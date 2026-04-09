@@ -11,6 +11,30 @@ import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 
+// #1232: Circuit breaker for embedding API failures
+// When the embedding API returns 502/503, skip semantic search and go directly to text fallback
+// for EMBEDDING_CIRCUIT_BREAKER_TTL_MS (default 5 minutes) to avoid repeated timeouts.
+let lastEmbeddingFailureTime = 0;
+const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
+
+/**
+ * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
+ * Only activates on real server errors, not generic exceptions.
+ */
+function isHttpServerError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message;
+    return /\b5[0-9]{2}\b/.test(msg) || msg.includes('Bad Gateway') || msg.includes('Service Unavailable') || msg.includes('Gateway Timeout');
+}
+
+/**
+ * Reset the circuit breaker state (for testing).
+ * @internal
+ */
+export function _resetEmbeddingCircuitBreaker(): void {
+    lastEmbeddingFailureTime = 0;
+}
+
 export interface SearchTasksByContentArgs {
     conversation_id?: string;
     search_query: string;
@@ -344,6 +368,28 @@ export const searchTasksByContentTool = {
             }
         }
 
+        // #1232: Circuit breaker — if embedding API failed recently, skip directly to text fallback
+        const now = Date.now();
+        if (lastEmbeddingFailureTime > 0 && (now - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS) {
+            const remainingMs = EMBEDDING_CIRCUIT_BREAKER_TTL_MS - (now - lastEmbeddingFailureTime);
+            console.warn(`[WARN] #1232: Embedding circuit breaker active, skipping semantic search (${Math.ceil(remainingMs / 1000)}s remaining). Using text fallback.`);
+            try {
+                const fallbackResult = await fallbackHandler(
+                    { query: args.search_query, workspace: args.workspace },
+                    conversationCache
+                );
+                return fallbackResult;
+            } catch (fallbackError) {
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: `Embedding API indisponible (circuit breaker actif). Fallback textuel échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                    }] as any
+                };
+            }
+        }
+
         // Tentative de recherche sémantique via Qdrant/OpenAI
         try {
             const qdrant = getQdrantClient();
@@ -605,6 +651,11 @@ export const searchTasksByContentTool = {
             };
 
         } catch (semanticError) {
+            // #1232: Activate circuit breaker ONLY on HTTP 5xx server errors
+            if (isHttpServerError(semanticError)) {
+                lastEmbeddingFailureTime = Date.now();
+                console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s (HTTP 5xx detected)`);
+            }
             console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
 
             // Fallback vers la recherche textuelle simple

@@ -116,7 +116,9 @@ describe('openai', () => {
 			expect(client).toBeDefined();
 			expect(MockOpenAI).toHaveBeenCalledWith({
 				apiKey: 'test-embedding-key',
-				baseURL: undefined
+				baseURL: undefined,
+				maxRetries: 1,
+				timeout: 15000,
 			});
 		});
 
@@ -130,7 +132,9 @@ describe('openai', () => {
 			expect(client).toBeDefined();
 			expect(MockOpenAI).toHaveBeenCalledWith({
 				apiKey: 'test-openai-key',
-				baseURL: undefined
+				baseURL: undefined,
+				maxRetries: 1,
+				timeout: 15000,
 			});
 		});
 
@@ -144,7 +148,9 @@ describe('openai', () => {
 
 			expect(MockOpenAI).toHaveBeenCalledWith({
 				apiKey: 'embed-key',
-				baseURL: undefined
+				baseURL: undefined,
+				maxRetries: 1,
+				timeout: 15000,
 			});
 		});
 
@@ -158,7 +164,9 @@ describe('openai', () => {
 
 			expect(MockOpenAI).toHaveBeenCalledWith({
 				apiKey: 'key',
-				baseURL: 'https://custom.api.com/v1'
+				baseURL: 'https://custom.api.com/v1',
+				maxRetries: 1,
+				timeout: 15000,
 			});
 		});
 
