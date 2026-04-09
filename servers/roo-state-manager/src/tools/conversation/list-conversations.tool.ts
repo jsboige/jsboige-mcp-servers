@@ -878,23 +878,6 @@ export const listConversationsTool = {
             }];
         }));
 
-        // Phase 2: Détecter les synthèses pour chaque nœud
-        const synthesisDetectionPromises: Promise<void>[] = [];
-        for (const skeleton of allSkeletons) {
-            const node = skeletonMap.get(skeleton.taskId);
-            if (node) {
-                synthesisDetectionPromises.push(
-                    detectSynthesis(skeleton).then(synthesis => {
-                        node.synthesis = synthesis;
-                    }).catch(error => {
-                        console.warn(`[list_conversations] Synthesis detection failed for ${skeleton.taskId}:`, error);
-                        node.synthesis = { available: false };
-                    })
-                );
-            }
-        }
-        await Promise.all(synthesisDetectionPromises);
-
         const forest: SkeletonNode[] = [];
 
         skeletonMap.forEach(node => {
@@ -919,6 +902,39 @@ export const listConversationsTool = {
         const totalPages = Math.ceil(totalCount / perPage);
         const startIdx = (page - 1) * perPage;
         const paginatedForest = forest.slice(startIdx, startIdx + perPage);
+
+        // Phase 2: Détecter les synthèses UNIQUEMENT pour les nœuds de la page courante
+        // #834: Moved AFTER pagination — was running on ALL 3000+ skeletons before,
+        // causing O(N) file I/O even though only ~20 items are displayed
+        const synthesisDetectionPromises: Promise<void>[] = [];
+        for (const node of paginatedForest) {
+            const skeleton = allSkeletons.find(s => s.taskId === node.taskId);
+            if (skeleton) {
+                synthesisDetectionPromises.push(
+                    detectSynthesis(skeleton).then(synthesis => {
+                        node.synthesis = synthesis;
+                    }).catch(error => {
+                        console.warn(`[list_conversations] Synthesis detection failed for ${skeleton.taskId}:`, error);
+                        node.synthesis = { available: false };
+                    })
+                );
+            }
+            // Also detect synthesis for displayed children (up to MAX_CHILDREN_SHOWN)
+            const displayedChildren = node.children.slice(0, MAX_CHILDREN_SHOWN);
+            for (const child of displayedChildren) {
+                const childSkeleton = allSkeletons.find(s => s.taskId === child.taskId);
+                if (childSkeleton) {
+                    synthesisDetectionPromises.push(
+                        detectSynthesis(childSkeleton).then(synthesis => {
+                            child.synthesis = synthesis;
+                        }).catch(() => {
+                            child.synthesis = { available: false };
+                        })
+                    );
+                }
+            }
+        }
+        await Promise.all(synthesisDetectionPromises);
 
         // Convertir en objets compacts — omit falsy fields, cap children
         const summaries = paginatedForest.map(node => toConversationSummary(node));
