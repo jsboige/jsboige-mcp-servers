@@ -11,6 +11,15 @@ import * as os from 'os';
 import { roosyncDashboard } from '../dashboard.js';
 import { resetChatOpenAIClient } from '@/services/openai';
 
+// #858: Mock OpenAI chat client for LLM condensation tests
+const mockChatCreate = vi.fn();
+const mockGetChatClient = vi.fn();
+
+vi.mock('@/services/openai', () => ({
+  getChatOpenAIClient: () => mockGetChatClient(),
+  resetChatOpenAIClient: vi.fn(),
+}));
+
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-test-');
 
 describe('roosync_dashboard', () => {
@@ -30,6 +39,9 @@ describe('roosync_dashboard', () => {
     // Aussi supprimer EMBEDDING_API_KEY car c'est un fallback dans getChatOpenAIClient
     delete process.env.EMBEDDING_API_KEY;
     delete process.env.EMBEDDING_API_BASE_URL;
+    // #858: Default mock = LLM unavailable (throws)
+    mockGetChatClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
+    mockChatCreate.mockReset();
   });
 
   afterEach(async () => {
@@ -150,8 +162,8 @@ describe('roosync_dashboard', () => {
 
   // === Test 11: Condensation manuelle (annulée sans LLM) ===
   // #864: Sans LLM configuré, la condensation est annulée
-  // TODO: Réparer ce test - le mock LLM ne réinitialise pas correctement le singleton
-  it.skip('condense is cancelled without LLM configured', async () => {
+  // #858: Fixed — mock properly resets via beforeEach
+  it('condense is cancelled without LLM configured', async () => {
     // S'assurer qu'aucun LLM n'est configuré
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
@@ -174,9 +186,9 @@ describe('roosync_dashboard', () => {
     expect(condenseResult.archivedCount).toBe(0);
 
     // Tous les messages sont conservés (pas de condensation)
-    // 1 (write) + 10 (append) = 11 messages
+    // write ne crée PAS de message intercom, seulement 10 (append)
     const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    expect(readResult.data?.intercom?.messages?.length).toBe(11);
+    expect(readResult.data?.intercom?.messages?.length).toBe(10);
   });
 
   // === Test 12: Read dashboard inexistant ===
@@ -333,8 +345,15 @@ describe('roosync_dashboard', () => {
   });
 
   // === Test 24: read_archive sans archiveFile liste les archives ===
-  // TODO: Réparer - dépend du test de condensation qui doit créer une archive
-  it.skip('read_archive lists archives for a key', async () => {
+  it('read_archive lists archives for a key', async () => {
+    // #858: Set up mock LLM for condensation to succeed
+    mockGetChatClient.mockReturnValue({
+      chat: { completions: { create: mockChatCreate } }
+    });
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\nAll good' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
+
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     for (let i = 0; i < 10; i++) {
       await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
@@ -352,8 +371,15 @@ describe('roosync_dashboard', () => {
   });
 
   // === Test 25: read_archive avec archiveFile lit l'archive ===
-  // TODO: Réparer - dépend du test de condensation qui doit créer une archive
-  it.skip('read_archive reads a specific archive file', async () => {
+  it('read_archive reads a specific archive file', async () => {
+    // #858: Set up mock LLM for condensation to succeed
+    mockGetChatClient.mockReturnValue({
+      chat: { completions: { create: mockChatCreate } }
+    });
+    mockChatCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\nAll good' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
+
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     for (let i = 0; i < 10; i++) {
       await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
@@ -398,8 +424,8 @@ describe('roosync_dashboard', () => {
 
   // === Test 27: Condensation sans LLM (annulée) ===
   // #864: Si le LLM est indisponible, la condensation est ANNULÉE (pas de fallback)
-  // TODO: Réparer - le mock LLM ne réinitialise pas correctement le singleton
-  it.skip('condense without LLM service is cancelled (no fallback)', async () => {
+  // #858: Fixed — mock properly resets via beforeEach
+  it('condense without LLM service is cancelled (no fallback)', async () => {
     // Sans configurer OPENAI_API_KEY, le LLM devrait échouer
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
@@ -424,14 +450,14 @@ describe('roosync_dashboard', () => {
     const messages = readResult.data?.intercom?.messages;
 
     // Tous les messages sont conservés (pas de condensation)
-    // 1 (write) + 10 (append) = 11 messages
-    expect(messages?.length).toBe(11);
+    // write ne crée PAS de message intercom, seulement 10 (append)
+    expect(messages?.length).toBe(10);
   });
 
   // === Test 28: Condensation annulée sans LLM préserve tous les messages ===
   // #864: Sans LLM, la condensation est annulée et tous les messages sont conservés
-  // TODO: Réparer - le mock LLM ne réinitialise pas correctement le singleton
-  it.skip('condense cancelled without LLM preserves all messages', async () => {
+  // #858: Fixed — mock properly resets via beforeEach
+  it('condense cancelled without LLM preserves all messages', async () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
 
@@ -452,8 +478,8 @@ describe('roosync_dashboard', () => {
     const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     const msgs = readResult.data?.intercom?.messages;
 
-    // Tous les messages conservés: 1 (write) + 10 (append) = 11
-    expect(msgs?.length).toBe(11);
+    // Tous les messages conservés: write ne crée PAS de message intercom, seulement 10 (append)
+    expect(msgs?.length).toBe(10);
 
     // Les derniers messages sont dans l'ordre original
     const lastMessage = msgs?.[msgs.length - 1]?.content;
@@ -591,5 +617,134 @@ describe('roosync_dashboard', () => {
 
     expect(messages.length).toBe(1);
     expect(messages[0].content).toBe(contentWithPipes);
+  });
+
+  // ============================================================
+  // Tests LLM Condensation avec mock (#858)
+  // ============================================================
+
+  describe('LLM condensation (#858)', () => {
+    it('condenses with LLM summary and status update', async () => {
+      // Set up mock LLM
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\n### Summary\nAll systems operational' } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary of 7 archived messages\n\n### Themes\n- Testing\n- Deployment' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'condense',
+        type: 'global',
+        keepMessages: 3
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.condensed).toBe(true);
+      // archivedCount = beforeCount(10) - afterCount(5) = 5
+      // (2 system messages + 3 kept = 5 remaining)
+      expect(result.archivedCount).toBe(5);
+
+      // Verify LLM was called (status + summary)
+      expect(mockChatCreate).toHaveBeenCalled();
+
+      // Read dashboard and verify structure
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const messages = readResult.data?.intercom?.messages ?? [];
+
+      // Should have: 1 CONDENSATION-SUMMARY + 1 CONDENSATION notice + 3 kept = 5
+      expect(messages.length).toBe(5);
+
+      // First message should be the LLM summary
+      expect(messages[0].tags).toContain('CONDENSATION-SUMMARY');
+      expect(messages[0].content).toContain('CONDENSATION-SUMMARY');
+
+      // Second message should be the condensation notice
+      expect(messages[1].tags).toContain('CONDENSATION');
+
+      // Last 3 should be the kept messages
+      expect(messages[2].content).toBe('Message 7');
+      expect(messages[3].content).toBe('Message 8');
+      expect(messages[4].content).toBe('Message 9');
+    });
+
+    it('updates status with LLM-generated content', async () => {
+      const newStatus = '## Updated Status\n\n### Summary\nAll systems operational';
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: newStatus } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Old Status' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+      }
+
+      await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      expect(readResult.data?.status?.markdown).toBe(newStatus);
+    });
+
+    it('cancels condensation when LLM returns empty', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: null } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'condense',
+        type: 'global',
+        keepMessages: 3
+      });
+
+      // LLM returned empty → condensation cancelled after retries
+      expect(result.success).toBe(true);
+      expect(result.condensed).toBe(false);
+      expect(result.archivedCount).toBe(0);
+    });
+
+    it('creates archive file with raw messages on condensation', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Status' } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      // Verify archive was created
+      const archiveResult = await roosyncDashboard({ action: 'read_archive', type: 'global' });
+      expect(archiveResult.archives?.length).toBeGreaterThanOrEqual(1);
+
+      // Read the archive and verify content
+      const archiveFile = archiveResult.archives?.[0];
+      const readArchive = await roosyncDashboard({
+        action: 'read_archive',
+        type: 'global',
+        archiveFile
+      });
+
+      expect(readArchive.archiveData?.messageCount).toBe(7);
+      expect(readArchive.archiveData?.messages.length).toBe(7);
+    });
   });
 });
