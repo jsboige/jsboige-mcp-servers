@@ -49,6 +49,7 @@ class ModelConfig:
     api_key_env: str = ""
     model_id: str = "default"
     vision: bool = False
+    thinking: bool = False
     enabled: bool = True
     description: str = ""
     context_window: int = 32_000
@@ -63,6 +64,7 @@ class ModelConfig:
             api_key_env=data.get("api_key_env", ""),
             model_id=data.get("model_id", data.get("id", "default")),
             vision=data.get("vision", False),
+            thinking=data.get("thinking", False),
             enabled=data.get("enabled", True),
             description=data.get("description", ""),
             context_window=data.get("context_window", _infer_context_window(data)),
@@ -76,6 +78,7 @@ class ModelConfig:
             "api_key": self.api_key,
             "model_id": self.model_id,
             "vision": self.vision,
+            "thinking": self.thinking,
             "enabled": self.enabled,
             "description": self.description,
             "context_window": self.context_window,

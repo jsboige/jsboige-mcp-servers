@@ -97,10 +97,10 @@ Dans Claude Code, taper une commande qui liste les MCPs ou vérifier que les out
 
 ### Tests recommandés
 
-1. **list_agents** - Vérifier 11 agents (analyst, fast, researcher, etc.)
-2. **call_agent(fast, "Bonjour")** - Test local rapide (glm-4.7-flash)
-3. **call_agent(analyst, "Capitale de France?")** - Test cloud (glm-5 via z.ai)
-4. **list_conversations** - Vérifier 4 conversations (deep-search, deep-think, etc.)
+1. **list_agents** - Vérifier 25 agents (analyst, fast, researcher, coder-local, etc.)
+2. **call_agent(fast, "Bonjour")** - Test cloud rapide (glm-4.7-flash via z.ai)
+3. **call_agent(analyst, "Capitale de France?")** - Test cloud (glm-5.1 via z.ai)
+4. **list_conversations** - Vérifier 8 conversations (deep-search, deep-think, etc.)
 
 ### Tests unitaires (optionnel)
 
@@ -119,11 +119,11 @@ Attendu: 160+ tests passed, 3 skipped
 
 **Structure v2:**
 - `config_version`: 2
-- `models`: 4 modèles (glm-5, glm-4.6v, zwz-8b, glm-4.7-flash)
+- `models`: 13 modèles (4 z.ai cloud + 2 vLLM direct + 4 OWUI proxy + 3 OWUI custom)
 - `embeddings`: Qwen3-4B-AWQ @ embeddings.myia.io (dim 2560)
 - `qdrant`: qdrant.myia.io:443 (API key)
-- `agents`: 11 agents (analyst, vision-analyst, fast, researcher, etc.)
-- `conversations`: 4 types (deep-search, deep-think, code-review, research-debate)
+- `agents`: 25 agents (12 core + 3 deep-search + 4 deep-think + 3 operational + 3 OWUI custom)
+- `conversations`: 8 types (deep-search, deep-think, code-review, research-debate, config-harmonization, commit-review, task-allocation, intelligent-task-dispatch)
 
 **Clés API nécessaires:**
 - `ZAI_API_KEY` pour glm-5 et glm-4.6v (z.ai cloud)
