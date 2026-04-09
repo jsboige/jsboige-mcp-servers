@@ -228,7 +228,103 @@ cd mcps/internal/servers/sk-agent
 python -m pytest test_sk_agent.py test_config.py -v
 ```
 
+## Available Models (13)
+
+### z.ai Cloud (4)
+
+| ID | Model | Vision | Thinking | Context |
+|----|-------|--------|----------|---------|
+| `glm-5.1` | GLM-5.1 | ❌ | ✅ | 200K |
+| `glm-5` | GLM-5 | ❌ | ✅ | 200K |
+| `glm-4.6v` | GLM-4.6V | ✅ | ❌ | 128K |
+| `glm-4.7-flash` | GLM-4.7-Flash | ❌ | ❌ | 131K |
+
+### vLLM Local Direct (2)
+
+| ID | Model | Vision | Thinking | Context |
+|----|-------|--------|----------|---------|
+| `omnicoder-9b` | OmniCoder-9B | ✅ | ✅ | 131K |
+| `qwen3.5-35b-a3b` | Qwen3.5 35B MoE | ✅ | ✅ | 262K |
+
+### OWUI Proxy (4)
+
+| ID | Model | Vision | Thinking | Context |
+|----|-------|--------|----------|---------|
+| `owui-glm-4.7-flash-fast` | GLM-4.7-Flash (no thinking) | ❌ | ❌ | 131K |
+| `owui-glm-4.7-flash-thinking` | GLM-4.7-Flash (thinking) | ❌ | ✅ | 131K |
+| `owui-omnicoder-9b` | OmniCoder-9B via OWUI | ✅ | ✅ | 131K |
+| `owui-qwen3.5-35b` | Qwen3.5 35B via OWUI | ✅ | ✅ | 262K |
+
+### OWUI Custom Models (3)
+
+| ID | Model | Vision | Thinking | Context |
+|----|-------|--------|----------|---------|
+| `owui-expert-analyste` | Expert Analyste | ❌ | ❌ | 131K |
+| `owui-redacteur-technique` | Rédacteur Technique | ❌ | ❌ | 131K |
+| `owui-vision-expert` | Vision Expert | ✅ | ❌ | 131K |
+
+## Available Agents (25)
+
+### Core Agents (12)
+
+| ID | Model | Vision | Thinking | Tools | Memory | Description |
+|----|-------|--------|----------|-------|--------|-------------|
+| `analyst` | glm-5.1 | ❌ | ✅ | searxng, playwright | ✅ | General analyst (default) |
+| `analyst-glm5` | glm-5 | ❌ | ✅ | searxng, playwright | ✅ | GLM-5 analyst variant |
+| `vision-analyst` | glm-4.6v | ✅ | ❌ | searxng | ❌ | Cloud vision specialist |
+| `vision-local` | omnicoder-9b | ✅ | ✅ | — | ❌ | Local vision+thinking |
+| `vision-local-owui` | owui-qwen3.5-35b | ✅ | ✅ | — | ❌ | OWUI Qwen3.5 vision |
+| `coder` | omnicoder-9b | ✅ | ✅ | — | ❌ | Local coding (vLLM direct) |
+| `coder-local` | owui-omnicoder-9b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
+| `fast` | glm-4.7-flash | ❌ | ❌ | — | ❌ | Fast cloud (z.ai) |
+| `fast-local` | owui-glm-4.7-flash-fast | ❌ | ❌ | — | ❌ | Fast local (OWUI, no thinking) |
+| `fast-local-thinking` | owui-glm-4.7-flash-thinking | ❌ | ✅ | — | ❌ | Local with thinking (OWUI) |
+| `qwen-local` | qwen3.5-35b-a3b | ✅ | ✅ | — | ❌ | Direct vLLM Qwen3.5 |
+| `guardian-sentinel` | glm-5.1 | ❌ | ✅ | — | ✅ | System health surveillance |
+
+### Deep Search Agents (3)
+
+| ID | Model | Tools | Memory |
+|----|-------|-------|--------|
+| `researcher` | glm-5.1 | searxng, playwright | ✅ |
+| `synthesizer` | glm-5.1 | — | ❌ |
+| `critic` | glm-5.1 | — | ❌ |
+
+### Deep Think Agents (4)
+
+| ID | Model | Role |
+|----|-------|------|
+| `optimist` | glm-5.1 | Opportunity finder |
+| `devils-advocate` | glm-5.1 | Risk identifier |
+| `pragmatist` | glm-5.1 | Implementation planner |
+| `mediator` | glm-5.1 | Consensus builder |
+
+### Operational Agents (3)
+
+| ID | Model | Role |
+|----|-------|------|
+| `config-auditor` | glm-5.1 | Configuration audit |
+| `log-analyzer` | glm-5.1 | Log analysis |
+| `commit-reviewer` | glm-5.1 | Code review |
+
+### OWUI Custom Agents (3)
+
+| ID | Model | Role |
+|----|-------|------|
+| `owui-analyst` | owui-expert-analyste | Structured French analysis |
+| `owui-writer` | owui-redacteur-technique | Technical documentation |
+| `owui-vision` | owui-vision-expert | Vision analysis |
+
 ## Changelog
+
+### v2.1 (2026-04-09) — Issue #894
+
+- **13 models**: z.ai cloud (4) + vLLM direct (2) + OWUI proxy (4) + OWUI custom (3)
+- **25 agents**: Full coverage of thinking/vision combinations across all model sources
+- **New model field**: `thinking` flag on ModelConfig for reasoning capability tracking
+- **New agents**: `fast-local`, `fast-local-thinking`, `analyst-glm5`, `coder-local`, `vision-local-owui`, `qwen-local`
+- **OWUI proxy models**: Separate entries for thinking vs non-thinking variants
+- **151 tests**: Config (51) + agent/integration (100), all passing
 
 ### v2.0 (2026-02-16)
 
