@@ -42,6 +42,9 @@ synthesis-test-output.txt
 test-results.txt
 test_output.txt
 test-errors.log
+test-output.txt
+test-output-*.txt
+vitest-output.txt
 
 test-diagnostic-*.log
 
