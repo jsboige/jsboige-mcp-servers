@@ -508,5 +508,275 @@ describe('roosync_search', () => {
 				undefined // diagnoseHandler passed as undefined
 			);
 		});
+
+		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'global search', workspace: 'all' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'global search',
+					workspace: 'all'
+				}),
+				mockCache
+			);
+		});
+
+		test('passes "*" workspace as undefined for semantic search', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'global query', workspace: '*' },
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('global query');
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('includes exclude_tool_results filter in semantic search', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'test query',
+					exclude_tool_results: true
+				},
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('test query');
+			expect(callArgs.exclude_tool_results).toBe(true);
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'global search', workspace: 'all' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'global search',
+					workspace: 'all'
+				}),
+				mockCache
+			);
+		});
+
+		test('passes "*" workspace as undefined for semantic search', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'global query', workspace: '*' },
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('global query');
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('includes exclude_tool_results filter in semantic search', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'test query',
+					exclude_tool_results: true
+				},
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('test query');
+			expect(callArgs.exclude_tool_results).toBe(true);
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'global search', workspace: 'all' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'global search',
+					workspace: 'all'
+				}),
+				mockCache
+			);
+		});
+
+		test('passes "*" workspace as undefined for semantic search', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'global query', workspace: '*' },
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('global query');
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'global search', workspace: 'all' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'global search',
+					workspace: 'all'
+				}),
+				mockCache
+			);
+		});
+
+		test('passes "*" workspace as undefined for semantic search', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'global query', workspace: '*' },
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('global query');
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('includes exclude_tool_results filter in semantic search', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'test query',
+					exclude_tool_results: true
+				},
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('test query');
+			expect(callArgs.exclude_tool_results).toBe(true);
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('includes exclude_tool_results filter in semantic search', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'test query',
+					exclude_tool_results: true
+				},
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('test query');
+			expect(callArgs.exclude_tool_results).toBe(true);
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+			await handleRooSyncSearch(
+				{ action: 'text', search_query: 'global search', workspace: 'all' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(mockFallbackHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					query: 'global search',
+					workspace: 'all'
+				}),
+				mockCache
+			);
+		});
+
+		test('passes "*" workspace as undefined for semantic search', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'global query', workspace: '*' },
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('global query');
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
+
+		test('includes exclude_tool_results filter in semantic search', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'test query',
+					exclude_tool_results: true
+				},
+				mockCache,
+				mockEnsureCache,
+				mockSemanticHandler,
+				mockFallbackHandler
+			);
+
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.search_query).toBe('test query');
+			expect(callArgs.exclude_tool_results).toBe(true);
+			expect(callArgs.workspace).toBeUndefined();
+			expect(callArgs.diagnose_index).toBe(false);
+		});
 	});
 });
