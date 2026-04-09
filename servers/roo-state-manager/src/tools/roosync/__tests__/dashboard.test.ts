@@ -662,11 +662,11 @@ describe('roosync_dashboard', () => {
       expect(messages.length).toBe(5);
 
       // First message should be the LLM summary
-      expect(messages[0].tags).toContain('CONDENSATION-SUMMARY');
+      // Note: `tags` field was removed in df56edb1 — assert on content marker only
       expect(messages[0].content).toContain('CONDENSATION-SUMMARY');
 
       // Second message should be the condensation notice
-      expect(messages[1].tags).toContain('CONDENSATION');
+      expect(messages[1].content).toContain('**CONDENSATION**');
 
       // Last 3 should be the kept messages
       expect(messages[2].content).toBe('Message 7');
