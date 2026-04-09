@@ -1,0 +1,5 @@
+{
+  "totalTests": 705,
+  "passedTests": 705,
+  "coverage": "N/A - vitest --coverage unavailable due to memory issues"
+}
