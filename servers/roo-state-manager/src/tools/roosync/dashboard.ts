@@ -71,8 +71,7 @@ export const IntercomMessageSchema = z.object({
   id: z.string().describe('ID unique du message (ic-{timestamp})'),
   timestamp: z.string().describe('ISO 8601 timestamp'),
   author: AuthorSchema,
-  content: z.string().describe('Contenu markdown du message'),
-  tags: z.array(z.string()).optional().describe('Tags optionnels : INFO, WARN, ERROR...')
+  content: z.string().describe('Contenu markdown du message')
 });
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
@@ -130,10 +129,6 @@ export const DashboardArgsSchema = z.object({
     .describe('Auteur de la modification (requis pour write/append)'),
   createIfNotExists: z.boolean().optional()
     .describe('Créer le dashboard s\'il n\'existe pas (défaut: true)'),
-
-  // Pour append (section intercom)
-  tags: z.array(z.string()).optional()
-    .describe('Tags pour le message intercom (ex: ["INFO", "WARN"])'),
 
   // Pour condense
   keepMessages: z.number().optional()
@@ -223,8 +218,10 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
     const statusMarkdown = statusMatch ? statusMatch[1].trim() : '';
     const intercomMarkdown = intercomMatch ? intercomMatch[1].trim() : '';
 
-    // Parser les messages intercom (format: ### [timestamp] machine|workspace [tags]\n\ncontent)
+    // Parser les messages intercom (format: ### [timestamp] machine|workspace\n\ncontent)
     // Bug fix: split on message headers instead of `---` which can appear in message content
+    // Note: legacy format `### [ts] machine|workspace [TAGS]` is still parsed for backward compat,
+    // but the captured tags segment is discarded (tags removed in 2026-04).
     const messages: IntercomMessage[] = [];
     if (intercomMarkdown && !intercomMarkdown.includes('*Aucun message.*')) {
       // Split on message headers (### [) while keeping the header in each block
@@ -234,19 +231,17 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
         const block = rawBlock.replace(/\n---\s*$/, '').trim();
         // Note: machineId et workspace peuvent contenir des tirets (ex: test-machine, roo-extensions)
         // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
-        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
+        // Le segment optionnel `\s+\[([^\]]+)\]` est l'ancien format tags — toujours toléré, jamais réutilisé.
+        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n\n([\s\S]+)/);
         if (headerMatch) {
-          const [, timestamp, machineId, workspace, , tagsStr, content] = headerMatch;
-          // tagsStr (groupe 5) contient déjà les tags sans les crochets: "WARN, SYSTEM"
-          const tags = tagsStr ? tagsStr.split(', ').map(t => t.trim()) : [];
+          const [, timestamp, machineId, workspace, , content] = headerMatch;
           // FIX #1123: Unescape "### [" that was escaped during write to prevent false splits
           const unescapedContent = content.trim().replace(/^\\#\\#\\# \[/gm, '### [');
           messages.push({
             id: generateMessageId(), // ID regénéré (pas stocké dans le format markdown)
             timestamp,
             author: { machineId: machineId.trim(), workspace: workspace.trim() },
-            content: unescapedContent,
-            tags: tags.length > 0 ? tags : undefined
+            content: unescapedContent
           });
         }
       }
@@ -301,8 +296,7 @@ async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<vo
     text.replace(/^### \[/gm, '\\#\\#\\# [');
   const intercomSection = dashboard.intercom.messages.length > 0
     ? dashboard.intercom.messages.map(msg => {
-        const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}\n\n${escapeContent(msg.content)}`;
+        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${escapeContent(msg.content)}`;
       }).join('\n\n---\n\n')
     : '*Aucun message.*';
 
@@ -366,8 +360,7 @@ async function generateLLMSummary(messages: IntercomMessage[]): Promise<string |
 
   // Construire le prompt avec les messages
   const messagesContent = messages.map(msg => {
-    const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-    const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+    const header = `[${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}`;
     return `${header}\n${msg.content}`;
   }).join('\n\n---\n\n');
 
@@ -480,9 +473,8 @@ async function generateStatusUpdate(
 
   // Format messages with archive/keep annotations
   const messagesContent = allMessages.map((msg, index) => {
-    const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
     const annotation = index < archivedCount ? '[SERA ARCHIVÉ]' : '[CONSERVÉ]';
-    const header = `${annotation} [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}`;
+    const header = `${annotation} [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}`;
     return `${header}\n${msg.content}`;
   }).join('\n\n---\n\n');
 
@@ -750,8 +742,7 @@ async function condenseIntercom(
   });
 
   const archiveMessages = toArchive.map(msg => {
-    const tags = msg.tags?.length ? ` [${msg.tags.join(', ')}]` : '';
-    return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}${tags}\n\n${msg.content}`;
+    return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`;
   }).join('\n\n---\n\n');
 
   const archiveContent = `---
@@ -784,8 +775,7 @@ ${archiveMessages}
         machineId: 'system',
         workspace: 'system'
       },
-      content: `**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}`,
-      tags: ['SYSTEM', 'CONDENSATION-SUMMARY']
+      content: `**CONDENSATION-SUMMARY** - ${now}\n\n${llmSummary}`
     };
     systemMessages.push(summaryMessage);
     logger.info('LLM summary added to dashboard', { summaryLength: llmSummary.length });
@@ -811,8 +801,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status: ${Math.round(t1Elapsed / 1000)}s, summary: ${Math.round(t2Elapsed / 1000)}s)`,
-    tags: ['SYSTEM', 'CONDENSATION']
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status: ${Math.round(t1Elapsed / 1000)}s, summary: ${Math.round(t2Elapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 
@@ -927,9 +916,6 @@ function estimateDashboardSize(dashboard: Dashboard): number {
     // Each message: header (~100B) + content + separator (~10B)
     size += 110;
     size += Buffer.byteLength(msg.content || '', 'utf8');
-    if (msg.tags) {
-      size += msg.tags.join(', ').length + 10;
-    }
   }
   return size;
 }
@@ -1073,8 +1059,7 @@ async function handleAppend(
     id: generateMessageId(),
     timestamp: new Date().toISOString(),
     author,
-    content: args.content,
-    tags: args.tags
+    content: args.content
   };
 
   const now = new Date().toISOString();
@@ -1413,20 +1398,18 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
     const messages: IntercomMessage[] = [];
 
     // Split on message headers instead of `---` to avoid content interference
+    // Legacy format `### [ts] machine|workspace [TAGS]` is still parsed (tags discarded).
     const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
     for (const rawBlock of messageBlocks) {
       const block = rawBlock.replace(/\n---\s*$/, '').trim();
-      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[([^\]]+)\])?\n\n([\s\S]+)/);
+      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n\n([\s\S]+)/);
       if (headerMatch) {
-        const [, timestamp, machineId, workspace, , tagsStr, msgContent] = headerMatch;
-        // tagsStr (groupe 5) contient déjà les tags sans les crochets: "WARN, SYSTEM"
-        const tags = tagsStr ? tagsStr.split(', ').map(t => t.trim()) : [];
+        const [, timestamp, machineId, workspace, , msgContent] = headerMatch;
         messages.push({
           id: generateMessageId(),
           timestamp,
           author: { machineId, workspace },
-          content: msgContent.trim(),
-          tags: tags.length > 0 ? tags : undefined
+          content: msgContent.trim()
         });
       }
     }
@@ -1510,11 +1493,6 @@ export const dashboardToolMetadata = {
       createIfNotExists: {
         type: 'boolean',
         description: '(write/append) Créer le dashboard s\'il n\'existe pas (défaut: true)'
-      },
-      tags: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '(append) Tags pour le message intercom (ex: ["INFO", "WARN", "ERROR"])'
       },
       keepMessages: {
         type: 'number',

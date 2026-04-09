@@ -133,19 +133,21 @@ describe('roosync_dashboard', () => {
     expect(msgs?.[1].content).toBe('Message 2');
   });
 
-  // === Test 10: Append avec tags ===
-  it('stores tags on intercom message', async () => {
+  // === Test 10: Legacy tag headers tolerated by parser ===
+  // Tags removed from dashboard intercom in 2026-04 (no consumer, AI slop).
+  // Parser still tolerates legacy `### [ts] machine|workspace [TAGS]` headers but discards them.
+  it('parses legacy headers with tags segment without breaking', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({
       action: 'append',
       type: 'global',
-      content: 'Warning message',
-      tags: ['WARN', 'SYSTEM']
+      content: 'Plain message'
     });
     const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     const msg = result.data?.intercom?.messages?.[0];
 
-    expect(msg?.tags).toEqual(['WARN', 'SYSTEM']);
+    expect(msg?.content).toBe('Plain message');
+    expect((msg as any)?.tags).toBeUndefined();
   });
 
   // === Test 11: Condensation manuelle (annulée sans LLM) ===
@@ -497,9 +499,9 @@ describe('roosync_dashboard', () => {
     expect(messageCount).toBe(100);
   });
 
-  // === Test 29: Pas de tags système si condensation annulée ===
+  // === Test 29: Pas de message système CONDENSATION si condensation annulée ===
   // #864: Sans LLM, pas de message système CONDENSATION ajouté
-  it('condense cancelled does not add system tags', async () => {
+  it('condense cancelled does not add system condensation message', async () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
 
@@ -518,8 +520,8 @@ describe('roosync_dashboard', () => {
     const messages = readResult.data?.intercom?.messages;
 
     // Aucun message système CONDENSATION ne devrait être présent
-    const hasCondensationTag = messages?.some(m => m.tags?.includes('CONDENSATION'));
-    expect(hasCondensationTag).toBe(false);
+    const hasCondensationMsg = messages?.some(m => m.content.includes('**CONDENSATION**'));
+    expect(hasCondensationMsg).toBe(false);
   });
 
   // === Test 32: Content with ### [ prefix doesn't break parsing (#1123) ===
@@ -531,8 +533,7 @@ describe('roosync_dashboard', () => {
     await roosyncDashboard({
       action: 'append',
       type: 'global',
-      content: maliciousContent,
-      tags: ['INFO']
+      content: maliciousContent
     });
 
     // Add a second message to verify split didn't corrupt
