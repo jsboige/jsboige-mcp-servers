@@ -492,6 +492,61 @@ describe('searchTasksByContentTool', () => {
 			expect(parsed.results[0].chunks).toHaveLength(2);
 			expect(parsed.results[0].best_score).toBe(0.9);
 		});
+
+		// ========================================================
+		// #1244 Couche 1.3 — Push date filters into Qdrant directly
+		// ========================================================
+		test('[#1244 1.3] pushes start_date and end_date as Qdrant range filter on timestamp', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{
+					search_query: 'work',
+					start_date: '2026-04-07',
+					end_date: '2026-04-08',
+				} as any,
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.filter).toBeDefined();
+			expect(searchCall.filter.must).toBeDefined();
+
+			// Should contain a range filter on the `timestamp` key.
+			const timestampFilter = searchCall.filter.must.find(
+				(c: any) => c && c.key === 'timestamp' && c.range
+			);
+			expect(timestampFilter).toBeDefined();
+
+			// gte must use start-of-day at UTC
+			expect(timestampFilter.range.gte).toBe('2026-04-07T00:00:00.000Z');
+			// lte must be expanded to end-of-day at UTC (pure date → 23:59:59.999)
+			expect(timestampFilter.range.lte).toBe('2026-04-08T23:59:59.999Z');
+		});
+
+		test('[#1244 1.3] pushes start_date only as Qdrant range filter (no lte)', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{
+					search_query: 'work',
+					start_date: '2026-04-07',
+				} as any,
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const timestampFilter = searchCall.filter.must.find(
+				(c: any) => c && c.key === 'timestamp' && c.range
+			);
+			expect(timestampFilter).toBeDefined();
+			expect(timestampFilter.range.gte).toBe('2026-04-07T00:00:00.000Z');
+			expect(timestampFilter.range.lte).toBeUndefined();
+		});
 	});
 
 	// ============================================================
