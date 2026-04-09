@@ -41,6 +41,11 @@ function getOpenAIClient(): OpenAI {
     openai = new OpenAI({
       apiKey,
       baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
+      // #1232: Reduce timeout and retries to prevent MCP Connection closed
+      // Default OpenAI SDK retries 2x with backoff = 90s+ on 502/503.
+      // With maxRetries=1 and timeout=15s, worst case = ~30s (2 attempts × 15s).
+      timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '15000'),
+      maxRetries: 1,
     });
   }
   return openai;
