@@ -585,15 +585,17 @@ export async function handleConversationBrowser(
                 // Résoudre taskId depuis taskId ou task_id
                 const resolvedTaskId = (args.taskId || args.task_id)!;
 
-                // === Synthesis: LLM pipeline via SynthesisOrchestratorService ===
-                // Enrichment methods implemented algorithmically (Phase 2, issue #767)
+                // === Synthesis: DISABLED — LLM pipeline not yet implemented (#788) ===
+                // Synthesis requires real LLM integration (Phase 3). Stub services return
+                // null/error. Block early to prevent unnecessary service instantiation.
                 if (args.summarize_type === 'synthesis') {
-                    return await handleSynthesisAction(
-                        resolvedTaskId,
-                        args.synthesis_output_format || 'json',
-                        args.filePath,
-                        getConversationSkeleton
-                    );
+                    return {
+                        content: [{
+                            type: 'text' as const,
+                            text: 'SYNTHESIS_DISABLED: summarize_type "synthesis" requires LLM integration not yet available. Use "trace" or "cluster" instead. See issue #788.'
+                        }],
+                        isError: true
+                    };
                 }
 
                 // Resolve source for summarize: 'all' not supported, auto-detect from taskId prefix
