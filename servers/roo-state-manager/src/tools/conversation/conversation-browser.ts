@@ -548,6 +548,17 @@ async function handleSynthesisAction(
 }
 
 /**
+ * #1262 — Timeout dur appliqué à toute exécution de conversation_browser.
+ * Si une action (list/view/tree/current/...) prend plus de CONVERSATION_BROWSER_TIMEOUT_MS,
+ * c'est un BUG à signaler : la pagination de liste ou l'affichage d'une conversation
+ * doit se terminer en moins de 30 secondes. Override via env CONVERSATION_BROWSER_TIMEOUT_MS.
+ */
+const CONVERSATION_BROWSER_TIMEOUT_MS = parseInt(
+    process.env.CONVERSATION_BROWSER_TIMEOUT_MS || '30000',
+    10
+);
+
+/**
  * Handler consolidé pour l'outil conversation_browser
  *
  * @param args Arguments de l'outil
@@ -558,6 +569,74 @@ async function handleSynthesisAction(
  * @param findChildTasks Finder de tâches enfantes (pour summarize cluster)
  */
 export async function handleConversationBrowser(
+    args: ConversationBrowserArgs,
+    conversationCache: Map<string, ConversationSkeleton>,
+    ensureSkeletonCacheIsFresh: () => Promise<void>,
+    contextWorkspace?: string,
+    getConversationSkeleton?: (id: string) => Promise<ConversationSkeleton | null>,
+    findChildTasks?: (rootId: string) => Promise<ConversationSkeleton[]>,
+    serverState?: ServerState
+): Promise<CallToolResult> {
+    // #1262 — Hard timeout (default 30s, env-overridable).
+    // The inner work runs unmodified; we just race it against a timer.
+    const startedAt = Date.now();
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<CallToolResult>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+            reject(new Error(
+                `conversation_browser TIMEOUT after ${CONVERSATION_BROWSER_TIMEOUT_MS}ms ` +
+                `(action: ${args.action}). This is a BUG to report: list pagination or ` +
+                `conversation detail must complete in <30s. Likely culprit: blocking ` +
+                `ensureSkeletonCacheIsFresh() in src/index.ts (failsafe full rebuild or ` +
+                `disk-scan storm). Workaround: disable force_refresh and retry; if it still ` +
+                `blocks, restart the MCP server.`
+            ));
+        }, CONVERSATION_BROWSER_TIMEOUT_MS);
+        // Allow process to exit even if timer is still pending
+        if (typeof timeoutHandle?.unref === 'function') {
+            timeoutHandle.unref();
+        }
+    });
+
+    try {
+        return await Promise.race([
+            handleConversationBrowserCore(
+                args,
+                conversationCache,
+                ensureSkeletonCacheIsFresh,
+                contextWorkspace,
+                getConversationSkeleton,
+                findChildTasks,
+                serverState
+            ),
+            timeoutPromise
+        ]);
+    } catch (error) {
+        const elapsedMs = Date.now() - startedAt;
+        const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+        // Distinguish timeout from other errors so callers can spot the bug.
+        const isTimeout = errorMessage.includes('TIMEOUT after');
+        return {
+            content: [{
+                type: 'text',
+                text: isTimeout
+                    ? `${errorMessage} (elapsed=${elapsedMs}ms)`
+                    : `Erreur lors de conversation_browser: ${errorMessage}`
+            }],
+            isError: true
+        };
+    } finally {
+        if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+        }
+    }
+}
+
+/**
+ * #1262 — Cœur de l'implémentation, isolé pour permettre le wrapping par timeout.
+ * Ne pas exporter : le seul point d'entrée public reste handleConversationBrowser.
+ */
+async function handleConversationBrowserCore(
     args: ConversationBrowserArgs,
     conversationCache: Map<string, ConversationSkeleton>,
     ensureSkeletonCacheIsFresh: () => Promise<void>,
