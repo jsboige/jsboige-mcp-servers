@@ -197,7 +197,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     let status: 'HEALTHY' | 'WARNING' | 'CRITICAL' = 'HEALTHY';
     if (offlineMachines.length > 0 || inboxStats.urgent > 0) {
       status = 'CRITICAL';
-    } else if (offlineMachines.length === 0 && (flags.length > 0 || inboxStats.unread > 5)) {
+    } else if (inboxStats.unread > 5 || (heartbeatState?.warningMachines?.length ?? 0) > 0) {
+      // WARNING if: high unread count OR heartbeat warning machines (but no offline)
       status = 'WARNING';
     }
 
