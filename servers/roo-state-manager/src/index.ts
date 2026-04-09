@@ -70,8 +70,9 @@ const packageJson = require('../package.json');
 let _stateManagerModule: typeof import('./services/state-manager.service.js') | null = null;
 let _serverHelpersModule: typeof import('./utils/server-helpers.js') | null = null;
 let _backgroundServicesModule: typeof import('./services/background-services.js') | null = null;
-let _rooStorageModule: typeof import('./utils/roo-storage-detector.js') | null = null;
-let _claudeStorageModule: typeof import('./utils/claude-storage-detector.js') | null = null;
+// #1244: _rooStorageModule and _claudeStorageModule removed — the synchronous
+// failsafe that loaded them is gone. Worker A in background-services handles
+// all freshness via 2-min incremental mtime scans.
 
 async function getStateManager() {
     if (!_stateManagerModule) _stateManagerModule = await import('./services/state-manager.service.js');
@@ -281,136 +282,105 @@ class RooStateManagerServer {
             }
         );
 
-        // Wrapper pour tronquer les résultats ET activer l'intercepteur de notifications
+        // Wrapper pour tronquer les résultats, mesurer la durée d'exécution,
+        // et activer l'intercepteur de notifications
         const originalCallTool = this.server['_requestHandlers'].get('tools/call');
         if (originalCallTool) {
             this.server['_requestHandlers'].set('tools/call', async (request: any) => {
+                // #1245: Measure wall-clock duration of every tool call (visible in output)
+                const startMs = Date.now();
+                const toolName: string | undefined = request?.params?.name;
+
                 // Ensure state is initialized before first tool call
                 await this.ensureInitialized();
 
                 const helpers = await getServerHelpers();
 
+                let result;
                 if (this.toolInterceptor) {
-                    const wrappedResult = await this.toolInterceptor.interceptToolCall(
+                    result = await this.toolInterceptor.interceptToolCall(
                         request.params.name,
                         request.params.arguments,
                         async () => await originalCallTool(request)
                     );
-                    return helpers.truncateResult(wrappedResult);
                 } else {
-                    const result = await originalCallTool(request);
-                    return helpers.truncateResult(result);
+                    result = await originalCallTool(request);
                 }
+
+                const durationMs = Date.now() - startMs;
+                // Inject duration AFTER truncation so the footer is never cut off.
+                return helpers.injectDuration(helpers.truncateResult(result), durationMs, toolName);
             });
         }
     }
 
     /**
-     * FAILSAFE: Ensure skeleton cache is fresh and up-to-date
+     * #1244: Fast freshness check (formerly synchronous failsafe).
+     *
+     * The actual heavy work — scanning task directories for modified files,
+     * rebuilding skeletons, regenerating the index — is done by Worker A
+     * (`startSkeletonRefreshWorker` in `services/background-services.ts`) on a
+     * 2-minute interval. Worker A is started at MCP startup via
+     * `initializeBackgroundServices()` and uses `state.lastSkeletonRefreshAt`
+     * as a checkpoint for incremental mtime-based scans (only files newer than
+     * the last tick are read).
+     *
+     * This method is now a fast no-op safety net:
+     *   - Throttled to once per minute.
+     *   - If state is not initialized yet, return immediately. The CallTool
+     *     wrapper already awaits `ensureInitialized()` before any tool runs.
+     *   - If the cache is empty (rare edge case: first run, index missing,
+     *     background load not finished), schedule a background populate via
+     *     `setImmediate`. NEVER await it.
+     *   - Otherwise, return immediately (< 5ms total).
+     *
+     * Foreground tools must NOT depend on this method to provide freshness.
+     * Freshness is guaranteed by Worker A's 2-minute periodic refresh.
      */
     private async ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean> {
         try {
-            // #883: Throttle to avoid repeated I/O scans
+            // #883: Throttle to avoid burning cycles on repeated checks
             const checkTime = Date.now();
             if (this.lastCacheCheckAt > 0 && (checkTime - this.lastCacheCheckAt) < RooStateManagerServer.CACHE_CHECK_THROTTLE_MS) {
                 return false;
             }
             this.lastCacheCheckAt = checkTime;
 
-            const sm = await this.ensureInitialized();
+            // Do NOT await ensureInitialized() here — that's the caller's job
+            // (the CallTool wrapper already does it). We work with whatever
+            // state is currently ready, no blocking I/O on the foreground path.
+            const sm = this.stateManager;
+            if (!sm) return false;
+
             const state = sm.getState();
 
-            if (state.conversationCache.size === 0) {
-                logger.info('[FAILSAFE] Cache empty, triggering differential rebuild...');
-                const { handleBuildSkeletonCache } = await import('./tools/index.js');
-                await handleBuildSkeletonCache({
-                    force_rebuild: false,
-                    workspace_filter: args?.workspace
-                }, state.conversationCache as any);
-                return true;
-            }
-
-            // Check for new tasks
-            if (!_rooStorageModule) _rooStorageModule = await import('./utils/roo-storage-detector.js');
-            const storageLocations = await _rooStorageModule.RooStorageDetector.detectStorageLocations();
-            if (storageLocations.length === 0) {
+            // Happy path: Worker A is keeping the cache fresh. Nothing to do.
+            if (state.conversationCache.size > 0) {
                 return false;
             }
 
-            let needsUpdate = false;
-            const now = Date.now();
-            const CACHE_VALIDITY_MS = 60 * 60 * 1000; // 1 hour
-
-            const { promises: fs } = await import('fs');
-
-            for (const location of storageLocations) {
-                try {
-                    const tasksDir = path.join(location, 'tasks');
-                    const conversationDirs = await fs.readdir(tasksDir, { withFileTypes: true });
-                    for (const convDir of conversationDirs) {
-                        if (convDir.isDirectory() && convDir.name !== '.skeletons') {
-                            const metadataPath = path.join(tasksDir, convDir.name, 'task_metadata.json');
-                            try {
-                                const metadataStat = await fs.stat(metadataPath);
-                                const ageMs = now - metadataStat.mtime.getTime();
-                                if (ageMs < CACHE_VALIDITY_MS && !state.conversationCache.has(convDir.name)) {
-                                    needsUpdate = true;
-                                    break;
-                                }
-                            } catch { /* ignore stat errors */ }
-                        }
+            // Edge case: cache empty — first run, missing index, or background
+            // load still in progress. Schedule a background populate so the next
+            // tool call has data. NEVER await it.
+            logger.info('[FAILSAFE] Cache empty — scheduling background populate (non-blocking)');
+            setImmediate(() => {
+                (async () => {
+                    try {
+                        const { handleBuildSkeletonCache } = await import('./tools/index.js');
+                        await handleBuildSkeletonCache({
+                            force_rebuild: false,
+                            workspace_filter: args?.workspace
+                        }, state.conversationCache as any);
+                        logger.info('[FAILSAFE] Background populate complete');
+                    } catch (error) {
+                        logger.warn('[FAILSAFE] Background populate failed (non-blocking):', { error });
                     }
-                    if (needsUpdate) break;
-                } catch (readdirError) {
-                    logger.warn(`[FAILSAFE] Could not read directory ${location}:`, { error: readdirError });
-                }
-            }
-
-            // Check Claude Code sessions
-            if (!needsUpdate) {
-                try {
-                    if (!_claudeStorageModule) _claudeStorageModule = await import('./utils/claude-storage-detector.js');
-                    const claudeLocations = await _claudeStorageModule.ClaudeStorageDetector.detectStorageLocations();
-                    const seenProjects = new Set<string>();
-
-                    for (const location of claudeLocations) {
-                        if (seenProjects.has(location.projectPath)) continue;
-                        seenProjects.add(location.projectPath);
-
-                        try {
-                            const files = (await fs.readdir(location.projectPath)).filter((f: string) => f.endsWith('.jsonl'));
-                            for (const file of files) {
-                                try {
-                                    const taskId = `claude-${file.replace('.jsonl', '')}`;
-                                    const filePath = path.join(location.projectPath, file);
-                                    const fileStat = await fs.stat(filePath);
-                                    if ((now - fileStat.mtime.getTime()) < CACHE_VALIDITY_MS && !state.conversationCache.has(taskId)) {
-                                        needsUpdate = true;
-                                        break;
-                                    }
-                                } catch { /* skip */ }
-                            }
-                            if (needsUpdate) break;
-                        } catch { /* skip */ }
-                    }
-                } catch (claudeError) {
-                    logger.warn('[FAILSAFE] Error checking Claude sessions:', { error: claudeError });
-                }
-            }
-
-            if (needsUpdate) {
-                logger.info('[FAILSAFE] Cache outdated, triggering differential rebuild...');
-                const { handleBuildSkeletonCache: rebuildCache } = await import('./tools/index.js');
-                await rebuildCache({
-                    force_rebuild: false,
-                    workspace_filter: args?.workspace
-                }, state.conversationCache as any);
-                return true;
-            }
+                })();
+            });
 
             return false;
         } catch (error) {
-            logger.error('[FAILSAFE] Error checking skeleton cache freshness:', { error });
+            logger.error('[FAILSAFE] Error in fast freshness check:', { error });
             return false;
         }
     }

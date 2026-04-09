@@ -10,10 +10,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { roosyncStorageManagement } from '../storage-management.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 describe('SMOKE: roosync_storage_management', () => {
-  const testStoragePath = path.join(process.cwd(), '.test-storage');
+  const testStoragePath = path.join(os.tmpdir(), '.test-storage');
   const testTasksPath = path.join(testStoragePath, 'test-workspace', 'tasks');
   let originalEnv: NodeJS.ProcessEnv;
 

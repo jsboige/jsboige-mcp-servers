@@ -46,7 +46,7 @@ describe('get-status (Option B)', () => {
       overallStatus: 'synced',
       lastUpdate: new Date().toISOString(),
       machines: {
-        'ai-01': { status: 'online', lastSync: '2026-04-08', pendingDecisions: 0, diffsCount: 0 }
+        'ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
       }
     });
     mockGetHeartbeatService.mockReturnValue({
@@ -131,7 +131,7 @@ describe('get-status (Option B)', () => {
         overallStatus: 'synced',
         lastUpdate: new Date().toISOString(),
         machines: {
-          'ai-01': { status: 'online', lastSync: '2026-04-08', pendingDecisions: 0, diffsCount: 0 }
+          'ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
         }
       });
 
@@ -222,7 +222,7 @@ describe('get-status (Option B)', () => {
       mockLoadDashboard.mockResolvedValue({
         overallStatus: 'synced',
         lastUpdate: new Date().toISOString(),
-        machines: { 'ai-01': { status: 'online', lastSync: '2026-04-08', pendingDecisions: 0, diffsCount: 0 } }
+        machines: { 'ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 } }
       });
 
       const result = await roosyncGetStatus({ machineFilter: 'ai-01' });

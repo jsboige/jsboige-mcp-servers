@@ -145,19 +145,21 @@ describe('roosync_dashboard', () => {
     expect(msgs?.[1].content).toBe('Message 2');
   });
 
-  // === Test 10: Append avec tags ===
-  it('stores tags on intercom message', async () => {
+  // === Test 10: Legacy tag headers tolerated by parser ===
+  // Tags removed from dashboard intercom in 2026-04 (no consumer, AI slop).
+  // Parser still tolerates legacy `### [ts] machine|workspace [TAGS]` headers but discards them.
+  it('parses legacy headers with tags segment without breaking', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({
       action: 'append',
       type: 'global',
-      content: 'Warning message',
-      tags: ['WARN', 'SYSTEM']
+      content: 'Plain message'
     });
     const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     const msg = result.data?.intercom?.messages?.[0];
 
-    expect(msg?.tags).toEqual(['WARN', 'SYSTEM']);
+    expect(msg?.content).toBe('Plain message');
+    expect((msg as any)?.tags).toBeUndefined();
   });
 
   // === Test 11: Condensation manuelle (annulée sans LLM) ===
@@ -523,9 +525,9 @@ describe('roosync_dashboard', () => {
     expect(messageCount).toBe(100);
   });
 
-  // === Test 29: Pas de tags système si condensation annulée ===
+  // === Test 29: Pas de message système CONDENSATION si condensation annulée ===
   // #864: Sans LLM, pas de message système CONDENSATION ajouté
-  it('condense cancelled does not add system tags', async () => {
+  it('condense cancelled does not add system condensation message', async () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
 
@@ -544,8 +546,207 @@ describe('roosync_dashboard', () => {
     const messages = readResult.data?.intercom?.messages;
 
     // Aucun message système CONDENSATION ne devrait être présent
-    const hasCondensationTag = messages?.some(m => m.tags?.includes('CONDENSATION'));
-    expect(hasCondensationTag).toBe(false);
+    const hasCondensationMsg = messages?.some(m => m.content.includes('**CONDENSATION**'));
+    expect(hasCondensationMsg).toBe(false);
+  });
+
+  // === Test 32: Content with ### [ prefix doesn't break parsing (#1123) ===
+  it('preserves message content containing ### [ at line start', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init', createIfNotExists: true });
+
+    // Message with ### [ in content — this used to cause false message splits
+    const maliciousContent = 'Normal text\n\n### [This looks like a header]\n\nMore text';
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: maliciousContent
+    });
+
+    // Add a second message to verify split didn't corrupt
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: 'Second message'
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = result.data?.intercom?.messages;
+
+    expect(messages.length).toBe(2);
+    // First message should preserve the ### [ content exactly
+    expect(messages[0].content).toBe(maliciousContent);
+    expect(messages[1].content).toBe('Second message');
+  });
+
+  // === Test 33: Content with --- separator doesn't break parsing ===
+  it('preserves message content containing --- separator', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init', createIfNotExists: true });
+
+    const contentWithDashes = 'Some text\n---\nMore text after dash separator';
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: contentWithDashes
+    });
+
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: 'After'
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = result.data?.intercom?.messages;
+
+    expect(messages.length).toBe(2);
+    expect(messages[0].content).toBe(contentWithDashes);
+  });
+
+  // === Test 34: Content with pipe | in body preserves correctly ===
+  it('preserves message content containing pipe characters', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init', createIfNotExists: true });
+
+    const contentWithPipes = 'Column A | Column B | Column C\n--- | --- | ---\n1 | 2 | 3';
+    await roosyncDashboard({
+      action: 'append',
+      type: 'global',
+      content: contentWithPipes
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const messages = result.data?.intercom?.messages;
+
+    expect(messages.length).toBe(1);
+    expect(messages[0].content).toBe(contentWithPipes);
+  });
+
+  // ============================================================
+  // Tests LLM Condensation avec mock (#858)
+  // ============================================================
+
+  describe('LLM condensation (#858)', () => {
+    it('condenses with LLM summary and status update', async () => {
+      // Set up mock LLM
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\n### Summary\nAll systems operational' } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary of 7 archived messages\n\n### Themes\n- Testing\n- Deployment' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'condense',
+        type: 'global',
+        keepMessages: 3
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.condensed).toBe(true);
+      // archivedCount = beforeCount(10) - afterCount(5) = 5
+      // (2 system messages + 3 kept = 5 remaining)
+      expect(result.archivedCount).toBe(5);
+
+      // Verify LLM was called (status + summary)
+      expect(mockChatCreate).toHaveBeenCalled();
+
+      // Read dashboard and verify structure
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const messages = readResult.data?.intercom?.messages ?? [];
+
+      // Should have: 1 CONDENSATION-SUMMARY + 1 CONDENSATION notice + 3 kept = 5
+      expect(messages.length).toBe(5);
+
+      // First message should be the LLM summary
+      // Note: `tags` field was removed in df56edb1 — assert on content marker only
+      expect(messages[0].content).toContain('CONDENSATION-SUMMARY');
+
+      // Second message should be the condensation notice
+      expect(messages[1].content).toContain('**CONDENSATION**');
+
+      // Last 3 should be the kept messages
+      expect(messages[2].content).toBe('Message 7');
+      expect(messages[3].content).toBe('Message 8');
+      expect(messages[4].content).toBe('Message 9');
+    });
+
+    it('updates status with LLM-generated content', async () => {
+      const newStatus = '## Updated Status\n\n### Summary\nAll systems operational';
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: newStatus } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Old Status' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+      }
+
+      await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      expect(readResult.data?.status?.markdown).toBe(newStatus);
+    });
+
+    it('cancels condensation when LLM returns empty', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: null } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'condense',
+        type: 'global',
+        keepMessages: 3
+      });
+
+      // LLM returned empty → condensation cancelled after retries
+      expect(result.success).toBe(true);
+      expect(result.condensed).toBe(false);
+      expect(result.archivedCount).toBe(0);
+    });
+
+    it('creates archive file with raw messages on condensation', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Status' } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      // Verify archive was created
+      const archiveResult = await roosyncDashboard({ action: 'read_archive', type: 'global' });
+      expect(archiveResult.archives?.length).toBeGreaterThanOrEqual(1);
+
+      // Read the archive and verify content
+      const archiveFile = archiveResult.archives?.[0];
+      const readArchive = await roosyncDashboard({
+        action: 'read_archive',
+        type: 'global',
+        archiveFile
+      });
+
+      expect(readArchive.archiveData?.messageCount).toBe(7);
+      expect(readArchive.archiveData?.messages.length).toBe(7);
+    });
   });
 
   // === Test 32: Content with ### [ prefix doesn't break parsing (#1123) ===

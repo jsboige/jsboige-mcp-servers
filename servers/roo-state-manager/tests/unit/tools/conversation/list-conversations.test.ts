@@ -66,6 +66,13 @@ describe('list_conversations tool', () => {
         mockCache.set('task-2', task2);
 
         vi.mocked(path.join).mockImplementation((...args) => args.join('/'));
+        // #1244 Couche 2.2 — list-conversations now uses normalizeWorkspaceId() which calls path.basename
+        vi.mocked(path.basename).mockImplementation((p: string) => {
+            if (!p) return '';
+            const normalized = p.replace(/\\/g, '/');
+            const parts = normalized.split('/').filter(Boolean);
+            return parts[parts.length - 1] || '';
+        });
     });
 
     it('should have correct definition', () => {
@@ -105,12 +112,13 @@ describe('list_conversations tool', () => {
         expect(content[1].taskId).toBe('task-1'); // 10 messages
     });
 
-    it('should limit results', async () => {
+    it('should clamp limit below floor to 10 (#1245: pages of <10 are useless)', async () => {
+        // mockCache has only 2 tasks. limit=1 gets clamped to 10, so we get all 2 back.
         const result = await listConversationsTool.handler({ limit: 1 }, mockCache);
         const _response = JSON.parse(result.content[0].text as string);
         const content = _response.conversations ?? _response;
-        
-        expect(content).toHaveLength(1);
+
+        expect(content).toHaveLength(2);
     });
 
     // Test for pendingSubtaskOnly filter
@@ -148,8 +156,82 @@ describe('list_conversations tool', () => {
         const result = await listConversationsTool.handler({ contentPattern: 'specific pattern' }, mockCache);
         const _response = JSON.parse(result.content[0].text as string);
         const content = _response.conversations ?? _response;
-        
+
         expect(content).toHaveLength(1);
         expect(content[0].taskId).toBe('task-2');
+    });
+
+    // ======================================================================
+    // #1244 — pipeline repair (couches 2.1 / 2.2 / 3.2)
+    // Regression guards for the CoursIA postmortem fixes.
+    // ======================================================================
+    describe('#1244 — pipeline repair', () => {
+        it('[#1244 2.1] startDate filter keeps only tasks with lastActivity >= startDate', async () => {
+            // task-1 lastActivity = 2023-01-02, task-2 lastActivity = 2023-01-01
+            const result = await listConversationsTool.handler({ startDate: '2023-01-02' }, mockCache);
+            const _response = JSON.parse(result.content[0].text as string);
+            const content = _response.conversations ?? _response;
+
+            expect(content).toHaveLength(1);
+            expect(content[0].taskId).toBe('task-1');
+        });
+
+        it('[#1244 2.1] endDate filter keeps only tasks with lastActivity <= endDate (end of day expanded)', async () => {
+            // endDate "2023-01-01" is expanded to end-of-day (23:59:59.999Z) by isWithinDateRange,
+            // so task-2 (2023-01-01T00:00:00Z) matches while task-1 (2023-01-02T00:00:00Z) is excluded.
+            const result = await listConversationsTool.handler({ endDate: '2023-01-01' }, mockCache);
+            const _response = JSON.parse(result.content[0].text as string);
+            const content = _response.conversations ?? _response;
+
+            expect(content).toHaveLength(1);
+            expect(content[0].taskId).toBe('task-2');
+        });
+
+        it('[#1244 2.1] machineId filter isolates a single machine cross-machine', async () => {
+            mockCache.get('task-1')!.metadata.machineId = 'myia-po-2025';
+            mockCache.get('task-2')!.metadata.machineId = 'myia-ai-01';
+
+            const result = await listConversationsTool.handler({ machineId: 'myia-po-2025' }, mockCache);
+            const _response = JSON.parse(result.content[0].text as string);
+            const content = _response.conversations ?? _response;
+
+            expect(content).toHaveLength(1);
+            expect(content[0].taskId).toBe('task-1');
+        });
+
+        it('[#1244 2.2] workspacePathMatch "normalized" (default) matches different parent paths via basename', async () => {
+            // Override task workspaces to two different parent trees sharing a basename.
+            mockCache.get('task-1')!.metadata.workspace = 'd:/dev/CoursIA';
+            mockCache.get('task-2')!.metadata.workspace = 'c:/other/Project';
+
+            // Query uses a shorter path ("d:/CoursIA") — with 'normalized' (default) both
+            // resolve to basename "coursia" and match. Before #1244 this failed (exact match only).
+            const result = await listConversationsTool.handler({ workspace: 'd:/CoursIA' }, mockCache);
+            const _response = JSON.parse(result.content[0].text as string);
+            const content = _response.conversations ?? _response;
+
+            expect(content).toHaveLength(1);
+            expect(content[0].taskId).toBe('task-1');
+        });
+
+        it('[#1244 3.2] toConversationSummary exposes source/tier/machineId from metadata', async () => {
+            const t1 = mockCache.get('task-1')!;
+            t1.metadata.source = 'claude-code';
+            t1.metadata.dataSource = 'archive';
+            t1.metadata.machineId = 'myia-po-2025';
+
+            const result = await listConversationsTool.handler({}, mockCache);
+            const _response = JSON.parse(result.content[0].text as string);
+            const content = _response.conversations ?? _response;
+
+            const task1Summary = content.find((c: any) => c.taskId === 'task-1');
+            expect(task1Summary).toBeDefined();
+            // Couche 3.2 — source flows from metadata.source (not taskId prefix)
+            expect(task1Summary.source).toBe('claude');
+            // Couche 3.2 — tier derived from metadata.dataSource ('archive' vs 'local')
+            expect(task1Summary.tier).toBe('archive');
+            // Cross-machine dimension surfaced in meta
+            expect(task1Summary.metadata.machineId).toBe('myia-po-2025');
+        });
     });
 });

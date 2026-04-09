@@ -77,6 +77,17 @@ describe('TaskArchiver', () => {
     });
 
     describe('archiveTask', () => {
+        // Since the archive format bump v1 -> v2, existence check is done by
+        // reading the archive (gunzip + JSON parse) and inspecting .version,
+        // NOT fs.access. The hoisted gunzip mock strips the 'compressed-' prefix,
+        // so a v2 archive is simulated as Buffer.from('compressed-' + JSON.stringify({version: 2, ...})).
+        const missingArchive = () =>
+            vi.mocked(fs.readFile).mockRejectedValueOnce(new Error('ENOENT'));
+        const existingV2Archive = () =>
+            vi.mocked(fs.readFile).mockResolvedValueOnce(
+                Buffer.from('compressed-' + JSON.stringify({ version: 2, taskId: 'x', messages: [] })) as any
+            );
+
         it('should archive a task from ui_messages.json', async () => {
             const skeleton = createMockSkeleton();
             const uiMessages = [
@@ -84,9 +95,7 @@ describe('TaskArchiver', () => {
                 { author: 'agent', text: 'Hi there!', timestamp: '2026-02-13T10:00:05Z' },
             ];
 
-            // File doesn't exist yet (no prior archive)
-            vi.mocked(fs.access).mockRejectedValueOnce(new Error('ENOENT'));
-            // ui_messages.json is readable
+            missingArchive(); // version check fails -> no prior archive
             vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(uiMessages));
             vi.mocked(fs.mkdir).mockResolvedValueOnce(undefined);
             vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined);
@@ -103,16 +112,33 @@ describe('TaskArchiver', () => {
             );
         });
 
-        it('should skip if already archived', async () => {
+        it('should skip if already archived as v2', async () => {
             const skeleton = createMockSkeleton();
-
-            // File already exists
-            vi.mocked(fs.access).mockResolvedValueOnce(undefined);
+            existingV2Archive();
 
             await TaskArchiver.archiveTask('test-task-123', '/task/path', skeleton);
 
-            expect(fs.readFile).not.toHaveBeenCalled();
+            // Only the version-check read happens; no source read and no write.
+            expect(vi.mocked(fs.readFile).mock.calls.length).toBe(1);
             expect(fs.writeFile).not.toHaveBeenCalled();
+        });
+
+        it('should upgrade existing v1 archive to v2', async () => {
+            const skeleton = createMockSkeleton();
+            const uiMessages = [
+                { author: 'user', text: 'Hello', timestamp: '2026-02-13T10:00:00Z' },
+            ];
+            // Version check returns v1 -> triggers re-archive
+            vi.mocked(fs.readFile).mockResolvedValueOnce(
+                Buffer.from('compressed-' + JSON.stringify({ version: 1, taskId: 'x', messages: [] })) as any
+            );
+            vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(uiMessages));
+            vi.mocked(fs.mkdir).mockResolvedValueOnce(undefined);
+            vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined);
+
+            await TaskArchiver.archiveTask('test-task-123', '/task/path', skeleton);
+
+            expect(fs.writeFile).toHaveBeenCalled();
         });
 
         it('should fallback to api_conversation_history.json if ui_messages absent', async () => {
@@ -122,11 +148,8 @@ describe('TaskArchiver', () => {
                 { role: 'assistant', content: 'Response', timestamp: '2026-02-13T10:00:05Z' },
             ];
 
-            // Not already archived
-            vi.mocked(fs.access).mockRejectedValueOnce(new Error('ENOENT'));
-            // ui_messages.json fails
+            missingArchive();
             vi.mocked(fs.readFile).mockRejectedValueOnce(new Error('ENOENT'));
-            // api_conversation_history.json works
             vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(apiMessages));
             vi.mocked(fs.mkdir).mockResolvedValueOnce(undefined);
             vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined);
@@ -139,9 +162,7 @@ describe('TaskArchiver', () => {
         it('should silently return if no message files exist', async () => {
             const skeleton = createMockSkeleton();
 
-            // Not already archived
-            vi.mocked(fs.access).mockRejectedValueOnce(new Error('ENOENT'));
-            // Both files fail
+            missingArchive();
             vi.mocked(fs.readFile).mockRejectedValueOnce(new Error('ENOENT'));
             vi.mocked(fs.readFile).mockRejectedValueOnce(new Error('ENOENT'));
 
@@ -150,29 +171,30 @@ describe('TaskArchiver', () => {
             expect(fs.writeFile).not.toHaveBeenCalled();
         });
 
-        it('should truncate content exceeding 10KB', async () => {
+        it('should preserve full content without truncation (v2 format)', async () => {
+            // Regression guard: commit 8af5dc6f silently introduced a 10KB
+            // per-message truncation without user request. v2 removes it.
             const skeleton = createMockSkeleton();
-            const longContent = 'x'.repeat(15000);
+            const longContent = 'x'.repeat(60 * 1024); // 60KB, well beyond the old 10KB cap
             const uiMessages = [
                 { author: 'user', text: longContent, timestamp: '2026-02-13T10:00:00Z' },
             ];
 
-            vi.mocked(fs.access).mockRejectedValueOnce(new Error('ENOENT'));
+            missingArchive();
             vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(uiMessages));
             vi.mocked(fs.mkdir).mockResolvedValueOnce(undefined);
             vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined);
 
             await TaskArchiver.archiveTask('test-task-123', '/task/path', skeleton);
 
-            // Verify the written data has truncated content
             const writeCall = vi.mocked(fs.writeFile).mock.calls[0];
             expect(writeCall).toBeDefined();
-            // The data is gzipped, but our mock just prepends 'compressed-'
             const compressedStr = (writeCall[1] as Buffer).toString();
             const jsonStr = compressedStr.replace('compressed-', '');
             const archived = JSON.parse(jsonStr);
-            expect(archived.messages[0].content.length).toBeLessThan(15000);
-            expect(archived.messages[0].content).toContain('[... truncated ...]');
+            expect(archived.version).toBe(2);
+            expect(archived.messages[0].content.length).toBe(longContent.length);
+            expect(archived.messages[0].content).not.toContain('[... truncated ...]');
         });
 
         it('should map agent author to assistant role', async () => {
@@ -181,7 +203,7 @@ describe('TaskArchiver', () => {
                 { author: 'agent', text: 'I am the assistant', timestamp: '2026-02-13T10:00:00Z' },
             ];
 
-            vi.mocked(fs.access).mockRejectedValueOnce(new Error('ENOENT'));
+            missingArchive();
             vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(uiMessages));
             vi.mocked(fs.mkdir).mockResolvedValueOnce(undefined);
             vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined);
@@ -203,7 +225,7 @@ describe('TaskArchiver', () => {
                 { author: 'user', text: '  ', timestamp: '2026-02-13T10:00:10Z' },
             ];
 
-            vi.mocked(fs.access).mockRejectedValueOnce(new Error('ENOENT'));
+            missingArchive();
             vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(uiMessages));
             vi.mocked(fs.mkdir).mockResolvedValueOnce(undefined);
             vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined);

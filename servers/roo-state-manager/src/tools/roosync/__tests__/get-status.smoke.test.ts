@@ -17,10 +17,11 @@ vi.unmock('../../../services/ConfigService.js');
 import { roosyncGetStatus } from '../get-status.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 describe('SMOKE: roosync_get_status (Option B)', () => {
-  const testSharedStatePath = path.join(process.cwd(), '.shared-state-test-getstatus-optb');
+  const testSharedStatePath = path.join(os.tmpdir(), '.shared-state-test-getstatus-optb');
   const testDashboardPath = path.join(testSharedStatePath, 'sync-dashboard.json');
   let originalEnv: NodeJS.ProcessEnv;
 

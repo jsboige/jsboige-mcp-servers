@@ -29,6 +29,71 @@ function truncateMessage(message: string, truncate: number): string {
 }
 
 /**
+ * #1244 Couche 2.5 — Hard cap final sur la sortie complete d'un handler view.
+ *
+ * Filet de securite : applique `ContentTruncator.hardCapString` au texte du
+ * premier item de contenu si sa taille depasse `maxChars`. Garantit le respect
+ * strict de `max_output_length` peu importe les fuites du legacy path,
+ * les bugs d'estimation, ou les depassements du gradient engine.
+ *
+ * Preserve les autres items de contenu tels quels (cas sauvegarde fichier,
+ * messages d'erreur multi-content, etc).
+ */
+function applyHardCap(result: CallToolResult, maxChars: number): CallToolResult {
+    if (!result.content || result.content.length === 0) return result;
+    const first = result.content[0];
+    if (first.type !== 'text' || typeof first.text !== 'string') return result;
+    if (first.text.length <= maxChars) return result;
+
+    const capped = ContentTruncator.hardCapString(first.text, maxChars, { headerKeepChars: 2000 });
+    return {
+        ...result,
+        content: [
+            { ...first, text: capped },
+            ...result.content.slice(1)
+        ]
+    };
+}
+
+/**
+ * #1244 Couche 2.6 — Injecte un en-tete messageRange en debut de sortie.
+ *
+ * Permet a l'agent de savoir combien de messages existent au total et comment
+ * paginer (re-appel avec messageStart: end precedent). Indique explicitement
+ * si la fenetre courante est une troncature.
+ *
+ * Pas besoin d'un bloc navigation verbeux : le schema MCP documente clairement
+ * messageStart/messageEnd. Cet en-tete suffit pour rendre la pagination evidente.
+ */
+function injectMessageRangeMetadata(
+    result: CallToolResult,
+    range: { start: number; end: number; total: number; truncated: boolean }
+): CallToolResult {
+    if (!result.content || result.content.length === 0) return result;
+    const first = result.content[0];
+    if (first.type !== 'text' || typeof first.text !== 'string') return result;
+
+    const lines: string[] = [
+        `messageRange: { start: ${range.start}, end: ${range.end}, total: ${range.total}, truncated: ${range.truncated} }`,
+    ];
+    if (range.truncated && range.end < range.total) {
+        lines.push(`  -> Pour la suite: re-appeler view avec messageStart: ${range.end} (page suivante)`);
+    }
+    if (range.truncated && range.start > 0) {
+        lines.push(`  -> Pour le debut: re-appeler view avec messageStart: 0, messageEnd: ${range.start}`);
+    }
+    const header = lines.join('\n') + '\n\n';
+
+    return {
+        ...result,
+        content: [
+            { ...first, text: header + first.text },
+            ...result.content.slice(1)
+        ]
+    };
+}
+
+/**
   * Trouve la tâche la plus récente dans le cache, optionnellement filtrée par workspace
   */
 function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, workspace?: string): ConversationSkeleton | undefined {
@@ -218,55 +283,132 @@ async function handleViewConversationTreeExecutionAsync(
     // FIX #584: Lazy load full skeleton if sequence is empty but messageCount suggests content exists
     // This happens when scanDiskForNewTasks creates minimal skeletons for discovery
     // FIX #594: Throw explicit error instead of failing silently when lazy loading fails
+    // #1244 Couche 2.7: Dispatch Roo vs Claude selon le prefix taskId / metadata.source
     if ((!mainTask.sequence || mainTask.sequence.length === 0) && mainTask.metadata.messageCount > 0) {
         console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
 
-        // Find the task path by checking all storage locations
-        const storageLocations = await RooStorageDetector.detectStorageLocations();
-        let taskPath: string | null = null;
-        let locationsChecked: string[] = [];
+        const isClaudeTask = task_id.startsWith('claude-')
+            || (mainTask.metadata as any)?.source === 'claude-code'
+            || (mainTask.metadata as any)?.dataSource === 'claude';
 
-        for (const locationPath of storageLocations) {
-            const potentialPath = path.join(locationPath, 'tasks', task_id);
-            locationsChecked.push(potentialPath);
-            try {
-                const stats = await fs.stat(potentialPath);
-                if (stats.isDirectory()) {
-                    taskPath = potentialPath;
+        if (isClaudeTask) {
+            // #1244 Couche 2.7 — Claude path: utiliser ClaudeStorageDetector
+            const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
+            const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
+            const projectBasename = task_id.replace(/^claude-/, '');
+            let claudeProjectPath: string | null = null;
+            const locationsChecked: string[] = [];
+
+            for (const loc of claudeLocations) {
+                locationsChecked.push(loc.projectPath);
+                if (path.basename(loc.projectPath) === projectBasename) {
+                    claudeProjectPath = loc.projectPath;
                     break;
                 }
-            } catch {
-                // Location doesn't have this task, continue to next
             }
-        }
 
-        if (taskPath) {
-            const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
-            if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
-                // Update the cache with complete skeleton
-                conversationCache.set(task_id, fullSkeleton);
-                // Refresh mainTask reference
-                mainTask = fullSkeleton;
-                console.log(`[view] Successfully loaded ${(fullSkeleton.sequence ?? []).length} sequence items for ${task_id}`);
-            } else {
-                // Task found but analyzeConversation returned null/empty
+            if (!claudeProjectPath) {
                 throw new GenericError(
-                    `Task '${task_id}' found at path but analysis failed. ` +
-                    `The task files may be corrupted or in an unexpected format. ` +
-                    `Checked ${locationsChecked.length} storage locations.`,
+                    `Claude task '${task_id}' has ${mainTask.metadata.messageCount} messages but no matching Claude project directory was found. ` +
+                    `Searched basename '${projectBasename}' in ${locationsChecked.length} location(s). ` +
+                    `The Claude session may have been deleted or moved.`,
                     GenericErrorCode.INVALID_ARGUMENT,
-                    { taskId: task_id, locationsChecked, taskPath }
+                    { taskId: task_id, projectBasename, locationsChecked }
+                );
+            }
+
+            const fullSkeleton = await ClaudeStorageDetector.analyzeConversation(task_id, claudeProjectPath);
+            if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
+                // Preserver les marqueurs source ajoutes par SkeletonCacheService Tier 2
+                if (!fullSkeleton.metadata) fullSkeleton.metadata = {} as any;
+                (fullSkeleton.metadata as any).source = 'claude-code';
+                (fullSkeleton.metadata as any).dataSource = 'claude';
+                conversationCache.set(task_id, fullSkeleton);
+                mainTask = fullSkeleton;
+                console.log(`[view] Successfully loaded Claude session ${task_id} (${(fullSkeleton.sequence ?? []).length} sequence items)`);
+            } else {
+                throw new GenericError(
+                    `Claude task '${task_id}' found at '${claudeProjectPath}' but analysis returned empty. ` +
+                    `The JSONL files may be corrupted or empty.`,
+                    GenericErrorCode.INVALID_ARGUMENT,
+                    { taskId: task_id, projectPath: claudeProjectPath }
                 );
             }
         } else {
-            // Task path not found in any storage location
-            throw new GenericError(
-                `Task '${task_id}' has ${mainTask.metadata.messageCount} messages but the task directory was not found in any storage location. ` +
-                `Checked ${locationsChecked.length} location(s): ${storageLocations.slice(0, 3).join(', ')}${storageLocations.length > 3 ? '...' : ''}. ` +
-                `The task may have been deleted or the storage locations may be misconfigured.`,
-                GenericErrorCode.INVALID_ARGUMENT,
-                { taskId: task_id, messageCount: mainTask.metadata.messageCount, locationsChecked, storageLocations }
-            );
+            // Roo path (existant)
+            const storageLocations = await RooStorageDetector.detectStorageLocations();
+            let taskPath: string | null = null;
+            let locationsChecked: string[] = [];
+
+            for (const locationPath of storageLocations) {
+                const potentialPath = path.join(locationPath, 'tasks', task_id);
+                locationsChecked.push(potentialPath);
+                try {
+                    const stats = await fs.stat(potentialPath);
+                    if (stats.isDirectory()) {
+                        taskPath = potentialPath;
+                        break;
+                    }
+                } catch {
+                    // Location doesn't have this task, continue to next
+                }
+            }
+
+            if (taskPath) {
+                const fullSkeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
+                if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
+                    // Update the cache with complete skeleton
+                    conversationCache.set(task_id, fullSkeleton);
+                    // Refresh mainTask reference
+                    mainTask = fullSkeleton;
+                    console.log(`[view] Successfully loaded ${(fullSkeleton.sequence ?? []).length} sequence items for ${task_id}`);
+                } else {
+                    // Task found but analyzeConversation returned null/empty
+                    throw new GenericError(
+                        `Task '${task_id}' found at path but analysis failed. ` +
+                        `The task files may be corrupted or in an unexpected format. ` +
+                        `Checked ${locationsChecked.length} storage locations.`,
+                        GenericErrorCode.INVALID_ARGUMENT,
+                        { taskId: task_id, locationsChecked, taskPath }
+                    );
+                }
+            } else {
+                // Task path not found in any storage location
+                throw new GenericError(
+                    `Task '${task_id}' has ${mainTask.metadata.messageCount} messages but the task directory was not found in any storage location. ` +
+                    `Checked ${locationsChecked.length} location(s): ${storageLocations.slice(0, 3).join(', ')}${storageLocations.length > 3 ? '...' : ''}. ` +
+                    `The task may have been deleted or the storage locations may be misconfigured.`,
+                    GenericErrorCode.INVALID_ARGUMENT,
+                    { taskId: task_id, messageCount: mainTask.metadata.messageCount, locationsChecked, storageLocations }
+                );
+            }
+        }
+    }
+
+    // #1244 Couche 2.6 — Pagination message-level sur la tache focale
+    // Applique avant le dispatch view_mode pour que chain/cluster voient la version paginee.
+    const totalMessages = (mainTask.sequence ?? []).length;
+    const hasPagingArgs = typeof args.messageStart === 'number' || typeof args.messageEnd === 'number';
+    let effectiveMessageStart = 0;
+    let effectiveMessageEnd = totalMessages;
+    let isPaged = false;
+
+    if (hasPagingArgs) {
+        effectiveMessageStart = Math.max(0, args.messageStart ?? 0);
+        effectiveMessageEnd = Math.min(totalMessages, args.messageEnd ?? totalMessages);
+        if (effectiveMessageStart > effectiveMessageEnd) {
+            effectiveMessageStart = effectiveMessageEnd;
+        }
+        isPaged = effectiveMessageStart > 0 || effectiveMessageEnd < totalMessages;
+
+        if (isPaged) {
+            const pagedMainTask: ConversationSkeleton = {
+                ...mainTask,
+                sequence: (mainTask.sequence ?? []).slice(effectiveMessageStart, effectiveMessageEnd),
+            };
+            // Substituer la version paginee dans la map et la reference principale
+            skeletonMap.set(task_id, pagedMainTask);
+            mainTask = pagedMainTask;
         }
     }
 
@@ -295,15 +437,30 @@ async function handleViewConversationTreeExecutionAsync(
             }
             break;
     }
-    
+
     // 🎯 POINT D'AIGUILLAGE : Smart Truncation vs Legacy
-    if (args.smart_truncation === true) {
-        // ✨ NOUVEAU : Algorithme de troncature intelligente avec gradient
-        return handleSmartTruncationAsync(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId);
-    } else {
-        // 🔄 LEGACY : Comportement original préservé (par défaut)
-        return handleLegacyTruncationAsync(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
+    // #1244 Couche 2.5 — Defaut inverse: smart_truncation est ON sauf opt-out explicite (false).
+    // Le legacy path reste accessible pour debug/comparaison via smart_truncation: false.
+    const useSmart = args.smart_truncation !== false;
+    const result = useSmart
+        ? await handleSmartTruncationAsync(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId)
+        : await handleLegacyTruncationAsync(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
+
+    // #1244 Couche 2.5 — Hard cap final: filet de securite pour garantir max_output_length
+    // independamment des estimations en amont. Couvre les bugs d'estimation, les fuites du
+    // legacy path, et les depassements occasionnels du gradient engine.
+    const cappedResult = applyHardCap(result, max_output_length);
+
+    // #1244 Couche 2.6 — Injecter messageRange metadata si pagination explicite
+    if (hasPagingArgs) {
+        return injectMessageRangeMetadata(cappedResult, {
+            start: effectiveMessageStart,
+            end: effectiveMessageEnd,
+            total: totalMessages,
+            truncated: effectiveMessageEnd < totalMessages || effectiveMessageStart > 0,
+        });
     }
+    return cappedResult;
 }
 
 /**
@@ -370,9 +527,34 @@ function handleViewConversationTreeExecution(
     };
 
     let tasksToDisplay: ConversationSkeleton[] = [];
-    const mainTask = skeletonMap.get(task_id);
+    let mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
         throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
+    }
+
+    // #1244 Couche 2.6 — Pagination message-level (version synchrone)
+    const totalMessages = (mainTask.sequence ?? []).length;
+    const hasPagingArgs = typeof args.messageStart === 'number' || typeof args.messageEnd === 'number';
+    let effectiveMessageStart = 0;
+    let effectiveMessageEnd = totalMessages;
+    let isPaged = false;
+
+    if (hasPagingArgs) {
+        effectiveMessageStart = Math.max(0, args.messageStart ?? 0);
+        effectiveMessageEnd = Math.min(totalMessages, args.messageEnd ?? totalMessages);
+        if (effectiveMessageStart > effectiveMessageEnd) {
+            effectiveMessageStart = effectiveMessageEnd;
+        }
+        isPaged = effectiveMessageStart > 0 || effectiveMessageEnd < totalMessages;
+
+        if (isPaged) {
+            const pagedMainTask: ConversationSkeleton = {
+                ...mainTask,
+                sequence: (mainTask.sequence ?? []).slice(effectiveMessageStart, effectiveMessageEnd),
+            };
+            skeletonMap.set(task_id, pagedMainTask);
+            mainTask = pagedMainTask;
+        }
     }
 
     switch (view_mode) {
@@ -399,13 +581,27 @@ function handleViewConversationTreeExecution(
             }
             break;
     }
-    
+
     // Version synchrone sans sauvegarde fichier
-    if (args.smart_truncation === true) {
-        return handleSmartTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId);
-    } else {
-        return handleLegacyTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
+    // #1244 Couche 2.5 — Defaut inverse: smart_truncation ON sauf opt-out explicite (false)
+    const useSmart = args.smart_truncation !== false;
+    const result = useSmart
+        ? handleSmartTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, currentTaskId)
+        : handleLegacyTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
+
+    // #1244 Couche 2.5 — Hard cap final
+    const cappedResult = applyHardCap(result, max_output_length);
+
+    // #1244 Couche 2.6 — Injecter messageRange metadata si pagination explicite
+    if (hasPagingArgs) {
+        return injectMessageRangeMetadata(cappedResult, {
+            start: effectiveMessageStart,
+            end: effectiveMessageEnd,
+            total: totalMessages,
+            truncated: effectiveMessageEnd < totalMessages || effectiveMessageStart > 0,
+        });
     }
+    return cappedResult;
 }
 
 /**
@@ -761,7 +957,7 @@ export const viewConversationTree = {
             detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], default: 'skeleton', description: 'Niveau de détail: skeleton (métadonnées seulement), summary (résumé), full (complet).' },
             truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },
             max_output_length: { type: 'number', default: 300000, description: 'Limite maximale de caractères en sortie. Au-delà, force la troncature. (AUGMENTÉ: 300K vs 150K)' },
-            smart_truncation: { type: 'boolean', default: false, description: '🧠 Activer l\'algorithme de troncature intelligente avec gradient (NOUVEAU)' },
+            smart_truncation: { type: 'boolean', default: true, description: '#1244 Couche 2.5 — Algorithme de troncature intelligente avec gradient (gradient temporel + priorisation par type, preserve debut/fin de conversation). Active PAR DEFAUT (defaut inverse depuis #1244). Passer false uniquement pour debug ou comparaison avec le legacy path. Un hard cap final est applique en sortie pour garantir le respect de max_output_length quel que soit le mode.' },
             smart_truncation_config: {
                 type: 'object',
                 description: '⚙️ Configuration avancée pour la troncature intelligente (NOUVEAU)',
@@ -771,7 +967,9 @@ export const viewConversationTree = {
                     maxTruncationRate: { type: 'number', description: 'Taux maximum de troncature pour le centre (défaut: 0.7)' }
                 }
             },
-            output_file: { type: 'string', description: 'Chemin optionnel pour sauvegarder l\'arbre dans un fichier markdown' }
+            output_file: { type: 'string', description: 'Chemin optionnel pour sauvegarder l\'arbre dans un fichier markdown' },
+            messageStart: { type: 'number', description: '#1244 Couche 2.6 — Index 0-based du premier message a inclure dans la vue (inclusif). Permet la pagination message-level pour les longues conversations. Defaut: 0 (debut).' },
+            messageEnd: { type: 'number', description: '#1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). Combiner avec messageStart pour fenetrer la conversation. Si > total, est clampe a total. Defaut: jusqu\'a la fin.' }
         },
     },
     handler: async (args: any, conversationCache: Map<string, ConversationSkeleton>): Promise<CallToolResult> => {

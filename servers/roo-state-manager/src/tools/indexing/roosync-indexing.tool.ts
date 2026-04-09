@@ -52,6 +52,15 @@ export interface RooSyncIndexingArgs {
 
     /** #604: Source de la conversation (pour action=index, détermine l'extracteur de chunks) */
     source?: 'roo' | 'claude-code';
+
+    /** #1244: Activer le diagnostic approfondi (scroll sample, distribution source/workspace) — pour action=diagnose */
+    deep?: boolean;
+
+    /** #1244: Taille de l'échantillon scroll (pour action=diagnose avec deep=true). Défaut 1000, max 5000 */
+    sample_size?: number;
+
+    /** #1244: Nombre de top workspaces à reporter (pour action=diagnose avec deep=true). Défaut 20, max 100 */
+    top_n_workspaces?: number;
 }
 
 /**
@@ -109,6 +118,21 @@ export const roosyncIndexingTool: Tool = {
                 type: 'string',
                 enum: ['roo', 'claude-code'],
                 description: "#604: Source de la conversation (pour action=index). 'roo' = tâche Roo standard, 'claude-code' = session Claude Code JSONL. Par défaut: 'roo'"
+            },
+            deep: {
+                type: 'boolean',
+                description: "#1244: Pour action=diagnose. Active le diagnostic approfondi (scroll d'un échantillon, distribution source/workspace_name, field coverage, payload samples). Permet de détecter les bugs d'indexation (champs manquants, dimension mismatch).",
+                default: false
+            },
+            sample_size: {
+                type: 'number',
+                description: "#1244: Pour action=diagnose avec deep=true. Taille de l'échantillon Qdrant à scroll. Défaut 1000, max 5000.",
+                default: 1000
+            },
+            top_n_workspaces: {
+                type: 'number',
+                description: "#1244: Pour action=diagnose avec deep=true. Nombre de top workspace_name à reporter dans la distribution. Défaut 20, max 100.",
+                default: 20
             }
         },
         required: ['action']
@@ -192,7 +216,11 @@ export async function handleRooSyncIndexing(
         }
 
         case 'diagnose': {
-            return await handleDiagnoseSemanticIndex(conversationCache);
+            return await handleDiagnoseSemanticIndex(conversationCache, {
+                deep: args.deep,
+                sample_size: args.sample_size,
+                top_n_workspaces: args.top_n_workspaces,
+            });
         }
 
         case 'archive': {
