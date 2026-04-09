@@ -18,12 +18,10 @@ import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
-import { ArchivedTask, ArchivedTaskMessage } from './types.js';
+import { ArchivedTask, ArchivedTaskMessage, ARCHIVE_CURRENT_VERSION } from './types.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
-
-const MAX_CONTENT_LENGTH = 10 * 1024; // 10KB - tronquer les tool results volumineux
 
 function getHostIdentifier(): string {
     return `${os.hostname()}-${os.platform()}-${os.arch()}`;
@@ -31,11 +29,6 @@ function getHostIdentifier(): string {
 
 function getMachineId(): string {
     return os.hostname().toLowerCase();
-}
-
-function truncateContent(content: string): string {
-    if (content.length <= MAX_CONTENT_LENGTH) return content;
-    return content.substring(0, MAX_CONTENT_LENGTH) + '\n[... truncated ...]';
 }
 
 interface UiMessage {
@@ -67,7 +60,7 @@ function transformUiMessages(messages: UiMessage[]): ArchivedTaskMessage[] {
         .filter(msg => msg.text && msg.text.trim().length > 0)
         .map(msg => ({
             role: (msg.author === 'agent' ? 'assistant' : 'user') as 'user' | 'assistant',
-            content: truncateContent(msg.text),
+            content: msg.text,
             timestamp: msg.timestamp,
         }));
 }
@@ -81,7 +74,7 @@ function transformApiMessages(messages: ApiMessage[]): ArchivedTaskMessage[] {
                 : JSON.stringify(msg.content);
             return {
                 role: msg.role as 'user' | 'assistant',
-                content: truncateContent(content),
+                content,
                 timestamp: msg.timestamp,
             };
         });
@@ -129,7 +122,7 @@ function transformClaudeCodeJsonl(jsonlLines: ClaudeCodeJsonlLine[]): ArchivedTa
         .filter(line => line.message && line.message.content && line.message.content.trim().length > 0)
         .map(line => ({
             role: line.message!.role as 'user' | 'assistant',
-            content: truncateContent(line.message!.content),
+            content: line.message!.content,
             timestamp: line.timestamp || new Date().toISOString(),
         }));
 }
@@ -138,10 +131,31 @@ function getArchiveBasePath(): string {
     return path.join(getSharedStatePath(), 'task-archive');
 }
 
+/**
+ * Lit la version d'un fichier d'archive existant.
+ * Retourne null si le fichier n'existe pas ou n'est pas lisible.
+ * Retourne 1 si le champ version est absent (format v1 historique).
+ */
+async function readArchiveVersion(archivePath: string): Promise<number | null> {
+    try {
+        const compressed = await fs.readFile(archivePath);
+        const decompressed = await gunzipAsync(compressed);
+        const archived = JSON.parse(decompressed.toString('utf-8')) as Partial<ArchivedTask>;
+        return typeof archived.version === 'number' ? archived.version : 1;
+    } catch {
+        return null;
+    }
+}
+
 export class TaskArchiver {
     /**
      * Archive une tache Roo complete sur GDrive.
      * Non-bloquant: les erreurs sont logguees mais ne remontent pas.
+     *
+     * Strategie upgrade-if-v1 :
+     * - Si le fichier n'existe pas : archivage normal (v2)
+     * - Si le fichier existe en v2 : skip (conserver)
+     * - Si le fichier existe en v1 : re-archiver (upgrade v1 -> v2)
      */
     static async archiveTask(
         taskId: string,
@@ -152,12 +166,10 @@ export class TaskArchiver {
         const archiveDir = path.join(getArchiveBasePath(), machineId);
         const archivePath = path.join(archiveDir, `${taskId}.json.gz`);
 
-        // Verifier si deja archive (eviter re-ecriture inutile)
-        try {
-            await fs.access(archivePath);
-            return; // Deja archive
-        } catch {
-            // Fichier n'existe pas, on continue
+        // Verifier la version existante : skip si v2, upgrade si v1
+        const existingVersion = await readArchiveVersion(archivePath);
+        if (existingVersion !== null && existingVersion >= ARCHIVE_CURRENT_VERSION) {
+            return; // Deja en v2, rien a faire
         }
 
         // Lire les messages: ui_messages.json (primaire) ou api_conversation_history.json (fallback)
@@ -185,7 +197,7 @@ export class TaskArchiver {
         }
 
         const archived: ArchivedTask = {
-            version: 1,
+            version: ARCHIVE_CURRENT_VERSION,
             taskId,
             machineId,
             hostIdentifier: getHostIdentifier(),
@@ -210,12 +222,15 @@ export class TaskArchiver {
         const compressed = await gzipAsync(Buffer.from(jsonData, 'utf-8'));
         await fs.writeFile(archivePath, compressed);
 
-        console.log(`[ARCHIVE] Task ${taskId} archived (${messages.length} msgs, ${compressed.length} bytes gz)`);
+        const verb = existingVersion === 1 ? 'upgraded v1->v2' : 'archived';
+        console.log(`[ARCHIVE] Task ${taskId} ${verb} (${messages.length} msgs, ${compressed.length} bytes gz)`);
     }
 
     /**
      * Archive une session Claude Code depuis un fichier JSONL
      * Stocke sur GDrive avec un prefixe "claude-" pour distinguer des taches Roo
+     *
+     * Meme strategie upgrade-if-v1 que archiveTask.
      */
     static async archiveClaudeCodeSession(
         sessionId: string,
@@ -226,12 +241,10 @@ export class TaskArchiver {
         const archiveDir = path.join(getArchiveBasePath(), machineId);
         const archivePath = path.join(archiveDir, `claude-${sessionId}.json.gz`);
 
-        // Verifier si deja archive
-        try {
-            await fs.access(archivePath);
-            return; // Deja archive
-        } catch {
-            // Fichier n'existe pas, on continue
+        // Verifier la version existante : skip si v2, upgrade si v1
+        const existingVersion = await readArchiveVersion(archivePath);
+        if (existingVersion !== null && existingVersion >= ARCHIVE_CURRENT_VERSION) {
+            return; // Deja en v2, rien a faire
         }
 
         // Lire le fichier JSONL
@@ -252,7 +265,7 @@ export class TaskArchiver {
         const deducedTitle = title || path.basename(path.dirname(jsonlPath));
 
         const archived: ArchivedTask = {
-            version: 1,
+            version: ARCHIVE_CURRENT_VERSION,
             taskId: sessionId,
             machineId,
             hostIdentifier: getHostIdentifier(),
@@ -272,7 +285,8 @@ export class TaskArchiver {
         const compressed = await gzipAsync(Buffer.from(jsonData, 'utf-8'));
         await fs.writeFile(archivePath, compressed);
 
-        console.log(`[ARCHIVE] Claude Code session ${sessionId} archived (${messages.length} msgs, ${compressed.length} bytes gz)`);
+        const verb = existingVersion === 1 ? 'upgraded v1->v2' : 'archived';
+        console.log(`[ARCHIVE] Claude Code session ${sessionId} ${verb} (${messages.length} msgs, ${compressed.length} bytes gz)`);
     }
 
     /**
@@ -474,5 +488,99 @@ export class TaskArchiver {
         }
 
         return taskIds;
+    }
+
+    /**
+     * Migration batch des archives v1 vers v2 sur la machine locale.
+     *
+     * Scanne le repertoire de la machine courante, identifie les fichiers en v1,
+     * et pour chaque fichier v1 : delit, decompresse, re-serialise en v2 et reecrit.
+     *
+     * La re-serialisation ne RESTAURE PAS les messages tronques (les donnees
+     * source ne sont pas disponibles ici). Pour reconstruire les messages complets,
+     * il faut passer par archiveTask()/archiveClaudeCodeSession() avec les fichiers
+     * source: cela arrive naturellement lors de la re-indexation Qdrant.
+     *
+     * Ce helper sert donc a :
+     * 1. Bumper la version dans les archives existantes (quick-fix)
+     * 2. Reporter le nombre d'archives v1 restantes (via dryRun: true)
+     *
+     * Pour une vraie reconstruction complete des messages, utiliser l'indexation
+     * Qdrant qui declenchera archiveTask() apres chaque re-indexation reussie.
+     */
+    static async migrateV1Archives(options: {
+        batchSize?: number;
+        rateLimitMs?: number;
+        dryRun?: boolean;
+        machineId?: string;
+        onProgress?: (done: number, total: number) => void;
+    } = {}): Promise<{ scanned: number; v1Found: number; upgraded: number; errors: number }> {
+        const {
+            batchSize = 50,
+            rateLimitMs = 100,
+            dryRun = false,
+            machineId = getMachineId(),
+            onProgress,
+        } = options;
+
+        const archiveBase = getArchiveBasePath();
+        const machineDir = path.join(archiveBase, machineId);
+
+        let scanned = 0;
+        let v1Found = 0;
+        let upgraded = 0;
+        let errors = 0;
+
+        let files: string[];
+        try {
+            files = (await fs.readdir(machineDir)).filter(f => f.endsWith('.json.gz'));
+        } catch {
+            return { scanned: 0, v1Found: 0, upgraded: 0, errors: 0 };
+        }
+
+        const total = files.length;
+
+        for (let i = 0; i < total; i++) {
+            const file = files[i];
+            const filePath = path.join(machineDir, file);
+            scanned++;
+
+            try {
+                const version = await readArchiveVersion(filePath);
+                if (version === null) {
+                    errors++;
+                } else if (version >= ARCHIVE_CURRENT_VERSION) {
+                    // deja en v2, rien a faire
+                } else {
+                    v1Found++;
+                    if (!dryRun) {
+                        // Upgrade : relire, patcher la version, reecrire.
+                        const compressed = await fs.readFile(filePath);
+                        const decompressed = await gunzipAsync(compressed);
+                        const archived = JSON.parse(decompressed.toString('utf-8')) as ArchivedTask;
+                        archived.version = ARCHIVE_CURRENT_VERSION;
+                        archived.archivedAt = new Date().toISOString();
+                        const newJson = JSON.stringify(archived);
+                        const newCompressed = await gzipAsync(Buffer.from(newJson, 'utf-8'));
+                        await fs.writeFile(filePath, newCompressed);
+                        upgraded++;
+                    }
+                }
+            } catch (err) {
+                console.warn(`[ARCHIVE MIGRATE] Failed on ${file}: ${err}`);
+                errors++;
+            }
+
+            if (onProgress) {
+                onProgress(i + 1, total);
+            }
+
+            // Throttle par lot
+            if ((i + 1) % batchSize === 0 && rateLimitMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, rateLimitMs));
+            }
+        }
+
+        return { scanned, v1Found, upgraded, errors };
     }
 }
