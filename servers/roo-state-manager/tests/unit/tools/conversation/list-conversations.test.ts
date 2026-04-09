@@ -112,12 +112,13 @@ describe('list_conversations tool', () => {
         expect(content[1].taskId).toBe('task-1'); // 10 messages
     });
 
-    it('should limit results', async () => {
+    it('should clamp limit below floor to 10 (#1245: pages of <10 are useless)', async () => {
+        // mockCache has only 2 tasks. limit=1 gets clamped to 10, so we get all 2 back.
         const result = await listConversationsTool.handler({ limit: 1 }, mockCache);
         const _response = JSON.parse(result.content[0].text as string);
         const content = _response.conversations ?? _response;
-        
-        expect(content).toHaveLength(1);
+
+        expect(content).toHaveLength(2);
     });
 
     // Test for pendingSubtaskOnly filter

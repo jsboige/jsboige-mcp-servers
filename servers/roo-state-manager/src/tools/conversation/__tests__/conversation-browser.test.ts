@@ -728,7 +728,8 @@ describe('conversation_browser', () => {
 			expect(parsed[2].taskId).toBe('task-old'); // 5 messages
 		});
 
-		test('list respects limit parameter', async () => {
+		test('list clamps limit below 10 to the floor (#1245: pages of <10 are useless)', async () => {
+			// mockCache has 3 tasks. limit=2 gets clamped to 10 → all 3 returned in sorted order.
 			const result = await handleConversationBrowser(
 				{ action: 'list', limit: 2, sortBy: 'lastActivity', sortOrder: 'desc' },
 				mockCache,
@@ -738,9 +739,10 @@ describe('conversation_browser', () => {
 			expect(result.isError).toBeFalsy();
 			const _response = JSON.parse(getTextContent(result));
 			const parsed = _response.conversations ?? _response;
-			expect(parsed.length).toBe(2);
+			expect(parsed.length).toBe(3);
 			expect(parsed[0].taskId).toBe('task-new');
 			expect(parsed[1].taskId).toBe('task-middle');
+			expect(parsed[2].taskId).toBe('task-old');
 		});
 
 		test('list filters by workspace when specified', async () => {

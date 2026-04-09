@@ -39,6 +39,10 @@ interface SkeletonNode {
     };
     firstUserMessage?: string;
     lastUserMessage?: string;
+    /** Last message of ANY role (user or assistant). Often shows the final state/result of the conversation. */
+    lastMessage?: string;
+    /** Role of the last message ('user' or 'assistant'). Helps disambiguate in output. */
+    lastMessageRole?: 'user' | 'assistant';
     lastAction?: string;
     isCompleted?: boolean;
     completionMessage?: string;
@@ -47,6 +51,9 @@ interface SkeletonNode {
         summary?: string;
         generatedAt?: string;
     };
+    /** Optional per-role message counts (when extractable) */
+    userMessageCount?: number;
+    assistantMessageCount?: number;
     children: SkeletonNode[];
 }
 
@@ -77,6 +84,8 @@ interface ConversationSummary {
     parentTaskId?: string;
     firstUserMessage?: string;
     lastUserMessage?: string;
+    lastMessage?: string;
+    lastMessageRole?: 'user' | 'assistant';
     lastAction?: string;
     isCompleted?: boolean;
     completionMessage?: string;
@@ -91,6 +100,8 @@ interface ConversationSummary {
         createdAt: string;
         mode?: string;
         messageCount: number;
+        userMessageCount?: number;
+        assistantMessageCount?: number;
         actionCount: number;
         totalSize?: number;
         workspace?: string;
@@ -99,20 +110,88 @@ interface ConversationSummary {
     children: ConversationSummary[];
 }
 
-/** Max children shown inline in list output (was 10 before regression, 3 was too aggressive) */
-const MAX_CHILDREN_SHOWN = 10;
+/** Max children shown inline in list output.
+ *  #1245 round 2: reduced from 10 → 5 to make budget room for richer root-level
+ *  firstUserMessage/lastMessage snippets while staying under 50KB total output. */
+const MAX_CHILDREN_SHOWN = 5;
 
 /**
  * Strip XML wrapper tags (<user_message>, </user_message>, <task>, etc.) from message text.
- * These are Roo internal tags that add noise to list output.
+ * Also strips leading BOM (U+FEFF) which appears in some Claude task titles and breaks
+ * downstream string comparisons (e.g. title vs firstUserMessage dedup).
+ * These are Roo/JSONL internal artifacts that add noise to list output.
  */
 function stripXmlTags(text?: string): string | undefined {
     if (!text) return undefined;
     return text
+        .replace(/^\uFEFF/, '') // Strip BOM (Claude session metadata)
         .replace(/<\/?user_message>/g, '')
         .replace(/<\/?task>/g, '')
         .replace(/^\s*\n/, '') // leading blank line after tag removal
         .trim() || undefined;
+}
+
+/**
+ * Normalize a string for content-equality comparison: strip BOM, lowercase,
+ * collapse whitespace runs to single spaces. Used to detect title vs
+ * firstUserMessage redundancy regardless of cosmetic differences.
+ */
+function normalizeForCompare(s: string | undefined): string {
+    if (!s) return '';
+    return s.replace(/^\uFEFF/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Format a duration as a human-readable relative time.
+ * "now", "3m ago", "2h ago", "5d ago", "3w ago", "2mo ago", "1y ago".
+ * Returns undefined if the input is invalid/missing.
+ */
+function formatRelativeTime(iso: string | undefined): string | undefined {
+    if (!iso) return undefined;
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return undefined;
+    const deltaMs = Date.now() - t;
+    if (deltaMs < 0) return 'in future';
+    const sec = Math.floor(deltaMs / 1000);
+    if (sec < 60) return 'now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const day = Math.floor(hr / 24);
+    if (day < 7) return `${day}d ago`;
+    const wk = Math.floor(day / 7);
+    if (wk < 5) return `${wk}w ago`;
+    const mo = Math.floor(day / 30);
+    if (mo < 12) return `${mo}mo ago`;
+    const yr = Math.floor(day / 365);
+    return `${yr}y ago`;
+}
+
+/**
+ * Format a byte count as a human-readable size: "234 B", "1.2 KB", "3.4 MB", "2.5 GB".
+ */
+function formatBytes(bytes: number | undefined): string | undefined {
+    if (bytes === undefined || bytes === null || bytes < 0) return undefined;
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    if (mb < 1024) return `${mb.toFixed(1)} MB`;
+    const gb = mb / 1024;
+    return `${gb.toFixed(2)} GB`;
+}
+
+/**
+ * Extract the workspace basename from a full path. "d:/dev/roo-extensions" → "roo-extensions".
+ * Returns undefined for empty/invalid input.
+ */
+function getWorkspaceShort(workspace: string | undefined): string | undefined {
+    if (!workspace) return undefined;
+    const cleaned = workspace.replace(/[\\/]+$/, ''); // trim trailing slashes
+    const parts = cleaned.split(/[\\/]/);
+    const last = parts[parts.length - 1];
+    return last && last.length > 0 ? last : undefined;
 }
 
 /**
@@ -137,30 +216,45 @@ function truncateAtBoundary(text: string, maxLength: number): string {
 }
 
 /**
- * Convertit un SkeletonNode vers un objet JSON compact pour le list output.
+ * Convertit un SkeletonNode vers un objet JSON compact mais informatif pour list output.
  *
- * Compactness strategy (target: ~500 chars/root, ~100 chars/child):
- * - Strip XML tags from messages
- * - Root firstUserMessage ≤150 chars, lastUserMessage ≤120 chars
- * - Skip lastUserMessage if JSON (tool calls, not human text)
- * - Children: max 3 shown (taskId + 50-char snippet + messageCount), rest as childrenCount
- * - Omit falsy/default values (isCompleted:false, empty strings, actionCount:0)
- * - Omit title when redundant with firstUserMessage
- * - synthesis only when available
+ * UX strategy (#1245 — restoring richer output):
+ * - Strip XML tags + BOM from messages, word-boundary truncation
+ * - Title shown only when distinct from firstUserMessage (BOM-aware dedup)
+ * - Metadata enriched with: ago (relative time), sizeHuman, workspaceShort, actionCount
+ * - Noise omitted: tier when "local", isCompleted when false, lastUserMessage when == firstMsg
+ * - Children: compact format with snippet + ago + mode + completion status
  */
 function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, unknown> {
-    // Clean and truncate root messages — #1177: use word-boundary truncation for cleaner output
+    // Clean and truncate root messages — #1177: word-boundary truncation.
+    // #1245 (round 2): moderate bump (+50-100%) vs previous session, capped to keep
+    // total output under 50KB with default per_page=10 (user constraint — above 50KB
+    // Claude Code shortens the output to a file reference).
     let firstMsg = stripXmlTags(node.firstUserMessage);
-    let lastMsg = stripXmlTags(node.lastUserMessage);
-    if (firstMsg) firstMsg = truncateAtBoundary(firstMsg, 400);
-    if (lastMsg) lastMsg = truncateAtBoundary(lastMsg, 400);
+    let lastUMsg = stripXmlTags(node.lastUserMessage);
+    let lastAnyMsg = stripXmlTags(node.lastMessage);
+    if (firstMsg) firstMsg = truncateAtBoundary(firstMsg, 700);
+    if (lastUMsg) lastUMsg = truncateAtBoundary(lastUMsg, 500);
+    if (lastAnyMsg) lastAnyMsg = truncateAtBoundary(lastAnyMsg, 500);
+
+    // Drop lastUserMessage when it duplicates firstMsg (Claude tail/head collisions)
+    if (lastUMsg && normalizeForCompare(lastUMsg) === normalizeForCompare(firstMsg)) {
+        lastUMsg = undefined;
+    }
+    // Drop lastMessage (any role) when it duplicates firstMsg or lastUserMessage
+    if (lastAnyMsg && normalizeForCompare(lastAnyMsg) === normalizeForCompare(firstMsg)) {
+        lastAnyMsg = undefined;
+    }
+    if (lastAnyMsg && lastUMsg && normalizeForCompare(lastAnyMsg) === normalizeForCompare(lastUMsg)) {
+        lastAnyMsg = undefined; // already shown as lastUserMessage
+    }
 
     // Build summary — always include key fields for readability
     const summary: Record<string, unknown> = { taskId: node.taskId };
+
     // #883: Always show source type (roo/claude)
     // #1244 Couche 3.2 — Prefer metadata.source (set by SkeletonCacheService Tier 2/3)
-    // before falling back to taskId prefix detection. Allows archives to surface their
-    // ORIGINAL source ('roo' or 'claude-code') instead of being inferred from the prefix.
+    // before falling back to taskId prefix detection.
     const metaSource = (node.metadata as any)?.source;
     if (metaSource === 'claude-code' || metaSource === 'claude') {
         summary.source = 'claude';
@@ -169,51 +263,97 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     } else {
         summary.source = node.taskId.startsWith('claude-') ? 'claude' : 'roo';
     }
-    // #1244 Couche 3.2 — Tier indicator: 'archive' (cold, cross-machine GDrive) vs 'local' (hot).
-    // Derived from metadata.dataSource set by archive-skeleton-builder / Claude tier loader.
-    // Lets agents know whether a result comes from local fast cache or remote archive.
+
+    // #1244 Couche 3.2 — Tier indicator. Only emitted when 'archive' (default 'local' is noise).
     const dataSource = node.metadata?.dataSource;
-    summary.tier = dataSource === 'archive' ? 'archive' : 'local';
+    if (dataSource === 'archive') {
+        summary.tier = 'archive';
+    }
+
     if (node.parentTaskId) summary.parentTaskId = node.parentTaskId;
     if (firstMsg) summary.firstUserMessage = firstMsg;
-    if (lastMsg) summary.lastUserMessage = lastMsg;
+    if (lastUMsg) summary.lastUserMessage = lastUMsg;
+    // lastMessage (any role) — often more informative than lastUserMessage because
+    // it surfaces the final assistant response / action / result of the conversation.
+    if (lastAnyMsg) {
+        summary.lastMessage = lastAnyMsg;
+        if (node.lastMessageRole) summary.lastMessageRole = node.lastMessageRole;
+    }
     if (node.lastAction) summary.lastAction = node.lastAction;
-    summary.isCompleted = node.isCompleted || false;
+    if (node.isCompleted) summary.isCompleted = true; // omit when false (default)
     if (node.completionMessage) summary.completionMessage = node.completionMessage;
     if (node.synthesis?.available) summary.synthesis = node.synthesis;
 
-    // Metadata — omit noise (actionCount) but keep useful fields
+    // Metadata — keep useful fields, drop noise.
+    // Field names preserve backward compat: workspace = full path, totalSize = raw bytes.
+    // New friendly fields added alongside: ago, sizeHuman, workspaceShort.
     const meta: Record<string, unknown> = {
         createdAt: node.metadata.createdAt,
         lastActivity: node.metadata.lastActivity,
-        messageCount: node.metadata.messageCount,
     };
-    if (node.metadata.totalSize) meta.totalSize = node.metadata.totalSize;
-    if (node.metadata.workspace) meta.workspace = node.metadata.workspace;
-    if (node.metadata.machineId) meta.machineId = node.metadata.machineId;
+    const ago = formatRelativeTime(node.metadata.lastActivity);
+    if (ago) meta.ago = ago;
+    meta.messageCount = node.metadata.messageCount;
+    // Per-role breakdown when available (extracted from Roo sequence or Claude JSONL scan).
+    if (node.userMessageCount !== undefined && node.userMessageCount >= 0) {
+        meta.userMessageCount = node.userMessageCount;
+    }
+    if (node.assistantMessageCount !== undefined && node.assistantMessageCount >= 0) {
+        meta.assistantMessageCount = node.assistantMessageCount;
+    }
+    if (node.metadata.actionCount && node.metadata.actionCount > 0) {
+        meta.actionCount = node.metadata.actionCount;
+    }
+    if (node.metadata.totalSize) {
+        meta.totalSize = node.metadata.totalSize;
+        const sizeHuman = formatBytes(node.metadata.totalSize);
+        if (sizeHuman) meta.sizeHuman = sizeHuman;
+    }
     if (node.metadata.mode) meta.mode = node.metadata.mode;
-    // Always include title as main snippet. When firstUserMessage also exists,
-    // skip title if it's just a prefix of firstUserMessage (redundant).
+    if (node.metadata.workspace) {
+        meta.workspace = node.metadata.workspace;
+        const wsShort = getWorkspaceShort(node.metadata.workspace);
+        if (wsShort && wsShort !== node.metadata.workspace) meta.workspaceShort = wsShort;
+    }
+    if (node.metadata.machineId) meta.machineId = node.metadata.machineId;
+
+    // Title: include only when distinct from firstUserMessage (BOM-aware dedup)
     if (node.metadata.title) {
-        let title = node.metadata.title;
+        let title = node.metadata.title.replace(/^\uFEFF/, ''); // strip BOM
         if (title.length > 200) title = title.substring(0, 200) + '...';
-        const titleRedundant = firstMsg && firstMsg.startsWith(title.substring(0, Math.min(50, title.length)));
+        const titleN = normalizeForCompare(title);
+        const firstMsgN = normalizeForCompare(firstMsg);
+        // Redundant if title is a prefix of (or equal to) firstMsg, OR firstMsg starts with title
+        const titleRedundant = titleN.length > 0 && firstMsgN.length > 0 && (
+            firstMsgN.startsWith(titleN) ||
+            (titleN.length >= 20 && firstMsgN.startsWith(titleN.substring(0, Math.min(60, titleN.length))))
+        );
         if (!titleRedundant) {
             meta.title = title;
         }
     }
     summary.metadata = meta;
 
-    // Children: show first N as compact objects, rest as childrenCount
+    // Children: show first N as compact objects with rich info
     if (node.children.length > 0) {
         const shown = node.children.slice(0, MAX_CHILDREN_SHOWN).map((child: SkeletonNode) => {
-            let childMsg = stripXmlTags(child.firstUserMessage) || child.metadata.title;
-            // #883: Increased from 100 to 200 chars
-            if (childMsg && childMsg.length > 200) childMsg = childMsg.substring(0, 200) + '...';
-            const c: Record<string, unknown> = { taskId: child.taskId, messageCount: child.metadata.messageCount };
+            // Prefer firstUserMessage; fall back to title (BOM-stripped)
+            let childMsg = stripXmlTags(child.firstUserMessage);
+            if (!childMsg && child.metadata.title) {
+                childMsg = child.metadata.title.replace(/^\uFEFF/, '');
+            }
+            if (childMsg && childMsg.length > 200) {
+                childMsg = childMsg.substring(0, 200) + '...';
+            }
+            const c: Record<string, unknown> = {
+                taskId: child.taskId,
+                messageCount: child.metadata.messageCount,
+            };
             if (childMsg) c.firstUserMessage = childMsg;
             if (child.metadata.mode) c.mode = child.metadata.mode;
-            c.isCompleted = child.isCompleted || false;
+            const childAgo = formatRelativeTime(child.metadata.lastActivity);
+            if (childAgo) c.ago = childAgo;
+            if (child.isCompleted) c.isCompleted = true; // omit when false
             return c;
         });
         summary.children = shown;
@@ -361,9 +501,9 @@ export const listConversationsTool = {
         inputSchema: {
             type: 'object',
             properties: {
-                limit: { type: 'number', description: 'Alias for per_page (backward compat). Max results per page.' },
+                limit: { type: 'number', description: 'Alias for per_page (backward compat). Clamped to [10, 100].' },
                 page: { type: 'number', description: 'Page number (1-based). Default: 1.' },
-                per_page: { type: 'number', description: 'Results per page. Default: 20. Max: 50.' },
+                per_page: { type: 'number', description: 'Results per page. Default: 10 (keeps output <50KB so Claude Code displays inline). Min: 10. Max: 100 (opt-in large pages — above ~50KB the host redirects output to a file).' },
                 sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },
                 sortOrder: { type: 'string', enum: ['asc', 'desc'] },
                 hasApiHistory: { type: 'boolean' },
@@ -569,10 +709,14 @@ export const listConversationsTool = {
         // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes
         const skeletonMap = new Map<string, SkeletonNode>(allSkeletons.map(s => {
             const sequence = (s as any).sequence;
-            
+
             // Variables pour les informations à extraire
             let firstUserMessage: string | undefined = undefined;
             let lastUserMessage: string | undefined = undefined;
+            let lastMessage: string | undefined = undefined;
+            let lastMessageRole: 'user' | 'assistant' | undefined = undefined;
+            let userMessageCount: number | undefined = undefined;
+            let assistantMessageCount: number | undefined = undefined;
             let lastAction: string | undefined = undefined;
             let isCompleted = false;
             let completionMessage: string | undefined = undefined;
@@ -580,19 +724,47 @@ export const listConversationsTool = {
             // Extraire les informations de la sequence si elle existe (Roo tasks)
             if (sequence && Array.isArray(sequence) && sequence.length > 0) {
                 // 1. Premier message utilisateur — #1177: strip XML, truncate at word boundary
+                //    #1245 round 2: bump 300 → 900 chars for richer context
                 const firstUserMsg = sequence.find((msg: any) => msg.role === 'user');
                 if (firstUserMsg && firstUserMsg.content) {
                     const cleaned = stripXmlTags(firstUserMsg.content) || firstUserMsg.content;
-                    firstUserMessage = truncateAtBoundary(cleaned, 300);
+                    firstUserMessage = truncateAtBoundary(cleaned, 900);
                 }
 
-                // 2. Dernier message utilisateur (permet de voir la fin de la conversation)
+                // 2. Dernier message utilisateur — #1245: bump 200 → 500 chars
                 const userMessages = sequence.filter((msg: any) => msg.role === 'user');
+                userMessageCount = userMessages.length;
                 if (userMessages.length > 0) {
                     const lastUserMsg = userMessages[userMessages.length - 1];
                     if (lastUserMsg && lastUserMsg.content) {
                         const cleaned = stripXmlTags(lastUserMsg.content) || lastUserMsg.content;
-                        lastUserMessage = truncateAtBoundary(cleaned, 200);
+                        lastUserMessage = truncateAtBoundary(cleaned, 500);
+                    }
+                }
+
+                // 2b. #1245 round 2: dernier message de TOUT rôle (user OR assistant)
+                //     Scan en arrière dans la sequence brute pour capturer le dernier message
+                //     réel (souvent un assistant, qui porte la réponse/action finale).
+                //     On garde lastMessageRole pour désambiguïser l'affichage.
+                const assistantMessages = sequence.filter((msg: any) => msg.role === 'assistant');
+                assistantMessageCount = assistantMessages.length;
+                for (let i = sequence.length - 1; i >= 0; i--) {
+                    const m = sequence[i];
+                    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+                    // Extract text content (may be string or array of blocks)
+                    let textContent: string | undefined;
+                    if (typeof m.content === 'string') {
+                        textContent = m.content;
+                    } else if (Array.isArray(m.content)) {
+                        // Find first text block
+                        const textBlock = m.content.find((c: any) => c.type === 'text' && c.text);
+                        if (textBlock) textContent = textBlock.text;
+                    }
+                    if (textContent) {
+                        const cleaned = stripXmlTags(textContent) || textContent;
+                        lastMessage = truncateAtBoundary(cleaned, 500);
+                        lastMessageRole = m.role;
+                        break;
                     }
                 }
 
@@ -622,7 +794,7 @@ export const listConversationsTool = {
                     }
                 }
 
-                // 3. Détecter si la conversation est terminée (dernier message de type attempt_completion)
+                // 4. Détecter si la conversation est terminée (dernier message de type attempt_completion)
                 const lastAssistantMessages = sequence
                     .filter((msg: any) => msg.role === 'assistant')
                     .slice(-3); // Prendre les 3 derniers messages assistant pour chercher attempt_completion
@@ -653,7 +825,8 @@ export const listConversationsTool = {
                 firstUserMessage = s.metadata.title;
             }
 
-            // #666: Fallback for Claude sessions — use pre-extracted JSONL metadata
+            // #666 + #1245 round 2: Fallback for Claude sessions — use pre-extracted JSONL metadata.
+            // These dynamic fields are set by scanClaudeSessions on the skeleton.
             const claudeAny = s as any;
             if (!firstUserMessage && claudeAny._claudeFirstUserMessage) {
                 firstUserMessage = claudeAny._claudeFirstUserMessage;
@@ -661,11 +834,28 @@ export const listConversationsTool = {
             if (!lastUserMessage && claudeAny._claudeLastUserMessage) {
                 lastUserMessage = claudeAny._claudeLastUserMessage;
             }
+            if (!lastMessage && claudeAny._claudeLastMessage) {
+                lastMessage = claudeAny._claudeLastMessage;
+                if (claudeAny._claudeLastMessageRole) {
+                    lastMessageRole = claudeAny._claudeLastMessageRole;
+                }
+            }
+            if (userMessageCount === undefined && typeof claudeAny._claudeUserCount === 'number') {
+                userMessageCount = claudeAny._claudeUserCount;
+            }
+            if (assistantMessageCount === undefined && typeof claudeAny._claudeAssistantCount === 'number') {
+                assistantMessageCount = claudeAny._claudeAssistantCount;
+            }
 
             // Deduplicate: skip lastUserMessage if identical to firstUserMessage
             // (happens with Claude sessions where tail chunk finds same message as head)
             if (lastUserMessage && lastUserMessage === firstUserMessage) {
                 lastUserMessage = undefined;
+            }
+            // Deduplicate: skip lastMessage if it just mirrors firstUserMessage (tiny task)
+            if (lastMessage && lastMessage === firstUserMessage) {
+                lastMessage = undefined;
+                lastMessageRole = undefined;
             }
 
             // Créer explicitement un SkeletonNode avec SEULEMENT les propriétés nécessaires
@@ -676,6 +866,10 @@ export const listConversationsTool = {
                 metadata: s.metadata,
                 firstUserMessage,
                 lastUserMessage,
+                lastMessage,
+                lastMessageRole,
+                userMessageCount,
+                assistantMessageCount,
                 lastAction,
                 isCompleted,
                 completionMessage,
@@ -712,7 +906,14 @@ export const listConversationsTool = {
         });
 
         // --- Pagination ---
-        const perPage = Math.min(args.per_page || args.limit || 20, 50); // Cap at 50
+        // #1245 round 2: clamp to [10, 100].
+        //   - floor 10: user explicit ("pas moins de 10 éléments par page, des pages de 5 ça n'a jamais été utile")
+        //   - cap 100: an agent may deliberately want a large page (it will be redirected to a file
+        //     above ~50KB — that's fine as an opt-in, just not the default behaviour).
+        //   - default 10: keeps the default output comfortably under 50KB so Claude Code displays
+        //     content inline; agents can pass per_page=50/100 when they want everything in a file.
+        const rawPerPage = args.per_page || args.limit || 10;
+        const perPage = Math.min(Math.max(rawPerPage, 10), 100);
         const page = Math.max(args.page || 1, 1);
         const totalCount = forest.length;
         const totalPages = Math.ceil(totalCount / perPage);
@@ -858,11 +1059,20 @@ function extractTextFromMessage(message: ApiMessage): string {
 interface ClaudeSessionMeta {
     firstUserMessage?: string;
     lastUserMessage?: string;
+    /** Last message of ANY role (user or assistant) — final state of the conversation. */
+    lastMessage?: string;
+    lastMessageRole?: 'user' | 'assistant';
     messageCount: number;
+    /** Sampled counts from head+tail chunks (under-counts for big files, exact for small ones). */
+    sampledUserCount?: number;
+    sampledAssistantCount?: number;
+    sampledCountsAreExact?: boolean;
 }
 
 async function extractClaudeSessionMeta(filePath: string, fileSize: number): Promise<ClaudeSessionMeta> {
-    const CHUNK = 16384; // 16KB
+    // #1245 round 2: bump 16KB → 48KB so we capture enough first-message content
+    // and more accurate counts. 48KB * 2 = 96KB max I/O per file, acceptable for list.
+    const CHUNK = 49152; // 48KB
     const result: ClaudeSessionMeta = { messageCount: 0 };
     let handle: import('fs/promises').FileHandle | undefined;
 
@@ -876,22 +1086,26 @@ async function extractClaudeSessionMeta(filePath: string, fileSize: number): Pro
         const headLines = headText.split('\n').filter(l => l.trim());
 
         let lineCount = 0;
+        let sampledUser = 0;
+        let sampledAssistant = 0;
         for (const line of headLines) {
             lineCount++;
             try {
                 const entry = JSON.parse(line);
+                if (entry.type === 'user') sampledUser++;
+                else if (entry.type === 'assistant') sampledAssistant++;
                 // Claude Code JSONL format: type="user" with message.content (string or array)
-                if (entry.type === 'user' && entry.message) {
+                if (!result.firstUserMessage && entry.type === 'user' && entry.message) {
                     const text = extractClaudeMessageText(entry.message.content);
                     if (text && text.length > 0) {
-                        result.firstUserMessage = truncateAtBoundary(text, 300);
-                        break;
+                        result.firstUserMessage = truncateAtBoundary(text, 900);
                     }
                 }
             } catch { /* skip malformed lines */ }
         }
 
-        // --- Read last chunk for last user message ---
+        // --- Read last chunk for last user message + last message (any role) ---
+        const fileFullyRead = fileSize <= CHUNK;
         if (fileSize > CHUNK) {
             const tailOffset = Math.max(0, fileSize - CHUNK);
             const tailBuf = Buffer.alloc(Math.min(CHUNK, fileSize - tailOffset));
@@ -900,25 +1114,71 @@ async function extractClaudeSessionMeta(filePath: string, fileSize: number): Pro
             const tailLines = tailText.split('\n').filter(l => l.trim());
             lineCount += tailLines.length;
 
-            // Scan backwards for last user message
+            // Also accumulate per-role counts from the tail (still sampled — may double-count
+            // the one boundary line but that's one line of error in large files).
+            for (const line of tailLines) {
+                try {
+                    const entry = JSON.parse(line);
+                    if (entry.type === 'user') sampledUser++;
+                    else if (entry.type === 'assistant') sampledAssistant++;
+                } catch { /* skip */ }
+            }
+
+            // Scan backwards for last USER message + last message (any role)
             for (let i = tailLines.length - 1; i >= 0; i--) {
                 try {
                     const entry = JSON.parse(tailLines[i]);
-                    if (entry.type === 'user' && entry.message) {
+                    if (!result.lastMessage && (entry.type === 'user' || entry.type === 'assistant') && entry.message) {
                         const text = extractClaudeMessageText(entry.message.content);
                         if (text && text.length > 0) {
-                            result.lastUserMessage = truncateAtBoundary(text, 200);
-                            break;
+                            result.lastMessage = truncateAtBoundary(text, 500);
+                            result.lastMessageRole = entry.type as 'user' | 'assistant';
                         }
                     }
+                    if (!result.lastUserMessage && entry.type === 'user' && entry.message) {
+                        const text = extractClaudeMessageText(entry.message.content);
+                        if (text && text.length > 0) {
+                            result.lastUserMessage = truncateAtBoundary(text, 500);
+                        }
+                    }
+                    if (result.lastUserMessage && result.lastMessage) break;
+                } catch { /* skip */ }
+            }
+        } else {
+            // Small file: head chunk has everything, scan backwards through headLines for last messages
+            for (let i = headLines.length - 1; i >= 0; i--) {
+                try {
+                    const entry = JSON.parse(headLines[i]);
+                    if (!result.lastMessage && (entry.type === 'user' || entry.type === 'assistant') && entry.message) {
+                        const text = extractClaudeMessageText(entry.message.content);
+                        if (text && text.length > 0) {
+                            result.lastMessage = truncateAtBoundary(text, 500);
+                            result.lastMessageRole = entry.type as 'user' | 'assistant';
+                        }
+                    }
+                    if (!result.lastUserMessage && entry.type === 'user' && entry.message) {
+                        const text = extractClaudeMessageText(entry.message.content);
+                        if (text && text.length > 0) {
+                            result.lastUserMessage = truncateAtBoundary(text, 500);
+                        }
+                    }
+                    if (result.lastUserMessage && result.lastMessage) break;
                 } catch { /* skip */ }
             }
         }
 
-        // Estimate message count: use line count from chunks as sample,
-        // extrapolate to full file based on avg bytes/line
-        const avgBytesPerLine = Math.max(100, (CHUNK * 2) / Math.max(lineCount, 1));
-        result.messageCount = Math.max(1, Math.round(fileSize / avgBytesPerLine));
+        // Message count: exact if the whole file fit in the head chunk, extrapolated otherwise.
+        if (fileFullyRead) {
+            result.messageCount = sampledUser + sampledAssistant;
+            result.sampledCountsAreExact = true;
+        } else {
+            // Extrapolate from avg bytes/line across sampled chunks
+            const avgBytesPerLine = Math.max(100, (CHUNK * 2) / Math.max(lineCount, 1));
+            result.messageCount = Math.max(1, Math.round(fileSize / avgBytesPerLine));
+            result.sampledCountsAreExact = false;
+        }
+        result.sampledUserCount = sampledUser;
+        result.sampledAssistantCount = sampledAssistant;
 
     } catch {
         // Fallback — return empty meta
@@ -988,17 +1248,31 @@ interface ClaudeJsonlMetadata {
     cwd?: string;
     firstUserMessage?: string;
     lastUserMessage?: string;
+    /** Last message of ANY role (user or assistant) — often the final state/result. */
+    lastMessage?: string;
+    lastMessageRole?: 'user' | 'assistant';
     approxMessageCount: number;
     title?: string;
+    /** Sampled per-role counts from head+tail chunks (exact when file fully scanned). */
+    userCount?: number;
+    assistantCount?: number;
+    countsAreExact?: boolean;
 }
 
 /**
- * Extract metadata from a Claude JSONL file by reading only the first and last 8KB.
- * This provides cwd, first/last user messages, and an approximate message count
- * without parsing the entire file (which can be many MB).
+ * Extract metadata from a Claude JSONL file by reading only the first and last chunks.
+ * This provides cwd, first/last messages (per-role + any-role), and an approximate
+ * message count without parsing the entire file (which can be many MB).
+ *
+ * #1245 round 2:
+ *   - CHUNK_SIZE bumped 8KB → 48KB (more content in first message, more accurate counts)
+ *   - Added lastMessage (any role) + lastMessageRole
+ *   - Added userCount/assistantCount with countsAreExact flag
+ *   - Truncation 300 → 900 (first), 200 → 500 (last user + last any)
  *
  * JSONL format: each line is a JSON object with { type, message?, cwd?, timestamp? }
  * User messages have type="user" with message.role="user" and message.content (string or array).
+ * Assistant messages have type="assistant" with message.role="assistant" and message.content.
  */
 async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): Promise<ClaudeJsonlMetadata> {
     const result: ClaudeJsonlMetadata = { approxMessageCount: 0 };
@@ -1006,9 +1280,13 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
 
     try {
         handle = await fs.open(filePath, 'r');
-        const CHUNK_SIZE = 8192;
+        const CHUNK_SIZE = 49152; // 48KB — enough to capture richer first messages and more accurate counts
 
-        // --- Read first chunk (first 8KB) ---
+        let sampledUser = 0;
+        let sampledAssistant = 0;
+        let fileFullyRead = false;
+
+        // --- Read first chunk (first 48KB) ---
         const headBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize));
         const { bytesRead: headRead } = await handle.read(headBuf, 0, headBuf.length, 0);
         const headText = headBuf.toString('utf-8', 0, headRead);
@@ -1023,11 +1301,17 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                 if (!result.cwd && entry.cwd) {
                     result.cwd = entry.cwd.replace(/\\/g, '/');
                 }
+                // Count messages by role (sampled from head chunk)
+                if (entry.type === 'user' && entry.message?.role === 'user') {
+                    sampledUser++;
+                } else if (entry.type === 'assistant' && entry.message?.role === 'assistant') {
+                    sampledAssistant++;
+                }
                 // Extract first user message
                 if (!result.firstUserMessage && entry.type === 'user' && entry.message?.role === 'user') {
                     const content = extractClaudeMessageText(entry.message.content);
                     if (content) {
-                        result.firstUserMessage = truncateAtBoundary(content, 300);
+                        result.firstUserMessage = truncateAtBoundary(content, 900);
                         // Derive title from first user message (skip command invocations)
                         const titleText = content.replace(/<[^>]+>/g, '').trim();
                         if (titleText.length > 3) {
@@ -1040,7 +1324,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
             }
         }
 
-        // --- Read last chunk (last 8KB) ---
+        // --- Read last chunk (last 48KB) ---
         if (fileSize > CHUNK_SIZE) {
             const tailOffset = Math.max(0, fileSize - CHUNK_SIZE);
             const tailBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize - tailOffset));
@@ -1048,30 +1332,95 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
             const tailText = tailBuf.toString('utf-8', 0, tailRead);
             const tailLines = tailText.split('\n');
 
-            // Walk backwards to find the last user message
+            // Accumulate per-role counts from tail (note: head+tail may overlap on small files,
+            // but we already guarded fileSize > CHUNK_SIZE above, so no overlap here)
+            let tailUser = 0;
+            let tailAssistant = 0;
+
+            // Walk backwards to find the last message (any role) and the last user message
+            let foundLastAny = false;
+            let foundLastUser = false;
             for (let i = tailLines.length - 1; i >= 0; i--) {
                 const trimmed = tailLines[i].trim();
                 if (!trimmed) continue;
                 try {
                     const entry = JSON.parse(trimmed);
-                    if (entry.type === 'user' && entry.message?.role === 'user') {
+                    const isUser = entry.type === 'user' && entry.message?.role === 'user';
+                    const isAssistant = entry.type === 'assistant' && entry.message?.role === 'assistant';
+                    if (isUser) tailUser++;
+                    if (isAssistant) tailAssistant++;
+
+                    if (!foundLastAny && (isUser || isAssistant)) {
                         const content = extractClaudeMessageText(entry.message.content);
                         if (content) {
-                            result.lastUserMessage = truncateAtBoundary(content, 200);
-                            break;
+                            result.lastMessage = truncateAtBoundary(content, 500);
+                            result.lastMessageRole = isUser ? 'user' : 'assistant';
+                            foundLastAny = true;
                         }
                     }
+                    if (!foundLastUser && isUser) {
+                        const content = extractClaudeMessageText(entry.message.content);
+                        if (content) {
+                            result.lastUserMessage = truncateAtBoundary(content, 500);
+                            foundLastUser = true;
+                        }
+                    }
+                    // Keep scanning so per-role counts are accumulated across the whole tail chunk
                 } catch {
                     // Skip truncated lines at chunk boundary
                 }
             }
+
+            sampledUser += tailUser;
+            sampledAssistant += tailAssistant;
+        } else {
+            // Small file: entire file was in head chunk. Scan backwards through headLines
+            // for lastMessage/lastUserMessage.
+            fileFullyRead = true;
+            let foundLastAny = false;
+            let foundLastUser = false;
+            for (let i = headLines.length - 1; i >= 0; i--) {
+                const trimmed = headLines[i].trim();
+                if (!trimmed) continue;
+                try {
+                    const entry = JSON.parse(trimmed);
+                    const isUser = entry.type === 'user' && entry.message?.role === 'user';
+                    const isAssistant = entry.type === 'assistant' && entry.message?.role === 'assistant';
+                    if (!foundLastAny && (isUser || isAssistant)) {
+                        const content = extractClaudeMessageText(entry.message.content);
+                        if (content) {
+                            result.lastMessage = truncateAtBoundary(content, 500);
+                            result.lastMessageRole = isUser ? 'user' : 'assistant';
+                            foundLastAny = true;
+                        }
+                    }
+                    if (!foundLastUser && isUser) {
+                        const content = extractClaudeMessageText(entry.message.content);
+                        if (content) {
+                            result.lastUserMessage = truncateAtBoundary(content, 500);
+                            foundLastUser = true;
+                        }
+                    }
+                    if (foundLastAny && foundLastUser) break;
+                } catch {
+                    // Skip unparseable lines
+                }
+            }
         }
 
-        // --- Approximate message count from file size ---
-        // Claude JSONL lines average ~500-2000 bytes. Use 1000 as middle ground.
-        // Only user+assistant messages matter, roughly 60% of lines.
-        const approxTotalLines = Math.max(1, Math.round(fileSize / 1000));
-        result.approxMessageCount = Math.max(1, Math.round(approxTotalLines * 0.6));
+        // --- Per-role counts + approximate total message count ---
+        result.userCount = sampledUser;
+        result.assistantCount = sampledAssistant;
+        result.countsAreExact = fileFullyRead;
+
+        if (fileFullyRead) {
+            result.approxMessageCount = sampledUser + sampledAssistant;
+        } else {
+            // Claude JSONL lines average ~500-2000 bytes. Use 1000 as middle ground.
+            // Only user+assistant messages matter, roughly 60% of lines.
+            const approxTotalLines = Math.max(1, Math.round(fileSize / 1000));
+            result.approxMessageCount = Math.max(1, Math.round(approxTotalLines * 0.6));
+        }
 
     } catch {
         // Return whatever we have so far
@@ -1166,6 +1515,16 @@ async function scanClaudeSessions(
                     const wsName = (fileWorkspace || derivedWorkspace) ? path.basename(fileWorkspace || derivedWorkspace || '') : 'unknown';
                     const claudeTitle = jsonlMeta.title || `[Claude] ${wsName} — ${sessionId.substring(0, 8)}`;
 
+                    // #1245 round 2: prefer sessionMeta's richer fields, fall back to jsonlMeta
+                    const mergedFirstUser = sessionMeta.firstUserMessage || jsonlMeta.firstUserMessage;
+                    const mergedLastUser = sessionMeta.lastUserMessage || jsonlMeta.lastUserMessage;
+                    const mergedLastAny = sessionMeta.lastMessage || jsonlMeta.lastMessage;
+                    const mergedLastRole = sessionMeta.lastMessageRole || jsonlMeta.lastMessageRole;
+
+                    // Per-role counts: prefer sessionMeta sampled counts, fall back to jsonlMeta
+                    const userCount = sessionMeta.sampledUserCount ?? jsonlMeta.userCount;
+                    const assistantCount = sessionMeta.sampledAssistantCount ?? jsonlMeta.assistantCount;
+
                     const skeleton: ConversationSkeleton = {
                         taskId,
                         sequence: [], // Content loaded on-demand via view action
@@ -1180,21 +1539,38 @@ async function scanClaudeSessions(
                             machineId: os.hostname(),
                             dataSource: 'claude',
                         },
-                        // #666: Store extracted messages for SkeletonNode enrichment (fallback)
-                        _claudeFirstUserMessage: jsonlMeta.firstUserMessage,
-                        _claudeLastUserMessage: jsonlMeta.lastUserMessage,
-                    } as ConversationSkeleton & { _claudeFirstUserMessage?: string; _claudeLastUserMessage?: string };
+                        // #666 + #1245: Store extracted messages + per-role counts for SkeletonNode enrichment (fallback)
+                        _claudeFirstUserMessage: mergedFirstUser,
+                        _claudeLastUserMessage: mergedLastUser,
+                        _claudeLastMessage: mergedLastAny,
+                        _claudeLastMessageRole: mergedLastRole,
+                        _claudeUserCount: userCount,
+                        _claudeAssistantCount: assistantCount,
+                    } as ConversationSkeleton & {
+                        _claudeFirstUserMessage?: string;
+                        _claudeLastUserMessage?: string;
+                        _claudeLastMessage?: string;
+                        _claudeLastMessageRole?: 'user' | 'assistant';
+                        _claudeUserCount?: number;
+                        _claudeAssistantCount?: number;
+                    };
 
                     // Inject first/last messages into sequence for toConversationSummary
-                    const firstMsg = sessionMeta.firstUserMessage || jsonlMeta.firstUserMessage;
-                    const lastMsg = sessionMeta.lastUserMessage || jsonlMeta.lastUserMessage;
-                    if (firstMsg || lastMsg) {
+                    // #1245 round 2: also inject lastMessage (any role) as the FINAL synthetic entry,
+                    // so the Roo sequence-extraction code path in the skeletonMap build picks it up
+                    // via a reverse scan. Use role='assistant' for non-user last messages so the
+                    // existing "last assistant" logic surfaces it.
+                    if (mergedFirstUser || mergedLastUser || mergedLastAny) {
                         const seq: any[] = [];
-                        if (firstMsg) {
-                            seq.push({ role: 'user', content: firstMsg });
+                        if (mergedFirstUser) {
+                            seq.push({ role: 'user', content: mergedFirstUser });
                         }
-                        if (lastMsg && lastMsg !== firstMsg) {
-                            seq.push({ role: 'user', content: lastMsg });
+                        if (mergedLastUser && mergedLastUser !== mergedFirstUser) {
+                            seq.push({ role: 'user', content: mergedLastUser });
+                        }
+                        // Final entry = last message of any role, so reverse scans pick it up
+                        if (mergedLastAny && mergedLastAny !== mergedLastUser && mergedLastAny !== mergedFirstUser) {
+                            seq.push({ role: mergedLastRole || 'assistant', content: mergedLastAny });
                         }
                         (skeleton as any).sequence = seq;
                     }
