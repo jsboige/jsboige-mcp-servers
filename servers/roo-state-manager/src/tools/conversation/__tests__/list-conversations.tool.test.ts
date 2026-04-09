@@ -406,9 +406,36 @@ describe('list-conversations', () => {
   });
 
   describe('handler - limit parameter', () => {
-    it('should limit number of results', async () => {
+    it('should honor limit when above the floor (#1245: clamped to [10, 100])', async () => {
+      // Create 20 tasks, ask for 15 → returns 15
       const mockCache = new Map<string, any>();
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 20; i++) {
+        mockCache.set(`task${i}`, {
+          taskId: `task${i}`,
+          metadata: {
+            lastActivity: new Date(Date.now() - i * 3600000).toISOString(),
+            createdAt: '2025-01-01T12:00:00.000Z',
+            messageCount: 10,
+            actionCount: 5,
+            totalSize: 1000
+          }
+        });
+      }
+
+      const result = await listConversationsTool.handler(
+        { limit: 15 },
+        mockCache
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      expect(parsed).toHaveLength(15);
+    });
+
+    it('should clamp limit to floor of 10 (pages of 5 are useless)', async () => {
+      // Create 12 tasks, ask for 5 → clamped up to 10
+      const mockCache = new Map<string, any>();
+      for (let i = 0; i < 12; i++) {
         mockCache.set(`task${i}`, {
           taskId: `task${i}`,
           metadata: {
@@ -428,7 +455,7 @@ describe('list-conversations', () => {
       const _response = JSON.parse(result.content[0].text as string);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed).toHaveLength(5);
+      expect(parsed).toHaveLength(10);
     });
 
     it('should return all results when limit is not specified', async () => {
