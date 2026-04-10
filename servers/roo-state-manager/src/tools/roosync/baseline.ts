@@ -26,7 +26,18 @@ import type { BaselineConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
 import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
 
-const logger: Logger = createLogger('BaselineTool');
+let loggerInstance: Logger | null = null;
+
+/**
+ * Get or create the logger instance lazily.
+ * This defers logger initialization until first use, preventing startup failures.
+ */
+function getLogger(): Logger {
+  if (!loggerInstance) {
+    loggerInstance = createLogger('BaselineTool');
+  }
+  return loggerInstance;
+}
 
 /**
  * Schema de validation pour roosync_baseline
@@ -140,7 +151,7 @@ export async function roosync_baseline(args: BaselineArgs): Promise<BaselineResu
   try {
     const timestamp = new Date().toISOString();
 
-    logger.info('🔧 Baseline operation started', {
+    getLogger().info('🔧 Baseline operation started', {
       action: args.action,
       machineId: args.machineId,
       version: args.version
@@ -163,7 +174,7 @@ export async function roosync_baseline(args: BaselineArgs): Promise<BaselineResu
         );
     }
   } catch (error) {
-    logger.error('❌ Baseline operation failed', {
+    getLogger().error('❌ Baseline operation failed', {
       action: args.action,
       error: (error as Error).message
     });
@@ -191,7 +202,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
     );
   }
 
-  logger.info('🔄 Starting baseline update', {
+  getLogger().info('🔄 Starting baseline update', {
     machineId: args.machineId,
     mode: args.mode || 'standard',
     version: args.version
@@ -239,12 +250,12 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
             mkdirSync(rollbackDir, { recursive: true });
           }
           copyFileSync(baselinePath, backupPath);
-          logger.info('✅ Baseline backup created', { backupPath, sourcePath: baselinePath });
+          getLogger().info('✅ Baseline backup created', { backupPath, sourcePath: baselinePath });
         } catch (backupError) {
-          logger.warn('⚠️ Could not create backup', { error: backupError });
+          getLogger().warn('⚠️ Could not create backup', { error: backupError });
         }
       } else {
-        logger.info('ℹ️ No existing baseline to backup, skipping backup', { machineId: args.machineId });
+        getLogger().info('ℹ️ No existing baseline to backup, skipping backup', { machineId: args.machineId });
       }
     }
   }
@@ -254,7 +265,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
 
   // Créer la nouvelle baseline selon le mode
   if (args.mode === 'profile') {
-    logger.info('📊 Creating non-nominative baseline', { name: args.machineId });
+    getLogger().info('📊 Creating non-nominative baseline', { name: args.machineId });
 
     const nonNominativeBaseline = await service.createNonNominativeBaseline(
       args.machineId,
@@ -295,7 +306,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
     };
   } else {
     // Mode standard (machine)
-    logger.info('📊 Collecting inventory for target machine', { machineId: args.machineId });
+    getLogger().info('📊 Collecting inventory for target machine', { machineId: args.machineId });
     const inventory = await inventoryCollector.collectInventory(args.machineId, true);
 
     if (!inventory) {
@@ -340,7 +351,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
     message += `\nRaison : ${args.updateReason}`;
   }
 
-  logger.info('✅ Baseline update completed successfully', {
+  getLogger().info('✅ Baseline update completed successfully', {
     newMachineId: args.machineId,
     newVersion: version,
     previousMachineId: previousBaseline?.machineId
@@ -383,7 +394,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     );
   }
 
-  logger.info('🏷️ Starting baseline versioning', {
+  getLogger().info('🏷️ Starting baseline versioning', {
     version: args.version,
     pushTags: args.pushTags,
     createChangelog: args.createChangelog
@@ -408,7 +419,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   const tagName = `baseline-v${args.version}`;
   const tagMessage = args.message || `Baseline version ${args.version} - Machine: ${currentBaseline.machineId}`;
 
-  logger.info('Creating Git tag', { tagName, message: tagMessage });
+  getLogger().info('Creating Git tag', { tagName, message: tagMessage });
 
   // Vérifier si le tag existe déjà
   let tagExists = false;
@@ -431,15 +442,15 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     const baselinePath = join(sharedPath, 'sync-config.ref.json');
     execSync(`git add "${baselinePath}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
     execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
-    logger.info('✅ Baseline committed successfully');
+    getLogger().info('✅ Baseline committed successfully');
   } catch (error) {
-    logger.warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
+    getLogger().warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
   }
 
   // Créer le tag Git
   try {
     execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
-    logger.info('✅ Git tag created successfully', { tagName });
+    getLogger().info('✅ Git tag created successfully', { tagName });
   } catch (error) {
     throw new RooSyncServiceError(
       `Erreur lors de la création du tag Git: ${(error as Error).message}`,
@@ -453,9 +464,9 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     try {
       execSync('git push --tags', { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
       tagPushed = true;
-      logger.info('✅ Git tag pushed successfully');
+      getLogger().info('✅ Git tag pushed successfully');
     } catch (error) {
-      logger.warn('⚠️ Could not push Git tag', { error: (error as Error).message });
+      getLogger().warn('⚠️ Could not push Git tag', { error: (error as Error).message });
     }
   }
 
@@ -501,9 +512,9 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
 
       writeFileSync(changelogPath, changelogContent, 'utf-8');
       changelogUpdated = true;
-      logger.info('✅ CHANGELOG updated successfully');
+      getLogger().info('✅ CHANGELOG updated successfully');
     } catch (error) {
-      logger.warn('⚠️ Could not update CHANGELOG', { error: (error as Error).message });
+      getLogger().warn('⚠️ Could not update CHANGELOG', { error: (error as Error).message });
     }
   }
 
@@ -521,9 +532,9 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
       updatedBy: 'roosync_baseline'
     });
 
-    logger.info('✅ Baseline version updated', { version: args.version });
+    getLogger().info('✅ Baseline version updated', { version: args.version });
   } catch (error) {
-    logger.warn('⚠️ Could not update baseline version', { error: (error as Error).message });
+    getLogger().warn('⚠️ Could not update baseline version', { error: (error as Error).message });
   }
 
   // Message de résultat
@@ -537,7 +548,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     message += `\nCHANGELOG mis à jour`;
   }
 
-  logger.info('✅ Baseline versioning completed successfully', {
+  getLogger().info('✅ Baseline versioning completed successfully', {
     version: args.version,
     tagName,
     baselineMachine: currentBaseline.machineId
@@ -566,7 +577,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
     );
   }
 
-  logger.info('🔄 Starting baseline restore', {
+  getLogger().info('🔄 Starting baseline restore', {
     source: args.source,
     createBackup: args.createBackup
   });
@@ -582,7 +593,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
   try {
     currentBaseline = await baselineService.loadBaseline(config.machineId);
   } catch (error) {
-    logger.warn('Impossible de charger la baseline actuelle', { error: (error as Error).message });
+    getLogger().warn('Impossible de charger la baseline actuelle', { error: (error as Error).message });
   }
 
   // Créer une sauvegarde si demandé
@@ -600,9 +611,9 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 
       writeFileSync(backupPath, JSON.stringify(currentBaseline, null, 2), 'utf-8');
       backupCreated = true;
-      logger.info('✅ Sauvegarde créée', { backupPath });
+      getLogger().info('✅ Sauvegarde créée', { backupPath });
     } catch (error) {
-      logger.warn('⚠️ Impossible de créer la sauvegarde', { error: (error as Error).message });
+      getLogger().warn('⚠️ Impossible de créer la sauvegarde', { error: (error as Error).message });
     }
   }
 
@@ -614,7 +625,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
     // Restauration depuis un tag Git
     sourceType = 'tag';
     try {
-      logger.info('Restauration depuis le tag Git', { tagName: args.source });
+      getLogger().info('Restauration depuis le tag Git', { tagName: args.source });
 
       // Vérifier si le tag existe
       try {
@@ -648,7 +659,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
         throw new BaselineServiceError('Baseline invalide: champs requis manquants', BaselineServiceErrorCode.BASELINE_INVALID);
       }
 
-      logger.info('Baseline récupérée depuis le tag', {
+      getLogger().info('Baseline récupérée depuis le tag', {
         machineId: restoredBaseline.machineId,
         version: restoredBaseline.version
       });
@@ -662,7 +673,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
     // Restauration depuis un fichier de sauvegarde
     sourceType = 'backup';
     try {
-      logger.info('Restauration depuis la sauvegarde', { backupPath: args.source });
+      getLogger().info('Restauration depuis la sauvegarde', { backupPath: args.source });
 
       if (!existsSync(args.source)) {
         throw new BaselineServiceError(`Fichier de sauvegarde non trouvé: ${args.source}`, BaselineServiceErrorCode.BASELINE_NOT_FOUND);
@@ -675,7 +686,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
         throw new BaselineServiceError('Baseline invalide: champs requis manquants', BaselineServiceErrorCode.BASELINE_INVALID);
       }
 
-      logger.info('Baseline récupérée depuis la sauvegarde', {
+      getLogger().info('Baseline récupérée depuis la sauvegarde', {
         machineId: restoredBaseline.machineId,
         version: restoredBaseline.version
       });
@@ -700,7 +711,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
       updatedBy: args.restoredBy || 'roosync_baseline'
     });
 
-    logger.info('✅ Baseline restaurée avec succès', {
+    getLogger().info('✅ Baseline restaurée avec succès', {
       machineId: restoredBaseline.machineId,
       version: restoredBaseline.version
     });
@@ -720,7 +731,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
     message += `\nSauvegarde créée: ${backupPath}`;
   }
 
-  logger.info('✅ Baseline restore completed successfully', {
+  getLogger().info('✅ Baseline restore completed successfully', {
     sourceType,
     source: args.source,
     restoredMachineId: restoredBaseline.machineId,
@@ -752,7 +763,7 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
     );
   }
 
-  logger.info('📤 Starting baseline export', {
+  getLogger().info('📤 Starting baseline export', {
     format: args.format,
     machineId: args.machineId
   });
@@ -814,7 +825,7 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
       extension = '.json';
       break;
     case 'yaml':
-      content = generateYamlExport(exportData);
+      content = await generateYamlExport(exportData);
       extension = '.yaml';
       break;
     case 'csv':
@@ -847,7 +858,7 @@ async function handleExportAction(args: BaselineArgs, timestamp: string): Promis
   // Écrire le fichier
   writeFileSync(outputPath, content, 'utf-8');
 
-  logger.info('✅ Baseline exported successfully', {
+  getLogger().info('✅ Baseline exported successfully', {
     machineId: baseline.machineId,
     format: args.format,
     outputPath,
@@ -969,9 +980,9 @@ function updateDashboard(config: any, machineId: string, version: string, previo
       }
 
       writeFileSync(dashboardPath, JSON.stringify(dashboard, null, 2), 'utf-8');
-      logger.info('✅ Dashboard updated');
+      getLogger().info('✅ Dashboard updated');
     } catch (error) {
-      logger.warn('⚠️ Could not update dashboard', { error });
+      getLogger().warn('⚠️ Could not update dashboard', { error });
     }
   }
 }
@@ -997,9 +1008,9 @@ function updateRoadmap(config: any, machineId: string, version: string, previous
 
       roadmapContent += baselineUpdateEntry;
       writeFileSync(roadmapPath, roadmapContent, 'utf-8');
-      logger.info('✅ Roadmap updated');
+      getLogger().info('✅ Roadmap updated');
     } catch (error) {
-      logger.warn('⚠️ Could not update roadmap', { error });
+      getLogger().warn('⚠️ Could not update roadmap', { error });
     }
   }
 }
@@ -1008,10 +1019,10 @@ function generateJsonExport(data: any, prettyPrint: boolean): string {
   return prettyPrint ? JSON.stringify(data, null, 2) : JSON.stringify(data);
 }
 
-function generateYamlExport(data: any): string {
+async function generateYamlExport(data: any): Promise<string> {
   try {
-    const yaml = require('js-yaml');
-    return yaml.dump(data, { indent: 2 });
+    const yaml = await import('js-yaml');
+    return (yaml as any).dump(data, { indent: 2 });
   } catch (error) {
     return simpleYamlExport(data);
   }
