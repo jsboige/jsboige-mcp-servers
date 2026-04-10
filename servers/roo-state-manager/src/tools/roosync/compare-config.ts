@@ -513,7 +513,8 @@ async function loadPublishedSettings(service: any, machineId: string): Promise<R
         const raw = await fsPromises.readFile(path, 'utf-8');
         const parsed = JSON.parse(raw);
         return parsed.settings ?? parsed;
-      } catch {
+      } catch (err) {
+        console.warn(`[compare-config] Failed to read settings file ${name}:`, err instanceof Error ? err.message : String(err));
         continue;
       }
     }
@@ -532,8 +533,8 @@ async function loadPublishedSettings(service: any, machineId: string): Promise<R
       const parsed = JSON.parse(raw);
       return parsed.settings ?? parsed;
     }
-  } catch {
-    // Continue to versioned packages
+  } catch (err) {
+    console.warn('[compare-config] Failed to list dated standalone settings files:', err instanceof Error ? err.message : String(err));
   }
 
   // Try versioned packages (find latest with roo-settings)
@@ -553,8 +554,8 @@ async function loadPublishedSettings(service: any, machineId: string): Promise<R
         return parsed.settings ?? parsed;
       }
     }
-  } catch {
-    // No versioned packages found
+  } catch (err) {
+    console.warn('[compare-config] Failed to find versioned packages:', err instanceof Error ? err.message : String(err));
   }
 
   return {};
