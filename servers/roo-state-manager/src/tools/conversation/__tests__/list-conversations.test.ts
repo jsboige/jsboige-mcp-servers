@@ -32,7 +32,8 @@ vi.mock('../../task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
 }));
 
-// Mock fs for contentPattern tests (loadApiMessages uses `import { promises as fs } from 'fs'`)
+// Mock fs for loadApiMessages (contentPattern/pendingSubtaskOnly)
+// loadApiMessages uses `import { promises as fs } from 'fs'` internally
 const { mockFsReadFile } = vi.hoisted(() => ({
   mockFsReadFile: vi.fn().mockRejectedValue(new Error('Not mocked for this test')),
 }));
@@ -51,6 +52,7 @@ vi.mock('fs', async () => {
 });
 
 import { listConversationsTool } from '../list-conversations.tool.js';
+import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
@@ -83,11 +85,16 @@ function makeCache(...skeletons: ConversationSkeleton[]): Map<string, Conversati
 // ─────────────────── setup ───────────────────
 
 let emptyCache: Map<string, ConversationSkeleton>;
+let storageSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   emptyCache = new Map();
   mockScanDiskForNewTasks.mockResolvedValue([]);
+  // vi.spyOn works where vi.mock fails for RooStorageDetector (#1123)
+  // Root cause: SkeletonCacheService (transitive dep) also imports RooStorageDetector,
+  // creating a module resolution path that vi.mock() doesn't intercept for loadApiMessages.
+  storageSpy = vi.spyOn(RooStorageDetector, 'detectStorageLocations').mockResolvedValue(['/mock/storage']);
 });
 
 // ─────────────────── tests ───────────────────
@@ -249,23 +256,35 @@ describe('listConversationsTool.handler', () => {
   // ============================================================
 
   describe('limit', () => {
-    test('limite les résultats au nombre demandé', async () => {
-      const cache = makeCache(
-        makeConversation('task-1'),
-        makeConversation('task-2'),
-        makeConversation('task-3'),
-        makeConversation('task-4'),
-        makeConversation('task-5'),
-      );
+    // #1245 round 2: per_page is clamped to [10, 100] — pages of 5 are useless,
+    // pages above 100 should be opt-in file redirection. These tests exercise
+    // values LARGER than the clamp floor.
+    test('limite les résultats au nombre demandé (above floor=10)', async () => {
+      // Create 20 tasks and ask for 12 → should return 12
+      const tasks = Array.from({ length: 20 }, (_, i) => makeConversation(`task-${i + 1}`));
+      const cache = makeCache(...tasks);
+
+      const result = await listConversationsTool.handler({ limit: 12 }, cache);
+      const _response = JSON.parse((result.content[0] as any).text);
+      const parsed = _response.conversations ?? _response;
+
+      expect(parsed.length).toBe(12);
+    });
+
+    test('limit inférieur au plancher 10 → clamp à 10', async () => {
+      // Create 15 tasks and ask for 3 → should be clamped to 10
+      const tasks = Array.from({ length: 15 }, (_, i) => makeConversation(`task-${i + 1}`));
+      const cache = makeCache(...tasks);
 
       const result = await listConversationsTool.handler({ limit: 3 }, cache);
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed.length).toBe(3);
+      expect(parsed.length).toBe(10);
     });
 
-    test('sans limit → retourne toutes les tâches', async () => {
+    test('sans limit → default 10 (page 1) — retourne au plus 10 tâches', async () => {
+      // Create 3 tasks — fewer than the default page size, so all 3 fit on page 1
       const cache = makeCache(
         makeConversation('task-1'),
         makeConversation('task-2'),
@@ -350,8 +369,12 @@ describe('listConversationsTool.handler', () => {
       expect(parsed[0].firstUserMessage).toBe('Initial user instruction');
     });
 
-    test('tronque le premier message à 300 caractères', async () => {
-      const longContent = 'x'.repeat(400);
+    test('tronque le premier message à 900 caractères', async () => {
+      // #1245 round 2: truncation bumped 300 → 900 for richer first-message context.
+      // The outer toConversationSummary also applies a 700-char cap; the deeper
+      // 900-char cap applies inside the sequence extractor. We assert the visible
+      // cap (what the summary actually emits).
+      const longContent = 'x'.repeat(1200);
       const task = makeConversation('task-long') as any;
       task.sequence = [{ role: 'user', content: longContent }];
       const cache = makeCache(task);
@@ -360,7 +383,8 @@ describe('listConversationsTool.handler', () => {
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(303); // max 300 + boundary truncation
+      // toConversationSummary re-truncates to 700 chars (+ boundary slack + "...")
+      expect(parsed[0].firstUserMessage.length).toBeLessThanOrEqual(710);
       expect(parsed[0].firstUserMessage).toContain('...');
     });
 
@@ -417,7 +441,9 @@ describe('listConversationsTool.handler', () => {
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed[0].isCompleted).toBe(false);
+      // #1245 UX: isCompleted is omitted when false (only emitted when true).
+      // Treat undefined as the absence of completion.
+      expect(parsed[0].isCompleted ?? false).toBe(false);
     });
 
     test('completionMessage extrait du résultat de attempt_completion', async () => {

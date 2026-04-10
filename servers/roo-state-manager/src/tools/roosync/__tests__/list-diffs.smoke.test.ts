@@ -18,18 +18,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { roosyncListDiffs } from '../list-diffs.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // Unmock modules that jest.setup.js mocks globally.
 // Smoke tests need real filesystem and real RooSyncService (not mocks).
 vi.unmock('fs');
 vi.unmock('fs/promises');
+vi.unmock('os');
 vi.unmock('../../../services/RooSyncService.js');
 vi.unmock('../../../services/ConfigService.js');
 
 describe('SMOKE: roosync_list_diffs', () => {
   // Use unique directory per test file to avoid ENOTEMPTY cleanup errors
-  const testSharedStatePath = path.join(process.cwd(), '.shared-state-test-listdiffs');
+  const testSharedStatePath = path.join(os.tmpdir(), '.shared-state-test-listdiffs');
   const testBaselinePath = path.join(testSharedStatePath, 'sync-config.ref.json');
   const testInventoriesPath = path.join(testSharedStatePath, 'inventories');
   let originalEnv: NodeJS.ProcessEnv;
@@ -243,7 +245,7 @@ describe('SMOKE: roosync_list_diffs', () => {
     expect(result1.totalDiffs).toBeGreaterThanOrEqual(0);
 
     // DEBUG: Write diffs to permanent file to see what's being detected
-    const debugPath = path.join(process.cwd(), 'outputs', 'debug-diffs.json');
+    const debugPath = path.join(os.tmpdir(), 'debug-diffs-listdiffs.json');
     fs.mkdirSync(path.dirname(debugPath), { recursive: true });
     fs.writeFileSync(debugPath, JSON.stringify({
       result1_diffs: result1.diffs,

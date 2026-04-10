@@ -113,4 +113,8 @@ export interface ViewConversationTreeArgs {
     smart_truncation_config?: Partial<SmartTruncationConfig>;
     /** Chemin optionnel pour sauvegarder l'arbre dans un fichier markdown */
     output_file?: string;
+    /** #1244 Couche 2.6 — Index 0-based du premier message a inclure (inclusif). Defaut: 0 (debut). */
+    messageStart?: number;
+    /** #1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). Defaut: jusqu'a la fin. */
+    messageEnd?: number;
 }

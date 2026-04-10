@@ -48,7 +48,8 @@ export interface GitHubMetrics {
  */
 async function ghGraphQL(query: string): Promise<any> {
   const { stdout } = await execAsync(`gh api graphql -f query="${query.replace(/"/g, '\\"')}"`, {
-    env: { ...process.env }
+    env: { ...process.env },
+    timeout: 60_000
   });
 
   // Nettoyer les sauts de ligne et espaces parasites dans le JSON
@@ -143,17 +144,20 @@ export async function getGitHubIssuesMetrics(): Promise<GitHubIssuesMetrics> {
   try {
     // Issues ouvertes
     const openResult = await execAsync('gh issue list --repo jsboige/roo-extensions --state open --json id --jq length', {
-      env: { ...process.env }
+      env: { ...process.env },
+      timeout: 60_000
     });
     const openCount = parseInt(openResult.stdout.trim()) || 0;
 
     // Issues fermées
     const closedResult = await execAsync('gh issue list --repo jsboige/roo-extensions --state closed --limit 1 --json id --jq length', {
-      env: { ...process.env }
+      env: { ...process.env },
+      timeout: 60_000
     });
     // gh ne retourne pas le total pour closed, on utilise search pour compter
     const searchResult = await execAsync('gh search issues --repo jsboige/roo-extensions --state closed --json number --jq length', {
-      env: { ...process.env }
+      env: { ...process.env },
+      timeout: 60_000
     });
     const closedCount = parseInt(searchResult.stdout.trim()) || 0;
 
@@ -164,7 +168,7 @@ export async function getGitHubIssuesMetrics(): Promise<GitHubIssuesMetrics> {
 
     const recentResult = await execAsync(
       `gh issue list --repo jsboige/roo-extensions --state all --search "updated:>=${recentDateStr}" --json id --jq length`,
-      { env: { ...process.env } }
+      { env: { ...process.env }, timeout: 60_000 }
     );
     const recentActivity = parseInt(recentResult.stdout.trim()) || 0;
 

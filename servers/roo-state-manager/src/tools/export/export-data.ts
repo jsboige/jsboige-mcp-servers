@@ -240,6 +240,36 @@ function validateRequiredParams(args: ExportDataArgs): void {
 }
 
 /**
+ * Validate filePath for security (path traversal, unsafe characters).
+ * Shared across JSON and CSV export handlers — XML uses XmlExporterService.validateFilePath.
+ */
+function validateExportFilePath(filePath: string): void {
+    const dangerousPatterns = [
+        /\.\./,          // Directory traversal
+        /^[\/\\]/,       // Absolute paths
+        /[<>:"|?*]/,     // Windows forbidden characters
+    ];
+
+    if (dangerousPatterns.some(pattern => pattern.test(filePath))) {
+        throw new StateManagerError(
+            `Unsafe file path: ${filePath}`,
+            'PATH_TRAVERSAL_DETECTED',
+            'ExportDataTool',
+            { filePath }
+        );
+    }
+
+    if (filePath.length > 260) {
+        throw new StateManagerError(
+            `File path too long (${filePath.length} chars, max 260)`,
+            'PATH_TOO_LONG',
+            'ExportDataTool',
+            { filePath, length: filePath.length }
+        );
+    }
+}
+
+/**
  * Handler pour export XML d'une tâche individuelle
  */
 async function handleTaskXml(
@@ -437,6 +467,8 @@ async function handleConversationJson(
     }
 
     if (filePath) {
+        validateExportFilePath(filePath);
+
         const dirPath = path.dirname(filePath);
         await fs.mkdir(dirPath, { recursive: true });
         await fs.writeFile(filePath, result.content, 'utf8');
@@ -500,6 +532,8 @@ async function handleConversationCsv(
     const csvLines = result.content.split('\n').length;
 
     if (filePath) {
+        validateExportFilePath(filePath);
+
         const dirPath = path.dirname(filePath);
         await fs.mkdir(dirPath, { recursive: true });
         await fs.writeFile(filePath, result.content, 'utf8');

@@ -18,6 +18,20 @@ interface BuildSkeletonCacheArgs {
     force_rebuild?: boolean;
     workspace_filter?: string;
     task_ids?: string[];  // Liste des IDs de tâches à construire spécifiquement
+    /**
+     * #1244 Couche 1.4 — Sources de squelettes a charger.
+     * Defaut: ['roo'] (backward compat). Valeurs possibles:
+     *  - 'roo'     : Storages Roo locaux (Tier 1, comportement historique)
+     *  - 'claude'  : Sessions Claude Code locales (Tier 2)
+     *  - 'archive' : Archives cross-machine GDrive (Tier 3, requiert ROOSYNC_SHARED_PATH)
+     */
+    sources?: Array<'roo' | 'claude' | 'archive'>;
+    /**
+     * #1244 Couche 1.4 — Si true, force l'enqueue Qdrant pour TOUS les squelettes
+     * (Tiers 1+2+3) meme s'ils etaient deja a jour. Si false/omis, suit le comportement
+     * historique (enqueue uniquement si state.isQdrantIndexingEnabled est actif).
+     */
+    reindex?: boolean;
 }
 
 /**
@@ -131,6 +145,16 @@ export const buildSkeletonCacheDefinition = {
                 type: 'array',
                 items: { type: 'string' },
                 description: 'Liste optionnelle d\'IDs de tâches spécifiques à construire. Si fourni, seules ces tâches seront traitées (ignore workspace_filter). Active les logs verbeux.'
+            },
+            sources: {
+                type: 'array',
+                items: { type: 'string', enum: ['roo', 'claude', 'archive'] },
+                description: '#1244 Couche 1.4 — Sources de squelettes a charger. Defaut: ["roo"]. "claude" inclut les sessions Claude Code locales (Tier 2). "archive" inclut les archives cross-machine GDrive (Tier 3, requiert ROOSYNC_SHARED_PATH).'
+            },
+            reindex: {
+                type: 'boolean',
+                description: '#1244 Couche 1.4 — Si true, force l\'enqueue Qdrant pour tous les squelettes construits/charges (tous tiers). Si false/omis, suit le comportement historique (enqueue uniquement si state.isQdrantIndexingEnabled est actif).',
+                default: false
             }
         },
         required: []
@@ -148,6 +172,24 @@ export async function handleBuildSkeletonCache(
 ): Promise<CallToolResult> {
         conversationCache.clear();
         const { force_rebuild = false, workspace_filter, task_ids } = args;
+        // #1244 Couche 1.4 — Sources multi-tier (defaut: roo seul, backward compat)
+        const sources: Array<'roo' | 'claude' | 'archive'> = (args.sources && args.sources.length > 0)
+            ? args.sources
+            : ['roo'];
+        const reindex = args.reindex === true;
+        // Helper d'enqueue Qdrant — honore reindex meme si Qdrant indexing n'est pas force globalement
+        const enqueueForReindex = (taskId: string) => {
+            if (state && (state.isQdrantIndexingEnabled || reindex)) {
+                state.qdrantIndexQueue.add(taskId);
+            }
+        };
+        // #1244 Couche 1.4 — Compteurs par tier
+        let tier2Loaded = 0;
+        let tier2Skipped = 0;
+        let tier2Errors = 0;
+        let tier3Loaded = 0;
+        let tier3Skipped = 0;
+        let tier3Errors = 0;
 
         // 🚀 PROTECTION TIMEOUT ÉTENDU : 5 minutes pour permettre rebuilds complets
         const GLOBAL_TIMEOUT_MS = 300000; // 300s = 5 minutes (ancien: 50s)
@@ -174,8 +216,11 @@ export async function handleBuildSkeletonCache(
             originalConsoleLog(...args);
         };
 
-        const locations = await RooStorageDetector.detectStorageLocations(); // This returns base storage paths
-        if (locations.length === 0) {
+        const locations = sources.includes('roo')
+            ? await RooStorageDetector.detectStorageLocations()
+            : [];
+        // #1244 Couche 1.4 — Ne plus echouer si aucun storage Roo: les Tier 2/3 peuvent suffire
+        if (locations.length === 0 && sources.includes('roo') && !sources.includes('claude') && !sources.includes('archive')) {
             console.log = originalConsoleLog; // Restaurer
             return { content: [{ type: 'text', text: 'Storage not found. Cache not built.' }] };
         }
@@ -321,11 +366,8 @@ export async function handleBuildSkeletonCache(
                                         if (skeleton && skeleton.taskId) {
                                             conversationCache.set(skeleton.taskId, skeleton);
 
-                                            // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible
-                                            if (state && state.isQdrantIndexingEnabled) {
-                                                state.qdrantIndexQueue.add(skeleton.taskId);
-                                                // console.log(`[INDEX-QUEUE] Added ${skeleton.taskId} to Qdrant indexing queue (from cache)`);
-                                            }
+                                            // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible OU si reindex force (#1244 Couche 1.4)
+                                            enqueueForReindex(skeleton.taskId);
 
                                             // 🚀 PHASE 1: Alimenter l'index avec les préfixes de ce squelette existant
                                             if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
@@ -359,11 +401,8 @@ export async function handleBuildSkeletonCache(
                                     // BUG FIX: Utiliser skeleton.taskId et non conversationId
                                     conversationCache.set(skeleton.taskId, skeleton);
 
-                                    // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible
-                                    if (state && state.isQdrantIndexingEnabled) {
-                                        state.qdrantIndexQueue.add(skeleton.taskId);
-                                        // console.log(`[INDEX-QUEUE] Added ${skeleton.taskId} to Qdrant indexing queue`);
-                                    }
+                                    // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible OU si reindex force (#1244 Couche 1.4)
+                                    enqueueForReindex(skeleton.taskId);
 
                                     // 🚀 PHASE 1: Collecter les préfixes pour l'index RadixTree
                                     if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
@@ -417,6 +456,92 @@ export async function handleBuildSkeletonCache(
                         skeletonsSkipped++;
                     }
                 }
+            }
+        }
+
+        // ============================================================
+        // #1244 Couche 1.4 — PHASE 1.5: Tier 2 (Claude Code local sessions)
+        // ============================================================
+        if (sources.includes('claude') && (!task_ids || task_ids.length === 0)) {
+            console.log(`🔄 [TIER2] Loading Claude Code sessions (#1244 Couche 1.4)...`);
+            try {
+                const { ClaudeStorageDetector } = await import('../../utils/claude-storage-detector.js');
+                const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
+                console.log(`[TIER2] Found ${claudeLocations.length} Claude project locations`);
+
+                for (const location of claudeLocations) {
+                    if (checkGlobalTimeout()) break;
+                    try {
+                        const taskId = `claude-${path.basename(location.projectPath)}`;
+
+                        // Tier 1 (Roo local) a la priorite — ne pas ecraser
+                        if (conversationCache.has(taskId)) {
+                            tier2Skipped++;
+                            continue;
+                        }
+
+                        const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                            taskId, location.projectPath
+                        );
+                        if (skeleton && (skeleton.sequence ?? []).length > 0) {
+                            if (!skeleton.metadata) skeleton.metadata = {} as any;
+                            (skeleton.metadata as any).source = 'claude-code';
+                            (skeleton.metadata as any).dataSource = 'claude';
+                            conversationCache.set(taskId, skeleton);
+                            enqueueForReindex(taskId);
+                            tier2Loaded++;
+                        }
+                    } catch (claudeErr) {
+                        tier2Errors++;
+                        console.warn(`[TIER2] Failed Claude location ${location.projectPath}:`, claudeErr);
+                    }
+                }
+                console.log(`[TIER2] ✅ ${tier2Loaded} Claude sessions loaded, ${tier2Skipped} collisions skipped, ${tier2Errors} errors`);
+            } catch (tier2GlobalErr) {
+                console.warn('[TIER2] Non-blocking failure:', tier2GlobalErr);
+            }
+        }
+
+        // ============================================================
+        // #1244 Couche 1.4 — PHASE 1.6: Tier 3 (Archives cross-machine GDrive)
+        // ============================================================
+        if (sources.includes('archive') && (!task_ids || task_ids.length === 0)) {
+            console.log(`🔄 [TIER3] Loading cross-machine archives from GDrive (#1244 Couche 1.4)...`);
+            try {
+                const { TaskArchiver } = await import('../../services/task-archiver/index.js');
+                const { archiveToSkeleton } = await import('../../services/archive-skeleton-builder.js');
+
+                const archivedTaskIds = await TaskArchiver.listArchivedTasks();
+                console.log(`[TIER3] Found ${archivedTaskIds.length} archived tasks`);
+
+                for (const archivedId of archivedTaskIds) {
+                    if (checkGlobalTimeout()) break;
+                    // Tiers chauds (Roo local + Claude local) ont la priorite
+                    if (conversationCache.has(archivedId)) {
+                        tier3Skipped++;
+                        continue;
+                    }
+                    try {
+                        const archive = await TaskArchiver.readArchivedTask(archivedId);
+                        if (!archive) {
+                            tier3Errors++;
+                            continue;
+                        }
+                        const skeleton = archiveToSkeleton(archive);
+                        conversationCache.set(skeleton.taskId, skeleton);
+                        enqueueForReindex(skeleton.taskId);
+                        tier3Loaded++;
+                    } catch (archiveErr) {
+                        tier3Errors++;
+                        console.warn(`[TIER3] Failed archive read ${archivedId}:`, archiveErr);
+                    }
+                }
+                console.log(
+                    `[TIER3] ✅ ${tier3Loaded} archives loaded, ` +
+                    `${tier3Skipped} collisions skipped, ${tier3Errors} errors`
+                );
+            } catch (tier3GlobalErr) {
+                console.warn('[TIER3] Non-blocking failure (likely missing ROOSYNC_SHARED_PATH):', tier3GlobalErr);
             }
         }
 
@@ -797,7 +922,18 @@ export async function handleBuildSkeletonCache(
         console.log = originalConsoleLog;
 
         // 🔍 Inclure les logs de debug dans la réponse
+        // Format historique conserve pour backward compat des tests + assertions externes
         let response = `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${conversationCache.size}, Hierarchy relations found: ${hierarchyRelationsFound}`;
+        // #1244 Couche 1.4 — Per-tier stats appendues (n'apparaissent que si Tier 2 ou Tier 3 actif)
+        if (sources.includes('claude') || sources.includes('archive')) {
+            const tier2Label = sources.includes('claude')
+                ? `Tier2(claude): loaded=${tier2Loaded} skipped=${tier2Skipped} errors=${tier2Errors}`
+                : 'Tier2(claude): disabled';
+            const tier3Label = sources.includes('archive')
+                ? `Tier3(archive): loaded=${tier3Loaded} skipped=${tier3Skipped} errors=${tier3Errors}`
+                : 'Tier3(archive): disabled';
+            response += ` | sources=${sources.join('+')} reindex=${reindex} | ${tier2Label} | ${tier3Label}`;
+        }
 
         if (debugLogs.length > 0) {
             response += `\n\n🔍 DEBUG LOGS (${debugLogs.length} entries):\n${debugLogs.join('\n')}`;

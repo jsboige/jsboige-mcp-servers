@@ -6,6 +6,7 @@
 
   "models": [
     {
+      "_comment": "=== z.ai cloud models (high quality, no local GPU needed) ===",
       "id": "glm-5.1",
       "enabled": true,
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -13,7 +14,20 @@
       "api_key": "YOUR_ZAI_API_KEY_HERE",
       "model_id": "glm-5.1",
       "vision": false,
+      "thinking": true,
       "description": "GLM-5.1 reasoning via z.ai cloud (200K context, 45.3/113 coding, +28% vs GLM-5)",
+      "context_window": 200000
+    },
+    {
+      "id": "glm-5",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5",
+      "vision": false,
+      "thinking": true,
+      "description": "GLM-5 reasoning via z.ai cloud (200K context, strong coding and analysis)",
       "context_window": 200000
     },
     {
@@ -24,17 +38,33 @@
       "api_key": "YOUR_ZAI_API_KEY_HERE",
       "model_id": "glm-4.6v",
       "vision": true,
+      "thinking": false,
       "description": "GLM-4.6V vision via z.ai cloud (128K context)",
       "context_window": 128000
     },
     {
+      "id": "glm-4.7-flash",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-4.7-flash",
+      "vision": false,
+      "thinking": false,
+      "description": "GLM-4.7-Flash via z.ai cloud — fast responses, no thinking overhead",
+      "context_window": 131072
+    },
+
+    {
+      "_comment": "=== vLLM local models (direct endpoint, fastest inference) ===",
       "id": "omnicoder-9b",
       "enabled": false,
       "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MINI_API_KEY_HERE",
       "model_id": "omnicoder-9b",
       "vision": true,
-      "description": "OmniCoder-9B — 96-107 tok/s, 131K ctx, thinking+vision, OCR 97.5%, MME 1258.5, tool call 1.09s. Replaces ZwZ-8B on GPU 2 (port 5001). qwen3_coder parser.",
+      "thinking": true,
+      "description": "OmniCoder-9B — 96-107 tok/s, 131K ctx, thinking+vision, OCR 97.5%, MME 1258.5, tool call 1.09s. GPU 2 (port 5001). qwen3_coder parser.",
       "context_window": 131072
     },
     {
@@ -44,29 +74,67 @@
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
       "model_id": "qwen3.5-35b-a3b",
       "vision": true,
-      "description": "Qwen3.5 35B MoE AWQ — 86 tok/s, 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. Primary model (GPU 0+1)",
+      "thinking": true,
+      "description": "Qwen3.5 35B MoE AWQ — 86 tok/s, 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. GPU 0+1",
       "context_window": 262144
     },
+
     {
-      "id": "glm-4.7-flash-fast",
+      "_comment": "=== OWUI proxied models (vLLM downstream through Open WebUI) ===",
+      "id": "owui-glm-4.7-flash-fast",
       "enabled": false,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "Local.glm-4.7-flash-fast",
       "vision": false,
-      "description": "GLM-4.7-Flash AWQ via OWUI (no thinking). NOTE: vLLM backend now serves Qwen3.5, OWUI model may need reconfiguration",
+      "thinking": false,
+      "description": "GLM-4.7-Flash AWQ via OWUI (no thinking). Fast local responses through OWUI proxy",
       "context_window": 131072
+    },
+    {
+      "id": "owui-glm-4.7-flash-thinking",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "Local.glm-4.7-flash",
+      "vision": false,
+      "thinking": true,
+      "description": "GLM-4.7-Flash AWQ via OWUI (with thinking mode). Reasoning-capable local model through OWUI proxy",
+      "context_window": 131072
+    },
+    {
+      "id": "owui-omnicoder-9b",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "Local.omnicoder-9b",
+      "vision": true,
+      "thinking": true,
+      "description": "OmniCoder-9B via OWUI proxy — vision+thinking, tool calling through OWUI",
+      "context_window": 131072
+    },
+    {
+      "id": "owui-qwen3.5-35b",
+      "enabled": false,
+      "base_url": "https://open-webui.myia.io/openai",
+      "api_key": "YOUR_OWUI_API_KEY_HERE",
+      "model_id": "Local.qwen3.5-35b-a3b",
+      "vision": true,
+      "thinking": true,
+      "description": "Qwen3.5 35B MoE via OWUI proxy — vision+thinking, highest quality local model",
+      "context_window": 262144
     },
 
     {
-      "_comment": "=== Open WebUI custom models (Direction 2: sk-agent consumes OWUI) ===",
+      "_comment": "=== OWUI custom models (Direction 2: enriched system prompts) ===",
       "id": "owui-expert-analyste",
       "enabled": false,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "expert-analyste",
       "vision": false,
-      "description": "OWUI Expert Analyste — structured French analyst with decomposition methodology (requires OWUI API key)",
+      "thinking": false,
+      "description": "OWUI Expert Analyste — structured French analyst with decomposition methodology",
       "context_window": 131072
     },
     {
@@ -76,7 +144,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "redacteur-technique",
       "vision": false,
-      "description": "OWUI Rédacteur Technique — technical documentation writer (requires OWUI API key)",
+      "thinking": false,
+      "description": "OWUI Rédacteur Technique — technical documentation writer",
       "context_window": 131072
     },
     {
@@ -86,7 +155,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "vision-expert",
       "vision": true,
-      "description": "OWUI Expert Vision — image and document analysis specialist (requires OWUI API key)",
+      "thinking": false,
+      "description": "OWUI Expert Vision — image and document analysis specialist",
       "context_window": 131072
     }
   ],
@@ -189,9 +259,60 @@
     },
     {
       "id": "fast",
-      "description": "Quick local responses (~1-5s), no tools, no thinking",
-      "model": "glm-4.7-flash-fast",
+      "description": "Quick cloud responses via z.ai GLM-4.7-Flash. No tools, no thinking, fastest cloud option",
+      "model": "glm-4.7-flash",
       "system_prompt": "Respond concisely and accurately. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "fast-local",
+      "description": "Quick local responses via OWUI (~1-5s), no tools, no thinking. Requires OWUI proxy",
+      "model": "owui-glm-4.7-flash-fast",
+      "system_prompt": "You are a fast local assistant via OWUI proxy. Respond concisely and accurately without thinking mode. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "fast-local-thinking",
+      "description": "Local responses with thinking mode via OWUI GLM-4.7-Flash. Better reasoning, slightly slower",
+      "model": "owui-glm-4.7-flash-thinking",
+      "system_prompt": "You are a local assistant with thinking mode via OWUI proxy. Think step by step before responding, showing your reasoning. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "analyst-glm5",
+      "description": "General analyst using GLM-5 (z.ai cloud, 200K ctx, thinking mode). Alternative to analyst (GLM-5.1)",
+      "model": "glm-5",
+      "system_prompt": "You are a helpful analyst powered by GLM-5 with web search and memory capabilities. Leverage your reasoning strengths for complex analysis. Always respond in the same language as the user.",
+      "mcps": ["searxng", "playwright"],
+      "memory": {
+        "enabled": true,
+        "collection": "analyst-glm5-memory"
+      }
+    },
+    {
+      "id": "coder-local",
+      "description": "Local coding via OWUI OmniCoder-9B proxy — vision+thinking+tool calling through OWUI",
+      "model": "owui-omnicoder-9b",
+      "system_prompt": "You are a local coding assistant via OWUI proxy with vision and thinking capabilities. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Leverage your vision capability for UI/code screenshot analysis. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "vision-local-owui",
+      "description": "Local vision via OWUI Qwen3.5 35B proxy — highest quality local vision+thinking model",
+      "model": "owui-qwen3.5-35b",
+      "system_prompt": "You are a vision analysis assistant with advanced reasoning capabilities. Analyze images carefully, describe what you see, and provide detailed insights. Be concise but thorough.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "qwen-local",
+      "description": "Direct vLLM access to Qwen3.5 35B MoE — 86 tok/s, 262K ctx, vision+thinking. Best local quality, no OWUI overhead",
+      "model": "qwen3.5-35b-a3b",
+      "system_prompt": "You are a helpful assistant with advanced reasoning capabilities. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
     },
@@ -300,7 +421,7 @@
       "id": "owui-analyst",
       "description": "Expert analyst via OWUI (enriched system prompt, structured French output)",
       "model": "owui-expert-analyste",
-      "system_prompt": "",
+      "system_prompt": "[OWUI enriched model: expert-analyste] Delegate to the OWUI custom model's built-in methodology for structured French analysis.",
       "mcps": ["searxng"],
       "memory": {
         "enabled": true,
@@ -311,7 +432,7 @@
       "id": "owui-writer",
       "description": "Technical documentation writer via OWUI (enriched system prompt)",
       "model": "owui-redacteur-technique",
-      "system_prompt": "",
+      "system_prompt": "[OWUI enriched model: redacteur-technique] Delegate to the OWUI custom model's built-in methodology for technical documentation writing.",
       "mcps": [],
       "memory": { "enabled": false }
     },
@@ -319,7 +440,7 @@
       "id": "owui-vision",
       "description": "Vision analysis expert via OWUI (enriched system prompt)",
       "model": "owui-vision-expert",
-      "system_prompt": "",
+      "system_prompt": "[OWUI enriched model: vision-expert] Delegate to the OWUI custom model's built-in methodology for expert image and document analysis.",
       "mcps": [],
       "memory": { "enabled": false }
     }

@@ -5,7 +5,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { exec } from 'child_process';
+import { exec } from 'child_process'; // kept for potential future use
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from './roo-storage-detector.js';
@@ -39,9 +39,68 @@ export function getSharedStatePath(): string {
 export function truncateResult(result: CallToolResult): CallToolResult {
     for (const item of result.content) {
         if (item.type === 'text' && item.text.length > OUTPUT_CONFIG.MAX_OUTPUT_LENGTH) {
-            item.text = item.text.substring(0, OUTPUT_CONFIG.MAX_OUTPUT_LENGTH) + 
+            item.text = item.text.substring(0, OUTPUT_CONFIG.MAX_OUTPUT_LENGTH) +
                 `\n\n[...]\n\n--- OUTPUT TRUNCATED AT ${OUTPUT_CONFIG.MAX_OUTPUT_LENGTH} CHARACTERS ---`;
         }
+    }
+    return result;
+}
+
+/**
+ * Format a millisecond duration as a compact human-readable string.
+ *  - <1000 ms : "142ms"
+ *  - <60 s    : "2.4s"
+ *  - <60 m    : "1m23s"
+ *  - else     : "1h05m"
+ */
+export function formatDurationMs(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+    const totalSec = Math.floor(ms / 1000);
+    if (totalSec < 3600) {
+        const m = Math.floor(totalSec / 60);
+        const s = totalSec % 60;
+        return `${m}m${s.toString().padStart(2, '0')}s`;
+    }
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    return `${h}h${m.toString().padStart(2, '0')}m`;
+}
+
+/**
+ * Inject execution duration into a tool result so callers can see how long
+ * each MCP tool took. Sets `result._meta.durationMs` (MCP spec field) AND
+ * appends a compact footer line to the first text content for human visibility.
+ *
+ * Footer format: `\n\n[⏱ <toolName> 142ms]`
+ *
+ * Safe by design:
+ *  - Footer is appended (never inserted), so JSON-text consumers that read
+ *    `content[0].text` will get the footer at the end. Existing convention
+ *    (cf. truncateResult) already appends non-JSON markers.
+ *  - When the result has no text content, only `_meta.durationMs` is set.
+ *  - errors during injection are swallowed — the original result is returned.
+ */
+export function injectDuration(
+    result: CallToolResult,
+    durationMs: number,
+    toolName?: string
+): CallToolResult {
+    try {
+        // Always set MCP spec _meta field
+        const meta = (result as any)._meta || {};
+        meta.durationMs = durationMs;
+        meta.toolName = toolName;
+        (result as any)._meta = meta;
+
+        // Append a compact footer to the first text item for visibility
+        const first = result.content && result.content[0];
+        if (first && first.type === 'text' && typeof first.text === 'string') {
+            const label = toolName ? `${toolName} ` : '';
+            first.text = `${first.text}\n\n[⏱ ${label}${formatDurationMs(durationMs)}]`;
+        }
+    } catch {
+        // Never fail tool calls because of instrumentation
     }
     return result;
 }

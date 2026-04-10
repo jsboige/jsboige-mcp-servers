@@ -11,10 +11,51 @@ import { TaskTruncationPlan, ElementTruncationPlan } from './types.js';
  */
 export class ContentTruncator {
     /**
+     * #1244 Couche 2.5 — Hard cap final pour garantir une borne stricte sur la sortie.
+     *
+     * Tronque le milieu d'une chaine de caracteres tout en preservant le debut
+     * (header / metadata) et la fin (resume / dernier message). Ce filet de
+     * securite est invoque en sortie de chaque handler view/list/summarize quand
+     * le moteur principal de troncature n'a pas suffi a respecter `max_output_length`.
+     *
+     * Caracteristiques :
+     *  - Operation char-level (pas line-level), donc applicable a n'importe quelle
+     *    sortie textuelle deja formattee.
+     *  - Reserve `headerKeepChars` au debut (par defaut 2000) pour conserver
+     *    metadata, titre, breakdown, etc.
+     *  - Le reste du budget va a la fin pour preserver le dernier contexte utile.
+     *  - Insere un marqueur lisible `[... N chars tronques par hard cap ...]`.
+     *  - No-op si `content.length <= maxChars`.
+     */
+    static hardCapString(
+        content: string,
+        maxChars: number,
+        options: { headerKeepChars?: number } = {}
+    ): string {
+        if (content.length <= maxChars) return content;
+
+        const headerKeepChars = Math.max(0, options.headerKeepChars ?? 2000);
+        const marker = `\n\n[... TRUNCATED chars by hard cap ...]\n\n`;
+
+        // Si headerKeepChars + marker depasse deja maxChars, fallback sur une simple coupe en fin
+        if (headerKeepChars + marker.length >= maxChars) {
+            const safeSize = Math.max(0, maxChars - marker.length);
+            return content.substring(0, safeSize) + marker;
+        }
+
+        const tailBudget = maxChars - headerKeepChars - marker.length;
+        const head = content.substring(0, headerKeepChars);
+        const tail = content.substring(content.length - tailBudget);
+        const removed = content.length - headerKeepChars - tailBudget;
+
+        return `${head}${marker.replace('TRUNCATED chars', `${removed} chars`)}${tail}`;
+    }
+
+    /**
      * Applique les plans de troncature aux tâches
      */
     static applyTruncationPlans(
-        tasks: ConversationSkeleton[], 
+        tasks: ConversationSkeleton[],
         taskPlans: TaskTruncationPlan[]
     ): ConversationSkeleton[] {
         const planMap = new Map(taskPlans.map(plan => [plan.taskId, plan]));

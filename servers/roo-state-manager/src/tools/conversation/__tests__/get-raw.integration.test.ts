@@ -26,12 +26,15 @@ describe('get_raw_conversation (integration)', () => {
   // ============================================================
 
   describe('error handling', () => {
+    // Valid UUID that does not exist — tests the "not found" path
+    const NONEXISTENT_UUID = '00000000-0000-4000-a000-000000000000';
+
     test('should handle non-existent task gracefully', async () => {
       const { getRawConversationTool } = await import('../get-raw.tool.js');
 
       // L'outil doit lancer une erreur quand la tâche n'existe pas
       await expect(getRawConversationTool.handler({
-        taskId: 'non-existent-task-id-12345'
+        taskId: NONEXISTENT_UUID
       })).rejects.toThrow();
     });
 
@@ -47,14 +50,14 @@ describe('get_raw_conversation (integration)', () => {
 
       try {
         await getRawConversationTool.handler({
-          taskId: 'this-task-definitely-does-not-exist-999'
+          taskId: NONEXISTENT_UUID
         });
         expect(true).toBe(false); // Should not reach here
       } catch (error) {
         expect(error).toBeDefined();
         const errorMessage = (error as Error).message;
         expect(errorMessage).toContain('not found');
-        expect(errorMessage).toContain('this-task-definitely-does-not-exist-999');
+        expect(errorMessage).toContain(NONEXISTENT_UUID);
       }
     });
   });

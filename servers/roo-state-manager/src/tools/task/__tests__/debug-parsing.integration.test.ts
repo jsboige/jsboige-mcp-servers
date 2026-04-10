@@ -26,10 +26,12 @@ describe('debug_task_parsing (integration)', () => {
   // ============================================================
 
   describe('error handling', () => {
+    const NONEXISTENT_UUID = '00000000-0000-4000-a000-000000000000';
+
     test('should handle non-existent task gracefully', async () => {
       const { handleDebugTaskParsing } = await import('../debug-parsing.tool.js');
       const result = await handleDebugTaskParsing({
-        task_id: 'this-task-definitely-does-not-exist-999'
+        task_id: NONEXISTENT_UUID
       });
 
       // L'outil doit retourner une structure valide même en erreur
@@ -59,10 +61,12 @@ describe('debug_task_parsing (integration)', () => {
   // ============================================================
 
   describe('response format', () => {
+    const NONEXISTENT_UUID = '00000000-0000-4000-a000-000000000000';
+
     test('should return valid text response for any input', async () => {
       const { handleDebugTaskParsing } = await import('../debug-parsing.tool.js');
       const result = await handleDebugTaskParsing({
-        task_id: 'test-task-id'
+        task_id: NONEXISTENT_UUID
       });
 
       const text = result.content[0].text;
@@ -81,7 +85,7 @@ describe('debug_task_parsing (integration)', () => {
     test('should include diagnostic information', async () => {
       const { handleDebugTaskParsing } = await import('../debug-parsing.tool.js');
       const result = await handleDebugTaskParsing({
-        task_id: 'test-task-id'
+        task_id: NONEXISTENT_UUID
       });
 
       const text = result.content[0].text;

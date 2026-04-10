@@ -113,6 +113,7 @@ export async function roosyncRefreshDashboard(args: RefreshDashboardArgs): Promi
     const { stdout, stderr } = await execAsync(command, {
       cwd: repoRoot,
       encoding: 'utf8',
+      timeout: 60_000,
       env: { ...process.env, ROOSYNC_SHARED_PATH: sharedPath }
     });
 

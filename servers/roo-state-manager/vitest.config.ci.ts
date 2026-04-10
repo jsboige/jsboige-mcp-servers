@@ -59,7 +59,10 @@ export default mergeConfig(baseConfig, defineConfig({
       'tests/unit/services/RooSyncService.test.ts',
       'tests/unit/services/task-indexer-vector-validation.test.ts',
       'tests/unit/services/task-indexer.test.ts',
-      'tests/unit/tools/view-conversation-tree.test.ts',
+      // #1244 Couche 2.5/2.6/2.7 — Re-enabled in CI after repair: legacy test was
+      // fixed to accommodate the new hard-cap and smart_truncation default, and the
+      // file now contains regression guards for the pipeline repair (#1244).
+      // 'tests/unit/tools/view-conversation-tree.test.ts',
 
       // ===== CI-excluded: POWERSHELL (requires Windows PowerShell) =====
       'src/services/__tests__/PowerShellExecutor.test.ts',

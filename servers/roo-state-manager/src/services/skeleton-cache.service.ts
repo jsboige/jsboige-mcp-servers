@@ -1,6 +1,20 @@
 /**
  * Service de gestion centralisée du cache de squelettes de conversations
  * Permet un accès global au cache pour les outils externalisés
+ *
+ * Issue #1244 - Couche 1.1: Multi-tier cache
+ *  Tier 1 (Roo local)        — toujours actif (existant)
+ *  Tier 2 (Claude local)     — opt-in via configure({ enableClaudeTier: true })
+ *  Tier 3 (Archives GDrive)  — opt-in via configure({ enableArchiveTier: true })
+ *
+ * L'opt-in est volontaire pour deux raisons:
+ *  1. Eviter de polluer les tests existants qui ne mockent que `RooStorageDetector` + `fs`.
+ *     `ClaudeStorageDetector` utilise `fs/promises` (non mocké), `TaskArchiver` necessite
+ *     `ROOSYNC_SHARED_PATH` set. Sans opt-in, les tests existants resteraient verts.
+ *  2. Permettre au code de production (index.ts startup) d'activer explicitement les tiers
+ *     selon la disponibilite des dependances (ex: archives uniquement si GDrive monte).
+ *
+ * Priorite de merge en cas de collision de taskId: local (Tier 1/2) > archive (Tier 3).
  */
 
 import { ConversationSkeleton } from '../types/conversation.js';
@@ -11,16 +25,42 @@ import { promises as fs } from 'fs';
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
 /**
+ * Configuration optionnelle pour activer les tiers cache supplementaires.
+ * Defaut: tous desactives (Tier 1 Roo local uniquement, comportement historique).
+ */
+export interface SkeletonCacheServiceConfig {
+    /** Activer le chargement des sessions Claude Code locales (~/.claude/projects/) */
+    enableClaudeTier?: boolean;
+    /** Activer le chargement des archives cross-machine depuis GDrive (.shared-state/task-archive/) */
+    enableArchiveTier?: boolean;
+}
+
+/**
  * Service singleton pour gérer le cache des squelettes de conversations
  */
 export class SkeletonCacheService {
     private static instance: SkeletonCacheService | null = null;
+    private static config: SkeletonCacheServiceConfig = {};
     private cache: Map<string, ConversationSkeleton> = new Map();
     private lastRefreshTime: number = 0;
     private readonly CACHE_VALIDITY_MS = 30 * 60 * 1000; // 30 minutes (was 5min, increased for stability)
 
     private constructor() {
         // Constructor privé pour pattern singleton
+    }
+
+    /**
+     * Configurer les tiers cache optionnels (Claude local, archives GDrive).
+     *
+     * A appeler depuis index.ts au demarrage du serveur, AVANT toute utilisation
+     * du cache. Sans appel, seul le Tier 1 (Roo local) est actif - comportement
+     * historique preserve pour la backward compatibility.
+     *
+     * Idempotent: les appels successifs fusionnent les flags (les anciens flags
+     * sont preserves sauf s'ils sont explicitement override).
+     */
+    public static configure(config: SkeletonCacheServiceConfig): void {
+        SkeletonCacheService.config = { ...SkeletonCacheService.config, ...config };
     }
 
     /**
@@ -191,7 +231,11 @@ export class SkeletonCacheService {
                 for (const file of jsonFiles) {
                     try {
                         const filePath = path.join(skeletonDir, file);
-                        const content = await fs.readFile(filePath, 'utf-8');
+                        let content = await fs.readFile(filePath, 'utf-8');
+                        // FIX #1123: Strip UTF-8 BOM if present (Windows editors can add it)
+                        if (content.charCodeAt(0) === 0xFEFF) {
+                            content = content.slice(1);
+                        }
                         const skeleton: ConversationSkeleton = JSON.parse(content);
 
                         if (skeleton.taskId) {
@@ -210,6 +254,17 @@ export class SkeletonCacheService {
 
             // FIX #623: Build missing skeletons for conversations that don't have one yet
             await this.buildMissingSkeletons(tasksDir, skeletonDir);
+
+            // #1244 Couche 1.1 — Tiers optionnels (opt-in via configure())
+            // L'opt-in evite de polluer les tests existants qui ne mockent que Tier 1.
+            // En production, index.ts active explicitement les tiers selon la dispo
+            // des dependances (ROOSYNC_SHARED_PATH pour archives, etc).
+            if (SkeletonCacheService.config.enableClaudeTier) {
+                await this.loadClaudeSessionsFromDisk();
+            }
+            if (SkeletonCacheService.config.enableArchiveTier) {
+                await this.loadArchivedSkeletonsFromGDrive();
+            }
         } catch (error) {
             console.error('[SkeletonCacheService] Erreur lors du chargement des skeletons:', error);
         }
@@ -297,9 +352,124 @@ export class SkeletonCacheService {
     }
 
     /**
+     * #1244 Couche 1.1 — Tier 2: Charger les sessions Claude Code locales.
+     *
+     * Lit `~/.claude/projects/<project>/` via `ClaudeStorageDetector`, construit
+     * un squelette par projet (un seul taskId `claude-<basename(projectPath)>`),
+     * et l'insere dans le cache. Les collisions de taskId sont resolues en
+     * faveur du cache existant (Tier 1 a deja la priorite — local Roo > local Claude).
+     *
+     * Pattern de reference: `background-services.ts:loadClaudeCodeSessions()`.
+     * Marque chaque squelette avec `metadata.source = 'claude-code'` et
+     * `metadata.dataSource = 'claude'` pour permettre le filtrage downstream.
+     *
+     * No-op silencieux si le detecteur Claude echoue (non-bloquant).
+     */
+    private async loadClaudeSessionsFromDisk(): Promise<void> {
+        try {
+            const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
+            const locations = await ClaudeStorageDetector.detectStorageLocations();
+
+            if (locations.length === 0) {
+                console.log('[SkeletonCacheService] Tier 2 (Claude): aucun repertoire de projets trouve');
+                return;
+            }
+
+            let loaded = 0;
+            for (const location of locations) {
+                try {
+                    const taskId = `claude-${path.basename(location.projectPath)}`;
+
+                    // Tier 1 (Roo local) a la priorite — ne pas ecraser
+                    if (this.cache.has(taskId)) continue;
+
+                    const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                        taskId, location.projectPath
+                    );
+                    if (skeleton && (skeleton.sequence ?? []).length > 0) {
+                        if (!skeleton.metadata) skeleton.metadata = {} as any;
+                        skeleton.metadata.source = 'claude-code';
+                        skeleton.metadata.dataSource = 'claude';
+                        this.cache.set(taskId, skeleton);
+                        loaded++;
+                    }
+                } catch (error) {
+                    console.warn(`[SkeletonCacheService] Tier 2 (Claude): echec ${location.projectPath}:`, error);
+                }
+            }
+
+            console.log(`[SkeletonCacheService] Tier 2 (Claude): ${loaded} sessions chargees depuis ${locations.length} projets`);
+        } catch (error) {
+            console.warn('[SkeletonCacheService] Tier 2 (Claude): chargement non-bloquant a echoue:', error);
+        }
+    }
+
+    /**
+     * #1244 Couche 1.1 — Tier 3: Charger les archives cross-machine depuis GDrive.
+     *
+     * Lit `.shared-state/task-archive/<machineId>/<taskId>.json.gz` via
+     * `TaskArchiver`, convertit chaque archive en `ConversationSkeleton` via
+     * `archiveToSkeleton()`, et merge dans le cache. Les collisions sont
+     * resolues en faveur des tiers chauds (local Roo/Claude > archive remote).
+     *
+     * Necessite `ROOSYNC_SHARED_PATH` (sinon `getSharedStatePath()` throw —
+     * capture par le try/catch global, no-op silencieux).
+     *
+     * **Attention scale:** Peut charger des milliers d'archives. Activable
+     * uniquement en production via `configure({ enableArchiveTier: true })`.
+     */
+    private async loadArchivedSkeletonsFromGDrive(): Promise<void> {
+        try {
+            const { TaskArchiver } = await import('./task-archiver/index.js');
+            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
+
+            const taskIds = await TaskArchiver.listArchivedTasks();
+
+            if (taskIds.length === 0) {
+                console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive trouvee');
+                return;
+            }
+
+            let loaded = 0;
+            let skippedCollision = 0;
+            let failed = 0;
+
+            for (const taskId of taskIds) {
+                // Tiers chauds (Roo local + Claude local) ont la priorite
+                if (this.cache.has(taskId)) {
+                    skippedCollision++;
+                    continue;
+                }
+
+                try {
+                    const archive = await TaskArchiver.readArchivedTask(taskId);
+                    if (!archive) {
+                        failed++;
+                        continue;
+                    }
+                    const skeleton = archiveToSkeleton(archive);
+                    this.cache.set(skeleton.taskId, skeleton);
+                    loaded++;
+                } catch (error) {
+                    failed++;
+                    console.warn(`[SkeletonCacheService] Tier 3 (archives): echec lecture ${taskId}:`, error);
+                }
+            }
+
+            console.log(
+                `[SkeletonCacheService] Tier 3 (archives): ${loaded} chargees, ` +
+                `${skippedCollision} collisions ignorees (local prioritaire), ${failed} echecs sur ${taskIds.length} total`
+            );
+        } catch (error) {
+            console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
+        }
+    }
+
+    /**
      * Réinitialiser le service (pour tests)
      */
     public static reset(): void {
         SkeletonCacheService.instance = null;
+        SkeletonCacheService.config = {};
     }
 }

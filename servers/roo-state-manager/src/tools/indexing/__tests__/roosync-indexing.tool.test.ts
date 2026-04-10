@@ -190,7 +190,28 @@ describe('roosyncIndexingTool', () => {
 			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
 		);
 
-		expect(mockDiagnoseHandler).toHaveBeenCalledWith(cache);
+		expect(mockDiagnoseHandler).toHaveBeenCalledWith(cache, {
+			deep: undefined,
+			sample_size: undefined,
+			top_n_workspaces: undefined,
+		});
+		expect(result).toBe(expected);
+	});
+
+	test('diagnose action with deep=true forwards options to handleDiagnoseSemanticIndex', async () => {
+		const expected = { content: [{ type: 'text', text: 'diagnosed deep' }] };
+		mockDiagnoseHandler.mockResolvedValue(expected);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'diagnose', deep: true, sample_size: 500, top_n_workspaces: 10 },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
+
+		expect(mockDiagnoseHandler).toHaveBeenCalledWith(cache, {
+			deep: true,
+			sample_size: 500,
+			top_n_workspaces: 10,
+		});
 		expect(result).toBe(expected);
 	});
 

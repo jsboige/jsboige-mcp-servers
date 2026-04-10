@@ -27,7 +27,7 @@ let lastFailureTime = 0;
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
 const EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 jours cache pour embeddings (FIX: augmenté de 24h)
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const MAX_OPERATIONS_PER_WINDOW = 100; // Max 100 operations/minute (FIX: augmenté de 10 pour éviter boucle)
+const MAX_OPERATIONS_PER_WINDOW = 200; // Max 200 operations/minute (FIX #1123: augmenté de 100 pour éviter storm rate-limiting)
 let operationTimestamps: number[] = [];
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small

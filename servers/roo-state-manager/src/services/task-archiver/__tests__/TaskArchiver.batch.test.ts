@@ -197,8 +197,14 @@ describe('TaskArchiver - Additional Coverage Tests', () => {
 	// ============================================================
 
 	describe('archiveClaudeCodeSession - title handling', () => {
-		test('skips when archive already exists', async () => {
-			mockAccess.mockResolvedValue(undefined); // Archive exists
+		test('skips when archive already exists as v2', async () => {
+			// v2 archive bump: existence is detected by reading + parsing
+			// the archive (not fs.access). Provide a v2 payload so the
+			// hoisted gunzip mock (which returns its input unchanged)
+			// yields parseable JSON with version === 2.
+			mockReadFile.mockResolvedValueOnce(
+				Buffer.from(JSON.stringify({ version: 2, taskId: 'x', messages: [] }))
+			);
 			const jsonlPath = '/some/weird/path/conversations.jsonl';
 
 			await TaskArchiver.archiveClaudeCodeSession('session-123', jsonlPath, 'Custom Title');

@@ -33,58 +33,79 @@ export const getRawConversationTool = {
             throw new GenericError("taskId is required.", GenericErrorCode.INVALID_ARGUMENT);
         }
 
+        // Security: Reject path traversal attempts (check before format to prevent bypass)
+        if (taskId.includes('..') || taskId.includes('/') || taskId.includes('\\')) {
+            throw new GenericError(
+                `Invalid taskId: path separators and parent directory references are not allowed.`,
+                GenericErrorCode.INVALID_ARGUMENT
+            );
+        }
+
+        // Security: Validate taskId format — must be UUID or claude- prefixed session ID
+        const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const CLAUDE_SESSION_REGEX = /^claude-[a-zA-Z0-9_.\-/]+--[a-zA-Z0-9\-]+$/;
+        if (!UUID_REGEX.test(taskId) && !CLAUDE_SESSION_REGEX.test(taskId)) {
+            throw new GenericError(
+                `Invalid taskId format: '${taskId.slice(0, 20)}...'. Expected UUID or claude- session ID.`,
+                GenericErrorCode.INVALID_ARGUMENT
+            );
+        }
+
         const locations = await RooStorageDetector.detectStorageLocations();
+        const parseErrors: string[] = [];
+
         for (const loc of locations) {
-            // 🚨 BUG FIX: Ajouter 'tasks' au chemin pour correspondre à la structure réelle
             const taskPath = path.join(loc, 'tasks', taskId);
             try {
-                await fs.access(taskPath); // Vérifie si le répertoire de la tâche existe
+                await fs.access(taskPath);
 
                 const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
                 const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+                const metadataPath = path.join(taskPath, 'task_metadata.json');
 
-                // 🚨 BUG FIX: Gérer les BOM UTF-8 qui causent des erreurs de parsing JSON
-                const readJsonFileClean = async (filePath: string) => {
+                // Read JSON files with proper error reporting
+                const readJsonFile = async (filePath: string, label: string) => {
                     try {
                         let content = await fs.readFile(filePath, 'utf-8');
-                        // Nettoyer le BOM UTF-8 si présent
                         if (content.charCodeAt(0) === 0xFEFF) {
                             content = content.slice(1);
                         }
-                        return JSON.parse(content);
+                        return { data: JSON.parse(content), error: null as string | null };
                     } catch (e) {
-                        return null;
+                        const msg = e instanceof Error ? e.message : String(e);
+                        parseErrors.push(`${label}: ${msg}`);
+                        return { data: null, error: msg };
                     }
                 };
 
-                const apiHistoryContent = await readJsonFileClean(apiHistoryPath);
-                const uiMessagesContent = await readJsonFileClean(uiMessagesPath);
+                const apiResult = await readJsonFile(apiHistoryPath, 'api_conversation_history');
+                const uiResult = await readJsonFile(uiMessagesPath, 'ui_messages');
+                const metaResult = await readJsonFile(metadataPath, 'metadata');
 
-                // 🚨 BUG FIX: Ajouter des métadonnées sur le fichier pour diagnostic
                 const taskStats = await fs.stat(taskPath).catch(() => null);
-                const metadataPath = path.join(taskPath, 'task_metadata.json');
-                const metadataContent = await readJsonFileClean(metadataPath);
 
                 const rawData = {
                     taskId,
-                    location: taskPath,
                     taskStats: taskStats ? {
                         created: taskStats.birthtime,
                         modified: taskStats.mtime,
                         size: taskStats.size
                     } : null,
-                    metadata: metadataContent,
-                    api_conversation_history: apiHistoryContent,
-                    ui_messages: uiMessagesContent,
+                    metadata: metaResult.data,
+                    api_conversation_history: apiResult.data,
+                    ui_messages: uiResult.data,
+                    ...(parseErrors.length > 0 ? { _parseErrors: parseErrors } : {}),
                 };
 
                 return { content: [{ type: 'text', text: JSON.stringify(rawData, null, 2) }] };
-            } catch (e) {
-                // Tâche non trouvée dans cet emplacement, on continue
-                console.debug(`[DEBUG] Task ${taskId} not found in ${taskPath}: ${e}`);
+            } catch {
+                // Task not found in this location, continue
             }
         }
 
-        throw new GenericError(`Task with ID '${taskId}' not found in any storage location.`, GenericErrorCode.FILE_SYSTEM_ERROR);
+        throw new GenericError(
+            `Task '${taskId}' not found in any storage location.${parseErrors.length > 0 ? ` Parse errors: ${parseErrors.join('; ')}` : ''}`,
+            GenericErrorCode.FILE_SYSTEM_ERROR
+        );
     }
 };

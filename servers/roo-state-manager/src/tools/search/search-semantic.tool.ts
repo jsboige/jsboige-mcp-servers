@@ -9,6 +9,31 @@ import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
+import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
+
+// #1232: Circuit breaker for embedding API failures
+// When the embedding API returns 502/503, skip semantic search and go directly to text fallback
+// for EMBEDDING_CIRCUIT_BREAKER_TTL_MS (default 5 minutes) to avoid repeated timeouts.
+let lastEmbeddingFailureTime = 0;
+const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
+
+/**
+ * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
+ * Only activates on real server errors, not generic exceptions.
+ */
+function isHttpServerError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message;
+    return /\b5[0-9]{2}\b/.test(msg) || msg.includes('Bad Gateway') || msg.includes('Service Unavailable') || msg.includes('Gateway Timeout');
+}
+
+/**
+ * Reset the circuit breaker state (for testing).
+ * @internal
+ */
+export function _resetEmbeddingCircuitBreaker(): void {
+    lastEmbeddingFailureTime = 0;
+}
 
 export interface SearchTasksByContentArgs {
     conversation_id?: string;
@@ -116,45 +141,9 @@ function formatRelativeTime(timestamp: string | undefined): string {
     }
 }
 
-/**
- * Parse a date string (ISO 8601 or YYYY-MM-DD) into a Date object.
- * Returns null if parsing fails.
- */
-function parseFilterDate(dateStr: string | undefined): Date | null {
-    if (!dateStr) return null;
-    try {
-        // Support YYYY-MM-DD by appending T00:00:00Z for start, or use as-is for ISO
-        const d = new Date(dateStr.includes('T') ? dateStr : `${dateStr}T00:00:00Z`);
-        return isNaN(d.getTime()) ? null : d;
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Check if a timestamp falls within the [startDate, endDate] range.
- * Both bounds are inclusive. Null bounds mean no constraint.
- */
-function isWithinDateRange(timestamp: string | undefined, startDate: Date | null, endDate: Date | null): boolean {
-    if (!startDate && !endDate) return true;
-    if (!timestamp) return false;
-    try {
-        const ts = new Date(timestamp);
-        if (isNaN(ts.getTime())) return false;
-        if (startDate && ts < startDate) return false;
-        if (endDate) {
-            // For end_date given as YYYY-MM-DD, include the entire day
-            const endOfDay = new Date(endDate.getTime());
-            if (endOfDay.getHours() === 0 && endOfDay.getMinutes() === 0) {
-                endOfDay.setUTCHours(23, 59, 59, 999);
-            }
-            if (ts > endOfDay) return false;
-        }
-        return true;
-    } catch {
-        return false;
-    }
-}
+// #1244 Couche 2.1 — parseFilterDate / isWithinDateRange factorises dans
+// `src/utils/date-filters.ts` pour reutilisation par list-conversations,
+// conversation-browser, summarize, etc. Importes en haut du fichier.
 
 interface RawSearchResult {
     taskId: string;
@@ -379,6 +368,28 @@ export const searchTasksByContentTool = {
             }
         }
 
+        // #1232: Circuit breaker — if embedding API failed recently, skip directly to text fallback
+        const now = Date.now();
+        if (lastEmbeddingFailureTime > 0 && (now - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS) {
+            const remainingMs = EMBEDDING_CIRCUIT_BREAKER_TTL_MS - (now - lastEmbeddingFailureTime);
+            console.warn(`[WARN] #1232: Embedding circuit breaker active, skipping semantic search (${Math.ceil(remainingMs / 1000)}s remaining). Using text fallback.`);
+            try {
+                const fallbackResult = await fallbackHandler(
+                    { query: args.search_query, workspace: args.workspace },
+                    conversationCache
+                );
+                return fallbackResult;
+            } catch (fallbackError) {
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: `Embedding API indisponible (circuit breaker actif). Fallback textuel échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                    }] as any
+                };
+            }
+        }
+
         // Tentative de recherche sémantique via Qdrant/OpenAI
         try {
             const qdrant = getQdrantClient();
@@ -470,6 +481,31 @@ export const searchTasksByContentTool = {
                 });
             }
 
+            // #1244 Couche 1.3 — Push date filter INTO Qdrant (range on timestamp field)
+            // Avant ce fix, le filtre etait applique APRES retrieval (lignes 548-553) :
+            // si un match etait en position 20 et max_results=10, l'utilisateur voyait 0 resultats.
+            // Les timestamps sont stockes comme strings ISO 8601 (lexicographiquement comparables).
+            const parsedStartDateForQdrant = parseFilterDate(start_date);
+            const parsedEndDateForQdrant = parseFilterDate(end_date);
+            if (parsedStartDateForQdrant || parsedEndDateForQdrant) {
+                const rangeFilter: any = {};
+                if (parsedStartDateForQdrant) {
+                    rangeFilter.gte = parsedStartDateForQdrant.toISOString();
+                }
+                if (parsedEndDateForQdrant) {
+                    // Pour YYYY-MM-DD, inclure la journee entiere
+                    const endOfDay = new Date(parsedEndDateForQdrant.getTime());
+                    if (endOfDay.getUTCHours() === 0 && endOfDay.getUTCMinutes() === 0) {
+                        endOfDay.setUTCHours(23, 59, 59, 999);
+                    }
+                    rangeFilter.lte = endOfDay.toISOString();
+                }
+                filterConditions.push({
+                    key: "timestamp",
+                    range: rangeFilter
+                });
+            }
+
             if (filterConditions.length > 0) {
                 filter = { must: filterConditions };
             } else {
@@ -545,11 +581,15 @@ export const searchTasksByContentTool = {
                 };
             });
 
-            // #636 Phase 2: Temporal post-filtering (Qdrant stores timestamps as strings)
-            const parsedStartDate = parseFilterDate(start_date);
-            const parsedEndDate = parseFilterDate(end_date);
-            const filteredResults = (parsedStartDate || parsedEndDate)
-                ? results.filter(r => isWithinDateRange(r.metadata.timestamp, parsedStartDate, parsedEndDate))
+            // #1244 Couche 1.3 — Filtre temporel : double-couche
+            //   (a) Push dans Qdrant en amont (range filter sur 'timestamp', cf. l. 477-495)
+            //       → fait l'essentiel du travail, evite de transferer des resultats hors plage.
+            //   (b) Filet de securite client-side : si Qdrant n'honore pas le filtre
+            //       (timestamp non indexe, schema mismatch, mock de tests), on filtre ici aussi.
+            //   Avant ce double-niveau, le filtre etait UNIQUEMENT post-Qdrant et apres `limit`,
+            //   ce qui pouvait masquer des matches en position > max_results (bug originel #1244).
+            const filteredResults = (parsedStartDateForQdrant || parsedEndDateForQdrant)
+                ? results.filter(r => isWithinDateRange(r.metadata.timestamp, parsedStartDateForQdrant, parsedEndDateForQdrant))
                 : results;
 
             // Group by task_id: deduplicate multiple chunks from the same conversation
@@ -583,8 +623,10 @@ export const searchTasksByContentTool = {
                     query: search_query,
                     results_count: filteredResults.length,
                     unique_tasks: groupedResults.length,
-                    // #636 Phase 2: temporal filter info
-                    ...(parsedStartDate || parsedEndDate ? {
+                    // #636 Phase 2 + #1244 Couche 1.3: temporal filter info
+                    // Le filtre est pousse en amont dans Qdrant (range filter sur 'timestamp')
+                    // ET applique en defense-in-depth client-side (cf. filteredResults plus haut).
+                    ...(parsedStartDateForQdrant || parsedEndDateForQdrant ? {
                         temporal_filter: {
                             start_date: start_date || null,
                             end_date: end_date || null,
@@ -609,6 +651,11 @@ export const searchTasksByContentTool = {
             };
 
         } catch (semanticError) {
+            // #1232: Activate circuit breaker ONLY on HTTP 5xx server errors
+            if (isHttpServerError(semanticError)) {
+                lastEmbeddingFailureTime = Date.now();
+                console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s (HTTP 5xx detected)`);
+            }
             console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
 
             // Fallback vers la recherche textuelle simple
