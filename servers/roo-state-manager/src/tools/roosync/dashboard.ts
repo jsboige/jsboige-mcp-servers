@@ -1518,7 +1518,7 @@ export const dashboardToolMetadata = {
       },
       keepMessages: {
         type: 'number',
-        description: '(condense) Nombre de messages à conserver (défaut: 100)'
+        description: '(condense) Nombre de messages à conserver (défaut: 10)'
       },
       archiveFile: {
         type: 'string',
