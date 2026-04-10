@@ -243,8 +243,7 @@ ${JSON.stringify(analysis.issues, null, 2)}
                 type: 'text',
                 text: JSON.stringify({
                     success: false,
-                    error: error.message,
-                    stack: error.stack
+                    error: error.message
                 }, null, 2)
             }],
             isError: true
