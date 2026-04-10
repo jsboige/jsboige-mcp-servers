@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { existsSync, writeFileSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { BaselineService } from '../../services/BaselineService.js';
@@ -102,14 +102,14 @@ export async function roosync_export_baseline(args: ExportBaselineArgs): Promise
     // Générer le contenu selon le format
     let content: string;
     let extension: string;
-    
+
     switch (validatedArgs.format) {
       case 'json':
         content = generateJsonExport(exportData, validatedArgs.prettyPrint);
         extension = '.json';
         break;
       case 'yaml':
-        content = generateYamlExport(exportData);
+        content = await generateYamlExport(exportData);
         extension = '.yaml';
         break;
       case 'csv':
@@ -136,7 +136,7 @@ export async function roosync_export_baseline(args: ExportBaselineArgs): Promise
     // Créer le répertoire de sortie si nécessaire
     const outputDir = outputPath.substring(0, outputPath.lastIndexOf('/'));
     if (outputDir && !existsSync(outputDir)) {
-      require('fs').mkdirSync(outputDir, { recursive: true });
+      mkdirSync(outputDir, { recursive: true });
     }
 
     // Écrire le fichier d'export
@@ -235,11 +235,11 @@ function generateJsonExport(data: any, prettyPrint: boolean): string {
 /**
  * Génère l'export YAML
  */
-function generateYamlExport(data: any): string {
+async function generateYamlExport(data: any): Promise<string> {
   try {
     // Utiliser yaml library si disponible, sinon fallback simple
-    const yaml = require('js-yaml');
-    return yaml.dump(data, { indent: 2 });
+    const yaml = await import('js-yaml');
+    return (yaml as any).dump(data, { indent: 2 });
   } catch (error) {
     // Fallback simple si js-yaml n'est pas disponible
     return simpleYamlExport(data);
