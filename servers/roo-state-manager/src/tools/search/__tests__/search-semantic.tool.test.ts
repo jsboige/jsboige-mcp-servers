@@ -76,7 +76,8 @@ function makeCache(): Map<string, ConversationSkeleton> {
 
 const mockEnsureCache = vi.fn(async () => true);
 const defaultFallback = vi.fn(async () => ({
-	content: [{ type: 'text', text: 'fallback result' }]
+	content: [{ type: 'text', text: JSON.stringify({ mode: 'fallback_text_search', results: [] }) }],
+	isError: false
 }));
 
 // ─────────────────── setup ───────────────────
@@ -675,7 +676,6 @@ describe('searchTasksByContentTool', () => {
 // Helper functions (tested via module internals exposure)
 // We test them indirectly through the handler results
 // ============================================================
-});
 
 describe('helper functions (indirect via handler)', () => {
 	beforeEach(() => {
@@ -1288,12 +1288,28 @@ describe('helper functions (indirect via handler)', () => {
 			});
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
+			// First call — 400 error triggers fallback but should NOT activate circuit breaker
 			const result = await searchTasksByContentTool.handler({
 				search_query: 'test circuit breaker 400',
-				workspace: 'd:	est'
+				workspace: 'd:\\test'
 			}, makeCache(), mockEnsureCache, defaultFallback);
 
-			expect(result.isError).toBe(true);
+			// Fallback still works (isError: false) — 400 is handled gracefully
+			expect(result.isError).toBe(false);
+
+			// Verify circuit breaker NOT activated: second call should still hit the API
+			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+			mockQdrantClient.search.mockResolvedValueOnce([]);
+
+			await searchTasksByContentTool.handler({
+				search_query: 'test after 400',
+				workspace: 'd:\\test'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			// API was called twice (not blocked by circuit breaker)
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(2);
 		});
 
 		test('prevents repeated calls when circuit breaker active', async () => {
@@ -1387,4 +1403,5 @@ describe('helper functions (indirect via handler)', () => {
 			consoleSpy.mockRestore();
 		});
 	});
+});
 });
