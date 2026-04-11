@@ -428,12 +428,14 @@ describe('searchFallbackTool', () => {
 			expect(parsed.results[0].taskId).toBe('claude-task-456');
 		});
 
-		test('filters by source using metadata.dataSource when available', async () => {
+		test('filters by source using metadata.source (not dataSource)', async () => {
+			// #1324: source filter must use metadata.source (normalized 'roo'/'claude-code'),
+			// not metadata.dataSource (which is the raw filesystem path)
 			const task1 = makeSkeleton('task-abc', {
-				metadata: { ...makeSkeleton('x').metadata, title: 'shared title', dataSource: 'claude-code' } as any
+				metadata: { ...makeSkeleton('x').metadata, title: 'shared title', source: 'claude-code' } as any
 			});
 			const task2 = makeSkeleton('task-xyz', {
-				metadata: { ...makeSkeleton('x').metadata, title: 'shared title', dataSource: 'roo' } as any
+				metadata: { ...makeSkeleton('x').metadata, title: 'shared title', source: 'roo' } as any
 			});
 			const cache = makeCache(task1, task2);
 

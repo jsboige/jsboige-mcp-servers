@@ -58,7 +58,7 @@ describe('roosync_search additional coverage', () => {
   });
 
   describe('workspace normalization edge cases', () => {
-    test('passes "all" workspace as preserved for text search', async () => {
+    test('translates "all" workspace to undefined for text search (#1324)', async () => {
       await handleRooSyncSearch(
         { action: 'text', search_query: 'global search', workspace: 'all' },
         mockCache,
@@ -66,10 +66,11 @@ describe('roosync_search additional coverage', () => {
         mockFallbackHandler
       );
 
+      // #1324: "all" must be translated to undefined, same as semantic path
       expect(mockFallbackHandler).toHaveBeenCalledWith(
         expect.objectContaining({
           query: 'global search',
-          workspace: 'all'
+          workspace: undefined
         }),
         mockCache
       );

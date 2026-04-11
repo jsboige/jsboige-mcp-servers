@@ -48,8 +48,10 @@ export async function searchFallbackTool(
       }
 
       // #604: Filtrer par source si spécifié
+      // #1324: Use metadata.source (normalized 'roo'/'claude-code'), not metadata.dataSource
+      // (which is the raw filesystem path and never matches 'roo' or 'claude-code')
       if (source) {
-        const taskSource = skeleton.metadata?.dataSource || (taskId.startsWith('claude-') ? 'claude-code' : 'roo');
+        const taskSource = skeleton.metadata?.source || (taskId.startsWith('claude-') ? 'claude-code' : 'roo');
         if (taskSource !== source) {
           continue;
         }
