@@ -210,15 +210,30 @@ export async function searchTasks(
   const searchFilter = filterConditions.length > 0 ? { must: filterConditions } : options.filter;
 
   // 2. Étape 1: Recherche des Chunks Initiaux dans Qdrant
-  const searchResult = await qdrant.search(collectionName, {
+  // #1275: Add timeout to prevent hanging on large collections
+  const searchTimeoutMs = parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10);
+  let searchTimeoutId;
+  const searchPromise = qdrant.search(collectionName, {
     vector,
     limit,
     filter: searchFilter,
     score_threshold: options.scoreThreshold,
     with_payload: true,
   });
+  const timeoutPromise = new Promise((_, reject) => {
+    searchTimeoutId = setTimeout(() => reject(new Error('Qdrant search timeout after ' + searchTimeoutMs + 'ms')), searchTimeoutMs);
+  });
 
-  const foundChunks = searchResult.map(result => ({
+  let searchResult: any;
+  try {
+    searchResult = await Promise.race([searchPromise, timeoutPromise]);
+  } finally {
+    if (searchTimeoutId !== undefined) {
+      clearTimeout(searchTimeoutId);
+    }
+  }
+
+  const foundChunks = searchResult.map((result: any) => ({
     chunk: result.payload as unknown as Chunk,
     score: result.score,
   }));

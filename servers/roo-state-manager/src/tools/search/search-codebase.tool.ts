@@ -92,13 +92,17 @@ export async function listWorkspaceCollections(): Promise<string[]> {
  * Separate from the task-indexer's OpenAI client to avoid config conflicts.
  */
 let codebaseEmbeddingClient: OpenAI | null = null;
+// #1275: Track last API key to detect provider switches
+let lastEmbeddingApiKey: string | undefined = undefined;
 
 function getCodebaseEmbeddingClient(): OpenAI {
-	if (!codebaseEmbeddingClient) {
-		const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+	const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+	// #1275: Re-create client if API key changed (e.g. after /switch-provider)
+	if (!codebaseEmbeddingClient || apiKey !== lastEmbeddingApiKey) {
 		if (!apiKey) {
 			throw new Error('No embedding API key configured. Set EMBEDDING_API_KEY or OPENAI_API_KEY.');
 		}
+		lastEmbeddingApiKey = apiKey;
 		codebaseEmbeddingClient = new OpenAI({
 			apiKey,
 			baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
