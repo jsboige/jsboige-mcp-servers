@@ -274,11 +274,25 @@ describe('SynthesisOrchestratorService', () => {
 
 			const result = await service.startBatchSynthesis(config);
 
-			expect(result.status).toBe('queued');
+			expect(['queued', 'running']).toContain(result.status);
 			expect(result.batchId).toBeDefined();
 			expect(result.config).toEqual(config);
-			expect(result.progress.totalTasks).toBe(0);
+			expect(result.progress.totalTasks).toBe(2);
+			expect(result.taskIds).toEqual(['task1', 'task2']);
 			expect(result.progress.completionPercentage).toBe(0);
+		});
+
+		test('throws for workspace-only filter (not yet implemented)', async () => {
+			const service = createService();
+			const config: BatchSynthesisConfig = {
+				llmModelId: 'test-model',
+				maxConcurrency: 2,
+				overwriteExisting: false,
+				taskFilter: { workspace: 'test-workspace' }
+			};
+
+			await expect(service.startBatchSynthesis(config))
+				.rejects.toThrow(SynthesisServiceError);
 		});
 	});
 
