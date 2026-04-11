@@ -102,7 +102,7 @@ export class RooSyncService {
        // Écrire directement dans un fichier de log
        try {
          const fs = require('fs');
-         const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
+         const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'outputs', 'debug', 'debug-roosync-compare.log');
          fs.appendFileSync(logPath, logEntry);
        } catch (e) {
          // Ignorer les erreurs de logging
