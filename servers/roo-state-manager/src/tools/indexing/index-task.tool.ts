@@ -8,6 +8,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { formatErrorForResponse } from '../../utils/error-format.js';
 
 export interface IndexTaskSemanticArgs {
     task_id: string;
@@ -105,7 +106,7 @@ export const indexTaskSemanticTool = {
                 isError: true,
                 content: [{
                     type: "text",
-                    text: `# Erreur d'indexation\n\n**Tâche:** ${args.task_id}\n**Erreur:** ${error instanceof Error ? error.message : String(error)}\n\nL'indexation de la tâche a échoué.`
+                    text: `# Erreur d'indexation\n\n**Tâche:** ${args.task_id}\n**Erreur:** ${formatErrorForResponse(error)}\n\nL'indexation de la tâche a échoué.`
                 }]
             };
         }

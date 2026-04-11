@@ -2,6 +2,7 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { formatErrorForResponse } from '../../utils/error-format.js';
 
 interface AnalyzeOptions {
     roadmapPath?: string;
@@ -243,7 +244,7 @@ ${JSON.stringify(analysis.issues, null, 2)}
                 type: 'text',
                 text: JSON.stringify({
                     success: false,
-                    error: error.message
+                    error: formatErrorForResponse(error)
                 }, null, 2)
             }],
             isError: true
