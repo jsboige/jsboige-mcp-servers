@@ -182,7 +182,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
 
             // Test que startBatchSynthesis crée correctement une tâche de lot
             const batchConfig = {
-                taskFilter: { workspace: '/test' },
+                taskFilter: { taskIds: ['test-task-1', 'test-task-2'] },
                 maxConcurrency: 1,
                 llmModelId: 'test-gpt-4',
                 overwriteExisting: false
@@ -197,7 +197,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             expect(batchTask.batchId.length).toBeGreaterThan(0);
 
             // Vérifier le statut initial
-            expect(batchTask.status).toBe('queued');
+            expect(['queued', 'running']).toContain(batchTask.status);
 
             // Vérifier les dates
             expect(batchTask.startTime).toBeDefined();
@@ -207,13 +207,10 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             expect(batchTask.config).toEqual(batchConfig);
 
             // Vérifier l'initialisation du progrès
-            expect(batchTask.progress).toEqual({
-                totalTasks: 0,
-                completedTasks: 0,
-                failedTasks: 0,
-                inProgressTasks: 0,
-                completionPercentage: 0
-            });
+            expect(batchTask.progress.totalTasks).toBe(2);
+            expect(batchTask.progress.completedTasks).toBe(0);
+            expect(batchTask.progress.failedTasks).toBe(0);
+            expect(batchTask.progress.completionPercentage).toBe(0);
 
             // Vérifier les résultats initiaux
             expect(batchTask.results).toEqual({
@@ -224,7 +221,7 @@ describe('Synthesis Services - Phase 1 Structure Validation', () => {
             });
 
             // Vérifier taskIds initialisé comme tableau vide
-            expect(batchTask.taskIds).toEqual([]);
+            expect(batchTask.taskIds).toEqual(['test-task-1', 'test-task-2']);
         });
     });
 

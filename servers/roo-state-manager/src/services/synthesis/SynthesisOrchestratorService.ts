@@ -368,8 +368,8 @@ export class SynthesisOrchestratorService {
     /**
      * Lance un traitement de synthèse par lots.
      *
-     * Phase 1 : Méthode squelette pour la structure.
-     * Phase 4 : Implémentera la logique complète de traitement par lots.
+     * Phase 4 : Traitement complet avec suivi de progression,
+     * contrôle de concurrence et gestion d'annulation.
      *
      * @param config Configuration du lot de traitement
      * @returns Promise de la tâche de traitement créée
@@ -377,6 +377,9 @@ export class SynthesisOrchestratorService {
     async startBatchSynthesis(config: BatchSynthesisConfig): Promise<BatchSynthesisTask> {
         // Valider la configuration
         this.validateBatchConfig(config);
+
+        // Résoudre les IDs de tâches depuis le filtre
+        const taskIds = this.resolveTaskIds(config.taskFilter);
 
         // Générer un ID unique pour le lot
         const batchId = this.generateBatchId();
@@ -388,13 +391,13 @@ export class SynthesisOrchestratorService {
             startTime: new Date().toISOString(),
             config,
             progress: {
-                totalTasks: 0,
+                totalTasks: taskIds.length,
                 completedTasks: 0,
                 failedTasks: 0,
                 inProgressTasks: 0,
                 completionPercentage: 0
             },
-            taskIds: [],
+            taskIds,
             results: {
                 synthesisCount: 0,
                 errorCount: 0,
@@ -406,7 +409,16 @@ export class SynthesisOrchestratorService {
         // Stocker la tâche dans la map des lots actifs
         this.activeBatches.set(batchId, batchTask);
 
-        console.log(`📦 [SynthesisOrchestrator] Lot créé: ${batchId} (maxConcurrency: ${config.maxConcurrency}, model: ${config.llmModelId})`);
+        console.log(`📦 [SynthesisOrchestrator] Lot créé: ${batchId} (${taskIds.length} tâches, maxConcurrency: ${config.maxConcurrency}, model: ${config.llmModelId})`);
+
+        // Lancer le traitement asynchrone
+        this.processBatch(batchTask).catch(error => {
+            console.error(`❌ [SynthesisOrchestrator] Lot ${batchId} erreur fatale:`, error);
+            if (batchTask.status === 'running') {
+                batchTask.status = 'failed';
+                batchTask.endTime = new Date().toISOString();
+            }
+        });
 
         return batchTask;
     }
@@ -841,6 +853,161 @@ ${analysesHtml}
                 'taskFilter doit spécifier soit taskIds soit workspace',
                 SynthesisServiceErrorCode.TASK_FILTER_INVALID,
                 { taskFilter: config.taskFilter }
+            );
+        }
+    }
+
+    /**
+     * Résout les IDs de tâches depuis un filtre.
+     *
+     * Supporte soit une liste explicite de taskIds, soit un workspace
+     * (workspace resolution sera implémentée ultérieurement).
+     *
+     * @param filter Filtre de tâches
+     * @returns Liste des IDs de tâches à traiter
+     */
+    private resolveTaskIds(filter: BatchSynthesisConfig['taskFilter']): string[] {
+        if (filter.taskIds && filter.taskIds.length > 0) {
+            return [...filter.taskIds];
+        }
+
+        // Workspace-only filter: not yet supported for auto-discovery
+        // Will be implemented when storage layer supports task listing by workspace
+        throw new SynthesisServiceError(
+            'Résolution par workspace non encore implémentée. Fournir taskIds explicites.',
+            SynthesisServiceErrorCode.TASK_FILTER_INVALID,
+            { filter }
+        );
+    }
+
+    /**
+     * Traite un lot de synthèse de manière asynchrone.
+     *
+     * Parcourt les tâches avec contrôle de concurrence, sauvegarde
+     * les résultats sur disque, et met à jour la progression en temps réel.
+     *
+     * @param batch Tâche de lot à traiter (mutée en place)
+     */
+    private async processBatch(batch: BatchSynthesisTask): Promise<void> {
+        batch.status = 'running';
+        console.log(`🔄 [SynthesisOrchestrator] Lot ${batch.batchId} démarré (${batch.taskIds.length} tâches)`);
+
+        const concurrency = batch.config.maxConcurrency;
+        const taskQueue = [...batch.taskIds];
+        const activePromises: Map<string, Promise<void>> = new Map();
+
+        const processNext = async (): Promise<void> => {
+            while (taskQueue.length > 0) {
+                // Check cancellation
+                if ((batch.status as string) === 'cancelled') {
+                    console.log(`🚫 [SynthesisOrchestrator] Lot ${batch.batchId} annulé, arrêt du traitement`);
+                    return;
+                }
+
+                const taskId = taskQueue.shift()!;
+                batch.progress.inProgressTasks = activePromises.size;
+
+                const promise = this.processSingleTask(batch, taskId)
+                    .finally(() => {
+                        activePromises.delete(taskId);
+                    });
+
+                activePromises.set(taskId, promise);
+
+                // If we've reached concurrency limit, wait for one to finish
+                if (activePromises.size >= concurrency) {
+                    await Promise.race(activePromises.values());
+                }
+            }
+        };
+
+        // Start concurrent workers
+        const workers: Promise<void>[] = [];
+        for (let i = 0; i < Math.min(concurrency, taskQueue.length); i++) {
+            workers.push(processNext());
+        }
+
+        await Promise.all(workers);
+
+        // Finalize batch status
+        if ((batch.status as string) === 'cancelled') {
+            return;
+        }
+
+        batch.endTime = new Date().toISOString();
+        batch.status = batch.results.errorCount > 0 && batch.results.synthesisCount === 0
+            ? 'failed'
+            : 'completed';
+
+        this.totalBatchesProcessedCount++;
+
+        console.log(
+            `✅ [SynthesisOrchestrator] Lot ${batch.batchId} terminé: ` +
+            `${batch.results.synthesisCount} succès, ${batch.results.errorCount} erreurs`
+        );
+    }
+
+    /**
+     * Traite une seule tâche dans un lot.
+     *
+     * @param batch Lot parent (pour mise à jour progression)
+     * @param taskId ID de la tâche à synthétiser
+     */
+    private async processSingleTask(batch: BatchSynthesisTask, taskId: string): Promise<void> {
+        try {
+            // Skip if overwrite disabled and analysis already exists
+            if (!batch.config.overwriteExisting) {
+                const existingPath = path.join(
+                    this.options.synthesisOutputDir,
+                    taskId,
+                    'analysis.json'
+                );
+                try {
+                    await fs.access(existingPath);
+                    console.log(`⏭️ [SynthesisOrchestrator] Tâche ${taskId} déjà synthétisée, skip`);
+                    batch.progress.completedTasks++;
+                    batch.results.synthesisCount++;
+                    batch.progress.completionPercentage = Math.round(
+                        ((batch.progress.completedTasks + batch.progress.failedTasks) / batch.progress.totalTasks) * 100
+                    );
+                    return;
+                } catch {
+                    // File doesn't exist, proceed
+                }
+            }
+
+            // Run synthesis
+            const analysis = await this.synthesizeConversation(taskId);
+
+            // Save to disk
+            const outputDir = path.join(this.options.synthesisOutputDir, taskId);
+            await fs.mkdir(outputDir, { recursive: true });
+            const outputPath = path.join(outputDir, 'analysis.json');
+            await fs.writeFile(outputPath, JSON.stringify(analysis, null, 2), 'utf-8');
+
+            // Update progress
+            batch.progress.completedTasks++;
+            batch.results.synthesisCount++;
+            batch.results.outputFiles.push(outputPath);
+            batch.progress.completionPercentage = Math.round(
+                ((batch.progress.completedTasks + batch.progress.failedTasks) / batch.progress.totalTasks) * 100
+            );
+
+            console.log(`✅ [SynthesisOrchestrator] Tâche ${taskId} synthétisée (${batch.progress.completionPercentage}%)`);
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.error(`❌ [SynthesisOrchestrator] Erreur tâche ${taskId}:`, errorMessage);
+
+            batch.progress.failedTasks++;
+            batch.results.errorCount++;
+            batch.results.errors.push({
+                taskId,
+                error: errorMessage,
+                timestamp: new Date().toISOString()
+            });
+            batch.progress.completionPercentage = Math.round(
+                ((batch.progress.completedTasks + batch.progress.failedTasks) / batch.progress.totalTasks) * 100
             );
         }
     }
