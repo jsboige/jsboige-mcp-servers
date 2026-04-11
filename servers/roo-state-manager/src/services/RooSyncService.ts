@@ -9,7 +9,7 @@
  */
 
 import { existsSync, statSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
 import {
   type RooSyncDecision,
@@ -102,7 +102,9 @@ export class RooSyncService {
        // Écrire directement dans un fichier de log
        try {
          const fs = require('fs');
-         const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'debug-roosync-compare.log');
+         const logPath = process.env.ROOSYNC_LOG_PATH || join(process.cwd(), 'outputs', 'debug', 'roosync-compare.log');
+         const logDir = dirname(logPath);
+         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
          fs.appendFileSync(logPath, logEntry);
        } catch (e) {
          // Ignorer les erreurs de logging
