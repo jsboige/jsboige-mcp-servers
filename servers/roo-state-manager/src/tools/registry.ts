@@ -21,6 +21,7 @@ import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
 import { loadFullSkeleton } from '../services/background-services.js';
 import { createLogger } from '../utils/logger.js';
+import { formatErrorForLog } from '../utils/error-format.js';
 
 const registryLogger = createLogger('ToolRegistry');
 
@@ -794,11 +795,12 @@ export function registerCallToolHandler(
 
         } catch (error) {
             const elapsed = Date.now() - toolCallStart;
+            const errInfo = formatErrorForLog(error);
             registryLogger.error(`Tool call FAILED: ${name}`, {
                 tool: name,
                 elapsed: `${elapsed}ms`,
-                error: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack?.split('\n').slice(0, 3).join(' | ') : undefined
+                error: errInfo.message,
+                stack: errInfo.stack
             });
             throw error;
         }
