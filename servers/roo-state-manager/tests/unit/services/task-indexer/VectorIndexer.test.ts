@@ -145,12 +145,11 @@ describe('VectorIndexer', () => {
       expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
     });
 
-    it('should handle errors gracefully', async () => {
+    it('should propagate errors instead of swallowing them (#1273)', async () => {
+      mockQdrantClient.getCollections.mockResolvedValue({ collections: [{ name: 'roo_tasks_semantic_index' }] });
       vi.mocked(extractChunksFromTask).mockRejectedValue(new Error('Extraction failed'));
 
-      const result = await indexTask('task-1', '/path');
-
-      expect(result).toHaveLength(0);
+      await expect(indexTask('task-1', '/path')).rejects.toThrow('Extraction failed');
     });
   });
 });

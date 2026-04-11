@@ -7,6 +7,7 @@ import getOpenAIClient, { getEmbeddingModel, getEmbeddingDimensions } from '../o
 import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
 import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 type PointStruct = Schemas['PointStruct'];
 
@@ -466,10 +467,13 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             if (success) {
                 console.log(`✅ Indexation réussie: ${pointsToIndex.length} points pour tâche ${taskId}`);
             } else {
-                console.error(`❌ Échec indexation pour tâche ${taskId} - Circuit breaker activé ou erreurs répétées`);
-                // Ne pas throw l'erreur pour éviter la boucle infernale
-                // Retourner un tableau vide pour indiquer l'échec sans crasher
-                return [];
+                // #1273: Propagate error instead of swallowing it silently
+                // Previously returned [] which caller treated as "success with 0 points"
+                throw new GenericError(
+                    `Indexation failed for task ${taskId} - circuit breaker active or repeated upsert errors`,
+                    GenericErrorCode.NETWORK_ERROR,
+                    { taskId, pointsCount: pointsToIndex.length, service: 'VectorIndexer.indexTask' }
+                );
             }
         } else {
             if (chunks.length === 0) {
@@ -485,11 +489,22 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
     } catch (error) {
         console.error(`Failed to index task ${taskId}:`, error);
 
-        // 🚨 CORRECTION CRITIQUE: Ne plus re-throw l'erreur qui cause la boucle infernale
-        // À la place, log l'erreur et retourner un résultat vide
-        console.error(`🔴 ERREUR CRITIQUE INTERCEPTÉE pour tâche ${taskId}: Circuit breaker activé`);
+        // #1273: Propagate error so caller can report isError to MCP client
+        // Previously swallowed all errors and returned [], causing:
+        // - Silent data loss (caller treats [] as "success with 0 points")
+        // - Background indexer infinite retry loop (qdrantIndexedAt never set)
         recordFailure();
-        return [];
+
+        // Re-throw as GenericError if not already a typed error
+        if (error instanceof GenericError) {
+            throw error;
+        }
+        throw new GenericError(
+            `Indexation failed for task ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            GenericErrorCode.NETWORK_ERROR,
+            { taskId, originalError: error instanceof Error ? error.message : String(error), service: 'VectorIndexer.indexTask' },
+            error instanceof Error ? error : undefined
+        );
     }
 }
 
