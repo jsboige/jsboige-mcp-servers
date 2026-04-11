@@ -174,6 +174,35 @@ async function handleEnvAction(
 }
 
 /**
+ * #1267: Retry polling with exponential backoff instead of fixed setTimeout.
+ * Polls getInstance until it succeeds or max retries exhausted.
+ */
+async function getInstanceWithRetry(
+  options: { enabled: boolean },
+  maxRetries = 5,
+  baseDelayMs = 100
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const service = await RooSyncService.getInstance(options);
+      if (service) return service;
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < maxRetries - 1) {
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      console.warn(`[DEBUG] getInstance attempt ${attempt + 1}/${maxRetries} failed, retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw new RooSyncServiceError(
+    `Failed to create RooSyncService instance after ${maxRetries} retries`,
+    'INSTANCE_CREATION_FAILED'
+  );
+}
+
+/**
  * Gère l'action 'debug' (debug du dashboard)
  * Anciennement debug_reset avec action='debug'
  */
@@ -186,17 +215,8 @@ async function handleDebugAction(
   // Forcer la réinitialisation complète du singleton
   await RooSyncService.resetInstance();
 
-  // Attendre que l'instance soit bien nettoyée (retry avec backoff)
-  let service: Awaited<ReturnType<typeof RooSyncService.getInstance>> | null = null;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    service = await RooSyncService.getInstance({ enabled: false });
-    if (service) break;
-    await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
-  }
-
-  if (!service) {
-    throw new RooSyncServiceError('reset', 'Failed to create new RooSyncService instance after reset');
-  }
+  // #1267: Retry polling instead of fixed 100ms sleep
+  const service = await getInstanceWithRetry({ enabled: false });
 
   console.log('[DEBUG] debugDashboard - NOUVELLE INSTANCE CRÉÉE');
 
