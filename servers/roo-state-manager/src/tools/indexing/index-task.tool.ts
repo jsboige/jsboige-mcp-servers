@@ -100,10 +100,12 @@ export const indexTaskSemanticTool = {
             };
         } catch (error) {
             console.error('Task indexing error:', error);
+            // #1273: Set isError=true so MCP client knows indexing actually failed
             return {
+                isError: true,
                 content: [{
                     type: "text",
-                    text: `# Erreur d'indexation\n\n**Tâche:** ${args.task_id}\n**Erreur:** ${error instanceof Error ? error.stack : String(error)}\n\nL'indexation de la tâche a échoué.`
+                    text: `# Erreur d'indexation\n\n**Tâche:** ${args.task_id}\n**Erreur:** ${error instanceof Error ? error.message : String(error)}\n\nL'indexation de la tâche a échoué.`
                 }]
             };
         }

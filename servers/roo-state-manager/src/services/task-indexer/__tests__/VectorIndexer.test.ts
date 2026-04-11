@@ -341,7 +341,11 @@ describe('VectorIndexer', () => {
 	describe('indexTask', () => {
 		test('returns empty array when no chunks extracted', async () => {
 			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
 			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			// Restore the mock after clearAllMocks
+			(extractChunksFromTask as any).mockResolvedValue([]);
 
 			mockGetCollections.mockResolvedValue({
 				collections: [{ name: expectedCollection }]
@@ -349,6 +353,21 @@ describe('VectorIndexer', () => {
 
 			const result = await indexTask('task-123', '/fake/path');
 			expect(result).toEqual([]);
+		});
+
+		test('propagates errors instead of swallowing them (#1273)', async () => {
+			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			mockGetCollections.mockResolvedValue({
+				collections: [{ name: expectedCollection }]
+			});
+
+			// Simulate a real error from chunk extraction
+			(extractChunksFromTask as any).mockRejectedValue(new Error('Qdrant connection refused'));
+
+			await expect(indexTask('task-fail', '/fake/path')).rejects.toThrow('Qdrant connection refused');
 		});
 	});
 
