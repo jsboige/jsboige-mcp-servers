@@ -91,26 +91,18 @@ async function handleDebugAction(
   timestamp: string,
   config: any
 ): Promise<DebugResetResult> {
-  console.log('[DEBUG] debugDashboard - FORCAGE NOUVELLE INSTANCE');
-  
   // Forcer la réinitialisation complète du singleton
-  await await RooSyncService.resetInstance();
-  
+  await RooSyncService.resetInstance();
+
   // Attendre un peu pour s'assurer que l'instance est bien nettoyée
   await new Promise(resolve => setTimeout(resolve, 100));
-  
+
   // Créer une nouvelle instance avec cache désactivé
-  const service = await await RooSyncService.getInstance({ enabled: false });
-  
-  console.log('[DEBUG] debugDashboard - NOUVELLE INSTANCE CRÉÉE');
-  
+  const service = await RooSyncService.getInstance({ enabled: false });
+
   // Appeler loadDashboard directement
   const dashboard = await service.loadDashboard();
-  
-  if (args.verbose) {
-    console.log('[DEBUG] debugDashboard - RÉSULTAT BRUT:', JSON.stringify(dashboard, null, 2));
-  }
-  
+
   return {
     action: 'debug',
     success: true,
@@ -143,18 +135,14 @@ async function handleResetAction(
     };
   }
   
-  console.log('[RESET] Réinitialisation de l\'instance RooSyncService...');
-  
   // Réinitialiser l'instance singleton
-  await await RooSyncService.resetInstance();
-  
+  await RooSyncService.resetInstance();
+
   // Vider le cache si demandé
   if (args.clearCache) {
     const service = await getRooSyncService();
     service.clearCache();
   }
-  
-  console.log('[RESET] Instance réinitialisée avec succès');
   
   return {
     action: 'reset',
