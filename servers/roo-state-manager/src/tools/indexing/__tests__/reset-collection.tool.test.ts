@@ -1,6 +1,7 @@
 /**
  * Tests for reset-collection.tool.ts
  * Issue #492 - Coverage for indexing tools
+ * Issue #1274 - Confirm parameter enforcement
  *
  * @module tools/indexing/__tests__/reset-collection.tool
  */
@@ -49,7 +50,7 @@ describe('resetQdrantCollectionTool', () => {
 		const setIndexingEnabled = vi.fn();
 
 		const result = await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			cache,
 			saveCallback,
 			indexQueue,
@@ -66,7 +67,7 @@ describe('resetQdrantCollectionTool', () => {
 		mockResetCollection.mockResolvedValue(undefined);
 
 		const result = await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			new Map(),
 			vi.fn().mockResolvedValue(undefined),
 			new Set(),
@@ -88,7 +89,7 @@ describe('resetQdrantCollectionTool', () => {
 		const saveCallback = vi.fn().mockResolvedValue(undefined);
 
 		await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			cache,
 			saveCallback,
 			new Set(),
@@ -109,7 +110,7 @@ describe('resetQdrantCollectionTool', () => {
 		const indexQueue = new Set<string>();
 
 		await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			cache,
 			vi.fn().mockResolvedValue(undefined),
 			indexQueue,
@@ -127,7 +128,7 @@ describe('resetQdrantCollectionTool', () => {
 		const setEnabled = vi.fn();
 
 		await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			new Map(),
 			vi.fn().mockResolvedValue(undefined),
 			new Set(),
@@ -141,7 +142,7 @@ describe('resetQdrantCollectionTool', () => {
 		mockResetCollection.mockRejectedValue(new Error('Qdrant down'));
 
 		const result = await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			new Map(),
 			vi.fn().mockResolvedValue(undefined),
 			new Set(),
@@ -157,7 +158,7 @@ describe('resetQdrantCollectionTool', () => {
 		mockResetCollection.mockResolvedValue(undefined);
 
 		const result = await resetQdrantCollectionTool.handler(
-			{},
+			{ confirm: true },
 			new Map(),
 			vi.fn().mockResolvedValue(undefined),
 			new Set(),
@@ -168,5 +169,35 @@ describe('resetQdrantCollectionTool', () => {
 		expect(parsed.success).toBe(true);
 		expect(parsed.skeletonsReset).toBe(0);
 		expect(parsed.queuedForReindexing).toBe(0);
+	});
+
+	test('handler rejects without confirm', async () => {
+		const result = await resetQdrantCollectionTool.handler(
+			{},
+			new Map(),
+			vi.fn().mockResolvedValue(undefined),
+			new Set(),
+			vi.fn()
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.success).toBe(false);
+		expect(parsed.message).toContain('Confirmation requise');
+		expect(mockResetCollection).not.toHaveBeenCalled();
+	});
+
+	test('handler rejects with confirm: false', async () => {
+		const result = await resetQdrantCollectionTool.handler(
+			{ confirm: false },
+			new Map(),
+			vi.fn().mockResolvedValue(undefined),
+			new Set(),
+			vi.fn()
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.success).toBe(false);
+		expect(parsed.message).toContain('Confirmation requise');
+		expect(mockResetCollection).not.toHaveBeenCalled();
 	});
 });
