@@ -42,8 +42,19 @@ export const resetQdrantCollectionTool = {
         setQdrantIndexingEnabled: (enabled: boolean) => void
     ): Promise<CallToolResult> => {
         try {
-            console.log('🧹 Réinitialisation de la collection Qdrant...');
-            
+            // Confirmation obligatoire avant opération destructive
+            if (!args.confirm) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            success: false,
+                            message: 'Confirmation requise. Passez confirm: true pour réinitialiser la collection Qdrant.'
+                        }, null, 2)
+                    }]
+                };
+            }
+
             const taskIndexer = new TaskIndexer();
             
             // Supprimer et recréer la collection Qdrant
