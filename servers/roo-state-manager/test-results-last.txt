@@ -1,0 +1,50 @@
+﻿This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Unhandled Error [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[31m[1mError[22m: [vitest-worker]: Timeout calling "onTaskUpdate"[39m
+[90m [2m❯[22m Object.onTimeoutError node_modules/vitest/dist/chunks/rpc.-pEldfrD.js:[2m53:10[22m[39m
+[90m [2m❯[22m Timeout._onTimeout node_modules/vitest/dist/chunks/index.B521nVV-.js:[2m59:62[22m[39m
+[90m [2m❯[22m listOnTimeout node:internal/timers:[2m608:17[22m[39m
+[90m [2m❯[22m processTimers node:internal/timers:[2m543:7[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Unhandled Error [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[31m[1mError[22m: [vitest-worker]: Timeout calling "onTaskUpdate"[39m
+[90m [2m❯[22m Object.onTimeoutError node_modules/vitest/dist/chunks/rpc.-pEldfrD.js:[2m53:10[22m[39m
+[90m [2m❯[22m Timeout._onTimeout node_modules/vitest/dist/chunks/index.B521nVV-.js:[2m59:62[22m[39m
+[90m [2m❯[22m listOnTimeout node:internal/timers:[2m608:17[22m[39m
+[90m [2m❯[22m processTimers node:internal/timers:[2m543:7[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Unhandled Error [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[31m[1mError[22m: [vitest-worker]: Timeout calling "onTaskUpdate"[39m
+[90m [2m❯[22m Object.onTimeoutError node_modules/vitest/dist/chunks/rpc.-pEldfrD.js:[2m53:10[22m[39m
+[90m [2m❯[22m Timeout._onTimeout node_modules/vitest/dist/chunks/index.B521nVV-.js:[2m59:62[22m[39m
+[90m [2m❯[22m listOnTimeout node:internal/timers:[2m608:17[22m[39m
+[90m [2m❯[22m processTimers node:internal/timers:[2m543:7[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Unhandled Error [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[31m[1mError[22m: [vitest-worker]: Timeout calling "onTaskUpdate"[39m
+[90m [2m❯[22m Object.onTimeoutError node_modules/vitest/dist/chunks/rpc.-pEldfrD.js:[2m53:10[22m[39m
+[90m [2m❯[22m Timeout._onTimeout node_modules/vitest/dist/chunks/index.B521nVV-.js:[2m59:62[22m[39m
+[90m [2m❯[22m listOnTimeout node:internal/timers:[2m608:17[22m[39m
+[90m [2m❯[22m processTimers node:internal/timers:[2m543:7[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Unhandled Error [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[31m[1mError[22m: [vitest-worker]: Timeout calling "onTaskUpdate"[39m
+[90m [2m❯[22m Object.onTimeoutError node_modules/vitest/dist/chunks/rpc.-pEldfrD.js:[2m53:10[22m[39m
+[90m [2m❯[22m Timeout._onTimeout node_modules/vitest/dist/chunks/index.B521nVV-.js:[2m59:62[22m[39m
+[90m [2m❯[22m listOnTimeout node:internal/timers:[2m608:17[22m[39m
+[90m [2m❯[22m processTimers node:internal/timers:[2m543:7[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[39m
+
+
+[2m Test Files [22m [1m[31m17 failed[39m[22m[2m | [22m[1m[32m433 passed[39m[22m[2m | [22m[33m2 skipped[39m[90m (452)[39m
+[2m      Tests [22m [1m[31m100 failed[39m[22m[2m | [22m[1m[32m8074 passed[39m[22m[2m | [22m[33m26 skipped[39m[90m (8200)[39m
+[2m     Errors [22m [1m[31m5 errors[39m[22m
+[2m   Start at [22m 01:01:07
+[2m   Duration [22m 1513.81s[2m (transform 109.26s, setup 44.50s, collect 940.85s, tests 4424.01s, environment 311ms, prepare 198.20s)[22m
+

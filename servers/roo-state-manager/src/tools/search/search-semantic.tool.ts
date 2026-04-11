@@ -35,30 +35,6 @@ export function _resetEmbeddingCircuitBreaker(): void {
     lastEmbeddingFailureTime = 0;
 }
 
-// #1232: Circuit breaker for embedding API failures
-// When the embedding API returns 502/503, skip semantic search and go directly to text fallback
-// for EMBEDDING_CIRCUIT_BREAKER_TTL_MS (default 5 minutes) to avoid repeated timeouts.
-let lastEmbeddingFailureTime = 0;
-const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
-
-/**
- * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
- * Only activates on real server errors, not generic exceptions.
- */
-function isHttpServerError(error: unknown): boolean {
-    if (!(error instanceof Error)) return false;
-    const msg = error.message;
-    return /\b5[0-9]{2}\b/.test(msg) || msg.includes('Bad Gateway') || msg.includes('Service Unavailable') || msg.includes('Gateway Timeout');
-}
-
-/**
- * Reset the circuit breaker state (for testing).
- * @internal
- */
-export function _resetEmbeddingCircuitBreaker(): void {
-    lastEmbeddingFailureTime = 0;
-}
-
 export interface SearchTasksByContentArgs {
     conversation_id?: string;
     search_query: string;
