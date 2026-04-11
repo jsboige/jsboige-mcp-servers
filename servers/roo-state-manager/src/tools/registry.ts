@@ -130,7 +130,8 @@ export function registerCallToolHandler(
                         try {
                             const locations = await RooStorageDetector.detectStorageLocations();
                             for (const loc of locations) {
-                                const taskPath = path.join(loc, id);
+                                // #1325: detectStorageLocations returns base paths, need 'tasks' segment
+                                const taskPath = path.join(loc, 'tasks', id);
                                 if (existsSync(taskPath)) {
                                     const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
                                     if (skeleton) {
@@ -147,7 +148,8 @@ export function registerCallToolHandler(
                         try {
                             const locations = await RooStorageDetector.detectStorageLocations();
                             for (const loc of locations) {
-                                const taskPath = path.join(loc, rootId);
+                                // #1325: detectStorageLocations returns base paths, need 'tasks' segment
+                                const taskPath = path.join(loc, 'tasks', rootId);
                                 if (existsSync(taskPath)) {
                                     const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
                                     if (skeleton && !cache.has(rootId)) {

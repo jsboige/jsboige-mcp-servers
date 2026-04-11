@@ -221,11 +221,16 @@ export async function handleRooSyncSearch(
                     content: [{ type: 'text', text: 'Le paramètre "search_query" est requis pour action=text' }]
                 };
             }
+            // #1324: Translate workspace "all"/"*" to undefined (same as semantic path)
+            let textWorkspace: string | undefined = args.workspace;
+            if (textWorkspace === '*' || textWorkspace === 'all') {
+                textWorkspace = undefined;
+            }
             // Appeler directement le fallback textuel
-            await ensureCacheFreshCallback({ workspace: args.workspace });
+            await ensureCacheFreshCallback({ workspace: textWorkspace });
             const fallbackArgs: SearchFallbackArgs = {
                 query: args.search_query,
-                workspace: args.workspace,
+                workspace: textWorkspace,
                 source: args.source
             };
             return await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);

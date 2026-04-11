@@ -139,6 +139,13 @@ export async function loadFullSkeleton(
         }
         const skeleton: ConversationSkeleton = JSON.parse(content);
 
+        // #1325: Validate that the loaded skeleton actually has a sequence.
+        // saveSkeletonToDisk can create header-only files when no existing
+        // file was present — these lack a sequence and should not be trusted.
+        if (!Array.isArray(skeleton.sequence) || skeleton.sequence.length === 0) {
+            return null;
+        }
+
         // Update cache with header only — sequence stays on disk
         conversationCache.set(taskId, toHeader(skeleton));
         return skeleton;
@@ -916,7 +923,11 @@ export async function saveSkeletonToDisk(skeleton: SkeletonHeader): Promise<void
                     toWrite = { ...parsed, ...skeleton, sequence: parsed.sequence };
                 }
             } catch {
-                // No existing file or parse error — write header as-is
+                // #1325: No existing file — don't write header-only data to disk.
+                // Header-only files corrupt the skeleton cache because loadFullSkeleton
+                // returns them as valid skeletons without sequence, causing 0 exchanges
+                // in trace summarize.
+                return;
             }
         }
 

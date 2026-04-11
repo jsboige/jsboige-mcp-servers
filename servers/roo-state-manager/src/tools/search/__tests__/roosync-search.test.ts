@@ -509,7 +509,7 @@ describe('roosync_search', () => {
 			);
 		});
 
-		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+		test('translates "all" workspace to undefined for text search (#1324)', async () => {
 			await handleRooSyncSearch(
 				{ action: 'text', search_query: 'global search', workspace: 'all' },
 				mockCache,
@@ -517,10 +517,11 @@ describe('roosync_search', () => {
 				mockFallbackHandler
 			);
 
+			// #1324: "all" must be translated to undefined, same as semantic path
 			expect(mockFallbackHandler).toHaveBeenCalledWith(
 				expect.objectContaining({
 					query: 'global search',
-					workspace: 'all'
+					workspace: undefined
 				}),
 				mockCache
 			);
@@ -563,7 +564,7 @@ describe('roosync_search', () => {
 			expect(callArgs.diagnose_index).toBe(false);
 		});
 
-		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+		test('translates "all" workspace to undefined for text search (#1324)', async () => {
 			await handleRooSyncSearch(
 				{ action: 'text', search_query: 'global search', workspace: 'all' },
 				mockCache,
@@ -571,10 +572,11 @@ describe('roosync_search', () => {
 				mockFallbackHandler
 			);
 
+			// #1324: "all" must be translated to undefined, same as semantic path
 			expect(mockFallbackHandler).toHaveBeenCalledWith(
 				expect.objectContaining({
 					query: 'global search',
-					workspace: 'all'
+					workspace: undefined
 				}),
 				mockCache
 			);
@@ -617,7 +619,7 @@ describe('roosync_search', () => {
 			expect(callArgs.diagnose_index).toBe(false);
 		});
 
-		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+		test('translates "all" workspace to undefined for text search (#1324)', async () => {
 			await handleRooSyncSearch(
 				{ action: 'text', search_query: 'global search', workspace: 'all' },
 				mockCache,
@@ -625,10 +627,11 @@ describe('roosync_search', () => {
 				mockFallbackHandler
 			);
 
+			// #1324: "all" must be translated to undefined, same as semantic path
 			expect(mockFallbackHandler).toHaveBeenCalledWith(
 				expect.objectContaining({
 					query: 'global search',
-					workspace: 'all'
+					workspace: undefined
 				}),
 				mockCache
 			);
@@ -650,7 +653,7 @@ describe('roosync_search', () => {
 			expect(callArgs.diagnose_index).toBe(false);
 		});
 
-		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+		test('translates "all" workspace to undefined for text search (#1324)', async () => {
 			await handleRooSyncSearch(
 				{ action: 'text', search_query: 'global search', workspace: 'all' },
 				mockCache,
@@ -658,10 +661,11 @@ describe('roosync_search', () => {
 				mockFallbackHandler
 			);
 
+			// #1324: "all" must be translated to undefined, same as semantic path
 			expect(mockFallbackHandler).toHaveBeenCalledWith(
 				expect.objectContaining({
 					query: 'global search',
-					workspace: 'all'
+					workspace: undefined
 				}),
 				mockCache
 			);
@@ -725,7 +729,7 @@ describe('roosync_search', () => {
 			expect(callArgs.diagnose_index).toBe(false);
 		});
 
-		test('passes "all" workspace as undefined for text search (should preserve "all")', async () => {
+		test('translates "all" workspace to undefined for text search (#1324)', async () => {
 			await handleRooSyncSearch(
 				{ action: 'text', search_query: 'global search', workspace: 'all' },
 				mockCache,
@@ -733,10 +737,11 @@ describe('roosync_search', () => {
 				mockFallbackHandler
 			);
 
+			// #1324: "all" must be translated to undefined, same as semantic path
 			expect(mockFallbackHandler).toHaveBeenCalledWith(
 				expect.objectContaining({
 					query: 'global search',
-					workspace: 'all'
+					workspace: undefined
 				}),
 				mockCache
 			);
