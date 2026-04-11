@@ -635,14 +635,6 @@ function cleanupEmptyAutoApprove(settings: McpSettings | Record<string, any>): v
     }
 }
 
-/**
- * Écrit la configuration MCP avec nettoyage automatique des autoApprove vides
- */
-async function writeMcpSettingsWithCleanup(settings: McpSettings): Promise<void> {
-    cleanupEmptyAutoApprove(settings);
-    await fs.writeFile(getMcpSettingsPath(), JSON.stringify(settings, null, 2), 'utf-8');
-}
-
 // ====================================================================
 // OUTIL PRINCIPAL
 // ====================================================================

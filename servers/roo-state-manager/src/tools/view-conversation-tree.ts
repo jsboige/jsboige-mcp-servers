@@ -194,6 +194,8 @@ async function handleViewConversationTreeExecutionAsync(
         
         (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
+                // #1271: Guard against null/undefined content
+                const content = item.content ?? '';
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
                 // #901: skeleton shows first 300 chars (was 50 — unusable)
@@ -201,22 +203,22 @@ async function handleViewConversationTreeExecutionAsync(
                 if (detail_level === 'skeleton') {
                     if (truncate === 0) {
                         // truncate=0: show full message (single line format)
-                        const summary = item.content.replace(/\n/g, ' ');
+                        const summary = content.replace(/\n/g, ' ');
                         output += `${indent}  [${role}]: ${summary}\n`;
                     } else if (truncate > 0) {
                         // truncate>0: apply truncateMessage then format as single line
-                        const truncated = truncateMessage(item.content, truncate);
+                        const truncated = truncateMessage(content, truncate);
                         const summary = truncated.replace(/\n/g, ' ');
                         output += `${indent}  [${role}]: ${summary}\n`;
                     } else {
                         // Fallback: show first 300 chars (legacy behavior)
-                        const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
-                        const ellipsis = item.content.length > 300 ? '...' : '';
+                        const summary = content.substring(0, 300).replace(/\n/g, ' ');
+                        const ellipsis = content.length > 300 ? '...' : '';
                         output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                     }
                 } else {
                     // Summary/Full : comportement original
-                    const message = truncateMessage(item.content, truncate);
+                    const message = truncateMessage(content, truncate);
                     const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
                     output += `${indent}  [${role}]:\n${messageLines}\n`;
                 }
@@ -265,7 +267,7 @@ async function handleViewConversationTreeExecutionAsync(
             totalSize += 200; // En-tête de tâche
             for (const item of skeleton.sequence ?? []) {
                 if ('role' in item) {
-                    totalSize += item.content.length + 100; // Message + formatage
+                    totalSize += (item.content?.length ?? 0) + 100; // Message + formatage
                 } else {
                     totalSize += 150; // Action + formatage
                 }
@@ -876,6 +878,8 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
         
         (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
+                // #1271: Guard against null/undefined content
+                const content = item.content ?? '';
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
 
                 // #901: skeleton shows first 300 chars (was 50 — unusable)
@@ -883,22 +887,22 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
                 if (detail_level === 'skeleton') {
                     if (truncate === 0) {
                         // truncate=0: show full message (single line format)
-                        const summary = item.content.replace(/\n/g, ' ');
+                        const summary = content.replace(/\n/g, ' ');
                         output += `${indent}  [${role}]: ${summary}\n`;
                     } else if (truncate > 0) {
                         // truncate>0: apply truncateMessage then format as single line
-                        const truncated = truncateMessage(item.content, truncate);
+                        const truncated = truncateMessage(content, truncate);
                         const summary = truncated.replace(/\n/g, ' ');
                         output += `${indent}  [${role}]: ${summary}\n`;
                     } else {
                         // Fallback: show first 300 chars (legacy behavior)
-                        const summary = item.content.substring(0, 300).replace(/\n/g, ' ');
-                        const ellipsis = item.content.length > 300 ? '...' : '';
+                        const summary = content.substring(0, 300).replace(/\n/g, ' ');
+                        const ellipsis = content.length > 300 ? '...' : '';
                         output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                     }
                 } else {
                     // Summary/Full : comportement original
-                    const message = truncateMessage(item.content, truncate);
+                    const message = truncateMessage(content, truncate);
                     const messageLines = message.split('\n').map(l => `${indent}    | ${l}`).join('\n');
                     output += `${indent}  [${role}]:\n${messageLines}\n`;
                 }
