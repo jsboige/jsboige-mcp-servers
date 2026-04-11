@@ -11,13 +11,16 @@
 
 import { z, ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { join } from 'path';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import {
   updateRoadmapStatus,
   validateDecisionStatus,
   formatDecisionResult,
   loadDecisionDetails,
-  moveDecisionFile
+  moveDecisionFile,
+  createBackup,
+  restoreBackup
 } from './utils/decision-helpers.js';
 
 /**
@@ -231,12 +234,32 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
         });
       }
 
-      // Créer un backup avant application (pour rollback)
+      // #1268: Real backup before applying decision (replaces stub)
+      // Backup the decision JSON file and sync-roadmap.md
       try {
-        // Note: createBackup sera implémenté plus tard
-        // Pour l'instant, on log l'action
-        executionLog.push(`[INFO] Backup créé avant application`);
-        rollbackAvailable = true;
+        const decisionJsonPath = join(config.sharedPath, 'decisions', previousStatus, `${args.decisionId}.json`);
+        const roadmapPath = join(config.sharedPath, 'sync-roadmap.md');
+        const filesToBackup: string[] = [];
+
+        // Only backup files that exist
+        const { existsSync } = await import('fs');
+        if (existsSync(decisionJsonPath)) filesToBackup.push(decisionJsonPath);
+        if (existsSync(roadmapPath)) filesToBackup.push(roadmapPath);
+
+        if (filesToBackup.length > 0) {
+          const backupDir = join(config.sharedPath, 'decisions', 'backups');
+          const backupInfo = createBackup(filesToBackup, backupDir);
+          executionLog.push(`[INFO] Backup créé: ${backupInfo.files.length} fichier(s) dans ${backupInfo.backupDir}`);
+          rollbackAvailable = true;
+
+          // Persist backup metadata for rollback
+          const { writeFileSync: writeMeta } = await import('fs');
+          const metaPath = join(config.sharedPath, 'decisions', 'backups', `${args.decisionId}-meta.json`);
+          writeMeta(metaPath, JSON.stringify(backupInfo, null, 2));
+        } else {
+          executionLog.push(`[INFO] Aucun fichier à sauvegarder (décision déjà déplacée ou roadmap absent)`);
+          rollbackAvailable = false;
+        }
       } catch (backupError) {
         if (!args.force) {
           return {
@@ -247,7 +270,7 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
             newStatus: previousStatus,
             timestamp: new Date().toISOString(),
             machineId,
-            error: 'Impossible de créer le backup. Utilisez force=true pour continuer sans backup.',
+            error: `Impossible de créer le backup: ${backupError instanceof Error ? backupError.message : String(backupError)}. Utilisez force=true pour continuer sans backup.`,
             nextSteps: ['Utilisez force=true pour continuer sans backup']
           };
         }
@@ -265,11 +288,20 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
       break;
 
     case 'rollback':
-      // Restaurer depuis le backup
+      // #1268: Real rollback using stored backup (replaces stub)
       try {
-        // Note: restoreBackup sera implémenté plus tard
-        restoredFiles = [];
-        executionLog.push(`[INFO] Rollback effectué pour ${args.decisionId}`);
+        const { existsSync: existsMeta, readFileSync: readMeta } = await import('fs');
+        const metaPath = join(config.sharedPath, 'decisions', 'backups', `${args.decisionId}-meta.json`);
+
+        if (existsMeta(metaPath)) {
+          const backupInfo = JSON.parse(readMeta(metaPath, 'utf-8'));
+          restoredFiles = restoreBackup(backupInfo, config.sharedPath);
+          executionLog.push(`[INFO] Rollback effectué: ${restoredFiles.length} fichier(s) restauré(s) pour ${args.decisionId}`);
+        } else {
+          // No backup found — cannot restore files but can still update status
+          restoredFiles = [];
+          executionLog.push(`[WARN] Aucun backup trouvé pour ${args.decisionId}. Restauration des fichiers impossible, mise à jour statut uniquement.`);
+        }
       } catch (restoreError) {
         const errorMessage = restoreError instanceof Error ? restoreError.message : String(restoreError);
         return {

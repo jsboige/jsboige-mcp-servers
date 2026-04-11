@@ -21,7 +21,8 @@ const mockLoadDecisionDetails = vi.fn();
 vi.mock('../../../../src/services/RooSyncService.js', () => ({
   getRooSyncService: () => ({
     getConfig: () => ({
-      machineId: 'test-machine-01'
+      machineId: 'test-machine-01',
+      sharedPath: '/tmp/test-shared-state'
     })
   }),
   RooSyncServiceError: class RooSyncServiceError extends Error {
@@ -45,7 +46,9 @@ describe('roosync_decision - Execution - Action Approve', () => {
       validateDecisionStatus: mockValidateDecisionStatus,
       formatDecisionResult: mockFormatDecisionResult,
       loadDecisionDetails: mockLoadDecisionDetails,
-      moveDecisionFile: vi.fn()
+      moveDecisionFile: vi.fn(),
+      createBackup: vi.fn(() => ({ files: [], backupDir: '/tmp/test-backup' })),
+      restoreBackup: vi.fn(() => [])
     }));
   });
 
@@ -124,7 +127,9 @@ describe('roosync_decision - Execution - Action Reject', () => {
       validateDecisionStatus: mockValidateDecisionStatus,
       formatDecisionResult: mockFormatDecisionResult,
       loadDecisionDetails: mockLoadDecisionDetails,
-      moveDecisionFile: vi.fn()
+      moveDecisionFile: vi.fn(),
+      createBackup: vi.fn(() => ({ files: [], backupDir: '/tmp/test-backup' })),
+      restoreBackup: vi.fn(() => [])
     }));
   });
 
@@ -180,7 +185,9 @@ describe('roosync_decision - Execution - Action Apply', () => {
       validateDecisionStatus: mockValidateDecisionStatus,
       formatDecisionResult: mockFormatDecisionResult,
       loadDecisionDetails: mockLoadDecisionDetails,
-      moveDecisionFile: vi.fn()
+      moveDecisionFile: vi.fn(),
+      createBackup: vi.fn(() => ({ files: [], backupDir: '/tmp/test-backup' })),
+      restoreBackup: vi.fn(() => [])
     }));
   });
 
@@ -270,7 +277,9 @@ describe('roosync_decision - Execution - Action Rollback', () => {
       validateDecisionStatus: mockValidateDecisionStatus,
       formatDecisionResult: mockFormatDecisionResult,
       loadDecisionDetails: mockLoadDecisionDetails,
-      moveDecisionFile: vi.fn()
+      moveDecisionFile: vi.fn(),
+      createBackup: vi.fn(() => ({ files: [], backupDir: '/tmp/test-backup' })),
+      restoreBackup: vi.fn(() => [])
     }));
   });
 
@@ -322,7 +331,9 @@ describe('roosync_decision - Execution - Error Handling', () => {
       validateDecisionStatus: mockValidateDecisionStatus,
       formatDecisionResult: mockFormatDecisionResult,
       loadDecisionDetails: mockLoadDecisionDetails,
-      moveDecisionFile: vi.fn()
+      moveDecisionFile: vi.fn(),
+      createBackup: vi.fn(() => ({ files: [], backupDir: '/tmp/test-backup' })),
+      restoreBackup: vi.fn(() => [])
     }));
   });
 

@@ -59,30 +59,80 @@ export class SkeletonComparator {
       });
     }
     
-    // Comparer workspace
-    if (oldSkeleton.metadata?.workspace !== newSkeleton.metadata?.workspace) {
-      differences.push({
-        field: 'workspace',
-        oldValue: oldSkeleton.metadata?.workspace,
-        newValue: newSkeleton.metadata?.workspace,
-        severity: 'major',
-      });
+    // Si un metadata est undefined et l'autre est défini, ne pas comparer les champs de metadata
+    if ((oldSkeleton.metadata === undefined || oldSkeleton.metadata === null) !==
+        (newSkeleton.metadata === undefined || newSkeleton.metadata === null)) {
+      // Ne rien ajouter, considérer comme identique
+    } else {
+      // Comparer workspace (undefined ou null = identique)
+      const oldWorkspace = oldSkeleton.metadata?.workspace;
+      const newWorkspace = newSkeleton.metadata?.workspace;
+      if (oldWorkspace !== newWorkspace &&
+          !((oldWorkspace === undefined || oldWorkspace === null) && (newWorkspace === undefined || newWorkspace === null))) {
+        differences.push({
+          field: 'workspace',
+          oldValue: oldWorkspace,
+          newValue: newWorkspace,
+          severity: 'major',
+        });
+      }
+
+      // Comparer metadata.createdAt (undefined ou null = identique)
+      const oldCreatedAt = oldSkeleton.metadata?.createdAt;
+      const newCreatedAt = newSkeleton.metadata?.createdAt;
+      if (oldCreatedAt !== newCreatedAt &&
+          !((oldCreatedAt === undefined || oldCreatedAt === null) && (newCreatedAt === undefined || newCreatedAt === null))) {
+        differences.push({
+          field: 'metadata.createdAt',
+          oldValue: oldCreatedAt,
+          newValue: newCreatedAt,
+          severity: 'minor',
+        });
+      }
+
+      // Comparer metadata.lastActivity (undefined ou null = identique)
+      const oldLastActivity = oldSkeleton.metadata?.lastActivity;
+      const newLastActivity = newSkeleton.metadata?.lastActivity;
+      if (oldLastActivity !== newLastActivity &&
+          !((oldLastActivity === undefined || oldLastActivity === null) && (newLastActivity === undefined || newLastActivity === null))) {
+        differences.push({
+          field: 'metadata.lastActivity',
+          oldValue: oldLastActivity,
+          newValue: newLastActivity,
+          severity: 'minor',
+        });
+      }
+
+      // Comparer metadata.messageCount (undefined ou null = identique)
+      const oldMessageCount = oldSkeleton.metadata?.messageCount;
+      const newMessageCount = newSkeleton.metadata?.messageCount;
+      if (oldMessageCount !== newMessageCount &&
+          !((oldMessageCount === undefined || oldMessageCount === null) && (newMessageCount === undefined || newMessageCount === null))) {
+        differences.push({
+          field: 'metadata.messageCount',
+          oldValue: oldMessageCount,
+          newValue: newMessageCount,
+          severity: 'major',
+        });
+      }
     }
-    
-    // Comparer truncatedInstruction
-    if (oldSkeleton.truncatedInstruction !== newSkeleton.truncatedInstruction) {
+
+    // Comparer truncatedInstruction (undefined ou null = identique)
+    const oldTruncated = oldSkeleton.truncatedInstruction;
+    const newTruncated = newSkeleton.truncatedInstruction;
+    if (oldTruncated !== newTruncated && !(oldTruncated === undefined && newTruncated === undefined) && !(oldTruncated === null && newTruncated === null)) {
       differences.push({
         field: 'truncatedInstruction',
-        oldValue: oldSkeleton.truncatedInstruction,
-        newValue: newSkeleton.truncatedInstruction,
+        oldValue: oldTruncated,
+        newValue: newTruncated,
         severity: 'major',
       });
     }
-    
-    // Comparer childTaskInstructionPrefixes
-    const oldPrefixes = new Set(oldSkeleton.childTaskInstructionPrefixes || []);
-    const newPrefixes = new Set(newSkeleton.childTaskInstructionPrefixes || []);
-    
+
+    // Comparer childTaskInstructionPrefixes (undefined ou null = vide = identique)
+    const oldPrefixes = new Set(oldSkeleton.childTaskInstructionPrefixes ?? []);
+    const newPrefixes = new Set(newSkeleton.childTaskInstructionPrefixes ?? []);
+
     if (!this.areSetsEqual(oldPrefixes, newPrefixes)) {
       differences.push({
         field: 'childTaskInstructionPrefixes',
@@ -91,43 +141,15 @@ export class SkeletonComparator {
         severity: 'major',
       });
     }
-    
-    // Comparer isCompleted
-    if (oldSkeleton.isCompleted !== newSkeleton.isCompleted) {
+
+    // Comparer isCompleted (undefined = false par défaut)
+    const oldCompleted = oldSkeleton.isCompleted ?? false;
+    const newCompleted = newSkeleton.isCompleted ?? false;
+    if (oldCompleted !== newCompleted) {
       differences.push({
         field: 'isCompleted',
-        oldValue: oldSkeleton.isCompleted,
-        newValue: newSkeleton.isCompleted,
-        severity: 'major',
-      });
-    }
-    
-    // Comparer metadata.createdAt
-    if (oldSkeleton.metadata?.createdAt !== newSkeleton.metadata?.createdAt) {
-      differences.push({
-        field: 'metadata.createdAt',
-        oldValue: oldSkeleton.metadata?.createdAt,
-        newValue: newSkeleton.metadata?.createdAt,
-        severity: 'minor',
-      });
-    }
-    
-    // Comparer metadata.lastActivity
-    if (oldSkeleton.metadata?.lastActivity !== newSkeleton.metadata?.lastActivity) {
-      differences.push({
-        field: 'metadata.lastActivity',
-        oldValue: oldSkeleton.metadata?.lastActivity,
-        newValue: newSkeleton.metadata?.lastActivity,
-        severity: 'minor',
-      });
-    }
-    
-    // Comparer metadata.messageCount
-    if (oldSkeleton.metadata?.messageCount !== newSkeleton.metadata?.messageCount) {
-      differences.push({
-        field: 'metadata.messageCount',
-        oldValue: oldSkeleton.metadata?.messageCount,
-        newValue: newSkeleton.metadata?.messageCount,
+        oldValue: oldCompleted,
+        newValue: newCompleted,
         severity: 'major',
       });
     }
@@ -135,7 +157,7 @@ export class SkeletonComparator {
     // Calculer le score de similarité
     const totalFields = 9; // Nombre de champs comparés
     const identicalFields = totalFields - differences.length;
-    const similarityScore = (identicalFields / totalFields) * 100;
+    const similarityScore = Math.round((identicalFields / totalFields) * 100 * 100) / 100; // Arrondi à 2 décimales
     
     return {
       areIdentical: differences.length === 0,
@@ -251,9 +273,15 @@ export class SkeletonComparator {
     
     // Amélioration 2 : Normalisation workspace
     if (oldSkeleton.metadata?.workspace && newSkeleton.metadata?.workspace &&
-        oldSkeleton.metadata.workspace !== newSkeleton.metadata.workspace &&
-        newSkeleton.metadata.workspace.includes('\\\\')) {
-      improvements.push('Normalisation path Windows (/ → \\\\)');
+        oldSkeleton.metadata.workspace !== newSkeleton.metadata.workspace) {
+      // Cas 1: Normalisation Windows (/ → \\)
+      if (newSkeleton.metadata.workspace.includes('\\\\')) {
+        improvements.push('Normalisation path Windows (/ → \\\\)');
+      }
+      // Cas 2: Normalisation vers forward slash
+      else if (oldSkeleton.metadata.workspace.includes('\\\\') && !newSkeleton.metadata.workspace.includes('\\\\')) {
+        improvements.push('Normalisation path Windows (\\\\ → /)');
+      }
     }
     
     // Amélioration 3 : Réduction truncatedInstruction

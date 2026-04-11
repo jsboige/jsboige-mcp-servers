@@ -174,6 +174,35 @@ async function handleEnvAction(
 }
 
 /**
+ * #1267: Retry polling with exponential backoff instead of fixed setTimeout.
+ * Polls getInstance until it succeeds or max retries exhausted.
+ */
+async function getInstanceWithRetry(
+  options: { enabled: boolean },
+  maxRetries = 5,
+  baseDelayMs = 100
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const service = await RooSyncService.getInstance(options);
+      if (service) return service;
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < maxRetries - 1) {
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      console.warn(`[DEBUG] getInstance attempt ${attempt + 1}/${maxRetries} failed, retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw new RooSyncServiceError(
+    `Failed to create RooSyncService instance after ${maxRetries} retries`,
+    'INSTANCE_CREATION_FAILED'
+  );
+}
+
+/**
  * Gère l'action 'debug' (debug du dashboard)
  * Anciennement debug_reset avec action='debug'
  */
@@ -184,13 +213,10 @@ async function handleDebugAction(
   console.log('[DEBUG] debugDashboard - FORCAGE NOUVELLE INSTANCE');
 
   // Forcer la réinitialisation complète du singleton
-  await await RooSyncService.resetInstance();
+  await RooSyncService.resetInstance();
 
-  // Attendre un peu pour s'assurer que l'instance est bien nettoyée
-  await new Promise(resolve => setTimeout(resolve, 100));
-
-  // Créer une nouvelle instance avec cache désactivé
-  const service = await await RooSyncService.getInstance({ enabled: false });
+  // #1267: Retry polling instead of fixed 100ms sleep
+  const service = await getInstanceWithRetry({ enabled: false });
 
   console.log('[DEBUG] debugDashboard - NOUVELLE INSTANCE CRÉÉE');
 
@@ -239,7 +265,7 @@ async function handleResetAction(
   console.log('[RESET] Réinitialisation de l\'instance RooSyncService...');
 
   // Réinitialiser l'instance singleton
-  await await RooSyncService.resetInstance();
+  await RooSyncService.resetInstance();
 
   // Vider le cache si demandé
   if (args.clearCache) {

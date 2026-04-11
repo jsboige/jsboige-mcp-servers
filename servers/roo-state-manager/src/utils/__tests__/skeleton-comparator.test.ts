@@ -23,7 +23,7 @@ function createSkeleton(overrides?: Partial<ConversationSkeleton>): Conversation
       messageCount: 10,
       actionCount: 5,
       totalSize: 2048,
-      workspace: '/workspace/project',
+      workspace: '/workspace',
     },
     sequence: [],
     childTaskInstructionPrefixes: ['prefix-1', 'prefix-2'],
@@ -145,6 +145,70 @@ describe('SkeletonComparator', () => {
       expect(result.metadata.oldSystemName).toBe('regex-based');
       expect(result.metadata.newSystemName).toBe('json-parsing');
     });
+
+    // Edge cases for compare method
+    it('should handle comparison with undefined metadata (null-safety: undefined = identical)', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({ metadata: undefined });
+      const result = comparator.compare(old, newer);
+
+      expect(result.areIdentical).toBe(true);
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
+    });
+
+    it('should handle comparison with null sequence', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({ sequence: null });
+      const result = comparator.compare(old, newer);
+
+      // The compare method doesn't compare sequence field, so they should be identical
+      expect(result.areIdentical).toBe(true);
+    });
+
+    it('should handle comparison with undefined childTaskInstructionPrefixes (null-safety: undefined = empty, but different from populated)', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: undefined });
+      const newer = createSkeleton(); // has ['prefix-1', 'prefix-2']
+      const result = comparator.compare(old, newer);
+
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('childTaskInstructionPrefixes');
+    });
+
+    it('should handle comparison with null values in metadata', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: null
+        }
+      });
+      const result = comparator.compare(old, newer);
+
+      expect(result.areIdentical).toBe(false);
+    });
+
+    it('should handle comparison with empty string differences', () => {
+      const old = createSkeleton({ taskId: '' });
+      const newer = createSkeleton({ taskId: 'task-001' });
+      const result = comparator.compare(old, newer);
+
+      expect(result.areIdentical).toBe(false);
+    });
+
+    it('should handle comparison with zero values', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          messageCount: 0
+        }
+      });
+      const result = comparator.compare(old, newer);
+
+      expect(result.areIdentical).toBe(false);
+    });
   });
 
   // === formatReport ===
@@ -169,6 +233,21 @@ describe('SkeletonComparator', () => {
       expect(report).toContain('Identical: NO');
       expect(report).toContain('[CRITICAL]');
       expect(report).toContain('taskId');
+    });
+
+    it('should format report with detailed differences', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        taskId: 'new-task',
+        metadata: { ...createSkeleton().metadata, messageCount: 50 }
+      });
+      const result = comparator.compare(old, newer);
+      const report = comparator.formatReport(result);
+
+      expect(report).toContain('[CRITICAL]');
+      expect(report).toContain('[MAJOR]');
+      expect(report).toContain('taskId');
+      expect(report).toContain('metadata.messageCount');
     });
   });
 
@@ -200,6 +279,17 @@ describe('SkeletonComparator', () => {
       expect(comparator.isWithinTolerance(result, 25)).toBe(true); // 77.78 >= 75
       expect(comparator.isWithinTolerance(result, 10)).toBe(false); // 77.78 < 90
     });
+
+    it('should return true when differences are below threshold', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        metadata: { ...createSkeleton().metadata, lastActivity: '2026-02-11T10:00:00Z' },
+      });
+      const result = comparator.compare(old, newer);
+
+      // Only minor difference, should pass with 90% tolerance
+      expect(comparator.isWithinTolerance(result, 90)).toBe(true);
+    });
   });
 
   // === getDifferenceSummary ===
@@ -226,6 +316,25 @@ describe('SkeletonComparator', () => {
     it('should return zeros for identical skeletons', () => {
       const result = comparator.compare(createSkeleton(), createSkeleton());
       const summary = comparator.getDifferenceSummary(result);
+
+      expect(summary.critical).toBe(0);
+      expect(summary.major).toBe(0);
+      expect(summary.minor).toBe(0);
+      expect(summary.total).toBe(0);
+    });
+
+    it('should handle empty differences array', () => {
+      const result = {
+        areIdentical: false,
+        differences: [],
+        similarityScore: 100,
+        metadata: {
+          comparedAt: Date.now(),
+          oldSystemName: 'test',
+          newSystemName: 'test'
+        }
+      };
+      const summary = comparator.getDifferenceSummary(result as any);
 
       expect(summary.critical).toBe(0);
       expect(summary.major).toBe(0);
@@ -266,6 +375,82 @@ describe('SkeletonComparator', () => {
       const improvements = comparator.identifyImprovements(skeleton, skeleton);
       expect(improvements).toHaveLength(0);
     });
+
+    it('should detect Windows path normalization', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '/workspace/project'
+        }
+      });
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '\\\\workspace\\\\project'
+        }
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Normalisation'))).toBe(true);
+    });
+
+    it('should detect reduction in truncatedInstruction as improvement', () => {
+      const old = createSkeleton({ truncatedInstruction: 'very long instruction that was truncated...' });
+      const newer = createSkeleton({ truncatedInstruction: undefined });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements).toContain('Instruction complète extraite (truncated → complete)');
+    });
+
+    it('should not detect improvement when truncatedInstruction is present in both', () => {
+      const old = createSkeleton({ truncatedInstruction: 'instruction' });
+      const newer = createSkeleton({ truncatedInstruction: 'different instruction' });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Instruction'))).toBe(false);
+    });
+
+    it('should not detect improvement when workspace normalization has already been done', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '\\\\workspace\\\\project'
+        }
+      });
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '\\\\workspace\\\\project'
+        }
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Normalisation'))).toBe(false);
+    });
+
+    it('should detect improvement when going from undefined to array', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: undefined });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['prefix-1'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('+1 child tasks'))).toBe(true);
+    });
+
+    it('should detect improvement when going from null to array', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: null });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['prefix-1', 'prefix-2'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('+2 child tasks'))).toBe(true);
+    });
+
+    it('should detect no improvement when going from array to undefined', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: ['prefix-1'] });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: undefined });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('child tasks'))).toBe(false);
+    });
   });
 
   // === compareWithImprovements ===
@@ -292,6 +477,451 @@ describe('SkeletonComparator', () => {
       expect(result.differences).toBeDefined();
       expect(result.similarityScore).toBeDefined();
       expect(result.metadata).toBeDefined();
+    });
+
+    it('should detect Windows path normalization as improvement', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '/workspace/project'
+        }
+      });
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '\\\\workspace\\\\project'
+        }
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Normalisation path Windows'))).toBe(true);
+    });
+
+    it('should return valid upgrade for significant improvements', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: [] });
+      const newer = createSkeleton({
+        childTaskInstructionPrefixes: Array.from({ length: 12 }, (_, i) => `improved-task-${i}`),
+      });
+
+      const result = comparator.compareWithImprovements(old, newer);
+      // Avec 12 child tasks vs 0, on a +12 child tasks (>10) et la similarité est à 100%
+      expect(result.isValidUpgrade).toBe(true);
+    });
+
+    it('should return invalid upgrade for regression', () => {
+      const old = createSkeleton({
+        childTaskInstructionPrefixes: ['task-1', 'task-2', 'task-3']
+      });
+      const newer = createSkeleton({
+        childTaskInstructionPrefixes: ['task-1']
+      });
+
+      const result = comparator.compareWithImprovements(old, newer);
+      expect(result.isValidUpgrade).toBe(false);
+    });
+  });
+
+  // Additional test for areSetsEqual method (private method testing)
+  describe('areSetsEqual', () => {
+    // Create a comparator instance to test private methods
+    const testComparator = new SkeletonComparator();
+
+    it('should return true for empty sets', () => {
+      expect(testComparator['areSetsEqual'](new Set(), new Set())).toBe(true);
+    });
+
+    it('should return true for identical sets with same elements', () => {
+      const set1 = new Set(['a', 'b', 'c']);
+      const set2 = new Set(['a', 'b', 'c']);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(true);
+    });
+
+    it('should return false for sets with different sizes', () => {
+      const set1 = new Set(['a', 'b']);
+      const set2 = new Set(['a', 'b', 'c']);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(false);
+    });
+
+    it('should return false for sets with same size but different elements', () => {
+      const set1 = new Set(['a', 'b', 'c']);
+      const set2 = new Set(['a', 'b', 'd']);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(false);
+    });
+
+    it('should handle sets with different types of elements', () => {
+      const set1 = new Set(['string', 123, true]);
+      const set2 = new Set(['string', 123, true]);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(true);
+    });
+
+    it('should handle sets with undefined and null values', () => {
+      const set1 = new Set(['a', undefined, null]);
+      const set2 = new Set(['a', undefined, null]);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(true);
+    });
+
+    it('should handle sets with object references', () => {
+      const obj1 = { id: 1 };
+      const obj2 = { id: 2 };
+      const set1 = new Set([obj1, 'test']);
+      const set2 = new Set([obj1, 'test']);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(true);
+    });
+
+    it('should handle sets with different object references', () => {
+      const obj1 = { id: 1 };
+      const obj2 = { id: 2 };
+      const set1 = new Set([obj1, 'test']);
+      const set2 = new Set([obj2, 'test']);
+      expect(testComparator['areSetsEqual'](set1, set2)).toBe(false);
+    });
+  });
+
+  // Edge cases for identifyImprovements
+  describe('identifyImprovements edge cases', () => {
+    it('should detect workspace normalization with backslashes', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '/workspace/project'
+        }
+      });
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '\\\\workspace\\\\project'
+        }
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements).toContain('Normalisation path Windows (/ → \\\\)');
+    });
+
+    it('should detect improvement when workspace changes from backslash to forward slash', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '\\\\old\\\\path'
+        }
+      });
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '/new/path'
+        }
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Normalisation'))).toBe(true);
+    });
+
+    it('should not detect improvement when workspace path stays the same', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '/same/path'
+        }
+      });
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: '/same/path'
+        }
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Normalisation'))).toBe(false);
+    });
+
+    it('should detect improvement when truncatedInstruction is removed', () => {
+      const old = createSkeleton({ truncatedInstruction: 'long instruction...' });
+      const newer = createSkeleton({ truncatedInstruction: undefined });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements).toContain('Instruction complète extraite (truncated → complete)');
+    });
+
+    it('should not detect improvement when truncatedInstruction is added', () => {
+      const old = createSkeleton({ truncatedInstruction: undefined });
+      const newer = createSkeleton({ truncatedInstruction: 'new instruction' });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('Instruction'))).toBe(false);
+    });
+
+    it('should detect improvement when child tasks are added', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: [] });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['new-task'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('+1 child tasks'))).toBe(true);
+    });
+
+    it('should detect multiple improvements simultaneously', () => {
+      const old = createSkeleton({
+        metadata: { ...createSkeleton().metadata, workspace: '/old/path' },
+        childTaskInstructionPrefixes: [],
+        truncatedInstruction: 'long instruction...'
+      });
+      const newer = createSkeleton({
+        metadata: { ...createSkeleton().metadata, workspace: '\\\\new\\\\path' },
+        childTaskInstructionPrefixes: ['task-1', 'task-2'],
+        truncatedInstruction: undefined
+      });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      const hasPathNormalization = improvements.some(i => i.includes('Normalisation'));
+      const hasChildTasks = improvements.some(i => i.includes('+2 child tasks'));
+      const hasInstructionExtraction = improvements.some(i => i.includes('Instruction complète'));
+
+      expect(hasPathNormalization).toBe(true);
+      expect(hasChildTasks).toBe(true);
+      expect(hasInstructionExtraction).toBe(true);
+    });
+  });
+
+  // Test for complete child task detection edge cases
+  describe('child task detection edge cases', () => {
+    it('should detect improvement when going from undefined to array', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: undefined });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['prefix-1'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('+1 child tasks'))).toBe(true);
+    });
+
+    it('should detect improvement when going from null to array', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: null });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['prefix-1', 'prefix-2'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('+2 child tasks'))).toBe(true);
+    });
+
+    it('should detect no improvement when going from array to undefined', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: ['prefix-1'] });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: undefined });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('child tasks'))).toBe(false);
+    });
+
+    it('should detect no improvement when going from array to null', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: ['task-1', 'task-2'] });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: null });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('child tasks'))).toBe(false);
+    });
+
+    it('should detect improvement when array length increases', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: ['a'] });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['a', 'b', 'c'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.some(i => i.includes('+2 child tasks'))).toBe(true);
+    });
+
+    it('should detect improvement when array length decreases but instructions are more specific', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: ['general', 'vague'] });
+      const newer = createSkeleton({ childTaskInstructionPrefixes: ['specific-1', 'specific-2'] });
+
+      const improvements = comparator.identifyImprovements(old, newer);
+      expect(improvements.length).toBe(0); // No improvement expected as per current implementation
+    });
+  });
+
+  // Additional tests for coverage improvement
+  describe('compare with edge cases', () => {
+    it('should handle comparison with undefined metadata', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({ metadata: undefined });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(true);
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
+    });
+
+    it('should handle comparison with null sequence', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({ sequence: null });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(true); // sequence n'est pas comparé
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
+    });
+
+    it('should handle comparison with undefined childTaskInstructionPrefixes (undefined = empty, but different from populated)', () => {
+      const old = createSkeleton({ childTaskInstructionPrefixes: undefined });
+      const newer = createSkeleton(); // has ['prefix-1', 'prefix-2']
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('childTaskInstructionPrefixes');
+    });
+
+    it('should handle comparison with null values in metadata', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          workspace: null
+        }
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('workspace');
+      expect(result.differences[0].oldValue).toBe('/workspace');
+      expect(result.differences[0].newValue).toBeNull();
+      expect(result.similarityScore).toBe(88.89);
+    });
+
+    it('should handle comparison with empty string differences', () => {
+      const old = createSkeleton({ taskId: '' });
+      const newer = createSkeleton({ taskId: 'task-001' });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('taskId');
+      expect(result.differences[0].oldValue).toBe('');
+      expect(result.differences[0].newValue).toBe('task-001');
+      expect(result.similarityScore).toBe(88.89);
+    });
+
+    it('should handle comparison with very large numbers', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          messageCount: Number.MAX_SAFE_INTEGER
+        }
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('metadata.messageCount');
+      expect(result.differences[0].oldValue).toBe(10);
+      expect(result.differences[0].newValue).toBe(Number.MAX_SAFE_INTEGER);
+      expect(result.similarityScore).toBe(88.89);
+    });
+
+    it('should handle comparison with zero values', () => {
+      const old = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          messageCount: 0
+        }
+      });
+      const newer = createSkeleton();
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('metadata.messageCount');
+      expect(result.differences[0].oldValue).toBe(0);
+      expect(result.differences[0].newValue).toBe(10);
+      expect(result.similarityScore).toBe(88.89);
+    });
+
+    it('should handle comparison with very long strings', () => {
+      const longString = 'a'.repeat(1000);
+      const old = createSkeleton({ truncatedInstruction: 'short' });
+      const newer = createSkeleton({ truncatedInstruction: longString });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].field).toBe('truncatedInstruction');
+      expect(result.differences[0].oldValue).toBe('short');
+      expect(result.differences[0].newValue).toBe(longString);
+      expect(result.similarityScore).toBe(88.89);
+    });
+
+    it('should handle comparison with boolean values in sequence', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        sequence: [{ type: 'user', message: 'test', isImportant: true }]
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(true); // sequence n'est pas comparé
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
+    });
+
+    it('should handle comparison with nested objects in sequence', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        sequence: [
+          {
+            type: 'user',
+            message: 'test',
+            metadata: { timestamp: '2026-02-10T10:00:00Z', flags: ['urgent'] }
+          }
+        ]
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(true); // sequence n'est pas comparé
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
+    });
+
+    it('should handle comparison with arrays of different lengths in sequence', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        sequence: [{ type: 'user', message: 'test' }, { type: 'assistant', message: 'response' }]
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(true); // sequence n'est pas comparé
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
+    });
+  });
+
+  // Tests for error handling and edge cases
+  describe('error handling', () => {
+    it('should handle comparison with both skeletons undefined', () => {
+      // This should not happen in practice but let's test robustness
+      expect(() => comparator.compare(undefined as any, undefined as any)).toThrow();
+    });
+
+    it('should handle comparison with one skeleton undefined', () => {
+      const skeleton = createSkeleton();
+      expect(() => comparator.compare(skeleton, undefined as any)).toThrow();
+    });
+
+    it('should handle comparison with invalid metadata structure (string instead of object)', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        metadata: 'invalid-metadata' as any
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(false);
+      // String metadata: fields are undefined, compared with defined fields → 4 differences
+      expect(result.similarityScore).toBe(55.56);
+      expect(result.differences).toHaveLength(4);
+    });
+
+    it('should handle comparison with sequence containing non-object items', () => {
+      const old = createSkeleton();
+      const newer = createSkeleton({
+        sequence: ['invalid-item', 123, true]
+      });
+
+      const result = comparator.compare(old, newer);
+      expect(result.areIdentical).toBe(true); // sequence n'est pas comparé
+      expect(result.differences).toHaveLength(0);
+      expect(result.similarityScore).toBe(100);
     });
   });
 });

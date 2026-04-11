@@ -76,7 +76,8 @@ function makeCache(): Map<string, ConversationSkeleton> {
 
 const mockEnsureCache = vi.fn(async () => true);
 const defaultFallback = vi.fn(async () => ({
-	content: [{ type: 'text', text: 'fallback result' }]
+	content: [{ type: 'text', text: JSON.stringify({ mode: 'fallback_text_search', results: [] }) }],
+	isError: false
 }));
 
 // ─────────────────── setup ───────────────────
@@ -1214,5 +1215,193 @@ describe('helper functions (indirect via handler)', () => {
 
 			consoleSpy.mockRestore();
 		});
+
+	describe('Circuit Breaker Functionality', () => {
+		test('activates on HTTP 502 Bad Gateway', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+
+			const mockError = Object.assign(new Error('Bad Gateway'), {
+				response: { status: 502, statusText: 'Bad Gateway', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+			const result = await searchTasksByContentTool.handler({
+				search_query: 'test circuit breaker 502',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			expect(result.isError).toBe(false);
+			expect(result.content[0].text).toContain('fallback_text_search');
+		});
+
+		test('activates on HTTP 503 Service Unavailable', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+
+			const mockError = Object.assign(new Error('Service Unavailable'), {
+				response: { status: 503, statusText: 'Service Unavailable', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+			const result = await searchTasksByContentTool.handler({
+				search_query: 'test circuit breaker 503',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			expect(result.isError).toBe(false);
+			expect(result.content[0].text).toContain('fallback_text_search');
+		});
+
+		test('activates on HTTP 504 Gateway Timeout', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+
+			const mockError = Object.assign(new Error('Gateway Timeout'), {
+				response: { status: 504, statusText: 'Gateway Timeout', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+			const result = await searchTasksByContentTool.handler({
+				search_query: 'test circuit breaker 504',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			expect(result.isError).toBe(false);
+			expect(result.content[0].text).toContain('fallback_text_search');
+		});
+
+		test('does NOT activate on HTTP 400 Bad Request', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool } = await import('../search-semantic.tool.js');
+
+			const mockError = Object.assign(new Error('Bad Request'), {
+				response: { status: 400, statusText: 'Bad Request', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+			// First call — 400 error triggers fallback but should NOT activate circuit breaker
+			const result = await searchTasksByContentTool.handler({
+				search_query: 'test circuit breaker 400',
+				workspace: 'd:\\test'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			// Fallback still works (isError: false) — 400 is handled gracefully
+			expect(result.isError).toBe(false);
+
+			// Verify circuit breaker NOT activated: second call should still hit the API
+			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+			mockQdrantClient.search.mockResolvedValueOnce([]);
+
+			await searchTasksByContentTool.handler({
+				search_query: 'test after 400',
+				workspace: 'd:\\test'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			// API was called twice (not blocked by circuit breaker)
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(2);
+		});
+
+		test('prevents repeated calls when circuit breaker active', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+
+			const mockError = Object.assign(new Error('Service Unavailable'), {
+				response: { status: 503, statusText: 'Service Unavailable', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+			// First call - triggers circuit breaker
+			await searchTasksByContentTool.handler({
+				search_query: 'trigger breaker',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			// Second call - should use fallback without calling API
+			const result = await searchTasksByContentTool.handler({
+				search_query: 'use fallback',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			expect(result.isError).toBe(false);
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(1);
+		});
+
+		test('resets after TTL expires', async () => {
+			vi.useFakeTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+
+			const mockError = Object.assign(new Error('Service Unavailable'), {
+				response: { status: 503, statusText: 'Service Unavailable', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+
+			// Trigger circuit breaker
+			await searchTasksByContentTool.handler({
+				search_query: 'trigger',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			// Advance past TTL (default 300000ms)
+			vi.advanceTimersByTime(310000);
+
+			// Should attempt API call again
+			const result = await searchTasksByContentTool.handler({
+				search_query: 'retry after TTL',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(2);
+		});
+
+		test('logs warning when circuit breaker active', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+
+			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+			const consoleSpy = vi.spyOn(console, 'warn');
+
+			const mockError = Object.assign(new Error('Service Unavailable'), {
+				response: { status: 503, statusText: 'Service Unavailable', data: {} }
+			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+			// Trigger circuit breaker
+			await searchTasksByContentTool.handler({
+				search_query: 'trigger',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			// Make second call - should log warning
+			await searchTasksByContentTool.handler({
+				search_query: 'check warning',
+				workspace: 'd:	est'
+			}, makeCache(), mockEnsureCache, defaultFallback);
+
+			const logCalls = consoleSpy.mock.calls.filter(
+				call => typeof call[0] === 'string' && call[0].includes('circuit breaker active')
+			);
+			expect(logCalls.length).toBeGreaterThan(0);
+
+			consoleSpy.mockRestore();
+		});
 	});
+});
 });
