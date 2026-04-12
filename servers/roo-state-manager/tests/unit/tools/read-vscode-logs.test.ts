@@ -139,9 +139,10 @@ describe('read_vscode_logs Tool', () => {
 
   it('should return a message if APPDATA is not set', async () => {
     delete process.env.APPDATA;
+    delete process.env.HOME;
     const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
-    expect(textContent).toContain('APPDATA environment variable not set');
+    expect(textContent).toContain('Unable to determine VS Code logs path for this platform');
   });
 
   it('should handle undefined args gracefully', async () => {

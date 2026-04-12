@@ -47,9 +47,11 @@ describe('read-vscode-logs', () => {
 
 	test('returns error when APPDATA not set', async () => {
 		delete process.env.APPDATA;
+		delete process.env.HOME;
 		const { readVscodeLogs } = await import('../read-vscode-logs.js');
 		const result = await readVscodeLogs.handler({});
-		expect(result.content[0].text).toContain('APPDATA');
+		// Should indicate VS Code logs path detection failed (cross-platform message)
+		expect(result.content[0].text).toContain('Unable to determine VS Code logs path');
 	});
 
 	test('returns no sessions message when directory empty', async () => {
