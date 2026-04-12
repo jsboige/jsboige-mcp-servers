@@ -165,6 +165,8 @@ describe('roosync_dashboard', () => {
   // === Test 11: Condensation manuelle (annulée sans LLM) ===
   // #864: Sans LLM configuré, la condensation est annulée
   // #858: Fixed — mock properly resets via beforeEach
+  // Atomicity fix: Condensation cancelled now persists a visible [ERROR] system
+  // message (deduplicated within 5 min), so LLM outages are visible instead of silent.
   it('condense is cancelled without LLM configured', async () => {
     // S'assurer qu'aucun LLM n'est configuré
     delete process.env.OPENAI_API_KEY;
@@ -187,10 +189,10 @@ describe('roosync_dashboard', () => {
     expect(condenseResult.condensed).toBe(false);
     expect(condenseResult.archivedCount).toBe(0);
 
-    // Tous les messages sont conservés (pas de condensation)
-    // write ne crée PAS de message intercom, seulement 10 (append)
+    // Tous les messages user sont conservés (pas de condensation) + 1 message system [ERROR]
+    // write ne crée PAS de message intercom, 10 (append) + 1 (ERROR) = 11
     const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    expect(readResult.data?.intercom?.messages?.length).toBe(10);
+    expect(readResult.data?.intercom?.messages?.length).toBe(11);
   });
 
   // === Test 12: Read dashboard inexistant ===
@@ -451,9 +453,9 @@ describe('roosync_dashboard', () => {
     const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     const messages = readResult.data?.intercom?.messages;
 
-    // Tous les messages sont conservés (pas de condensation)
-    // write ne crée PAS de message intercom, seulement 10 (append)
-    expect(messages?.length).toBe(10);
+    // Tous les messages user conservés + 1 message system [ERROR] persisté pour visibilité
+    // write ne crée PAS de message intercom, 10 (append) + 1 (ERROR) = 11
+    expect(messages?.length).toBe(11);
   });
 
   // === Test 28: Condensation annulée sans LLM préserve tous les messages ===
@@ -480,12 +482,19 @@ describe('roosync_dashboard', () => {
     const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     const msgs = readResult.data?.intercom?.messages;
 
-    // Tous les messages conservés: write ne crée PAS de message intercom, seulement 10 (append)
-    expect(msgs?.length).toBe(10);
+    // 10 messages user (append) + 1 message system [ERROR] = 11
+    expect(msgs?.length).toBe(11);
 
-    // Les derniers messages sont dans l'ordre original
-    const lastMessage = msgs?.[msgs.length - 1]?.content;
-    expect(lastMessage).toBe('Message 9');
+    // Les 10 messages user sont dans l'ordre original
+    for (let i = 0; i < 10; i++) {
+      expect(msgs?.[i]?.content).toBe(`Message ${i}`);
+      expect(msgs?.[i]?.author?.machineId).not.toBe('system');
+    }
+
+    // Le dernier message est le système [ERROR] CONDENSATION CANCELLED
+    const lastMessage = msgs?.[msgs.length - 1];
+    expect(lastMessage?.author?.machineId).toBe('system');
+    expect(lastMessage?.content).toContain('[ERROR] CONDENSATION CANCELLED');
   });
 
   // === Test 30: Size-based auto-condensation triggers on large dashboards ===
@@ -505,8 +514,8 @@ describe('roosync_dashboard', () => {
     const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     const messageCount = result.data?.intercom?.messages?.length ?? 0;
 
-    // All 25 messages preserved since LLM is unavailable (condensation cancelled)
-    expect(messageCount).toBe(25);
+    // All 25 user messages preserved + 1 system [ERROR] (visibility fix) = 26
+    expect(messageCount).toBe(26);
   });
 
   // === Test 31: Small messages don't trigger condensation even with many messages ===
