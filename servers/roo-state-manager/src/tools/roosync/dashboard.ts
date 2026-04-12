@@ -57,6 +57,46 @@ const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 
+// Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
+// when LLM is down and every append re-triggers a failed condensation).
+const CONDENSATION_ERROR_DEDUP_MS = 5 * 60 * 1000; // 5 minutes
+
+// === Per-key mutex ===
+//
+// Prevents concurrent condensations/writes on the same dashboard key within
+// this process. Without this, two concurrent append() calls that both detect
+// the 50KB threshold will:
+//   1. Both run condenseIntercom in parallel (two 3-min LLM calls)
+//   2. Each write its own archive file (same source messages, different
+//      timestamp) — producing duplicate archives
+//   3. Race on writeDashboardFile, the second overwriting the first
+//
+// Cross-process / cross-machine races on GDrive are NOT solved here (that
+// would require a file-based lock with stale detection, tracked separately).
+const perKeyLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialize async operations per key.
+ * Callers with the same key run one-at-a-time in arrival order.
+ * Errors don't poison the chain: the next caller proceeds regardless.
+ */
+async function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = perKeyLocks.get(key) ?? Promise.resolve();
+  // Chain: run fn() whether `previous` resolved or rejected
+  const current = previous.then(() => fn(), () => fn());
+  // Best-effort cleanup: remove from map once settled, if we're still the tail
+  const stored = current.then(
+    () => undefined,
+    () => undefined
+  ).finally(() => {
+    if (perKeyLocks.get(key) === stored) {
+      perKeyLocks.delete(key);
+    }
+  });
+  perKeyLocks.set(key, stored);
+  return current;
+}
+
 // === Schemas Zod ===
 
 export const AuthorSchema = z.object({
@@ -717,7 +757,50 @@ async function condenseIntercom(
       summaryOk: !!llmSummary,
       statusOk: !!newStatus
     });
-    return dashboard; // Retourner le dashboard inchangé
+
+    // Inject a visible [ERROR] system message so next readers see the failure.
+    // Deduped over CONDENSATION_ERROR_DEDUP_MS to avoid filling the dashboard
+    // when LLM stays down across multiple append() triggers.
+    const existing = dashboard.intercom.messages;
+    const lastErrorIdx = [...existing].reverse().findIndex(
+      m => m.author.machineId === 'system'
+        && m.content.includes('[ERROR] CONDENSATION CANCELLED')
+    );
+    const recentErrorExists = lastErrorIdx !== -1
+      && (Date.now() - new Date(
+           existing[existing.length - 1 - lastErrorIdx].timestamp
+         ).getTime()) < CONDENSATION_ERROR_DEDUP_MS;
+
+    if (recentErrorExists) {
+      return dashboard; // Déjà signalé récemment, pas de spam
+    }
+
+    const errorTimestamp = new Date().toISOString();
+    const statusOkLabel = newStatus ? 'OK' : 'FAILED';
+    const summaryOkLabel = llmSummary ? 'OK' : 'FAILED';
+    const errorMessage: IntercomMessage = {
+      id: generateMessageId(),
+      timestamp: errorTimestamp,
+      author: { machineId: 'system', workspace: 'system' },
+      content: `**[ERROR] CONDENSATION CANCELLED** - ${errorTimestamp}\n\n`
+        + `LLM calls failed after ${LLM_MAX_RETRIES} retries (backoff 2s/4s/8s):\n`
+        + `- Status update: ${statusOkLabel}\n`
+        + `- Summary generation: ${summaryOkLabel}\n\n`
+        + `Dashboard left unchanged (${dashboard.intercom.messages.length} messages). `
+        + `Verify LLM endpoint (OPENAI_CHAT_API_BASE / OPENAI_CHAT_MODEL_ID) and retry. `
+        + `Next condensation attempt will occur on the next append exceeding the `
+        + `${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB threshold.`
+    };
+
+    return {
+      ...dashboard,
+      lastModified: errorTimestamp,
+      intercom: {
+        ...dashboard.intercom,
+        messages: [...dashboard.intercom.messages, errorMessage],
+        totalMessages: dashboard.intercom.totalMessages + 1
+      }
+    };
   }
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
@@ -890,13 +973,20 @@ export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardRe
     case 'read':
       return handleRead(key, args, resolvedMachineId, resolvedWorkspace);
     case 'write':
-      return handleWrite(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace);
+      // Serialized: read-modify-write races can overwrite concurrent updates
+      return withKeyLock(key, () =>
+        handleWrite(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace)
+      );
     case 'append':
-      return handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace);
+      // Serialized: prevents concurrent condensations producing duplicate archives
+      return withKeyLock(key, () =>
+        handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace)
+      );
     case 'condense':
-      return handleCondense(key, args);
+      // Serialized: manual condense must not race with auto-condense from append
+      return withKeyLock(key, () => handleCondense(key, args));
     case 'delete':
-      return handleDelete(key, args);
+      return withKeyLock(key, () => handleDelete(key, args));
     case 'read_archive':
       return handleReadArchive(key, args);
     default:
@@ -1141,8 +1231,12 @@ async function handleCondense(
   const condensedDashboard = await condenseIntercom(key, dashboard, keepCount);
   const condenseElapsed = Date.now() - condenseStart;
   const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
+  // Persist whenever the dashboard changed — either condensation succeeded
+  // (count decreased) or LLM failed and an ERROR system message was injected
+  // (count increased). writeDashboardFile is atomic (tmp+rename).
+  const dashboardChanged = condensedDashboard.intercom.messages.length !== beforeCount;
 
-  if (actuallyCondensed) {
+  if (dashboardChanged) {
     await writeDashboardFile(key, condensedDashboard);
   }
 
