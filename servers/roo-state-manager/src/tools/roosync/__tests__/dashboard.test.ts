@@ -189,8 +189,9 @@ describe('roosync_dashboard', () => {
 
     // Tous les messages sont conservés (pas de condensation)
     // write ne crée PAS de message intercom, seulement 10 (append)
+    // Mais on ajoute un message d'erreur quand LLM échoue
     const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    expect(readResult.data?.intercom?.messages?.length).toBe(10);
+    expect(readResult.data?.intercom?.messages?.length).toBe(11);
   });
 
   // === Test 12: Read dashboard inexistant ===

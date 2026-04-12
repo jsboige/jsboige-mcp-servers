@@ -45,6 +45,54 @@ import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
 
+// In-process mutex for dashboard operations to prevent race conditions
+const locks = new Map<string, Promise<any>>();
+function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const existingLock = locks.get(key);
+  if (existingLock) {
+    return existingLock.then(() => withKeyLock(key, fn));
+  }
+
+  const newLock = (async () => {
+    try {
+      return await fn();
+    } finally {
+      locks.delete(key);
+    }
+  })();
+
+  locks.set(key, newLock);
+  return newLock;
+}
+
+// Track condensation errors to avoid spam
+let lastCondensationError = 0;
+function addCondensationError(dashboard: Dashboard): Dashboard {
+  const now = Date.now();
+  if (now - lastCondensationError < CONDENSATION_ERROR_DEDUP_MS) {
+    return dashboard; // Skip to avoid spam
+  }
+  lastCondensationError = now;
+
+  const errorSystemMessage: IntercomMessage = {
+    id: `system-error-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    author: {
+      machineId: 'system',
+      workspace: 'dashboard'
+    },
+    content: `⚠️ **[ERROR] CONDENSATION CANCELLED**\n\nLa condensation a échoué à cause d'une erreur LLM. Les messages n'ont pas été archivés. Veuillez réessayer plus tard.`
+  };
+
+  return {
+    ...dashboard,
+    intercom: {
+      ...dashboard.intercom,
+      messages: [...dashboard.intercom.messages, errorSystemMessage]
+    }
+  };
+}
+
 // Auto-condensation: size-based (50KB) + keep 10 most recent messages
 // When dashboard file exceeds MAX_DASHBOARD_SIZE_BYTES, condense old messages
 // into the status section via LLM, keeping only CONDENSE_KEEP recent messages.
@@ -56,6 +104,7 @@ const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
 const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
+const CONDENSATION_ERROR_DEDUP_MS = 5 * 60 * 1000; // 5 minutes
 
 // === Schemas Zod ===
 
@@ -717,7 +766,12 @@ async function condenseIntercom(
       summaryOk: !!llmSummary,
       statusOk: !!newStatus
     });
-    return dashboard; // Retourner le dashboard inchangé
+
+    // Add error message to dashboard for visibility
+    const dashboardWithError = addCondensationError(dashboard);
+    await writeDashboardFile(key, dashboardWithError);
+
+    return dashboardWithError;
   }
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
@@ -1033,6 +1087,7 @@ async function handleAppend(
   resolvedMachineId: string,
   resolvedWorkspace: string
 ): Promise<DashboardResult> {
+  return withKeyLock(key, async () => {
   if (!args.content) {
     throw new Error('content est requis pour action=append');
   }
@@ -1104,12 +1159,14 @@ async function handleAppend(
     archivedCount,
     message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}`
   };
+  }); // End of withKeyLock
 }
 
 async function handleCondense(
   key: string,
   args: DashboardArgs
 ): Promise<DashboardResult> {
+  return withKeyLock(key, async () => {
   const dashboard = await readDashboardFile(key);
   if (!dashboard) {
     return {
@@ -1142,7 +1199,8 @@ async function handleCondense(
   const condenseElapsed = Date.now() - condenseStart;
   const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
 
-  if (actuallyCondensed) {
+  // Always persist the dashboard if it changed (either condensed or had error message)
+  if (actuallyCondensed || condensedDashboard.intercom.messages.length !== dashboard.intercom.messages.length) {
     await writeDashboardFile(key, condensedDashboard);
   }
 
@@ -1159,6 +1217,7 @@ async function handleCondense(
       ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
       : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)`
   };
+  }); // End of withKeyLock
 }
 
 /**
