@@ -42,6 +42,22 @@ async function readLastLines(filePath: string, lineCount: number, filter?: strin
     }
 }
 
+function getVsCodeLogsPath(): string | null {
+    // Windows: APPDATA/Code/logs
+    if (process.env.APPDATA) {
+        return path.join(process.env.APPDATA, 'Code', 'logs');
+    }
+    // macOS: ~/Library/Application Support/Code/logs
+    if (process.platform === 'darwin') {
+        return path.join(process.env.HOME || '', 'Library', 'Application Support', 'Code', 'logs');
+    }
+    // Linux: ~/.config/Code/logs
+    if (process.platform === 'linux') {
+        return path.join(process.env.HOME || '', '.config', 'Code', 'logs');
+    }
+    return null;
+}
+
 export const readVscodeLogs = {
     name: 'read_vscode_logs',
     description: 'Scans the VS Code log directory to automatically find and read the latest logs from the Extension Host, Renderer, and Roo-Code Output Channels.',
@@ -58,11 +74,11 @@ export const readVscodeLogs = {
         const lineCount = safeArgs.lines || 100;
         const { filter } = safeArgs;
         const maxSessions = safeArgs.maxSessions || 1;
-        const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
-        const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
+        const rootLogsPath = getVsCodeLogsPath();
+        const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`, `[DEBUG] Platform: ${process.platform}`];
 
-        if (!process.env.APPDATA) {
-            return { content: [{ type: 'text' as const, text: 'APPDATA environment variable not set. Cannot find logs directory.' }] };
+        if (!rootLogsPath) {
+            return { content: [{ type: 'text' as const, text: 'Unable to determine VS Code logs path for this platform. HOME environment variable not set.' }] };
         }
 
         try {

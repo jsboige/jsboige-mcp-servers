@@ -66,10 +66,20 @@ export class ClaudeStorageDetector {
             // Le répertoire n'existe pas, ignorer
         }
 
-        // Chercher dans les chemins alternatifs (Windows)
-        const appDataPath = process.env.APPDATA
-            ? path.join(process.env.APPDATA, 'Code', 'User', 'globalStorage', ClaudeStorageDetector.CLAUDE_CONFIG_DIR, ClaudeStorageDetector.CLAUDE_PROJECTS_DIR)
-            : null;
+        // Chercher dans les chemins alternatifs (Windows-spécifique)
+        // Sur Windows: %APPDATA%\Code\User\globalStorage\.claude\projects\
+        // Sur Linux/macOS: ~/.config/Code/User/globalStorage/.claude/projects/ (non standard mais compatible)
+        let appDataPath: string | null = null;
+
+        if (process.platform === 'win32' && process.env.APPDATA) {
+            appDataPath = path.join(process.env.APPDATA, 'Code', 'User', 'globalStorage', ClaudeStorageDetector.CLAUDE_CONFIG_DIR, ClaudeStorageDetector.CLAUDE_PROJECTS_DIR);
+        } else if (process.platform === 'linux') {
+            // Linux: ~/.config/Code/User/globalStorage/.claude/projects/
+            appDataPath = path.join(os.homedir(), '.config', 'Code', 'User', 'globalStorage', ClaudeStorageDetector.CLAUDE_CONFIG_DIR, ClaudeStorageDetector.CLAUDE_PROJECTS_DIR);
+        } else if (process.platform === 'darwin') {
+            // macOS: ~/Library/Application Support/Code/User/globalStorage/.claude/projects/
+            appDataPath = path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'globalStorage', ClaudeStorageDetector.CLAUDE_CONFIG_DIR, ClaudeStorageDetector.CLAUDE_PROJECTS_DIR);
+        }
 
         if (appDataPath) {
             try {
