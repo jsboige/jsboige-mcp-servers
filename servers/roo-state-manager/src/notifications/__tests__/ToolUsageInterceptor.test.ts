@@ -307,9 +307,10 @@ describe('ToolUsageInterceptor', () => {
 
       await interceptor.interceptToolCall('tool', {}, async () => 'ok');
 
-      expect(notifySpy).toHaveBeenCalledWith(
+      // FIX #1356: inbox check is fire-and-forget; wait for background notification
+      await vi.waitFor(() => expect(notifySpy).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'new_message' })
-      );
+      ));
     });
 
     test('message en dessous du seuil minPriority : pas de notification', async () => {
@@ -445,9 +446,10 @@ describe('ToolUsageInterceptor', () => {
 
       await interceptor.interceptToolCall('tool', {}, async () => 'ok');
 
-      expect(notifySpy).toHaveBeenCalledWith(
+      // FIX #1356: inbox check is fire-and-forget; wait for background notification
+      await vi.waitFor(() => expect(notifySpy).toHaveBeenCalledWith(
         expect.objectContaining({ priority: 'URGENT' })
-      );
+      ));
     });
   });
 });
