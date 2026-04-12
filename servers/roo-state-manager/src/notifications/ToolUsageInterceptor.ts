@@ -49,6 +49,10 @@ export class ToolUsageInterceptor {
   private messageManager: MessageManager;
   private conversationCache: Map<string, SkeletonHeader>;
   private config: InterceptorConfig;
+
+  // FIX #1356: prevent pile-up of background inbox scans when tool calls
+  // arrive faster than the GDrive scan completes. One at a time is enough.
+  private inboxCheckInFlight = false;
   
   /**
    * Constructeur de l'intercepteur
@@ -107,10 +111,15 @@ export class ToolUsageInterceptor {
       });
     }
     
-    // 2. Vérifier la boîte de réception RooSync (non-bloquant avec timeout)
-    // FIX: Previously this was `await`-ed, blocking ALL tool calls if Google Drive was slow
-    if (this.config.checkInbox) {
-      const inboxCheckPromise = this.checkForNewMessages()
+    // 2. Vérifier la boîte de réception RooSync (FIRE-AND-FORGET)
+    // FIX #1356: The previous `Promise.race(3s)` did NOT fire under heavy GDrive I/O
+    // because the event-loop timer was starved by libuv threadpool saturation
+    // (1345+ sequential fs.readFile calls on FUSE-mounted GDrive).
+    // Solution: never await the inbox check. Let it run in the background.
+    // Any notifications will still be emitted, just asynchronously after the tool returns.
+    if (this.config.checkInbox && !this.inboxCheckInFlight) {
+      this.inboxCheckInFlight = true;
+      this.checkForNewMessages()
         .then(async (newMessages) => {
           if (newMessages.length > 0) {
             console.error(`📬 [ToolUsageInterceptor] Found ${newMessages.length} new messages`);
@@ -119,11 +128,10 @@ export class ToolUsageInterceptor {
         })
         .catch(error => {
           console.error('⚠️ [ToolUsageInterceptor] Error checking inbox:', error);
+        })
+        .finally(() => {
+          this.inboxCheckInFlight = false;
         });
-
-      // Race with a 3-second timeout: don't block tool execution
-      const timeoutPromise = new Promise<void>(resolve => setTimeout(resolve, 3000));
-      await Promise.race([inboxCheckPromise, timeoutPromise]);
     }
     
     // 4. Exécuter l'outil original
