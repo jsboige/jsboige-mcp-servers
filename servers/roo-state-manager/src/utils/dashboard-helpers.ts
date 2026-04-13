@@ -13,6 +13,7 @@ import { promisify } from 'util';
 import { getSharedStatePath } from './shared-state-path.js';
 import { getLocalMachineId } from './message-helpers.js';
 import { createLogger, Logger } from './logger.js';
+import { getMessageManager } from '../services/MessageManager.js';
 
 const execAsync = promisify(exec);
 const logger: Logger = createLogger('DashboardHelpers');
@@ -206,7 +207,8 @@ export async function sendMentionNotificationsAsync(
 
     for (const mention of mentions) {
       if (mention.type === 'machine' || mention.type === 'agent') {
-        const machine = mention.type === 'machine' ? mention.target : mention.target.split(':')[0];
+        // Extract machine ID: for agent types like "roo-myia-ai-01", get "myia-ai-01"
+        const machine = mention.type === 'machine' ? mention.target : mention.target.split('-').slice(1).join('-');
         if (!mentionsByMachine.has(machine)) {
           mentionsByMachine.set(machine, []);
         }
@@ -232,17 +234,27 @@ ${mentionList}
 **Extrait:**
 ${contentExcerpt.substring(0, 200)}${contentExcerpt.length > 200 ? '...' : ''}`;
 
-      // Import dynamique pour éviter les dépendances circulaires
       try {
         // Appel fire-and-forget: on ne blockera pas le flux principal
-        // TODO: Intégrer avec le système RooSync existant pour envoyer les notifications
-        logger.debug('Mention notification queued (RooSync integration pending)', {
+        const messageManager = getMessageManager();
+
+        // Envoyer le message RooSync de notification
+        await messageManager.sendMessage(
+          getLocalMachineId(),
+          machine,
+          subject,
+          body,
+          'HIGH',
+          ['mention', 'notification']
+        );
+
+        logger.debug('Mention notification sent via RooSync', {
           messageId,
           machine,
           mentionCount: machineMentions.length
         });
       } catch (error) {
-        logger.debug('Failed to queue mention notification (non-critical)', {
+        logger.debug('Failed to send mention notification (non-critical)', {
           error: String(error),
           messageId,
           machine

@@ -1073,6 +1073,10 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
     ? (rawArgs as any).messageId
     : undefined;
 
+  if (customMessageId) {
+    logger.debug('Custom messageId captured', { customMessageId, rawArgsType: typeof rawArgs });
+  }
+
   // Validate args using Zod schema to ensure type safety
   let args: DashboardArgs;
   try {

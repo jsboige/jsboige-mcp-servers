@@ -325,3 +325,36 @@ describe('updateDashboardMetricsAsync', () => {
 		await expect(updateDashboardMetricsAsync()).resolves.toBeUndefined();
 	});
 });
+
+describe('sendMentionNotificationsAsync', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it('does not throw with empty mention list (fire-and-forget)', async () => {
+		const { sendMentionNotificationsAsync } = await getModule();
+		await expect(sendMentionNotificationsAsync('msg-123', [], 'workspace-test', 'Test content')).resolves.toBeUndefined();
+	});
+
+	it('does not throw when called with various mention types (fire-and-forget)', async () => {
+		const { sendMentionNotificationsAsync } = await getModule();
+		const mentions = [
+			{ type: 'machine' as const, target: 'myia-ai-01', pattern: '@myia-ai-01' },
+			{ type: 'agent' as const, target: 'roo-myia-po-2025', pattern: '@roo-myia-po-2025' },
+			{ type: 'user' as const, target: 'jsboige', pattern: '@jsboige' },
+			{ type: 'message' as const, target: 'ic-2026-04-13', pattern: '@msg:ic-2026-04-13' }
+		];
+
+		await expect(sendMentionNotificationsAsync('msg-123', mentions, 'workspace-test', 'Test content')).resolves.toBeUndefined();
+	});
+
+	it('does not throw when RooSync service is unavailable (fire-and-forget)', async () => {
+		const { sendMentionNotificationsAsync } = await getModule();
+		const mentions = [
+			{ type: 'machine' as const, target: 'myia-ai-01', pattern: '@myia-ai-01' }
+		];
+
+		// Should not throw even if MessageManager is not available
+		await expect(sendMentionNotificationsAsync('msg-123', mentions, 'workspace-test', 'Test content')).resolves.toBeUndefined();
+	});
+});
