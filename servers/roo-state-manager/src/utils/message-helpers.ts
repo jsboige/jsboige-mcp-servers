@@ -2,7 +2,7 @@
  * Fonctions utilitaires partagées pour les outils RooSync de messagerie
  *
  * @module utils/message-helpers
- * @version 1.1.0 - Auto-détection workspace depuis process.cwd()
+ * @version 1.2.0 - #1364 Worktree detection: resolve parent workspace from .claude/worktrees/*
  */
 
 import os from 'os';
@@ -68,8 +68,17 @@ export function getLocalWorkspaceId(): string {
     }
   }
 
-  // 3. Auto-détection depuis le répertoire courant (fallback)
+  // 3. Auto-détection depuis le répertoire courant
   const cwd = process.cwd();
+
+  // 3a. Worktree detection (#1364): if cwd is inside .claude/worktrees/,
+  //     resolve to the parent workspace name instead of the worktree name.
+  const worktreeWorkspace = resolveWorkspaceFromWorktree(cwd);
+  if (worktreeWorkspace) {
+    return worktreeWorkspace;
+  }
+
+  // 3b. Standard: use basename of current directory
   const workspaceName = path.basename(cwd);
 
   // Validation basique : le nom doit être significatif
@@ -79,6 +88,37 @@ export function getLocalWorkspaceId(): string {
 
   // 4. Fallback ultime (ne devrait jamais arriver en production)
   return 'default';
+}
+
+/**
+ * Detects if a path is inside a git worktree (.claude/worktrees/*) and
+ * resolves the parent workspace name.
+ *
+ * #1364: Agents running in worktrees pollute dashboards with keys like
+ * `workspace-wt-worker-*` instead of posting to the parent workspace dashboard.
+ *
+ * Detection patterns:
+ * - Path contains `.claude/worktrees/wt-*` → extract parent workspace from
+ *   the path before `.claude/` (e.g., `c:/dev/roo-extensions/.claude/worktrees/wt-X`
+ *   → parent is `roo-extensions`)
+ *
+ * @param cwd Current working directory path
+ * @returns Parent workspace name if in worktree, null otherwise
+ */
+export function resolveWorkspaceFromWorktree(cwd: string): string | null {
+  const normalized = cwd.replace(/\\/g, '/');
+
+  // Match pattern: <parent-path>/.claude/worktrees/wt-<name>
+  const worktreeMatch = normalized.match(/(.+)\/\.claude\/worktrees\/wt-[^/]+/);
+  if (worktreeMatch) {
+    const parentPath = worktreeMatch[1];
+    const parentName = path.basename(parentPath);
+    if (parentName && parentName !== '.' && parentName.length >= 2) {
+      return parentName;
+    }
+  }
+
+  return null;
 }
 
 /**

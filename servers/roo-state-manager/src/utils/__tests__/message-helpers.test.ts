@@ -17,7 +17,8 @@ import {
   normalizeWorkspaceId,
   formatDate,
   getPriorityIcon,
-  getStatusIcon
+  getStatusIcon,
+  resolveWorkspaceFromWorktree
 } from '../message-helpers.js';
 
 describe('message-helpers', () => {
@@ -262,6 +263,89 @@ describe('message-helpers', () => {
       expect(getStatusIcon('unread')).toBeTruthy();
       expect(getStatusIcon('read')).toBeTruthy();
       expect(getStatusIcon('archived')).toBeTruthy();
+    });
+  });
+
+  describe('#1364 resolveWorkspaceFromWorktree', () => {
+    test('resolves parent workspace from worktree path (Windows)', () => {
+      expect(resolveWorkspaceFromWorktree(
+        'c:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-ai-01-20260413-110726'
+      )).toBe('roo-extensions');
+    });
+
+    test('resolves parent workspace from worktree path (backslashes)', () => {
+      expect(resolveWorkspaceFromWorktree(
+        'c:\\dev\\roo-extensions\\.claude\\worktrees\\wt-fix-1365-get-status'
+      )).toBe('roo-extensions');
+    });
+
+    test('resolves parent workspace from deeply nested worktree', () => {
+      expect(resolveWorkspaceFromWorktree(
+        'c:/dev/roo-extensions/.claude/worktrees/wt-1030-declutter'
+      )).toBe('roo-extensions');
+    });
+
+    test('resolves parent workspace with different project name', () => {
+      expect(resolveWorkspaceFromWorktree(
+        'd:/projects/my-app/.claude/worktrees/wt-feature-branch'
+      )).toBe('my-app');
+    });
+
+    test('returns null for non-worktree path', () => {
+      expect(resolveWorkspaceFromWorktree('c:/dev/roo-extensions')).toBeNull();
+    });
+
+    test('returns null for regular project subdirectory', () => {
+      expect(resolveWorkspaceFromWorktree('c:/dev/roo-extensions/src/tools')).toBeNull();
+    });
+
+    test('returns null for .claude but not worktrees', () => {
+      expect(resolveWorkspaceFromWorktree('c:/dev/roo-extensions/.claude/rules')).toBeNull();
+    });
+  });
+
+  describe('#1364 getLocalWorkspaceId worktree detection', () => {
+    const origEnv = process.env.ROOSYNC_WORKSPACE_ID;
+    const origWorkspacePath = process.env.WORKSPACE_PATH;
+    const origCwd = process.cwd;
+
+    afterEach(() => {
+      if (origEnv !== undefined) {
+        process.env.ROOSYNC_WORKSPACE_ID = origEnv;
+      } else {
+        delete process.env.ROOSYNC_WORKSPACE_ID;
+      }
+      if (origWorkspacePath !== undefined) {
+        process.env.WORKSPACE_PATH = origWorkspacePath;
+      } else {
+        delete process.env.WORKSPACE_PATH;
+      }
+      process.cwd = origCwd;
+    });
+
+    test('resolves parent workspace when cwd is worktree (no env overrides)', () => {
+      delete process.env.ROOSYNC_WORKSPACE_ID;
+      delete process.env.WORKSPACE_PATH;
+      // Mock process.cwd to return a worktree path
+      process.cwd = () => 'c:/dev/roo-extensions/.claude/worktrees/wt-1365';
+
+      expect(getLocalWorkspaceId()).toBe('roo-extensions');
+    });
+
+    test('env override takes precedence over worktree detection', () => {
+      process.env.ROOSYNC_WORKSPACE_ID = 'custom-override';
+      delete process.env.WORKSPACE_PATH;
+      process.cwd = () => 'c:/dev/roo-extensions/.claude/worktrees/wt-1365';
+
+      expect(getLocalWorkspaceId()).toBe('custom-override');
+    });
+
+    test('WORKSPACE_PATH takes precedence over worktree cwd', () => {
+      delete process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.WORKSPACE_PATH = 'd:/other-project';
+      process.cwd = () => 'c:/dev/roo-extensions/.claude/worktrees/wt-1365';
+
+      expect(getLocalWorkspaceId()).toBe('other-project');
     });
   });
 });
