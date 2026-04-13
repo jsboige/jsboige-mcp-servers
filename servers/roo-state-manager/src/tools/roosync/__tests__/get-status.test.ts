@@ -1,5 +1,6 @@
 /**
  * Tests pour get-status.ts — Option B compact status (#1206)
+ * Updated #1365: Use real machine IDs (myia-*) to match isKnownMachine filter.
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
@@ -41,18 +42,18 @@ vi.mock('../../../services/MessageManager.js', () => ({
 describe('get-status (Option B)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetConfig.mockReturnValue({ machineId: 'ai-01', sharedPath: '/shared' });
+    mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared' });
     mockLoadDashboard.mockResolvedValue({
       overallStatus: 'synced',
       lastUpdate: new Date().toISOString(),
       machines: {
-        'ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
+        'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
       }
     });
     mockGetHeartbeatService.mockReturnValue({
       checkHeartbeats: vi.fn(),
       getState: vi.fn(() => ({
-        onlineMachines: ['ai-01', 'po-2023'],
+        onlineMachines: ['myia-ai-01', 'myia-po-2023'],
         offlineMachines: [],
         warningMachines: []
       }))
@@ -68,8 +69,8 @@ describe('get-status (Option B)', () => {
     });
 
     test('accepts machineFilter', () => {
-      const result = GetStatusArgsSchema.parse({ machineFilter: 'po-2023' });
-      expect(result.machineFilter).toBe('po-2023');
+      const result = GetStatusArgsSchema.parse({ machineFilter: 'myia-po-2023' });
+      expect(result.machineFilter).toBe('myia-po-2023');
     });
 
     test('accepts resetCache', () => {
@@ -105,7 +106,7 @@ describe('get-status (Option B)', () => {
         inbox: { unread: 15, urgent: 2 },
         decisions: { pending: 3 },
         dashboards: { active: 1 },
-        flags: ['OFFLINE:po-2025', 'INBOX_URGENT:2', 'DECISIONS_PENDING:3'],
+        flags: ['OFFLINE:myia-po-2025', 'INBOX_URGENT:2', 'DECISIONS_PENDING:3'],
         lastUpdated: '2026-04-08T00:00:00Z'
       });
       expect(result.status).toBe('CRITICAL');
@@ -131,7 +132,7 @@ describe('get-status (Option B)', () => {
         overallStatus: 'synced',
         lastUpdate: new Date().toISOString(),
         machines: {
-          'ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
+          'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
         }
       });
 
@@ -146,8 +147,8 @@ describe('get-status (Option B)', () => {
       mockGetHeartbeatService.mockReturnValue({
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
-          onlineMachines: ['ai-01'],
-          offlineMachines: ['po-2025'],
+          onlineMachines: ['myia-ai-01'],
+          offlineMachines: ['myia-po-2025'],
           warningMachines: []
         }))
       });
@@ -156,7 +157,7 @@ describe('get-status (Option B)', () => {
 
       expect(result.status).toBe('CRITICAL');
       expect(result.machines.offline).toBe(1);
-      expect(result.flags).toContain('OFFLINE:po-2025');
+      expect(result.flags).toContain('OFFLINE:myia-po-2025');
     });
 
     test('returns CRITICAL when urgent messages', async () => {
@@ -197,22 +198,22 @@ describe('get-status (Option B)', () => {
       mockGetHeartbeatService.mockReturnValue({
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
-          onlineMachines: ['ai-01'],
+          onlineMachines: ['myia-ai-01'],
           offlineMachines: [],
-          warningMachines: ['po-2023']
+          warningMachines: ['myia-po-2023']
         }))
       });
 
       const result = await roosyncGetStatus({});
 
-      expect(result.flags).toContain('HEARTBEAT_STALE:po-2023');
+      expect(result.flags).toContain('HEARTBEAT_STALE:myia-po-2023');
     });
 
     test('throws when machine not found', async () => {
       mockLoadDashboard.mockResolvedValue({
         overallStatus: 'synced',
         lastUpdate: '2026-01-01T00:00:00Z',
-        machines: { 'ai-01': { status: 'online', lastSync: '2026-01-01', pendingDecisions: 0, diffsCount: 0 } }
+        machines: { 'myia-ai-01': { status: 'online', lastSync: '2026-01-01', pendingDecisions: 0, diffsCount: 0 } }
       });
 
       await expect(roosyncGetStatus({ machineFilter: 'nonexistent' })).rejects.toThrow('non trouvée');
@@ -222,10 +223,10 @@ describe('get-status (Option B)', () => {
       mockLoadDashboard.mockResolvedValue({
         overallStatus: 'synced',
         lastUpdate: new Date().toISOString(),
-        machines: { 'ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 } }
+        machines: { 'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 } }
       });
 
-      const result = await roosyncGetStatus({ machineFilter: 'ai-01' });
+      const result = await roosyncGetStatus({ machineFilter: 'myia-ai-01' });
       expect(result).toBeDefined();
     });
 
@@ -247,6 +248,81 @@ describe('get-status (Option B)', () => {
       const result = await roosyncGetStatus({});
 
       expect(result).toBeDefined();
+    });
+  });
+
+  describe('#1365 orphan test entry filtering', () => {
+    test('excludes orphan test machines from offline count', async () => {
+      // Simulates real scenario: 6 real machines online + 3 test artifacts offline
+      mockGetHeartbeatService.mockReturnValue({
+        checkHeartbeats: vi.fn(),
+        getState: vi.fn(() => ({
+          onlineMachines: ['myia-ai-01', 'myia-po-2023', 'myia-po-2024'],
+          offlineMachines: ['test-machine', 'persistent-machine', 'machine-2'],
+          warningMachines: []
+        }))
+      });
+
+      const result = await roosyncGetStatus({});
+
+      // Orphan test machines should NOT trigger CRITICAL
+      expect(result.status).toBe('HEALTHY');
+      expect(result.machines.offline).toBe(0);
+      expect(result.flags).not.toContain('OFFLINE:test-machine');
+      expect(result.flags).not.toContain('OFFLINE:persistent-machine');
+    });
+
+    test('excludes orphan test machines from dashboard total', async () => {
+      mockLoadDashboard.mockResolvedValue({
+        overallStatus: 'synced',
+        lastUpdate: new Date().toISOString(),
+        machines: {
+          'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+          'myia-po-2023': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+          'test-machine': { status: 'offline', lastSync: '2025-01-01', pendingDecisions: 0, diffsCount: 0 }
+        }
+      });
+
+      const result = await roosyncGetStatus({});
+
+      // Total should be 2 real machines, not 3
+      expect(result.machines.total).toBe(2);
+    });
+
+    test('excludes orphan warning machines from status derivation', async () => {
+      mockGetHeartbeatService.mockReturnValue({
+        checkHeartbeats: vi.fn(),
+        getState: vi.fn(() => ({
+          onlineMachines: ['myia-ai-01'],
+          offlineMachines: [],
+          warningMachines: ['test-machine']  // Orphan, should be filtered
+        }))
+      });
+
+      const result = await roosyncGetStatus({});
+
+      // test-machine warning should NOT trigger WARNING status
+      expect(result.status).toBe('HEALTHY');
+      expect(result.flags).not.toContain('HEARTBEAT_STALE:test-machine');
+    });
+
+    test('still detects real offline machines correctly', async () => {
+      mockGetHeartbeatService.mockReturnValue({
+        checkHeartbeats: vi.fn(),
+        getState: vi.fn(() => ({
+          onlineMachines: ['myia-ai-01'],
+          offlineMachines: ['myia-po-2025', 'test-machine'],  // 1 real + 1 orphan
+          warningMachines: []
+        }))
+      });
+
+      const result = await roosyncGetStatus({});
+
+      // Should be CRITICAL from real offline machine only
+      expect(result.status).toBe('CRITICAL');
+      expect(result.machines.offline).toBe(1);  // Only myia-po-2025
+      expect(result.flags).toContain('OFFLINE:myia-po-2025');
+      expect(result.flags).not.toContain('OFFLINE:test-machine');
     });
   });
 });

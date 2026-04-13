@@ -5,12 +5,24 @@
  * Un seul appel suffit pour décider des prochaines actions.
  *
  * @module tools/roosync/get-status
- * @version 3.0.0 — #1206 Option B (compact status with flags)
+ * @version 3.1.0 — #1365 Fix false positives (orphan test entries + stale sync)
  */
 
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { getMessageManager } from '../../services/MessageManager.js';
+
+/**
+ * Check if a machine ID is a real production machine (not a test artifact).
+ *
+ * Production machines match the pattern: myia-*
+ * Test artifacts (test-machine, persistent-machine, machine-2, etc.) are excluded.
+ *
+ * #1365: Orphan test entries in heartbeat files pollute offline counts.
+ */
+function isKnownMachine(machineId: string): boolean {
+	return machineId.toLowerCase().startsWith('myia-');
+}
 
 /**
  * Schema de validation pour roosync_get_status
@@ -176,37 +188,44 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       ? (new Date(dashboard.lastUpdate).getTime() > oneDayAgo ? 1 : 0)
       : 0;
 
-    // Compute machine counts
-    const onlineMachines = heartbeatState?.onlineMachines ?? [];
-    const offlineMachines = heartbeatState?.offlineMachines ?? [];
-    const totalMachines = Math.max(machines.length, onlineMachines.length + offlineMachines.length);
+    // #1365: Filter out orphan test entries (test-machine, persistent-machine, etc.)
+    // Only keep machines matching the known pattern: myia-*
+    const filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
+    const filteredOfflineMachines = (heartbeatState?.offlineMachines ?? []).filter(isKnownMachine);
+    const filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
+    const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
+
+    const totalMachines = Math.max(
+      filteredDashboardMachines.length,
+      filteredOnlineMachines.length + filteredOfflineMachines.length
+    );
 
     // Build flags
     const flags = buildFlags(
       {
-        onlineMachines: onlineMachines as string[],
-        offlineMachines: offlineMachines as string[],
-        warningMachines: (heartbeatState?.warningMachines ?? []) as string[]
+        onlineMachines: filteredOnlineMachines,
+        offlineMachines: filteredOfflineMachines,
+        warningMachines: filteredWarningMachines
       },
       inboxStats,
       pendingDecisions,
-      machines
+      filteredDashboardMachines
     );
 
-    // Derive overall status
+    // Derive overall status (based on KNOWN machines only)
     let status: 'HEALTHY' | 'WARNING' | 'CRITICAL' = 'HEALTHY';
-    if (offlineMachines.length > 0 || inboxStats.urgent > 0) {
+    if (filteredOfflineMachines.length > 0 || inboxStats.urgent > 0) {
       status = 'CRITICAL';
-    } else if (inboxStats.unread > 5 || (heartbeatState?.warningMachines?.length ?? 0) > 0) {
+    } else if (inboxStats.unread > 5 || filteredWarningMachines.length > 0) {
       // WARNING if: high unread count OR heartbeat warning machines (but no offline)
       status = 'WARNING';
     }
 
     // Apply machine filter if specified
     if (args.machineFilter) {
-      const machineExists = machines.some(m => m.id === args.machineFilter) ||
-        onlineMachines.includes(args.machineFilter) ||
-        offlineMachines.includes(args.machineFilter);
+      const machineExists = filteredDashboardMachines.some(m => m.id === args.machineFilter) ||
+        filteredOnlineMachines.includes(args.machineFilter) ||
+        filteredOfflineMachines.includes(args.machineFilter);
 
       if (!machineExists) {
         throw new RooSyncServiceError(
@@ -219,8 +238,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     return {
       status,
       machines: {
-        online: onlineMachines.length,
-        offline: offlineMachines.length,
+        online: filteredOnlineMachines.length,
+        offline: filteredOfflineMachines.length,
         total: totalMachines
       },
       inbox: inboxStats,
