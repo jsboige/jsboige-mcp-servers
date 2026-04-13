@@ -41,6 +41,7 @@ import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient } from '../../services/openai.js';
+import { sendMentionNotificationsAsync } from '../../utils/dashboard-helpers.js';
 import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
@@ -161,6 +162,8 @@ export const DashboardArgsSchema = z.object({
     .describe('Section à lire (défaut: all)'),
   intercomLimit: z.number().optional()
     .describe('Nombre max de messages intercom retournés (défaut: tous). Le dashboard est auto-condensé à 50KB, donc tous les messages sont normalement visibles.'),
+  mentionsOnly: z.boolean().optional()
+    .describe('(read) Ne retourner que les messages mentionnant la machine/agent courant (défaut: false)'),
 
   // Pour write (section status)
   content: z.string().optional()
@@ -169,6 +172,8 @@ export const DashboardArgsSchema = z.object({
     .describe('Auteur de la modification (requis pour write/append)'),
   createIfNotExists: z.boolean().optional()
     .describe('Créer le dashboard s\'il n\'existe pas (défaut: true)'),
+  messageId: z.string().optional()
+    .describe('(append) ID optionnel pour le message (ex: hash GitHub issue). Si absent, généré automatiquement.'),
 
   // Pour condense
   keepMessages: z.number().optional()
@@ -177,9 +182,13 @@ export const DashboardArgsSchema = z.object({
   // Pour read_archive
   archiveFile: z.string().optional()
     .describe('(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.')
-});
+}).passthrough();
 
-export type DashboardArgs = z.infer<typeof DashboardArgsSchema>;
+export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string, any>;
+
+// Track custom messageIds for dashboard messages by key
+// This ensures custom IDs are available across function boundaries
+const pendingMessageIds = new Map<string, string>();
 
 // === Utilitaires ===
 
@@ -387,6 +396,117 @@ function createEmptyDashboard(
  */
 function generateMessageId(): string {
   return `ic-${new Date().toISOString().replace(/[:.]/g, '').substring(0, 16)}`;
+}
+
+/**
+ * Détecte les mentions dans un contenu de message
+ * Patterns supportés:
+ * - @myia-ai-01 (machine)
+ * - @myia-po-2025 (machine)
+ * - @myia-web1 (machine)
+ * - @roo-myia-ai-01 (agent Roo)
+ * - @claude-myia-ai-01 (agent Claude)
+ * - @jsboige (utilisateur)
+ * - @msg:ic-20260413T0830-a1b2 (référence message)
+ */
+interface ParsedMention {
+  type: 'machine' | 'agent' | 'user' | 'message';
+  target: string; // machine ID, agent ID, user ID, ou message ID
+  pattern: string; // exact pattern matched
+}
+
+function parseMentions(content: string): ParsedMention[] {
+  const mentions: ParsedMention[] = [];
+  let match;
+
+  // Pattern 1: @roo-<machine-id> or @claude-<machine-id> (check this FIRST)
+  // Matches: @roo-myia-ai-01, @claude-test-machine, etc.
+  const agentPattern = /@(roo|claude)-([a-zA-Z0-9][a-zA-Z0-9\-]*)/g;
+  while ((match = agentPattern.exec(content)) !== null) {
+    mentions.push({
+      type: 'agent',
+      target: `${match[1]}-${match[2]}`,
+      pattern: match[0]
+    });
+  }
+
+  // Pattern 2: @msg:id (message references)
+  // Matches: @msg:ic-2026-04-13-101530, @msg:issue-1234
+  const messagePattern = /@msg:([a-zA-Z0-9][a-zA-Z0-9\-]*)/g;
+  while ((match = messagePattern.exec(content)) !== null) {
+    mentions.push({
+      type: 'message',
+      target: match[1],
+      pattern: match[0]
+    });
+  }
+
+  // Pattern 3: @jsboige (known usernames)
+  const userPattern = /@(jsboige)/g;
+  while ((match = userPattern.exec(content)) !== null) {
+    mentions.push({
+      type: 'user',
+      target: match[1],
+      pattern: match[0]
+    });
+  }
+
+  // Pattern 4: @machine-id (catch-all for any other @mention)
+  // Matches: @myia-ai-01, @test-machine, @myia-po-2025, etc.
+  // But skips matches already captured above
+  const generalPattern = /@([a-zA-Z0-9][a-zA-Z0-9\-]*)/g;
+  const capturedPatterns = new Set(mentions.map(m => m.pattern));
+  while ((match = generalPattern.exec(content)) !== null) {
+    const target = match[1];
+    const pattern = match[0];
+    // Skip if already captured by agent or message pattern
+    if (!capturedPatterns.has(pattern)) {
+      mentions.push({
+        type: 'machine',
+        target,
+        pattern
+      });
+      capturedPatterns.add(pattern);
+    }
+  }
+
+  // Deduplicate mentions by pattern
+  const uniqueMentions = new Map<string, ParsedMention>();
+  for (const mention of mentions) {
+    if (!uniqueMentions.has(mention.pattern)) {
+      uniqueMentions.set(mention.pattern, mention);
+    }
+  }
+
+  return Array.from(uniqueMentions.values());
+}
+
+/**
+ * Détermine si un message mentionne la machine/agent courant
+ */
+function isMentioned(mentions: ParsedMention[], localMachineId: string, localWorkspaceId: string): boolean {
+  for (const mention of mentions) {
+    switch (mention.type) {
+      case 'machine':
+        if (mention.target === localMachineId) return true;
+        break;
+      case 'agent':
+        // Check both roo-<machineId> and claude-<machineId>
+        if (mention.target === `roo-${localMachineId}` ||
+            mention.target === `claude-${localMachineId}`) {
+          return true;
+        }
+        break;
+      case 'user':
+        // Users mentioned (@jsboige) are always considered "for them"
+        // but for read filtering, we skip user mentions (not machine-specific)
+        break;
+      case 'message':
+        // Message references don't trigger "mentioned" status
+        break;
+    }
+  }
+  return false;
 }
 
 /**
@@ -947,7 +1067,24 @@ export interface DashboardResult {
 /**
  * Handler pour l'outil roosync_dashboard
  */
-export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardResult> {
+export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResult> {
+  // Capture messageId BEFORE Zod parsing to preserve custom IDs
+  const customMessageId = typeof rawArgs === 'object' && rawArgs !== null && 'messageId' in rawArgs
+    ? (rawArgs as any).messageId
+    : undefined;
+
+  // Validate args using Zod schema to ensure type safety
+  let args: DashboardArgs;
+  try {
+    args = DashboardArgsSchema.parse(rawArgs);
+  } catch (e) {
+    logger.error('Invalid args for roosync_dashboard', { error: String(e) });
+    throw new Error(`Invalid arguments: ${String(e)}`);
+  }
+
+  // The custom messageId is stored in pendingMessageIds Map after key is computed
+  // This happens below when handling the append action
+
   // action=list et read_overview ne nécessitent pas de type
   if (args.action === 'list') {
     return handleList();
@@ -967,30 +1104,43 @@ export async function roosyncDashboard(args: DashboardArgs): Promise<DashboardRe
   const key = buildDashboardKey(args.type, resolvedMachineId, resolvedWorkspace);
   const createIfNotExists = args.createIfNotExists !== false; // défaut: true
 
+  // Store pending custom messageId for append action
+  if (customMessageId && args.action === 'append') {
+    pendingMessageIds.set(key, customMessageId);
+  }
+
   logger.info('roosync_dashboard appelé', { action: args.action, key });
 
-  switch (args.action) {
-    case 'read':
-      return handleRead(key, args, resolvedMachineId, resolvedWorkspace);
-    case 'write':
-      // Serialized: read-modify-write races can overwrite concurrent updates
-      return withKeyLock(key, () =>
-        handleWrite(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace)
-      );
-    case 'append':
-      // Serialized: prevents concurrent condensations producing duplicate archives
-      return withKeyLock(key, () =>
-        handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace)
-      );
+  try {
+    switch (args.action) {
+      case 'read':
+        return handleRead(key, args, resolvedMachineId, resolvedWorkspace);
+      case 'write':
+        // Serialized: read-modify-write races can overwrite concurrent updates
+        return withKeyLock(key, () =>
+          handleWrite(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace)
+        );
+      case 'append':
+        // Serialized: prevents concurrent condensations producing duplicate archives
+        return withKeyLock(key, () =>
+          handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace)
+        );
+
     case 'condense':
       // Serialized: manual condense must not race with auto-condense from append
       return withKeyLock(key, () => handleCondense(key, args));
     case 'delete':
       return withKeyLock(key, () => handleDelete(key, args));
-    case 'read_archive':
-      return handleReadArchive(key, args);
-    default:
-      throw new Error(`Action inconnue: ${(args as any).action}`);
+      case 'read_archive':
+        return handleReadArchive(key, args);
+      default:
+        throw new Error(`Action inconnue: ${(args as any).action}`);
+    }
+  } finally {
+    // Clean up pending messageId after append completes
+    if (args.action === 'append') {
+      pendingMessageIds.delete(key);
+    }
   }
 }
 
@@ -1038,9 +1188,18 @@ async function handleRead(
     data.status = dashboard.status;
   }
   if (section === 'intercom' || section === 'all') {
-    const messages = intercomLimit
+    let messages = intercomLimit
       ? dashboard.intercom.messages.slice(-intercomLimit)
       : dashboard.intercom.messages;
+
+    // Filter by mentionsOnly if requested
+    if (args.mentionsOnly) {
+      messages = messages.filter(msg => {
+        const mentions = parseMentions(msg.content);
+        return isMentioned(mentions, resolvedMachineId, resolvedWorkspace);
+      });
+    }
+
     data.intercom = {
       ...dashboard.intercom,
       messages
@@ -1145,12 +1304,29 @@ async function handleAppend(
     dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
+  // Use provided messageId or generate a new one
+  // Check in order:
+  // 1. Pending messageId from the Map (custom ID provided to append)
+  // 2. args.messageId property (from schema)
+  // 3. Generate new ID as fallback
+  const messageIdValue = pendingMessageIds.get(key) || (args as any).messageId || generateMessageId();
+
   const message: IntercomMessage = {
-    id: generateMessageId(),
+    id: messageIdValue,
     timestamp: new Date().toISOString(),
     author,
     content: args.content
   };
+
+  // Parse mentions in the message content
+  const mentions = parseMentions(args.content);
+  if (mentions.length > 0) {
+    logger.debug('Mentions detected in dashboard message', {
+      messageId: message.id,
+      mentionCount: mentions.length,
+      mentions: mentions.map(m => m.pattern)
+    });
+  }
 
   const now = new Date().toISOString();
   const updatedDashboard: Dashboard = {
@@ -1184,6 +1360,22 @@ async function handleAppend(
   }
 
   await writeDashboardFile(key, finalDashboard);
+
+  // Fire-and-forget: Send mention notifications if mentions were detected
+  if (mentions.length > 0) {
+    sendMentionNotificationsAsync(
+      message.id,
+      mentions,
+      key,
+      args.content
+    ).catch((err: Error) => {
+      logger.debug('Mention notification failed (non-critical)', {
+        error: String(err),
+        messageId: message.id
+      });
+    });
+  }
+
   return {
     success: true,
     action: 'append',
@@ -1595,6 +1787,14 @@ export const dashboardToolMetadata = {
       archiveFile: {
         type: 'string',
         description: '(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.'
+      },
+      mentionsOnly: {
+        type: 'boolean',
+        description: '(read) Ne retourner que les messages mentionnant la machine/agent courant (défaut: false). Détecte patterns @machine-id, @roo-*, @claude-*, @msg:id, @user.'
+      },
+      messageId: {
+        type: 'string',
+        description: '(append) ID optionnel pour le message (ex: hash GitHub issue). Si absent, généré automatiquement au format ic-{timestamp}.'
       }
     },
     required: ['action'],

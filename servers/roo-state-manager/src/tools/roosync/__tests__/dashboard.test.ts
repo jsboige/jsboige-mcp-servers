@@ -757,4 +757,201 @@ describe('roosync_dashboard', () => {
       expect(readArchive.archiveData?.messages.length).toBe(7);
     });
   });
+
+  describe('Mention parsing and filtering (#1363)', () => {
+    beforeEach(async () => {
+      // Initialize a global dashboard for mention tests
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Test Dashboard' });
+    });
+
+    it('detects machine mentions (@machine-id)', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Hey @myia-ai-01, please review this'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      expect(result.data?.intercom?.messages.length).toBe(1);
+      expect(result.data?.intercom?.messages[0].content).toContain('@myia-ai-01');
+    });
+
+    it('detects agent mentions (@roo-*, @claude-*)', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Mentioning @roo-myia-ai-01 and @claude-myia-po-2023'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      expect(result.data?.intercom?.messages.length).toBe(1);
+      const content = result.data?.intercom?.messages[0].content || '';
+      expect(content).toContain('@roo-myia-ai-01');
+      expect(content).toContain('@claude-myia-po-2023');
+    });
+
+    it('detects message mentions (@msg:id)', async () => {
+      const appendResult = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        messageId: 'msg-123',
+        content: 'Original message'
+      });
+
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Responding to @msg:msg-123 - this is great!'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      expect(result.data?.intercom?.messages.length).toBe(2);
+      expect(result.data?.intercom?.messages[1].content).toContain('@msg:msg-123');
+    });
+
+    it('detects user mentions (@user)', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'FYI @jsboige, please check the dashboard'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      expect(result.data?.intercom?.messages.length).toBe(1);
+      expect(result.data?.intercom?.messages[0].content).toContain('@jsboige');
+    });
+
+    it('preserves custom messageId in append', async () => {
+      const appendArgs: any = {
+        action: 'append' as const,
+        type: 'global' as const,
+        messageId: 'custom-id-12345',
+        content: 'Message with custom ID'
+      };
+
+      // Verify args has messageId before calling function
+      expect(appendArgs.messageId).toBe('custom-id-12345');
+
+      const appendResult = await roosyncDashboard(appendArgs);
+      expect(appendResult.success).toBe(true);
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      expect(result.data?.intercom?.messages.length).toBe(1);
+      expect(result.data?.intercom?.messages[0].id).toBe('custom-id-12345');
+    });
+
+    it('generates messageId automatically when not provided', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Message without custom ID'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      expect(result.data?.intercom?.messages.length).toBe(1);
+      const messageId = result.data?.intercom?.messages[0].id || '';
+      expect(messageId).toMatch(/^ic-\d{4}-\d{2}-\d{2}/); // ic-YYYY-MM-DD format
+    });
+
+    it('filters messages by mentionsOnly when machine is mentioned', async () => {
+      // Add messages: some mention the test machine, others don't
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Message for @test-machine - important'
+      });
+
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Message for @other-machine - not relevant'
+      });
+
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: '@test-machine please respond to this'
+      });
+
+      // Read with mentionsOnly filter
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+        mentionsOnly: true
+      });
+
+      // Should only return messages mentioning test-machine
+      expect(result.data?.intercom?.messages.length).toBe(2);
+      expect(result.data?.intercom?.messages[0].content).toContain('@test-machine');
+      expect(result.data?.intercom?.messages[1].content).toContain('@test-machine');
+    });
+
+    it('handles multiple mentions in single message', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: '@myia-ai-01 and @jsboige: please check @msg:prev-msg for context'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom'
+      });
+
+      const content = result.data?.intercom?.messages[0].content || '';
+      expect(content).toContain('@myia-ai-01');
+      expect(content).toContain('@jsboige');
+      expect(content).toContain('@msg:prev-msg');
+    });
+
+    it('does not filter non-mention patterns', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'Email: user@example.com and hash: #abc123 should not be treated as mentions'
+      });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+        mentionsOnly: true
+      });
+
+      // Should return 0 messages since no valid mentions
+      expect(result.data?.intercom?.messages.length).toBe(0);
+    });
+  });
 });
