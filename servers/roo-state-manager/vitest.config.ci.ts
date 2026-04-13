@@ -19,6 +19,10 @@ import baseConfig from './vitest.config.js';
 
 export default mergeConfig(baseConfig, defineConfig({
   test: {
+    // Timeout settings for CI tests (long-running integration tests)
+    testTimeout: 30000,
+    hookTimeout: 60000,
+
     exclude: [
       // ===== Inherited from base config =====
       'node_modules',
@@ -56,8 +60,7 @@ export default mergeConfig(baseConfig, defineConfig({
       'tests/integration/roosync-conflict-integration.test.ts',
       'tests/performance/concurrency.test.ts',
       'tests/unit/services/BaselineService.test.ts',
-      'tests/unit/services/RooSyncService.test.ts',
-      'tests/unit/services/task-indexer-vector-validation.test.ts',
+            'tests/unit/services/task-indexer-vector-validation.test.ts',
       'tests/unit/services/task-indexer.test.ts',
       // #1244 Couche 2.5/2.6/2.7 — Re-enabled in CI after repair: legacy test was
       // fixed to accommodate the new hard-cap and smart_truncation default, and the

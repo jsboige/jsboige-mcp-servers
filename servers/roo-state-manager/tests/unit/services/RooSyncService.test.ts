@@ -21,6 +21,10 @@ vi.unmock('fs');
 import { RooSyncService, getRooSyncService, RooSyncServiceError } from '../../../src/services/RooSyncService.js';
 
 describe('RooSyncService', () => {
+  // Extended timeout for integration tests that perform file I/O
+  const testTimeout = 60000; // 60 seconds
+  const hookTimeout = 90000; // 90 seconds
+
   const testDir = join(__dirname, '../../fixtures/roosync-service-test');
 
   beforeEach(() => {

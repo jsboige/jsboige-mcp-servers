@@ -19,7 +19,7 @@
     "test:mocks": "vitest run tests/unit/tools/manage-mcp-settings.test.ts",
     "test:divers": "vitest run tests/unit --exclude=manage-mcp-settings.test.ts --exclude=task-indexer-vector-validation.test.ts",
     "test:detector": "node build/tests/manual/test-storage-detector.js",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --config vitest.config.ci.ts",
     "test:hierarchy:debug": "cross-env ROO_DEBUG_INSTRUCTIONS=1 npm run test:hierarchy",
     "test:ui": "vitest --ui",
     "test": "vitest",

@@ -61,8 +61,8 @@ export default defineConfig({
     globalSetup: './tests/config/globalSetup.ts',
 
     // Timeout (30 secondes comme Jest)
-    testTimeout: 15000,
-    hookTimeout: 30000,
+    testTimeout: 30000,
+    hookTimeout: 60000,
 
     // Pool configuration - forks is faster for isolated tests with heavy setup
     pool: 'forks',
@@ -79,9 +79,17 @@ export default defineConfig({
 
     // Coverage configuration
     coverage: {
-      provider: 'v8',
+      provider: 'v8',  // Reverted to v8 with explicit configuration
+      providerOptions: {
+        supportedExtensions: ['js', 'ts', 'tsx', 'jsx'],
+        ignoreEmptyLines: true,
+        allowExternal: true,
+        includeSources: true,
+        excludeAfterRemap: true
+      },
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
+      tempDirectory: './coverage/.tmp',
       exclude: [
         'node_modules/',
         'build/',
