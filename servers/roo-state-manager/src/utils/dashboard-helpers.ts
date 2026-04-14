@@ -13,6 +13,7 @@ import { promisify } from 'util';
 import { getSharedStatePath } from './shared-state-path.js';
 import { getLocalMachineId } from './message-helpers.js';
 import { createLogger, Logger } from './logger.js';
+import { getMessageManager } from '../services/MessageManager.js';
 
 const execAsync = promisify(exec);
 const logger: Logger = createLogger('DashboardHelpers');
@@ -171,6 +172,101 @@ ${details?.subject ? `- **Sujet :** ${details.subject}` : ''}
   } catch (error) {
     // Fire-and-forget : ne pas propager l'erreur
     logger.debug('Dashboard update failed (non-critical)', { error: String(error) });
+  }
+}
+
+/**
+ * Interface pour les mentions détectées dans les messages dashboard
+ */
+interface ParsedMention {
+  type: 'machine' | 'agent' | 'user' | 'message';
+  target: string;
+  pattern: string;
+}
+
+/**
+ * Envoie des notifications RooSync automatiques quand un message mentionne d'autres machines/agents
+ *
+ * Cette fonction est fire-and-forget et n'interrompt pas le flux principal.
+ *
+ * @param messageId ID du message dashboard contenant les mentions
+ * @param mentions Liste des mentions détectées
+ * @param dashboardKey Clé du dashboard (ex: workspace-roo-extensions)
+ * @param contentExcerpt Extrait du contenu du message (pour la notification)
+ * @issue #1363
+ */
+export async function sendMentionNotificationsAsync(
+  messageId: string,
+  mentions: ParsedMention[],
+  dashboardKey: string,
+  contentExcerpt: string
+): Promise<void> {
+  try {
+    // Grouper les mentions par machine pour envoyer un seul message par machine
+    const mentionsByMachine = new Map<string, ParsedMention[]>();
+
+    for (const mention of mentions) {
+      if (mention.type === 'machine' || mention.type === 'agent') {
+        // Extract machine ID: for agent types like "roo-myia-ai-01", get "myia-ai-01"
+        const machine = mention.type === 'machine' ? mention.target : mention.target.split('-').slice(1).join('-');
+        if (!mentionsByMachine.has(machine)) {
+          mentionsByMachine.set(machine, []);
+        }
+        mentionsByMachine.get(machine)!.push(mention);
+      }
+    }
+
+    // Construire et envoyer les notifications
+    for (const [machine, machineMentions] of mentionsByMachine) {
+      const subject = `[MENTION] Nouveau message dashboard mentionnant @${machine}`;
+      const mentionList = machineMentions
+        .map(m => `- @${m.target}${m.type === 'agent' ? ' (agent)' : ''}`)
+        .join('\n');
+
+      const body = `Un message a été posté sur le dashboard mentionnant votre machine.
+
+**Message ID:** \`${messageId}\`
+**Dashboard:** ${dashboardKey}
+
+**Mentions:**
+${mentionList}
+
+**Extrait:**
+${contentExcerpt.substring(0, 200)}${contentExcerpt.length > 200 ? '...' : ''}`;
+
+      try {
+        // Appel fire-and-forget: on ne blockera pas le flux principal
+        const messageManager = getMessageManager();
+
+        // Envoyer le message RooSync de notification
+        await messageManager.sendMessage(
+          getLocalMachineId(),
+          machine,
+          subject,
+          body,
+          'HIGH',
+          ['mention', 'notification']
+        );
+
+        logger.debug('Mention notification sent via RooSync', {
+          messageId,
+          machine,
+          mentionCount: machineMentions.length
+        });
+      } catch (error) {
+        logger.debug('Failed to send mention notification (non-critical)', {
+          error: String(error),
+          messageId,
+          machine
+        });
+      }
+    }
+  } catch (error) {
+    // Fire-and-forget : ne pas propager l'erreur
+    logger.debug('Mention notification sending failed (non-critical)', {
+      error: String(error),
+      messageId
+    });
   }
 }
 
