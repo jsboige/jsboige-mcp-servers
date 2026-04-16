@@ -195,9 +195,13 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     const filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
     const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
 
+    // #1409: Use machine registry as authoritative source for total count
+    const registryMachineIds = service.getKnownMachineIds();
+    const heartbeatTotal = filteredOnlineMachines.length + filteredOfflineMachines.length;
     const totalMachines = Math.max(
+      registryMachineIds.length,
       filteredDashboardMachines.length,
-      filteredOnlineMachines.length + filteredOfflineMachines.length
+      heartbeatTotal
     );
 
     // Build flags

@@ -137,17 +137,28 @@ describe('RooStorageDetector', () => {
         });
 
         test('calcule la taille totale', async () => {
-            mockReaddir.mockResolvedValue([
+            // #1409: getStatsForPath now reads files inside each task dir
+            const outerEntries = [
                 { name: 'task1', isDirectory: () => true },
                 { name: 'task2', isDirectory: () => true },
-            ]);
+            ];
+
+            // First call: outer readdir (task dirs)
+            // Subsequent calls: inner readdir (files inside each task dir)
+            mockReaddir
+                .mockResolvedValueOnce(outerEntries)      // /mock/tasks → [task1, task2]
+                .mockResolvedValueOnce(['file1.json'])      // task1 files
+                .mockResolvedValueOnce(['file2.json', 'file3.json']); // task2 files
+
+            // stat calls: file1 (1000) + file2 (2000) + file3 (500)
             mockStat
-                .mockResolvedValueOnce({ isDirectory: () => true, size: 1000 })
-                .mockResolvedValueOnce({ isDirectory: () => true, size: 2000 });
+                .mockResolvedValueOnce({ isFile: () => true, size: 1000, mtime: new Date() })
+                .mockResolvedValueOnce({ isFile: () => true, size: 2000, mtime: new Date() })
+                .mockResolvedValueOnce({ isFile: () => true, size: 500, mtime: new Date() });
 
             const stats = await RooStorageDetector.getStatsForPath('/mock/tasks');
 
-            expect(stats.totalSize).toBe(3000);
+            expect(stats.totalSize).toBe(3500);
         });
 
         test('gère readdir retournant undefined (bug Vitest)', async () => {

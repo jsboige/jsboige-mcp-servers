@@ -436,8 +436,11 @@ describe('HeartbeatService - Tests Unitaires', () => {
       
       // Assert
       expect(removedCount).toBe(2);
-      expect(heartbeatService.getHeartbeatData('machine-old-1')).toBeUndefined();
-      expect(heartbeatService.getHeartbeatData('machine-old-2')).toBeUndefined();
+      // #1409: Machines kept in state as offline, not deleted
+      expect(heartbeatService.getHeartbeatData('machine-old-1')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('machine-old-1')!.status).toBe('offline');
+      expect(heartbeatService.getHeartbeatData('machine-old-2')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('machine-old-2')!.status).toBe('offline');
       expect(heartbeatService.getHeartbeatData('machine-recent')).toBeDefined(); // Pas supprimée
     });
   });

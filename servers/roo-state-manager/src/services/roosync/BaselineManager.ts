@@ -211,6 +211,14 @@ export class BaselineManager {
   }
 
   /**
+   * Obtenir la liste des IDs machines connues du registre
+   * #1409: Source de vérité pour le nombre total de machines du cluster
+   */
+  public getKnownMachineIds(): string[] {
+    return Array.from(this.machineRegistry.machines.keys());
+  }
+
+  /**
    * Vérifier si une machine existe dans le registre
    */
   private machineExistsInRegistry(machineId: string): boolean {

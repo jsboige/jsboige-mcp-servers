@@ -938,6 +938,14 @@ export class RooSyncService {
   }
 
   /**
+   * Obtient les IDs des machines connues du registre
+   * #1409: Source de vérité pour le nombre total de machines
+   */
+  public getKnownMachineIds(): string[] {
+    return this.baselineManager.getKnownMachineIds();
+  }
+
+  /**
    * Obtient le service de commit log
    */
   public getCommitLogService(): CommitLogService {
