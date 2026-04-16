@@ -519,15 +519,13 @@ export const searchTasksByContentTool = {
             }
 
             // #831: Add configurable timeout for large vector indexes (9.93M vectors)
-            // #1275: Fix Promise leak — clear timeout if search completes first
-            const searchTimeoutMs = parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10); // Default 30s
+            // #1275: Use native Qdrant timeout parameter (seconds) instead of Promise.race leak
+            const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
 
             // #883: Global search is now allowed (workspace auto-defaults in roosync_search)
 
             // #851: Optimized search params for 10M+ vector collection
-            // #831/#1275: Timeout wrapper with proper cleanup to avoid Promise leak
-            let timeoutId: ReturnType<typeof setTimeout> | undefined;
-            const searchPromise = qdrant.search(collectionName, {
+            const searchResults = await qdrant.search(collectionName, {
                 vector: queryVector,
                 limit: max_results || 10,
                 filter: filter,
@@ -538,22 +536,9 @@ export const searchTasksByContentTool = {
                 },
                 with_payload: {
                     include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error']
-                }
+                },
+                timeout: searchTimeoutSec,
             });
-
-            const timeoutPromise = new Promise<never>((_, reject) => {
-                timeoutId = setTimeout(() => reject(new Error(`Qdrant search timeout after ${searchTimeoutMs}ms (9.93M vectors). Tip: Provide workspace parameter to narrow search.`)), searchTimeoutMs);
-            });
-
-            let searchResults;
-            try {
-                searchResults = await Promise.race([searchPromise, timeoutPromise]);
-            } finally {
-                // #1275: Always clear timeout to prevent leaked timer
-                if (timeoutId !== undefined) {
-                    clearTimeout(timeoutId);
-                }
-            }
 
 
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête

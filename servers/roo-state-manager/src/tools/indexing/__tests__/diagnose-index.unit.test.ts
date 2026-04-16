@@ -40,7 +40,7 @@ vi.mock('../../../services/openai.js', () => ({
 }));
 
 // Import the module under test (static import, mocks are hoisted)
-import { handleDiagnoseSemanticIndex } from '../diagnose-index.tool.js';
+import { handleDiagnoseSemanticIndex, _resetConnectivityCache } from '../diagnose-index.tool.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 
 describe('diagnose-index.tool (unit tests)', () => {
@@ -78,6 +78,7 @@ describe('diagnose-index.tool (unit tests)', () => {
 	beforeEach(() => {
 		// Clear all mocks (not resetModules - we want to keep the module cached)
 		vi.clearAllMocks();
+		_resetConnectivityCache();
 
 		// Reset env vars
 		process.env = { ...origEnv };

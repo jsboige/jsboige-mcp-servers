@@ -47,7 +47,7 @@ vi.mock('../../services/openai.js', () => ({
   getEmbeddingModel: vi.fn(() => 'text-embedding-3-small')
 }));
 
-import { handleDiagnoseSemanticIndex } from '../diagnose-index.tool.js';
+import { handleDiagnoseSemanticIndex, _resetConnectivityCache } from '../diagnose-index.tool.js';
 import * as qdrantService from '../../services/qdrant.js';
 import * as openaiService from '../../services/openai.js';
 
@@ -60,6 +60,7 @@ describe('diagnose-index', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetConnectivityCache();
 
     // Set up default environment variables
     process.env.QDRANT_URL = 'http://localhost:6333';
