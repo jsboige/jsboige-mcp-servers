@@ -1517,7 +1517,7 @@ async function handleAppend(
     try {
       const targets = args.mentions.map(m => resolveMentionTarget(m));
       sendStructuredMentionNotificationsAsync(
-        author.machineId,
+        { machineId: author.machineId, workspace: author.workspace },
         message.id,
         targets,
         key,

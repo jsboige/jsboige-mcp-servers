@@ -307,57 +307,62 @@ export function resolveMentionTarget(mention: Mention): UserId {
  * Envoie des notifications RooSync pour des mentions v3 structurées.
  *
  * Contrairement à `sendMentionNotificationsAsync` (v1, pattern @machine parsé),
- * cette variante prend directement des UserId résolus. Une seule notification par
- * machineId distinct (dédoublonnage), listant tous les workspaces ciblés.
+ * cette variante prend directement des UserId résolus. Une notification par
+ * (machineId, workspace) distinct — le dédoublonnage par machineId seul
+ * (historique pre-#1472) perdait le workspace avant la comparaison anti-auto-
+ * message, bloquant à tort cross-workspace same-machine.
  *
  * Fire-and-forget : aucune erreur n'est propagée au flux principal.
  *
- * @param fromMachineId Machine émettrice (auteur du message dashboard)
- * @param messageId     ID du message dashboard (format v3: machineId:workspace:ic-...)
- * @param targets       UserIds résolus via `resolveMentionTarget`
- * @param dashboardKey  Clé du dashboard source (ex: workspace-roo-extensions)
- * @param excerpt       Extrait du contenu (tronqué à 200 chars)
- * @issue #1363
+ * @param fromUserId   UserId de l'émetteur (auteur du message dashboard) —
+ *                     machineId+workspace portés ensemble pour préserver le
+ *                     workspace jusqu'au check anti-auto-message de MessageManager.
+ * @param messageId    ID du message dashboard (format v3: machineId:workspace:ic-...)
+ * @param targets      UserIds résolus via `resolveMentionTarget`
+ * @param dashboardKey Clé du dashboard source (ex: workspace-roo-extensions)
+ * @param excerpt      Extrait du contenu (tronqué à 200 chars)
+ * @issue #1363 (feature), #1472 (workspace-loss fix)
  */
 export async function sendStructuredMentionNotificationsAsync(
-  fromMachineId: string,
+  fromUserId: UserId,
   messageId: string,
   targets: UserId[],
   dashboardKey: string,
   excerpt: string
 ): Promise<void> {
   try {
-    // Dédupliquer par machineId, en agrégeant les workspaces pointés.
-    const byMachine = new Map<string, Set<string>>();
+    // Dédupliquer par (machineId, workspace). Un message mentionnant 2 workspaces
+    // sur une même machine produit 2 notifs distinctes (une par target précis).
+    // Clé qualifiée = permet à MessageManager.sendMessage de comparer correctement
+    // from.workspace vs to.workspace pour l'anti-auto-message.
+    const byTarget = new Map<string, UserId>();
     for (const t of targets) {
-      if (!byMachine.has(t.machineId)) {
-        byMachine.set(t.machineId, new Set<string>());
+      const key = `${t.machineId}:${t.workspace}`;
+      if (!byTarget.has(key)) {
+        byTarget.set(key, t);
       }
-      byMachine.get(t.machineId)!.add(t.workspace);
     }
 
     const messageManager = getMessageManager();
+    const from = `${fromUserId.machineId}:${fromUserId.workspace}`;
 
-    for (const [machine, workspaces] of byMachine) {
-      const wsList = Array.from(workspaces);
-      const subject = `[MENTION] Dashboard ${dashboardKey} → ${machine}`;
-      const wsLines = wsList.map(w => `- \`${machine}:${w}\``).join('\n');
-
-      const body = `Un message dashboard mentionne un userId de votre machine.
+    for (const [qualifiedTarget, _target] of byTarget) {
+      const subject = `[MENTION] Dashboard ${dashboardKey} → ${qualifiedTarget}`;
+      const body = `Un message dashboard mentionne votre userId.
 
 **Message ID:** \`${messageId}\`
 **Dashboard source:** \`${dashboardKey}\`
 
-**UserId(s) ciblé(s):**
-${wsLines}
+**UserId ciblé:**
+- \`${qualifiedTarget}\`
 
 **Extrait:**
 ${excerpt.substring(0, 200)}${excerpt.length > 200 ? '...' : ''}`;
 
       try {
         await messageManager.sendMessage(
-          fromMachineId,
-          machine,
+          from,
+          qualifiedTarget,
           subject,
           body,
           'HIGH',
@@ -366,20 +371,23 @@ ${excerpt.substring(0, 200)}${excerpt.length > 200 ? '...' : ''}`;
 
         logger.debug('Structured mention notification sent via RooSync', {
           messageId,
-          machine,
-          workspaceCount: wsList.length
+          from,
+          target: qualifiedTarget
         });
       } catch (error) {
-        logger.debug('Failed to send structured mention notification (non-critical)', {
-          error: String(error),
-          messageId,
-          machine
-        });
+        // #1472: log at WARN for non-self-message rejections so future dispatch
+        // failures don't get silently swallowed like the workspace-loss bug did.
+        const msg = String(error);
+        const isSelfBlock = msg.includes('Auto-message interdit');
+        (isSelfBlock ? logger.debug : logger.warn)(
+          'Failed to send structured mention notification',
+          { error: msg, messageId, from, target: qualifiedTarget, selfBlock: isSelfBlock }
+        );
       }
     }
   } catch (error) {
-    // Fire-and-forget
-    logger.debug('Structured mention notification dispatch failed (non-critical)', {
+    // Fire-and-forget — outer catch for unexpected throws (e.g. getMessageManager fails).
+    logger.warn('Structured mention notification dispatch failed', {
       error: String(error),
       messageId
     });
