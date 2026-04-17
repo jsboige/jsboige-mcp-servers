@@ -62,7 +62,15 @@ export function getLocalWorkspaceId(): string {
   // 2. WORKSPACE_PATH from launcher (mcp-wrapper captures original cwd,
   //    or Roo injects ${workspaceFolder} via config)
   if (process.env.WORKSPACE_PATH) {
-    const wsName = path.basename(process.env.WORKSPACE_PATH.replace(/\\/g, '/'));
+    const normalized = process.env.WORKSPACE_PATH.replace(/\\/g, '/');
+    // Worktree detection (#1364 regression fix): WORKSPACE_PATH may itself
+    // point inside .claude/worktrees/* (when the wrapper captured cwd from
+    // a worktree). Resolve to parent workspace before using basename.
+    const worktreeWorkspace = resolveWorkspaceFromWorktree(normalized);
+    if (worktreeWorkspace) {
+      return worktreeWorkspace;
+    }
+    const wsName = path.basename(normalized);
     if (wsName && wsName !== '.' && wsName.length >= 2) {
       return wsName;
     }

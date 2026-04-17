@@ -340,12 +340,28 @@ describe('message-helpers', () => {
       expect(getLocalWorkspaceId()).toBe('custom-override');
     });
 
-    test('WORKSPACE_PATH takes precedence over worktree cwd', () => {
+    test('WORKSPACE_PATH outside worktree takes precedence over worktree cwd', () => {
       delete process.env.ROOSYNC_WORKSPACE_ID;
       process.env.WORKSPACE_PATH = 'd:/other-project';
       process.cwd = () => 'c:/dev/roo-extensions/.claude/worktrees/wt-1365';
 
       expect(getLocalWorkspaceId()).toBe('other-project');
+    });
+
+    test('WORKSPACE_PATH pointing inside worktree resolves to parent workspace (#1364 regression)', () => {
+      delete process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.WORKSPACE_PATH = 'd:/roo-extensions/.claude/worktrees/wt-worker-myia-ai-01-20260417';
+      process.cwd = () => 'd:/some/unrelated/cwd';
+
+      expect(getLocalWorkspaceId()).toBe('roo-extensions');
+    });
+
+    test('WORKSPACE_PATH with backslashes inside worktree resolves to parent', () => {
+      delete process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.WORKSPACE_PATH = 'd:\\roo-extensions\\.claude\\worktrees\\wt-1364-fix';
+      process.cwd = () => 'd:/some/unrelated/cwd';
+
+      expect(getLocalWorkspaceId()).toBe('roo-extensions');
     });
   });
 });
