@@ -12,6 +12,7 @@ import { promises as fs, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { createLogger } from '../../utils/logger.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import {
   CommitEntryType,
   CommitStatus,
@@ -53,7 +54,7 @@ export class CommitLogService {
   constructor(config: Partial<CommitLogConfig> = {}) {
     // Configuration par défaut
     this.config = {
-      commitLogPath: config.commitLogPath || join(process.cwd(), '.shared-state', 'commit-log'),
+      commitLogPath: config.commitLogPath || join(getSharedStatePath(), 'commit-log'),
       syncInterval: config.syncInterval || 30000, // 30 secondes
       maxEntries: config.maxEntries || 10000,
       maxRetryAttempts: config.maxRetryAttempts || 3,
