@@ -43,7 +43,7 @@ function getLogger(): Logger {
  * Schema de validation pour roosync_baseline
  */
 export const BaselineArgsSchema = z.object({
-  action: z.enum(['update', 'version', 'restore', 'export'])
+  action: z.enum(['update', 'version', 'restore', 'export', 'list_versions'])
     .describe('Action à effectuer sur la baseline'),
 
   // Paramètres pour action: update
@@ -130,7 +130,10 @@ export const BaselineResultSchema = z.object({
   outputPath: z.string().optional().describe('[export] Chemin du fichier exporté'),
   size: z.number().optional().describe('[export] Taille du fichier en octets'),
   includeHistory: z.boolean().optional().describe('[export] Inclusion de l\'historique'),
-  includeMetadata: z.boolean().optional().describe('[export] Inclusion des métadonnées')
+  includeMetadata: z.boolean().optional().describe('[export] Inclusion des métadonnées'),
+
+  // Champs spécifiques pour list_versions
+  data: z.any().optional().describe('[list_versions] Données de réponse structurées')
 });
 
 export type BaselineResult = z.infer<typeof BaselineResultSchema>;
@@ -167,6 +170,8 @@ export async function roosync_baseline(args: BaselineArgs): Promise<BaselineResu
         return await handleRestoreAction(args, timestamp);
       case 'export':
         return await handleExportAction(args, timestamp);
+      case 'list_versions':
+        return await handleListVersionsAction(args, timestamp);
       default:
         throw new RooSyncServiceError(
           `Action non supportée: ${args.action}`,
@@ -752,6 +757,98 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 }
 
 /**
+ * Handler pour action: list_versions
+ * Découvre les versions de baseline disponibles (tags Git baseline-v*)
+ */
+async function handleListVersionsAction(args: BaselineArgs, timestamp: string): Promise<BaselineResult> {
+  const sharedStatePath = getSharedStatePath();
+  const configDir = join(sharedStatePath, 'configs');
+
+  interface VersionInfo {
+    tag: string;
+    date: string;
+    message: string;
+  }
+
+  try {
+    const allTags = execSync('git tag -l "baseline-v*"', {
+      encoding: 'utf8',
+      timeout: GIT_QUICK_TIMEOUT_MS,
+      cwd: configDir
+    });
+
+    const tags = allTags.split('\n').filter(t => t.trim());
+
+    if (tags.length === 0) {
+      return {
+        success: true,
+        action: 'list_versions',
+        timestamp,
+        version: '',
+        machineId: '',
+        message: 'Aucune version de baseline trouvée (pas de tags baseline-v*)',
+        data: {
+          versions: [],
+          totalVersions: 0
+        }
+      };
+    }
+
+    const versions: VersionInfo[] = [];
+    for (const tag of tags) {
+      let date = '';
+      let message = '';
+      try {
+        date = execSync(`git log -1 --format=%ai ${tag}`, {
+          encoding: 'utf8',
+          timeout: GIT_QUICK_TIMEOUT_MS,
+          cwd: configDir
+        }).trim();
+      } catch { /* skip */ }
+      try {
+        message = execSync(`git log -1 --format=%s ${tag}`, {
+          encoding: 'utf8',
+          timeout: GIT_QUICK_TIMEOUT_MS,
+          cwd: configDir
+        }).trim();
+      } catch { /* skip */ }
+      versions.push({ tag, date, message });
+    }
+
+    // Sort by date descending (newest first)
+    versions.sort((a, b) => b.date.localeCompare(a.date));
+
+    return {
+      success: true,
+      action: 'list_versions',
+      timestamp,
+      version: versions[0]?.tag || '',
+      machineId: '',
+      message: `${versions.length} versions de baseline trouvées`,
+      data: {
+        versions,
+        totalVersions: versions.length,
+        latest: versions[0]?.tag || null
+      }
+    };
+  } catch (error) {
+    return {
+      success: true,
+      action: 'list_versions',
+      timestamp,
+      version: '',
+      machineId: '',
+      message: `Impossible de lister les tags: ${(error as Error).message}`,
+      data: {
+        versions: [],
+        totalVersions: 0,
+        message: `Impossible de lister les tags: ${(error as Error).message}`
+      }
+    };
+  }
+}
+
+/**
  * Handler pour action: export
  * Remplace roosync_export_baseline
  */
@@ -1119,13 +1216,13 @@ function countParameters(config: any): number {
  */
 export const baselineToolMetadata = {
   name: 'roosync_baseline',
-  description: 'Outil consolidé pour gérer les baselines RooSync (update, version, restore, export)',
+  description: 'Outil consolidé pour gérer les baselines RooSync (update, version, restore, export, list_versions)',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
-        enum: ['update', 'version', 'restore', 'export'],
+        enum: ['update', 'version', 'restore', 'export', 'list_versions'],
         description: 'Action à effectuer sur la baseline'
       },
       machineId: {

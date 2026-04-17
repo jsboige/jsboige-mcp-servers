@@ -41,7 +41,11 @@ import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient } from '../../services/openai.js';
-import { sendMentionNotificationsAsync } from '../../utils/dashboard-helpers.js';
+import {
+  sendMentionNotificationsAsync,
+  sendStructuredMentionNotificationsAsync,
+  resolveMentionTarget
+} from '../../utils/dashboard-helpers.js';
 import type OpenAI from 'openai';
 
 const logger: Logger = createLogger('DashboardTool');
@@ -117,6 +121,43 @@ export const IntercomMessageSchema = z.object({
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
 
+// === Mentions v3 (#1363) ===
+// userId = { machineId, workspace } tuple. Mention notifies exactly one userId
+// (either directly via userId or indirectly via messageId whose author = userId).
+// Exactly one of userId/messageId must be provided (XOR).
+
+export const UserIdSchema = z.object({
+  machineId: z.string().describe('ID de la machine'),
+  workspace: z.string().describe('Workspace ID')
+});
+
+export type UserId = z.infer<typeof UserIdSchema>;
+
+export const MentionSchema = z.object({
+  userId: UserIdSchema.optional()
+    .describe('userId explicite à mentionner (exclusif avec messageId)'),
+  messageId: z.string().optional()
+    .describe('ID de message à référencer (format: machineId:workspace:ic-...). Résout en userId = auteur du message référencé.'),
+  note: z.string().optional()
+    .describe('Note optionnelle expliquant la raison de la mention')
+}).refine(
+  (m) => (m.userId !== undefined) !== (m.messageId !== undefined),
+  { message: 'mention: exactement un de userId ou messageId doit être fourni' }
+);
+
+export type Mention = z.infer<typeof MentionSchema>;
+
+export const CrossPostSchema = z.object({
+  type: z.enum(['global', 'machine', 'workspace'])
+    .describe('Type de dashboard cible'),
+  machineId: z.string().optional()
+    .describe('machineId cible (pour type=machine)'),
+  workspace: z.string().optional()
+    .describe('workspace cible (pour type=workspace)')
+});
+
+export type CrossPost = z.infer<typeof CrossPostSchema>;
+
 // Dashboard au format Markdown (avec frontmatter YAML)
 export interface Dashboard {
   type: 'global' | 'machine' | 'workspace';
@@ -174,6 +215,14 @@ export const DashboardArgsSchema = z.object({
     .describe('Créer le dashboard s\'il n\'existe pas (défaut: true)'),
   messageId: z.string().optional()
     .describe('(append) ID optionnel pour le message (ex: hash GitHub issue). Si absent, généré automatiquement.'),
+
+  // Mentions v3 (#1363) — structured mentions with RooSync auto-notify
+  mentions: z.array(MentionSchema).optional()
+    .describe('(append) Mentions structurées. Chaque entrée = userId XOR messageId. Notifie les destinataires via RooSync.'),
+
+  // Cross-post v3 (#1363) — multi-write without notification
+  crossPost: z.array(CrossPostSchema).optional()
+    .describe('(append) Cross-post le même message vers d\'autres dashboards (sans notification RooSync).'),
 
   // Pour condense
   keepMessages: z.number().optional()
@@ -281,15 +330,19 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
         // Note: machineId et workspace peuvent contenir des tirets (ex: test-machine, roo-extensions)
         // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
         // Le segment optionnel `\s+\[([^\]]+)\]` est l'ancien format tags — toujours toléré, jamais réutilisé.
-        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n\n([\s\S]+)/);
+        // v3 (#1363): ligne `[msg: <id>]` optionnelle immédiatement après le header, avant le contenu.
+        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n(?:\[msg: ([^\]]+)\]\n)?\n([\s\S]+)/);
         if (headerMatch) {
-          const [, timestamp, machineId, workspace, , content] = headerMatch;
+          const [, timestamp, machineId, workspace, , persistedId, content] = headerMatch;
           // FIX #1123: Unescape "### [" that was escaped during write to prevent false splits
           const unescapedContent = content.trim().replace(/^\\#\\#\\# \[/gm, '### [');
+          const mid = machineId.trim();
+          const ws = workspace.trim();
           messages.push({
-            id: generateMessageId(), // ID regénéré (pas stocké dans le format markdown)
+            // v3: use persisted ID if present, else regen (legacy fallback)
+            id: persistedId || generateMessageId(mid, ws),
             timestamp,
-            author: { machineId: machineId.trim(), workspace: workspace.trim() },
+            author: { machineId: mid, workspace: ws },
             content: unescapedContent
           });
         }
@@ -345,7 +398,8 @@ async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<vo
     text.replace(/^### \[/gm, '\\#\\#\\# [');
   const intercomSection = dashboard.intercom.messages.length > 0
     ? dashboard.intercom.messages.map(msg => {
-        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${escapeContent(msg.content)}`;
+        // v3 (#1363): persist message id on a dedicated line below header
+        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${escapeContent(msg.content)}`;
       }).join('\n\n---\n\n')
     : '*Aucun message.*';
 
@@ -392,10 +446,14 @@ function createEmptyDashboard(
 }
 
 /**
- * Génère un ID unique pour un message intercom
+ * Génère un ID unique pour un message intercom.
+ * Format v3 (#1363): ${machineId}:${workspace}:ic-${ts}-${rand}
+ * Aligné avec RooSync inbox pour permettre le référencement cross-message.
  */
-function generateMessageId(): string {
-  return `ic-${new Date().toISOString().replace(/[:.]/g, '').substring(0, 16)}`;
+function generateMessageId(machineId: string, workspace: string): string {
+  const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 16);
+  const rand = Math.random().toString(36).substring(2, 6);
+  return `${machineId}:${workspace}:ic-${ts}-${rand}`;
 }
 
 /**
@@ -899,7 +957,7 @@ async function condenseIntercom(
     const statusOkLabel = newStatus ? 'OK' : 'FAILED';
     const summaryOkLabel = llmSummary ? 'OK' : 'FAILED';
     const errorMessage: IntercomMessage = {
-      id: generateMessageId(),
+      id: generateMessageId('system', 'system'),
       timestamp: errorTimestamp,
       author: { machineId: 'system', workspace: 'system' },
       content: `**[ERROR] CONDENSATION CANCELLED** - ${errorTimestamp}\n\n`
@@ -972,7 +1030,7 @@ ${archiveMessages}
   // Ajouter le résumé LLM si disponible (#858)
   if (llmSummary) {
     const summaryMessage: IntercomMessage = {
-      id: generateMessageId(),
+      id: generateMessageId('system', 'system'),
       timestamp: now,
       author: {
         machineId: 'system',
@@ -998,7 +1056,7 @@ ${archiveMessages}
   // Ajouter le message de condensation standard avec timing et tailles
   const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
-    id: generateMessageId(),
+    id: generateMessageId('system', 'system'),
     timestamp: now,
     author: {
       machineId: 'system',
@@ -1086,6 +1144,8 @@ export interface DashboardResult {
     lastModified: string;
     lastModifiedBy: Author;
   } | null>;
+  /** Per-target cross-post outcomes (v3 #1363). Present only when args.crossPost was used. */
+  crossPost?: Array<{ key: string; ok: boolean; error?: string }>;
 }
 
 /**
@@ -1383,7 +1443,7 @@ async function handleAppend(
   // 1. Pending messageId from the Map (custom ID provided to append)
   // 2. args.messageId property (from schema)
   // 3. Generate new ID as fallback
-  const messageIdValue = pendingMessageIds.get(key) || (args as any).messageId || generateMessageId();
+  const messageIdValue = pendingMessageIds.get(key) || (args as any).messageId || generateMessageId(author.machineId, author.workspace);
 
   const message: IntercomMessage = {
     id: messageIdValue,
@@ -1450,6 +1510,94 @@ async function handleAppend(
     });
   }
 
+  // v3 (#1363) — Structured mentions: resolve each to UserId and notify via RooSync.
+  // Fire-and-forget, same robustness pattern as v1.
+  const crossPostResults: Array<{ key: string; ok: boolean; error?: string }> = [];
+  if (args.mentions && args.mentions.length > 0) {
+    try {
+      const targets = args.mentions.map(m => resolveMentionTarget(m));
+      sendStructuredMentionNotificationsAsync(
+        author.machineId,
+        message.id,
+        targets,
+        key,
+        args.content
+      ).catch((err: Error) => {
+        logger.debug('Structured mention notification failed (non-critical)', {
+          error: String(err),
+          messageId: message.id
+        });
+      });
+    } catch (err) {
+      // resolveMentionTarget can throw on malformed messageId — log but do not fail the append.
+      logger.debug('Structured mention resolution failed (non-critical)', {
+        error: String(err),
+        messageId: message.id
+      });
+    }
+  }
+
+  // v3 (#1363) — Cross-post: replicate the same message (same id, timestamp, author, content)
+  // into additional dashboards WITHOUT firing notifications. Each target is independent:
+  // a failure on one target must not abort the others nor the primary append result.
+  if (args.crossPost && args.crossPost.length > 0) {
+    for (const target of args.crossPost) {
+      let targetKey = '';
+      try {
+        const targetMachineId = target.machineId ?? resolvedMachineId;
+        const targetWorkspace = target.workspace ?? resolvedWorkspace;
+        targetKey = buildDashboardKey(target.type, targetMachineId, targetWorkspace);
+        if (targetKey === key) {
+          // Skip self-cross-post (the primary write already covered it)
+          crossPostResults.push({ key: targetKey, ok: true });
+          continue;
+        }
+
+        let targetDashboard = await readDashboardFile(targetKey);
+        if (!targetDashboard) {
+          if (!createIfNotExists) {
+            crossPostResults.push({
+              key: targetKey,
+              ok: false,
+              error: `Dashboard introuvable et createIfNotExists=false`
+            });
+            continue;
+          }
+          targetDashboard = createEmptyDashboard(target.type, targetKey, author);
+        }
+
+        const crossPosted: Dashboard = {
+          ...targetDashboard,
+          lastModified: now,
+          lastModifiedBy: author,
+          intercom: {
+            messages: [...targetDashboard.intercom.messages, message],
+            totalMessages: targetDashboard.intercom.totalMessages + 1,
+            lastCondensedAt: targetDashboard.intercom.lastCondensedAt
+          }
+        };
+
+        await writeDashboardFile(targetKey, crossPosted);
+        crossPostResults.push({ key: targetKey, ok: true });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.debug('Cross-post target failed (non-fatal)', {
+          sourceKey: key,
+          targetKey,
+          messageId: message.id,
+          error: errMsg
+        });
+        crossPostResults.push({ key: targetKey || 'unknown', ok: false, error: errMsg });
+      }
+    }
+  }
+
+  const crossPostOk = crossPostResults.filter(r => r.ok).length;
+  const crossPostFail = crossPostResults.length - crossPostOk;
+  const crossPostSuffix = crossPostResults.length > 0
+    ? ` (cross-post: ${crossPostOk}/${crossPostResults.length} OK${crossPostFail > 0 ? `, ${crossPostFail} échecs` : ''})`
+    : '';
+
   return {
     success: true,
     action: 'append',
@@ -1460,7 +1608,8 @@ async function handleAppend(
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
     archivedCount,
-    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}`
+    crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
+    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}${crossPostSuffix}`
   };
 }
 
@@ -1783,11 +1932,12 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
     for (const rawBlock of messageBlocks) {
       const block = rawBlock.replace(/\n---\s*$/, '').trim();
-      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n\n([\s\S]+)/);
+      // v3 (#1363): persisted `[msg: <id>]` line optionnelle
+      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n(?:\[msg: ([^\]]+)\]\n)?\n([\s\S]+)/);
       if (headerMatch) {
-        const [, timestamp, machineId, workspace, , msgContent] = headerMatch;
+        const [, timestamp, machineId, workspace, , persistedId, msgContent] = headerMatch;
         messages.push({
-          id: generateMessageId(),
+          id: persistedId || generateMessageId(machineId, workspace),
           timestamp,
           author: { machineId, workspace },
           content: msgContent.trim()

@@ -14,6 +14,7 @@ import { getSharedStatePath } from './shared-state-path.js';
 import { getLocalMachineId } from './message-helpers.js';
 import { createLogger, Logger } from './logger.js';
 import { getMessageManager } from '../services/MessageManager.js';
+import type { Mention, UserId } from '../tools/roosync/dashboard.js';
 
 const execAsync = promisify(exec);
 const logger: Logger = createLogger('DashboardHelpers');
@@ -264,6 +265,121 @@ ${contentExcerpt.substring(0, 200)}${contentExcerpt.length > 200 ? '...' : ''}`;
   } catch (error) {
     // Fire-and-forget : ne pas propager l'erreur
     logger.debug('Mention notification sending failed (non-critical)', {
+      error: String(error),
+      messageId
+    });
+  }
+}
+
+/**
+ * Résout la cible d'une mention v3 en un UserId canonique.
+ *
+ * - Si la mention porte `userId`, on le renvoie tel quel.
+ * - Si la mention porte `messageId` (format `machineId:workspace:ic-...`),
+ *   on extrait les deux premiers segments comme userId (= auteur du message référencé).
+ *
+ * Le schéma Zod garantit qu'exactement un des deux champs est fourni (XOR refine),
+ * donc cette fonction n'a pas de branche d'erreur runtime en pratique.
+ *
+ * @issue #1363
+ */
+export function resolveMentionTarget(mention: Mention): UserId {
+  if (mention.userId !== undefined) {
+    return mention.userId;
+  }
+  if (mention.messageId !== undefined) {
+    // Format v3: ${machineId}:${workspace}:ic-${ts}-${rand}
+    // Splitter sur les DEUX premiers ':' uniquement — le 3e segment contient lui-même des '-' voire des ':'.
+    const firstColon = mention.messageId.indexOf(':');
+    const secondColon = firstColon >= 0 ? mention.messageId.indexOf(':', firstColon + 1) : -1;
+    if (firstColon < 0 || secondColon < 0) {
+      throw new Error(`Invalid messageId format: '${mention.messageId}' (expected machineId:workspace:id)`);
+    }
+    return {
+      machineId: mention.messageId.substring(0, firstColon),
+      workspace: mention.messageId.substring(firstColon + 1, secondColon)
+    };
+  }
+  throw new Error('Mention has neither userId nor messageId (schema XOR invariant violated)');
+}
+
+/**
+ * Envoie des notifications RooSync pour des mentions v3 structurées.
+ *
+ * Contrairement à `sendMentionNotificationsAsync` (v1, pattern @machine parsé),
+ * cette variante prend directement des UserId résolus. Une seule notification par
+ * machineId distinct (dédoublonnage), listant tous les workspaces ciblés.
+ *
+ * Fire-and-forget : aucune erreur n'est propagée au flux principal.
+ *
+ * @param fromMachineId Machine émettrice (auteur du message dashboard)
+ * @param messageId     ID du message dashboard (format v3: machineId:workspace:ic-...)
+ * @param targets       UserIds résolus via `resolveMentionTarget`
+ * @param dashboardKey  Clé du dashboard source (ex: workspace-roo-extensions)
+ * @param excerpt       Extrait du contenu (tronqué à 200 chars)
+ * @issue #1363
+ */
+export async function sendStructuredMentionNotificationsAsync(
+  fromMachineId: string,
+  messageId: string,
+  targets: UserId[],
+  dashboardKey: string,
+  excerpt: string
+): Promise<void> {
+  try {
+    // Dédupliquer par machineId, en agrégeant les workspaces pointés.
+    const byMachine = new Map<string, Set<string>>();
+    for (const t of targets) {
+      if (!byMachine.has(t.machineId)) {
+        byMachine.set(t.machineId, new Set<string>());
+      }
+      byMachine.get(t.machineId)!.add(t.workspace);
+    }
+
+    const messageManager = getMessageManager();
+
+    for (const [machine, workspaces] of byMachine) {
+      const wsList = Array.from(workspaces);
+      const subject = `[MENTION] Dashboard ${dashboardKey} → ${machine}`;
+      const wsLines = wsList.map(w => `- \`${machine}:${w}\``).join('\n');
+
+      const body = `Un message dashboard mentionne un userId de votre machine.
+
+**Message ID:** \`${messageId}\`
+**Dashboard source:** \`${dashboardKey}\`
+
+**UserId(s) ciblé(s):**
+${wsLines}
+
+**Extrait:**
+${excerpt.substring(0, 200)}${excerpt.length > 200 ? '...' : ''}`;
+
+      try {
+        await messageManager.sendMessage(
+          fromMachineId,
+          machine,
+          subject,
+          body,
+          'HIGH',
+          ['mention', 'notification', 'v3']
+        );
+
+        logger.debug('Structured mention notification sent via RooSync', {
+          messageId,
+          machine,
+          workspaceCount: wsList.length
+        });
+      } catch (error) {
+        logger.debug('Failed to send structured mention notification (non-critical)', {
+          error: String(error),
+          messageId,
+          machine
+        });
+      }
+    }
+  } catch (error) {
+    // Fire-and-forget
+    logger.debug('Structured mention notification dispatch failed (non-critical)', {
       error: String(error),
       messageId
     });
