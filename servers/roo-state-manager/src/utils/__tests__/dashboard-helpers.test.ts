@@ -358,3 +358,200 @@ describe('sendMentionNotificationsAsync', () => {
 		await expect(sendMentionNotificationsAsync('msg-123', mentions, 'workspace-test', 'Test content')).resolves.toBeUndefined();
 	});
 });
+
+// ─── sendStructuredMentionNotificationsAsync — #1472 workspace-loss fix ──────
+
+describe('sendStructuredMentionNotificationsAsync', () => {
+	const mockSendMessage = vi.fn();
+
+	async function getStructuredModule() {
+		vi.resetModules();
+		mockSendMessage.mockReset();
+		mockSendMessage.mockResolvedValue({ id: 'msg-fake' });
+
+		vi.doMock('fs/promises', () => ({
+			access: mockAccess,
+			readFile: mockReadFile,
+			writeFile: mockWriteFile
+		}));
+		vi.doMock('child_process', () => {
+			const exec = vi.fn() as any;
+			exec[Symbol.for('nodejs.util.promisify.custom')] = mockExecPromisified;
+			return { exec };
+		});
+		vi.doMock('../server-helpers.js', () => ({ getSharedStatePath: () => '/shared-state' }));
+		vi.doMock('../message-helpers.js', () => ({ getLocalMachineId: () => 'myia-po-2025' }));
+		vi.doMock('../logger.js', () => ({
+			createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+		}));
+
+		// Mock MessageManager: sendMessage reflects the real anti-auto-message check
+		// (parseMachineWorkspace + self-message guard from MessageManager.ts:336-345).
+		vi.doMock('../../services/MessageManager.js', () => ({
+			getMessageManager: () => ({
+				sendMessage: (from: string, to: string, ...rest: any[]) => {
+					// Replicate parseMachineWorkspace from message-helpers.ts:157-166
+					const parse = (id: string) => {
+						const i = id.indexOf(':');
+						return i === -1
+							? { machineId: id, workspaceId: undefined }
+							: { machineId: id.substring(0, i), workspaceId: id.substring(i + 1) };
+					};
+					const f = parse(from);
+					const t = parse(to);
+					if (f.machineId === t.machineId && f.workspaceId === t.workspaceId) {
+						throw new Error(`Auto-message interdit : ${from} ne peut pas envoyer de message à ${to}`);
+					}
+					return mockSendMessage(from, to, ...rest);
+				}
+			})
+		}));
+
+		return import('../dashboard-helpers.js');
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it('passes qualified from (machineId:workspace) to sendMessage', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+			'msg-1',
+			[{ machineId: 'myia-po-2023', workspace: 'roo-extensions' }],
+			'workspace-roo-extensions',
+			'content'
+		);
+		expect(mockSendMessage).toHaveBeenCalledOnce();
+		const [from, to] = mockSendMessage.mock.calls[0];
+		expect(from).toBe('myia-ai-01:roo-extensions');
+		expect(to).toBe('myia-po-2023:roo-extensions');
+	});
+
+	it('does NOT block cross-workspace same-machine mentions (#1472 fix)', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+			'msg-1',
+			[{ machineId: 'myia-ai-01', workspace: 'nanoclaw' }],
+			'workspace-roo-extensions',
+			'content'
+		);
+		// BEFORE #1472: bare machineId both sides → undefined===undefined → BLOCK
+		// AFTER #1472: qualified both sides → workspaces differ → NOT BLOCK
+		expect(mockSendMessage).toHaveBeenCalledOnce();
+		const [from, to] = mockSendMessage.mock.calls[0];
+		expect(from).toBe('myia-ai-01:roo-extensions');
+		expect(to).toBe('myia-ai-01:nanoclaw');
+	});
+
+	it('still blocks self-mention same-machine-same-workspace (fire-and-forget)', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+			'msg-1',
+			[{ machineId: 'myia-ai-01', workspace: 'roo-extensions' }],
+			'workspace-roo-extensions',
+			'content'
+		);
+		// Anti-auto-message throws inside sendMessage; mockSendMessage never reached.
+		expect(mockSendMessage).not.toHaveBeenCalled();
+	});
+
+	it('dispatches one notification per (machineId, workspace) target pair', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+			'msg-1',
+			[
+				{ machineId: 'myia-ai-01', workspace: 'nanoclaw' },
+				{ machineId: 'myia-ai-01', workspace: 'another' },
+				{ machineId: 'myia-po-2023', workspace: 'roo-extensions' }
+			],
+			'workspace-roo-extensions',
+			'content'
+		);
+		expect(mockSendMessage).toHaveBeenCalledTimes(3);
+		const tos = mockSendMessage.mock.calls.map(c => c[1]).sort();
+		expect(tos).toEqual([
+			'myia-ai-01:another',
+			'myia-ai-01:nanoclaw',
+			'myia-po-2023:roo-extensions'
+		]);
+	});
+
+	it('dedups identical (machineId, workspace) targets (same userId mentioned twice)', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+			'msg-1',
+			[
+				{ machineId: 'myia-po-2023', workspace: 'roo-extensions' },
+				{ machineId: 'myia-po-2023', workspace: 'roo-extensions' }
+			],
+			'workspace-roo-extensions',
+			'content'
+		);
+		expect(mockSendMessage).toHaveBeenCalledOnce();
+	});
+
+	it('does not throw when sendMessage fails (fire-and-forget)', async () => {
+		vi.resetModules();
+		vi.doMock('../../services/MessageManager.js', () => ({
+			getMessageManager: () => ({
+				sendMessage: () => { throw new Error('Network fail'); }
+			})
+		}));
+		vi.doMock('../logger.js', () => ({
+			createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+		}));
+		const mod = await import('../dashboard-helpers.js');
+		await expect(
+			mod.sendStructuredMentionNotificationsAsync(
+				{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+				'msg-1',
+				[{ machineId: 'myia-po-2023', workspace: 'roo-extensions' }],
+				'workspace-roo-extensions',
+				'content'
+			)
+		).resolves.toBeUndefined();
+	});
+
+	it('handles workspace IDs containing colons (parseMachineWorkspace splits on first colon only)', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'ws:with:colons' },
+			'msg-1',
+			[{ machineId: 'myia-po-2023', workspace: 'other:ws' }],
+			'workspace-roo-extensions',
+			'content'
+		);
+		expect(mockSendMessage).toHaveBeenCalledOnce();
+		const [from, to] = mockSendMessage.mock.calls[0];
+		expect(from).toBe('myia-ai-01:ws:with:colons');
+		expect(to).toBe('myia-po-2023:other:ws');
+		// parseMachineWorkspace uses indexOf(':') + substring — first colon splits machineId,
+		// rest is workspace verbatim. No misparse on multi-colon workspace IDs.
+	});
+
+	it('does not throw when getMessageManager fails (outer catch, fire-and-forget)', async () => {
+		vi.resetModules();
+		vi.doMock('../../services/MessageManager.js', () => ({
+			getMessageManager: () => { throw new Error('MM init fail'); }
+		}));
+		vi.doMock('../logger.js', () => ({
+			createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+		}));
+		const mod = await import('../dashboard-helpers.js');
+		await expect(
+			mod.sendStructuredMentionNotificationsAsync(
+				{ machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+				'msg-1',
+				[{ machineId: 'myia-po-2023', workspace: 'roo-extensions' }],
+				'workspace-roo-extensions',
+				'content'
+			)
+		).resolves.toBeUndefined();
+	});
+});
