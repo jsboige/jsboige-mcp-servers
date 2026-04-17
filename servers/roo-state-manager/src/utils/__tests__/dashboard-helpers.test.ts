@@ -518,6 +518,23 @@ describe('sendStructuredMentionNotificationsAsync', () => {
 		).resolves.toBeUndefined();
 	});
 
+	it('handles workspace IDs containing colons (parseMachineWorkspace splits on first colon only)', async () => {
+		const { sendStructuredMentionNotificationsAsync } = await getStructuredModule();
+		await sendStructuredMentionNotificationsAsync(
+			{ machineId: 'myia-ai-01', workspace: 'ws:with:colons' },
+			'msg-1',
+			[{ machineId: 'myia-po-2023', workspace: 'other:ws' }],
+			'workspace-roo-extensions',
+			'content'
+		);
+		expect(mockSendMessage).toHaveBeenCalledOnce();
+		const [from, to] = mockSendMessage.mock.calls[0];
+		expect(from).toBe('myia-ai-01:ws:with:colons');
+		expect(to).toBe('myia-po-2023:other:ws');
+		// parseMachineWorkspace uses indexOf(':') + substring — first colon splits machineId,
+		// rest is workspace verbatim. No misparse on multi-colon workspace IDs.
+	});
+
 	it('does not throw when getMessageManager fails (outer catch, fire-and-forget)', async () => {
 		vi.resetModules();
 		vi.doMock('../../services/MessageManager.js', () => ({
