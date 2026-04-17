@@ -889,14 +889,20 @@ export const listConversationsTool = {
         });
 
         // --- Pagination ---
-        // #1245 round 2: clamp to [10, 100].
+        // #1245 round 2: clamp per_page to [10, 100].
         //   - floor 10: user explicit ("pas moins de 10 éléments par page, des pages de 5 ça n'a jamais été utile")
         //   - cap 100: an agent may deliberately want a large page (it will be redirected to a file
         //     above ~50KB — that's fine as an opt-in, just not the default behaviour).
         //   - default 10: keeps the default output comfortably under 50KB so Claude Code displays
         //     content inline; agents can pass per_page=50/100 when they want everything in a file.
-        const rawPerPage = args.per_page || args.limit || 10;
-        const perPage = Math.min(Math.max(rawPerPage, 10), 100);
+        // #1410 fix: `limit` (from conversation_browser) is a hard cap on total results, NOT a page size.
+        //   When only `limit` is provided (no `per_page`), it acts as both page size and total cap.
+        //   The floor of 10 does NOT apply to `limit` — the caller explicitly asked for fewer.
+        const hasExplicitPerPage = args.per_page !== undefined && args.per_page !== null;
+        const rawPerPage = (hasExplicitPerPage ? args.per_page : (args.limit || 10)) as number;
+        const perPage = hasExplicitPerPage
+            ? Math.min(Math.max(rawPerPage, 10), 100)
+            : Math.min(rawPerPage, 100);
         const page = Math.max(args.page || 1, 1);
         const totalCount = forest.length;
         const totalPages = Math.ceil(totalCount / perPage);
