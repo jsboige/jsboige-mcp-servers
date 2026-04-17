@@ -17,6 +17,12 @@ interface AnalysisIssue {
     details?: any;
 }
 
+interface StaleDecision {
+    decisionId: string;
+    createdDate: string;
+    ageDays: number;
+}
+
 interface RoadmapAnalysis {
     timestamp: string;
     filePath: string;
@@ -24,6 +30,8 @@ interface RoadmapAnalysis {
     totalDecisions: number;
     pendingDecisions: number;
     approvedDecisions: number;
+    staleDecisions: number;
+    staleDecisionDetails: StaleDecision[];
     duplicateIds: string[];
     corruptedHardware: any[];
     statusInconsistencies: any[];
@@ -112,12 +120,15 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             totalDecisions: 0,
             pendingDecisions: 0,
             approvedDecisions: 0,
+            staleDecisions: 0,
+            staleDecisionDetails: [],
             duplicateIds: [],
             corruptedHardware: [],
             statusInconsistencies: [],
             issues: [],
             success: true
         };
+        const STALE_THRESHOLD_DAYS = 30;
         // Regex pour extraire les blocs de décision
         // Adapté du PS1: (<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->)
         const blockRegex = /<!-- DECISION_BLOCK_START -->([\s\S]*?)<!-- DECISION_BLOCK_END -->/g;
@@ -145,6 +156,25 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
                 const status = statusMatch[1].toLowerCase();
                 if (status === 'pending') {
                     analysis.pendingDecisions++;
+                    // Stale detection: check if pending for > STALE_THRESHOLD_DAYS
+                    const createdMatch = block.match(/\*\*Créé:\*\*\s*(\S+)/);
+                    if (createdMatch) {
+                        try {
+                            const createdDate = new Date(createdMatch[1]);
+                            const ageMs = Date.now() - createdDate.getTime();
+                            const ageDays = ageMs / (1000 * 60 * 60 * 24);
+                            if (ageDays > STALE_THRESHOLD_DAYS) {
+                                analysis.staleDecisions++;
+                                analysis.staleDecisionDetails.push({
+                                    decisionId,
+                                    createdDate: createdMatch[1],
+                                    ageDays: Math.round(ageDays)
+                                });
+                            }
+                        } catch {
+                            // Invalid date format, skip stale check
+                        }
+                    }
                 } else if (status === 'approved') {
                     analysis.approvedDecisions++;
                     if (!block.match(/\*\*Approuvé le:\*\*/)) {
@@ -202,6 +232,15 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
                 details: analysis.statusInconsistencies
             });
         }
+        if (analysis.staleDecisions > 0) {
+            analysis.issues.push({
+                type: "STALE_PENDING_DECISIONS",
+                severity: "MEDIUM",
+                count: analysis.staleDecisions,
+                description: `Décisions en attente depuis plus de ${STALE_THRESHOLD_DAYS} jours`,
+                details: analysis.staleDecisionDetails
+            });
+        }
 
         let reportPath = null;
         if (options.generateReport) {
@@ -219,7 +258,8 @@ Fichier: ${analysis.filePath}
 ## Résumé
 - Total: ${analysis.totalDecisions}
 - Pending: ${analysis.pendingDecisions}
-- Approved: ${analysis.approvedDecisions}
+	- Stale (>30j): ${analysis.staleDecisions}
+	- Approved: ${analysis.approvedDecisions}
 - Problèmes: ${analysis.issues.length}
 
 ## Détails Problèmes
