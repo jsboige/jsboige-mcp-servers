@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema } from '../dashboard.js';
+import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
 // #858: Mock OpenAI chat client for LLM condensation tests
@@ -880,7 +881,7 @@ describe('roosync_dashboard', () => {
 
       expect(result.data?.intercom?.messages.length).toBe(1);
       const messageId = result.data?.intercom?.messages[0].id || '';
-      expect(messageId).toMatch(/^ic-\d{4}-\d{2}-\d{2}/); // ic-YYYY-MM-DD format
+      expect(messageId).toMatch(/^[^:]+:[^:]+:ic-\d{4}-\d{2}-\d{2}/); // v3 format: machineId:workspace:ic-YYYY-MM-DD
     });
 
     it('filters messages by mentionsOnly when machine is mentioned', async () => {
@@ -952,6 +953,193 @@ describe('roosync_dashboard', () => {
 
       // Should return 0 messages since no valid mentions
       expect(result.data?.intercom?.messages.length).toBe(0);
+    });
+  });
+
+  // ========================================================================
+  // v3 mentions and cross-post (#1363)
+  // ========================================================================
+  describe('v3 mentions and cross-post (#1363)', () => {
+    describe('MentionSchema XOR validation', () => {
+      it('accepts only userId', () => {
+        const parsed = MentionSchema.safeParse({
+          userId: { machineId: 'po-2023', workspace: 'roo-extensions' }
+        });
+        expect(parsed.success).toBe(true);
+      });
+
+      it('accepts only messageId', () => {
+        const parsed = MentionSchema.safeParse({
+          messageId: 'po-2023:roo-extensions:ic-2026-04-17T1234-abcd'
+        });
+        expect(parsed.success).toBe(true);
+      });
+
+      it('rejects both userId and messageId', () => {
+        const parsed = MentionSchema.safeParse({
+          userId: { machineId: 'po-2023', workspace: 'roo-extensions' },
+          messageId: 'po-2023:roo-extensions:ic-2026-04-17T1234-abcd'
+        });
+        expect(parsed.success).toBe(false);
+      });
+
+      it('rejects neither userId nor messageId', () => {
+        const parsed = MentionSchema.safeParse({ note: 'nothing' });
+        expect(parsed.success).toBe(false);
+      });
+    });
+
+    describe('resolveMentionTarget', () => {
+      it('returns userId passthrough when mention has userId', () => {
+        const target = resolveMentionTarget({
+          userId: { machineId: 'po-2024', workspace: 'roo-extensions' }
+        });
+        expect(target).toEqual({ machineId: 'po-2024', workspace: 'roo-extensions' });
+      });
+
+      it('splits messageId on first two colons only', () => {
+        const target = resolveMentionTarget({
+          messageId: 'myia-ai-01:roo-extensions:ic-2026-04-17T0809-3lmh'
+        });
+        expect(target).toEqual({ machineId: 'myia-ai-01', workspace: 'roo-extensions' });
+      });
+
+      it('handles messageId with dashes and extra colons in third segment', () => {
+        // Third segment can contain any chars; we only care about the first two segments.
+        const target = resolveMentionTarget({
+          messageId: 'po-2026:my-workspace:ic-2026-04-17T0809-3lmh:extra:suffix'
+        });
+        expect(target).toEqual({ machineId: 'po-2026', workspace: 'my-workspace' });
+      });
+
+      it('throws on malformed messageId (no colons)', () => {
+        expect(() => resolveMentionTarget({ messageId: 'no-colons-here' }))
+          .toThrow(/Invalid messageId format/);
+      });
+
+      it('throws on malformed messageId (single colon)', () => {
+        expect(() => resolveMentionTarget({ messageId: 'only-one:colon' }))
+          .toThrow(/Invalid messageId format/);
+      });
+    });
+
+    describe('append with mentions[]', () => {
+      it('accepts structured mentions array and returns success', async () => {
+        const result = await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: 'Cross-machine ping with structured mentions',
+          mentions: [
+            { userId: { machineId: 'po-2023', workspace: 'roo-extensions' } },
+            { userId: { machineId: 'po-2024', workspace: 'roo-extensions' }, note: 'review please' }
+          ]
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.action).toBe('append');
+      });
+    });
+
+    describe('append with crossPost[]', () => {
+      it('replicates message to a different dashboard (global)', async () => {
+        const result = await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: 'Important notice cross-posted to global',
+          crossPost: [{ type: 'global' }],
+          createIfNotExists: true
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.crossPost).toBeDefined();
+        expect(result.crossPost!.length).toBe(1);
+        expect(result.crossPost![0].key).toBe('global');
+        expect(result.crossPost![0].ok).toBe(true);
+
+        // Confirm the message was actually written to the global dashboard
+        const readGlobal = await roosyncDashboard({
+          action: 'read',
+          type: 'global',
+          section: 'intercom'
+        });
+        const found = (readGlobal.data?.intercom?.messages ?? [])
+          .some(m => m.content.includes('Important notice cross-posted to global'));
+        expect(found).toBe(true);
+      });
+
+      it('skips self-cross-post without duplicating (ok=true, no target write)', async () => {
+        // First append creates the workspace dashboard; cross-post back to self should be a no-op.
+        const result = await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: 'Self-cross-post should be skipped',
+          crossPost: [{ type: 'workspace', workspace: 'test-workspace' }]
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.crossPost).toBeDefined();
+        expect(result.crossPost!.length).toBe(1);
+        expect(result.crossPost![0].ok).toBe(true);
+
+        // Read back the source dashboard and verify the message appears exactly once.
+        const read = await roosyncDashboard({
+          action: 'read',
+          type: 'workspace',
+          section: 'intercom'
+        });
+        const count = (read.data?.intercom?.messages ?? [])
+          .filter(m => m.content.includes('Self-cross-post should be skipped'))
+          .length;
+        expect(count).toBe(1);
+      });
+
+      it('reports error entry when cross-post target missing and createIfNotExists=false', async () => {
+        // Ensure the source workspace dashboard exists first (default createIfNotExists=true)
+        await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: 'Bootstrap source dashboard before cross-post test'
+        });
+
+        // Now attempt append with cross-post to a non-existent machine dashboard,
+        // explicitly forbidding creation. Source exists → handleAppend reaches the
+        // cross-post loop → target is missing → error entry is recorded.
+        const result = await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: 'Attempting cross-post to non-existent machine dashboard',
+          crossPost: [{ type: 'machine', machineId: 'does-not-exist' }],
+          createIfNotExists: false
+        });
+
+        expect(result.crossPost).toBeDefined();
+        expect(result.crossPost!.length).toBe(1);
+        const entry = result.crossPost![0];
+        expect(entry.key).toBe('machine-does-not-exist');
+        expect(entry.ok).toBe(false);
+        expect(typeof entry.error).toBe('string');
+      });
+    });
+
+    describe('messageId v3 round-trip', () => {
+      it('persists messageId in v3 format machineId:workspace:ic-YYYY-MM-DD...', async () => {
+        await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: 'Message to inspect for v3 messageId format'
+        });
+
+        const read = await roosyncDashboard({
+          action: 'read',
+          type: 'workspace',
+          section: 'intercom'
+        });
+        const messages = read.data?.intercom?.messages ?? [];
+        expect(messages.length).toBeGreaterThan(0);
+        const target = messages.find(m => m.content.includes('Message to inspect for v3 messageId format'));
+        expect(target).toBeDefined();
+        expect(target!.id).toMatch(/^test-machine:test-workspace:ic-\d{4}-\d{2}-\d{2}/);
+      });
     });
   });
 });
