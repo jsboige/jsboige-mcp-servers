@@ -2042,6 +2042,58 @@ export const dashboardToolMetadata = {
       messageId: {
         type: 'string',
         description: '(append) ID optionnel pour le message (ex: hash GitHub issue). Si absent, généré automatiquement au format ic-{timestamp}.'
+      },
+      mentions: {
+        type: 'array',
+        description: '(append) Mentions structurées v3 (#1363). Chaque entrée = userId XOR messageId (exactement un des deux). Notifie les destinataires via RooSync (fire-and-forget, dedup par machineId).',
+        items: {
+          type: 'object',
+          properties: {
+            userId: {
+              type: 'object',
+              description: 'userId explicite à mentionner (exclusif avec messageId).',
+              properties: {
+                machineId: { type: 'string', description: 'ID de la machine' },
+                workspace: { type: 'string', description: 'Workspace ID' }
+              },
+              required: ['machineId', 'workspace'],
+              additionalProperties: false
+            },
+            messageId: {
+              type: 'string',
+              description: 'ID de message à référencer (format: machineId:workspace:ic-...). Résout en userId = auteur du message référencé.'
+            },
+            note: {
+              type: 'string',
+              description: 'Note optionnelle expliquant la raison de la mention.'
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      crossPost: {
+        type: 'array',
+        description: '(append) Cross-post le même message vers d\'autres dashboards v3 (#1363), SANS notification RooSync. Self-skip : une cible pointant vers le dashboard source ne duplique pas. Target manquant + createIfNotExists=false = entrée { key, ok: false, error } dans result.crossPost.',
+        items: {
+          type: 'object',
+          properties: {
+            type: {
+              type: 'string',
+              enum: ['global', 'machine', 'workspace'],
+              description: 'Type de dashboard cible.'
+            },
+            machineId: {
+              type: 'string',
+              description: 'machineId cible (pour type=machine).'
+            },
+            workspace: {
+              type: 'string',
+              description: 'workspace cible (pour type=workspace).'
+            }
+          },
+          required: ['type'],
+          additionalProperties: false
+        }
       }
     },
     required: ['action'],
