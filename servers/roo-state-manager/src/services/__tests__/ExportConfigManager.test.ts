@@ -131,7 +131,7 @@ describe('ExportConfigManager', () => {
     test('fusionne le fichier avec les valeurs par défaut manquantes', async () => {
       const partialConfig = {
         defaults: { prettyPrint: false, includeContent: true, compression: 'none' as const },
-        // templates et filters absents → doivent être fusionnés avec les défauts
+        // templates et filters absents → doivent être fusionnés avec les défauts (vides)
       };
       mockAccess.mockResolvedValue(undefined);
       mockReadFile.mockResolvedValue(JSON.stringify(partialConfig));
@@ -139,9 +139,9 @@ describe('ExportConfigManager', () => {
       const manager = makeManager();
       const config = await manager.getConfig();
 
-      // Les templates par défaut doivent être présents
-      expect(config.templates).toHaveProperty('jira_export');
-      expect(config.templates).toHaveProperty('full_export');
+      // Les templates et filters par défaut sont vides (#1411 — removed non-functional hardcoded defaults)
+      expect(config.templates).toEqual({});
+      expect(config.filters).toEqual({});
     });
 
     test('nettoie le BOM UTF-8 si présent', async () => {

@@ -177,14 +177,14 @@ export const getMcpBestPractices = {
             
             combinedContent += `### 🩺 4. Pattern "Environment Diagnostic First"\n`;
             combinedContent += `**Approche:** Toujours diagnostiquer l'environnement avant de chercher des bugs de logique\n`;
-            combinedContent += `**Outils:** system_info, read_vscode_logs, manage_mcp_settings\n\n`;
+            combinedContent += `**Outils:** roosync_diagnose (action: "env"), read_vscode_logs, roosync_mcp_management (subAction: "read")\n\n`;
             
             // === SECTION 2: WORKFLOW SYSTÉMATIQUE ===
             combinedContent += `## ⚡ WORKFLOW DE DÉBOGAGE SYSTÉMATIQUE\n\n`;
             combinedContent += `\`\`\`bash\n`;
             combinedContent += `# 1. Diagnostic initial\n`;
-            combinedContent += `use_mcp_tool roo-state-manager manage_mcp_settings {"action": "read"}\n`;
-            combinedContent += `use_mcp_tool [mcp-name] system_info {}\n\n`;
+            combinedContent += `use_mcp_tool roo-state-manager roosync_mcp_management {"action": "manage", "subAction": "read"}\n`;
+            combinedContent += `use_mcp_tool roo-state-manager roosync_diagnose {"action": "env"}\n\n`;
             combinedContent += `# 2. Force reload après modification\n`;
             combinedContent += `use_mcp_tool roo-state-manager touch_mcp_settings {}\n\n`;
             combinedContent += `# 3. Progressive isolation si problème persiste\n`;
@@ -197,14 +197,14 @@ export const getMcpBestPractices = {
             combinedContent += `## 🚨 CHECKLIST DE DÉBOGAGE URGENT\n\n`;
             combinedContent += `**Quand un MCP ne répond plus:**\n\n`;
             combinedContent += `- [ ] **Force reload:** \`touch_mcp_settings\`\n`;
-            combinedContent += `- [ ] **Test connectivité:** outil simple (system_info)\n`;
+            combinedContent += `- [ ] **Test connectivité:** roosync_diagnose (action: "env")\n`;
             combinedContent += `- [ ] **Logs diagnostic:** \`read_vscode_logs\`\n`;
             combinedContent += `- [ ] **Progressive isolation** si timeout persiste\n\n`;
             
             // === SECTION 4: ERREURS COMMUNES ===
             combinedContent += `## 🐛 ERREURS COMMUNES DOCUMENTÉES\n\n`;
             combinedContent += `### TypeScript/Node.js:\n`;
-            combinedContent += `- **ENOENT errors:** Chemins hardcodés incorrects (ex: get-mcp-dev-docs.ts)\n`;
+            combinedContent += `- **ENOENT errors:** Chemins hardcodés incorrects\n`;
             combinedContent += `- **Module resolution:** Build non-reflété nécessitant rebuild_and_restart_mcp\n\n`;
             combinedContent += `### Python:\n`;
             combinedContent += `- **Import timeouts:** Imports lourds (papermill) bloquants en contexte MCP\n`;
@@ -311,7 +311,7 @@ export const getMcpBestPractices = {
             combinedContent += `## 🎯 GROUNDING POUR AGENTS EXTERNES\n\n`;
             combinedContent += `**Procédure complète pour debugger un MCP défectueux:**\n\n`;
             combinedContent += `1. **Identifier le MCP** via \`manage_mcp_settings read\`\n`;
-            combinedContent += `2. **Analyser sa structure** via \`get_mcp_dev_docs --mcp_name=<nom>\`\n`;
+            combinedContent += `2. **Analyser sa structure** via \`get_mcp_best_practices --mcp_name=<nom>\`\n`;
             combinedContent += `3. **Vérifier les logs** via \`read_vscode_logs\`\n`;
             combinedContent += `4. **Test minimal** avec Progressive Isolation\n`;
             combinedContent += `5. **Force reload** via \`touch_mcp_settings\`\n`;

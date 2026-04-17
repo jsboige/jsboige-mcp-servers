@@ -104,6 +104,33 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 }
 
 /**
+ * Detect container/WSL environment (#1411)
+ */
+function detectContainerEnvironment(): { type: string; details: Record<string, boolean | string> } {
+  const details: Record<string, boolean | string> = {};
+  let type = 'native';
+
+  if (process.env.WSL_DISTRO_NAME) {
+    type = 'wsl';
+    details.distro = process.env.WSL_DISTRO_NAME;
+  } else if (os.release().toLowerCase().includes('microsoft')) {
+    type = 'wsl';
+    details.detectedVia = 'os.release()';
+  }
+
+  if (process.env.DOCKER_HOST) {
+    type = type === 'native' ? 'docker' : `${type}+docker`;
+    details.dockerHost = process.env.DOCKER_HOST;
+  }
+  if (process.env.KUBERNETES_SERVICE_HOST) {
+    type = type === 'native' ? 'kubernetes' : `${type}+k8s`;
+    details.k8sHost = process.env.KUBERNETES_SERVICE_HOST;
+  }
+
+  return { type, details };
+}
+
+/**
  * Gère l'action 'env' (diagnostic d'environnement)
  * Anciennement diagnose_env
  */
@@ -127,6 +154,7 @@ async function handleEnvAction(
       hasPath: !!process.env.PATH,
       cwd: process.cwd()
     },
+    container: detectContainerEnvironment(),
     status: 'OK'
   };
 

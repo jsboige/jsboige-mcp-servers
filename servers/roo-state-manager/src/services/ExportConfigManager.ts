@@ -32,25 +32,8 @@ const DEFAULT_CONFIG: ExportConfig = {
         includeContent: false,
         compression: 'none'
     },
-    templates: {
-        jira_export: {
-            format: 'simplified',
-            fields: ['taskId', 'title', 'user_messages_only']
-        },
-        full_export: {
-            format: 'complete',
-            fields: ['taskId', 'title', 'metadata', 'sequence']
-        }
-    },
-    filters: {
-        last_week: {
-            startDate: 'now-7d',
-            endDate: 'now'
-        },
-        debug_tasks: {
-            mode: 'debug-complex'
-        }
-    }
+    templates: {},
+    filters: {}
 };
 
 /**
