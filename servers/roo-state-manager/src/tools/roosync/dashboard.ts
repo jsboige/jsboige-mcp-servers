@@ -1039,6 +1039,27 @@ export interface DashboardSummary {
   statusLength: number;
 }
 
+/** Echo of the request parameters sent by the caller */
+export interface RequestEcho {
+  action: string;
+  type?: string;
+  machineId?: string;
+  workspace?: string;
+  section?: string;
+  intercomLimit?: number;
+  keepMessages?: number;
+  archiveFile?: string;
+}
+
+/** Size metrics for dashboard responses */
+export interface SizesInfo {
+  statusBytes: number;
+  intercomBytes: number;
+  totalBytes: number;
+  thresholdBytes: number;
+  utilizationPct: number;
+}
+
 /**
  * Résultat de l'outil roosync_dashboard
  */
@@ -1062,6 +1083,8 @@ export interface DashboardResult {
     lastModified: string;
     lastModifiedBy: Author;
   } | null>;
+  request?: RequestEcho;
+  sizes?: SizesInfo;
 }
 
 /**
@@ -1091,7 +1114,7 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
 
   // action=list et read_overview ne nécessitent pas de type
   if (args.action === 'list') {
-    return handleList();
+    return handleList(args);
   }
   if (args.action === 'read_overview') {
     const resolvedMachineId = args.machineId ?? getLocalMachineId();
@@ -1149,6 +1172,43 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
 }
 
 /**
+ * Builds a request echo from the call arguments.
+ * Strips content/body to keep the echo lightweight.
+ */
+function buildRequestEcho(args: DashboardArgs): RequestEcho {
+  return {
+    action: args.action,
+    type: args.type,
+    machineId: args.machineId,
+    workspace: args.workspace,
+    section: args.section,
+    intercomLimit: args.intercomLimit,
+    keepMessages: args.keepMessages,
+    archiveFile: args.archiveFile,
+  };
+}
+
+/**
+ * Computes size metrics for a dashboard.
+ */
+function computeSizes(dashboard: Dashboard): SizesInfo {
+  const statusBytes = Buffer.byteLength(dashboard.status.markdown || '', 'utf8');
+  let intercomBytes = 0;
+  for (const msg of dashboard.intercom.messages) {
+    intercomBytes += 110 + Buffer.byteLength(msg.content || '', 'utf8');
+  }
+  const totalBytes = 200 + statusBytes + intercomBytes;
+  const utilizationPct = Math.round((totalBytes / MAX_DASHBOARD_SIZE_BYTES) * 100);
+  return {
+    statusBytes,
+    intercomBytes,
+    totalBytes,
+    thresholdBytes: MAX_DASHBOARD_SIZE_BYTES,
+    utilizationPct,
+  };
+}
+
+/**
  * Estimates the serialized file size of a dashboard (in bytes).
  * Used to decide when to trigger size-based condensation.
  */
@@ -1177,7 +1237,8 @@ async function handleRead(
       action: 'read',
       key,
       type: args.type!,
-      message: `Dashboard '${key}' introuvable. Utilisez createIfNotExists: true lors d'un write/append pour le créer.`
+      message: `Dashboard '${key}' introuvable. Utilisez createIfNotExists: true lors d'un write/append pour le créer.`,
+      request: buildRequestEcho(args)
     };
   }
 
@@ -1225,7 +1286,9 @@ async function handleRead(
     key,
     type: args.type!,
     data,
-    messageCount: dashboard.intercom.messages.length
+    messageCount: dashboard.intercom.messages.length,
+    request: buildRequestEcho(args),
+    sizes: computeSizes(dashboard)
   };
 }
 
@@ -1252,7 +1315,8 @@ async function handleWrite(
         action: 'write',
         key,
         type: args.type!,
-        message: `Dashboard '${key}' introuvable et createIfNotExists=false`
+        message: `Dashboard '${key}' introuvable et createIfNotExists=false`,
+        request: buildRequestEcho(args)
       };
     }
     dashboard = createEmptyDashboard(args.type!, key, author);
@@ -1275,7 +1339,9 @@ async function handleWrite(
     action: 'write',
     key,
     type: args.type!,
-    message: `Status mis à jour pour dashboard '${key}'`
+    message: `Status mis à jour pour dashboard '${key}'`,
+    request: buildRequestEcho(args),
+    sizes: computeSizes(dashboard)
   };
 }
 
@@ -1302,7 +1368,8 @@ async function handleAppend(
         action: 'append',
         key,
         type: args.type!,
-        message: `Dashboard '${key}' introuvable et createIfNotExists=false`
+        message: `Dashboard '${key}' introuvable et createIfNotExists=false`,
+        request: buildRequestEcho(args)
       };
     }
     dashboard = createEmptyDashboard(args.type!, key, author);
@@ -1388,7 +1455,9 @@ async function handleAppend(
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
     archivedCount,
-    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}`
+    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}`,
+    request: buildRequestEcho(args),
+    sizes: computeSizes(finalDashboard)
   };
 }
 
@@ -1403,7 +1472,8 @@ async function handleCondense(
       action: 'condense',
       key,
       type: args.type!,
-      message: `Dashboard '${key}' introuvable`
+      message: `Dashboard '${key}' introuvable`,
+      request: buildRequestEcho(args)
     };
   }
 
@@ -1419,7 +1489,9 @@ async function handleCondense(
       messageCount: beforeCount,
       condensed: false,
       archivedCount: 0,
-      message: `Aucune condensation nécessaire (${beforeCount} messages ≤ seuil ${keepCount})`
+      message: `Aucune condensation nécessaire (${beforeCount} messages ≤ seuil ${keepCount})`,
+      request: buildRequestEcho(args),
+      sizes: computeSizes(dashboard)
     };
   }
 
@@ -1447,7 +1519,9 @@ async function handleCondense(
     archivedCount,
     message: actuallyCondensed
       ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
-      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)`
+      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)`,
+    request: buildRequestEcho(args),
+    sizes: computeSizes(condensedDashboard)
   };
 }
 
@@ -1511,11 +1585,12 @@ async function handleReadOverview(
     key: `overview-${resolvedMachineId}-${resolvedWorkspace}`,
     type: 'overview',
     overview,
-    message: `Vue d'ensemble: ${foundCount}/3 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`
+    message: `Vue d'ensemble: ${foundCount}/3 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`,
+    request: buildRequestEcho(args),
   };
 }
 
-async function handleList(): Promise<DashboardResult> {
+async function handleList(args: DashboardArgs): Promise<DashboardResult> {
   const dir = getDashboardsDir();
   try {
     await fs.mkdir(dir, { recursive: true });
@@ -1549,7 +1624,8 @@ async function handleList(): Promise<DashboardResult> {
       key: '',
       type: '',
       dashboards: summaries,
-      message: `${summaries.length} dashboard(s) trouvé(s)`
+      message: `${summaries.length} dashboard(s) trouvé(s)`,
+      request: buildRequestEcho(args),
     };
   } catch (error) {
     return {
@@ -1558,7 +1634,8 @@ async function handleList(): Promise<DashboardResult> {
       key: '',
       type: '',
       dashboards: [],
-      message: 'Répertoire dashboards vide ou inexistant'
+      message: 'Répertoire dashboards vide ou inexistant',
+      request: buildRequestEcho(args),
     };
   }
 }
@@ -1588,7 +1665,8 @@ async function handleDelete(key: string, args: DashboardArgs): Promise<Dashboard
           action: 'delete',
           key,
           type: args.type ?? '',
-          message: `⛔ REFUSÉ: Dashboard '${key}' modifié il y a ${ageDays.toFixed(1)} jours (seuil: ${DASHBOARD_PROTECTION_DAYS}j). ${messageCount} messages seraient perdus. Utilisez 'condense' pour archiver les anciens messages sans supprimer le dashboard.`
+          message: `⛔ REFUSÉ: Dashboard '${key}' modifié il y a ${ageDays.toFixed(1)} jours (seuil: ${DASHBOARD_PROTECTION_DAYS}j). ${messageCount} messages seraient perdus. Utilisez 'condense' pour archiver les anciens messages sans supprimer le dashboard.`,
+          request: buildRequestEcho(args),
         };
       }
 
@@ -1616,7 +1694,8 @@ async function handleDelete(key: string, args: DashboardArgs): Promise<Dashboard
       action: 'delete',
       key,
       type: args.type ?? '',
-      message: `Dashboard '${key}' supprimé (archivé en sécurité avant suppression)`
+      message: `Dashboard '${key}' supprimé (archivé en sécurité avant suppression)`,
+      request: buildRequestEcho(args),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1625,7 +1704,8 @@ async function handleDelete(key: string, args: DashboardArgs): Promise<Dashboard
         action: 'delete',
         key,
         type: args.type ?? '',
-        message: `Dashboard '${key}' introuvable`
+        message: `Dashboard '${key}' introuvable`,
+        request: buildRequestEcho(args),
       };
     }
     throw error;
@@ -1651,7 +1731,8 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
         key,
         type: args.type ?? '',
         archives,
-        message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
+        message: `${archives.length} archive(s) trouvée(s) pour '${key}'`,
+        request: buildRequestEcho(args),
       };
     } catch {
       return {
@@ -1660,7 +1741,8 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
         key,
         type: args.type ?? '',
         archives: [],
-        message: `Aucune archive pour '${key}'`
+        message: `Aucune archive pour '${key}'`,
+        request: buildRequestEcho(args),
       };
     }
   }
@@ -1715,7 +1797,8 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
         messageCount: archiveFrontmatter.messageCount,
         messages
       },
-      message: `Archive '${args.archiveFile}' lue (${archiveFrontmatter.messageCount} messages)`
+      message: `Archive '${args.archiveFile}' lue (${archiveFrontmatter.messageCount} messages)`,
+      request: buildRequestEcho(args),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1724,7 +1807,8 @@ async function handleReadArchive(key: string, args: DashboardArgs): Promise<Dash
         action: 'read_archive',
         key,
         type: args.type ?? '',
-        message: `Archive '${args.archiveFile}' introuvable`
+        message: `Archive '${args.archiveFile}' introuvable`,
+        request: buildRequestEcho(args),
       };
     }
     throw error;
