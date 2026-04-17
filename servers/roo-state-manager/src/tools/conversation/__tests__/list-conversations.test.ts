@@ -271,8 +271,8 @@ describe('listConversationsTool.handler', () => {
       expect(parsed.length).toBe(12);
     });
 
-    test('limit inférieur au plancher 10 → clamp à 10', async () => {
-      // Create 15 tasks and ask for 3 → should be clamped to 10
+    test('limit < 10 is respected as hard cap (#1410: floor only applies to per_page)', async () => {
+      // Create 15 tasks and ask for 3 → should return 3 (limit is hard cap, not page size)
       const tasks = Array.from({ length: 15 }, (_, i) => makeConversation(`task-${i + 1}`));
       const cache = makeCache(...tasks);
 
@@ -280,7 +280,7 @@ describe('listConversationsTool.handler', () => {
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed.length).toBe(10);
+      expect(parsed.length).toBe(3);
     });
 
     test('sans limit → default 10 (page 1) — retourne au plus 10 tâches', async () => {

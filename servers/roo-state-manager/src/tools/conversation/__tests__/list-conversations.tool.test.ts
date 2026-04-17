@@ -432,8 +432,8 @@ describe('list-conversations', () => {
       expect(parsed).toHaveLength(15);
     });
 
-    it('should clamp limit to floor of 10 (pages of 5 are useless)', async () => {
-      // Create 12 tasks, ask for 5 → clamped up to 10
+    it('should respect limit as hard cap (#1410: floor only applies to per_page)', async () => {
+      // Create 12 tasks, ask for 5 → returns 5 (limit is a hard cap, not page size)
       const mockCache = new Map<string, any>();
       for (let i = 0; i < 12; i++) {
         mockCache.set(`task${i}`, {
@@ -455,7 +455,7 @@ describe('list-conversations', () => {
       const _response = JSON.parse(result.content[0].text as string);
       const parsed = _response.conversations ?? _response;
 
-      expect(parsed).toHaveLength(10);
+      expect(parsed).toHaveLength(5);
     });
 
     it('should return all results when limit is not specified', async () => {
