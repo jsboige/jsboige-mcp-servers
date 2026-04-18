@@ -230,6 +230,47 @@ describe.sequential('roosyncRead', () => {
   });
 
   // ============================================================
+  // Tests pour mode: 'inbox' — workspace & to_machine overrides (#1498)
+  // ============================================================
+
+  describe('mode: inbox — workspace override (#1498)', () => {
+    test('filters inbox by explicit workspace param (scheduler multi-workspace)', async () => {
+      // Send one message to each workspace on test-machine
+      await messageManager.sendMessage(
+        'sender-a', 'test-machine:workspace-a', 'For A', 'Body A', 'MEDIUM'
+      );
+      await messageManager.sendMessage(
+        'sender-b', 'test-machine:workspace-b', 'For B', 'Body B', 'MEDIUM'
+      );
+
+      // Read only workspace-a
+      const resA = await roosyncRead({ mode: 'inbox', workspace: 'workspace-a' });
+      const textA = (resA.content[0] as any).text;
+      expect(textA).toContain('workspace-a');
+      expect(textA).toContain('For A');
+      expect(textA).not.toContain('For B');
+
+      // Read only workspace-b
+      const resB = await roosyncRead({ mode: 'inbox', workspace: 'workspace-b' });
+      const textB = (resB.content[0] as any).text;
+      expect(textB).toContain('workspace-b');
+      expect(textB).toContain('For B');
+      expect(textB).not.toContain('For A');
+    });
+
+    test('returns empty for workspace that has no messages', async () => {
+      await messageManager.sendMessage(
+        'sender', 'test-machine:workspace-a', 'Only A', 'Body', 'LOW'
+      );
+
+      const res = await roosyncRead({ mode: 'inbox', workspace: 'workspace-nonexistent' });
+      const text = (res.content[0] as any).text;
+      expect(text).toContain('Aucun message');
+      expect(text).toContain('workspace-nonexistent');
+    });
+  });
+
+  // ============================================================
   // Tests pour mode: 'message'
   // ============================================================
 

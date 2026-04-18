@@ -605,7 +605,9 @@ export const roosyncReadDefinition = {
             page: { type: 'number', description: 'Page number (1-based) for pagination. Requires per_page.' },
             per_page: { type: 'number', description: 'Messages per page. Requires page. Recommended: 20.' },
             message_id: { type: 'string', description: "ID du message à récupérer (requis pour mode=message ou mode=attachments)" },
-            mark_as_read: { type: 'boolean', description: 'Marquer automatiquement comme lu (mode message, défaut: false)' }
+            mark_as_read: { type: 'boolean', description: 'Marquer automatiquement comme lu (mode message, défaut: false)' },
+            workspace: { type: 'string', description: "(mode inbox, #1498) Override workspace filter. Défaut: workspace du process MCP. Permet à un scheduler tournant dans workspace X de lire l'inbox adressée à workspace Y sur la même machine (dashboard-watcher multi-workspace)." },
+            to_machine: { type: 'string', description: '(mode inbox, #1498, avancé) Override machine filter. Défaut: machine locale. Normalement tu veux ta propre machine.' }
         },
         required: ['mode']
     }
