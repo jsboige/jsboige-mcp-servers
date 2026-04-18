@@ -56,6 +56,15 @@ const logger: Logger = createLogger('DashboardTool');
 const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024; // 50 KB
 const CONDENSE_KEEP = 10;
 
+// #1497: Preemptive condensation threshold (85% of MAX)
+// Triggered BEFORE appending a new message when the dashboard is near-full, so
+// that the condense (which can take ~30s via LLM) completes on smaller data
+// and does not timeout the client call at 96%+ utilization (reported by
+// nanoclaw-cluster, 2026-04-17T22:17Z). Rationale: appending to a 96% dashboard
+// forces condense of ~50 messages at LLM speed; pre-condensing at 85% keeps
+// the working set smaller and shifts the latency into more predictable slots.
+const PREEMPTIVE_CONDENSE_THRESHOLD_BYTES = Math.floor(MAX_DASHBOARD_SIZE_BYTES * 0.85); // ~42.5 KB
+
 // Size limits for LLM outputs (bytes). If exceeded, retry with a stricter prompt.
 const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
 const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
@@ -1438,6 +1447,26 @@ async function handleAppend(
     dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
+  // #1497: Preemptive condensation at 85% utilization
+  // Runs BEFORE the new message is appended, so condense operates on the existing
+  // messages (current state) rather than waiting for the post-append size check
+  // to fire at 100%. Prevents client-side timeout when dashboard is near-saturation.
+  let preemptivelyCondensed = false;
+  let preemptivelyArchivedCount = 0;
+  const preAppendSize = estimateDashboardSize(dashboard);
+  if (preAppendSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES && dashboard.intercom.messages.length > CONDENSE_KEEP) {
+    logger.info('Preemptive condensation triggered (#1497)', {
+      key,
+      preAppendSize: `${Math.round(preAppendSize / 1024)}KB`,
+      preemptiveThreshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB (85% of ${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB)`,
+      messageCount: dashboard.intercom.messages.length
+    });
+    const beforePreemptive = dashboard.intercom.messages.length;
+    dashboard = await condenseIntercom(key, dashboard, CONDENSE_KEEP);
+    preemptivelyArchivedCount = beforePreemptive - dashboard.intercom.messages.length;
+    preemptivelyCondensed = preemptivelyArchivedCount > 0;
+  }
+
   // Use provided messageId or generate a new one
   // Check in order:
   // 1. Pending messageId from the Map (custom ID provided to append)
@@ -1476,8 +1505,11 @@ async function handleAppend(
 
   // Auto-condensation based on file size (50KB threshold)
   // Estimate the file size by serializing the dashboard content
-  let condensed = false;
-  let archivedCount = 0;
+  // NOTE (#1497): preemptive condense above should normally keep us below this
+  // threshold. This remains as a safety net for edge cases (very large single
+  // messages, pre-condense skipped because below message count threshold).
+  let condensed = preemptivelyCondensed;
+  let archivedCount = preemptivelyArchivedCount;
   let finalDashboard = updatedDashboard;
   const estimatedSize = estimateDashboardSize(updatedDashboard);
   if (estimatedSize > MAX_DASHBOARD_SIZE_BYTES && updatedDashboard.intercom.messages.length > CONDENSE_KEEP) {
@@ -1489,8 +1521,9 @@ async function handleAppend(
     });
     const beforeCount = updatedDashboard.intercom.messages.length;
     finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP);
-    archivedCount = beforeCount - finalDashboard.intercom.messages.length;
-    condensed = archivedCount > 0;
+    const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
+    archivedCount += newlyArchived;
+    condensed = condensed || newlyArchived > 0;
   }
 
   await writeDashboardFile(key, finalDashboard);

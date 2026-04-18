@@ -759,6 +759,88 @@ describe('roosync_dashboard', () => {
     });
   });
 
+  describe('Preemptive condensation (#1497)', () => {
+    it('triggers condensation during fill-up when dashboard crosses 85% utilization', async () => {
+      // Persistent mock — preemptive may fire multiple times during fill-up loop
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Summary\n\nArchived' } }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // Fill with messages until the preemptive threshold triggers condensation.
+      // Each message is ~3 KB; 20 messages would total ~60 KB (120% of 50 KB),
+      // so preemptive condensation at 85% (42.5 KB) must fire before we get there.
+      const bigContent = 'X'.repeat(3000);
+      let firstCondensedAt = -1;
+      for (let i = 0; i < 20; i++) {
+        const result = await roosyncDashboard({
+          action: 'append',
+          type: 'global',
+          content: `${bigContent} msg${i}`
+        });
+        if (result.condensed && firstCondensedAt < 0) {
+          firstCondensedAt = i;
+        }
+      }
+
+      // At least one append must have triggered preemptive condensation
+      expect(firstCondensedAt).toBeGreaterThanOrEqual(0);
+      expect(mockChatCreate).toHaveBeenCalled();
+    });
+
+    it('does NOT trigger preemptive condensation below 85% utilization', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      // 5 small messages — should stay well below 85%
+      for (let i = 0; i < 5; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `small ${i}` });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'another small'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.condensed).toBe(false);
+      expect(result.archivedCount).toBe(0);
+      // LLM must not have been called (no condensation)
+      expect(mockChatCreate).not.toHaveBeenCalled();
+    });
+
+    it('does NOT preemptively condense when messages.length <= CONDENSE_KEEP', async () => {
+      // Even if size hits threshold, with <= 10 messages we must not condense
+      // (nothing to keep minus nothing to archive = edge case).
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      // Very large message, only 1 entry — size > 85% but count < CONDENSE_KEEP
+      const huge = 'Y'.repeat(45 * 1024); // 45 KB single message
+      await roosyncDashboard({ action: 'append', type: 'global', content: huge });
+
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'second small'
+      });
+
+      expect(result.success).toBe(true);
+      // Preemptive condense skipped because messageCount (1) <= CONDENSE_KEEP (10)
+      expect(result.condensed).toBe(false);
+      expect(mockChatCreate).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Mention parsing and filtering (#1363)', () => {
     beforeEach(async () => {
       // Initialize a global dashboard for mention tests
