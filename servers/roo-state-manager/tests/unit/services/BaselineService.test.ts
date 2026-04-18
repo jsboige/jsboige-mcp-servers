@@ -502,4 +502,202 @@ describe('BaselineService', () => {
     expect(result).toHaveProperty('approvedDecisions');
     expect(result).toHaveProperty('appliedDecisions');
   });
+
+  describe('Private methods', () => {
+    describe('formatDecisionToMarkdown', () => {
+      it('should format decision to markdown', () => {
+        const decision: SyncDecision = {
+          id: 'test-decision',
+          action: 'sync_to_baseline',
+          description: 'Test decision',
+          status: 'pending',
+          severity: 'MEDIUM',
+          category: 'config',
+          differenceId: 'roo.userSettings.theme',
+          machineId: 'test-machine',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        // @ts-ignore - Accéder à la méthode privée pour test
+        const markdown = service.formatDecisionToMarkdown(decision, '2025-01-01T00:00:00.000Z');
+
+        expect(markdown).toContain('## Décision');
+        expect(markdown).toContain('test-decision');
+        expect(markdown).toContain('sync_to_baseline');
+        expect(markdown).toContain('Test decision');
+        expect(markdown).toContain('MEDIUM');
+      });
+    });
+
+    describe('extractField', () => {
+      it('should extract field from markdown lines', () => {
+        const lines = [
+          '### test-decision',
+          '```',
+          'action: sync_to_baseline',
+          'description: Test decision',
+          '```'
+        ];
+
+        // @ts-ignore - Accéder à la méthode privée pour test
+        const action = service.extractField(lines, 'action');
+        const description = service.extractField(lines, 'description');
+
+        expect(action).toBe('sync_to_baseline');
+        expect(description).toBe('Test decision');
+      });
+
+      it('should return empty string if field not found', () => {
+        const lines = [
+          '### test-decision',
+          '```',
+          'action: sync_to_baseline',
+          '```'
+        ];
+
+        // @ts-ignore - Accéder à la méthode privée pour test
+        const result = service.extractField(lines, 'nonexistent');
+
+        expect(result).toBe('');
+      });
+    });
+
+    describe('getStatusEmoji', () => {
+      it('should return correct emoji for status', () => {
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getStatusEmoji('pending')).toBe('⏳');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getStatusEmoji('approved')).toBe('✅');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getStatusEmoji('rejected')).toBe('❌');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getStatusEmoji('applied')).toBe('✅');
+      });
+    });
+
+    describe('getSeverityEmoji', () => {
+      it('should return correct emoji for severity', () => {
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getSeverityEmoji('LOW')).toBe('🟢');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getSeverityEmoji('MEDIUM')).toBe('🟡');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getSeverityEmoji('WARNING')).toBe('🟡');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getSeverityEmoji('HIGH')).toBe('🟠');
+        // @ts-ignore - Accéder à la méthode privée pour test
+        expect(service.getSeverityEmoji('CRITICAL')).toBe('🔴');
+      });
+    });
+
+    describe('createDefaultBaseline', () => {
+      it('should create a default baseline', () => {
+        // @ts-ignore - Accéder à la méthode privée pour test
+        const baseline = service.createDefaultBaseline();
+
+        expect(baseline).toHaveProperty('version');
+        expect(baseline).toHaveProperty('baselineId');
+        expect(baseline).toHaveProperty('machineId');
+        expect(baseline).toHaveProperty('timestamp');
+        expect(baseline).toHaveProperty('machines');
+        expect(baseline.machines).toHaveLength(1);
+      });
+    });
+
+    describe('loadDecisionsFromRoadmap', () => {
+      it('should load decisions from roadmap', async () => {
+        const roadmapContent = `# RooSync Roadmap
+
+## Décisions de Synchronisation
+
+## Décision
+### test-decision
+- Status: pending
+- Action: sync_to_baseline
+- Description: Test decision
+- Sévérité: MEDIUM
+- Catégorie: config
+
+`;
+
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(fs.readFile).mockResolvedValue(roadmapContent);
+
+        // @ts-ignore - Accéder à la méthode privée pour test
+        const decisions = await service.loadDecisionsFromRoadmap();
+
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0].id).toBe('test-decision');
+        expect(decisions[0].action).toBe('sync_to_baseline');
+      });
+    });
+
+    describe('updateDecisionInRoadmap', () => {
+      it('should update decision in roadmap', async () => {
+        const existingContent = `# RooSync Roadmap
+
+## Décisions de Synchronisation
+
+## Décision
+### test-decision-1
+- Status: pending
+- Action: sync_to_baseline
+- Description: Test decision 1
+`;
+
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(fs.readFile).mockResolvedValue(existingContent);
+        vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+        const updatedDecision: SyncDecision = {
+          id: 'test-decision-1',
+          action: 'backup',
+          description: 'Updated decision',
+          status: 'approved',
+          severity: 'HIGH',
+          category: 'config',
+          differenceId: 'roo.userSettings.theme',
+          machineId: 'test-machine',
+          createdAt: '2025-01-01T00:00:00.000Z',
+          updatedAt: new Date().toISOString()
+        };
+
+        // @ts-ignore - Accéder à la méthode privée pour test
+        await service.updateDecisionInRoadmap(updatedDecision);
+
+        expect(fs.writeFile).toHaveBeenCalled();
+      });
+    });
+
+    describe('parseDecisionsFromMarkdown', () => {
+      it('should parse decisions from markdown', () => {
+        const content = `# RooSync Roadmap
+
+## Décisions de Synchronisation
+
+## Décision
+### test-decision-1
+- Status: pending
+- Action: sync_to_baseline
+- Description: Test decision 1
+
+## Décision
+### test-decision-2
+- Status: approved
+- Action: backup
+- Description: Test decision 2
+`;
+
+        // @ts-ignore - Accéder à la méthode privée pour test
+        const decisions = service.parseDecisionsFromMarkdown(content);
+
+        expect(decisions).toHaveLength(2);
+        expect(decisions[0].id).toBe('test-decision-1');
+        expect(decisions[1].id).toBe('test-decision-2');
+        expect(decisions[0].status).toBe('pending');
+        expect(decisions[1].status).toBe('approved');
+      });
+    });
+  });
 });
