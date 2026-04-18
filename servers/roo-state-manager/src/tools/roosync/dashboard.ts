@@ -1451,6 +1451,16 @@ async function handleAppend(
   // Runs BEFORE the new message is appended, so condense operates on the existing
   // messages (current state) rather than waiting for the post-append size check
   // to fire at 100%. Prevents client-side timeout when dashboard is near-saturation.
+  //
+  // Concurrency contract: this function is NOT serialized per-key. Concurrent
+  // appends to the same dashboard that both cross the 85% threshold will each
+  // enter condenseIntercom, and the writeDashboardFile at the end uses
+  // last-writer-wins semantics (same as the pre-existing reactive path). The
+  // #1497 change does not introduce a new race beyond what already exists in
+  // the reactive condense at 100%. If strict serialization is needed, wrap this
+  // handler in a per-key mutex (see future issue if observed in production).
+  // NOTE: `dashboard` is reassigned below — subsequent code must use the
+  // post-condense binding.
   let preemptivelyCondensed = false;
   let preemptivelyArchivedCount = 0;
   const preAppendSize = estimateDashboardSize(dashboard);

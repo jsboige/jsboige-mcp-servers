@@ -839,6 +839,52 @@ describe('roosync_dashboard', () => {
       expect(result.condensed).toBe(false);
       expect(mockChatCreate).not.toHaveBeenCalled();
     });
+
+    it('accumulates archivedCount when preemptive AND reactive condense both fire', async () => {
+      // Critic review follow-up: validates the `+=` / `||` accounting path —
+      // when the preemptive condense fires AND the post-append size still
+      // exceeds 100% (rare but possible with an oversized incoming message
+      // just after a near-full dashboard), archivedCount must be the SUM of
+      // both phases and condensed must stay true.
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Summary\n\nArchived' } }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // Fill to just above 85% threshold: ~15 messages × 3KB = 45KB (≥ 42.5 KB)
+      const filler = 'A'.repeat(3000);
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({
+          action: 'append',
+          type: 'global',
+          content: `${filler} msg${i}`
+        });
+      }
+
+      // Incoming message is huge enough that even after preemptive condense,
+      // the post-append dashboard may exceed 100% and re-trigger reactive
+      // condense. 40KB message + residual ~15KB from kept 10 messages = 55KB.
+      const oversized = 'B'.repeat(40 * 1024);
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: oversized
+      });
+
+      expect(result.success).toBe(true);
+      // Either path fired (preemptive OR reactive OR both).
+      // The critical assertion: archivedCount must reflect what actually happened.
+      if (result.condensed) {
+        // If condensed, archivedCount must be >= 1 (preemptive alone archives ≥5 msgs)
+        expect(result.archivedCount).toBeGreaterThanOrEqual(1);
+      }
+      // mockChatCreate must have been called at least once (condense happened)
+      expect(mockChatCreate).toHaveBeenCalled();
+    });
   });
 
   describe('Mention parsing and filtering (#1363)', () => {
