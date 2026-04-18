@@ -583,7 +583,11 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  * @returns Résumé markdown ou null si échec (fallback)
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
-  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
+  // #1497: bumped 600s → 1800s (30 min). Qwen3.6 thinking mode can take 60-90s
+  // per call on 40KB prompts; with 3 retries + backoff 2s/4s/8s, total
+  // wall-clock per call can exceed 5 min. Since the 2 LLM calls now run in
+  // parallel (see condenseIntercom), one slow call would still drag the total.
+  const timeoutMs = 1800000;
 
   // Construire le prompt avec les messages
   const messagesContent = messages.map(msg => {
@@ -634,10 +638,6 @@ FORMAT :
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     const startTime = Date.now();
     try {
-      // #1497: disable Qwen thinking mode via chat_template_kwargs — when
-      // enabled (default on Qwen3.6), the reasoning trace for large prompts
-      // (40+ KB dashboard) consumes all max_tokens, leaving content = null and
-      // forcing 3 retries to fail. vLLM-specific extra body param (cast via any).
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
@@ -645,9 +645,8 @@ FORMAT :
           { role: 'user', content: userPrompt }
         ],
         max_tokens: 10000,
-        temperature: 0.3,
-        chat_template_kwargs: { enable_thinking: false }
-      } as any, {
+        temperature: 0.3
+      }, {
         timeout: timeoutMs
       });
 
@@ -701,7 +700,8 @@ async function generateStatusUpdate(
   allMessages: IntercomMessage[],
   archivedCount: number
 ): Promise<string | null> {
-  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
+  // #1497: bumped 600s → 1800s (30 min) — see generateLLMSummary for rationale.
+  const timeoutMs = 1800000;
 
   // Format messages with archive/keep annotations
   const messagesContent = allMessages.map((msg, index) => {
@@ -781,7 +781,6 @@ Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ].
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     const startTime = Date.now();
     try {
-      // #1497: disable Qwen thinking mode (see generateLLMSummary for rationale)
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
@@ -789,9 +788,8 @@ Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ].
           { role: 'user', content: userPrompt }
         ],
         max_tokens: 10000,
-        temperature: 0.3,
-        chat_template_kwargs: { enable_thinking: false }
-      } as any, {
+        temperature: 0.3
+      }, {
         timeout: timeoutMs
       });
 
@@ -871,7 +869,6 @@ RÈGLES :
 
   const startTime = Date.now();
   try {
-    // #1497: disable Qwen thinking mode (see generateLLMSummary for rationale)
     const response = await openai.chat.completions.create({
       model: modelId,
       messages: [
@@ -879,10 +876,9 @@ RÈGLES :
         { role: 'user', content: text }
       ],
       max_tokens: 10000,
-      temperature: 0.3,
-      chat_template_kwargs: { enable_thinking: false }
-    } as any, {
-      timeout: 300000  // 5 minutes
+      temperature: 0.3
+    }, {
+      timeout: 900000  // #1497: 5 min → 15 min, accommodate thinking-mode latency
     });
 
     const condensed = response.choices[0]?.message?.content;

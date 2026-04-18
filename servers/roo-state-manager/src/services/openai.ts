@@ -69,8 +69,18 @@ export function getChatOpenAIClient(): OpenAI {
         { envVar: 'OPENAI_API_KEY' }
       );
     }
-    // OpenAI SDK automatically reads OPENAI_BASE_URL from env
-    chatOpenai = new OpenAI({ apiKey });
+    // OpenAI SDK automatically reads OPENAI_BASE_URL from env.
+    // #1497: explicit maxRetries=0 and long timeout. The SDK default maxRetries=2
+    // triggers exponential backoff on 5xx/connection errors and can silently
+    // compound latency beyond our per-function retry loop (3 retries × 2 LLM
+    // calls). For dashboard condense, the caller already handles null/error
+    // with its own retry + backoff, so we disable the SDK layer. Timeout 1800s
+    // (30 min) accommodates Qwen3.6 thinking-mode latency on 40KB prompts.
+    chatOpenai = new OpenAI({
+      apiKey,
+      maxRetries: 0,
+      timeout: 1800000
+    });
   }
   return chatOpenai;
 }
