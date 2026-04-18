@@ -634,6 +634,10 @@ FORMAT :
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     const startTime = Date.now();
     try {
+      // #1497: disable Qwen thinking mode via chat_template_kwargs — when
+      // enabled (default on Qwen3.6), the reasoning trace for large prompts
+      // (40+ KB dashboard) consumes all max_tokens, leaving content = null and
+      // forcing 3 retries to fail. vLLM-specific extra body param (cast via any).
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
@@ -641,8 +645,9 @@ FORMAT :
           { role: 'user', content: userPrompt }
         ],
         max_tokens: 10000,
-        temperature: 0.3
-      }, {
+        temperature: 0.3,
+        chat_template_kwargs: { enable_thinking: false }
+      } as any, {
         timeout: timeoutMs
       });
 
@@ -776,6 +781,7 @@ Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ].
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     const startTime = Date.now();
     try {
+      // #1497: disable Qwen thinking mode (see generateLLMSummary for rationale)
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
@@ -783,8 +789,9 @@ Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ].
           { role: 'user', content: userPrompt }
         ],
         max_tokens: 10000,
-        temperature: 0.3
-      }, {
+        temperature: 0.3,
+        chat_template_kwargs: { enable_thinking: false }
+      } as any, {
         timeout: timeoutMs
       });
 
@@ -864,6 +871,7 @@ RÈGLES :
 
   const startTime = Date.now();
   try {
+    // #1497: disable Qwen thinking mode (see generateLLMSummary for rationale)
     const response = await openai.chat.completions.create({
       model: modelId,
       messages: [
@@ -871,8 +879,9 @@ RÈGLES :
         { role: 'user', content: text }
       ],
       max_tokens: 10000,
-      temperature: 0.3
-    }, {
+      temperature: 0.3,
+      chat_template_kwargs: { enable_thinking: false }
+    } as any, {
       timeout: 300000  // 5 minutes
     });
 
@@ -926,15 +935,24 @@ async function condenseIntercom(
   // Pass ALL messages to status update so LLM sees full context
   const previousStatus = dashboard.status.markdown;
 
-  const t1 = Date.now();
-  let newStatus = await generateStatusUpdate(previousStatus, messages, toArchive.length);
-  const t1Elapsed = Date.now() - t1;
-  logger.info('Status update LLM call completed', { elapsed: `${t1Elapsed}ms`, success: newStatus !== null });
-
-  const t2 = Date.now();
-  let llmSummary = await generateLLMSummary(toArchive);
-  const t2Elapsed = Date.now() - t2;
-  logger.info('Summary LLM call completed', { elapsed: `${t2Elapsed}ms`, success: llmSummary !== null });
+  // #1497: Run the 2 LLM calls in parallel (status update + summary) — they are
+  // independent (both take messages as input, neither depends on the other's
+  // output). Halves wall-clock latency from ~2×T to ~T, critical when condense
+  // races the client timeout. A single failing call still cancels condensation
+  // via the existing null-check below.
+  const tParallel = Date.now();
+  const [newStatusResult, llmSummaryResult] = await Promise.all([
+    generateStatusUpdate(previousStatus, messages, toArchive.length),
+    generateLLMSummary(toArchive)
+  ]);
+  let newStatus = newStatusResult;
+  let llmSummary = llmSummaryResult;
+  const tParallelElapsed = Date.now() - tParallel;
+  logger.info('LLM calls completed (parallel)', {
+    elapsed: `${tParallelElapsed}ms`,
+    statusOk: newStatus !== null,
+    summaryOk: llmSummary !== null
+  });
 
   // Both LLM calls are MANDATORY — if either fails, cancel condensation
   if (!llmSummary || !newStatus) {
@@ -1071,7 +1089,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status: ${Math.round(t1Elapsed / 1000)}s, summary: ${Math.round(t2Elapsed / 1000)}s)`
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 
