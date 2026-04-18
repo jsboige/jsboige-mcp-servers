@@ -56,6 +56,16 @@ interface RooSyncReadArgs {
 
   /** Marquer automatiquement comme lu (défaut: false, mode 'message' uniquement) */
   mark_as_read?: boolean;
+
+  // #1498: multi-workspace inbox polling (dashboard-watcher Phase 2).
+  // A single scheduler running in ai-01/roo-extensions needs to poll inboxes
+  // for ai-01/nanoclaw, ai-01/foo, etc. The default filter (localWorkspaceId
+  // from process cwd) makes that impossible without these overrides.
+  /** Override workspace filter (défaut: workspace du process MCP). Permet à un scheduler tournant dans workspace X de lire l'inbox adressée à workspace Y sur la même machine. */
+  workspace?: string;
+
+  /** Override machine filter (défaut: machine locale). Usage avancé : lire inbox d'une autre machine. Normalement tu veux garder ta propre machine. */
+  to_machine?: string;
 }
 
 /**
@@ -69,26 +79,30 @@ async function readInboxMode(
   args: RooSyncReadArgs,
   messageManager: MessageManager
 ): Promise<string> {
-  const localMachineId = getLocalMachineId();
-  const localWorkspaceId = getLocalWorkspaceId();
+  // #1498: allow explicit override of machine + workspace filters so a single
+  // dashboard-watcher process can poll inboxes for every workspace on a machine.
+  const effectiveMachineId = args.to_machine || getLocalMachineId();
+  const effectiveWorkspaceId = args.workspace || getLocalWorkspaceId();
   const status = args.status || 'all';
   const limit = args.limit;
   const page = args.page;
   const perPage = args.per_page;
 
-  logger.info('📬 Reading inbox', { machineId: localMachineId, workspaceId: localWorkspaceId, status, limit, page, perPage });
+  logger.info('📬 Reading inbox', { machineId: effectiveMachineId, workspaceId: effectiveWorkspaceId, status, limit, page, perPage });
 
   // Get counts from cache (single scan, no double-read — #638 perf fix)
-  const counts = await messageManager.getFilteredCount(localMachineId, 'all', localWorkspaceId);
+  const counts = await messageManager.getFilteredCount(effectiveMachineId, 'all', effectiveWorkspaceId);
 
   // Read messages with pagination
   const messages = await messageManager.readInbox(
-    localMachineId, status, limit, localWorkspaceId, page, perPage
+    effectiveMachineId, status, limit, effectiveWorkspaceId, page, perPage
   );
 
-  // Fire-and-forget heartbeat update
+  // Fire-and-forget heartbeat update. Always use the REAL local machine, not
+  // the overridden filter — heartbeat is proof-of-life for the local process,
+  // not for the machine whose inbox is being read.
   (await getRooSyncService()).getHeartbeatService()
-    .registerHeartbeat(localMachineId, { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
+    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
   // Throttled fire-and-forget cleanup tasks (run at most once every 5 min)
@@ -118,12 +132,13 @@ async function readInboxMode(
 
 Votre inbox est vide pour le moment.
 
-**Machine :** ${localMachineId}
+**Machine :** ${effectiveMachineId}
+**Workspace :** ${effectiveWorkspaceId}
 **Filtre :** ${status}`;
   }
 
   // Formater la liste
-  let result = `📬 **Boîte de Réception** - ${localMachineId}\n\n`;
+  let result = `📬 **Boîte de Réception** - ${effectiveMachineId}:${effectiveWorkspaceId}\n\n`;
   result += `**Total :** ${counts.total} message${counts.total > 1 ? 's' : ''} | `;
   result += `🆕 ${counts.unread} non-lu${counts.unread > 1 ? 's' : ''} | `;
   result += `✅ ${counts.read} lu${counts.read > 1 ? 's' : ''}\n`;
@@ -395,6 +410,14 @@ export const readToolMetadata = {
       mark_as_read: {
         type: 'boolean',
         description: 'Marquer automatiquement comme lu (mode message, défaut: false)'
+      },
+      workspace: {
+        type: 'string',
+        description: '(mode inbox, #1498) Override workspace filter. Défaut: workspace du process MCP. Permet à un scheduler tournant dans workspace X de lire l\'inbox adressée à workspace Y sur la même machine (dashboard-watcher multi-workspace).'
+      },
+      to_machine: {
+        type: 'string',
+        description: '(mode inbox, #1498, avancé) Override machine filter. Défaut: machine locale. Normalement tu veux ta propre machine.'
       }
     },
     required: ['mode']
