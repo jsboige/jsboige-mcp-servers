@@ -160,13 +160,28 @@ describe('roosync_search', () => {
 					conversation_id: 'conv-123',
 					max_results: 5,
 					workspace: 'test-ws',
-					diagnose_index: false
+					diagnose_index: false,
+					// #1496: strict_mode must be passed through so semantic errors
+					// propagate to the caller instead of silently falling back to text.
+					strict_mode: true
 				}),
 				mockCache,
 				mockEnsureCache,
 				mockFallbackHandler,
 				mockDiagnoseHandler
 			);
+		});
+
+		test('#1496: passes strict_mode=true to semantic handler', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'test', workspace: 'd:\\test-workspace' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.strict_mode).toBe(true);
 		});
 
 		test('returns semantic handler result', async () => {

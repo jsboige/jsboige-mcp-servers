@@ -54,6 +54,12 @@ export interface SearchTasksByContentArgs {
     // #636 Phase 3: Convenience filter
     /** Exclude tool_interaction chunks, returning only message_exchange chunks */
     exclude_tool_results?: boolean;
+    // #1496: When true, propagate semantic errors instead of silently falling
+    // back to text search. Used by `roosync_search(action: "semantic")` so the
+    // caller gets a clear signal when the embedding backend is down, rather
+    // than returning `searchType: "text"` without warning. Default: false
+    // (legacy behavior preserved for direct `searchTasks` callers).
+    strict_mode?: boolean;
 }
 
 /**
@@ -666,9 +672,30 @@ export const searchTasksByContentTool = {
                 lastEmbeddingFailureTime = Date.now();
                 console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s (HTTP 5xx detected)`);
             }
-            console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticError instanceof Error ? semanticError.message : String(semanticError)}`);
 
-            // Fallback vers la recherche textuelle simple
+            const semanticErrorMsg = semanticError instanceof Error ? semanticError.message : String(semanticError);
+
+            // #1496: Strict mode — propagate the semantic error instead of silently
+            // falling back to text. Callers that explicitly requested semantic
+            // (like `roosync_search(action: "semantic")`) need to know when the
+            // embedding backend is down, otherwise they treat text results as
+            // semantic and real regressions go unnoticed for days (cf #1407, #1451).
+            if (args.strict_mode) {
+                console.warn(`[WARN] Semantic search failed in strict_mode (no fallback): ${semanticErrorMsg}`);
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `Semantic search failed: ${semanticErrorMsg}\n\n` +
+                              `Diagnostic: run roosync_search(action: "diagnose") to check backend state.\n` +
+                              `Hint: if you want text fallback, use roosync_search(action: "text") explicitly.`
+                    }]
+                };
+            }
+
+            console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticErrorMsg}`);
+
+            // Fallback vers la recherche textuelle simple (legacy — default path)
             try {
                 // Fix: mapper search_query → query pour le fallback
                 const fallbackResult = await fallbackHandler(

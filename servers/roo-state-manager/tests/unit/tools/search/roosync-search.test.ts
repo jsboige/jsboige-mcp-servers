@@ -202,7 +202,11 @@ describe('roosync_search - CONS-11', () => {
             expect(result.isError).toBeFalsy();
         });
 
-        it('should fallback to text on semantic error', async () => {
+        it('#1496: propagates semantic error instead of silent fallback (strict_mode)', async () => {
+            // Before #1496: semantic errors caused a silent fallback to text search,
+            // which masked embedding backend regressions for days (cf #1407, #1451).
+            // After #1496: `roosync_search(action: "semantic")` must return isError:true
+            // with a diagnostic hint so the caller knows the semantic path failed.
             mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('OpenAI Error'));
 
             const result = await handleRooSyncSearch(
@@ -212,8 +216,13 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(fallbackHandler).toHaveBeenCalled();
-            expect((result.content[0] as any).text).toBe('Fallback result');
+            expect(fallbackHandler).not.toHaveBeenCalled();
+            expect(result.isError).toBe(true);
+            const errorText = (result.content[0] as any).text;
+            expect(errorText).toContain('Semantic search failed');
+            expect(errorText).toContain('OpenAI Error');
+            expect(errorText).toContain('roosync_search(action: "diagnose")');
+            expect(errorText).toContain('roosync_search(action: "text")');
         });
     });
 

@@ -185,7 +185,10 @@ export async function handleRooSyncSearch(
                 effectiveWorkspace = undefined;
             }
 
-            // Déléguer au handler sémantique existant (inclut fallback automatique sur erreur)
+            // Déléguer au handler sémantique existant.
+            // #1496: strict_mode=true so semantic errors are propagated to the caller
+            // instead of silently falling back to text search (which masked the
+            // #1407 and #1451 embedding backend regressions for days).
             const semanticArgs: SearchTasksByContentArgs = {
                 search_query: args.search_query,
                 conversation_id: args.conversation_id,
@@ -193,6 +196,7 @@ export async function handleRooSyncSearch(
                 workspace: effectiveWorkspace,
                 source: args.source,
                 diagnose_index: false,
+                strict_mode: true,
                 // #636: Advanced filters
                 chunk_type: args.chunk_type,
                 role: args.role,
