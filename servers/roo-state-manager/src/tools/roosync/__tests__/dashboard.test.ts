@@ -760,7 +760,7 @@ describe('roosync_dashboard', () => {
   });
 
   describe('Preemptive condensation (#1497)', () => {
-    it('triggers condensation during fill-up when dashboard crosses 85% utilization', async () => {
+    it('triggers condensation during fill-up when dashboard crosses 92% utilization', async () => {
       // Persistent mock — preemptive may fire multiple times during fill-up loop
       mockGetChatClient.mockReturnValue({
         chat: { completions: { create: mockChatCreate } }
@@ -773,7 +773,7 @@ describe('roosync_dashboard', () => {
 
       // Fill with messages until the preemptive threshold triggers condensation.
       // Each message is ~3 KB; 20 messages would total ~60 KB (120% of 50 KB),
-      // so preemptive condensation at 85% (42.5 KB) must fire before we get there.
+      // so preemptive condensation at 92% (46 KB) must fire before we get there.
       const bigContent = 'X'.repeat(3000);
       let firstCondensedAt = -1;
       for (let i = 0; i < 20; i++) {
@@ -792,13 +792,13 @@ describe('roosync_dashboard', () => {
       expect(mockChatCreate).toHaveBeenCalled();
     });
 
-    it('does NOT trigger preemptive condensation below 85% utilization', async () => {
+    it('does NOT trigger preemptive condensation below 92% utilization', async () => {
       mockGetChatClient.mockReturnValue({
         chat: { completions: { create: mockChatCreate } }
       });
 
       await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      // 5 small messages — should stay well below 85%
+      // 5 small messages — should stay well below 92%
       for (let i = 0; i < 5; i++) {
         await roosyncDashboard({ action: 'append', type: 'global', content: `small ${i}` });
       }
@@ -824,8 +824,8 @@ describe('roosync_dashboard', () => {
       });
 
       await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      // Very large message, only 1 entry — size > 85% but count < CONDENSE_KEEP
-      const huge = 'Y'.repeat(45 * 1024); // 45 KB single message
+      // Very large message, only 1 entry — size > 92% but count < CONDENSE_KEEP
+      const huge = 'Y'.repeat(47 * 1024); // 47 KB single message (above 46 KB threshold)
       await roosyncDashboard({ action: 'append', type: 'global', content: huge });
 
       const result = await roosyncDashboard({
@@ -855,9 +855,9 @@ describe('roosync_dashboard', () => {
 
       await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
 
-      // Fill to just above 85% threshold: ~15 messages × 3KB = 45KB (≥ 42.5 KB)
+      // Fill to just above 92% threshold: ~16 messages × 3KB = 48KB (≥ 46 KB)
       const filler = 'A'.repeat(3000);
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 16; i++) {
         await roosyncDashboard({
           action: 'append',
           type: 'global',

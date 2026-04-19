@@ -56,14 +56,14 @@ const logger: Logger = createLogger('DashboardTool');
 const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024; // 50 KB
 const CONDENSE_KEEP = 10;
 
-// #1497: Preemptive condensation threshold (85% of MAX)
+// #1497: Preemptive condensation threshold (92% of MAX)
 // Triggered BEFORE appending a new message when the dashboard is near-full, so
 // that the condense (which can take ~30s via LLM) completes on smaller data
 // and does not timeout the client call at 96%+ utilization (reported by
 // nanoclaw-cluster, 2026-04-17T22:17Z). Rationale: appending to a 96% dashboard
-// forces condense of ~50 messages at LLM speed; pre-condensing at 85% keeps
+// forces condense of ~50 messages at LLM speed; pre-condensing at 92% keeps
 // the working set smaller and shifts the latency into more predictable slots.
-const PREEMPTIVE_CONDENSE_THRESHOLD_BYTES = Math.floor(MAX_DASHBOARD_SIZE_BYTES * 0.85); // ~42.5 KB
+const PREEMPTIVE_CONDENSE_THRESHOLD_BYTES = Math.floor(MAX_DASHBOARD_SIZE_BYTES * 0.92); // ~46 KB
 
 // Size limits for LLM outputs (bytes). If exceeded, retry with a stricter prompt.
 const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
@@ -1543,13 +1543,13 @@ async function handleAppend(
     dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
-  // #1497: Preemptive condensation at 85% utilization
+  // #1497: Preemptive condensation at 92% utilization
   // Runs BEFORE the new message is appended, so condense operates on the existing
   // messages (current state) rather than waiting for the post-append size check
   // to fire at 100%. Prevents client-side timeout when dashboard is near-saturation.
   //
   // Concurrency contract: this function is NOT serialized per-key. Concurrent
-  // appends to the same dashboard that both cross the 85% threshold will each
+  // appends to the same dashboard that both cross the 92% threshold will each
   // enter condenseIntercom, and the writeDashboardFile at the end uses
   // last-writer-wins semantics (same as the pre-existing reactive path). The
   // #1497 change does not introduce a new race beyond what already exists in
@@ -1564,7 +1564,7 @@ async function handleAppend(
     logger.info('Preemptive condensation triggered (#1497)', {
       key,
       preAppendSize: `${Math.round(preAppendSize / 1024)}KB`,
-      preemptiveThreshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB (85% of ${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB)`,
+      preemptiveThreshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB (92% of ${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB)`,
       messageCount: dashboard.intercom.messages.length
     });
     const beforePreemptive = dashboard.intercom.messages.length;
