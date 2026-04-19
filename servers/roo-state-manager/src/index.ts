@@ -34,26 +34,47 @@ if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
 }
 
-// VALIDATION STRICTE DES CONFIGURATIONS CRITIQUES AU STARTUP
-const REQUIRED_ENV_VARS = [
-    'QDRANT_URL',
-    'QDRANT_API_KEY',
-    'QDRANT_COLLECTION_NAME',
-    'ROOSYNC_SHARED_PATH'
+// #1551: Enhanced env validation — distinguish empty from missing, show .env path and fix hints
+const REQUIRED_ENV_VARS: Array<{ name: string; hint: string }> = [
+    { name: 'QDRANT_URL', hint: 'Ex: https://qdrant.myia.io (remote) ou http://localhost:6333 (local)' },
+    { name: 'QDRANT_API_KEY', hint: 'Clé API Qdrant. Ne PAS laisser vide. Ex: 4f89edd5-...' },
+    { name: 'QDRANT_COLLECTION_NAME', hint: 'Ex: roo_tasks_semantic_index' },
+    { name: 'ROOSYNC_SHARED_PATH', hint: 'Ex: G:/Mon Drive/Synchronisation/RooSync/.shared-state' },
 ];
 const hasEmbeddingKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
 if (!hasEmbeddingKey) {
-    console.error('🚨 ERREUR: Aucune clé d\'embedding configurée. Définir EMBEDDING_API_KEY (préféré) ou OPENAI_API_KEY.');
+    console.error('⚠️ WARNING: Aucune clé d\'embedding configurée. Recherche sémantique indisponible.');
+    console.error('   Définir EMBEDDING_API_KEY (préféré) ou OPENAI_API_KEY dans le .env.');
 }
-const missingVars = REQUIRED_ENV_VARS.filter(varName => !process.env[varName]);
-if (missingVars.length > 0) {
-    console.error('🚨 ERREUR CRITIQUE: Variables d\'environnement manquantes:');
-    missingVars.forEach(varName => console.error(`   ❌ ${varName}`));
-    console.error('📄 Vérifiez le fichier .env à la racine du projet roo-state-manager');
-    console.error('🔥 ARRÊT IMMÉDIAT DU SERVEUR POUR ÉVITER TOUTE PERTE DE TEMPS');
+
+const problems: Array<{ name: string; issue: string; hint: string }> = [];
+for (const { name, hint } of REQUIRED_ENV_VARS) {
+    const value = process.env[name];
+    if (value === undefined || value === '') {
+        const issue = value === undefined ? 'ABSENTE (non définie)' : 'VIDE (définie mais vide)';
+        problems.push({ name, issue, hint });
+    }
+}
+
+if (problems.length > 0) {
+    console.error('');
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error('🚨 ERREUR CRITIQUE: Configuration .env invalide');
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error(`📄 Fichier .env: ${envPath}`);
+    console.error('');
+    for (const { name, issue, hint } of problems) {
+        console.error(`   ❌ ${name} — ${issue}`);
+        console.error(`      → ${hint}`);
+    }
+    console.error('');
+    console.error('🔧 ACTION: Vérifiez le fichier .env ci-dessus. Chaque variable');
+    console.error('   doit avoir une valeur non-vide. Ne JAMAIS vider une clé existante.');
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error('');
     process.exit(1);
 }
-console.error('✅ Variables d\'environnement critiques présentes');
+console.error(`✅ Configuration .env validée (${envPath})`);
 
 // #1140: ONLY import what's needed for server creation + handler registration.
 // Everything else loads lazily on first use.
