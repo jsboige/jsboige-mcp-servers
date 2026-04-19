@@ -16,6 +16,7 @@ import { NotificationService, NotificationEvent } from './NotificationService.js
 import { MessageManager, Message } from '../services/MessageManager.js';
 import { scanDiskForNewTasks } from '../tools/task/disk-scanner.js';
 import { SkeletonHeader } from '../types/conversation.js';
+import { getLocalWorkspaceId } from '../utils/message-helpers.js';
 
 /**
  * Configuration de l'intercepteur
@@ -172,7 +173,9 @@ export class ToolUsageInterceptor {
       // Utiliser readInbox avec filtre 'unread'
       const unreadItems = await this.messageManager.readInbox(
         this.config.machineId,
-        'unread'
+        'unread',
+        undefined,
+        getLocalWorkspaceId()
       );
       
       // Récupérer les messages complets

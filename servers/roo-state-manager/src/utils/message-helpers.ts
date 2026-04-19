@@ -206,7 +206,7 @@ export function normalizeWorkspaceId(workspaceId: string): string {
 export function matchesRecipient(
   messageTo: string,
   localMachineId: string,
-  localWorkspaceId: string
+  localWorkspaceId: string | undefined
 ): boolean {
   // Broadcast
   if (messageTo === 'all' || messageTo === 'All') {
@@ -223,6 +223,7 @@ export function matchesRecipient(
   // If message targets a specific workspace, only that workspace should see it
   // Normalize both sides: basename + lowercase (handles "D:\vllm" vs "vllm")
   if (parsed.workspaceId) {
+    if (!localWorkspaceId) return false;
     return normalizeWorkspaceId(localWorkspaceId) === normalizeWorkspaceId(parsed.workspaceId);
   }
 
