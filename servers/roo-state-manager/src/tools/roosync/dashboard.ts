@@ -716,10 +716,9 @@ async function generateStatusUpdate(
   const systemPrompt = `Tu es un expert en synthèse de dashboards de coordination multi-agents.
 
 CONTEXTE : Le dashboard contient un STATUT (mémoire de travail du projet) et des MESSAGES INTERCOM.
-Les messages les plus anciens vont être archivés. Ta mission : RÉÉCRIRE le statut en y INTÉGRANT les infos importantes des messages qui vont disparaître.
+Les messages les plus anciens vont être archivés. Ta mission : mettre à jour le statut en y intégrant les infos importantes des messages qui vont disparaître.
 
-Le statut doit rester COMPACT (max 15 Ko) tout en préservant l'information critique.
-Viser 50-100 lignes. Au-delà, synthétiser plus agressivement.
+La taille est gérée par une passe de condensation automatique (déclenchée au-delà du seuil) — ici, reste qualitatif sans raisonner en octets.
 
 RÈGLE ABSOLUE — LAST-KNOWN-STATE WINS (#1502) :
 Pour CHAQUE sujet (machine, service, tâche), SEUL le dernier état connu doit apparaître.
@@ -773,7 +772,7 @@ ${previousStatus}
 **${allMessages.length} messages intercom (dont ${archivedCount} seront archivés, ${allMessages.length - archivedCount} conservés) :**
 ${messagesContent}
 
-Réécris le statut en intégrant les informations des messages [SERA ARCHIVÉ]. Date de référence : ${lastDate}.`;
+Mets à jour le statut en intégrant les informations des messages [SERA ARCHIVÉ]. Date de référence : ${lastDate}.`;
 
   logger.info('Calling LLM for status update', {
     previousStatusLength: previousStatus.length,
