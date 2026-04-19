@@ -301,13 +301,16 @@ async function handleViewConversationTreeExecutionAsync(
             let claudeProjectPath: string | null = null;
             const locationsChecked: string[] = [];
 
-            for (const loc of claudeLocations) {
-                locationsChecked.push(loc.projectPath);
-                if (path.basename(loc.projectPath) === projectBasename) {
-                    claudeProjectPath = loc.projectPath;
-                    break;
-                }
-            }
+            // #1493: Use prefix match instead of exact match.
+            // Task ID format: claude-{projectDir}--{sessionUUID}
+            // The project directory basename does NOT include the session UUID suffix,
+            // so an exact === match fails for worktree sessions. Instead, find the
+            // longest project directory that is a prefix of the task-derived basename.
+            const candidates = claudeLocations
+                .filter(loc => projectBasename.startsWith(path.basename(loc.projectPath)))
+                .sort((a, b) => path.basename(b.projectPath).length - path.basename(a.projectPath).length);
+            claudeProjectPath = candidates.length > 0 ? candidates[0].projectPath : null;
+            locationsChecked.push(...claudeLocations.map(loc => loc.projectPath));
 
             if (!claudeProjectPath) {
                 throw new GenericError(
