@@ -68,7 +68,7 @@ describe('read_inbox', () => {
 
 		const result = await readInbox({ status: 'unread' });
 
-		expect(mockReadInbox).toHaveBeenCalledWith('myia-ai-01', 'unread', undefined);
+		expect(mockReadInbox).toHaveBeenCalledWith('myia-ai-01', 'unread', undefined, expect.any(String));
 		expect(result.content[0].text).toContain('unread');
 	});
 
@@ -77,7 +77,7 @@ describe('read_inbox', () => {
 
 		await readInbox({ limit: 5 });
 
-		expect(mockReadInbox).toHaveBeenCalledWith('myia-ai-01', 'all', 5);
+		expect(mockReadInbox).toHaveBeenCalledWith('myia-ai-01', 'all', 5, expect.any(String));
 	});
 
 	test('formats messages as table', async () => {
@@ -150,7 +150,7 @@ describe('read_inbox', () => {
 
 		await readInbox({});
 
-		expect(mockReadInbox).toHaveBeenCalledWith('myia-web1', 'all', undefined);
+		expect(mockReadInbox).toHaveBeenCalledWith('myia-web1', 'all', undefined, expect.any(String));
 	});
 
 	test('returns error on failure', async () => {

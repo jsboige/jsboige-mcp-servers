@@ -454,9 +454,8 @@ export class MessageManager {
     page?: number,
     perPage?: number
   ): Promise<MessageListItem[]> {
-    // Auto-détection du workspace si non fourni
-    const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
-    logger.info(`Reading inbox for: ${machineId}:${effectiveWorkspaceId}`);
+    const effectiveWorkspaceId = workspaceId;
+    logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`);
 
     try {
       // Use cached data (#638 perf optimization)
@@ -522,7 +521,7 @@ export class MessageManager {
     status?: 'unread' | 'read' | 'all',
     workspaceId?: string
   ): Promise<{ total: number; unread: number; read: number }> {
-    const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
+    const effectiveWorkspaceId = workspaceId;
     const { items, full } = await this.ensureInboxCache();
 
     let total = 0;

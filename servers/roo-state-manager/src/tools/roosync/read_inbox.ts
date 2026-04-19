@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
+import { getLocalWorkspaceId } from '../../utils/message-helpers.js';
 
 // Logger instance for read_inbox tool
 const logger: Logger = createLogger('ReadInboxTool');
@@ -107,7 +108,8 @@ export async function readInbox(
     const messages = await messageManager.readInbox(
       machineId,
       args.status || 'all',
-      args.limit
+      args.limit,
+      getLocalWorkspaceId()
     );
 
     // Cas : aucun message
