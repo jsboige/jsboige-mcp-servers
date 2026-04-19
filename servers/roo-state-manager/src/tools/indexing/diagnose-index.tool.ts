@@ -17,6 +17,19 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 
+// #1275: Cache embedding connectivity check to avoid consuming API credits on every diagnose call.
+// TTL: 5 minutes (same as circuit breaker pattern).
+let lastConnectivityCheck = { time: 0, dimension: undefined as number | undefined, status: '' as string };
+const CONNECTIVITY_CACHE_TTL_MS = parseInt(process.env.DIAGNOSE_CONNECTIVITY_TTL_MS || '300000');
+
+/**
+ * Reset the connectivity cache state (for testing).
+ * @internal
+ */
+export function _resetConnectivityCache(): void {
+    lastConnectivityCheck = { time: 0, dimension: undefined, status: '' };
+}
+
 /**
  * Options for the diagnose tool. All optional — preserves backward compatibility.
  */
@@ -135,19 +148,32 @@ export async function handleDiagnoseSemanticIndex(
     // Test de connectivité à OpenAI/vLLM (always run, even if Qdrant fails)
     // #1244: capture the actual returned dimension to compare with collection dimension
     let embeddingLiveDimension: number | undefined;
-    try {
-        const openai = getOpenAIClient();
-        const testEmbedding = await openai.embeddings.create({
-            model: getEmbeddingModel(),
-            input: 'test connectivity',
-        });
-        const embeddingLength = testEmbedding.data[0].embedding.length;
-        embeddingLiveDimension = embeddingLength;
-        diagnostics.details.openai_connection = embeddingLength > 0 ? 'success' : 'failed';
-        diagnostics.details.embedding_live_dimension = embeddingLength;
-    } catch (openaiError: any) {
-        diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
-        diagnostics.details.openai_connection = 'failed';
+    const now = Date.now();
+    if (lastConnectivityCheck.time && (now - lastConnectivityCheck.time) < CONNECTIVITY_CACHE_TTL_MS) {
+        // Use cached result
+        embeddingLiveDimension = lastConnectivityCheck.dimension;
+        diagnostics.details.openai_connection = lastConnectivityCheck.status;
+        diagnostics.details.embedding_live_dimension = embeddingLiveDimension;
+        diagnostics.details.openai_connectivity_cached = true;
+    } else {
+        try {
+            const openai = getOpenAIClient();
+            const testEmbedding = await openai.embeddings.create({
+                model: getEmbeddingModel(),
+                input: 'test connectivity',
+            });
+            const embeddingLength = testEmbedding.data[0].embedding.length;
+            embeddingLiveDimension = embeddingLength;
+            const status = embeddingLength > 0 ? 'success' : 'failed';
+            diagnostics.details.openai_connection = status;
+            diagnostics.details.embedding_live_dimension = embeddingLength;
+            // Cache the result
+            lastConnectivityCheck = { time: now, dimension: embeddingLength, status };
+        } catch (openaiError: any) {
+            diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
+            diagnostics.details.openai_connection = 'failed';
+            lastConnectivityCheck = { time: now, dimension: undefined, status: 'failed' };
+        }
     }
 
     // #1244: Dimension mismatch detection (Hypothesis A from plan)

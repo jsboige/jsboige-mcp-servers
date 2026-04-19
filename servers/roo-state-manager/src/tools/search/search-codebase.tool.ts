@@ -113,6 +113,14 @@ function getCodebaseEmbeddingClient(): OpenAI {
 	}
 	return codebaseEmbeddingClient;
 }
+/**
+ * Reset the embedding client singleton (for testing).
+ * @internal
+ */
+export function resetCodebaseEmbeddingClient(): void {
+	codebaseEmbeddingClient = null;
+	lastEmbeddingApiKey = undefined;
+}
 
 function getCodebaseEmbeddingModel(): string {
 	return process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
@@ -276,7 +284,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// #1085: Hash mismatches between Roo (Windows fsPath backslashes) and
 		// Claude Code (Git Bash forward slashes) produce different hashes.
 		if (!collectionName) {
-			const allWsCollections = await listWorkspaceCollections();
+			// #1275: Limit to max 5 collections to prevent cascade timeouts
+			const allWsCollections = (await listWorkspaceCollections()).slice(0, 5);
 			for (const wsCol of allWsCollections) {
 				try {
 					const info = await qdrant.getCollection(wsCol);

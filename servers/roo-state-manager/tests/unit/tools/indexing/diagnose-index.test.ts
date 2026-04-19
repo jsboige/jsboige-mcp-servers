@@ -32,7 +32,7 @@ vi.mock('../../../../src/services/openai.js', () => ({
     getEmbeddingModel: mockGetEmbeddingModel
 }));
 
-import { handleDiagnoseSemanticIndex } from '../../../../src/tools/indexing/diagnose-index.tool.js';
+import { handleDiagnoseSemanticIndex, _resetConnectivityCache } from '../../../../src/tools/indexing/diagnose-index.tool.js';
 import { ConversationSkeleton } from '../../../../src/types/conversation.js';
 
 // ============================================================
@@ -99,6 +99,7 @@ describe('handleDiagnoseSemanticIndex', () => {
     beforeEach(() => {
         conversationCache = new Map();
         vi.clearAllMocks();
+        _resetConnectivityCache();
 
         // Save env and set all expected variables
         savedEnv = { ...process.env };
