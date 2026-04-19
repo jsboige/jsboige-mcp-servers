@@ -19,6 +19,7 @@ const mockGetChatClient = vi.fn();
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetChatClient(),
   resetChatOpenAIClient: vi.fn(),
+  getLLMModelId: () => 'test-model',
 }));
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-test-');

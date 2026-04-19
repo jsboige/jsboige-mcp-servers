@@ -86,6 +86,14 @@ export function getChatOpenAIClient(): OpenAI {
 }
 
 /**
+ * #1470: Centralized LLM chat model ID for dashboard condensation/synthesis.
+ * Single source of truth — eliminates 3 hardcoded copies in dashboard.ts.
+ */
+export function getLLMModelId(): string {
+  return process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
+}
+
+/**
  * #864: Reset the chat OpenAI client singleton.
  * Used for testing to simulate LLM unavailability.
  */

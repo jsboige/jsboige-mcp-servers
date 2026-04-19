@@ -357,15 +357,18 @@ import {
 import { attachmentsToolMetadata } from './roosync-attachments.tool.js';
 
 // #675: Dashboards markdown partagés cross-machine
-import { dashboardToolMetadata } from './dashboard.js';
+// #1470: Metadata import from dashboard-schemas.ts (no handler dependency)
+import { dashboardToolMetadata } from './dashboard-schemas.js';
 
 export {
   roosyncDashboard,
-  dashboardToolMetadata,
   DashboardArgsSchema,
   AuthorSchema,
   IntercomMessageSchema
 } from './dashboard.js';
+
+// #1470: Re-export metadata from single source of truth
+export { dashboardToolMetadata } from './dashboard-schemas.js';
 
 export type {
   DashboardArgs,
@@ -451,44 +454,6 @@ const exportBaselineToolMetadata = {
  * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
  * - Dashboards: roosync_refresh_dashboard, roosync_update_dashboard (#546), roosync_dashboard (#675)
  */
-export const roosyncTools = [
-  initToolMetadata,
-  getStatusToolMetadata,
-  compareConfigToolMetadata,
-  listDiffsToolMetadata,
-  // CONS-5: Outils de décision consolidés (5→2)
-  roosyncDecisionToolMetadata,
-  roosyncDecisionInfoToolMetadata,
-  baselineToolMetadata, // CONS-4: Outil consolidé Baseline 3→1
-  configToolMetadata, // CONS-3: Outil consolidé Config 4→2
-  inventoryToolMetadata, // CONS-6: Outil consolidé Inventory (machine + heartbeat)
-  machinesToolMetadata, // CONS-6: Outil consolidé Machines (offline + warning)
-  // CONS-#443 Groupe 1: Outil consolidé de heartbeat (heartbeat_status + heartbeat_service → roosync_heartbeat)
-  heartbeatToolMetadata,
-  // [DEPRECATED] #533: roosync_sync_event retiré de ListTools - jamais utilisé en production
-  // CallTool handler conservé pour backward compat
-  // syncEventToolMetadata,
-  // CONS-#443 Groupe 3: Outil consolidé de gestion MCP (manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings → roosync_mcp_management)
-  mcpManagementToolMetadata,
-  // CONS-#443 Groupe 4: Outil consolidé de gestion du stockage (storage_info + maintenance → roosync_storage_management)
-  storageManagementToolMetadata,
-  // CONS-#443 Groupe 5: Outil consolidé de diagnostic (diagnose_env + debug_reset + minimal_test_tool → roosync_diagnose)
-  diagnoseToolMetadata,
-  // Outils de dashboard (T3.17)
-  refreshDashboardToolMetadata,
-  // #546: Dashboard hiérarchique
-  updateDashboardToolMetadata,
-  // CONS-1: Outils de messagerie consolidés (6→3)
-  sendToolMetadata,
-  readToolMetadata,
-  manageToolMetadata,
-  // #613 ISS-1: Outil de cleanup en masse
-  cleanupToolMetadata,
-  // CONS-7: Outil consolidé gestion pièces jointes (list + get + delete → 1)
-  // [DEPRECATED] roosync_list_attachments, roosync_get_attachment, roosync_delete_attachment
-  // Conservés dans registry.ts pour backward compat uniquement
-  attachmentsToolMetadata,
-  // #675: Dashboards markdown partagés cross-machine
-  dashboardToolMetadata
-  // NOTE: modes-management = API interne, pas d'outil MCP (#595/#603)
-];
+
+// #1470: roosyncTools array removed — orphan, never consumed by registry.ts
+// (registry uses allToolDefinitions from tool-definitions.ts instead)

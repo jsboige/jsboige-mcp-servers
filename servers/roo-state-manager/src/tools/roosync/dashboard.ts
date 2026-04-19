@@ -40,13 +40,50 @@ import * as yaml from 'js-yaml';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { getChatOpenAIClient } from '../../services/openai.js';
+import { getChatOpenAIClient, getLLMModelId } from '../../services/openai.js';
 import {
   sendMentionNotificationsAsync,
   sendStructuredMentionNotificationsAsync,
   resolveMentionTarget
 } from '../../utils/dashboard-helpers.js';
 import type OpenAI from 'openai';
+
+// #1470: Single source of truth schemas from dedicated module
+// No handler logic imported — safe circular-dep-free module
+import {
+  AuthorSchema,
+  IntercomMessageSchema,
+  UserIdSchema,
+  MentionSchema,
+  CrossPostSchema,
+  DashboardArgsSchema,
+  type Author,
+  type IntercomMessage,
+  type UserId,
+  type Mention,
+  type CrossPost,
+  type Dashboard,
+  type DashboardFrontmatter,
+  type DashboardArgs
+} from './dashboard-schemas.js';
+
+// Re-export schemas and types for backward compatibility
+export {
+  AuthorSchema,
+  IntercomMessageSchema,
+  UserIdSchema,
+  MentionSchema,
+  CrossPostSchema,
+  DashboardArgsSchema,
+  type Author,
+  type IntercomMessage,
+  type UserId,
+  type Mention,
+  type CrossPost,
+  type Dashboard,
+  type DashboardFrontmatter,
+  type DashboardArgs
+};
 
 const logger: Logger = createLogger('DashboardTool');
 
@@ -110,139 +147,6 @@ async function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   perKeyLocks.set(key, stored);
   return current;
 }
-
-// === Schemas Zod ===
-
-export const AuthorSchema = z.object({
-  machineId: z.string().describe('ID de la machine'),
-  workspace: z.string().describe('Workspace ID'),
-  worktree: z.string().optional().describe('Worktree path (si applicable)')
-});
-
-export type Author = z.infer<typeof AuthorSchema>;
-
-export const IntercomMessageSchema = z.object({
-  id: z.string().describe('ID unique du message (ic-{timestamp})'),
-  timestamp: z.string().describe('ISO 8601 timestamp'),
-  author: AuthorSchema,
-  content: z.string().describe('Contenu markdown du message')
-});
-
-export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
-
-// === Mentions v3 (#1363) ===
-// userId = { machineId, workspace } tuple. Mention notifies exactly one userId
-// (either directly via userId or indirectly via messageId whose author = userId).
-// Exactly one of userId/messageId must be provided (XOR).
-
-export const UserIdSchema = z.object({
-  machineId: z.string().describe('ID de la machine'),
-  workspace: z.string().describe('Workspace ID')
-});
-
-export type UserId = z.infer<typeof UserIdSchema>;
-
-export const MentionSchema = z.object({
-  userId: UserIdSchema.optional()
-    .describe('userId explicite à mentionner (exclusif avec messageId)'),
-  messageId: z.string().optional()
-    .describe('ID de message à référencer (format: machineId:workspace:ic-...). Résout en userId = auteur du message référencé.'),
-  note: z.string().optional()
-    .describe('Note optionnelle expliquant la raison de la mention')
-}).refine(
-  (m) => (m.userId !== undefined) !== (m.messageId !== undefined),
-  { message: 'mention: exactement un de userId ou messageId doit être fourni' }
-);
-
-export type Mention = z.infer<typeof MentionSchema>;
-
-export const CrossPostSchema = z.object({
-  type: z.enum(['global', 'machine', 'workspace'])
-    .describe('Type de dashboard cible'),
-  machineId: z.string().optional()
-    .describe('machineId cible (pour type=machine)'),
-  workspace: z.string().optional()
-    .describe('workspace cible (pour type=workspace)')
-});
-
-export type CrossPost = z.infer<typeof CrossPostSchema>;
-
-// Dashboard au format Markdown (avec frontmatter YAML)
-export interface Dashboard {
-  type: 'global' | 'machine' | 'workspace';
-  key: string;
-  lastModified: string;
-  lastModifiedBy: Author;
-  status: {
-    markdown: string;
-    lastDiffCommit?: string;
-  };
-  intercom: {
-    messages: IntercomMessage[];
-    totalMessages: number;
-    lastCondensedAt?: string;
-  };
-}
-
-// Frontmatter YAML (méta-données du fichier Markdown)
-export interface DashboardFrontmatter {
-  type: Dashboard['type'];
-  lastModified: string;
-  lastModifiedBy: Author;
-  totalMessages?: number;
-  lastCondensedAt?: string;
-}
-
-// Schema args pour l'outil MCP
-export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'])
-    .describe('Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives), read_overview (vue concaténée des 3 niveaux)'),
-
-  type: z.enum(['global', 'machine', 'workspace']).optional()
-    .describe('Type de dashboard (requis sauf pour action=list)'),
-
-  machineId: z.string().optional()
-    .describe('ID machine (défaut: machine locale). Utilisé pour type machine'),
-
-  workspace: z.string().optional()
-    .describe('Workspace (défaut: workspace courant). Utilisé pour type workspace'),
-
-  // Pour read
-  section: z.enum(['status', 'intercom', 'all']).optional()
-    .describe('Section à lire (défaut: all)'),
-  intercomLimit: z.number().optional()
-    .describe('Nombre max de messages intercom retournés (défaut: tous). Le dashboard est auto-condensé à 50KB, donc tous les messages sont normalement visibles.'),
-  mentionsOnly: z.boolean().optional()
-    .describe('(read) Ne retourner que les messages mentionnant la machine/agent courant (défaut: false)'),
-
-  // Pour write (section status)
-  content: z.string().optional()
-    .describe('Contenu markdown pour write (remplace status.markdown) ou append (nouveau message)'),
-  author: AuthorSchema.optional()
-    .describe('Auteur de la modification (requis pour write/append)'),
-  createIfNotExists: z.boolean().optional()
-    .describe('Créer le dashboard s\'il n\'existe pas (défaut: true)'),
-  messageId: z.string().optional()
-    .describe('(append) ID optionnel pour le message (ex: hash GitHub issue). Si absent, généré automatiquement.'),
-
-  // Mentions v3 (#1363) — structured mentions with RooSync auto-notify
-  mentions: z.array(MentionSchema).optional()
-    .describe('(append) Mentions structurées. Chaque entrée = userId XOR messageId. Notifie les destinataires via RooSync.'),
-
-  // Cross-post v3 (#1363) — multi-write without notification
-  crossPost: z.array(CrossPostSchema).optional()
-    .describe('(append) Cross-post le même message vers d\'autres dashboards (sans notification RooSync).'),
-
-  // Pour condense
-  keepMessages: z.number().optional()
-    .describe('Nombre de messages à conserver lors de la condensation (défaut: 10)'),
-
-  // Pour read_archive
-  archiveFile: z.string().optional()
-    .describe('(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.')
-}).passthrough();
-
-export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string, any>;
 
 // Track custom messageIds for dashboard messages by key
 // This ensures custom IDs are available across function boundaries
@@ -632,7 +536,7 @@ FORMAT :
     logger.error('LLM client init failed for summary', { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
-  const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
+  const modelId = getLLMModelId();
 
   // Retry with exponential backoff (error/empty only — size handled post-hoc)
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
@@ -787,7 +691,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     logger.error('LLM client init failed for status update', { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
-  const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
+  const modelId = getLLMModelId();
 
   // Retry with exponential backoff
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
@@ -864,7 +768,7 @@ async function condenseTextIfTooLarge(
     logger.warn(`Cannot auto-condense ${label}: no LLM client`);
     return text;
   }
-  const modelId = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
+  const modelId = getLLMModelId();
 
   const systemPrompt = `Tu es un expert en synthèse. Le texte suivant dépasse la limite de ${Math.round(maxSizeBytes / 1024)} Ko.
 
@@ -2111,130 +2015,3 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     throw error;
   }
 }
-
-// === Métadonnées de l'outil MCP ===
-
-export const dashboardToolMetadata = {
-  name: 'roosync_dashboard',
-  description: 'Dashboards markdown partagés cross-machine. 3 types : global, machine, workspace. Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 3 niveaux en 1 appel).',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'],
-        description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom), read_overview (vue concaténée des 3 niveaux en 1 appel)'
-      },
-      type: {
-        type: 'string',
-        enum: ['global', 'machine', 'workspace'],
-        description: 'Type de dashboard. Requis sauf pour action=list et action=read_overview.'
-      },
-      machineId: {
-        type: 'string',
-        description: 'ID machine (défaut: machine locale). Pour type machine.'
-      },
-      workspace: {
-        type: 'string',
-        description: 'Workspace ID (défaut: workspace courant). Pour type workspace.'
-      },
-      section: {
-        type: 'string',
-        enum: ['status', 'intercom', 'all'],
-        description: '(read) Section à lire (défaut: all)'
-      },
-      intercomLimit: {
-        type: 'number',
-        description: '(read) Nombre max de messages intercom retournés (défaut: tous). Auto-condensation à 50KB garantit un dashboard lisible.'
-      },
-      content: {
-        type: 'string',
-        description: '(write/append) Contenu markdown : pour write = nouveau status (remplace), pour append = nouveau message'
-      },
-      author: {
-        type: 'object',
-        properties: {
-          machineId: { type: 'string' },
-          workspace: { type: 'string' },
-          worktree: { type: 'string' }
-        },
-        required: ['machineId', 'workspace'],
-        description: '(write/append) Auteur de la modification. Défaut: machine+workspace locaux.'
-      },
-      createIfNotExists: {
-        type: 'boolean',
-        description: '(write/append) Créer le dashboard s\'il n\'existe pas (défaut: true)'
-      },
-      keepMessages: {
-        type: 'number',
-        description: '(condense) Nombre de messages à conserver (défaut: 10)'
-      },
-      archiveFile: {
-        type: 'string',
-        description: '(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.'
-      },
-      mentionsOnly: {
-        type: 'boolean',
-        description: '(read) Ne retourner que les messages mentionnant la machine/agent courant (défaut: false). Détecte patterns @machine-id, @roo-*, @claude-*, @msg:id, @user.'
-      },
-      messageId: {
-        type: 'string',
-        description: '(append) ID optionnel pour le message (ex: hash GitHub issue). Si absent, généré automatiquement au format ic-{timestamp}.'
-      },
-      mentions: {
-        type: 'array',
-        description: '(append) Mentions structurées v3 (#1363). Chaque entrée = userId XOR messageId (exactement un des deux). Notifie les destinataires via RooSync (fire-and-forget, dedup par machineId).',
-        items: {
-          type: 'object',
-          properties: {
-            userId: {
-              type: 'object',
-              description: 'userId explicite à mentionner (exclusif avec messageId).',
-              properties: {
-                machineId: { type: 'string', description: 'ID de la machine' },
-                workspace: { type: 'string', description: 'Workspace ID' }
-              },
-              required: ['machineId', 'workspace'],
-              additionalProperties: false
-            },
-            messageId: {
-              type: 'string',
-              description: 'ID de message à référencer (format: machineId:workspace:ic-...). Résout en userId = auteur du message référencé.'
-            },
-            note: {
-              type: 'string',
-              description: 'Note optionnelle expliquant la raison de la mention.'
-            }
-          },
-          additionalProperties: false
-        }
-      },
-      crossPost: {
-        type: 'array',
-        description: '(append) Cross-post le même message vers d\'autres dashboards v3 (#1363), SANS notification RooSync. Self-skip : une cible pointant vers le dashboard source ne duplique pas. Target manquant + createIfNotExists=false = entrée { key, ok: false, error } dans result.crossPost.',
-        items: {
-          type: 'object',
-          properties: {
-            type: {
-              type: 'string',
-              enum: ['global', 'machine', 'workspace'],
-              description: 'Type de dashboard cible.'
-            },
-            machineId: {
-              type: 'string',
-              description: 'machineId cible (pour type=machine).'
-            },
-            workspace: {
-              type: 'string',
-              description: 'workspace cible (pour type=workspace).'
-            }
-          },
-          required: ['type'],
-          additionalProperties: false
-        }
-      }
-    },
-    required: ['action'],
-    additionalProperties: false
-  }
-};
