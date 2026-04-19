@@ -857,6 +857,7 @@ export function classifyIndexingError(error: any): boolean {
 
     const permanentErrors = [
         'file not found',
+        'not found',              // #1401: "Claude Code session XXX not found" (archived/deleted)
         'access denied',
         'permission denied',
         'invalid format',
