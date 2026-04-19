@@ -537,7 +537,7 @@ export const searchTasksByContentTool = {
                     quantization: { rescore: true }
                 },
                 with_payload: {
-                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model']
+                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error']
                 }
             });
 
