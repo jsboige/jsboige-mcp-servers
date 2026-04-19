@@ -379,40 +379,40 @@ describe('HeartbeatService - Tests Unitaires', () => {
 
     it('devrait nettoyer les machines offline depuis longtemps', async () => {
       // Arrange - Créer des machines offline avec différents âges
-      await heartbeatService.registerHeartbeat('machine-old-1');
-      await heartbeatService.registerHeartbeat('machine-old-2');
-      await heartbeatService.registerHeartbeat('machine-recent');
-      
+      await heartbeatService.registerHeartbeat('myia-old-1');
+      await heartbeatService.registerHeartbeat('myia-old-2');
+      await heartbeatService.registerHeartbeat('myia-recent');
+
       const heartbeatPath = join(sharedPath, 'heartbeat.json');
       const state = heartbeatService.getState();
-      
+
       // Modifier les timestamps
       const now = Date.now();
-      
-      const old1Data = state.heartbeats.get('machine-old-1');
+
+      const old1Data = state.heartbeats.get('myia-old-1');
       if (old1Data) {
         old1Data.lastHeartbeat = new Date(now - 90000000).toISOString(); // Plus de 24h
         old1Data.status = 'offline';
         old1Data.offlineSince = new Date(now - 90000000).toISOString();
-        state.heartbeats.set('machine-old-1', old1Data);
+        state.heartbeats.set('myia-old-1', old1Data);
       }
-      
-      const old2Data = state.heartbeats.get('machine-old-2');
+
+      const old2Data = state.heartbeats.get('myia-old-2');
       if (old2Data) {
         old2Data.lastHeartbeat = new Date(now - 90000000).toISOString(); // Plus de 24h
         old2Data.status = 'offline';
         old2Data.offlineSince = new Date(now - 90000000).toISOString();
-        state.heartbeats.set('machine-old-2', old2Data);
+        state.heartbeats.set('myia-old-2', old2Data);
       }
-      
-      const recentData = state.heartbeats.get('machine-recent');
+
+      const recentData = state.heartbeats.get('myia-recent');
       if (recentData) {
         recentData.lastHeartbeat = new Date(now - 3600000).toISOString(); // 1 heure
         recentData.status = 'offline';
         recentData.offlineSince = new Date(now - 3600000).toISOString();
-        state.heartbeats.set('machine-recent', recentData);
+        state.heartbeats.set('myia-recent', recentData);
       }
-      
+
       await fs.writeFile(heartbeatPath, JSON.stringify({
         heartbeats: Object.fromEntries(state.heartbeats),
         onlineMachines: state.onlineMachines,
@@ -420,7 +420,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
         warningMachines: state.warningMachines,
         statistics: state.statistics
       }, null, 2));
-      
+
       // Recréer le service
       await heartbeatService.stopHeartbeatService();
       heartbeatService = new HeartbeatService(sharedPath, {
@@ -430,18 +430,18 @@ describe('HeartbeatService - Tests Unitaires', () => {
         autoSyncEnabled: false,
         autoSyncInterval: 60000
       });
-      
+
       // Act - Nettoyer les machines offline depuis plus de 24h
       const removedCount = await heartbeatService.cleanupOldOfflineMachines(86400000); // 24h
-      
+
       // Assert
       expect(removedCount).toBe(2);
-      // #1409: Machines kept in state as offline, not deleted
-      expect(heartbeatService.getHeartbeatData('machine-old-1')).toBeDefined();
-      expect(heartbeatService.getHeartbeatData('machine-old-1')!.status).toBe('offline');
-      expect(heartbeatService.getHeartbeatData('machine-old-2')).toBeDefined();
-      expect(heartbeatService.getHeartbeatData('machine-old-2')!.status).toBe('offline');
-      expect(heartbeatService.getHeartbeatData('machine-recent')).toBeDefined(); // Pas supprimée
+      // #1409: Production machines (myia-*) kept in state as offline, not deleted
+      expect(heartbeatService.getHeartbeatData('myia-old-1')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('myia-old-1')!.status).toBe('offline');
+      expect(heartbeatService.getHeartbeatData('myia-old-2')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('myia-old-2')!.status).toBe('offline');
+      expect(heartbeatService.getHeartbeatData('myia-recent')).toBeDefined(); // Pas supprimée
     });
   });
 

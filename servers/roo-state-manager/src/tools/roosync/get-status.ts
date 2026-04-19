@@ -11,6 +11,9 @@
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { getMessageManager } from '../../services/MessageManager.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { join } from 'path';
+import { readdirSync, statSync } from 'fs';
 
 /**
  * Check if a machine ID is a real production machine (not a test artifact).
@@ -182,11 +185,24 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           }))
         : []);
 
-    // Dashboard activity (<24h)
+    // Dashboard activity (<24h) — count actual intercom dashboard files (#1409 fix)
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const activeDashboards = dashboard?.lastUpdate
-      ? (new Date(dashboard.lastUpdate).getTime() > oneDayAgo ? 1 : 0)
-      : 0;
+    let activeDashboards = 0;
+    try {
+      const dashboardsDir = join(getSharedStatePath(), 'dashboards');
+      const files = readdirSync(dashboardsDir);
+      for (const file of files) {
+        if (file.endsWith('.md') && !file.endsWith('.tmp')) {
+          const filePath = join(dashboardsDir, file);
+          const stat = statSync(filePath);
+          if (stat.mtimeMs > oneDayAgo) {
+            activeDashboards++;
+          }
+        }
+      }
+    } catch {
+      // dashboards dir may not exist yet
+    }
 
     // #1365: Filter out orphan test entries (test-machine, persistent-machine, etc.)
     // Only keep machines matching the known pattern: myia-*
