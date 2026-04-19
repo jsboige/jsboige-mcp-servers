@@ -8,7 +8,10 @@
  * DO NOT import any tool handler modules here.
  * Schemas for roosync_decision and roosync_decision_info are inlined
  * (those two tools use zodToJsonSchema at module scope in their source files).
+ * #1470: dashboard schema derived from dashboard-schemas.ts (no handler imports).
  */
+
+import { dashboardToolMetadata } from './roosync/dashboard-schemas.js';
 
 // ============================================================
 // conversation_browser
@@ -665,81 +668,8 @@ export const roosyncAttachmentsDefinition = {
     }
 };
 
-export const roosyncDashboardDefinition = {
-    name: 'roosync_dashboard',
-    description: 'Dashboards markdown partagés cross-machine. 3 types : global, machine, workspace. Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 3 niveaux en 1 appel).',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            action: { type: 'string', enum: ['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'], description: 'Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives intercom), read_overview (vue concaténée des 3 niveaux en 1 appel)' },
-            type: { type: 'string', enum: ['global', 'machine', 'workspace'], description: 'Type de dashboard. Requis sauf pour action=list et action=read_overview.' },
-            machineId: { type: 'string', description: 'ID machine (défaut: machine locale). Pour type machine.' },
-            workspace: { type: 'string', description: 'Workspace ID (défaut: workspace courant). Pour type workspace.' },
-            section: { type: 'string', enum: ['status', 'intercom', 'all'], description: '(read) Section à lire (défaut: all)' },
-            intercomLimit: { type: 'number', description: '(read) Nombre max de messages intercom retournés (défaut: tous). Auto-condensation à 50KB garantit un dashboard lisible.' },
-            content: { type: 'string', description: '(write/append) Contenu markdown : pour write = nouveau status (remplace), pour append = nouveau message' },
-            author: { type: 'object', properties: { machineId: { type: 'string' }, workspace: { type: 'string' }, worktree: { type: 'string' } }, required: ['machineId', 'workspace'], description: '(write/append) Auteur de la modification. Défaut: machine+workspace locaux.' },
-            createIfNotExists: { type: 'boolean', description: "(write/append) Créer le dashboard s'il n'existe pas (défaut: true)" },
-            tags: { type: 'array', items: { type: 'string' }, description: '(append) Tags pour le message intercom (ex: ["INFO", "WARN", "ERROR"])' },
-            keepMessages: { type: 'number', description: '(condense) Nombre de messages à conserver (défaut: 100)' },
-            archiveFile: { type: 'string', description: '(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.' },
-            mentions: {
-                type: 'array',
-                description: '(append) Mentions structurées v3 (#1363). Chaque entrée = userId XOR messageId (exactement un des deux). Notifie les destinataires via RooSync (fire-and-forget, dedup par machineId).',
-                items: {
-                    type: 'object',
-                    properties: {
-                        userId: {
-                            type: 'object',
-                            description: 'userId explicite à mentionner (exclusif avec messageId).',
-                            properties: {
-                                machineId: { type: 'string', description: 'ID de la machine' },
-                                workspace: { type: 'string', description: 'Workspace ID' }
-                            },
-                            required: ['machineId', 'workspace'],
-                            additionalProperties: false
-                        },
-                        messageId: {
-                            type: 'string',
-                            description: 'ID de message à référencer (format: machineId:workspace:ic-...). Résout en userId = auteur du message référencé.'
-                        },
-                        note: {
-                            type: 'string',
-                            description: 'Note optionnelle expliquant la raison de la mention.'
-                        }
-                    },
-                    additionalProperties: false
-                }
-            },
-            crossPost: {
-                type: 'array',
-                description: '(append) Cross-post le même message vers d\'autres dashboards v3 (#1363), SANS notification RooSync. Self-skip : une cible pointant vers le dashboard source ne duplique pas. Target manquant + createIfNotExists=false = entrée { key, ok: false, error } dans result.crossPost.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        type: {
-                            type: 'string',
-                            enum: ['global', 'machine', 'workspace'],
-                            description: 'Type de dashboard cible.'
-                        },
-                        machineId: {
-                            type: 'string',
-                            description: 'machineId cible (pour type=machine).'
-                        },
-                        workspace: {
-                            type: 'string',
-                            description: 'workspace cible (pour type=workspace).'
-                        }
-                    },
-                    required: ['type'],
-                    additionalProperties: false
-                }
-            }
-        },
-        required: ['action'],
-        additionalProperties: false
-    }
-};
+// #1470: Derived from Zod schema in dashboard-schemas.ts (single source of truth)
+export const roosyncDashboardDefinition = dashboardToolMetadata;
 
 // ============================================================
 // allToolDefinitions — the complete ordered list for ListTools
