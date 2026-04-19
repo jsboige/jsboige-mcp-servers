@@ -160,6 +160,12 @@ class RooStateManagerServer {
         const { initializeBackgroundServices } = await getBackgroundServices();
         const state = this.stateManager.getState();
         await initializeBackgroundServices(state);
+
+        // #1495: Preload RooSyncService so dashboard/heartbeat are ready on first call.
+        // Without this, getRooSyncService() only loads on first tool call → "Not connected".
+        const { getRooSyncService: preloadRooSync } = await import('./services/lazy-roosync.js');
+        await preloadRooSync();
+        logger.info('✅ [ColdStart] RooSyncService preloaded — dashboard/heartbeat ready');
     }
 
     /**
