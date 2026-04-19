@@ -56,6 +56,15 @@ const logger: Logger = createLogger('DashboardTool');
 const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024; // 50 KB
 const CONDENSE_KEEP = 10;
 
+// #1497: Preemptive condensation threshold (85% of MAX)
+// Triggered BEFORE appending a new message when the dashboard is near-full, so
+// that the condense (which can take ~30s via LLM) completes on smaller data
+// and does not timeout the client call at 96%+ utilization (reported by
+// nanoclaw-cluster, 2026-04-17T22:17Z). Rationale: appending to a 96% dashboard
+// forces condense of ~50 messages at LLM speed; pre-condensing at 85% keeps
+// the working set smaller and shifts the latency into more predictable slots.
+const PREEMPTIVE_CONDENSE_THRESHOLD_BYTES = Math.floor(MAX_DASHBOARD_SIZE_BYTES * 0.85); // ~42.5 KB
+
 // Size limits for LLM outputs (bytes). If exceeded, retry with a stricter prompt.
 const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
 const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
@@ -574,7 +583,11 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  * @returns Résumé markdown ou null si échec (fallback)
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
-  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
+  // #1497: bumped 600s → 1800s (30 min). Qwen3.6 thinking mode can take 60-90s
+  // per call on 40KB prompts; with 3 retries + backoff 2s/4s/8s, total
+  // wall-clock per call can exceed 5 min. Since the 2 LLM calls now run in
+  // parallel (see condenseIntercom), one slow call would still drag the total.
+  const timeoutMs = 1800000;
 
   // Construire le prompt avec les messages
   const messagesContent = messages.map(msg => {
@@ -687,7 +700,8 @@ async function generateStatusUpdate(
   allMessages: IntercomMessage[],
   archivedCount: number
 ): Promise<string | null> {
-  const timeoutMs = 600000; // 600 secondes (10 minutes — LLM local peut mettre du temps à démarrer)
+  // #1497: bumped 600s → 1800s (30 min) — see generateLLMSummary for rationale.
+  const timeoutMs = 1800000;
 
   // Format messages with archive/keep annotations
   const messagesContent = allMessages.map((msg, index) => {
@@ -864,7 +878,7 @@ RÈGLES :
       max_tokens: 10000,
       temperature: 0.3
     }, {
-      timeout: 300000  // 5 minutes
+      timeout: 900000  // #1497: 5 min → 15 min, accommodate thinking-mode latency
     });
 
     const condensed = response.choices[0]?.message?.content;
@@ -917,15 +931,24 @@ async function condenseIntercom(
   // Pass ALL messages to status update so LLM sees full context
   const previousStatus = dashboard.status.markdown;
 
-  const t1 = Date.now();
-  let newStatus = await generateStatusUpdate(previousStatus, messages, toArchive.length);
-  const t1Elapsed = Date.now() - t1;
-  logger.info('Status update LLM call completed', { elapsed: `${t1Elapsed}ms`, success: newStatus !== null });
-
-  const t2 = Date.now();
-  let llmSummary = await generateLLMSummary(toArchive);
-  const t2Elapsed = Date.now() - t2;
-  logger.info('Summary LLM call completed', { elapsed: `${t2Elapsed}ms`, success: llmSummary !== null });
+  // #1497: Run the 2 LLM calls in parallel (status update + summary) — they are
+  // independent (both take messages as input, neither depends on the other's
+  // output). Halves wall-clock latency from ~2×T to ~T, critical when condense
+  // races the client timeout. A single failing call still cancels condensation
+  // via the existing null-check below.
+  const tParallel = Date.now();
+  const [newStatusResult, llmSummaryResult] = await Promise.all([
+    generateStatusUpdate(previousStatus, messages, toArchive.length),
+    generateLLMSummary(toArchive)
+  ]);
+  let newStatus = newStatusResult;
+  let llmSummary = llmSummaryResult;
+  const tParallelElapsed = Date.now() - tParallel;
+  logger.info('LLM calls completed (parallel)', {
+    elapsed: `${tParallelElapsed}ms`,
+    statusOk: newStatus !== null,
+    summaryOk: llmSummary !== null
+  });
 
   // Both LLM calls are MANDATORY — if either fails, cancel condensation
   if (!llmSummary || !newStatus) {
@@ -1062,7 +1085,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status: ${Math.round(t1Elapsed / 1000)}s, summary: ${Math.round(t2Elapsed / 1000)}s)`
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 
@@ -1438,6 +1461,36 @@ async function handleAppend(
     dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
+  // #1497: Preemptive condensation at 85% utilization
+  // Runs BEFORE the new message is appended, so condense operates on the existing
+  // messages (current state) rather than waiting for the post-append size check
+  // to fire at 100%. Prevents client-side timeout when dashboard is near-saturation.
+  //
+  // Concurrency contract: this function is NOT serialized per-key. Concurrent
+  // appends to the same dashboard that both cross the 85% threshold will each
+  // enter condenseIntercom, and the writeDashboardFile at the end uses
+  // last-writer-wins semantics (same as the pre-existing reactive path). The
+  // #1497 change does not introduce a new race beyond what already exists in
+  // the reactive condense at 100%. If strict serialization is needed, wrap this
+  // handler in a per-key mutex (see future issue if observed in production).
+  // NOTE: `dashboard` is reassigned below — subsequent code must use the
+  // post-condense binding.
+  let preemptivelyCondensed = false;
+  let preemptivelyArchivedCount = 0;
+  const preAppendSize = estimateDashboardSize(dashboard);
+  if (preAppendSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES && dashboard.intercom.messages.length > CONDENSE_KEEP) {
+    logger.info('Preemptive condensation triggered (#1497)', {
+      key,
+      preAppendSize: `${Math.round(preAppendSize / 1024)}KB`,
+      preemptiveThreshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB (85% of ${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB)`,
+      messageCount: dashboard.intercom.messages.length
+    });
+    const beforePreemptive = dashboard.intercom.messages.length;
+    dashboard = await condenseIntercom(key, dashboard, CONDENSE_KEEP);
+    preemptivelyArchivedCount = beforePreemptive - dashboard.intercom.messages.length;
+    preemptivelyCondensed = preemptivelyArchivedCount > 0;
+  }
+
   // Use provided messageId or generate a new one
   // Check in order:
   // 1. Pending messageId from the Map (custom ID provided to append)
@@ -1476,8 +1529,11 @@ async function handleAppend(
 
   // Auto-condensation based on file size (50KB threshold)
   // Estimate the file size by serializing the dashboard content
-  let condensed = false;
-  let archivedCount = 0;
+  // NOTE (#1497): preemptive condense above should normally keep us below this
+  // threshold. This remains as a safety net for edge cases (very large single
+  // messages, pre-condense skipped because below message count threshold).
+  let condensed = preemptivelyCondensed;
+  let archivedCount = preemptivelyArchivedCount;
   let finalDashboard = updatedDashboard;
   const estimatedSize = estimateDashboardSize(updatedDashboard);
   if (estimatedSize > MAX_DASHBOARD_SIZE_BYTES && updatedDashboard.intercom.messages.length > CONDENSE_KEEP) {
@@ -1489,8 +1545,9 @@ async function handleAppend(
     });
     const beforeCount = updatedDashboard.intercom.messages.length;
     finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP);
-    archivedCount = beforeCount - finalDashboard.intercom.messages.length;
-    condensed = archivedCount > 0;
+    const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
+    archivedCount += newlyArchived;
+    condensed = condensed || newlyArchived > 0;
   }
 
   await writeDashboardFile(key, finalDashboard);
