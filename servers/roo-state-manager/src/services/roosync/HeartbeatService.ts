@@ -156,7 +156,7 @@ export class HeartbeatService {
     // Configuration par défaut (#607 fix: réduit fréquence d'écriture GDrive)
     this.config = {
       heartbeatInterval: 60000,  // 1 minute (réduit de 30s)
-      offlineTimeout: 600000,    // 10 minutes (réduit faux positifs avec dirty-flag)
+      offlineTimeout: 1200000,   // 20 minutes (4x persistence interval, tolerates GDrive sync delay) (#1409)
       missedHeartbeatThreshold: 4,
       autoSyncEnabled: true,
       autoSyncInterval: 60000,   // 1 minute
@@ -757,19 +757,30 @@ export class HeartbeatService {
    */
   public async cleanupOldOfflineMachines(maxAge: number = 86400000): Promise<number> {
     // maxAge par défaut: 24 heures
-    // #1409: Don't delete heartbeat files — just keep machines as offline.
-    // Deleting files causes machineCount to drop below the actual cluster size.
+    // #1409: Don't delete heartbeat files for production machines (myia-*) — just keep as offline.
+    // Deleting production files causes machineCount to drop below the actual cluster size.
+    // Non-production machines (test artifacts, machine-2, workflow-machine) are deleted after maxAge.
     const now = Date.now();
     let cleanedCount = 0;
+    const isProduction = (id: string) => id.toLowerCase().startsWith('myia-');
 
     for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
       if (heartbeatData.offlineSince) {
         const offlineAge = now - new Date(heartbeatData.offlineSince).getTime();
 
         if (offlineAge > maxAge) {
-          // Keep in state as offline, don't remove file or delete from map
-          heartbeatData.status = 'offline';
-          cleanedCount++;
+          if (isProduction(machineId)) {
+            // Production machines: keep in state as offline, don't remove file
+            heartbeatData.status = 'offline';
+            cleanedCount++;
+          } else {
+            // Non-production (test artifacts): delete file and remove from state
+            await this.removeMachineFile(machineId);
+            this.state.heartbeats.delete(machineId);
+            cleanedCount++;
+            logger.info(`Test machine supprimée (offline ${Math.round(offlineAge / 3600000)}h): ${machineId}`);
+            continue;
+          }
 
           logger.info(`Machine offline longue durée (conservée): ${machineId}`, {
             offlineAge,

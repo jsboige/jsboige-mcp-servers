@@ -645,17 +645,17 @@ describe('HeartbeatService', () => {
     test('garde les machines offline anciennes en statut offline (#1409)', async () => {
       const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
 
-      await service.registerHeartbeat('old-offline');
-      const hb = service.getHeartbeatData('old-offline')!;
+      await service.registerHeartbeat('myia-old-offline');
+      const hb = service.getHeartbeatData('myia-old-offline')!;
       hb.status = 'offline';
       hb.offlineSince = new Date(Date.now() - 100_000).toISOString(); // offline depuis 100s
 
       const removed = await service.cleanupOldOfflineMachines(50_000); // maxAge = 50s
 
       expect(removed).toBe(1);
-      // #1409: Machine kept in state as offline, not deleted
-      expect(service.getHeartbeatData('old-offline')).toBeDefined();
-      expect(service.getHeartbeatData('old-offline')!.status).toBe('offline');
+      // #1409: Production machines (myia-*) kept in state as offline, not deleted
+      expect(service.getHeartbeatData('myia-old-offline')).toBeDefined();
+      expect(service.getHeartbeatData('myia-old-offline')!.status).toBe('offline');
     });
 
     test('garde les machines offline récentes', async () => {
@@ -682,22 +682,37 @@ describe('HeartbeatService', () => {
       expect(removed).toBe(0);
     });
 
-    test('ne supprime plus les fichiers heartbeat des machines nettoyées (#1409)', async () => {
+    test('supprime les machines non-production (test artifacts) offline anciennes (#1409)', async () => {
       const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
 
-      await service.registerHeartbeat('cleanup-target');
-      const hb = service.getHeartbeatData('cleanup-target')!;
+      await service.registerHeartbeat('test-artifact-machine');
+      const hb = service.getHeartbeatData('test-artifact-machine')!;
       hb.status = 'offline';
       hb.offlineSince = new Date(Date.now() - 100_000).toISOString();
 
-      // The file exists on disk
       mockExistsSync.mockReturnValue(true);
 
       await service.cleanupOldOfflineMachines(50_000);
 
-      // #1409: Files are NOT deleted anymore — machines are kept as offline
+      // #1409: Non-production machines (not myia-*) ARE deleted
+      expect(service.getHeartbeatData('test-artifact-machine')).toBeUndefined();
+    });
+
+    test('garde les machines production offline sans supprimer le fichier (#1409)', async () => {
+      const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
+
+      await service.registerHeartbeat('myia-cleanup-target');
+      const hb = service.getHeartbeatData('myia-cleanup-target')!;
+      hb.status = 'offline';
+      hb.offlineSince = new Date(Date.now() - 100_000).toISOString();
+
+      mockExistsSync.mockReturnValue(true);
+
+      await service.cleanupOldOfflineMachines(50_000);
+
+      // #1409: Production machines (myia-*) kept as offline, files NOT deleted
       expect(mockUnlink).not.toHaveBeenCalled();
-      expect(service.getHeartbeatData('cleanup-target')).toBeDefined();
+      expect(service.getHeartbeatData('myia-cleanup-target')).toBeDefined();
     });
   });
 
