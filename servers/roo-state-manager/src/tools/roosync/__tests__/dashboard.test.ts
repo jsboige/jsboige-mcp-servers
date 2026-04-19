@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -1268,6 +1268,71 @@ describe('roosync_dashboard', () => {
         expect(target).toBeDefined();
         expect(target!.id).toMatch(/^test-machine:test-workspace:ic-\d{4}-\d{2}-\d{2}/);
       });
+    });
+  });
+
+  // ============================================================
+  // Tests detectStatusContradictions (#1502)
+  // ============================================================
+  describe('detectStatusContradictions (#1502)', () => {
+    it('returns empty for a clean status with no contradictions', () => {
+      const status = `## Status
+### État des systèmes
+- **vllm** : UP (source: 2026-04-18)
+- **myia-ai-01** : online (source: 2026-04-18)`;
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions).toHaveLength(0);
+    });
+
+    it('detects UP vs DOWN contradiction for same entity', () => {
+      const status = `## Status
+- **vllm** : DOWN (ancien statut)
+- vllm is now UP and running fine`;
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const vllmContradiction = contradictions.find(c => c.entity === 'vllm');
+      expect(vllmContradiction).toBeDefined();
+      expect(vllmContradiction!.conflictingStates.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('detects actif vs inactif contradiction for a machine', () => {
+      const status = `## Status
+- myia-po-2024 est actif et fonctionne
+- myia-po-2024 inactif ce matin`;
+      const contradictions = detectStatusContradictions(status);
+      const po2024 = contradictions.find(c => c.entity === 'myia-po-2024' || c.entity === 'po-2024');
+      expect(po2024).toBeDefined();
+    });
+
+    it('detects terminé vs en cours contradiction for same entity', () => {
+      const status = `## Status
+- myia-ai-01 : tâche X terminée (PR merged)
+- myia-ai-01 : tâche X en cours de déploiement`;
+      const contradictions = detectStatusContradictions(status);
+      const ai01 = contradictions.find(c => c.entity === 'myia-ai-01' || c.entity === 'ai-01');
+      expect(ai01).toBeDefined();
+    });
+
+    it('does not flag a single state as contradiction', () => {
+      const status = `## Status
+- **vllm** : DOWN since yesterday`;
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions).toHaveLength(0);
+    });
+
+    it('handles empty status gracefully', () => {
+      const contradictions = detectStatusContradictions('');
+      expect(contradictions).toHaveLength(0);
+    });
+
+    it('detects multiple contradictory entities simultaneously', () => {
+      const status = `## Status
+- vllm : DOWN (ancien statut)
+- vllm : UP et opérationnel (mis à jour)
+- myia-web1 : offline ce matin
+- myia-web1 : active et running maintenant`;
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions.length).toBeGreaterThanOrEqual(2);
     });
   });
 });

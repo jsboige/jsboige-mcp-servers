@@ -721,38 +721,51 @@ Les messages les plus anciens vont être archivés. Ta mission : RÉÉCRIRE le s
 Le statut doit rester COMPACT (max 15 Ko) tout en préservant l'information critique.
 Viser 50-100 lignes. Au-delà, synthétiser plus agressivement.
 
+RÈGLE ABSOLUE — LAST-KNOWN-STATE WINS (#1502) :
+Pour CHAQUE sujet (machine, service, tâche), SEUL le dernier état connu doit apparaître.
+- Si un message récent dit "vLLM UP" et l'ancien statut dit "vLLM DOWN" → écrire "vLLM UP" UNIQUEMENT.
+- Si un message récent dit "[DONE] tâche X" → la tâche X est TERMINÉE, pas "en cours".
+- SUPPRIMER explicitement tout fait contredit par une source plus récente. Ne PAS garder les deux versions.
+
 EXIGENCES :
 1. ZÉRO perte d'information stratégique (décisions, blocages, livrables, métriques)
 2. DATES à jour : timestamps messages récents > dates ancien statut
-3. CONTRADICTIONS : messages récents ont RAISON (plus frais)
-4. [DONE] dans messages récents → TERMINÉ dans statut (pas "en cours")
+3. CONTRADICTIONS : messages récents ont TOUJOURS RAISON — SUPPRIMER les faits obsolètes de l'ancien statut
+4. [DONE] dans messages récents → TERMINÉ dans statut (JAMAIS "en cours")
 5. Métriques chiffrées EXACTES préservées
 6. INTÉGRER infos des messages [SERA ARCHIVÉ] sinon perdues
 7. Pas d'emojis. Pas de prose. Factuel et structuré.
+8. INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas EXPLICITEMENT dans les sources
 
 STRUCTURE :
 ## [Workspace] — État au ${lastDate}
 
 ### Résumé
-[2-3 phrases : état global, tendance]
+[2-3 phrases INTERPRÉTATIVES : état global, tendance — clairement séparé des faits ci-dessous]
+
+### État des systèmes
+[FACTUEL uniquement : par entité (machine/service), dernier état connu avec date source]
+Format : "- **entité** : état (source: [date])"
 
 ### Livrables récents
 [Réalisations avec dates — synthétiser par thème, pas par PR/commit individuel]
 
 ### En cours
-[Tâches actives avec responsable]
+[Tâches actives avec responsable — uniquement celles sans [DONE] récent]
 
 ### Blocages / Attention
-[Problèmes non résolus]
+[Problèmes non résolus — retirer ceux résolus par des messages récents]
 
 ### Décisions et métriques
 [Choix actés + chiffres clés]
 
-NE PAS :
+INTERDIT :
 - Copier-coller l'ancien statut (SYNTHÉTISER et METTRE À JOUR)
+- Garder un fait contredit par un message plus récent (ex: "X DOWN" si un message dit "X UP")
 - Garder des tâches terminées depuis longtemps sans valeur de référence
 - Lister chaque commit/PR individuellement
-- Inventer des informations absentes des sources`;
+- Inventer des informations absentes des sources
+- Inférer un état à partir d'informations partielles (extrapolation)`;
 
   const userPrompt = `**Statut précédent :**
 ${previousStatus}
@@ -865,7 +878,10 @@ RÈGLES :
 - Supprimer les formulations verbeuses, garder le factuel
 - Supprimer les sections obsolètes (tâches terminées sans valeur de référence)
 - Pas d'emojis, pas de prose
-- Le résultat DOIT être plus court que l'original`;
+- Le résultat DOIT être plus court que l'original
+- LAST-KNOWN-STATE WINS : pour chaque sujet, ne garder QUE le dernier état connu (#1502)
+- INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas dans le texte source (#1502)
+- SUPPRIMER les faits contredits par des informations plus récentes dans le texte (#1502)`;
 
   const startTime = Date.now();
   try {
@@ -905,6 +921,57 @@ RÈGLES :
     });
     return text;
   }
+}
+
+/**
+ * Détecte les contradictions dans un statut généré (#1502).
+ * Vérifie que chaque entité connue n'apparaît qu'avec un seul état (le plus récent).
+ * Retourne la liste des contradictions trouvées pour logging et marquage.
+ */
+export function detectStatusContradictions(status: string): Array<{ entity: string; conflictingStates: string[] }> {
+  const contradictions: Array<{ entity: string; conflictingStates: string[] }> = [];
+
+  // Paires d'états contradictoires (positif vs négatif)
+  const statePairs: Array<{ positive: string[]; negative: string[] }> = [
+    { positive: ['UP', 'running', 'actif', 'active', 'online', 'ok', 'opérationnel'], negative: ['DOWN', 'stopped', 'inactif', 'inactive', 'offline', 'ko', 'hs', 'error', 'panne'] },
+    { positive: ['terminé', 'done', 'complété', 'résolu', 'closed', 'merged'], negative: ['en cours', 'in progress', 'open', 'bloqué', 'blocked', 'todo'] },
+  ];
+
+  // Entités connues à surveiller (machines + services)
+  const knownEntities = [
+    'vllm', 'ollama', 'qdrant',
+    'myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1',
+    'ai-01', 'po-2023', 'po-2024', 'po-2025', 'po-2026', 'web1'
+  ];
+
+  const lines = status.split('\n');
+
+  for (const entity of knownEntities) {
+    const entityLower = entity.toLowerCase();
+    const matchingLines = lines.filter(l => l.toLowerCase().includes(entityLower));
+
+    if (matchingLines.length < 2) continue; // Besoin d'au moins 2 lignes pour une contradiction
+
+    for (const { positive, negative } of statePairs) {
+      const foundPositive = matchingLines.some(line =>
+        positive.some(p => line.toLowerCase().includes(p.toLowerCase()))
+      );
+      const foundNegative = matchingLines.some(line =>
+        negative.some(n => line.toLowerCase().includes(n.toLowerCase()))
+      );
+
+      if (foundPositive && foundNegative) {
+        const posStates = positive.filter(p => matchingLines.some(l => l.toLowerCase().includes(p.toLowerCase())));
+        const negStates = negative.filter(n => matchingLines.some(l => l.toLowerCase().includes(n.toLowerCase())));
+        contradictions.push({
+          entity,
+          conflictingStates: [...posStates, ...negStates]
+        });
+      }
+    }
+  }
+
+  return contradictions;
 }
 
 /**
@@ -1007,6 +1074,21 @@ async function condenseIntercom(
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');
   llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary');
+
+  // #1502: Detect contradictions in generated status before committing
+  const detectedContradictions = detectStatusContradictions(newStatus!);
+  if (detectedContradictions.length > 0) {
+    logger.warn('Status contradictions detected after LLM generation (#1502)', {
+      contradictionCount: detectedContradictions.length,
+      contradictions: detectedContradictions.map(c => `${c.entity}: ${c.conflictingStates.join(' vs ')}`)
+    });
+    // Append HTML comment markers for visibility to next readers
+    const warningLines = detectedContradictions.map(c =>
+      `<!-- #1502 CONTRADICTION: ${c.entity} has conflicting states: ${c.conflictingStates.join(' vs ')} -->`
+    ).join('\n');
+    newStatus = newStatus! + '\n\n' + warningLines;
+  }
+
   const statusUpdated = true;
 
   // Archiver les anciens messages (format Markdown)
