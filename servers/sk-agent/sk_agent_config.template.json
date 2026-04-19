@@ -80,7 +80,7 @@
     },
 
     {
-      "_comment": "=== OWUI proxied models (vLLM downstream through Open WebUI) ===",
+      "_comment": "=== OWUI proxied models (validated 2026-04-19 with OpenAI SDK >=1.109 + base_url ending /openai — SDK does NOT append /v1). GLM-4.7-Flash wrappers dead (no more local GLM since pre-March 2026) ===",
       "id": "owui-glm-4.7-flash-fast",
       "enabled": false,
       "base_url": "https://open-webui.myia.io/openai",
@@ -88,7 +88,7 @@
       "model_id": "Local.glm-4.7-flash-fast",
       "vision": false,
       "thinking": false,
-      "description": "GLM-4.7-Flash AWQ via OWUI (no thinking). Fast local responses through OWUI proxy",
+      "description": "GLM-4.7-Flash AWQ via OWUI (no thinking). DISABLED: model deleted upstream (no more local GLM hosting)",
       "context_window": 131072
     },
     {
@@ -99,64 +99,64 @@
       "model_id": "Local.glm-4.7-flash",
       "vision": false,
       "thinking": true,
-      "description": "GLM-4.7-Flash AWQ via OWUI (with thinking mode). Reasoning-capable local model through OWUI proxy",
+      "description": "GLM-4.7-Flash AWQ via OWUI (thinking ON). DISABLED: model deleted upstream. No equivalent thinking local/cloud — use Qwen_think wrappers or direct qwen3.6-35b-a3b",
       "context_window": 131072
     },
     {
       "id": "owui-omnicoder-9b",
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "Local.omnicoder-9b",
       "vision": true,
       "thinking": true,
-      "description": "OmniCoder-9B via OWUI proxy — vision+thinking, tool calling through OWUI",
+      "description": "OmniCoder-9B via OWUI proxy (bénéficie des filters/pipelines OWUI, notamment detoxify). Fallback direct vLLM via id omnicoder-9b.",
       "context_window": 131072
     },
     {
-      "id": "owui-qwen3.5-35b",
-      "enabled": false,
+      "id": "owui-qwen3.6-35b",
+      "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
-      "model_id": "Local.qwen3.5-35b-a3b",
+      "model_id": "Local.qwen3.6-35b-a3b",
       "vision": true,
       "thinking": true,
-      "description": "Qwen3.5 35B MoE via OWUI proxy — vision+thinking, highest quality local model",
+      "description": "Qwen3.6 35B MoE via OWUI proxy (bénéficie des filters/pipelines OWUI). Renommé depuis qwen3.5 (OWUI commit 4b8d8d521). Fallback direct vLLM via id qwen3.6-35b-a3b.",
       "context_window": 262144
     },
 
     {
-      "_comment": "=== OWUI custom models (Direction 2: enriched system prompts) ===",
+      "_comment": "=== OWUI custom models (validated present 2026-04-19 via GET /api/models). Thin wrappers over qwen3.6-35b-a3b / omnicoder-9b with system prompts spécialisés ===",
       "id": "owui-expert-analyste",
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "expert-analyste",
       "vision": false,
       "thinking": false,
-      "description": "OWUI Expert Analyste — structured French analyst with decomposition methodology",
+      "description": "OWUI Expert Analyste (wrapper qwen3.6-35b-a3b).",
       "context_window": 131072
     },
     {
       "id": "owui-redacteur-technique",
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "redacteur-technique",
       "vision": false,
       "thinking": false,
-      "description": "OWUI Rédacteur Technique — technical documentation writer",
+      "description": "OWUI Rédacteur Technique (wrapper qwen3.6-35b-a3b).",
       "context_window": 131072
     },
     {
       "id": "owui-vision-expert",
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "vision-expert",
       "vision": true,
       "thinking": false,
-      "description": "OWUI Expert Vision — image and document analysis specialist",
+      "description": "OWUI Expert Vision (wrapper omnicoder-9b).",
       "context_window": 131072
     }
   ],
