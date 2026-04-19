@@ -277,11 +277,11 @@ describe('roosync_baseline - Metadata', () => {
     expect(metadata.inputSchema.type).toBe('object');
     expect(metadata.inputSchema.properties).toBeDefined();
     expect(metadata.inputSchema.properties.action).toBeDefined();
-    expect(metadata.inputSchema.properties.action.enum).toEqual(['update', 'version', 'restore', 'export']);
+    expect(metadata.inputSchema.properties.action.enum).toEqual(['update', 'version', 'restore', 'export', 'list_versions']);
     expect(metadata.inputSchema.required).toEqual(['action']);
   });
 
-  it('devrait documenter tous les paramètres des 4 actions', () => {
+  it('devrait documenter tous les paramètres des 5 actions', () => {
     const metadata = module.baselineToolMetadata;
     const props = metadata.inputSchema.properties;
 
