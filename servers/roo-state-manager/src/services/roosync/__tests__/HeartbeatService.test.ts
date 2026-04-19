@@ -642,7 +642,7 @@ describe('HeartbeatService', () => {
       expect(removed).toBe(0);
     });
 
-    test('supprime les machines offline depuis trop longtemps', async () => {
+    test('garde les machines offline anciennes en statut offline (#1409)', async () => {
       const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
 
       await service.registerHeartbeat('old-offline');
@@ -653,7 +653,9 @@ describe('HeartbeatService', () => {
       const removed = await service.cleanupOldOfflineMachines(50_000); // maxAge = 50s
 
       expect(removed).toBe(1);
-      expect(service.getHeartbeatData('old-offline')).toBeUndefined();
+      // #1409: Machine kept in state as offline, not deleted
+      expect(service.getHeartbeatData('old-offline')).toBeDefined();
+      expect(service.getHeartbeatData('old-offline')!.status).toBe('offline');
     });
 
     test('garde les machines offline récentes', async () => {
@@ -680,7 +682,7 @@ describe('HeartbeatService', () => {
       expect(removed).toBe(0);
     });
 
-    test('deletes per-machine files for cleaned up machines', async () => {
+    test('ne supprime plus les fichiers heartbeat des machines nettoyées (#1409)', async () => {
       const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
 
       await service.registerHeartbeat('cleanup-target');
@@ -693,7 +695,9 @@ describe('HeartbeatService', () => {
 
       await service.cleanupOldOfflineMachines(50_000);
 
-      expect(mockUnlink).toHaveBeenCalledWith(join(HEARTBEATS_DIR, 'cleanup-target.json'));
+      // #1409: Files are NOT deleted anymore — machines are kept as offline
+      expect(mockUnlink).not.toHaveBeenCalled();
+      expect(service.getHeartbeatData('cleanup-target')).toBeDefined();
     });
   });
 

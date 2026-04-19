@@ -6,11 +6,12 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { GetStatusArgsSchema, GetStatusResultSchema, roosyncGetStatus } from '../get-status.js';
 
-const { mockGetConfig, mockLoadDashboard, mockGetHeartbeatService, mockLoadPendingDecisions } = vi.hoisted(() => ({
+const { mockGetConfig, mockLoadDashboard, mockGetHeartbeatService, mockLoadPendingDecisions, mockGetKnownMachineIds } = vi.hoisted(() => ({
   mockGetConfig: vi.fn(),
   mockLoadDashboard: vi.fn(),
   mockGetHeartbeatService: vi.fn(),
-  mockLoadPendingDecisions: vi.fn()
+  mockLoadPendingDecisions: vi.fn(),
+  mockGetKnownMachineIds: vi.fn()
 }));
 
 const { mockGetInboxStats } = vi.hoisted(() => ({
@@ -22,7 +23,8 @@ vi.mock('../../../services/RooSyncService.js', () => ({
     getConfig: mockGetConfig,
     loadDashboard: mockLoadDashboard,
     loadPendingDecisions: mockLoadPendingDecisions,
-    getHeartbeatService: mockGetHeartbeatService
+    getHeartbeatService: mockGetHeartbeatService,
+    getKnownMachineIds: mockGetKnownMachineIds
   })),
   RooSyncServiceError: class extends Error {
     code: string;
@@ -60,6 +62,7 @@ describe('get-status (Option B)', () => {
     });
     mockGetInboxStats.mockResolvedValue({ unread: 0, urgent: 0, by_priority: {} });
     mockLoadPendingDecisions.mockResolvedValue([]);
+    mockGetKnownMachineIds.mockReturnValue(['ai-01', 'po-2023']);
   });
 
   describe('GetStatusArgsSchema', () => {

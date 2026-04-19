@@ -757,18 +757,21 @@ export class HeartbeatService {
    */
   public async cleanupOldOfflineMachines(maxAge: number = 86400000): Promise<number> {
     // maxAge par défaut: 24 heures
+    // #1409: Don't delete heartbeat files — just keep machines as offline.
+    // Deleting files causes machineCount to drop below the actual cluster size.
     const now = Date.now();
-    const removedMachines: string[] = [];
+    let cleanedCount = 0;
 
     for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
       if (heartbeatData.offlineSince) {
         const offlineAge = now - new Date(heartbeatData.offlineSince).getTime();
 
         if (offlineAge > maxAge) {
-          this.state.heartbeats.delete(machineId);
-          removedMachines.push(machineId);
+          // Keep in state as offline, don't remove file or delete from map
+          heartbeatData.status = 'offline';
+          cleanedCount++;
 
-          logger.info(`Machine offline supprimée: ${machineId}`, {
+          logger.info(`Machine offline longue durée (conservée): ${machineId}`, {
             offlineAge,
             maxAge
           });
@@ -776,13 +779,10 @@ export class HeartbeatService {
       }
     }
 
-    if (removedMachines.length > 0) {
+    if (cleanedCount > 0) {
       this.updateMachineStatus();
-      for (const machineId of removedMachines) {
-        await this.removeMachineFile(machineId);
-      }
     }
 
-    return removedMachines.length;
+    return cleanedCount;
   }
 }

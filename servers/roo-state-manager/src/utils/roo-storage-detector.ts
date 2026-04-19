@@ -115,11 +115,23 @@ export class RooStorageDetector {
         if (entry.isDirectory()) {
             const taskPath = path.join(storagePath, entry.name);
             try {
-                const stats = await fs.stat(taskPath); // stat sur le répertoire
+                // #1409: Sum individual file sizes (fs.stat on directory returns 0 on Windows/NTFS)
+                let dirSize = 0;
+                let dirMtime: Date | null = null;
+                try {
+                  const files = await fs.readdir(taskPath);
+                  for (const file of files) {
+                    try {
+                      const fileStat = await fs.stat(path.join(taskPath, file));
+                      if (fileStat.isFile()) dirSize += fileStat.size;
+                      if (!dirMtime || fileStat.mtime > dirMtime) dirMtime = fileStat.mtime;
+                    } catch { /* skip unreadable files */ }
+                  }
+                } catch { /* skip unreadable dirs */ }
                 count++;
-                totalSize += stats.size; // Taille approximative
-                if (!lastActivity || stats.mtime > lastActivity) {
-                    lastActivity = stats.mtime;
+                totalSize += dirSize;
+                if (dirMtime && (!lastActivity || dirMtime > lastActivity)) {
+                    lastActivity = dirMtime;
                 }
             } catch (e) {
                 // ignorer
@@ -1800,27 +1812,54 @@ export class RooStorageDetector {
   /**
    * 🔧 FIX CRITIQUE: Calcule breakdown par workspace en scannant directement le disque
    * pour être cohérent avec getStorageStats() qui compte aussi sur le disque
+   * #1409: Reuses a single WorkspaceDetector instance for cache efficiency
    */
   public static async getWorkspaceBreakdown(): Promise<Record<string, {count: number, totalSize: number, lastActivity: string}>> {
     const locations = await this.detectStorageLocations();
     const workspaceBreakdown: Record<string, {count: number, totalSize: number, lastActivity: string}> = {};
 
+    // #1409: Single WorkspaceDetector instance — cache works across tasks
+    const workspaceDetector = new WorkspaceDetector({
+      enableCache: true,
+      validateExistence: false,
+      normalizePaths: true,
+    });
+
     for (const loc of locations) {
         const tasksPath = path.join(loc, 'tasks');
+        // #1409: Derive fallback workspace from location path
+        const locationWorkspace = path.basename(loc);
 
         try {
             const entries = await fs.readdir(tasksPath, { withFileTypes: true });
 
-            for (const entry of entries) {
-                if (entry.isDirectory()) {
+            // #1409: Batch file size computation with parallelism (limit concurrency)
+            const batchSize = 50;
+            for (let i = 0; i < entries.length; i += batchSize) {
+                const batch = entries.slice(i, i + batchSize).filter(e => e.isDirectory());
+                await Promise.all(batch.map(async (entry) => {
                     const taskPath = path.join(tasksPath, entry.name);
 
                     try {
                         // Détecter le workspace pour cette tâche
-                        const workspace = await this.detectWorkspaceForTask(taskPath);
+                        const workspace = await this.detectWorkspaceForTaskWithDetector(taskPath, workspaceDetector, locationWorkspace);
 
-                        const stats = await fs.stat(taskPath);
-                        const lastActivity = stats.mtime.toISOString();
+                        // #1409: Sum individual file sizes (directory stat returns 0 on Windows/NTFS)
+                        let dirSize = 0;
+                        let lastActivity = '';
+                        try {
+                          const files = await fs.readdir(taskPath);
+                          for (const file of files) {
+                            try {
+                              const fileStat = await fs.stat(path.join(taskPath, file));
+                              if (fileStat.isFile()) dirSize += fileStat.size;
+                              if (!lastActivity || fileStat.mtime.toISOString() > lastActivity) {
+                                lastActivity = fileStat.mtime.toISOString();
+                              }
+                            } catch { /* skip */ }
+                          }
+                        } catch { /* skip unreadable dir */ }
+                        if (!lastActivity) lastActivity = new Date().toISOString();
 
                         // Initialiser ou mettre à jour les stats du workspace
                         if (!workspaceBreakdown[workspace]) {
@@ -1832,7 +1871,7 @@ export class RooStorageDetector {
                         }
 
                         workspaceBreakdown[workspace].count++;
-                        workspaceBreakdown[workspace].totalSize += stats.size;
+                        workspaceBreakdown[workspace].totalSize += dirSize;
 
                         // Mettre à jour la dernière activité si plus récente
                         if (new Date(lastActivity) > new Date(workspaceBreakdown[workspace].lastActivity)) {
@@ -1843,7 +1882,7 @@ export class RooStorageDetector {
                         // Ignorer les tâches non accessibles
                         console.warn(`Impossible d'analyser tâche ${entry.name}:`, (taskError as Error).message);
                     }
-                }
+                }));
             }
         } catch (dirError) {
             console.warn(`Impossible de lire répertoire ${tasksPath}:`, (dirError as Error).message);
@@ -1854,21 +1893,18 @@ export class RooStorageDetector {
   }
 
   /**
-   * Détecte le workspace pour une tâche donnée
-   * @version 2.0 - Utilise WorkspaceDetector moderne (stratégie dual)
-   * @see WorkspaceDetector pour détails stratégie metadata → environment_details fallback
+   * Détecte le workspace pour une tâche, en réutilisant un détecteur existant
+   * et en fallback sur le nom du répertoire parent de la location.
+   * #1409: Avoids 'UNKNOWN' by using location directory name as last resort.
    */
-  public static async detectWorkspaceForTask(taskPath: string): Promise<string> {
+  private static async detectWorkspaceForTaskWithDetector(
+    taskPath: string,
+    detector: WorkspaceDetector,
+    fallbackWorkspace: string
+  ): Promise<string> {
     try {
-      const workspaceDetector = new WorkspaceDetector({
-        enableCache: true,
-        validateExistence: false, // Performance
-        normalizePaths: true,
-      });
+      const result = await detector.detect(taskPath);
 
-      const result = await workspaceDetector.detect(taskPath);
-
-      // Log détaillé si mode debug
       if (process.env.DEBUG_WORKSPACE === 'true') {
         console.log(`[detectWorkspaceForTask] ${taskPath}:`, {
           workspace: result.workspace,
@@ -1877,10 +1913,38 @@ export class RooStorageDetector {
         });
       }
 
+      // #1409: Use fallback from location path instead of 'UNKNOWN'
+      return result.workspace || fallbackWorkspace || 'UNKNOWN';
+    } catch (error) {
+      return fallbackWorkspace || 'UNKNOWN';
+    }
+  }
+
+  /**
+   * Détecte le workspace pour une tâche donnée (standalone, creates new detector)
+   * @version 2.1 - Fallback to location directory name instead of 'UNKNOWN'
+   */
+  public static async detectWorkspaceForTask(taskPath: string): Promise<string> {
+    try {
+      const workspaceDetector = new WorkspaceDetector({
+        enableCache: true,
+        validateExistence: false,
+        normalizePaths: true,
+      });
+
+      const result = await workspaceDetector.detect(taskPath);
+
+      // #1409: Fallback — derive workspace from task path hierarchy
+      if (!result.workspace) {
+        const parentDir = path.basename(path.dirname(path.dirname(taskPath)));
+        if (parentDir && parentDir.length >= 2) return parentDir;
+      }
+
       return result.workspace || 'UNKNOWN';
     } catch (error) {
-      console.warn(`[detectWorkspaceForTask] Error for ${taskPath}:`, error);
-      return 'UNKNOWN';
+      // #1409: Same fallback
+      const parentDir = path.basename(path.dirname(path.dirname(taskPath)));
+      return (parentDir && parentDir.length >= 2) ? parentDir : 'UNKNOWN';
     }
   }
 

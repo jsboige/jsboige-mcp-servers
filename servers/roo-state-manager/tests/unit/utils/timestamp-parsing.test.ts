@@ -197,12 +197,18 @@ it('should handle malformed JSON gracefully', async () => {
 
   describe('getStatsForPath', () => {
     it('should return storage statistics for valid path', async () => {
-      mockFsPromises.readdir.mockResolvedValue([
+      // #1409: getStatsForPath reads files inside task dirs for actual sizes
+      const outerEntries = [
         { name: 'task1', isDirectory: () => true, isFile: () => false },
         { name: 'task2', isDirectory: () => true, isFile: () => false }
-      ]);
+      ];
+      // Outer readdir → task dirs, then inner readdirs → files in each
+      mockFsPromises.readdir
+        .mockResolvedValueOnce(outerEntries)
+        .mockResolvedValueOnce(['api_conversation_history.json'])
+        .mockResolvedValueOnce(['ui_messages.json', 'task_metadata.json']);
       mockFsPromises.stat.mockResolvedValue({
-        isDirectory: () => true,
+        isFile: () => true,
         size: 2048,
         mtime: new Date('2025-11-30T12:00:00.000Z')
       });
