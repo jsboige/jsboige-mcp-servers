@@ -815,7 +815,7 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
     };
 
     if (this.config.logLevel === 'DEBUG' || this.config.logLevel === 'INFO') {
-      console.log(JSON.stringify(logEntry));
+      console.error(JSON.stringify(logEntry));
     }
   }
 

@@ -117,10 +117,17 @@ server.stderr.on('data', (data) => {
     }
 });
 
-// Fonction pour cacher la réponse tools/list (anti-doublons, sans filtrage)
+// Fonction pour cacher la réponse tools/list (anti-doublons + validation JSON-RPC)
+// Retourne null pour les messages non-JSON-RPC (#1572: stdout pollution defense)
 function cacheToolsList(message) {
     try {
         const parsed = JSON.parse(message);
+
+        // Validate JSON-RPC envelope — MCP stdio requires jsonrpc: "2.0"
+        if (parsed.jsonrpc !== '2.0') {
+            logDebug('Suppressed non-RPC JSON on stdout: ' + message.substring(0, 100));
+            return null;
+        }
 
         // Si c'est une réponse "tools/list"
         if (parsed.result && parsed.result.tools && Array.isArray(parsed.result.tools)) {
@@ -162,11 +169,12 @@ function cacheToolsList(message) {
             return cachedToolsListResponse;
         }
 
-        // Sinon, retourner le message tel quel
+        // Valid JSON-RPC, pass through
         return message;
     } catch (error) {
-        // Si ce n'est pas du JSON valide, retourner tel quel
-        return message;
+        // Not valid JSON — suppress (#1572)
+        logDebug('Suppressed unparseable output on stdout: ' + message.substring(0, 100));
+        return null;
     }
 }
 
@@ -186,9 +194,11 @@ server.stdout.on('data', (data) => {
         if (!trimmed) return;
 
         if (trimmed.startsWith('{')) {
-            // Message MCP JSON-RPC - cacher tools/list pour éviter doublons
+            // Validate JSON-RPC before forwarding to stdout (#1572)
             const processed = cacheToolsList(trimmed);
-            process.stdout.write(processed + '\n');
+            if (processed !== null) {
+                process.stdout.write(processed + '\n');
+            }
         } else if (trimmed.includes('Roo State Manager Server started')) {
             // FIX: Redirect to stderr, NOT stdout - MCP stdio protocol requires
             // only JSON-RPC messages on stdout. Non-JSON text breaks the handshake.

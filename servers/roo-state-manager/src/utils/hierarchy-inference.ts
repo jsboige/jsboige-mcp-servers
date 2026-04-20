@@ -38,16 +38,16 @@ export function extractTaskIdFromText(text: string): string | undefined {
  */
 export async function extractParentFromApiHistory(apiHistoryPath: string): Promise<string | undefined> {
     try {
-        process.stdout.write(`[extractParentFromApiHistory] Lecture du fichier: ${apiHistoryPath}\n`);
+        process.stderr.write(`[extractParentFromApiHistory] Lecture du fichier: ${apiHistoryPath}\n`);
         const content = await fs.readFile(apiHistoryPath, 'utf-8');
         const data = JSON.parse(content);
         const messages = Array.isArray(data) ? data : (data?.messages || []);
-        process.stdout.write(`[extractParentFromApiHistory] Messages trouvés: ${messages.length}\n`);
+        process.stderr.write(`[extractParentFromApiHistory] Messages trouvés: ${messages.length}\n`);
         
         const firstUserMessage = messages.find((msg: any) => msg.role === 'user');
-        process.stdout.write(`[extractParentFromApiHistory] Premier message user: ${firstUserMessage ? 'trouvé' : 'non trouvé'}\n`);
+        process.stderr.write(`[extractParentFromApiHistory] Premier message user: ${firstUserMessage ? 'trouvé' : 'non trouvé'}\n`);
         if (!firstUserMessage?.content) {
-            process.stdout.write(`[extractParentFromApiHistory] Pas de content dans le premier message user\n`);
+            process.stderr.write(`[extractParentFromApiHistory] Pas de content dans le premier message user\n`);
             return undefined;
         }
 
@@ -55,13 +55,13 @@ export async function extractParentFromApiHistory(apiHistoryPath: string): Promi
             ? firstUserMessage.content.find((c: any) => c.type === 'text')?.text || ''
             : firstUserMessage.content;
         
-        process.stdout.write(`[extractParentFromApiHistory] Texte à analyser: ${messageText.substring(0, 100)}...\n`);
+        process.stderr.write(`[extractParentFromApiHistory] Texte à analyser: ${messageText.substring(0, 100)}...\n`);
 
         const result = extractTaskIdFromText(messageText);
-        process.stdout.write(`[extractParentFromApiHistory] Résultat: ${result}\n`);
+        process.stderr.write(`[extractParentFromApiHistory] Résultat: ${result}\n`);
         return result;
     } catch (error) {
-        process.stdout.write(`[extractParentFromApiHistory] Erreur: ${error}\n`);
+        process.stderr.write(`[extractParentFromApiHistory] Erreur: ${error}\n`);
         return undefined;
     }
 }
@@ -71,26 +71,26 @@ export async function extractParentFromApiHistory(apiHistoryPath: string): Promi
  */
 export async function extractParentFromUiMessages(uiMessagesPath: string): Promise<string | undefined> {
     try {
-        process.stdout.write(`[extractParentFromUiMessages] Lecture du fichier: ${uiMessagesPath}\n`);
+        process.stderr.write(`[extractParentFromUiMessages] Lecture du fichier: ${uiMessagesPath}\n`);
         const content = await fs.readFile(uiMessagesPath, 'utf-8');
         const data = JSON.parse(content);
         const messages = Array.isArray(data) ? data : (data?.messages || []);
-        process.stdout.write(`[extractParentFromUiMessages] Messages trouvés: ${messages.length}\n`);
+        process.stderr.write(`[extractParentFromUiMessages] Messages trouvés: ${messages.length}\n`);
         
         // Chercher le premier message utilisateur (type 'user' dans ui_messages)
         const firstUserMessage = messages.find((msg: any) => msg.type === 'user' || msg.role === 'user');
-        process.stdout.write(`[extractParentFromUiMessages] Premier message user: ${firstUserMessage ? 'trouvé' : 'non trouvé'}\n`);
+        process.stderr.write(`[extractParentFromUiMessages] Premier message user: ${firstUserMessage ? 'trouvé' : 'non trouvé'}\n`);
         if (!firstUserMessage?.content) {
-            process.stdout.write(`[extractParentFromUiMessages] Pas de content dans le premier message user\n`);
+            process.stderr.write(`[extractParentFromUiMessages] Pas de content dans le premier message user\n`);
             return undefined;
         }
 
-        process.stdout.write(`[extractParentFromUiMessages] Texte à analyser: ${firstUserMessage.content.substring(0, 100)}...\n`);
+        process.stderr.write(`[extractParentFromUiMessages] Texte à analyser: ${firstUserMessage.content.substring(0, 100)}...\n`);
         const result = extractTaskIdFromText(firstUserMessage.content);
-        process.stdout.write(`[extractParentFromUiMessages] Résultat: ${result}\n`);
+        process.stderr.write(`[extractParentFromUiMessages] Résultat: ${result}\n`);
         return result;
     } catch (error) {
-        process.stdout.write(`[extractParentFromUiMessages] Erreur: ${error}\n`);
+        process.stderr.write(`[extractParentFromUiMessages] Erreur: ${error}\n`);
         return undefined;
     }
 }
