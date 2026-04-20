@@ -85,6 +85,8 @@ export default mergeConfig(baseConfig, defineConfig({
       'src/tools/roosync/__tests__/diagnose.integration.test.ts',
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
       'src/tools/roosync/__tests__/update-dashboard.integration.test.ts',
+      // Live LLM endpoint, opt-in via LLM_LIVE_INTEGRATION=1 — 502 repro (#1578)
+      'src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts',
       'tests/unit/tools/roosync/baseline.test.ts',
 
       // ===== CI-excluded: Export baseline (schema mismatch) =====
