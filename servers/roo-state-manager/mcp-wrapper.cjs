@@ -186,9 +186,23 @@ server.stdout.on('data', (data) => {
         if (!trimmed) return;
 
         if (trimmed.startsWith('{')) {
-            // Message MCP JSON-RPC - cacher tools/list pour éviter doublons
-            const processed = cacheToolsList(trimmed);
-            process.stdout.write(processed + '\n');
+            // Only forward genuine JSON-RPC messages. Some services (e.g. BaselineService)
+            // historically wrote JSON.stringify(logEntry) to stdout — those look like JSON
+            // but aren't JSON-RPC, and they break clients like mcp-proxy/pydantic.
+            let parsed;
+            try {
+                parsed = JSON.parse(trimmed);
+            } catch {
+                process.stderr.write('[MCP-WRAPPER] dropped non-JSON line: ' + trimmed.slice(0, 120) + '\n');
+                return;
+            }
+            if (parsed && parsed.jsonrpc === '2.0') {
+                const processed = cacheToolsList(trimmed);
+                process.stdout.write(processed + '\n');
+            } else {
+                // Valid JSON but not JSON-RPC — route to stderr so it's still visible in logs.
+                process.stderr.write('[MCP-WRAPPER] dropped non-JSONRPC JSON: ' + trimmed.slice(0, 120) + '\n');
+            }
         } else if (trimmed.includes('Roo State Manager Server started')) {
             // FIX: Redirect to stderr, NOT stdout - MCP stdio protocol requires
             // only JSON-RPC messages on stdout. Non-JSON text breaks the handshake.

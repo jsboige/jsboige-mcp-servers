@@ -815,7 +815,9 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
     };
 
     if (this.config.logLevel === 'DEBUG' || this.config.logLevel === 'INFO') {
-      console.log(JSON.stringify(logEntry));
+      // stderr, not stdout: MCP stdio protocol reserves stdout for JSON-RPC only.
+      // Mixing log JSON with protocol JSON breaks clients (pydantic parse errors in mcp-proxy).
+      console.error(JSON.stringify(logEntry));
     }
   }
 
