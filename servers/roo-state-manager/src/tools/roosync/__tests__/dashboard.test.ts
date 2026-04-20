@@ -760,6 +760,187 @@ describe('roosync_dashboard', () => {
     });
   });
 
+  // === Diagnostic + archivedCount clamp (2026-04-20) ===
+  //
+  // Regression coverage for the CoursIA condense incident on 2026-04-20:
+  //   - archivedCount came back as -2 (two injected error msgs × 2 passes)
+  //   - result.condensed was false but no explanation was visible to callers
+  //   - dedup window (5min) was shorter than the LLM retry cycle (~6min) on
+  //     40KB prompts, so both passes injected an error msg
+  // These tests lock in: diagnostic exposed, archivedCount ≥ 0, dedup works.
+  describe('Condense diagnostic + error semantics (2026-04-20)', () => {
+    it('populates condenseDiagnostic with LLM stats on manual condense success', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Status' } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary' } }] });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      expect(result.condensed).toBe(true);
+      expect(result.condenseDiagnostic).toBeDefined();
+      expect(result.condenseDiagnostic).toHaveLength(1);
+      const diag = result.condenseDiagnostic![0];
+      expect(diag.phase).toBe('manual');
+      expect(diag.outcome).toBe('condensed');
+      expect(diag.archivedMessageCount).toBe(7);
+      expect(diag.elapsedMs).toBeGreaterThan(0);
+      expect(diag.llm?.summary.finalOutcome).toBe('ok');
+      expect(diag.llm?.status.finalOutcome).toBe('ok');
+      expect(diag.llm?.summary.attempts).toBe(1);
+      expect(diag.llm?.status.attempts).toBe(1);
+    });
+
+    it('reports llm-failed-injected with nullCount when LLM returns empty content', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      expect(result.condensed).toBe(false);
+      expect(result.archivedCount).toBe(0);
+      const diag = result.condenseDiagnostic![0];
+      expect(diag.outcome).toBe('llm-failed-injected');
+      expect(diag.llm?.summary.finalOutcome).toBe('null');
+      expect(diag.llm?.summary.nullCount).toBe(3); // 3 retries
+      expect(diag.llm?.summary.lastError).toContain('null content');
+      expect(diag.llm?.status.finalOutcome).toBe('null');
+      expect(diag.llm?.status.nullCount).toBe(3);
+      // Human-readable message must surface the failure mode
+      expect(result.message).toContain('summary=null');
+      expect(result.message).toContain('status=null');
+    });
+
+    it('reports error + lastError when LLM throws', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:5002'));
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      expect(result.condensed).toBe(false);
+      const diag = result.condenseDiagnostic![0];
+      expect(diag.llm?.summary.finalOutcome).toBe('error');
+      expect(diag.llm?.summary.errorCount).toBe(3);
+      expect(diag.llm?.summary.lastError).toContain('ECONNREFUSED');
+      expect(result.message).toContain('summary=error');
+    });
+
+    it('reports client-init-failed when LLM client throws on init', async () => {
+      // mockGetChatClient throws (default beforeEach behavior sets this)
+      // Leave mockGetChatClient at its default "No chat API key configured" throw.
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      expect(result.condensed).toBe(false);
+      const diag = result.condenseDiagnostic![0];
+      expect(diag.llm?.summary.finalOutcome).toBe('client-init-failed');
+      expect(diag.llm?.summary.attempts).toBe(0); // Never entered the retry loop
+      expect(diag.llm?.summary.lastError).toContain('No chat API key');
+    });
+
+    it('archivedCount clamped to 0 on failed append (regression: CoursIA -2)', async () => {
+      // When an append triggers preemptive+reactive condense that both fail
+      // with LLM null content, the old accounting computed
+      //   archivedCount = preempArchived + reactiveArchived
+      //                 = (before - (before + 1)) + (before+1 - (before+2))
+      //                 = -1 + -1 = -2
+      // The reported archivedCount must be >= 0. The truth lives in
+      // condenseDiagnostic[].outcome which must mark both passes as failed.
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      // Fill past 92% with enough 3KB messages to trigger preemptive
+      const filler = 'X'.repeat(3000);
+      for (let i = 0; i < 16; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `${filler} m${i}` });
+      }
+
+      // Now append something else — triggers preemptive (at >= 92%) + possibly reactive
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: `${filler} trigger`
+      });
+
+      expect(result.success).toBe(true);
+      // CRITICAL: archivedCount must be >= 0 even when LLM injected error msgs
+      expect(result.archivedCount).toBeGreaterThanOrEqual(0);
+      expect(result.condensed).toBe(false);
+      // Diagnostic must show the failure mode
+      expect(result.condenseDiagnostic).toBeDefined();
+      expect(result.condenseDiagnostic!.length).toBeGreaterThanOrEqual(1);
+      const failedPasses = result.condenseDiagnostic!.filter(d =>
+        d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected'
+      );
+      expect(failedPasses.length).toBeGreaterThanOrEqual(1);
+      // Human-readable message must carry the failure detail
+      expect(result.message).toContain('LLM échoué');
+    });
+
+    it('dedup within 20min window does NOT re-inject a second error message', async () => {
+      // Regression for the 5min window that was too short. A second condense
+      // within 20min after a failure must return outcome=llm-failed-dedup and
+      // leave the dashboard untouched (same message count).
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      // First condense — injects [ERROR] CONDENSATION CANCELLED
+      const r1 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      expect(r1.condenseDiagnostic![0].outcome).toBe('llm-failed-injected');
+      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const countAfterFirst = afterFirst.data?.intercom?.messages.length ?? 0;
+      expect(countAfterFirst).toBe(11); // 10 user + 1 error
+
+      // Immediate second condense — dedup must kick in (still within 20min)
+      const r2 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      expect(r2.condenseDiagnostic![0].outcome).toBe('llm-failed-dedup');
+      const afterSecond = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      expect(afterSecond.data?.intercom?.messages.length).toBe(11); // unchanged
+      expect(r2.archivedCount).toBe(0);
+    });
+  });
+
   describe('Preemptive condensation (#1497)', () => {
     it('triggers condensation during fill-up when dashboard crosses 92% utilization', async () => {
       // Persistent mock — preemptive may fire multiple times during fill-up loop

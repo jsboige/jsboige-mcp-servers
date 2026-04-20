@@ -110,7 +110,14 @@ const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
 // when LLM is down and every append re-triggers a failed condensation).
-const CONDENSATION_ERROR_DEDUP_MS = 5 * 60 * 1000; // 5 minutes
+// 2026-04-20: bumped 5min → 20min. A single append triggers up to 2 condense
+// passes (preemptive + reactive). Each pass can burn several minutes in LLM
+// retries when Qwen thinking mode eats max_tokens on a 40KB prompt. With a
+// 5min window, the 2nd pass fell outside and injected a 2nd error message →
+// archivedCount went to -2 (math correct, semantics broken). 20min covers both
+// passes even under worst-case LLM latency while still allowing legitimate
+// retries after a user-driven restart of the MCP / LLM endpoint.
+const CONDENSATION_ERROR_DEDUP_MS = 20 * 60 * 1000; // 20 minutes
 
 // === Per-key mutex ===
 //
@@ -481,12 +488,81 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
 }
 
 /**
+ * Per-condense-pass telemetry bubbled up to the tool result. Populated by
+ * `condenseIntercom` via an optional accumulator argument (non-breaking change
+ * to preserve the Dashboard return type consumed by legacy paths).
+ *
+ * Outcomes:
+ *   - `condensed`         : LLM succeeded, archive written, status updated
+ *   - `no-op`             : messages ≤ keepCount, nothing to do
+ *   - `llm-failed-dedup`  : LLM failed but a recent CONDENSATION CANCELLED
+ *                           already exists within CONDENSATION_ERROR_DEDUP_MS
+ *                           → dashboard returned unchanged, no extra error msg
+ *   - `llm-failed-injected`: LLM failed, no recent error → new CONDENSATION
+ *                            CANCELLED system message appended
+ */
+export interface CondenseAttemptInfo {
+  phase: 'preemptive' | 'reactive' | 'manual';
+  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected';
+  elapsedMs: number;
+  archivedMessageCount: number;
+  llm?: {
+    summary: LLMCallStats;
+    status: LLMCallStats;
+  };
+}
+
+function newDiagnostic(phase: CondenseAttemptInfo['phase']): CondenseAttemptInfo {
+  return { phase, outcome: 'no-op', elapsedMs: 0, archivedMessageCount: 0 };
+}
+
+/**
+ * Per-phase LLM call telemetry. Populated by `generateLLMSummary` /
+ * `generateStatusUpdate` and bubbled up through `condenseIntercom` → the
+ * dashboard tool result so operators can distinguish "LLM down" from "LLM
+ * returned null content because thinking ate max_tokens" from "prompt too
+ * large" without tailing server logs.
+ */
+export interface LLMCallStats {
+  /** Number of attempts made (1..LLM_MAX_RETRIES). */
+  attempts: number;
+  /** Total wall-clock elapsed including backoffs (ms). */
+  elapsedMs: number;
+  /** How many attempts returned a null/empty content (thinking overran max_tokens, etc.). */
+  nullCount: number;
+  /** How many attempts threw (connection, 4xx/5xx, JSON parse). */
+  errorCount: number;
+  /** Subset of errorCount: attempts that aborted on timeout. */
+  timeoutCount: number;
+  /** Truncated last error message (first 240 chars). Only set when final outcome is error/timeout. */
+  lastError?: string;
+  /** Final outcome. */
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed';
+}
+
+/**
+ * Result wrapper for an LLM generation call.
+ */
+interface LLMCallResult {
+  content: string | null;
+  stats: LLMCallStats;
+}
+
+function emptyLLMStats(outcome: LLMCallStats['finalOutcome']): LLMCallStats {
+  return { attempts: 0, elapsedMs: 0, nullCount: 0, errorCount: 0, timeoutCount: 0, finalOutcome: outcome };
+}
+
+function truncateError(msg: string): string {
+  return msg.length > 240 ? `${msg.slice(0, 237)}...` : msg;
+}
+
+/**
  * Génère un résumé LLM des messages intercom (#858)
  *
  * @param messages - Messages à résumer
- * @returns Résumé markdown ou null si échec (fallback)
+ * @returns Résumé markdown + stats. content = null si échec (3 retries failed).
  */
-async function generateLLMSummary(messages: IntercomMessage[]): Promise<string | null> {
+async function generateLLMSummary(messages: IntercomMessage[]): Promise<LLMCallResult> {
   // #1497: bumped 600s → 1800s (30 min). Qwen3.6 thinking mode can take 60-90s
   // per call on 40KB prompts; with 3 retries + backoff 2s/4s/8s, total
   // wall-clock per call can exceed 5 min. Since the 2 LLM calls now run in
@@ -529,17 +605,25 @@ FORMAT :
 
   logger.info('Calling LLM for intercom summary', { messageCount: messages.length });
 
+  const callStart = Date.now();
+  const stats: LLMCallStats = emptyLLMStats('null');
+
   let openai: OpenAI;
   try {
     openai = getChatOpenAIClient();
   } catch (error) {
-    logger.error('LLM client init failed for summary', { error: error instanceof Error ? error.message : String(error) });
-    return null;
+    const errStr = error instanceof Error ? error.message : String(error);
+    logger.error('LLM client init failed for summary', { error: errStr });
+    return {
+      content: null,
+      stats: { ...emptyLLMStats('client-init-failed'), lastError: truncateError(errStr), elapsedMs: Date.now() - callStart }
+    };
   }
   const modelId = getLLMModelId();
 
   // Retry with exponential backoff (error/empty only — size handled post-hoc)
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+    stats.attempts = attempt;
     const startTime = Date.now();
     try {
       const response = await openai.chat.completions.create({
@@ -548,7 +632,11 @@ FORMAT :
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 10000,
+        // 2026-04-20: bumped 10000 → 30000. Qwen3.6 thinking mode can easily
+        // spend 10k+ tokens on reasoning for a 40KB prompt, leaving the model
+        // no room for the actual markdown output — `content` comes back null
+        // with finish_reason=length. Room for ~20k thinking + 10k summary.
+        max_tokens: 30000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -556,27 +644,37 @@ FORMAT :
 
       const summary = response.choices[0]?.message?.content;
       if (!summary) {
-        logger.warn('LLM returned empty summary', { attempt });
+        stats.nullCount += 1;
+        logger.warn('LLM returned empty summary', { attempt, finishReason: response.choices[0]?.finish_reason });
         if (attempt < LLM_MAX_RETRIES) {
           const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
           logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
           await new Promise(resolve => setTimeout(resolve, backoff));
           continue;
         }
-        return null;
+        stats.finalOutcome = 'null';
+        stats.elapsedMs = Date.now() - callStart;
+        stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=30000)`;
+        return { content: null, stats };
       }
 
       const sizeBytes = Buffer.byteLength(summary, 'utf8');
       const elapsed = Date.now() - startTime;
       logger.info('LLM summary generated', { attempt, elapsed: `${elapsed}ms`, summaryLength: summary.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
-      return summary;
+      stats.finalOutcome = 'ok';
+      stats.elapsedMs = Date.now() - callStart;
+      return { content: summary, stats };
 
     } catch (error: unknown) {
       const elapsed = Date.now() - startTime;
-      if (error instanceof Error && error.name === 'AbortError') {
+      const errStr = error instanceof Error ? error.message : String(error);
+      stats.errorCount += 1;
+      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      if (isTimeout) {
+        stats.timeoutCount += 1;
         logger.warn('LLM summary timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
       } else {
-        logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: error instanceof Error ? error.message : String(error) });
+        logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
       if (attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
@@ -584,11 +682,16 @@ FORMAT :
         await new Promise(resolve => setTimeout(resolve, backoff));
         continue;
       }
-      return null;
+      stats.finalOutcome = isTimeout ? 'timeout' : 'error';
+      stats.elapsedMs = Date.now() - callStart;
+      stats.lastError = truncateError(errStr);
+      return { content: null, stats };
     }
   }
 
-  return null;
+  stats.finalOutcome = 'null';
+  stats.elapsedMs = Date.now() - callStart;
+  return { content: null, stats };
 }
 
 /**
@@ -603,7 +706,7 @@ async function generateStatusUpdate(
   previousStatus: string,
   allMessages: IntercomMessage[],
   archivedCount: number
-): Promise<string | null> {
+): Promise<LLMCallResult> {
   // #1497: bumped 600s → 1800s (30 min) — see generateLLMSummary for rationale.
   const timeoutMs = 1800000;
 
@@ -684,17 +787,25 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     archivedCount
   });
 
+  const callStart = Date.now();
+  const stats: LLMCallStats = emptyLLMStats('null');
+
   let openai: OpenAI;
   try {
     openai = getChatOpenAIClient();
   } catch (error) {
-    logger.error('LLM client init failed for status update', { error: error instanceof Error ? error.message : String(error) });
-    return null;
+    const errStr = error instanceof Error ? error.message : String(error);
+    logger.error('LLM client init failed for status update', { error: errStr });
+    return {
+      content: null,
+      stats: { ...emptyLLMStats('client-init-failed'), lastError: truncateError(errStr), elapsedMs: Date.now() - callStart }
+    };
   }
   const modelId = getLLMModelId();
 
   // Retry with exponential backoff
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+    stats.attempts = attempt;
     const startTime = Date.now();
     try {
       const response = await openai.chat.completions.create({
@@ -703,7 +814,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 10000,
+        // 2026-04-20: bumped 10000 → 30000 (see generateLLMSummary for rationale).
+        max_tokens: 30000,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -711,27 +823,37 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
 
       const newStatus = response.choices[0]?.message?.content;
       if (!newStatus) {
-        logger.warn('LLM returned empty status update', { attempt });
+        stats.nullCount += 1;
+        logger.warn('LLM returned empty status update', { attempt, finishReason: response.choices[0]?.finish_reason });
         if (attempt < LLM_MAX_RETRIES) {
           const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
           logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
           await new Promise(resolve => setTimeout(resolve, backoff));
           continue;
         }
-        return null;
+        stats.finalOutcome = 'null';
+        stats.elapsedMs = Date.now() - callStart;
+        stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=30000)`;
+        return { content: null, stats };
       }
 
       const sizeBytes = Buffer.byteLength(newStatus, 'utf8');
       const elapsed = Date.now() - startTime;
       logger.info('LLM status update generated', { attempt, elapsed: `${elapsed}ms`, newStatusLength: newStatus.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
-      return newStatus;
+      stats.finalOutcome = 'ok';
+      stats.elapsedMs = Date.now() - callStart;
+      return { content: newStatus, stats };
 
     } catch (error: unknown) {
       const elapsed = Date.now() - startTime;
-      if (error instanceof Error && error.name === 'AbortError') {
+      const errStr = error instanceof Error ? error.message : String(error);
+      stats.errorCount += 1;
+      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      if (isTimeout) {
+        stats.timeoutCount += 1;
         logger.warn('LLM status update timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
       } else {
-        logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: error instanceof Error ? error.message : String(error) });
+        logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
       if (attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
@@ -739,11 +861,16 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         await new Promise(resolve => setTimeout(resolve, backoff));
         continue;
       }
-      return null;
+      stats.finalOutcome = isTimeout ? 'timeout' : 'error';
+      stats.elapsedMs = Date.now() - callStart;
+      stats.lastError = truncateError(errStr);
+      return { content: null, stats };
     }
   }
 
-  return null;
+  stats.finalOutcome = 'null';
+  stats.elapsedMs = Date.now() - callStart;
+  return { content: null, stats };
 }
 
 /**
@@ -794,7 +921,8 @@ RÈGLES :
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }
       ],
-      max_tokens: 10000,
+      // 2026-04-20: bumped 10000 → 30000 (see generateLLMSummary for rationale).
+      max_tokens: 30000,
       temperature: 0.3
     }, {
       timeout: 900000  // #1497: 5 min → 15 min, accommodate thinking-mode latency
@@ -886,11 +1014,17 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
 async function condenseIntercom(
   key: string,
   dashboard: Dashboard,
-  keepCount: number
+  keepCount: number,
+  diagnostic?: CondenseAttemptInfo
 ): Promise<Dashboard> {
   const condensationStart = Date.now();
   const messages = dashboard.intercom.messages;
   if (messages.length <= keepCount) {
+    if (diagnostic) {
+      diagnostic.outcome = 'no-op';
+      diagnostic.elapsedMs = Date.now() - condensationStart;
+      diagnostic.archivedMessageCount = 0;
+    }
     return dashboard; // Rien à condenser
   }
 
@@ -907,17 +1041,22 @@ async function condenseIntercom(
   // races the client timeout. A single failing call still cancels condensation
   // via the existing null-check below.
   const tParallel = Date.now();
-  const [newStatusResult, llmSummaryResult] = await Promise.all([
+  const [statusCall, summaryCall] = await Promise.all([
     generateStatusUpdate(previousStatus, messages, toArchive.length),
     generateLLMSummary(toArchive)
   ]);
-  let newStatus = newStatusResult;
-  let llmSummary = llmSummaryResult;
+  if (diagnostic) {
+    diagnostic.llm = { summary: summaryCall.stats, status: statusCall.stats };
+  }
+  let newStatus = statusCall.content;
+  let llmSummary = summaryCall.content;
   const tParallelElapsed = Date.now() - tParallel;
   logger.info('LLM calls completed (parallel)', {
     elapsed: `${tParallelElapsed}ms`,
     statusOk: newStatus !== null,
-    summaryOk: llmSummary !== null
+    summaryOk: llmSummary !== null,
+    statusOutcome: statusCall.stats.finalOutcome,
+    summaryOutcome: summaryCall.stats.finalOutcome
   });
 
   // Both LLM calls are MANDATORY — if either fails, cancel condensation
@@ -926,7 +1065,9 @@ async function condenseIntercom(
       key,
       messageCount: toArchive.length,
       summaryOk: !!llmSummary,
-      statusOk: !!newStatus
+      statusOk: !!newStatus,
+      summaryOutcome: summaryCall.stats.finalOutcome,
+      statusOutcome: statusCall.stats.finalOutcome
     });
 
     // Inject a visible [ERROR] system message so next readers see the failure.
@@ -943,25 +1084,40 @@ async function condenseIntercom(
          ).getTime()) < CONDENSATION_ERROR_DEDUP_MS;
 
     if (recentErrorExists) {
+      if (diagnostic) {
+        diagnostic.outcome = 'llm-failed-dedup';
+        diagnostic.elapsedMs = Date.now() - condensationStart;
+        diagnostic.archivedMessageCount = 0;
+      }
       return dashboard; // Déjà signalé récemment, pas de spam
     }
 
     const errorTimestamp = new Date().toISOString();
-    const statusOkLabel = newStatus ? 'OK' : 'FAILED';
-    const summaryOkLabel = llmSummary ? 'OK' : 'FAILED';
+    const statusOkLabel = newStatus ? 'OK' : `FAILED (${statusCall.stats.finalOutcome})`;
+    const summaryOkLabel = llmSummary ? 'OK' : `FAILED (${summaryCall.stats.finalOutcome})`;
     const errorMessage: IntercomMessage = {
       id: generateMessageId('system', 'system'),
       timestamp: errorTimestamp,
       author: { machineId: 'system', workspace: 'system' },
       content: `**[ERROR] CONDENSATION CANCELLED** - ${errorTimestamp}\n\n`
         + `LLM calls failed after ${LLM_MAX_RETRIES} retries (backoff 2s/4s/8s):\n`
-        + `- Status update: ${statusOkLabel}\n`
-        + `- Summary generation: ${summaryOkLabel}\n\n`
-        + `Dashboard left unchanged (${dashboard.intercom.messages.length} messages). `
+        + `- Status update: ${statusOkLabel} (${Math.round(statusCall.stats.elapsedMs / 1000)}s, `
+        + `null×${statusCall.stats.nullCount}, err×${statusCall.stats.errorCount})\n`
+        + `- Summary generation: ${summaryOkLabel} (${Math.round(summaryCall.stats.elapsedMs / 1000)}s, `
+        + `null×${summaryCall.stats.nullCount}, err×${summaryCall.stats.errorCount})\n`
+        + (statusCall.stats.lastError ? `- Status last error: ${statusCall.stats.lastError}\n` : '')
+        + (summaryCall.stats.lastError ? `- Summary last error: ${summaryCall.stats.lastError}\n` : '')
+        + `\nDashboard left unchanged (${dashboard.intercom.messages.length} messages). `
         + `Verify LLM endpoint (OPENAI_CHAT_API_BASE / OPENAI_CHAT_MODEL_ID) and retry. `
         + `Next condensation attempt will occur on the next append exceeding the `
         + `${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB threshold.`
     };
+
+    if (diagnostic) {
+      diagnostic.outcome = 'llm-failed-injected';
+      diagnostic.elapsedMs = Date.now() - condensationStart;
+      diagnostic.archivedMessageCount = 0;
+    }
 
     return {
       ...dashboard,
@@ -1076,6 +1232,12 @@ ${archiveMessages}
 
   logger.info('Condensation completed', { totalElapsed: `${totalElapsed}ms` });
 
+  if (diagnostic) {
+    diagnostic.outcome = 'condensed';
+    diagnostic.elapsedMs = totalElapsed;
+    diagnostic.archivedMessageCount = toArchive.length;
+  }
+
   return {
     ...dashboard,
     lastModified: now,
@@ -1154,6 +1316,16 @@ export interface DashboardResult {
   } | null>;
   /** Per-target cross-post outcomes (v3 #1363). Present only when args.crossPost was used. */
   crossPost?: Array<{ key: string; ok: boolean; error?: string }>;
+  /**
+   * Per-pass condensation telemetry (2026-04-20). Present whenever condensation
+   * was attempted (append with size over threshold, or explicit condense
+   * action). Each entry reports phase + outcome + LLM call stats so operators
+   * can tell "LLM down" from "LLM returned null content" without tailing logs.
+   *
+   * An append can have up to 2 entries (preemptive + reactive). A condense
+   * action has 1 (manual). No entry means no condensation was attempted.
+   */
+  condenseDiagnostic?: CondenseAttemptInfo[];
 }
 
 /**
@@ -1462,6 +1634,7 @@ async function handleAppend(
   // post-condense binding.
   let preemptivelyCondensed = false;
   let preemptivelyArchivedCount = 0;
+  const condenseDiagnostics: CondenseAttemptInfo[] = [];
   const preAppendSize = estimateDashboardSize(dashboard);
   if (preAppendSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES && dashboard.intercom.messages.length > CONDENSE_KEEP) {
     logger.info('Preemptive condensation triggered (#1497)', {
@@ -1471,7 +1644,9 @@ async function handleAppend(
       messageCount: dashboard.intercom.messages.length
     });
     const beforePreemptive = dashboard.intercom.messages.length;
-    dashboard = await condenseIntercom(key, dashboard, CONDENSE_KEEP);
+    const preemptiveDiag = newDiagnostic('preemptive');
+    dashboard = await condenseIntercom(key, dashboard, CONDENSE_KEEP, preemptiveDiag);
+    condenseDiagnostics.push(preemptiveDiag);
     preemptivelyArchivedCount = beforePreemptive - dashboard.intercom.messages.length;
     preemptivelyCondensed = preemptivelyArchivedCount > 0;
   }
@@ -1529,7 +1704,9 @@ async function handleAppend(
       messageCount: updatedDashboard.intercom.messages.length
     });
     const beforeCount = updatedDashboard.intercom.messages.length;
-    finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP);
+    const reactiveDiag = newDiagnostic('reactive');
+    finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, reactiveDiag);
+    condenseDiagnostics.push(reactiveDiag);
     const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
     archivedCount += newlyArchived;
     condensed = condensed || newlyArchived > 0;
@@ -1640,6 +1817,38 @@ async function handleAppend(
     ? ` (cross-post: ${crossPostOk}/${crossPostResults.length} OK${crossPostFail > 0 ? `, ${crossPostFail} échecs` : ''})`
     : '';
 
+  // 2026-04-20: Clamp archivedCount to non-negative. When LLM failure injects
+  // an [ERROR] CONDENSATION CANCELLED message, `newlyArchived = beforeCount -
+  // finalDashboard.intercom.messages.length` goes negative (the +1 system
+  // message). That's mathematically consistent but misleads clients that read
+  // `archivedCount` as "messages archived". The truth lives in
+  // `condenseDiagnostic[].outcome`. Clients needing the signed delta can
+  // compute it from sizes.
+  const reportedArchivedCount = Math.max(0, archivedCount);
+
+  // Build a diagnostic suffix for the human message whenever condensation was
+  // attempted — so the failure mode is visible in the primary tool result
+  // (not just in condenseDiagnostic which some consumers won't inspect).
+  let diagSuffix = '';
+  if (condenseDiagnostics.length > 0 && !condensed) {
+    const failed = condenseDiagnostics.filter(d =>
+      d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected'
+    );
+    if (failed.length > 0) {
+      const first = failed[0];
+      const totalS = Math.round(failed.reduce((sum, d) => sum + d.elapsedMs, 0) / 1000);
+      const summary = first.llm?.summary;
+      const status = first.llm?.status;
+      const llmBits: string[] = [];
+      if (summary) llmBits.push(`summary=${summary.finalOutcome}×${summary.attempts}`);
+      if (status) llmBits.push(`status=${status.finalOutcome}×${status.attempts}`);
+      const dedupNote = failed.some(d => d.outcome === 'llm-failed-dedup')
+        ? ' [recent error msg within dedup window → not re-injected]'
+        : '';
+      diagSuffix = ` — LLM échoué (${totalS}s total, ${llmBits.join(', ')})${dedupNote}`;
+    }
+  }
+
   return {
     success: true,
     action: 'append',
@@ -1649,9 +1858,10 @@ async function handleAppend(
     sizes: buildSizes(finalDashboard),
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
-    archivedCount,
+    archivedCount: reportedArchivedCount,
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
-    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${archivedCount} messages archivés, taille réduite)` : ''}${crossPostSuffix}`
+    condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
+    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}`
   };
 }
 
@@ -1691,7 +1901,8 @@ async function handleCondense(
   }
 
   const condenseStart = Date.now();
-  const condensedDashboard = await condenseIntercom(key, dashboard, keepCount);
+  const manualDiag = newDiagnostic('manual');
+  const condensedDashboard = await condenseIntercom(key, dashboard, keepCount, manualDiag);
   const condenseElapsed = Date.now() - condenseStart;
   const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
   // Persist whenever the dashboard changed — either condensation succeeded
@@ -1704,6 +1915,23 @@ async function handleCondense(
   }
 
   const archivedCount = actuallyCondensed ? beforeCount - condensedDashboard.intercom.messages.length : 0;
+
+  // Build a rich diag suffix when the LLM failed, so the tool's `message` field
+  // carries the "why" without requiring the caller to parse condenseDiagnostic.
+  let failureDetail = '';
+  if (!actuallyCondensed && manualDiag.llm) {
+    const summary = manualDiag.llm.summary;
+    const status = manualDiag.llm.status;
+    const llmBits = [
+      `summary=${summary.finalOutcome}×${summary.attempts} (${Math.round(summary.elapsedMs / 1000)}s)`,
+      `status=${status.finalOutcome}×${status.attempts} (${Math.round(status.elapsedMs / 1000)}s)`
+    ];
+    failureDetail = ` [${llmBits.join(', ')}]`;
+    if (manualDiag.outcome === 'llm-failed-dedup') {
+      failureDetail += ' (dedup: recent error msg within window, not re-injected)';
+    }
+  }
+
   return {
     success: true,
     action: 'condense',
@@ -1714,9 +1942,10 @@ async function handleCondense(
     messageCount: condensedDashboard.intercom.messages.length,
     condensed: actuallyCondensed,
     archivedCount,
+    condenseDiagnostic: [manualDiag],
     message: actuallyCondensed
       ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
-      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)`
+      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)${failureDetail}`
   };
 }
 
