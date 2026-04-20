@@ -102,6 +102,14 @@ const CONDENSE_KEEP = 10;
 // the working set smaller and shifts the latency into more predictable slots.
 const PREEMPTIVE_CONDENSE_THRESHOLD_BYTES = Math.floor(MAX_DASHBOARD_SIZE_BYTES * 0.92); // ~46 KB
 
+// #1589: Per-message size cap. Messages larger than this are split into multiple
+// parts at append time, so each part is subject to the CONDENSE_KEEP slice policy
+// independently. Prevents the pathological case where 3 "recent" 15KB dispatches
+// protect themselves from archival (all within the CONDENSE_KEEP=10 window) while
+// the dashboard sits above the 50KB threshold, producing an infinite condensation
+// loop (reported on workspace-CoursIA + po-2025, 2026-04-20, 10+min appends).
+const MAX_INDIVIDUAL_MESSAGE_BYTES = 4 * 1024; // 4 KB per part
+
 // Size limits for LLM outputs (bytes). If exceeded, retry with a stricter prompt.
 const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
 const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
@@ -1326,6 +1334,23 @@ export interface DashboardResult {
    * action has 1 (manual). No entry means no condensation was attempted.
    */
   condenseDiagnostic?: CondenseAttemptInfo[];
+  /**
+   * Count of parts the incoming content was split into (#1589). `1` means no
+   * split was performed (content fit under MAX_INDIVIDUAL_MESSAGE_BYTES).
+   * Present only on `append` results.
+   */
+  splitCount?: number;
+  /**
+   * Wall-clock breakdown of the append call (#1589). Populated on every
+   * `append` result so operators can attribute latency to condensation phases
+   * vs disk write vs other work without tailing MCP logs. Times are in ms.
+   */
+  durationBreakdown?: {
+    totalMs: number;
+    preemptiveCondenseMs: number;
+    reactiveCondenseMs: number;
+    writeMs: number;
+  };
 }
 
 /**
@@ -1464,6 +1489,87 @@ function estimateDashboardSize(dashboard: Dashboard): number {
   return size;
 }
 
+/**
+ * Split a message body into smaller parts, each <= MAX_INDIVIDUAL_MESSAGE_BYTES.
+ *
+ * Strategy: prefer line-boundary splits (preserves markdown readability); fall
+ * back to hard char-slice for individual lines that exceed the cap.
+ *
+ * Returns a single-element array when the body already fits. Otherwise each
+ * part is prefixed with `**[PART n/N]**` so readers can reassemble the original
+ * and so dashboard readers see the message structure without surprise.
+ *
+ * Trailing whitespace on each part is trimmed. Parts are guaranteed non-empty.
+ */
+export function splitLargeMessage(
+  content: string,
+  maxBytes: number = MAX_INDIVIDUAL_MESSAGE_BYTES
+): string[] {
+  if (Buffer.byteLength(content, 'utf8') <= maxBytes) {
+    return [content];
+  }
+
+  const rawParts: string[] = [];
+  const lines = content.split('\n');
+  let buffer = '';
+  let bufferBytes = 0;
+
+  const flush = () => {
+    const trimmed = buffer.replace(/\n+$/, '');
+    if (trimmed.length > 0) {
+      rawParts.push(trimmed);
+    }
+    buffer = '';
+    bufferBytes = 0;
+  };
+
+  for (const line of lines) {
+    const lineWithNl = line + '\n';
+    const lineBytes = Buffer.byteLength(lineWithNl, 'utf8');
+
+    if (lineBytes > maxBytes) {
+      // Single line too big — flush current buffer, then hard-slice the line.
+      flush();
+      let remainder = line;
+      while (Buffer.byteLength(remainder, 'utf8') > maxBytes) {
+        // Binary search a char-boundary cut under the byte cap
+        let lo = 1;
+        let hi = remainder.length;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          if (Buffer.byteLength(remainder.slice(0, mid), 'utf8') <= maxBytes) {
+            lo = mid;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        rawParts.push(remainder.slice(0, lo));
+        remainder = remainder.slice(lo);
+      }
+      if (remainder.length > 0) {
+        buffer = remainder + '\n';
+        bufferBytes = Buffer.byteLength(buffer, 'utf8');
+      }
+      continue;
+    }
+
+    if (bufferBytes + lineBytes > maxBytes) {
+      flush();
+    }
+    buffer += lineWithNl;
+    bufferBytes += lineBytes;
+  }
+  flush();
+
+  if (rawParts.length === 0) {
+    // Should not happen given the input-size guard above, but keep contract
+    return [content];
+  }
+
+  const total = rawParts.length;
+  return rawParts.map((part, idx) => `**[PART ${idx + 1}/${total}]**\n\n${part}`);
+}
+
 async function handleRead(
   key: string,
   args: DashboardArgs,
@@ -1598,6 +1704,10 @@ async function handleAppend(
   if (!args.content) {
     throw new Error('content est requis pour action=append');
   }
+  const appendStart = Date.now();
+  let preemptiveCondenseMs = 0;
+  let reactiveCondenseMs = 0;
+  let writeMs = 0;
   const author: Author = args.author ?? {
     machineId: resolvedMachineId,
     workspace: resolvedWorkspace
@@ -1645,7 +1755,9 @@ async function handleAppend(
     });
     const beforePreemptive = dashboard.intercom.messages.length;
     const preemptiveDiag = newDiagnostic('preemptive');
+    const tPre = Date.now();
     dashboard = await condenseIntercom(key, dashboard, CONDENSE_KEEP, preemptiveDiag);
+    preemptiveCondenseMs = Date.now() - tPre;
     condenseDiagnostics.push(preemptiveDiag);
     preemptivelyArchivedCount = beforePreemptive - dashboard.intercom.messages.length;
     preemptivelyCondensed = preemptivelyArchivedCount > 0;
@@ -1658,31 +1770,61 @@ async function handleAppend(
   // 3. Generate new ID as fallback
   const messageIdValue = pendingMessageIds.get(key) || (args as any).messageId || generateMessageId(author.machineId, author.workspace);
 
-  const message: IntercomMessage = {
-    id: messageIdValue,
-    timestamp: new Date().toISOString(),
-    author,
-    content: args.content
-  };
+  // #1589: Split messages above MAX_INDIVIDUAL_MESSAGE_BYTES into multiple
+  // IntercomMessage entries. Each part is an independent message subject to
+  // the CONDENSE_KEEP slice policy, so oversized dispatches no longer
+  // indefinitely protect themselves from archival by virtue of being recent.
+  const contentParts = splitLargeMessage(args.content);
+  const isMultiPart = contentParts.length > 1;
+  if (isMultiPart) {
+    logger.info('Large message split at append time (#1589)', {
+      key,
+      originalSizeKB: `${(Buffer.byteLength(args.content, 'utf8') / 1024).toFixed(1)}KB`,
+      partCount: contentParts.length,
+      perPartCapKB: `${(MAX_INDIVIDUAL_MESSAGE_BYTES / 1024).toFixed(0)}KB`
+    });
+  }
 
-  // Parse mentions in the message content
+  const nowDate = new Date();
+  const newMessages: IntercomMessage[] = contentParts.map((partContent, idx) => ({
+    // First part inherits the caller-provided messageId (so consumers that
+    // referenced it via `messageId` still resolve). Subsequent parts get fresh
+    // generated IDs keyed to the same author.
+    id: idx === 0
+      ? messageIdValue
+      : generateMessageId(author.machineId, author.workspace),
+    // Stagger per-part timestamps by 1ms so insertion order survives any
+    // later sort that keys on timestamp alone.
+    timestamp: new Date(nowDate.getTime() + idx).toISOString(),
+    author,
+    content: partContent
+  }));
+
+  // Use the FIRST part as the "primary" message for mention/crossPost wiring —
+  // it carries the caller-provided messageId and is the natural anchor in the
+  // intercom stream.
+  const message = newMessages[0];
+
+  // Parse mentions on the FULL original content (not on a single part) so
+  // @-mentions that happen to cross a part boundary still fire exactly once.
   const mentions = parseMentions(args.content);
   if (mentions.length > 0) {
     logger.debug('Mentions detected in dashboard message', {
       messageId: message.id,
       mentionCount: mentions.length,
-      mentions: mentions.map(m => m.pattern)
+      mentions: mentions.map(m => m.pattern),
+      isMultiPart
     });
   }
 
-  const now = new Date().toISOString();
+  const now = nowDate.toISOString();
   const updatedDashboard: Dashboard = {
     ...dashboard,
     lastModified: now,
     lastModifiedBy: author,
     intercom: {
-      messages: [...dashboard.intercom.messages, message],
-      totalMessages: dashboard.intercom.totalMessages + 1,
+      messages: [...dashboard.intercom.messages, ...newMessages],
+      totalMessages: dashboard.intercom.totalMessages + newMessages.length,
       lastCondensedAt: dashboard.intercom.lastCondensedAt
     }
   };
@@ -1705,14 +1847,18 @@ async function handleAppend(
     });
     const beforeCount = updatedDashboard.intercom.messages.length;
     const reactiveDiag = newDiagnostic('reactive');
+    const tReact = Date.now();
     finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, reactiveDiag);
+    reactiveCondenseMs = Date.now() - tReact;
     condenseDiagnostics.push(reactiveDiag);
     const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
     archivedCount += newlyArchived;
     condensed = condensed || newlyArchived > 0;
   }
 
+  const tWrite = Date.now();
   await writeDashboardFile(key, finalDashboard);
+  writeMs = Date.now() - tWrite;
 
   // Fire-and-forget: Send mention notifications if mentions were detected
   if (mentions.length > 0) {
@@ -1849,6 +1995,9 @@ async function handleAppend(
     }
   }
 
+  const totalMs = Date.now() - appendStart;
+  const splitSuffix = isMultiPart ? ` [split en ${newMessages.length} parts]` : '';
+
   return {
     success: true,
     action: 'append',
@@ -1861,7 +2010,14 @@ async function handleAppend(
     archivedCount: reportedArchivedCount,
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
-    message: `Message ajouté au dashboard '${key}'${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}`
+    splitCount: newMessages.length,
+    durationBreakdown: {
+      totalMs,
+      preemptiveCondenseMs,
+      reactiveCondenseMs,
+      writeMs
+    },
+    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}`
   };
 }
 

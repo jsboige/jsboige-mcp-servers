@@ -998,17 +998,27 @@ describe('roosync_dashboard', () => {
       expect(mockChatCreate).not.toHaveBeenCalled();
     });
 
-    it('does NOT preemptively condense when messages.length <= CONDENSE_KEEP', async () => {
-      // Even if size hits threshold, with <= 10 messages we must not condense
-      // (nothing to keep minus nothing to archive = edge case).
+    it('splits large incoming messages so condense can archive them (#1589)', async () => {
+      // Regression: prior behaviour was "single large message protected by
+      // CONDENSE_KEEP slice policy → dashboard stays above threshold forever".
+      // With per-append split (#1589), a 47KB message becomes ~12 parts (4KB
+      // cap each). After an initial small message + the big one split into
+      // parts, messages.length > CONDENSE_KEEP and the next append correctly
+      // triggers condensation.
       mockGetChatClient.mockReturnValue({
         chat: { completions: { create: mockChatCreate } }
       });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Summary\n\nArchived content' } }]
+      });
 
       await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      // Very large message, only 1 entry — size > 92% but count < CONDENSE_KEEP
-      const huge = 'Y'.repeat(47 * 1024); // 47 KB single message (above 46 KB threshold)
-      await roosyncDashboard({ action: 'append', type: 'global', content: huge });
+      const huge = 'Y'.repeat(47 * 1024); // 47 KB single message
+      const firstResult = await roosyncDashboard({ action: 'append', type: 'global', content: huge });
+
+      // The 47KB content is split into ~12 parts of 4KB each.
+      expect(firstResult.splitCount).toBeGreaterThan(1);
+      expect(firstResult.messageCount).toBeGreaterThan(10);
 
       const result = await roosyncDashboard({
         action: 'append',
@@ -1017,9 +1027,9 @@ describe('roosync_dashboard', () => {
       });
 
       expect(result.success).toBe(true);
-      // Preemptive condense skipped because messageCount (1) <= CONDENSE_KEEP (10)
-      expect(result.condensed).toBe(false);
-      expect(mockChatCreate).not.toHaveBeenCalled();
+      // Now that the big message is multiple parts and count > CONDENSE_KEEP,
+      // preemptive condense fires and LLM is called.
+      expect(mockChatCreate).toHaveBeenCalled();
     });
 
     it('accumulates archivedCount when preemptive AND reactive condense both fire', async () => {
@@ -1067,6 +1077,153 @@ describe('roosync_dashboard', () => {
       // mockChatCreate must have been called at least once (condense happened)
       expect(mockChatCreate).toHaveBeenCalled();
     });
+  });
+
+  describe('Message splitting and duration breakdown (#1589)', () => {
+    it('does NOT split messages under the per-message cap', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'A small message under 4KB.'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.splitCount).toBe(1);
+      // Verify the dashboard has exactly one message added.
+      expect(result.messageCount).toBe(1);
+    });
+
+    it('splits a single oversize content on line boundaries', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // Build a paragraph-heavy body: 20 lines × ~600 chars = ~12KB.
+      const line = 'This is a readable sentence that contributes toward the total byte budget. '.repeat(8);
+      const body = Array.from({ length: 20 }, (_, i) => `## Section ${i + 1}\n${line}`).join('\n\n');
+
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: body
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.splitCount).toBeGreaterThan(1);
+      expect(result.messageCount).toBe(result.splitCount);
+      // Each part should be tagged with the PART marker for readers.
+      const dashboard = await roosyncDashboard({ action: 'read', type: 'global' });
+      const firstMsg = dashboard.data?.intercom?.messages?.[0];
+      expect(firstMsg?.content).toMatch(/^\*\*\[PART 1\//);
+    });
+
+    it('hard-slices individual lines that exceed the cap', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // One single-line body of 10KB — must be sliced at char boundaries.
+      const giantLine = 'X'.repeat(10 * 1024);
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: giantLine
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.splitCount).toBeGreaterThan(1);
+    });
+
+    it('populates durationBreakdown on every append', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'quick'
+      });
+
+      expect(result.durationBreakdown).toBeDefined();
+      expect(result.durationBreakdown!.totalMs).toBeGreaterThanOrEqual(0);
+      // No condensation fired, so preemptive & reactive are 0.
+      expect(result.durationBreakdown!.preemptiveCondenseMs).toBe(0);
+      expect(result.durationBreakdown!.reactiveCondenseMs).toBe(0);
+      expect(result.durationBreakdown!.writeMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('reports preemptiveCondenseMs > 0 when preemptive condense fires', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Summary\n\nCondensed' } }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      // Fill past 92% of 50KB with 16 ≥ CONDENSE_KEEP messages of 3KB each.
+      const filler = 'A'.repeat(3000);
+      for (let i = 0; i < 16; i++) {
+        await roosyncDashboard({
+          action: 'append',
+          type: 'global',
+          content: `${filler} msg${i}`
+        });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: 'trigger preemptive'
+      });
+
+      expect(result.condensed).toBe(true);
+      expect(result.durationBreakdown!.preemptiveCondenseMs).toBeGreaterThan(0);
+    });
+
+    it('unblocks a saturated dashboard pattern (3 large + filler)', async () => {
+      // Reproduces the CoursIA / po-2025 failure mode: 3 oversized dispatches
+      // in the recent window + 9 small messages = 55+ KB. Without split, the
+      // recent-slice policy of condense protected the 3 big ones and we never
+      // dropped below threshold. With split, the big messages become many
+      // parts, condense archives them normally, dashboard comes back under
+      // MAX_DASHBOARD_SIZE_BYTES.
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Summary\n\nArchived dispatches' } }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // 9 small "INFO" messages (~300 chars each)
+      for (let i = 0; i < 9; i++) {
+        await roosyncDashboard({
+          action: 'append',
+          type: 'global',
+          content: `[INFO] Small message ${i} with minor coordination detail.`
+        });
+      }
+
+      // 3 oversize dispatches mimicking CoursIA: 15KB, 12KB, 5KB
+      const dispatch1 = 'Mission A content. '.repeat(800); // ~15KB
+      const dispatch2 = 'Mission B content. '.repeat(660); // ~12KB
+      const dispatch3 = 'Mission C content. '.repeat(270); // ~5KB
+
+      await roosyncDashboard({ action: 'append', type: 'global', content: dispatch1 });
+      await roosyncDashboard({ action: 'append', type: 'global', content: dispatch2 });
+      const result = await roosyncDashboard({ action: 'append', type: 'global', content: dispatch3 });
+
+      // With split, the 3 big dispatches become many 4KB parts spread across
+      // the message list. The dashboard stays below the 50KB threshold either
+      // because (a) the split itself kept each append small or (b) condense
+      // then naturally archived older parts. Either outcome is success — the
+      // old bug was "saturated forever".
+      const readBack = await roosyncDashboard({ action: 'read', type: 'global' });
+      const intercomSize = (readBack.sizes as any).intercomLength;
+      const statusSize = (readBack.sizes as any).statusLength;
+      const totalSize = intercomSize + statusSize;
+
+      expect(totalSize).toBeLessThan(50 * 1024);
+      // The 3rd dispatch was split into multiple parts.
+      expect(result.splitCount).toBeGreaterThan(1);
+    }, 15000);
   });
 
   describe('Mention parsing and filtering (#1363)', () => {
