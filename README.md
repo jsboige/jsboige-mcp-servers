@@ -3,8 +3,7 @@
 Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités des modèles de langage (LLM).
 
 [![CI](https://github.com/jsboige/jsboige-mcp-servers/actions/workflows/ci.yml/badge.svg)](https://github.com/jsboige/jsboige-mcp-servers/actions/workflows/ci.yml)
-[![License: MIT](https://imgices.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Test Coverage](https://imgices.shields.io/codecov/c/github/jsboige/jsboige-mcp-servers)](https://codecov.io/gh/jsboige/jsboige-mcp-servers)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## CI Policy
 
@@ -57,7 +56,7 @@ Le serveur **roo-state-manager** est le composant central du système RooSync Mu
 - Diagnostics et maintenance
 
 **Stack**: TypeScript, Node.js 20.18.0, Vitest
-**Tests**: 7600+ tests unitaires
+**Tests**: 7900+ tests unitaires
 **Documentation**: [servers/roo-state-manager/README.md](servers/roo-state-manager/README.md)
 
 #### Jupyter MCP Server
@@ -136,7 +135,7 @@ servers/
 └── server-name/
     ├── README.md           # Documentation
     ├── package.json        # Dépendances et scripts
-    ├── jest.config.{js|cjs}  # Configuration Jest
+    ├── vitest.config.ts    # Configuration Vitest
     ├── tsconfig.json       # Configuration TypeScript
     ├── src/                # Code source
     │   ├── index.ts        # Point d'entrée
@@ -155,7 +154,7 @@ servers/
 ### Avant de committer
 
 1. **Build**: `npm run build` (pour les serveurs TypeScript)
-2. **Tests**: `npm test` ou `npx vitest run`
+2. **Tests**: `npx vitest run` (JAMAIS `npm test` — watch mode blocks)
 3. **Linting**: Vérifier la conformité aux standards du projet
 
 ### Branches
@@ -183,6 +182,6 @@ MIT - voir [LICENSE](LICENSE)
 
 ## Ressources
 
-- [Spécification MCP officielle](https://github.com/microsoft/mcp)
+- [Spécification MCP officielle](https://modelcontextprotocol.io)
 - [Projet parent: roo-extensions](https://github.com/jsboige/roo-extensions)
 - [Issue CI: #626](https://github.com/jsboige/roo-extensions/issues/626) - Suivi réparation CI
