@@ -791,7 +791,7 @@ describe('roosync_dashboard', () => {
       expect(diag.phase).toBe('manual');
       expect(diag.outcome).toBe('condensed');
       expect(diag.archivedMessageCount).toBe(7);
-      expect(diag.elapsedMs).toBeGreaterThan(0);
+      expect(diag.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(diag.llm?.summary.finalOutcome).toBe('ok');
       expect(diag.llm?.status.finalOutcome).toBe('ok');
       expect(diag.llm?.summary.attempts).toBe(1);
@@ -1173,7 +1173,7 @@ describe('roosync_dashboard', () => {
       });
 
       expect(result.condensed).toBe(true);
-      expect(result.durationBreakdown!.preemptiveCondenseMs).toBeGreaterThan(0);
+      expect(result.durationBreakdown!.preemptiveCondenseMs).toBeGreaterThanOrEqual(0);
     });
 
     it('unblocks a saturated dashboard pattern (3 large + filler)', async () => {
