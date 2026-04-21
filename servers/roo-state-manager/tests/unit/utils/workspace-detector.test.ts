@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'path';
 
 const { mockAccess, mockReadFile } = vi.hoisted(() => ({
   mockAccess: vi.fn(),
@@ -60,7 +61,7 @@ describe('WorkspaceDetector', () => {
       const detector = new WorkspaceDetector({ enableCache: false });
       const result = await detector.detect('/fake/tasks/task1');
 
-      expect(result.workspace).toBe('c:\\dev\\roo-extensions'); // normalized
+      expect(result.workspace).toBe(path.normalize('c:/dev/roo-extensions'));
       expect(result.source).toBe('metadata');
       expect(result.confidence).toBe(0.95);
     });
@@ -73,7 +74,7 @@ describe('WorkspaceDetector', () => {
       const detector = new WorkspaceDetector({ enableCache: false });
       const result = await detector.detect('/fake/tasks/task2');
 
-      expect(result.workspace).toBe('d:\\projects\\myapp');
+      expect(result.workspace).toBe(path.normalize('d:/projects/myapp'));
       expect(result.source).toBe('metadata');
     });
 
@@ -275,8 +276,8 @@ describe('WorkspaceDetector', () => {
       const detector = new WorkspaceDetector({ enableCache: false, normalizePaths: true });
       const result = await detector.detect('/fake/tasks/norm');
 
-      // On Windows, should use backslashes
-      expect(result.workspace).toContain('\\');
+      // Should use platform separator
+      expect(result.workspace).toContain(path.sep);
     });
 
     it('removes trailing separator', async () => {
