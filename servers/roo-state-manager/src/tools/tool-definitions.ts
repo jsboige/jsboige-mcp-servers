@@ -461,6 +461,7 @@ export const roosyncMachinesDefinition = {
 };
 
 
+
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
     description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle/update_server_field/sync_always_allow configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
