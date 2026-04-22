@@ -106,7 +106,7 @@ export const roosyncIndexingTool: Tool = {
             },
             claude_code_sessions: {
                 type: 'boolean',
-                description: 'Archiver les sessions Claude Code (pour action=archive)',
+                description: 'Archiver les sessions Claude Code (pour action=archive) - DÉSACTIVÉ: sessions sanctuarisées #1621',
                 default: false
             },
             max_sessions: {
@@ -227,7 +227,19 @@ export async function handleRooSyncIndexing(
             const { TaskArchiver } = await import('../../services/task-archiver/index.js');
             const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
 
-            // Support pour l'archivage des sessions Claude Code
+            // GARDE-FOU SESSIONS SANCTUAIRE #1621
+            // Les sessions Claude/Roo sont sanctuarisées pour RL futur - aucun archivage sans approbation explicite
+            if (args.claude_code_sessions) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: 'ERREUR: Les sessions Claude Code sont SANCTUAIRES pour Reinforcement Learning futur. Aucun archivage ne peut être effectué sans approbation utilisateur explicite. Voir: #1621'
+                    }]
+                };
+            }
+
+            // Support pour l'archivage des sessions Claude Code (bloqué par le garde-fou ci-dessus)
             if (args.claude_code_sessions) {
                 const os = await import('os');
                 const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');

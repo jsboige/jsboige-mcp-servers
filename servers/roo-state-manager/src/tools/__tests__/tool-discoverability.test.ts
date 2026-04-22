@@ -100,7 +100,11 @@ async function hasCallToolHandler(handler: (req: any) => Promise<any>, toolName:
         if (error.message?.includes('Tool not found')) {
             return false;
         }
-        // Other errors (including timeout) mean the handler EXISTS but the operation failed
+        // Timeout means no handler found - return false
+        if (error.message?.includes('Tool check timeout')) {
+            return false;
+        }
+        // Other errors mean the handler EXISTS but the operation failed
         return true;
     }
 }
