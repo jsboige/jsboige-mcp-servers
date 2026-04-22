@@ -28,7 +28,7 @@ import {
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
     roosyncMachinesDefinition,
-    roosyncHeartbeatDefinition,
+    // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
@@ -42,7 +42,7 @@ import {
     roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 34;
+const EXPECTED_TOOL_COUNT = 33;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // heartbeat sits right after getStatus (not after machines) — see source.
@@ -243,13 +243,7 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(modes).toContain('attachments');
         });
 
-        it('roosync_heartbeat should have all action types', () => {
-            const actions = (roosyncHeartbeatDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
-            expect(actions).toContain('status');
-            expect(actions).toContain('register');
-            expect(actions).toContain('start');
-            expect(actions).toContain('stop');
-        });
+        // #1609: roosync_heartbeat test removed — tool no longer exists
 
         it('roosync_diagnose should have env/debug/reset/test actions', () => {
             const actions = (roosyncDiagnoseDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
@@ -374,7 +368,8 @@ describe('tool-definitions.ts — Schema Validation', () => {
         const strictTools = [
             roosyncInitDefinition, roosyncGetStatusDefinition, roosyncCompareConfigDefinition,
             roosyncListDiffsDefinition, roosyncBaselineDefinition, roosyncConfigDefinition,
-            roosyncInventoryDefinition, roosyncMachinesDefinition, roosyncHeartbeatDefinition,
+            roosyncInventoryDefinition, roosyncMachinesDefinition,
+            // #1609: roosyncHeartbeatDefinition removed
             roosyncMcpManagementDefinition, roosyncStorageManagementDefinition,
             roosyncDiagnoseDefinition, roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition
         ];
