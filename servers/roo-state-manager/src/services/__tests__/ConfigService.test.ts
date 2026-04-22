@@ -175,7 +175,10 @@ describe('ConfigService', () => {
     });
 
     it('devrait lancer une erreur en cas d\'erreur de sauvegarde', async () => {
-      const service = new ConfigService('/invalid/path/config.json');
+      // Use a path under a guaranteed non-existent temp directory (cross-platform)
+      // /invalid/path/ can resolve to a writable path on Windows (C:\invalid\path\)
+      const invalidDir = join(process.cwd(), 'test-temp-config', 'nonexistent-deep-' + Date.now(), 'nested');
+      const service = new ConfigService(join(invalidDir, 'config.json'));
 
       await expect(service.saveConfig({ test: 'data' })).rejects.toThrow();
     });
