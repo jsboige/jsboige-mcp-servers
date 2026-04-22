@@ -460,8 +460,7 @@ export const roosyncMachinesDefinition = {
     }
 };
 
-
-
+// #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
     description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle/update_server_field/sync_always_allow configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
@@ -683,6 +682,7 @@ export const allToolDefinitions = [
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
     roosyncMachinesDefinition,
+    // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
