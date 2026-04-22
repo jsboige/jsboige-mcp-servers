@@ -283,5 +283,40 @@ describe('FileLockManager', () => {
 			expect(result.success).toBe(true);
 			expect(result.data).toEqual({ items: ['first'] });
 		});
+
+		test('auto-repairs corrupt/empty JSON file (#1623)', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue('');
+
+			const manager = FileLockManager.getInstance();
+			const result = await manager.updateJsonWithLock<{ count: number }>(
+				'/test/corrupt.json',
+				(data) => data ?? { count: 1 }
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.data).toEqual({ count: 1 });
+			expect(mockWriteFile).toHaveBeenCalledWith(
+				'/test/corrupt.json',
+				JSON.stringify({ count: 1 }, null, 2),
+				'utf-8'
+			);
+		});
+
+		test('auto-repairs truncated JSON file (#1623)', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue('{"count":');
+
+			const manager = FileLockManager.getInstance();
+			const result = await manager.updateJsonWithLock<{ count: number }>(
+				'/test/truncated.json',
+				(data) => data ?? { count: 0 }
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.data).toEqual({ count: 0 });
+		});
 	});
 });
