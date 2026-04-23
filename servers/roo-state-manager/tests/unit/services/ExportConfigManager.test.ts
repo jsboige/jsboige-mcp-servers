@@ -492,7 +492,7 @@ describe('ExportConfigManager', () => {
       // Create a fresh manager to avoid any caching from global beforeEach
       const manager = new ExportConfigManager();
 
-      // Override the storage detector to return empty array
+      // Override the storage detector to return empty array (triggers error in initializeConfigPath)
       mockedStorageDetector.detectStorageLocations.mockResolvedValue([]);
 
       await expect(manager.getConfig()).rejects.toThrow(ExportConfigManagerError);

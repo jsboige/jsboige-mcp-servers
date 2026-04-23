@@ -140,7 +140,7 @@ export class ExportConfigManager {
             // Si l'erreur est liée à la détection de stockage, lancer une erreur
             if (error instanceof Error && error.message.includes('stockage')) {
                 throw new ExportConfigManagerError(
-                    'Impossible de déterminer l\'emplacement du fichier de configuration. Aucun stockage Roo détecté.',
+                    "Impossible de déterminer l'emplacement du fichier de configuration. Aucun stockage Roo détecté.",
                     ExportConfigManagerErrorCode.NO_STORAGE_DETECTED,
                     { originalError: error.message },
                     error
