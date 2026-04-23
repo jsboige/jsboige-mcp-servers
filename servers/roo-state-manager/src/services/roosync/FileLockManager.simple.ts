@@ -236,10 +236,13 @@ export class FileLockManager {
         const content = await fs.readFile(filePath, 'utf-8');
         data = JSON.parse(content) as T;
       } catch (error: any) {
-        if (error.code !== 'ENOENT') {
-          throw error;
+        if (error.code === 'ENOENT') {
+          // Fichier n'existe pas - data reste undefined
+        } else {
+          // Corrupt/empty file — treat as missing, updater will recreate (#1623)
+          console.warn(`[FileLockManager] Corrupt JSON in ${filePath}, treating as empty: ${error.message}`);
+          data = undefined;
         }
-        // Fichier n'existe pas - data reste undefined
       }
       const updated = updater(data);
       await fs.writeFile(filePath, JSON.stringify(updated, null, 2), 'utf-8');
