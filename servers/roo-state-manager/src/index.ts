@@ -34,47 +34,66 @@ if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
 }
 
-// #1551: Enhanced env validation — distinguish empty from missing, show .env path and fix hints
+// #1635: Resilient env validation — degrade instead of crash.
+// Missing env vars are tracked as degraded capabilities; tools return errors instead.
+import { getServerCapabilities } from './utils/server-capabilities.js';
+
+const ENV_VAR_CAPABILITIES: Record<string, 'sharedPath' | 'qdrant' | 'embeddings'> = {
+    ROOSYNC_SHARED_PATH: 'sharedPath',
+    QDRANT_URL: 'qdrant',
+    QDRANT_API_KEY: 'qdrant',
+    QDRANT_COLLECTION_NAME: 'qdrant',
+};
+const EMBEDDING_VARS = ['EMBEDDING_API_KEY', 'OPENAI_API_KEY'];
+
 const REQUIRED_ENV_VARS: Array<{ name: string; hint: string }> = [
     { name: 'QDRANT_URL', hint: 'Ex: https://qdrant.myia.io (remote) ou http://localhost:6333 (local)' },
     { name: 'QDRANT_API_KEY', hint: 'Clé API Qdrant. Ne PAS laisser vide. Ex: 4f89edd5-...' },
     { name: 'QDRANT_COLLECTION_NAME', hint: 'Ex: roo_tasks_semantic_index' },
     { name: 'ROOSYNC_SHARED_PATH', hint: 'Ex: G:/Mon Drive/Synchronisation/RooSync/.shared-state' },
 ];
-const hasEmbeddingKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
-if (!hasEmbeddingKey) {
-    console.error('⚠️ WARNING: Aucune clé d\'embedding configurée. Recherche sémantique indisponible.');
-    console.error('   Définir EMBEDDING_API_KEY (préféré) ou OPENAI_API_KEY dans le .env.');
-}
 
 const problems: Array<{ name: string; issue: string; hint: string }> = [];
+const capabilities = getServerCapabilities();
+
 for (const { name, hint } of REQUIRED_ENV_VARS) {
     const value = process.env[name];
     if (value === undefined || value === '') {
         const issue = value === undefined ? 'ABSENTE (non définie)' : 'VIDE (définie mais vide)';
         problems.push({ name, issue, hint });
+        const cap = ENV_VAR_CAPABILITIES[name];
+        if (cap) {
+            capabilities.markDegraded(cap, `${name} ${issue}`);
+        }
     }
+}
+
+const hasEmbeddingKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+if (!hasEmbeddingKey) {
+    capabilities.markDegraded('embeddings', 'Aucune clé d\'embedding configurée');
+    console.error('⚠️ WARNING: Aucune clé d\'embedding configurée. Recherche sémantique indisponible.');
+    console.error('   Définir EMBEDDING_API_KEY (préféré) ou OPENAI_API_KEY dans le .env.');
 }
 
 if (problems.length > 0) {
     console.error('');
     console.error('═══════════════════════════════════════════════════════════════');
-    console.error('🚨 ERREUR CRITIQUE: Configuration .env invalide');
+    console.error('⚠️ MODE DÉGRADÉ: Configuration .env incomplète');
     console.error('═══════════════════════════════════════════════════════════════');
     console.error(`📄 Fichier .env: ${envPath}`);
     console.error('');
     for (const { name, issue, hint } of problems) {
-        console.error(`   ❌ ${name} — ${issue}`);
+        console.error(`   ⚠️ ${name} — ${issue}`);
         console.error(`      → ${hint}`);
     }
     console.error('');
-    console.error('🔧 ACTION: Vérifiez le fichier .env ci-dessus. Chaque variable');
-    console.error('   doit avoir une valeur non-vide. Ne JAMAIS vider une clé existante.');
+    console.error('🔧 Le serveur démarre en mode dégradé. Les outils utilisant ces');
+    console.error('   variables retourneront une erreur explicative.');
     console.error('═══════════════════════════════════════════════════════════════');
     console.error('');
-    process.exit(1);
+} else {
+    console.error(`✅ Configuration .env validée (${envPath})`);
 }
-console.error(`✅ Configuration .env validée (${envPath})`);
 
 // #1140: ONLY import what's needed for server creation + handler registration.
 // Everything else loads lazily on first use.

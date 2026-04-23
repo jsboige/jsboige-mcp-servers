@@ -22,8 +22,46 @@ import { CACHE_CONFIG } from '../config/server-config.js';
 import { loadFullSkeleton } from '../services/background-services.js';
 import { createLogger } from '../utils/logger.js';
 import { formatErrorForLog } from '../utils/error-format.js';
+import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
 
 const registryLogger = createLogger('ToolRegistry');
+
+// #1635: Tool → required capability mapping.
+// Tools not listed here have no capability dependency (always available).
+const TOOL_CAPABILITIES: Record<string, Capability[]> = {
+	// RooSync/sharedPath-dependent tools
+	roosync_read: ['sharedPath'],
+	roosync_send: ['sharedPath'],
+	roosync_manage: ['sharedPath'],
+	roosync_attachments: ['sharedPath'],
+	roosync_dashboard: ['sharedPath'],
+	roosync_update_dashboard: ['sharedPath'],
+	roosync_refresh_dashboard: ['sharedPath'],
+	roosync_get_status: ['sharedPath'],
+	roosync_inventory: ['sharedPath'],
+	roosync_machines: ['sharedPath'],
+	roosync_config: ['sharedPath'],
+	roosync_compare_config: ['sharedPath'],
+	roosync_list_diffs: ['sharedPath'],
+	roosync_decision: ['sharedPath'],
+	roosync_decision_info: ['sharedPath'],
+	roosync_init: ['sharedPath'],
+	roosync_heartbeat: ['sharedPath'],
+	roosync_diagnose: ['sharedPath'],
+	roosync_cleanup_messages: ['sharedPath'],
+	roosync_baseline: ['sharedPath'],
+	roosync_indexing: ['sharedPath'],
+	roosync_mcp_management: ['sharedPath'],
+	roosync_storage_management: ['sharedPath'],
+	conversation_browser: ['sharedPath'],
+	export_data: ['sharedPath'],
+	task_export: ['sharedPath'],
+	maintenance: ['sharedPath'],
+	storage_info: ['sharedPath'],
+	// Qdrant-dependent tools
+	roosync_search: ['qdrant', 'embeddings'],
+	codebase_search: ['qdrant', 'embeddings'],
+};
 
 /**
  * Enregistre le handler pour ListTools
@@ -57,6 +95,29 @@ export function registerCallToolHandler(
 
         const toolCallStart = Date.now();
         let result: CallToolResult;
+
+        // #1635: Capability guard — check degraded capabilities before executing tool.
+        const requiredCaps = TOOL_CAPABILITIES[name];
+        if (requiredCaps) {
+            const caps = getServerCapabilities();
+            const degraded = requiredCaps.filter(c => !caps.isAvailable(c));
+            if (degraded.length > 0) {
+                const reasons = degraded
+                    .map(c => `${c}: ${caps.getDegradedReason(c)}`)
+                    .join('; ');
+                registryLogger.warn(`Tool "${name}" blocked — degraded capabilities: ${reasons}`);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `⚠️ Tool "${name}" indisponible — mode dégradé.\n\n` +
+                            `Capacité(s) manquante(s): ${degraded.join(', ')}\n` +
+                            `Raison: ${reasons}\n\n` +
+                            `Vérifiez le fichier .env du serveur et redémarrez.`,
+                    }],
+                    isError: true,
+                };
+            }
+        }
 
         try {
         switch (name) {

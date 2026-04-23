@@ -3,7 +3,7 @@
  * Coverage target: Core logic (enregistrement + routing)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
     registerListToolsHandler,
     registerCallToolHandler
@@ -12,6 +12,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import { getServerCapabilities } from '../../utils/server-capabilities.js';
 
 // Mock du Server SDK MCP
 vi.mock('@modelcontextprotocol/sdk/server/index.js', async () => {
@@ -739,6 +740,136 @@ describe('registry.ts - Tool Registration', () => {
             expect(result).toBeDefined();
             expect(result).toHaveProperty('content');
             expect(Array.isArray(result.content)).toBe(true);
+        });
+    });
+
+    describe('#1635: Degraded Mode Capability Guard', () => {
+        let mockServer: any;
+        let mockState: ServerState;
+        let caps: ReturnType<typeof getServerCapabilities>;
+
+        beforeEach(() => {
+            caps = getServerCapabilities();
+            caps.reset();
+
+            mockServer = {
+                setRequestHandler: vi.fn()
+            };
+
+            mockState = {
+                conversationCache: new Map<string, ConversationSkeleton>(),
+                qdrantIndexQueue: new Set<string>(),
+                isQdrantIndexingEnabled: false,
+                xmlExporterService: {},
+                exportConfigManager: {}
+            } as any;
+        });
+
+        afterEach(() => {
+            caps.reset();
+        });
+
+        it('should return error when sharedPath is degraded and tool requires it', async () => {
+            caps.markDegraded('sharedPath', 'ROOSYNC_SHARED_PATH ABSENTE');
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'roosync_dashboard',
+                    arguments: { action: 'read', type: 'workspace' }
+                }
+            };
+
+            const result = await handler(request);
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain('mode dégradé');
+            expect(result.content[0].text).toContain('sharedPath');
+        });
+
+        it('should return error when qdrant is degraded and tool requires it', async () => {
+            caps.markDegraded('qdrant', 'QDRANT_URL absent');
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'roosync_search',
+                    arguments: { action: 'semantic', search_query: 'test' }
+                }
+            };
+
+            const result = await handler(request);
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain('qdrant');
+        });
+
+        it('should allow tool execution when no capabilities are degraded', async () => {
+            // No degraded capabilities — normal flow
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Settings touched' }] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'touch_mcp_settings',
+                    arguments: {}
+                }
+            };
+
+            const result = await handler(request);
+
+            // Should proceed normally, not return degraded error
+            expect(result.isError).toBeUndefined();
+        });
+
+        it('should allow tools with no capability requirements regardless of degradation', async () => {
+            // Degrade everything
+            caps.markDegraded('sharedPath', 'test');
+            caps.markDegraded('qdrant', 'test');
+            caps.markDegraded('embeddings', 'test');
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'OK' }] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'touch_mcp_settings',
+                    arguments: {}
+                }
+            };
+
+            const result = await handler(request);
+
+            // touch_mcp_settings has no capability requirement — should work
+            expect(result.isError).toBeUndefined();
         });
     });
 });
