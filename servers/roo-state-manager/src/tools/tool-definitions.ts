@@ -460,28 +460,6 @@ export const roosyncMachinesDefinition = {
     }
 };
 
-export const roosyncHeartbeatDefinition = {
-    name: 'roosync_heartbeat',
-    description: "Gestion complète du heartbeat des agents Roo. Actions : status (consulter état), register (enregistrer nouveau heartbeat), start (démarrer surveillance), stop (arrêter surveillance).",
-    inputSchema: {
-        type: 'object',
-        properties: {
-            action: { type: 'string', enum: ['status', 'register', 'start', 'stop'], description: "Type d'opération: status (état), register (enregistrer), start (démarrer), stop (arrêter)" },
-            filter: { type: 'string', enum: ['all', 'online', 'offline', 'warning'], description: 'Filtrer par statut de machine (action: status)' },
-            includeHeartbeats: { type: 'boolean', description: 'Inclure les données de heartbeat de chaque machine (action: status)' },
-            forceCheck: { type: 'boolean', description: 'Forcer une vérification immédiate des heartbeats (action: status)' },
-            includeChanges: { type: 'boolean', description: 'Inclure les changements de statut récents (action: status)' },
-            machineId: { type: 'string', description: 'Identifiant de la machine (requis pour register, start)' },
-            metadata: { type: 'object', description: 'Métadonnées optionnelles à associer au heartbeat (action: register)' },
-            enableAutoSync: { type: 'boolean', description: 'Activer la synchronisation automatique (action: start)' },
-            heartbeatInterval: { type: 'number', description: 'Intervalle de heartbeat en millisecondes (action: start)' },
-            offlineTimeout: { type: 'number', description: 'Timeout avant de considérer une machine offline en ms (action: start)' },
-            saveState: { type: 'boolean', description: "Sauvegarder l'état avant l'arrêt (action: stop)" }
-        },
-        required: ['action'],
-        additionalProperties: false
-    }
-};
 
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
@@ -671,6 +649,29 @@ export const roosyncAttachmentsDefinition = {
 // #1470: Derived from Zod schema in dashboard-schemas.ts (single source of truth)
 export const roosyncDashboardDefinition = dashboardToolMetadata;
 
+export const roosyncHeartbeatDefinition = {
+    name: 'roosync_heartbeat',
+    description: "Gestion complète du heartbeat des agents Roo. Actions : status (consulter état), register (enregistrer nouveau heartbeat), start (démarrer surveillance), stop (arrêter surveillance).",
+    inputSchema: {
+        type: 'object',
+        properties: {
+            action: { type: 'string', enum: ['status', 'register', 'start', 'stop'], description: "Type d'opération: status (état), register (enregistrer), start (démarrer), stop (arrêter)" },
+            filter: { type: 'string', enum: ['all', 'online', 'offline', 'warning'], description: "Filtrer par statut de machine (action: status)" },
+            includeHeartbeats: { type: 'boolean', description: "Inclure les données de heartbeat de chaque machine (action: status)" },
+            forceCheck: { type: 'boolean', description: "Forcer une vérification immédiate des heartbeats (action: status)" },
+            includeChanges: { type: 'boolean', description: "Inclure les changements de statut récents (action: status)" },
+            machineId: { type: 'string', description: "Identifiant de la machine (requis pour register, start)" },
+            metadata: { type: 'object', description: "Métadonnées optionnelles à associer au heartbeat (action: register)" },
+            enableAutoSync: { type: 'boolean', description: "Activer la synchronisation automatique (action: start)" },
+            heartbeatInterval: { type: 'number', description: "Intervalle de heartbeat en millisecondes (action: start)" },
+            offlineTimeout: { type: 'number', description: "Timeout avant de considérer une machine offline en ms (action: start)" },
+            saveState: { type: 'boolean', description: "Sauvegarder l'état avant l'arrêt (action: stop)" }
+        },
+        required: ['action'],
+        additionalProperties: false
+    }
+};
+
 // ============================================================
 // allToolDefinitions — the complete ordered list for ListTools
 // This mirrors the order in the current registerListToolsHandler.
@@ -693,9 +694,10 @@ export const allToolDefinitions = [
     getRawConversationDefinition,
     // WP4: Diagnostic
     analyzeRooSyncProblemsDefinition,
-    // RooSync tools (22) — same order as roosyncTools array in roosync/index.ts
+    // RooSync tools (23) — same order as roosyncTools array in roosync/index.ts
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
+    roosyncHeartbeatDefinition,
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
@@ -704,7 +706,6 @@ export const allToolDefinitions = [
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
     roosyncMachinesDefinition,
-    roosyncHeartbeatDefinition,
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,

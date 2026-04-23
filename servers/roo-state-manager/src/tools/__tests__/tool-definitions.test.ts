@@ -44,6 +44,8 @@ import {
 
 const EXPECTED_TOOL_COUNT = 34;
 
+// Order MUST mirror allToolDefinitions in tool-definitions.ts.
+// heartbeat sits right after getStatus (not after machines) — see source.
 const allDefinitions = [
     conversationBrowserDefinition,
     taskExportDefinition,
@@ -59,6 +61,7 @@ const allDefinitions = [
     analyzeRooSyncProblemsDefinition,
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
+    roosyncHeartbeatDefinition,
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
@@ -67,7 +70,6 @@ const allDefinitions = [
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
     roosyncMachinesDefinition,
-    roosyncHeartbeatDefinition,
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,

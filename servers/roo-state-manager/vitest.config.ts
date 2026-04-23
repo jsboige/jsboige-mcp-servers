@@ -1,18 +1,20 @@
-import { defineConfig } from 'vitest/config';
-import path from 'path';
+import { defineConfig } from 'vitest/config'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+// Obtenir le chemin du fichier courant (ESM)
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 export default defineConfig({
   test: {
-    // Globals pour avoir describe, it, expect disponibles sans import
     globals: true,
-
-    // Environnement Node.js (comme Jest)
     environment: 'node',
-
-    // Patterns de tests (équivalent à testMatch de Jest)
-    // NOTE: tests/e2e sont EXCLUS du run par défaut car ils envoient de vrais messages
-    // à la production RooSync (GDrive). Utiliser vitest.config.real-machines.ts pour les e2e.
-    // NOTE: vitest-migration/backups sont des anciennes sauvegardes, ne pas les inclure
+    allowImportingTsExtensions: true,
+    // Restore explicit include patterns — without them, vitest defaults to
+    // `**/*.{test,spec}.?(c|m)[jt]s?(x)` and picks up `src/tests/BaselineService.test.ts`
+    // which has broken mocks (global.mockFs undefined). The test file is never meant
+    // to run in CI — it lives outside `src/**/__tests__/`.
     include: [
       'tests/unit/**/*.test.ts',
       'tests/unit/**/*.test.js',
@@ -23,8 +25,6 @@ export default defineConfig({
       'src/**/__tests__/**/*.test.ts',
       'src/**/__tests__/**/*.test.js'
     ],
-
-    // Exclusions (équivalent à testPathIgnorePatterns)
     exclude: [
       'node_modules',
       'build',
@@ -52,19 +52,83 @@ export default defineConfig({
       'tests/unit/services/roosync/FileLockManager.diagnostic.test.ts',
       'tests/unit/services/roosync/PresenceManager.integration.test.ts'
     ],
-
     // Setup files (équivalent à setupFilesAfterEnv)
     setupFiles: ['./tests/setup-env.ts', './tests/setup/jest.setup.js', './tests/setup/filelock.setup.js'],
-
     // Global setup (création du stockage temporaire)
-    // Note: Dans Vitest v3, globalSetup retourne une fonction de teardown
     globalSetup: './tests/config/globalSetup.ts',
-
-    // Timeout (30 secondes comme Jest)
+    // Timeout pour environnement de développement (30 secondes comme Jest)
     testTimeout: 15000,
     hookTimeout: 30000,
 
     // Pool configuration - forks is faster for isolated tests with heavy setup
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        maxForks: 4
+      }
+    },
+
+    // Mocks
+    clearMocks: true,
+    restoreMocks: true,
+    mockReset: true,
+
+    // Coverage configuration
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html', 'lcov'],
+      reportsDirectory: './coverage',
+      exclude: [
+        'node_modules/',
+        'build/',
+        'dist/',
+        'tests/',
+        '**/*.d.ts',
+        '**/*.config.*',
+        '**/mockData/',
+        'coverage/**',
+        '**/__tests__/**',
+        '**/vitest-migration/**'
+      ],
+      // Seuils de couverture (optionnel) - syntaxe Vitest v3
+      thresholds: {
+        lines: 50,
+        functions: 50,
+        branches: 50,
+        statements: 50
+      }
+    },
+
+    // Isolate pour éviter les fuites entre tests
+    isolate: true,
+
+    // Reporters
+    reporters: ['default']
+  },
+
+  // Configuration CI (exclut les tests platform-dependants)
+  ci: {
+    // Sélection automatique si CI=true dans l'environnement
+    ...(process.env.CI === 'true' ? {
+      // Exclure les tests qui dépendent de l'environnement Windows
+      exclude: [
+        'tests/unit/services/roosync/FileLockManager.test.ts',
+        'tests/unit/services/roosync/PresenceManager.test.ts',
+        'tests/integration/file-lock-manager-integration.test.ts'
+      ]
+    } : {}),
+
+    // Timeout pour CI (plus long pour les tests lents)
+    testTimeout: 90000, // 90 seconds
+    hookTimeout: 120000, // 120 seconds
+
+    // Setup files (nécessaire pour CI)
+    setupFiles: ['./tests/setup-env.ts', './tests/setup/jest.setup.js', './tests/setup/filelock.setup.js'],
+
+    // Global setup (nécessaire pour CI)
+    globalSetup: './tests/config/globalSetup.ts',
+
+    // Pool configuration
     pool: 'forks',
     poolOptions: {
       forks: {

@@ -269,57 +269,44 @@ describe('roosyncIndexingTool', () => {
 	// Archive action - Claude Code sessions (#611)
 	// ============================================================
 
-	test('archive action with claude_code_sessions=true archives Claude Code sessions', async () => {
-		mockArchiveClaudeCodeSessions.mockResolvedValue({
-			archived: 5,
-			failed: 1
-		});
+	test('archive action with claude_code_sessions=true returns error (sanctuary protection)', async () => {
+		// Sanctuary protection prevents this path from being reached
 
 		const result = await handleRooSyncIndexing(
 			{ action: 'archive', claude_code_sessions: true },
 			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
 		);
 
-		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalled();
-		expect((result as any).isError).toBe(false);
-		expect(result.content[0].text).toContain('Sessions Claude Code archivées');
-		expect(result.content[0].text).toContain('5 réussies');
-		expect(result.content[0].text).toContain('1 échecs');
+		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
+		expect((result as any).isError).toBe(true);
+		expect(result.content[0].text).toContain('SANCTUAIRES');
+		expect(result.content[0].text).toContain('Reinforcement Learning futur');
 	});
 
-	test('archive action with claude_code_sessions and max_sessions limits archiving', async () => {
-		mockArchiveClaudeCodeSessions.mockResolvedValue({
-			archived: 10,
-			failed: 0
-		});
+	test('archive action with claude_code_sessions and max_sessions returns error (sanctuary protection)', async () => {
+		// Sanctuary protection prevents this path from being reached
 
 		const result = await handleRooSyncIndexing(
 			{ action: 'archive', claude_code_sessions: true, max_sessions: 10 },
 			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
 		);
 
-		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalledWith(expect.any(String), 10);
-		expect(result.content[0].text).toContain('Sessions Claude Code archivées');
-		expect(result.content[0].text).toContain('10 réussies');
-		expect(result.content[0].text).toContain('0 échecs');
+		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
+		expect((result as any).isError).toBe(true);
+			expect(result.content[0].text).toContain('SANCTUAIRES');
+		expect(result.content[0].text).toContain('Reinforcement Learning futur');
 	});
 
-	test('archive action returns error on Claude Code archiving failure', async () => {
-		let errorCaught = false;
-		mockArchiveClaudeCodeSessions.mockRejectedValueOnce(new Error('Directory not found'));
+	test('archive action with claude_code_sessions=true returns error (sanctuary protection)', async () => {
+		const result = await handleRooSyncIndexing(
+			{ action: 'archive', claude_code_sessions: true },
+			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
+		);
 
-		try {
-			await handleRooSyncIndexing(
-				{ action: 'archive', claude_code_sessions: true },
-				cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
-			);
-		} catch (e) {
-			errorCaught = true;
-			expect(e).toBeInstanceOf(Error);
-			expect((e as Error).message).toContain('Directory not found');
-		}
-
-		expect(errorCaught).toBe(true);
+		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
+		expect((result as any).isError).toBe(true);
+		expect(result.content[0].text).toContain('SANCTUAIRES');
+		expect(result.content[0].text).toContain('Reinforcement Learning futur');
 	});
 });
 
