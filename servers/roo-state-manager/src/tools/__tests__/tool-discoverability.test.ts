@@ -100,11 +100,8 @@ async function hasCallToolHandler(handler: (req: any) => Promise<any>, toolName:
         if (error.message?.includes('Tool not found')) {
             return false;
         }
-        // Timeout means no handler found - return false
-        if (error.message?.includes('Tool check timeout')) {
-            return false;
-        }
-        // Other errors mean the handler EXISTS but the operation failed
+        // Other errors (including timeout) mean the handler EXISTS but the operation failed
+        // (e.g. roosync_cleanup_messages does heavy GDrive I/O beyond the 5s test budget)
         return true;
     }
 }

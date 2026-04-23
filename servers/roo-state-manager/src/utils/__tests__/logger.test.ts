@@ -8,6 +8,8 @@ import { Logger, createLogger, getDefaultLogger, resetDefaultLogger } from '../l
 import type { LogLevel, LoggerOptions } from '../logger.js';
 
 describe('logger', () => {
+	// NOTE: MCP stdio transport reserves stdout for JSON-RPC.
+	// All log levels MUST go to stderr (console.error) — see fix(MCP) stdout leak.
 	let consoleSpy: Record<string, ReturnType<typeof vi.spyOn>>;
 
 	beforeEach(() => {
@@ -74,19 +76,19 @@ describe('logger', () => {
 		test('filters out DEBUG when minLevel is INFO', () => {
 			const logger = new Logger({ minLevel: 'INFO' as LogLevel, logDir: '/tmp/test-logs-' + Date.now() });
 			logger.debug('should be filtered');
-			expect(consoleSpy.debug).not.toHaveBeenCalled();
+			expect(consoleSpy.error).not.toHaveBeenCalled();
 		});
 
 		test('shows INFO when minLevel is INFO', () => {
 			const logger = new Logger({ minLevel: 'INFO' as LogLevel, logDir: '/tmp/test-logs-' + Date.now() });
 			logger.info('should appear');
-			expect(consoleSpy.log).toHaveBeenCalled();
+			expect(consoleSpy.error).toHaveBeenCalled();
 		});
 
 		test('shows WARN when minLevel is INFO', () => {
 			const logger = new Logger({ minLevel: 'INFO' as LogLevel, logDir: '/tmp/test-logs-' + Date.now() });
 			logger.warn('should appear');
-			expect(consoleSpy.warn).toHaveBeenCalled();
+			expect(consoleSpy.error).toHaveBeenCalled();
 		});
 
 		test('shows ERROR when minLevel is INFO', () => {
@@ -104,7 +106,7 @@ describe('logger', () => {
 			expect(consoleSpy.debug).not.toHaveBeenCalled();
 			expect(consoleSpy.log).not.toHaveBeenCalled();
 			expect(consoleSpy.warn).not.toHaveBeenCalled();
-			expect(consoleSpy.error).toHaveBeenCalled();
+			expect(consoleSpy.error).toHaveBeenCalledTimes(1);
 		});
 
 		test('shows everything when minLevel is DEBUG', () => {
@@ -113,10 +115,8 @@ describe('logger', () => {
 			logger.info('i');
 			logger.warn('w');
 			logger.error('e');
-			expect(consoleSpy.debug).toHaveBeenCalled();
-			expect(consoleSpy.log).toHaveBeenCalled();
-			expect(consoleSpy.warn).toHaveBeenCalled();
-			expect(consoleSpy.error).toHaveBeenCalled();
+			// All 4 log levels go to stderr (stdout reserved for JSON-RPC in MCP stdio transport)
+			expect(consoleSpy.error).toHaveBeenCalledTimes(4);
 		});
 	});
 
@@ -155,8 +155,8 @@ describe('logger', () => {
 		test('includes metadata in log output', () => {
 			const logger = new Logger({ minLevel: 'INFO' as LogLevel, logDir: '/tmp/test-logs-' + Date.now() });
 			logger.info('Test message', { key: 'value', count: 42 });
-			expect(consoleSpy.log).toHaveBeenCalled();
-			const output = consoleSpy.log.mock.calls[0][0];
+			expect(consoleSpy.error).toHaveBeenCalled();
+			const output = consoleSpy.error.mock.calls[0][0];
 			expect(output).toContain('key');
 			expect(output).toContain('value');
 		});
@@ -164,7 +164,7 @@ describe('logger', () => {
 		test('formats without metadata when none provided', () => {
 			const logger = new Logger({ minLevel: 'INFO' as LogLevel, logDir: '/tmp/test-logs-' + Date.now() });
 			logger.info('Simple message');
-			expect(consoleSpy.log).toHaveBeenCalled();
+			expect(consoleSpy.error).toHaveBeenCalled();
 		});
 	});
 
