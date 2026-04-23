@@ -76,9 +76,12 @@ export class ExportConfigManager {
                 const firstLocation = storageLocations[0];
                 const storageDir = path.dirname(firstLocation); // Remonte d'un niveau depuis tasks/
                 this.configPath = path.join(storageDir, ExportConfigManager.CONFIG_FILE_NAME);
+            } else {
+                throw new Error('Aucun stockage Roo détecté');
             }
         } catch (error) {
             console.error('Erreur lors de l\'initialisation du chemin de configuration:', error);
+            throw error; // Re-throw the error
         }
     }
 
@@ -134,8 +137,17 @@ export class ExportConfigManager {
             }
             
         } catch (error) {
+            // Si l'erreur est liée à la détection de stockage, lancer une erreur
+            if (error instanceof Error && error.message.includes('stockage')) {
+                throw new ExportConfigManagerError(
+                    'Impossible de déterminer l\'emplacement du fichier de configuration. Aucun stockage Roo détecté.',
+                    ExportConfigManagerErrorCode.NO_STORAGE_DETECTED,
+                    { originalError: error.message },
+                    error
+                );
+            }
             console.error('Erreur lors du chargement de la configuration:', error);
-            // Retourner la configuration par défaut en cas d'erreur
+            // Retourner la configuration par défaut en cas d'erreur de configuration
             return { ...DEFAULT_CONFIG };
         }
     }

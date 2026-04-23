@@ -18,7 +18,7 @@ vi.mock('js-yaml');
 vi.mock('../../../../src/utils/shared-state-path.js');
 vi.mock('../../../../src/utils/message-helpers.js');
 vi.mock('../../../../src/utils/logger.js');
-vi.mock('../../../../src/services/openai.js');
+vi.mock('../../../../src/services/openai.ts');
 vi.mock('../../../../src/utils/dashboard-helpers.js');
 
 const { readFileSync, writeFileSync, existsSync } = vi.mocked(require('fs'));

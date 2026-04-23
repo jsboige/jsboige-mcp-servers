@@ -46,3 +46,6 @@ export * from './tool-definitions.js';
 
 // Types MachineConfig unifiés (#603 B3)
 export * from './machine-config.js';
+
+// Types d'erreurs
+export * from './errors';

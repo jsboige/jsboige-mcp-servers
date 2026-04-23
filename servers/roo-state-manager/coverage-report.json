@@ -1,0 +1,32 @@
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Startup Error [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯⎯[39m
+Error: Failed to load custom Reporter from text
+    at loadCustomReporterModule (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:7705:9)
+    at async file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:7723:28
+    ... 3 lines matching cause stack trace ...
+    at async _createServer (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite/dist/node/chunks/config.js:25606:86)
+    at async createViteServer (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:6911:17)
+    at async createVitest (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:10202:17)
+    at async prepareVitest (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:10541:14)
+    at async startVitest (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:10488:14) {
+  [cause]: Error: Cannot find package 'text'
+      at ViteNodeRunner._fetchModule (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite-node/dist/client.mjs:247:19)
+      at async ViteNodeRunner.directRequest (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite-node/dist/client.mjs:268:44)
+      at async ViteNodeRunner.cachedRequest (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite-node/dist/client.mjs:189:11)
+      at async ViteNodeRunner.executeId (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite-node/dist/client.mjs:166:10)
+      at async loadCustomReporterModule (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:7703:26)
+      at async file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:7723:28
+      at async Promise.all (index 1)
+      at async Vitest._setServer (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:9341:138)
+      at async BasicMinimalPluginContext.handler (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vitest/dist/chunks/cli-api.BkDphVBG.js:10169:6)
+      at async _createServer (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite/dist/node/chunks/config.js:25606:86) {
+    code: 'ERR_MODULE_NOT_FOUND',
+    [cause]: Error: Failed to load url text (resolved id: text). Does the file exist?
+        at loadAndTransform (file:///C:/dev/roo-extensions/.claude/worktrees/wt-worker-myia-web1-20260423-080731/mcps/internal/servers/roo-state-manager/node_modules/vite/dist/node/chunks/config.js:22663:33) {
+      code: 'ERR_LOAD_URL'
+    }
+  }
+}
+
+
+
