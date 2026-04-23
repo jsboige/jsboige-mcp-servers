@@ -81,6 +81,43 @@ describe('roosync_decision (integration)', () => {
         mkdirSync(dir, { recursive: true });
       }
     }
+
+    // Create sync-roadmap.md for the tests
+    const roadmapPath = join(testSharedStatePath, 'sync-roadmap.md');
+    const roadmapContent = `# Test Sync Roadmap
+
+## Test Decision
+
+<!-- DECISION_BLOCK_START -->
+**Titre:** Test decision
+**ID:** test-decision-001
+**Statut:** pending
+**Proposé par:** test-machine
+**Créé le:** 2024-01-01T00:00:00.000Z
+**Changes:**
+- File: test.txt
+  Action: create
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**Titre:** Test decision with comment
+**ID:** test-decision-002
+**Statut:** pending
+**Proposé par:** test-machine
+**Créé le:** 2024-01-01T00:00:00.000Z
+**Changes:**
+<!-- DECISION_BLOCK_END -->
+
+<!-- DECISION_BLOCK_START -->
+**Titre:** Test decision move
+**ID:** test-decision-003
+**Statut:** pending
+**Proposé par:** test-machine
+**Créé le:** 2024-01-01T00:00:00.000Z
+**Changes:**
+<!-- DECISION_BLOCK_END -->
+`;
+    writeFileSync(roadmapPath, roadmapContent);
   });
 
   afterEach(async () => {

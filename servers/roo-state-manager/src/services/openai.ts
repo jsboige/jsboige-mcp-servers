@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { StateManagerError } from '../types/errors.ts';
+import { StateManagerError } from '../types/errors';
 
 let openai: OpenAI | null = null;
 let chatOpenai: OpenAI | null = null;
