@@ -11,6 +11,20 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     allowImportingTsExtensions: true,
+    // Restore explicit include patterns — without them, vitest defaults to
+    // `**/*.{test,spec}.?(c|m)[jt]s?(x)` and picks up `src/tests/BaselineService.test.ts`
+    // which has broken mocks (global.mockFs undefined). The test file is never meant
+    // to run in CI — it lives outside `src/**/__tests__/`.
+    include: [
+      'tests/unit/**/*.test.ts',
+      'tests/unit/**/*.test.js',
+      'tests/integration/**/*.test.ts',
+      'tests/integration/**/*.test.js',
+      'tests/performance/**/*.test.ts',
+      'tests/performance/**/*.test.js',
+      'src/**/__tests__/**/*.test.ts',
+      'src/**/__tests__/**/*.test.js'
+    ],
     exclude: [
       'node_modules',
       'build',
