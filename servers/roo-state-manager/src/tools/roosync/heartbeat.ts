@@ -49,9 +49,9 @@ export const HeartbeatArgsSchema = z.object({
   // Paramètres pour action: 'start'
   enableAutoSync: z.boolean().optional()
     .describe('Activer la synchronisation automatique (action: start)'),
-  heartbeatInterval: z.number().optional()
+  heartbeatInterval: z.number().min(0).optional()
     .describe('Intervalle de heartbeat en ms (action: start)'),
-  offlineTimeout: z.number().optional()
+  offlineTimeout: z.number().min(0).optional()
     .describe('Timeout offline en ms (action: start)'),
 
   // Paramètres pour action: 'stop'
