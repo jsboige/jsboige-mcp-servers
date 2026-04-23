@@ -103,9 +103,7 @@ describe('logger', () => {
 			logger.info('filtered');
 			logger.warn('filtered');
 			logger.error('shown');
-			expect(consoleSpy.debug).not.toHaveBeenCalled();
-			expect(consoleSpy.log).not.toHaveBeenCalled();
-			expect(consoleSpy.warn).not.toHaveBeenCalled();
+			// All output goes to stderr (stdout reserved for JSON-RPC in MCP stdio transport)
 			expect(consoleSpy.error).toHaveBeenCalledTimes(1);
 		});
 

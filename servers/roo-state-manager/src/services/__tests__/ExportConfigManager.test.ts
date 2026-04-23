@@ -179,13 +179,12 @@ describe('ExportConfigManager', () => {
       expect(JSON.parse(content).defaults).toBeDefined();
     });
 
-    test('retourne la config par défaut si aucun storage détecté', async () => {
+    test('lève NO_STORAGE_DETECTED si aucun storage détecté', async () => {
       mockDetectStorageLocations.mockResolvedValue([]);
 
       const manager = makeManager();
-      const config = await manager.getConfig();
 
-      expect(config.defaults.prettyPrint).toBe(true);
+      await expect(manager.getConfig()).rejects.toThrow('Aucun stockage Roo détecté');
     });
   });
 

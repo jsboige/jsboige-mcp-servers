@@ -12,27 +12,69 @@ import {
 import { AuthorSchema, IntercomMessageSchema, UserIdSchema } from '../../../../src/tools/roosync/dashboard-schemas.js';
 
 // Mock des dépendances
-vi.mock('fs/promises');
-vi.mock('fs');
-vi.mock('js-yaml');
-vi.mock('../../../../src/utils/shared-state-path.js');
-vi.mock('../../../../src/utils/message-helpers.js');
-vi.mock('../../../../src/utils/logger.js');
-vi.mock('../../../../src/services/openai.ts');
-vi.mock('../../../../src/utils/dashboard-helpers.js');
+vi.mock('fs/promises', () => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  mkdir: vi.fn(),
+}));
+vi.mock('fs', () => ({
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  existsSync: vi.fn(),
+}));
+vi.mock('js-yaml', () => ({
+  load: vi.fn(),
+  dump: vi.fn(),
+}));
+vi.mock('../../../../src/utils/shared-state-path.js', () => ({
+  getSharedStatePath: vi.fn(),
+}));
+vi.mock('../../../../src/utils/message-helpers.js', () => ({
+  getLocalMachineId: vi.fn(),
+  getLocalWorkspaceId: vi.fn(),
+}));
+vi.mock('../../../../src/utils/logger.js', () => ({
+  createLogger: vi.fn(),
+}));
+vi.mock('../../../../src/services/openai.js', () => ({
+  getChatOpenAIClient: vi.fn(),
+  getLLMModelId: vi.fn(),
+}));
+vi.mock('../../../../src/utils/dashboard-helpers.js', () => ({
+  sendMentionNotificationsAsync: vi.fn(),
+  sendStructuredMentionNotificationsAsync: vi.fn(),
+  resolveMentionTarget: vi.fn(),
+}));
 
-const { readFileSync, writeFileSync, existsSync } = vi.mocked(require('fs'));
-const { readFile, writeFile, mkdir } = vi.mocked(require('fs/promises'));
-const yaml = vi.mocked(require('js-yaml'));
-const { getSharedStatePath } = vi.mocked(require('../../../../src/utils/shared-state-path.ts'));
-const { getLocalMachineId, getLocalWorkspaceId } = vi.mocked(require('../../../../src/utils/message-helpers.ts'));
-const { createLogger } = vi.mocked(require('../../../../src/utils/logger.ts'));
-const { getChatOpenAIClient, getLLMModelId } = vi.mocked(require('../../../../src/services/openai.ts'));
-const {
-  sendMentionNotificationsAsync,
-  sendStructuredMentionNotificationsAsync,
-  resolveMentionTarget
-} = vi.mocked(require('../../../../src/utils/dashboard-helpers.ts'));
+import { readFileSync as _readFileSync, writeFileSync as _writeFileSync, existsSync as _existsSync } from 'fs';
+import { readFile as _readFile, writeFile as _writeFile, mkdir as _mkdir } from 'fs/promises';
+import * as _yaml from 'js-yaml';
+import { getSharedStatePath as _getSharedStatePath } from '../../../../src/utils/shared-state-path.js';
+import { getLocalMachineId as _getLocalMachineId, getLocalWorkspaceId as _getLocalWorkspaceId } from '../../../../src/utils/message-helpers.js';
+import { createLogger as _createLogger } from '../../../../src/utils/logger.js';
+import { getChatOpenAIClient as _getChatOpenAIClient, getLLMModelId as _getLLMModelId } from '../../../../src/services/openai.js';
+import {
+  sendMentionNotificationsAsync as _sendMentionNotificationsAsync,
+  sendStructuredMentionNotificationsAsync as _sendStructuredMentionNotificationsAsync,
+  resolveMentionTarget as _resolveMentionTarget
+} from '../../../../src/utils/dashboard-helpers.js';
+
+const readFileSync = vi.mocked(_readFileSync);
+const writeFileSync = vi.mocked(_writeFileSync);
+const existsSync = vi.mocked(_existsSync);
+const readFile = vi.mocked(_readFile);
+const writeFile = vi.mocked(_writeFile);
+const mkdir = vi.mocked(_mkdir);
+const yaml = vi.mocked(_yaml);
+const getSharedStatePath = vi.mocked(_getSharedStatePath);
+const getLocalMachineId = vi.mocked(_getLocalMachineId);
+const getLocalWorkspaceId = vi.mocked(_getLocalWorkspaceId);
+const createLogger = vi.mocked(_createLogger);
+const getChatOpenAIClient = vi.mocked(_getChatOpenAIClient);
+const getLLMModelId = vi.mocked(_getLLMModelId);
+const sendMentionNotificationsAsync = vi.mocked(_sendMentionNotificationsAsync);
+const sendStructuredMentionNotificationsAsync = vi.mocked(_sendStructuredMentionNotificationsAsync);
+const resolveMentionTarget = vi.mocked(_resolveMentionTarget);
 
 describe('DashboardArgsSchema', () => {
   beforeEach(() => {

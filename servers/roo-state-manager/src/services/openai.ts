@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { StateManagerError } from '../types/errors';
+import { StateManagerError } from '../types/errors.js';
 
 let openai: OpenAI | null = null;
 let chatOpenai: OpenAI | null = null;
