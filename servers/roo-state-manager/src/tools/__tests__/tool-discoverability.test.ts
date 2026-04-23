@@ -101,6 +101,7 @@ async function hasCallToolHandler(handler: (req: any) => Promise<any>, toolName:
             return false;
         }
         // Other errors (including timeout) mean the handler EXISTS but the operation failed
+        // (e.g. roosync_cleanup_messages does heavy GDrive I/O beyond the 5s test budget)
         return true;
     }
 }

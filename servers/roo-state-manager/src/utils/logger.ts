@@ -219,20 +219,8 @@ export class Logger {
      */
     private logToConsole(level: LogLevel, logEntry: string): void {
         const coloredEntry = formatWithColors(level, logEntry);
-
-        switch (level) {
-            case 'ERROR':
-                console.error(coloredEntry);
-                break;
-            case 'WARN':
-                console.warn(coloredEntry);
-                break;
-            case 'DEBUG':
-                console.debug(coloredEntry);
-                break;
-            default:
-                console.log(coloredEntry);
-        }
+        // ALL logs MUST go to stderr — stdout is reserved for JSON-RPC in MCP stdio transport
+        console.error(coloredEntry);
     }
 
     /**
@@ -313,7 +301,7 @@ export class Logger {
 
             this.currentLogFile = join(this.logDir, `${basePattern}-${nextNum}.log`);
 
-            console.log(`[Logger] Log rotated to: ${this.currentLogFile}`);
+            console.error(`[Logger] Log rotated to: ${this.currentLogFile}`);
         } catch (error) {
             console.error('[Logger] Failed to rotate log:', error);
         }
@@ -343,7 +331,7 @@ export class Logger {
 
                 if (age > retentionMs) {
                     unlinkSync(filePath);
-                    console.log(`[Logger] Cleaned up old log file: ${file}`);
+                    console.error(`[Logger] Cleaned up old log file: ${file}`);
                 }
             }
         } catch (error) {
