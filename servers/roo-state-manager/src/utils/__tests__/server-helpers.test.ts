@@ -22,6 +22,8 @@ vi.mock('fs', async () => {
     return {
         ...actual,
         default: actual,
+        existsSync: vi.fn(() => true),
+        readFileSync: vi.fn(() => 'ROOSYNC_SHARED_PATH=/mock/env/path\n'),
         promises: {
             access: vi.fn(),
             utimes: vi.fn(),
@@ -95,14 +97,20 @@ describe('server-helpers', () => {
             expect(result).toBe('/custom/shared-state');
         });
 
-        test('should throw error when env var is not set', () => {
+        test('should fall back to .env when env var is not set (#1628)', () => {
             delete process.env.ROOSYNC_SHARED_PATH;
-            expect(() => getSharedStatePath()).toThrow('ROOSYNC_SHARED_PATH environment variable is not set');
+            // With mocked fs (existsSync=true, readFileSync returns .env content)
+            const result = getSharedStatePath();
+            expect(result).toBe('/mock/env/path');
+            // Should also cache in process.env
+            expect(process.env.ROOSYNC_SHARED_PATH).toBe(result);
         });
 
-        test('should throw error when env var is empty string', () => {
+        test('should fall back to .env when env var is empty string (#1628)', () => {
             process.env.ROOSYNC_SHARED_PATH = '';
-            expect(() => getSharedStatePath()).toThrow('ROOSYNC_SHARED_PATH environment variable is not set');
+            // Empty string is falsy, so fallback to .env kicks in
+            const result = getSharedStatePath();
+            expect(result).toBe('/mock/env/path');
         });
     });
 

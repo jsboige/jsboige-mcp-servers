@@ -20,7 +20,9 @@ vi.mock('fs', () => ({
 }));
 
 vi.mock('path', () => ({
-  join: vi.fn((...args) => args.join('/'))
+  join: vi.fn((...args) => args.join('/')),
+  dirname: vi.fn((p: string) => p.split('/').slice(0, -1).join('/')),
+  resolve: vi.fn((...args) => args.join('/'))
 }));
 
 vi.mock('../../utils/server-helpers.js', () => ({

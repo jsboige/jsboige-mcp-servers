@@ -16,23 +16,9 @@ import { OUTPUT_CONFIG } from '../config/server-config.js';
 // Only 2 functions use toolExports, so lazy-loading is safe.
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 
-/**
- * Obtenir le chemin du répertoire shared-state RooSync
- *
- * @throws {Error} Si ROOSYNC_SHARED_PATH n'est pas défini
- * @returns {string} Le chemin vers le répertoire shared-state
- */
-export function getSharedStatePath(): string {
-    // ROOSYNC_SHARED_PATH est OBLIGATOIRE - pas de fallback pour éviter la pollution du dépôt
-    if (!process.env.ROOSYNC_SHARED_PATH) {
-        throw new Error(
-            'ROOSYNC_SHARED_PATH environment variable is not set. ' +
-            'This variable is required to prevent file pollution in the repository. ' +
-            'Please set ROOSYNC_SHARED_PATH to your Google Drive shared state path.'
-        );
-    }
-    return process.env.ROOSYNC_SHARED_PATH;
-}
+// #1628: Re-export from shared-state-path.ts instead of duplicating.
+// The isolated module has no project imports, so this does not create cycles.
+export { getSharedStatePath } from './shared-state-path.js';
 /**
  * Tronque les résultats trop longs
  */
