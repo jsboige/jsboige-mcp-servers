@@ -1,5 +1,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// Control .env file detection for getSharedStatePath tests (#1628 fallback)
+const { dotenvConfig } = vi.hoisted(() => ({
+  dotenvConfig: { exists: true, content: 'ROOSYNC_SHARED_PATH=/mock/gdrive/path\n' },
+}));
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn((path) => {
+      const p = typeof path === 'string' ? path : '';
+      if (p.endsWith('.env')) return dotenvConfig.exists;
+      return actual.existsSync(path as any);
+    }),
+    readFileSync: vi.fn((path, ...args) => {
+      const p = typeof path === 'string' ? path : '';
+      if (p.endsWith('.env') && dotenvConfig.exists) return dotenvConfig.content;
+      return actual.readFileSync(path as any, ...(args as any));
+    }),
+  };
+});
+
 vi.unmock('../../../src/utils/server-helpers.js');
 import {
   getSharedStatePath,
@@ -44,6 +66,7 @@ describe('server-helpers', () => {
   describe('getSharedStatePath', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
+      dotenvConfig.exists = true;
     });
 
     it('should return ROOSYNC_SHARED_PATH when set', () => {
@@ -51,9 +74,18 @@ describe('server-helpers', () => {
       expect(getSharedStatePath()).toBe('/some/shared/path');
     });
 
-    it('should throw when ROOSYNC_SHARED_PATH is not set', () => {
+    it('should throw when ROOSYNC_SHARED_PATH is not set and .env unavailable', () => {
       vi.stubEnv('ROOSYNC_SHARED_PATH', '');
+      dotenvConfig.exists = false;
       expect(() => getSharedStatePath()).toThrow('ROOSYNC_SHARED_PATH environment variable is not set');
+    });
+
+    it('should fall back to .env file when env var is empty (#1628)', () => {
+      vi.stubEnv('ROOSYNC_SHARED_PATH', '');
+      dotenvConfig.exists = true;
+      const result = getSharedStatePath();
+      expect(typeof result).toBe('string');
+      expect(result).toBe('/mock/gdrive/path');
     });
   });
 
