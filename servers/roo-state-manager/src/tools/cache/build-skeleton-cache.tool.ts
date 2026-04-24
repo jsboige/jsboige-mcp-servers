@@ -7,10 +7,11 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Tool } from '../../types/tool-definitions.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
 import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { ServerState } from '../../services/state-manager.service.js';
+import { saveSkeletonIndex, toHeader } from '../../services/background-services.js';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
@@ -91,6 +92,25 @@ async function saveSkeletonWithRetry(
     }
     
     return { success: false, attempts: maxRetries, error: 'Max retries reached' };
+}
+
+/**
+ * #1654: Persist the skeleton index (_skeleton_index.json) from the current cache.
+ * Called on all return paths of handleBuildSkeletonCache so that cold-start
+ * loadSkeletonsFromDisk() sees a non-empty index even when the build times out partway.
+ */
+async function persistSkeletonIndex(
+    conversationCache: Map<string, ConversationSkeleton>
+): Promise<void> {
+    try {
+        const headerMap = new Map<string, SkeletonHeader>();
+        for (const [taskId, skeleton] of conversationCache) {
+            headerMap.set(taskId, toHeader(skeleton));
+        }
+        await saveSkeletonIndex(headerMap);
+    } catch (indexError) {
+        console.warn('[#1654] Non-blocking: failed to persist skeleton index:', indexError);
+    }
 }
 
 /**
@@ -588,6 +608,8 @@ export async function handleBuildSkeletonCache(
             const partialResult = buildTimeoutResponse(skeletonsBuilt, skeletonsSkipped, 0, debugLogs,
                 "TIMEOUT: Phase hiérarchique non exécutée. Relancez le build pour compléter l'analyse des parentID.",
                 conversationCache.size);
+            // #1654: Persist whatever we managed to load — partial index is better than empty.
+            await persistSkeletonIndex(conversationCache);
             console.log = originalConsoleLog; // Restaurer
             return partialResult;
         }
@@ -799,6 +821,8 @@ export async function handleBuildSkeletonCache(
                 const partialResult = buildTimeoutResponse(skeletonsBuilt, skeletonsSkipped, hierarchyRelationsFound, debugLogs,
                     "TIMEOUT: Build partiel terminé. Phase hiérarchique incomplète - relancez pour finaliser l'analyse parentID.",
                     conversationCache.size);
+                // #1654: Persist partial index even on engine timeout.
+                await persistSkeletonIndex(conversationCache);
                 console.log = originalConsoleLog; // Restaurer
                 return partialResult;
             }
@@ -810,6 +834,8 @@ export async function handleBuildSkeletonCache(
             const partialResult = buildTimeoutResponse(skeletonsBuilt, skeletonsSkipped, hierarchyRelationsFound, debugLogs,
                 "TIMEOUT: Relations trouvées mais sauvegarde incomplète. Relancez pour persister les changements.",
                 conversationCache.size);
+            // #1654: Persist partial index so cold-start has at least the loaded skeletons.
+            await persistSkeletonIndex(conversationCache);
             console.log = originalConsoleLog; // Restaurer
             return partialResult;
         }
@@ -917,6 +943,9 @@ export async function handleBuildSkeletonCache(
         }
 
         console.log(`✅ Skeleton cache build complete. Mode: ${mode}, Cache size: ${conversationCache.size}, New relations: ${hierarchyRelationsFound}`);
+
+        // #1654: Persist _skeleton_index.json so cold-start sees the rebuilt cache.
+        await persistSkeletonIndex(conversationCache);
 
         // 🔍 Restaurer console.log original
         console.log = originalConsoleLog;
