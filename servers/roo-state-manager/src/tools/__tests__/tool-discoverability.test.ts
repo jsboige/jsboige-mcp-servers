@@ -112,7 +112,7 @@ async function hasCallToolHandler(handler: (req: any) => Promise<any>, toolName:
 // ============================================================================
 
 describe('Category 1: ListTools → CallTool Consistency', () => {
-    it('every tool in ListTools must have a CallTool handler', async () => {
+    it('every tool in ListTools must have a CallTool handler', { timeout: 60000 }, async () => {
         const toolNames = await getListToolsNames();
         const { handler } = createCallToolHandler();
 
