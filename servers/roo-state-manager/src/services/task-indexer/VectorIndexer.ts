@@ -682,3 +682,107 @@ export async function upsertPointsBatch(
         }
     }
 }
+
+/**
+ * Supprime les vecteurs plus anciens qu'un âge donné (#1658)
+ * Utilise le champ `timestamp` du payload pour filtrer par âge.
+ * @param maxAgeDays Âge maximum en jours (défaut: 90)
+ * @param dryRun Mode simulation — compte sans supprimer
+ * @param workspaceFilter Filtre optionnel par workspace_name
+ */
+export async function cleanupOldVectors(
+    maxAgeDays: number = 90,
+    dryRun: boolean = false,
+    workspaceFilter?: string
+): Promise<{ deletedCount: number; cutoffDate: string; workspaceFilter?: string }> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+    const cutoffIso = cutoffDate.toISOString();
+
+    const mustConditions: Array<{ key: string; match: { value: string } } | { key: string; range: { lt: string } }> = [
+        {
+            key: 'timestamp',
+            range: { lt: cutoffIso }
+        }
+    ];
+
+    if (workspaceFilter) {
+        mustConditions.push({
+            key: 'workspace_name',
+            match: { value: workspaceFilter }
+        });
+    }
+
+    const filter = { must: mustConditions };
+
+    // Count candidates first
+    const countResult = await retryWithBackoff(async () => {
+        const qdrant = getQdrantClient();
+        return await qdrant.count(COLLECTION_NAME, {
+            filter,
+            exact: true
+        });
+    }, `Qdrant cleanup count (age>${maxAgeDays}d)`);
+
+    const candidateCount = countResult.count;
+    networkMetrics.qdrantCalls++;
+
+    if (candidateCount === 0) {
+        return { deletedCount: 0, cutoffDate: cutoffIso, workspaceFilter };
+    }
+
+    if (dryRun) {
+        console.log(`[DRY RUN] ${candidateCount} vecteurs seraient supprimés (antérieurs à ${cutoffIso}${workspaceFilter ? `, workspace=${workspaceFilter}` : ''})`);
+        return { deletedCount: candidateCount, cutoffDate: cutoffIso, workspaceFilter };
+    }
+
+    // Delete in batches using scroll + delete pattern to avoid timeout on large sets
+    const BATCH_SIZE = 1000;
+    let totalDeleted = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+        await qdrantRateLimiter.execute(async () => {
+            // Scroll to get a batch of point IDs matching the filter
+            const scrolled = await retryWithBackoff(async () => {
+                const qdrant = getQdrantClient();
+                return await qdrant.scroll(COLLECTION_NAME, {
+                    filter,
+                    limit: BATCH_SIZE,
+                    with_payload: false,
+                    with_vector: false
+                });
+            }, `Qdrant cleanup scroll (batch at ${totalDeleted})`);
+
+            networkMetrics.qdrantCalls++;
+
+            if (!scrolled.points || scrolled.points.length === 0) {
+                hasMore = false;
+                return;
+            }
+
+            const idsToDelete = scrolled.points.map((p: any) => p.id);
+
+            // Delete this batch
+            await retryWithBackoff(async () => {
+                const qdrant = getQdrantClient();
+                await qdrant.delete(COLLECTION_NAME, {
+                    points: idsToDelete,
+                    wait: true
+                });
+            }, `Qdrant cleanup delete batch (${idsToDelete.length} points)`);
+
+            networkMetrics.qdrantCalls++;
+            totalDeleted += idsToDelete.length;
+
+            console.log(`✓ Cleanup batch: ${idsToDelete.length} vecteurs supprimés (total: ${totalDeleted}/${candidateCount})`);
+
+            if (!scrolled.next_page_offset) {
+                hasMore = false;
+            }
+        });
+    }
+
+    console.log(`✅ Cleanup terminé: ${totalDeleted} vecteurs supprimés (antérieurs à ${cutoffIso}${workspaceFilter ? `, workspace=${workspaceFilter}` : ''})`);
+    return { deletedCount: totalDeleted, cutoffDate: cutoffIso, workspaceFilter };
+}

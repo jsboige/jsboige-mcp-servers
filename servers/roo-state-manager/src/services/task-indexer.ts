@@ -12,6 +12,7 @@ import {
     indexTask as indexTaskVector,
     resetCollection as resetCollectionVector,
     countPointsByHostOs as countPointsByHostOsVector,
+    cleanupOldVectors as cleanupOldVectorsVector,
     updateSkeletonIndexTimestamp,
     upsertPointsBatch,
     qdrantRateLimiter
@@ -191,5 +192,16 @@ export class TaskIndexer {
      */
     async countPointsByHostOs(hostOs: string): Promise<number> {
         return countPointsByHostOsVector(hostOs);
+    }
+
+    /**
+     * Supprime les vecteurs plus anciens qu'un âge donné (#1658)
+     */
+    async cleanupOldVectors(
+        maxAgeDays: number = 90,
+        dryRun: boolean = false,
+        workspaceFilter?: string
+    ): Promise<{ deletedCount: number; cutoffDate: string; workspaceFilter?: string }> {
+        return cleanupOldVectorsVector(maxAgeDays, dryRun, workspaceFilter);
     }
 }
