@@ -31,13 +31,19 @@ describe('getSharedStatePath', () => {
     });
 
     test('falls back to .env file when env var is not set', async () => {
-        // The real .env file exists in the project with ROOSYNC_SHARED_PATH set.
-        // When env var is deleted, the fallback should read from it.
+        // Mock fs to simulate .env file (CI doesn't have a real one)
+        vi.doMock('fs', async () => {
+            const actual = await vi.importActual('fs');
+            return {
+                ...actual,
+                existsSync: () => true,
+                readFileSync: () => 'ROOSYNC_SHARED_PATH=/mock/env/path\n',
+            };
+        });
+
         const { getSharedStatePath } = await import('../shared-state-path.js');
         const result = getSharedStatePath();
-        // Should return a non-empty path from .env (not throw)
-        expect(result).toBeTruthy();
-        expect(result).not.toBe('');
+        expect(result).toBe('/mock/env/path');
         // Should also cache it in process.env
         expect(process.env.ROOSYNC_SHARED_PATH).toBe(result);
     });

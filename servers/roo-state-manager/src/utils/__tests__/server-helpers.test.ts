@@ -22,6 +22,8 @@ vi.mock('fs', async () => {
     return {
         ...actual,
         default: actual,
+        existsSync: vi.fn(() => true),
+        readFileSync: vi.fn(() => 'ROOSYNC_SHARED_PATH=/mock/env/path\n'),
         promises: {
             access: vi.fn(),
             utimes: vi.fn(),
@@ -97,9 +99,9 @@ describe('server-helpers', () => {
 
         test('should fall back to .env when env var is not set (#1628)', () => {
             delete process.env.ROOSYNC_SHARED_PATH;
-            // With the .env fallback, it should return a path from .env (not throw)
+            // With mocked fs (existsSync=true, readFileSync returns .env content)
             const result = getSharedStatePath();
-            expect(result).toBeTruthy();
+            expect(result).toBe('/mock/env/path');
             // Should also cache in process.env
             expect(process.env.ROOSYNC_SHARED_PATH).toBe(result);
         });
@@ -108,7 +110,7 @@ describe('server-helpers', () => {
             process.env.ROOSYNC_SHARED_PATH = '';
             // Empty string is falsy, so fallback to .env kicks in
             const result = getSharedStatePath();
-            expect(result).toBeTruthy();
+            expect(result).toBe('/mock/env/path');
         });
     });
 
