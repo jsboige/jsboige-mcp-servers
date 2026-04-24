@@ -47,7 +47,6 @@ const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_decision: ['sharedPath'],
 	roosync_decision_info: ['sharedPath'],
 	roosync_init: ['sharedPath'],
-	roosync_heartbeat: ['sharedPath'],
 	roosync_diagnose: ['sharedPath'],
 	roosync_cleanup_messages: ['sharedPath'],
 	roosync_baseline: ['sharedPath'],

@@ -61,7 +61,6 @@ const allDefinitions = [
     analyzeRooSyncProblemsDefinition,
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
-    roosyncHeartbeatDefinition,
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
