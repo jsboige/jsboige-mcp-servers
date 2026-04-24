@@ -10,6 +10,11 @@
  * 3. Create server + register handlers + connect transport ASAP
  * 4. Heavy imports (StateManager, Notifications, Background) load in background
  */
+// #1668: Redirect console.log → stderr to keep stdout clean for MCP JSON-RPC.
+// 730+ console.log calls across 63 source files pollute stdout, breaking the
+// MCP stdio handshake (client expects only Content-Length framed JSON-RPC).
+console.log = (...args) => console.error(...args);
+
 // FIX #373: TLS bypass now opt-in via QDRANT_SKIP_TLS_VERIFY env var
 if (process.env.QDRANT_SKIP_TLS_VERIFY === 'true') {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -465,12 +470,19 @@ class RooStateManagerServer {
 
 // Gestion des erreurs globales
 process.on('uncaughtException', (error) => {
-    logger.error('Uncaught exception:', { error });
+    logger.error('Uncaught exception:', {
+        errorMessage: error?.message || String(error),
+        errorStack: error?.stack,
+        errorName: error?.constructor?.name,
+    });
     process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled rejection at:', { promise, reason });
+    const reasonInfo = reason instanceof Error
+        ? { message: reason.message, stack: reason.stack, name: reason.constructor.name }
+        : { reason: String(reason) };
+    logger.error('Unhandled rejection at:', { promise: String(promise), ...reasonInfo });
     process.exit(1);
 });
 
