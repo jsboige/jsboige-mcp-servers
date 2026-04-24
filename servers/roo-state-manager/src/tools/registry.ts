@@ -16,6 +16,7 @@ import { allToolDefinitions } from './tool-definitions.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../utils/claude-storage-detector.js';
+import { autoHeartbeat } from '../utils/auto-heartbeat.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
@@ -46,7 +47,6 @@ const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_decision: ['sharedPath'],
 	roosync_decision_info: ['sharedPath'],
 	roosync_init: ['sharedPath'],
-	roosync_heartbeat: ['sharedPath'],
 	roosync_diagnose: ['sharedPath'],
 	roosync_cleanup_messages: ['sharedPath'],
 	roosync_baseline: ['sharedPath'],
@@ -700,17 +700,7 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // CONS-#443 Groupe 1: Outil consolidé de heartbeat (2→1)
-          case 'roosync_heartbeat': {
-              try {
-                  const m = await import('./roosync/heartbeat.js');
-                  const heartbeatResult = await m.roosyncHeartbeat(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(heartbeatResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
+          // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
           // CONS-1: Outils messagerie consolidés (6→3)
            case 'roosync_send': {
                try {
@@ -901,6 +891,9 @@ export function registerCallToolHandler(
         } else {
             registryLogger.info(`Tool call OK: ${name}`, { tool: name, elapsed: `${elapsed}ms` });
         }
+
+        // #1609: Auto-heartbeat on any successful tool call
+        await autoHeartbeat(name);
 
         return result;
     });

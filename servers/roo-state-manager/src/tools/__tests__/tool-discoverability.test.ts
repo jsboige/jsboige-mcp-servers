@@ -315,10 +315,7 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
             field: 'action',
             actions: ['collect', 'publish', 'apply', 'apply_profile'],
         },
-        'roosync_heartbeat': {
-            field: 'action',
-            actions: ['status', 'register', 'start', 'stop'],
-        },
+        // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
         'roosync_mcp_management': {
             field: 'action',
             actions: ['manage', 'rebuild', 'touch'],
@@ -437,7 +434,7 @@ describe('Category 4: Essential Tools for Agent Workflows', () => {
         'roosync_config',        // collect/publish/apply config
         'roosync_compare_config', // compare configs between machines
         'roosync_mcp_management', // manage MCP servers
-        'roosync_heartbeat',     // heartbeat management
+        // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
 
         // Diagnostics
         'roosync_diagnose',      // diagnose system
@@ -500,7 +497,7 @@ describe('Category 5: Description Discoverability', () => {
         'roosync_read': ['réception', 'message'],        // "Lire la boîte de réception des messages"
         'roosync_config': ['config'],                    // "Gestion de configuration RooSync"
         'roosync_compare_config': ['compare', 'config'], // "Compare les configurations Roo"
-        'roosync_heartbeat': ['heartbeat'],              // "Gestion complète du heartbeat"
+        // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
         'roosync_diagnose': ['diagnos'],                 // "diagnostic et debug"
         'roosync_mcp_management': ['MCP'],               // "Gestion complète des serveurs MCP"
         'roosync_decision': ['décision'],                // "workflow de décision RooSync"
