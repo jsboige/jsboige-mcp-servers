@@ -12,6 +12,9 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { StateManagerError } from '../../types/errors.js';
 
+/** Maximum number of backup files to keep (.bak-1, .bak-2, .bak-3) */
+const MAX_BACKUPS = 3;
+
 /**
  * Options de verrouillage
  */
@@ -231,20 +234,9 @@ export class FileLockManager {
     options?: LockOptions
   ): Promise<LockOperationResult<T>> {
     return this.withLock(filePath, async () => {
-      let data: T | undefined;
-      try {
-        const content = await fs.readFile(filePath, 'utf-8');
-        data = JSON.parse(content) as T;
-      } catch (error: any) {
-        if (error.code === 'ENOENT') {
-          // Fichier n'existe pas - data reste undefined
-        } else {
-          // Corrupt/empty file — treat as missing, updater will recreate (#1623)
-          console.warn(`[FileLockManager] Corrupt JSON in ${filePath}, treating as empty: ${error.message}`);
-          data = undefined;
-        }
-      }
+      const data = await this.readJsonWithFallback<T>(filePath);
       const updated = updater(data);
+      await this.rotateBackups(filePath);
       await fs.writeFile(filePath, JSON.stringify(updated, null, 2), 'utf-8');
       return updated;
     }, options);
@@ -258,6 +250,81 @@ export class FileLockManager {
    */
   private getLockFilePath(filePath: string): string {
     return `${filePath}.lock`;
+  }
+
+  /**
+   * Rotate backup files before a write (.bak-3 <- .bak-2 <- .bak-1 <- current)
+   *
+   * @param filePath - Chemin du fichier original
+   */
+  private async rotateBackups(filePath: string): Promise<void> {
+    // Delete oldest backup if it exists
+    const oldestBackup = `${filePath}.bak-${MAX_BACKUPS}`;
+    try {
+      await fs.unlink(oldestBackup);
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`[FileLockManager] Failed to remove old backup ${oldestBackup}: ${error.message}`);
+      }
+    }
+
+    // Shift backups: .bak-(N-1) -> .bak-N, ..., .bak-1 -> .bak-2
+    for (let i = MAX_BACKUPS - 1; i >= 1; i--) {
+      const src = `${filePath}.bak-${i}`;
+      const dest = `${filePath}.bak-${i + 1}`;
+      try {
+        await fs.rename(src, dest);
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') {
+          console.warn(`[FileLockManager] Failed to rotate backup ${src} -> ${dest}: ${error.message}`);
+        }
+      }
+    }
+
+    // Copy current file to .bak-1
+    try {
+      await fs.copyFile(filePath, `${filePath}.bak-1`);
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`[FileLockManager] Failed to create backup of ${filePath}: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Try to read and parse a JSON file, falling back to backup files on failure
+   *
+   * @param filePath - Chemin du fichier original
+   * @returns Parsed data, or undefined if no valid file found
+   */
+  private async readJsonWithFallback<T>(filePath: string): Promise<T | undefined> {
+    // Try the main file first
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(content) as T;
+    } catch (error: any) {
+      if (error.code === 'ENOENT') {
+        return undefined;
+      }
+      // Corrupt/empty — log and try backups
+      console.warn(`[FileLockManager] Corrupt JSON in ${filePath}: ${error.message}, trying backups`);
+    }
+
+    // Try backups in order: .bak-1, .bak-2, .bak-3
+    for (let i = 1; i <= MAX_BACKUPS; i++) {
+      const backupPath = `${filePath}.bak-${i}`;
+      try {
+        const content = await fs.readFile(backupPath, 'utf-8');
+        const data = JSON.parse(content) as T;
+        console.warn(`[FileLockManager] Recovered data from backup ${backupPath}`);
+        return data;
+      } catch {
+        // Continue to next backup
+      }
+    }
+
+    console.warn(`[FileLockManager] No valid data found in ${filePath} or any backup`);
+    return undefined;
   }
 }
 
