@@ -40,12 +40,16 @@ describe('export-tree-md.tool', () => {
     });
 
     describe('handleExportTaskTreeMarkdown', () => {
-        const mockEnsureFresh = vi.fn();
+        let mockEnsureFresh: ReturnType<typeof vi.fn>;
+        let successTree: ReturnType<typeof vi.fn>;
         const conversation_id = 'test-conv-1';
 
-        const successTree = vi.fn().mockResolvedValue(makeMockTreeResult(
-            'Task root\n  ├── Task child 1\n  └── Task child 2',
-        ));
+        beforeEach(() => {
+            mockEnsureFresh = vi.fn();
+            successTree = vi.fn().mockResolvedValue(makeMockTreeResult(
+                'Task root\n  ├── Task child 1\n  └── Task child 2',
+            ));
+        });
 
         it('should return tree content when no filePath specified', async () => {
             const result = await handleExportTaskTreeMarkdown(
