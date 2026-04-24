@@ -511,5 +511,91 @@ describe('compare-config', () => {
 				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
 			}
 		});
+
+		test('mode granularity compares Roo modes between machines', async () => {
+			mockGetInventory.mockResolvedValue({
+				inventory: {
+					rooModes: {
+						'code-simple': { groups: ['read', 'edit', 'browser', 'mcp'], terminal: false },
+						'debug-simple': { groups: ['read', 'edit', 'browser', 'mcp'], terminal: false }
+					}
+				}
+			});
+
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2023',
+				diffs: [
+					{
+						type: 'modified',
+						path: 'code-simple.terminal',
+						category: 'roo_config',
+						severity: 'WARNING',
+						description: 'Terminal setting differs'
+					}
+				],
+				stats: { added: 0, removed: 0, modified: 1, unchanged: 1 }
+			});
+
+			const result = await roosyncCompareConfig({
+				target: 'po-2023',
+				granularity: 'mode'
+			});
+
+			expect(mockCompareGranular).toHaveBeenCalled();
+			expect(result.differences[0].path).toContain('inventory.rooModes');
+			expect(result.differences[0].category).toBe('roo_config');
+		});
+
+		test('claude granularity compares Claude Code config', async () => {
+			mockGetInventory.mockResolvedValue({
+				inventory: {
+					claudeConfig: {
+						mcpServers: {
+							'roo-state-manager': { enabled: true }
+						}
+					}
+				}
+			});
+
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2023',
+				diffs: [
+					{
+						type: 'added',
+						path: 'mcpServers.sk-agent',
+						category: 'claude_config',
+						severity: 'WARNING',
+						description: 'MCP server present on target only'
+					}
+				],
+				stats: { added: 1, removed: 0, modified: 0, unchanged: 1 }
+			});
+
+			const result = await roosyncCompareConfig({
+				target: 'po-2023',
+				granularity: 'claude'
+			});
+
+			expect(result.differences[0].path).toContain('inventory.claudeConfig');
+			expect(result.differences[0].category).toBe('claude_config');
+		});
+
+		test('returns graceful CRITICAL when RooSyncService initialization fails', async () => {
+			// Mock getConfig to throw an error (simulating service initialization failure)
+			mockGetConfig.mockImplementationOnce(() => {
+				throw new Error('ENOENT: no such file or directory, open \'\\\\network\\share\'');
+			});
+
+			const result = await roosyncCompareConfig({
+				target: 'po-2023'
+			});
+
+			expect(result.differences.length).toBe(1);
+			expect(result.differences[0].severity).toBe('CRITICAL');
+			expect(result.differences[0].description).toContain('manquant ou inaccessible');
+			expect(result.summary.critical).toBe(1);
+		});
 	});
 });
