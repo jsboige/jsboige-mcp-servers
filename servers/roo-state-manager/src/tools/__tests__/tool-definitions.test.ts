@@ -69,6 +69,7 @@ const allDefinitions = [
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
     roosyncMachinesDefinition,
+    // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
@@ -242,7 +243,7 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(modes).toContain('attachments');
         });
 
-        // #1609: roosync_heartbeat test removed — tool no longer exists
+        // #1609: roosync_heartbeat test removed — auto-heartbeat on any tool call
 
         it('roosync_diagnose should have env/debug/reset/test actions', () => {
             const actions = (roosyncDiagnoseDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];

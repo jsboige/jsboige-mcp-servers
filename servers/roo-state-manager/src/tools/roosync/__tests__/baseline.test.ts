@@ -1558,4 +1558,70 @@ First release
       expect(exportedData.statistics.exportTimestamp).toBeDefined();
     });
   });
+
+  describe('action: current_version', () => {
+    test('should return current baseline version when baseline exists', async () => {
+      // Create a baseline file
+      const baselineData = {
+        version: '2026.04.25-1430',
+        baselineId: 'baseline-2026.04.25-1430',
+        machineId: 'test-machine',
+        lastUpdated: '2026-04-25T14:30:00.000Z',
+        config: { roo: {}, hardware: {}, software: {}, system: {} }
+      };
+      writeFileSync(
+        join(testSharedStatePath, 'sync-config.ref.json'),
+        JSON.stringify(baselineData, null, 2)
+      );
+
+      const result = await roosync_baseline({
+        action: 'current_version'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('current_version');
+      expect(result.data.exists).toBe(true);
+      expect(result.data.version).toBe('2026.04.25-1430');
+      expect(result.data.machineId).toBe('test-machine');
+      expect(result.version).toBe('2026.04.25-1430');
+    });
+
+    test('should report no baseline when file does not exist', async () => {
+      // Remove baseline file if it exists
+      const baselinePath = join(testSharedStatePath, 'sync-config.ref.json');
+      if (existsSync(baselinePath)) {
+        rmSync(baselinePath);
+      }
+
+      const result = await roosync_baseline({
+        action: 'current_version'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data.exists).toBe(false);
+      expect(result.version).toBe('');
+    });
+
+    test('should accept explicit machineId parameter', async () => {
+      const baselineData = {
+        version: '2026.04.25-1500',
+        baselineId: 'baseline-2026.04.25-1500',
+        machineId: 'explicit-machine',
+        lastUpdated: '2026-04-25T15:00:00.000Z',
+        config: { roo: {}, hardware: {}, software: {}, system: {} }
+      };
+      writeFileSync(
+        join(testSharedStatePath, 'sync-config.ref.json'),
+        JSON.stringify(baselineData, null, 2)
+      );
+
+      const result = await roosync_baseline({
+        action: 'current_version',
+        machineId: 'explicit-machine'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data.exists).toBe(true);
+    });
+  });
 });

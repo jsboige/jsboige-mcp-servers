@@ -386,11 +386,11 @@ export const roosyncDecisionInfoDefinition = {
 
 export const roosyncBaselineDefinition = {
     name: 'roosync_baseline',
-    description: 'Outil consolidé pour gérer les baselines RooSync (update, version, restore, export)',
+    description: 'Outil consolidé pour gérer les baselines RooSync (update, version, restore, export, list_versions, current_version)',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['update', 'version', 'restore', 'export'], description: 'Action à effectuer sur la baseline' },
+            action: { type: 'string', enum: ['update', 'version', 'restore', 'export', 'list_versions', 'current_version'], description: 'Action à effectuer sur la baseline' },
             machineId: { type: 'string', description: '[update] ID de la machine ou nom du profil' },
             mode: { type: 'string', enum: ['standard', 'profile'], description: '[update] Mode de mise à jour' },
             aggregationConfig: { type: 'object', description: "[update] Configuration d'agrégation (mode profile uniquement)" },
@@ -460,8 +460,7 @@ export const roosyncMachinesDefinition = {
     }
 };
 
-
-
+// #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
     description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle/update_server_field/sync_always_allow configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
@@ -683,6 +682,7 @@ export const allToolDefinitions = [
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
     roosyncMachinesDefinition,
+    // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,

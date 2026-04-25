@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { indexTask, safeQdrantUpsert, QdrantRateLimiter, qdrantRateLimiter } from '../../../../src/services/task-indexer/VectorIndexer.js';
+import { indexTask, safeQdrantUpsert, QdrantRateLimiter, qdrantRateLimiter, cleanupOldVectors } from '../../../../src/services/task-indexer/VectorIndexer.js';
 import { getQdrantClient } from '../../../../src/services/qdrant.js';
 import getOpenAIClient from '../../../../src/services/openai.js';
 import { extractChunksFromTask, splitChunk } from '../../../../src/services/task-indexer/ChunkExtractor.js';
@@ -34,7 +34,10 @@ describe('VectorIndexer', () => {
     mockQdrantClient = {
       getCollections: vi.fn(),
       createCollection: vi.fn(),
-      upsert: vi.fn()
+      upsert: vi.fn(),
+      count: vi.fn(),
+      scroll: vi.fn(),
+      delete: vi.fn()
     };
     vi.mocked(getQdrantClient).mockReturnValue(mockQdrantClient);
 
@@ -150,6 +153,84 @@ describe('VectorIndexer', () => {
       vi.mocked(extractChunksFromTask).mockRejectedValue(new Error('Extraction failed'));
 
       await expect(indexTask('task-1', '/path')).rejects.toThrow('Extraction failed');
+    });
+  });
+
+  describe('cleanupOldVectors', () => {
+    it('should return 0 when no old vectors found', async () => {
+      mockQdrantClient.count.mockResolvedValue({ count: 0 });
+
+      const result = await cleanupOldVectors(90);
+
+      expect(result.deletedCount).toBe(0);
+      expect(mockQdrantClient.count).toHaveBeenCalled();
+      expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+      expect(mockQdrantClient.delete).not.toHaveBeenCalled();
+    });
+
+    it('should count but not delete in dry_run mode', async () => {
+      mockQdrantClient.count.mockResolvedValue({ count: 5000 });
+
+      const result = await cleanupOldVectors(90, true);
+
+      expect(result.deletedCount).toBe(5000);
+      expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+      expect(mockQdrantClient.delete).not.toHaveBeenCalled();
+    });
+
+    it('should delete vectors older than max_age_days', async () => {
+      mockQdrantClient.count.mockResolvedValue({ count: 3 });
+      mockQdrantClient.scroll
+        .mockResolvedValueOnce({
+          points: [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }],
+          next_page_offset: null
+        });
+      mockQdrantClient.delete.mockResolvedValue({});
+
+      const result = await cleanupOldVectors(90, false);
+
+      expect(result.deletedCount).toBe(3);
+      expect(mockQdrantClient.delete).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          points: ['p1', 'p2', 'p3'],
+          wait: true
+        })
+      );
+    });
+
+    it('should filter by workspace_name when provided', async () => {
+      mockQdrantClient.count.mockResolvedValue({ count: 0 });
+
+      const result = await cleanupOldVectors(90, false, 'roo-extensions');
+
+      expect(result.workspaceFilter).toBe('roo-extensions');
+      // Verify the count call used the workspace filter
+      const countCall = mockQdrantClient.count.mock.calls[0];
+      expect(countCall[1].filter.must).toHaveLength(2);
+      expect(countCall[1].filter.must[1]).toEqual({
+        key: 'workspace_name',
+        match: { value: 'roo-extensions' }
+      });
+    });
+
+    it('should handle multi-batch deletion', async () => {
+      mockQdrantClient.count.mockResolvedValue({ count: 5 });
+      mockQdrantClient.scroll
+        .mockResolvedValueOnce({
+          points: Array.from({ length: 3 }, (_, i) => ({ id: `p${i}` })),
+          next_page_offset: 'offset1'
+        })
+        .mockResolvedValueOnce({
+          points: [{ id: 'p3' }, { id: 'p4' }],
+          next_page_offset: null
+        });
+      mockQdrantClient.delete.mockResolvedValue({});
+
+      const result = await cleanupOldVectors(90, false);
+
+      expect(result.deletedCount).toBe(5);
+      expect(mockQdrantClient.delete).toHaveBeenCalledTimes(2);
     });
   });
 });
