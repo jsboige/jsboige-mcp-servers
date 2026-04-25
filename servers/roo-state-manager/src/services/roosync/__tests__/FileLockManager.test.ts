@@ -332,10 +332,18 @@ describe('FileLockManager', () => {
       );
     });
 
-    test('retourne success=false si JSON invalide', async () => {
+    test('corrupt JSON treated as missing — updater can recreate (#1623)', async () => {
       mockReadFile.mockResolvedValue('invalid-json{{{');
       const result = await manager.updateJsonWithLock('/tmp/bad.json', (d) => d);
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
+      expect(result.data).toBeUndefined();
+    });
+
+    test('corrupt JSON passes undefined to updater for recreation (#1623)', async () => {
+      mockReadFile.mockResolvedValue('invalid-json{{{');
+      const result = await manager.updateJsonWithLock<any>('/tmp/bad.json', (d) => ({ recreated: true }));
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ recreated: true });
     });
   });
 

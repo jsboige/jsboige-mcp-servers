@@ -207,20 +207,31 @@ export class FileLockManager {
    */
   async updateJsonWithLock<T>(
     filePath: string,
-    updateFn: (data: T) => T,
+    updateFn: (data: T | undefined) => T,
     options: LockOptions = {}
   ): Promise<LockOperationResult<T>> {
     return this.withLock<T>(filePath, async () => {
       // Lire le fichier existant
-      const content = await fs.readFile(filePath, 'utf-8');
-      const data = JSON.parse(content) as T;
-      
+      let data: T | undefined;
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        data = JSON.parse(content) as T;
+      } catch (error: any) {
+        if (error.code === 'ENOENT') {
+          // Fichier n'existe pas - data reste undefined
+        } else {
+          // Corrupt/empty file — treat as missing, updater will recreate (#1623)
+          console.warn(`[FileLockManager] Corrupt JSON in ${filePath}, treating as empty: ${error.message}`);
+          data = undefined;
+        }
+      }
+
       // Appliquer la mise à jour
       const updatedData = updateFn(data);
-      
+
       // Écrire le fichier mis à jour
       await fs.writeFile(filePath, JSON.stringify(updatedData, null, 2), 'utf-8');
-      
+
       console.log(`[FileLockManager] Fichier JSON mis à jour avec succès: ${filePath}`);
       return updatedData;
     }, options);
