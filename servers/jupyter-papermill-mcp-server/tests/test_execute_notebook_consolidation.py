@@ -1,8 +1,11 @@
 """
 Tests for Phase 3 consolidation: execute_notebook unified tool.
 
-Tests the consolidated execute_notebook tool and its 5 deprecated wrappers,
+Tests the consolidated execute_notebook tool and its deprecated wrappers,
 ensuring backward compatibility and correct mode-based execution.
+
+Updated for fix #1690: consolidated service now uses NotebookService.execute_notebook()
+for sync mode and AsyncJobService.start_notebook_async() for async mode.
 """
 
 import pytest
@@ -60,13 +63,21 @@ def notebook_service(mock_config):
 
     service.resolve_path = Mock(side_effect=resolve_side_effect)
 
-    # Mock internal methods
-    service.execute_notebook_solution_a = AsyncMock()
-    service.parameterize_notebook = AsyncMock()
-    service.start_notebook_async = AsyncMock()
-    service._calculate_optimal_timeout = Mock(return_value=120)
+    # Mock execute_notebook (the working method on NotebookService)
+    service.execute_notebook = AsyncMock()
 
     return service
+
+
+@pytest.fixture
+def mock_job_service():
+    """Mock AsyncJobService for async tests."""
+    job_service = Mock()
+    job_service.start_notebook_async = Mock(
+        return_value={"success": True, "job_id": "test-job-123", "timeout_seconds": 120}
+    )
+    job_service._calculate_optimal_timeout = Mock(return_value=120)
+    return job_service
 
 
 @pytest.fixture
@@ -162,7 +173,7 @@ async def test_validate_invalid_report_mode(consolidated_executor):
 @pytest.mark.asyncio
 async def test_execute_notebook_sync_basic(consolidated_executor, notebook_service):
     """Test exécution synchrone basique."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -188,13 +199,10 @@ async def test_execute_notebook_sync_basic(consolidated_executor, notebook_servi
 async def test_execute_notebook_sync_with_parameters(
     consolidated_executor, notebook_service
 ):
-    """Test exécution synchrone avec paramètres."""
+    """Test exécution synchrone avec paramètres injectés via execute_notebook."""
     test_params = {"param1": "value1", "param2": 42}
 
-    notebook_service.execute_notebook_solution_a = AsyncMock(
-        return_value={"success": True, "output_path": "/output.ipynb"}
-    )
-    notebook_service.parameterize_notebook = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -211,7 +219,9 @@ async def test_execute_notebook_sync_with_parameters(
 
     assert result["status"] == "success"
     assert result["parameters_injected"] == test_params
-    notebook_service.parameterize_notebook.assert_called_once()
+    # Parameters are passed directly to execute_notebook
+    call_args = notebook_service.execute_notebook.call_args
+    assert call_args[1]["parameters"] == test_params
 
 
 @pytest.mark.asyncio
@@ -221,7 +231,7 @@ async def test_execute_notebook_sync_custom_output_path(
     """Test exécution synchrone avec output_path personnalisé."""
     custom_output = "/custom/output.ipynb"
 
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": custom_output}
     )
 
@@ -244,10 +254,9 @@ async def test_execute_notebook_sync_with_error(
     consolidated_executor, notebook_service
 ):
     """Test exécution synchrone avec erreur."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={
             "success": False,
-            "execution_mode": "failed",
             "error": "Execution failed",
         }
     )
@@ -257,8 +266,7 @@ async def test_execute_notebook_sync_with_error(
             input_path="test.ipynb", mode="sync"
         )
 
-    # Peut retourner status "failed" ou message d'erreur
-    assert result.get("status") in ["failed", "unknown"] or "message" in result
+    assert result["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -266,7 +274,7 @@ async def test_execute_notebook_sync_with_timeout(
     consolidated_executor, notebook_service
 ):
     """Test exécution synchrone avec timeout personnalisé."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -281,9 +289,9 @@ async def test_execute_notebook_sync_with_timeout(
             input_path="test.ipynb", mode="sync", timeout=300
         )
 
-    # Vérifier que execute_notebook_solution_a a été appelé avec timeout correct
-    call_args = notebook_service.execute_notebook_solution_a.call_args
-    assert call_args[1]["timeout"] == 600  # 2x le sync timeout
+    # Verify execute_notebook was called with the timeout
+    call_args = notebook_service.execute_notebook.call_args
+    assert call_args[1]["timeout"] == 300
 
 
 # ============================================================================
@@ -292,13 +300,10 @@ async def test_execute_notebook_sync_with_timeout(
 
 
 @pytest.mark.asyncio
-async def test_execute_notebook_async_basic(consolidated_executor, notebook_service):
+async def test_execute_notebook_async_basic(consolidated_executor, notebook_service, mock_job_service):
     """Test exécution asynchrone basique."""
-    notebook_service.start_notebook_async = AsyncMock(
-        return_value={"success": True, "job_id": "test-job-123", "timeout_seconds": 120}
-    )
-
-    with patch("pathlib.Path.exists", return_value=True), patch.object(
+    with patch("papermill_mcp.services.notebook_service_consolidated.get_async_job_service",
+               return_value=mock_job_service), patch("pathlib.Path.exists", return_value=True), patch.object(
         consolidated_executor, "_estimate_duration", return_value=2.0
     ):
         result = await consolidated_executor.execute_notebook(
@@ -313,20 +318,13 @@ async def test_execute_notebook_async_basic(consolidated_executor, notebook_serv
 
 @pytest.mark.asyncio
 async def test_execute_notebook_async_with_parameters(
-    consolidated_executor, notebook_service
+    consolidated_executor, notebook_service, mock_job_service
 ):
     """Test exécution asynchrone avec paramètres."""
     test_params = {"async_param": "value"}
 
-    notebook_service.start_notebook_async = AsyncMock(
-        return_value={
-            "success": True,
-            "job_id": "async-job-456",
-            "timeout_seconds": 180,
-        }
-    )
-
-    with patch("pathlib.Path.exists", return_value=True), patch.object(
+    with patch("papermill_mcp.services.notebook_service_consolidated.get_async_job_service",
+               return_value=mock_job_service), patch("pathlib.Path.exists", return_value=True), patch.object(
         consolidated_executor, "_estimate_duration", return_value=3.0
     ):
         result = await consolidated_executor.execute_notebook(
@@ -335,21 +333,18 @@ async def test_execute_notebook_async_with_parameters(
 
     assert result["status"] == "submitted"
     assert result["parameters_injected"] == test_params
-    # Vérifier que start_notebook_async a reçu les paramètres
-    call_args = notebook_service.start_notebook_async.call_args
+    # Verify start_notebook_async received the parameters
+    call_args = mock_job_service.start_notebook_async.call_args
     assert call_args[1]["parameters"] == test_params
 
 
 @pytest.mark.asyncio
 async def test_execute_notebook_async_returns_job_id(
-    consolidated_executor, notebook_service
+    consolidated_executor, notebook_service, mock_job_service
 ):
     """Test que mode async retourne toujours un job_id."""
-    notebook_service.start_notebook_async = AsyncMock(
-        return_value={"success": True, "job_id": "job-789", "timeout_seconds": 240}
-    )
-
-    with patch("pathlib.Path.exists", return_value=True), patch.object(
+    with patch("papermill_mcp.services.notebook_service_consolidated.get_async_job_service",
+               return_value=mock_job_service), patch("pathlib.Path.exists", return_value=True), patch.object(
         consolidated_executor, "_estimate_duration", return_value=4.0
     ):
         result = await consolidated_executor.execute_notebook(
@@ -357,7 +352,7 @@ async def test_execute_notebook_async_returns_job_id(
         )
 
     assert "job_id" in result
-    assert result["job_id"] == "job-789"
+    assert result["job_id"] == "test-job-123"
 
 
 # ============================================================================
@@ -370,7 +365,7 @@ async def test_execute_notebook_report_mode_minimal(
     consolidated_executor, notebook_service
 ):
     """Test mode sync avec report_mode='minimal'."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -385,7 +380,6 @@ async def test_execute_notebook_report_mode_minimal(
             input_path="test.ipynb", mode="sync", report_mode="minimal"
         )
 
-    # Vérifier que _format_report a été appelé avec "minimal"
     mock_format.assert_called_once()
     assert mock_format.call_args[0][2] == "minimal"
 
@@ -395,7 +389,7 @@ async def test_execute_notebook_report_mode_summary(
     consolidated_executor, notebook_service
 ):
     """Test mode sync avec report_mode='summary' (défaut)."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -425,7 +419,7 @@ async def test_execute_notebook_report_mode_full(
     consolidated_executor, notebook_service
 ):
     """Test mode sync avec report_mode='full'."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -460,7 +454,7 @@ async def test_execute_notebook_auto_output_path(
     consolidated_executor, notebook_service
 ):
     """Test auto-génération de output_path avec timestamp."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/auto/output.ipynb"}
     )
 
@@ -495,7 +489,6 @@ async def test_execute_notebook_papermill_wrapper_deprecated(notebook_service):
     """Test wrapper deprecated execute_notebook_papermill."""
     from papermill_mcp.tools.execution_tools import get_services
 
-    # Mock get_services pour retourner notre notebook_service mocké
     with patch(
         "papermill_mcp.tools.execution_tools.get_services",
         return_value=(notebook_service, None),
@@ -504,10 +497,6 @@ async def test_execute_notebook_papermill_wrapper_deprecated(notebook_service):
             return_value={"status": "success", "mode": "sync"}
         )
 
-        # Import dynamique du tool
-        from papermill_mcp.tools import execution_tools
-
-        # Simuler appel via wrapper
         result = await notebook_service.execute_notebook_consolidated(
             input_path="test.ipynb", mode="sync", parameters={"test": "param"}
         )
@@ -546,12 +535,8 @@ async def test_execute_notebook_kernel_not_found(
     consolidated_executor, notebook_service
 ):
     """Test avec kernel inexistant."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
-        return_value={
-            "success": False,
-            "execution_mode": "error",
-            "error": "Kernel not found",
-        }
+    notebook_service.execute_notebook = AsyncMock(
+        side_effect=Exception("Kernel not found")
     )
 
     with patch("pathlib.Path.exists", return_value=True):
@@ -559,14 +544,13 @@ async def test_execute_notebook_kernel_not_found(
             input_path="test.ipynb", mode="sync", kernel_name="nonexistent_kernel"
         )
 
-    # Le résultat doit propager le statut d'erreur
-    assert result.get("status") == "error" or "error" in result
+    assert result["status"] == "error"
 
 
 @pytest.mark.asyncio
 async def test_execute_notebook_no_parameters(consolidated_executor, notebook_service):
     """Test exécution sans paramètres (parameters=None)."""
-    notebook_service.execute_notebook_solution_a = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -578,7 +562,7 @@ async def test_execute_notebook_no_parameters(consolidated_executor, notebook_se
         consolidated_executor, "_format_report", return_value={"mode": "summary"}
     ):
         result = await consolidated_executor.execute_notebook(
-            input_path="test.ipynb", parameters=None, mode="sync"  # Explicitly None
+            input_path="test.ipynb", parameters=None, mode="sync"
         )
 
     assert result["parameters_injected"] == {}
@@ -598,10 +582,7 @@ async def test_execute_notebook_parameters_types(
         "dict": {"nested": "value"},
     }
 
-    notebook_service.execute_notebook_solution_a = AsyncMock(
-        return_value={"success": True, "output_path": "/output.ipynb"}
-    )
-    notebook_service.parameterize_notebook = AsyncMock(
+    notebook_service.execute_notebook = AsyncMock(
         return_value={"success": True, "output_path": "/output.ipynb"}
     )
 
@@ -624,14 +605,13 @@ async def test_execute_notebook_parameters_types(
 # ============================================================================
 
 
-def test_estimate_duration(consolidated_executor, notebook_service):
+def test_estimate_duration(consolidated_executor, mock_job_service):
     """Test estimation de durée basée sur timeout optimal."""
-    notebook_service._calculate_optimal_timeout = Mock(return_value=300)  # 5 minutes
+    mock_job_service._calculate_optimal_timeout = Mock(return_value=300)  # 5 minutes
 
-    with patch("pathlib.Path") as mock_path:
+    with patch("papermill_mcp.services.notebook_service_consolidated.get_async_job_service",
+               return_value=mock_job_service):
         mock_path_instance = Mock()
-        mock_path.return_value = mock_path_instance
-
         duration = consolidated_executor._estimate_duration(mock_path_instance)
 
     assert duration == 5.0  # 300s / 60 = 5 minutes
@@ -646,7 +626,6 @@ def test_analyze_notebook_output_success():
     """Test analyse d'un notebook de sortie sans erreurs."""
     executor = ExecuteNotebookConsolidated(Mock())
 
-    # Mock nbformat.read
     mock_notebook = Mock()
     mock_notebook.cells = [
         Mock(cell_type="code", execution_count=1, outputs=[]),
@@ -693,8 +672,8 @@ def test_format_report_summary():
 # ============================================================================
 
 if __name__ == "__main__":
-    print("✅ Test suite for Phase 3 consolidation (execute_notebook)")
-    print("📊 Total tests: 31")
+    print("Test suite for Phase 3 consolidation (execute_notebook) — fix #1690")
+    print("Total tests: 28")
     print("   - Validation: 6 tests")
     print("   - Mode Sync: 5 tests")
     print("   - Mode Async: 3 tests")
@@ -704,4 +683,3 @@ if __name__ == "__main__":
     print("   - Edge Cases: 4 tests")
     print("   - Estimation: 1 test")
     print("   - Analysis & Formatting: 3 tests")
-    print("   - Additional: 3 tests")

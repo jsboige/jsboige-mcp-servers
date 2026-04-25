@@ -15,6 +15,8 @@ from typing import Any, Dict, Literal, Optional
 
 import nbformat
 
+from .async_job_service import get_async_job_service
+
 logger = logging.getLogger(__name__)
 
 
@@ -263,37 +265,25 @@ class ExecuteNotebookConsolidated:
         start_time: float,
     ) -> Dict[str, Any]:
         """
-        Exécution synchrone avec architecture hybride.
+        Exécution synchrone via NotebookService.execute_notebook().
 
-        Réutilise execute_notebook_solution_a qui gère :
-        - Sync rapide pour notebooks courts
-        - Bascule async automatique pour notebooks longs
+        Uses PapermillExecutor which handles parameter injection natively.
         """
         try:
-            # Utiliser l'architecture hybride éprouvée
-            sync_timeout = timeout or 60  # Défaut 1 minute pour sync
-            total_timeout = (timeout * 2) if timeout else 120
-
-            result = await self.notebook_service.execute_notebook_solution_a(
-                input_path=input_path,
+            result = await self.notebook_service.execute_notebook(
+                path=input_path,
                 output_path=output_path,
-                timeout=total_timeout,
-                sync_timeout_seconds=sync_timeout,
+                parameters=parameters,
+                kernel_name=kernel_name,
+                timeout=timeout,
             )
-
-            # Si paramètres fournis, injecter via parameterize
-            if parameters:
-                logger.info(f"Injecting parameters: {list(parameters.keys())}")
-                result = await self.notebook_service.parameterize_notebook(
-                    input_path=input_path,
-                    parameters=parameters,
-                    output_path=output_path,
-                )
 
             execution_time = time.time() - start_time
 
-            # Analyser le notebook de sortie si disponible
-            if result.get("success") and Path(output_path).exists():
+            # PapermillExecutor returns a dict via to_dict()
+            success = result.get("success", False) or result.get("status") == "success"
+
+            if success and Path(output_path).exists():
                 analysis = self._analyze_notebook_output(output_path)
                 report = self._format_report(output_path, analysis, report_mode)
 
@@ -312,17 +302,15 @@ class ExecuteNotebookConsolidated:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             else:
-                # Échec ou in_progress (notebook long)
                 return {
-                    "status": result.get("execution_mode", "unknown"),
+                    "status": "error",
                     "mode": "sync",
                     "input_path": input_path,
                     "output_path": output_path,
                     "execution_time": execution_time,
                     "parameters_injected": parameters or {},
                     "kernel_name": kernel_name or "auto",
-                    "message": result.get("message", "Execution in progress or failed"),
-                    "job_id": result.get("job_id"),
+                    "message": result.get("message", result.get("error", "Execution failed")),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -355,11 +343,12 @@ class ExecuteNotebookConsolidated:
         """
         Exécution asynchrone via ExecutionManager.
 
-        Délègue à start_notebook_async qui gère le job-based execution.
+        Délègue à AsyncJobService.start_notebook_async() pour le job-based execution.
         """
         try:
-            # Démarrer l'exécution asynchrone
-            result = await self.notebook_service.start_notebook_async(
+            # Démarrer l'exécution asynchrone via AsyncJobService
+            job_service = get_async_job_service()
+            result = job_service.start_notebook_async(
                 input_path=input_path,
                 output_path=output_path,
                 parameters=parameters,
@@ -524,10 +513,8 @@ class ExecuteNotebookConsolidated:
     def _estimate_duration(self, notebook_path: Path) -> Optional[float]:
         """Estime la durée d'exécution en minutes."""
         try:
-            # Réutiliser la logique d'estimation existante
-            timeout_seconds = self.notebook_service._calculate_optimal_timeout(
-                notebook_path
-            )
+            job_service = get_async_job_service()
+            timeout_seconds = job_service._calculate_optimal_timeout(notebook_path)
             return round(timeout_seconds / 60, 1)
         except Exception as e:
             logger.warning(f"Error estimating duration: {e}")
