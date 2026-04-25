@@ -311,5 +311,177 @@ describe('PresenceManager', () => {
 			expect(result.isValid).toBe(true);
 			expect(result.conflicts).toHaveLength(0);
 		});
+
+		test('detects duplicate machineIds across multiple files', async () => {
+			// Simuler deux fichiers avec le même ID de machine
+			mockReaddir.mockResolvedValue(['machine-1.json', 'machine-2.json']);
+			mockExistsSync.mockReturnValue(true);
+			mockReadFile.mockImplementation(async (path: string) => {
+				// Les deux fichiers contiennent le même ID
+				return JSON.stringify({
+					id: 'duplicate-id', status: 'online', lastSeen: '2026-01-01',
+					version: '1.0.0', mode: 'code'
+				});
+			});
+
+			const result = await manager.validatePresenceUniqueness();
+			expect(result.isValid).toBe(false);
+			expect(result.conflicts).toHaveLength(1);
+			expect(result.conflicts[0].machineId).toBe('duplicate-id');
+			expect(result.conflicts[0].duplicateFiles).toHaveLength(2);
+		});
+	});
+
+	// ============================================================
+	// updatePresence - Identity Mismatch
+	// ============================================================
+
+	describe('updatePresence - IDENTITY_MISMATCH', () => {
+		test('throws error when existing data has different machineId', async () => {
+			// Simuler que le fichier existe déjà avec un ID différent
+			mockUpdateJsonWithLock.mockImplementation(async (
+				_path: string,
+				updater: (existingData: PresenceData | null) => PresenceData
+			) => {
+				// Simuler des données existantes avec un ID différent
+				const existingData: PresenceData = {
+					id: 'existing-machine-id',
+					status: 'online',
+					lastSeen: '2026-01-01T00:00:00Z',
+					version: '1.0.0',
+					mode: 'code'
+				};
+
+				try {
+					updater(existingData);
+					return { success: true };
+				} catch (error) {
+					return { success: false, error };
+				}
+			});
+
+			const result = await manager.updatePresence('new-machine-id', { status: 'online' });
+			expect(result.success).toBe(false);
+			expect(result.warningMessage).toContain('INCOHÉRENCE D\'IDENTITÉ');
+		});
+
+		test('allows update when machineId matches existing data', async () => {
+			mockUpdateJsonWithLock.mockImplementation(async (
+				_path: string,
+				updater: (existingData: PresenceData | null) => PresenceData
+			) => {
+				const existingData: PresenceData = {
+					id: 'machine-1',
+					status: 'offline',
+					lastSeen: '2026-01-01T00:00:00Z',
+					version: '1.0.0',
+					mode: 'code'
+				};
+
+				try {
+					const updated = updater(existingData);
+					return { success: true };
+				} catch (error) {
+					return { success: false, error };
+				}
+			});
+
+			const result = await manager.updatePresence('machine-1', { status: 'online' });
+			expect(result.success).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// updatePresence - Source Conflict
+	// ============================================================
+
+	describe('updatePresence - SOURCE_CONFLICT', () => {
+		test('throws error when source conflicts without force flag', async () => {
+			mockUpdateJsonWithLock.mockImplementation(async (
+				_path: string,
+				updater: (existingData: PresenceData | null) => PresenceData
+			) => {
+				const existingData: PresenceData = {
+					id: 'machine-1',
+					status: 'online',
+					lastSeen: '2026-01-01T00:00:00Z',
+					version: '1.0.0',
+					mode: 'code',
+					source: 'source-A'
+				};
+
+				try {
+					updater(existingData);
+					return { success: true };
+				} catch (error) {
+					return { success: false, error };
+				}
+			});
+
+			const result = await manager.updatePresence('machine-1', {
+				status: 'online',
+				source: 'source-B'
+			});
+			expect(result.success).toBe(false);
+			expect(result.warningMessage).toContain('CONFLIT DE SOURCE');
+		});
+
+		test('allows update when force flag is true despite source conflict', async () => {
+			mockUpdateJsonWithLock.mockImplementation(async (
+				_path: string,
+				updater: (existingData: PresenceData | null) => PresenceData
+			) => {
+				const existingData: PresenceData = {
+					id: 'machine-1',
+					status: 'online',
+					lastSeen: '2026-01-01T00:00:00Z',
+					version: '1.0.0',
+					mode: 'code',
+					source: 'source-A'
+				};
+
+				try {
+					const updated = updater(existingData);
+					return { success: true };
+				} catch (error) {
+					return { success: false, error };
+				}
+			});
+
+			const result = await manager.updatePresence('machine-1', {
+				status: 'online',
+				source: 'source-B'
+			}, true); // force = true
+			expect(result.success).toBe(true);
+		});
+
+		test('allows update when source is the same', async () => {
+			mockUpdateJsonWithLock.mockImplementation(async (
+				_path: string,
+				updater: (existingData: PresenceData | null) => PresenceData
+			) => {
+				const existingData: PresenceData = {
+					id: 'machine-1',
+					status: 'online',
+					lastSeen: '2026-01-01T00:00:00Z',
+					version: '1.0.0',
+					mode: 'code',
+					source: 'source-A'
+				};
+
+				try {
+					updater(existingData);
+					return { success: true };
+				} catch (error) {
+					return { success: false, error };
+				}
+			});
+
+			const result = await manager.updatePresence('machine-1', {
+				status: 'offline',
+				source: 'source-A'
+			});
+			expect(result.success).toBe(true);
+		});
 	});
 });
