@@ -270,30 +270,21 @@ class ExecuteNotebookConsolidated:
         - Bascule async automatique pour notebooks longs
         """
         try:
-            # Utiliser l'architecture hybride éprouvée
-            sync_timeout = timeout or 60  # Défaut 1 minute pour sync
-            total_timeout = (timeout * 2) if timeout else 120
+            # Use PapermillExecutor directly (handles parameters natively)
+            executor = self.notebook_service.papermill_executor
 
-            result = await self.notebook_service.execute_notebook_solution_a(
+            result = await executor.execute_notebook(
                 input_path=input_path,
                 output_path=output_path,
-                timeout=total_timeout,
-                sync_timeout_seconds=sync_timeout,
+                parameters=parameters,
+                kernel=kernel_name,
+                timeout=timeout,
             )
-
-            # Si paramètres fournis, injecter via parameterize
-            if parameters:
-                logger.info(f"Injecting parameters: {list(parameters.keys())}")
-                result = await self.notebook_service.parameterize_notebook(
-                    input_path=input_path,
-                    parameters=parameters,
-                    output_path=output_path,
-                )
 
             execution_time = time.time() - start_time
 
-            # Analyser le notebook de sortie si disponible
-            if result.get("success") and Path(output_path).exists():
+            # Analyze output notebook if available
+            if result.success and Path(output_path).exists():
                 analysis = self._analyze_notebook_output(output_path)
                 report = self._format_report(output_path, analysis, report_mode)
 
@@ -312,17 +303,19 @@ class ExecuteNotebookConsolidated:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             else:
-                # Échec ou in_progress (notebook long)
                 return {
-                    "status": result.get("execution_mode", "unknown"),
+                    "status": "error",
                     "mode": "sync",
                     "input_path": input_path,
                     "output_path": output_path,
                     "execution_time": execution_time,
                     "parameters_injected": parameters or {},
                     "kernel_name": kernel_name or "auto",
-                    "message": result.get("message", "Execution in progress or failed"),
-                    "job_id": result.get("job_id"),
+                    "error": {
+                        "type": "ExecutionError",
+                        "message": "; ".join(result.errors) if result.errors else "Execution failed",
+                        "traceback": "",
+                    },
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -358,13 +351,16 @@ class ExecuteNotebookConsolidated:
         Délègue à start_notebook_async qui gère le job-based execution.
         """
         try:
-            # Démarrer l'exécution asynchrone
-            result = await self.notebook_service.start_notebook_async(
+            # Démarrer l'exécution asynchrone via AsyncJobService singleton
+            from .async_job_service import get_async_job_service
+
+            async_job_service = get_async_job_service()
+            result = async_job_service.start_notebook_async(
                 input_path=input_path,
                 output_path=output_path,
                 parameters=parameters,
                 timeout_seconds=timeout,
-                wait_seconds=2,  # Attendre 2s pour confirmation
+                wait_seconds=2,
             )
 
             if not result.get("success"):
@@ -524,8 +520,10 @@ class ExecuteNotebookConsolidated:
     def _estimate_duration(self, notebook_path: Path) -> Optional[float]:
         """Estime la durée d'exécution en minutes."""
         try:
-            # Réutiliser la logique d'estimation existante
-            timeout_seconds = self.notebook_service._calculate_optimal_timeout(
+            from .async_job_service import get_async_job_service
+
+            async_job_service = get_async_job_service()
+            timeout_seconds = async_job_service._calculate_optimal_timeout(
                 notebook_path
             )
             return round(timeout_seconds / 60, 1)
