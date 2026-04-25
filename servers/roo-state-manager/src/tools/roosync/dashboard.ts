@@ -181,9 +181,13 @@ function buildDashboardKey(
     case 'global':
       return 'global';
     case 'machine':
-      return `machine-${machineId}`;
+      // Guard against double-prefix (e.g., machine-machine-foo)
+      const cleanMachineId = machineId.startsWith('machine-') ? machineId.slice('machine-'.length) : machineId;
+      return `machine-${cleanMachineId}`;
     case 'workspace':
-      return `workspace-${workspace}`;
+      // Guard against double-prefix (e.g., workspace-workspace-Argumentum → #1409 item 2)
+      const cleanWorkspace = workspace.startsWith('workspace-') ? workspace.slice('workspace-'.length) : workspace;
+      return `workspace-${cleanWorkspace}`;
     default:
       throw new Error(`Type dashboard inconnu: ${type}`);
   }
