@@ -611,4 +611,91 @@ describe('HeartbeatService - Tests Unitaires', () => {
       expect(newService.getHeartbeatData('machine-2')).toBeDefined();
     });
   });
+
+  describe('Atomic writes (#1674)', () => {
+    it('should write heartbeat files atomically (no 0-byte on interrupt)', async () => {
+      await heartbeatService.registerHeartbeat('test-atomic');
+
+      // Verify the heartbeat file exists and is valid JSON
+      const heartbeatDir = join(sharedPath, 'heartbeats');
+      const filePath = join(heartbeatDir, 'test-atomic.json');
+      expect(existsSync(filePath)).toBe(true);
+
+      const content = await fs.readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(content);
+      expect(parsed.machineId).toBe('test-atomic');
+      expect(parsed.status).toBe('online');
+    });
+
+    it('should clean up 0-byte heartbeat files on load', async () => {
+      // Register a machine first
+      await heartbeatService.registerHeartbeat('machine-clean');
+
+      // Create a 0-byte file simulating corruption
+      const heartbeatDir = join(sharedPath, 'heartbeats');
+      const corruptPath = join(heartbeatDir, 'corrupt-machine.json');
+      await fs.writeFile(corruptPath, '', 'utf-8'); // 0-byte file
+
+      expect(existsSync(corruptPath)).toBe(true);
+
+      // Stop and reload — should clean up the 0-byte file
+      await heartbeatService.stopHeartbeatService();
+      const newService = new HeartbeatService(sharedPath, {
+        heartbeatInterval: 30000,
+        offlineTimeout: 120000,
+        missedHeartbeatThreshold: 4,
+        autoSyncEnabled: false,
+        autoSyncInterval: 60000
+      });
+
+      const state = newService.getState();
+      expect(state.statistics.totalMachines).toBe(1);
+      expect(newService.getHeartbeatData('machine-clean')).toBeDefined();
+      expect(existsSync(corruptPath)).toBe(false); // 0-byte file removed
+    });
+  });
+
+  describe('Identity dedup (#1674)', () => {
+    it('should deduplicate shortname and myia-prefixed identities', async () => {
+      const heartbeatDir = join(sharedPath, 'heartbeats');
+      await mkdir(heartbeatDir, { recursive: true });
+
+      // Create a stale unprefixed file
+      const staleData: HeartbeatData = {
+        machineId: 'po-2025',
+        status: 'offline',
+        lastHeartbeat: new Date(Date.now() - 86400000).toISOString(),
+        missedHeartbeats: 5,
+        metadata: { firstSeen: new Date().toISOString(), lastUpdated: new Date().toISOString() }
+      };
+      await fs.writeFile(join(heartbeatDir, 'po-2025.json'), JSON.stringify(staleData, null, 2));
+
+      // Create a fresh myia-prefixed file
+      const freshData: HeartbeatData = {
+        machineId: 'myia-po-2025',
+        status: 'online',
+        lastHeartbeat: new Date().toISOString(),
+        missedHeartbeats: 0,
+        metadata: { firstSeen: new Date().toISOString(), lastUpdated: new Date().toISOString() }
+      };
+      await fs.writeFile(join(heartbeatDir, 'myia-po-2025.json'), JSON.stringify(freshData, null, 2));
+
+      // Load service — should deduplicate
+      const service = new HeartbeatService(sharedPath, {
+        heartbeatInterval: 30000,
+        offlineTimeout: 120000,
+        missedHeartbeatThreshold: 4,
+        autoSyncEnabled: false,
+        autoSyncInterval: 60000
+      });
+
+      const state = service.getState();
+      // Should only have the myia-prefixed entry
+      expect(state.statistics.totalMachines).toBe(1);
+      expect(service.getHeartbeatData('myia-po-2025')).toBeDefined();
+      expect(service.getHeartbeatData('myia-po-2025')?.status).toBe('online');
+      // Unprefixed file should be gone
+      expect(existsSync(join(heartbeatDir, 'po-2025.json'))).toBe(false);
+    });
+  });
 });

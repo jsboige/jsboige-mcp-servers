@@ -11,11 +11,30 @@
  * @version 3.1.0
  */
 
-import { promises as fs, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
+import { promises as fs, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, renameSync as fsRenameSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('HeartbeatService');
+
+/**
+ * Atomic write: write to .tmp then rename. Prevents 0-byte corruption on GDrive/Windows
+ * when the process is interrupted mid-write.
+ */
+async function atomicWriteFile(filePath: string, data: string): Promise<void> {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmpPath, data, 'utf-8');
+  await fs.rename(tmpPath, filePath);
+}
+
+/**
+ * Synchronous atomic write for use during migration (called from sync context).
+ */
+function atomicWriteFileSync(filePath: string, data: string): void {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, data, 'utf-8');
+  fsRenameSync(tmpPath, filePath);
+}
 
 /**
  * Configuration du heartbeat
@@ -257,6 +276,15 @@ export class HeartbeatService {
       for (const file of jsonFiles) {
         try {
           const filePath = join(this.heartbeatsDir, file);
+
+          // Clean up 0-byte files (corruption from interrupted non-atomic writes)
+          const stat = statSync(filePath);
+          if (stat.size === 0) {
+            logger.warn(`Suppression fichier heartbeat vide (0 bytes): ${file}`);
+            try { unlinkSync(filePath); } catch (_) { /* ignore cleanup failure */ }
+            continue;
+          }
+
           const content = readFileSync(filePath, 'utf-8');
           const data = JSON.parse(content) as HeartbeatData;
           const machineId = data.machineId?.toLowerCase() || file.replace('.json', '').toLowerCase();
@@ -265,8 +293,59 @@ export class HeartbeatService {
           logger.warn(`Erreur lecture fichier heartbeat ${file}`, { error: String(fileError) });
         }
       }
+
+      // Identity dedup: merge stale unprefixed files into myia-prefixed ones
+      // e.g. po-2025.json → myia-po-2025.json (the canonical identity)
+      this.dedupMachineIdentities();
     } catch (error) {
       logger.error('Erreur lecture répertoire heartbeats', error);
+    }
+  }
+
+  /**
+   * Deduplicate heartbeat files where a machine has both "shortname" and "myia-shortname" entries.
+   * Keeps the more recent entry, removes the stale one.
+   */
+  private dedupMachineIdentities(): void {
+    const entries = Array.from(this.state.heartbeats.entries());
+    const toRemove: string[] = [];
+
+    for (const [machineId, data] of entries) {
+      // Check if this is an unprefixed variant of a myia-prefixed machine
+      if (!machineId.startsWith('myia-')) {
+        const prefixedId = `myia-${machineId}`;
+        if (this.state.heartbeats.has(prefixedId)) {
+          const prefixedData = this.state.heartbeats.get(prefixedId)!;
+          // Keep the one with the most recent timestamp
+          const unprefixedTime = new Date(data.lastHeartbeat || 0).getTime();
+          const prefixedTime = new Date(prefixedData.lastHeartbeat || 0).getTime();
+
+          if (prefixedTime >= unprefixedTime) {
+            // Prefixed is newer or same — remove unprefixed
+            toRemove.push(machineId);
+            logger.info(`Dedup: suppression identité dupliquée ${machineId} (conserve ${prefixedId})`);
+          } else {
+            // Unprefixed is newer — merge into prefixed, remove unprefixed
+            this.state.heartbeats.set(prefixedId, data);
+            toRemove.push(machineId);
+            logger.info(`Dedup: fusion ${machineId} → ${prefixedId} (données plus récentes)`);
+          }
+
+          // Clean up the orphan file
+          try {
+            const orphanPath = this.getMachineFilePath(machineId);
+            if (existsSync(orphanPath)) {
+              unlinkSync(orphanPath);
+            }
+          } catch (e) {
+            logger.warn(`Dedup: impossible de supprimer fichier orphelin pour ${machineId}`, { error: String(e) });
+          }
+        }
+      }
+    }
+
+    for (const id of toRemove) {
+      this.state.heartbeats.delete(id);
     }
   }
 
@@ -289,7 +368,7 @@ export class HeartbeatService {
         // Write individual file
         try {
           const filePath = this.getMachineFilePath(machineId);
-          writeFileSync(filePath, JSON.stringify(heartbeatData, null, 2));
+          atomicWriteFileSync(filePath, JSON.stringify(heartbeatData, null, 2));
         } catch (writeError) {
           logger.warn(`Erreur écriture heartbeat ${machineId} pendant migration`, { error: String(writeError) });
         }
@@ -329,7 +408,7 @@ export class HeartbeatService {
       if (!heartbeatData) return;
 
       const filePath = this.getMachineFilePath(machineId);
-      await fs.writeFile(filePath, JSON.stringify(heartbeatData, null, 2));
+      await atomicWriteFile(filePath, JSON.stringify(heartbeatData, null, 2));
     } catch (error) {
       logger.error(`Erreur sauvegarde heartbeat pour ${machineId}`, error);
     }
@@ -358,7 +437,7 @@ export class HeartbeatService {
 
       for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
         const filePath = this.getMachineFilePath(machineId);
-        await fs.writeFile(filePath, JSON.stringify(heartbeatData, null, 2));
+        await atomicWriteFile(filePath, JSON.stringify(heartbeatData, null, 2));
       }
     } catch (error) {
       logger.error('Erreur sauvegarde état', error);
