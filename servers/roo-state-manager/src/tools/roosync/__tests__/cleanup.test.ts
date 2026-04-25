@@ -6,41 +6,41 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const { mockBulkOperation } = vi.hoisted(() => ({
-	mockBulkOperation: vi.fn()
+  mockBulkOperation: vi.fn()
 }));
 
 const { mockGetSharedStatePath } = vi.hoisted(() => ({
-	mockGetSharedStatePath: vi.fn()
+  mockGetSharedStatePath: vi.fn()
 }));
 
 const { mockGetLocalMachineId } = vi.hoisted(() => ({
-	mockGetLocalMachineId: vi.fn()
+  mockGetLocalMachineId: vi.fn()
 }));
 
 vi.mock('../../../services/MessageManager.js', () => {
-	const mockInstance = {
-		bulkOperation: (...args: any[]) => mockBulkOperation(...args),
-	};
-	return {
-		MessageManager: class {
-			constructor() {}
-			bulkOperation(...args: any[]) { return mockBulkOperation(...args); }
-		},
-		getMessageManager: () => mockInstance,
-	};
+  const mockInstance = {
+    bulkOperation: (...args: any[]) => mockBulkOperation(...args),
+  };
+  return {
+    MessageManager: class {
+      constructor() {}
+      bulkOperation(...args: any[]) { return mockBulkOperation(...args); }
+    },
+    getMessageManager: () => mockInstance,
+  };
 });
 
 vi.mock('../../../utils/server-helpers.js', () => ({
-	getSharedStatePath: mockGetSharedStatePath
+  getSharedStatePath: mockGetSharedStatePath
 }));
 
 vi.mock('../../../utils/message-helpers.js', () => ({
-	getLocalMachineId: mockGetLocalMachineId
+  getLocalMachineId: mockGetLocalMachineId
 }));
 
 vi.mock('../../../utils/logger.js', () => ({
-	createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
-	Logger: class {}
+  createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
+  Logger: class {}
 }));
 
 // Fix #636 timeout: Use static import instead of dynamic imports
@@ -60,9 +60,6 @@ describe('cleanup', () => {
 	});
 
 	test('exports CleanupMessagesArgs type', async () => {
-		// Type is exported but not a runtime value, so we can't test it directly
-		// The compilation would fail if the type wasn't exported
-		// We can at least verify the module loaded successfully
 		expect(cleanupMessages).toBeDefined();
 	});
 
@@ -219,6 +216,44 @@ describe('cleanup', () => {
 		expect(text).toContain('**Messages correspondants :** 10');
 		expect(text).toContain('**Messages traités :** 8');
 		expect(text).toContain('**Erreurs :** 2');
+	});
+
+	test('reports failed_ids when messages fail', async () => {
+		mockBulkOperation.mockResolvedValue({
+			operation: 'mark_read',
+			matched: 5,
+			processed: 3,
+			errors: 2,
+			message_ids: ['msg-1', 'msg-2', 'msg-3', 'msg-4', 'msg-5'],
+			failed_ids: ['msg-4', 'msg-5']
+		});
+
+		const result = await cleanupMessages({
+			operation: 'mark_read'
+		});
+
+		const text = result.content[0].text;
+		expect(text).toContain('**IDs en échec** (2)');
+		expect(text).toContain('❌ msg-4');
+		expect(text).toContain('❌ msg-5');
+	});
+
+	test('hides failed_ids section when no failures', async () => {
+		mockBulkOperation.mockResolvedValue({
+			operation: 'mark_read',
+			matched: 3,
+			processed: 3,
+			errors: 0,
+			message_ids: ['msg-1', 'msg-2', 'msg-3'],
+			failed_ids: []
+		});
+
+		const result = await cleanupMessages({
+			operation: 'mark_read'
+		});
+
+		const text = result.content[0].text;
+		expect(text).not.toContain('IDs en échec');
 	});
 
 	test('inputSchema metadata is valid', async () => {
