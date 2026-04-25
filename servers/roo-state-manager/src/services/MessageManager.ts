@@ -1059,18 +1059,20 @@ export class MessageManager {
     processed: number;
     errors: number;
     message_ids: string[];
+    failed_ids: string[];
   }> {
     const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
     logger.info(`Bulk ${operation} for ${machineId}:${effectiveWorkspaceId}`, { filters });
 
     if (!existsSync(this.inboxPath)) {
-      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [] };
+      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [] };
     }
 
     // Use cached data for filtering (#638 perf optimization)
     const { items, full } = await this.ensureInboxCache();
     const matchedIds: string[] = [];
     let errors = 0;
+    const failedIds: string[] = [];
 
     for (const item of items) {
       const message = full.get(item.id);
@@ -1119,15 +1121,16 @@ export class MessageManager {
         if (operation === 'mark_read') {
           const success = await this.markAsRead(id, machineId);
           if (success) processed++;
-          else errors++;
+          else { errors++; failedIds.push(id); }
         } else if (operation === 'archive') {
           const success = await this.archiveMessage(id);
           if (success) processed++;
-          else errors++;
+          else { errors++; failedIds.push(id); }
         }
       } catch (error) {
         logger.error(`Error processing message ${id}`, error);
         errors++;
+        failedIds.push(id);
       }
     }
 
@@ -1137,7 +1140,8 @@ export class MessageManager {
       matched: matchedIds.length,
       processed,
       errors,
-      message_ids: matchedIds
+      message_ids: matchedIds,
+      failed_ids: failedIds
     };
   }
 

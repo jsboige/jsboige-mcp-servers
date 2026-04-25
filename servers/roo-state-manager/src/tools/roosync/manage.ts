@@ -281,6 +281,11 @@ async function bulkOperationHandler(
   if (args.subject_contains) filtersDesc.push(`sujet contient: "${args.subject_contains}"`);
   if (args.tag) filtersDesc.push(`tag: ${args.tag}`);
 
+  const failedIds = result.failed_ids ?? [];
+  const failedSection = failedIds.length > 0
+    ? `\n\n**IDs en échec (${failedIds.length}) :** ${failedIds.slice(0, 10).map(id => `❌ \`${id}\``).join(', ')}${failedIds.length > 10 ? ` ... et ${failedIds.length - 10} autres` : ''}`
+    : '';
+
   return `✅ **Opération bulk terminée : ${opName}**
 
 ---
@@ -288,7 +293,7 @@ async function bulkOperationHandler(
 **Filtres appliqués :** ${filtersDesc.length > 0 ? filtersDesc.join(', ') : 'aucun (tous les messages)'}
 **Messages trouvés :** ${result.matched}
 **Messages traités :** ${result.processed}
-**Erreurs :** ${result.errors}
+**Erreurs :** ${result.errors}${failedSection}
 
 ${result.message_ids.length > 0 ? `**IDs traités :** ${result.message_ids.slice(0, 10).map(id => `\`${id}\``).join(', ')}${result.message_ids.length > 10 ? ` ... et ${result.message_ids.length - 10} autres` : ''}` : '**Aucun message ne correspond aux filtres.**'}`;
 }
