@@ -43,7 +43,7 @@ function getLogger(): Logger {
  * Schema de validation pour roosync_baseline
  */
 export const BaselineArgsSchema = z.object({
-  action: z.enum(['update', 'version', 'restore', 'export', 'list_versions'])
+  action: z.enum(['update', 'version', 'restore', 'export', 'list_versions', 'current_version'])
     .describe('Action à effectuer sur la baseline'),
 
   // Paramètres pour action: update
@@ -172,6 +172,8 @@ export async function roosync_baseline(args: BaselineArgs): Promise<BaselineResu
         return await handleExportAction(args, timestamp);
       case 'list_versions':
         return await handleListVersionsAction(args, timestamp);
+      case 'current_version':
+        return await handleCurrentVersionAction(args, timestamp);
       default:
         throw new RooSyncServiceError(
           `Action non supportée: ${args.action}`,
@@ -844,6 +846,64 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
         totalVersions: 0,
         message: `Impossible de lister les tags: ${(error as Error).message}`
       }
+    };
+  }
+}
+
+/**
+ * Handler pour action: current_version
+ * Reads the current baseline version from the file without creating tags
+ * #1410: Version discovery — allows agents to check baseline status
+ */
+async function handleCurrentVersionAction(args: BaselineArgs, timestamp: string): Promise<BaselineResult> {
+  const service = await getRooSyncService();
+  const config = service.getConfig();
+  const machineId = args.machineId || config.machineId;
+
+  const configService = new ConfigService(config.sharedPath);
+  const baselineService = new BaselineService(configService, null as any, null as any);
+
+  try {
+    const baseline = await baselineService.loadBaseline(machineId);
+
+    if (!baseline) {
+      return {
+        success: true,
+        action: 'current_version',
+        timestamp,
+        version: '',
+        machineId,
+        message: `Aucune baseline trouvée pour ${machineId}`,
+        data: {
+          exists: false,
+          machineId
+        }
+      };
+    }
+
+    return {
+      success: true,
+      action: 'current_version',
+      timestamp,
+      version: baseline.version || '',
+      machineId: baseline.machineId,
+      message: `Baseline actuelle: ${baseline.version || 'non-versionnée'} (${machineId})`,
+      data: {
+        exists: true,
+        machineId: baseline.machineId,
+        version: baseline.version || '',
+        lastUpdated: baseline.lastUpdated || '',
+        baselineId: (baseline as any).baselineId || ''
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      action: 'current_version',
+      timestamp,
+      version: '',
+      machineId,
+      message: `Erreur lors de la lecture de la baseline: ${(error as Error).message}`
     };
   }
 }
