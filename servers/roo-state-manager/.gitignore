@@ -68,6 +68,9 @@ analysis-consolidation/
 analysis-reports/
 analysis-tests/
 
+# Live integration test artifacts (502 repro, etc.)
+src/tools/roosync/__tests__/artifacts/
+
 # Temporary files and runtime state
 temp/
 test-results/
