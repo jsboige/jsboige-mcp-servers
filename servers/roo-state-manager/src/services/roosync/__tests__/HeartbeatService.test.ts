@@ -33,9 +33,12 @@ const {
   mockMkdirSync,
   mockWriteFileSync,
   mockUnlinkSync,
+  mockStatSync,
+  mockRenameSync,
   mockWriteFile,
   mockMkdir,
   mockUnlink,
+  mockRename,
 } = vi.hoisted(() => ({
   mockExistsSync: vi.fn().mockReturnValue(false),
   mockReadFileSync: vi.fn().mockReturnValue('{}'),
@@ -43,9 +46,12 @@ const {
   mockMkdirSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
   mockUnlinkSync: vi.fn(),
+  mockStatSync: vi.fn().mockReturnValue({ size: 100 }),
+  mockRenameSync: vi.fn(),
   mockWriteFile: vi.fn().mockResolvedValue(undefined),
   mockMkdir: vi.fn().mockResolvedValue(undefined),
   mockUnlink: vi.fn().mockResolvedValue(undefined),
+  mockRename: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('fs', () => ({
@@ -55,10 +61,13 @@ vi.mock('fs', () => ({
   mkdirSync: mockMkdirSync,
   writeFileSync: mockWriteFileSync,
   unlinkSync: mockUnlinkSync,
+  statSync: mockStatSync,
+  renameSync: mockRenameSync,
   promises: {
     writeFile: (...args: any[]) => mockWriteFile(...args),
     mkdir: (...args: any[]) => mockMkdir(...args),
     unlink: (...args: any[]) => mockUnlink(...args),
+    rename: (...args: any[]) => mockRename(...args),
   },
 }));
 
@@ -136,9 +145,11 @@ beforeEach(() => {
   mockExistsSync.mockReturnValue(false);
   mockReadFileSync.mockReturnValue('{}');
   mockReaddirSync.mockReturnValue([]);
+  mockStatSync.mockReturnValue({ size: 100 });
   mockWriteFile.mockResolvedValue(undefined);
   mockMkdir.mockResolvedValue(undefined);
   mockUnlink.mockResolvedValue(undefined);
+  mockRename.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -336,10 +347,11 @@ describe('HeartbeatService', () => {
       await service.registerHeartbeat('machine-y');
 
       expect(mockMkdir).toHaveBeenCalledWith(HEARTBEATS_DIR, { recursive: true });
-      expect(mockWriteFile).toHaveBeenCalledWith(
-        join(HEARTBEATS_DIR, 'machine-y.json'),
-        expect.any(String)
-      );
+      // Atomic write: writeFile gets .tmp path, then rename to final path
+      const writeFileCalls = mockWriteFile.mock.calls;
+      expect(writeFileCalls.length).toBeGreaterThanOrEqual(1);
+      expect(writeFileCalls[0][0]).toContain(join(HEARTBEATS_DIR, 'machine-y.json'));
+      expect(mockRename).toHaveBeenCalled();
     });
 
     test('enregistre plusieurs machines indépendamment', async () => {
@@ -361,10 +373,10 @@ describe('HeartbeatService', () => {
       await service.registerHeartbeat('MyIA-AI-01');
 
       expect(service.getHeartbeatData('myia-ai-01')).toBeDefined();
-      expect(mockWriteFile).toHaveBeenCalledWith(
-        join(HEARTBEATS_DIR, 'myia-ai-01.json'),
-        expect.any(String)
-      );
+      // Atomic write: writeFile gets .tmp path
+      const writeFileCalls = mockWriteFile.mock.calls;
+      expect(writeFileCalls.length).toBeGreaterThanOrEqual(1);
+      expect(writeFileCalls[0][0]).toContain(join(HEARTBEATS_DIR, 'myia-ai-01.json'));
     });
   });
 
@@ -736,10 +748,11 @@ describe('HeartbeatService', () => {
       await service.stopHeartbeatService();
 
       expect(mockMkdir).toHaveBeenCalledWith(HEARTBEATS_DIR, { recursive: true });
-      expect(mockWriteFile).toHaveBeenCalledWith(
-        join(HEARTBEATS_DIR, 'persisted-machine.json'),
-        expect.any(String)
-      );
+      // Atomic write: writeFile gets .tmp path, then rename to final path
+      const writeFileCalls = mockWriteFile.mock.calls;
+      expect(writeFileCalls.length).toBeGreaterThanOrEqual(1);
+      expect(writeFileCalls[0][0]).toContain(join(HEARTBEATS_DIR, 'persisted-machine.json'));
+      expect(mockRename).toHaveBeenCalled();
     });
   });
 

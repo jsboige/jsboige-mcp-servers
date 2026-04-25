@@ -11,7 +11,7 @@
  * @version 3.1.0
  */
 
-import { promises as fs, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
+import { promises as fs, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, renameSync as fsRenameSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../../utils/logger.js';
 
@@ -33,8 +33,7 @@ async function atomicWriteFile(filePath: string, data: string): Promise<void> {
 function atomicWriteFileSync(filePath: string, data: string): void {
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmpPath, data, 'utf-8');
-  const { renameSync } = require('fs');
-  renameSync(tmpPath, filePath);
+  fsRenameSync(tmpPath, filePath);
 }
 
 /**
@@ -279,7 +278,7 @@ export class HeartbeatService {
           const filePath = join(this.heartbeatsDir, file);
 
           // Clean up 0-byte files (corruption from interrupted non-atomic writes)
-          const stat = require('fs').statSync(filePath);
+          const stat = statSync(filePath);
           if (stat.size === 0) {
             logger.warn(`Suppression fichier heartbeat vide (0 bytes): ${file}`);
             try { unlinkSync(filePath); } catch (_) { /* ignore cleanup failure */ }
