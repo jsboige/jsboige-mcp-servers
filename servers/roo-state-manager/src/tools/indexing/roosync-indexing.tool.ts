@@ -24,7 +24,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -53,6 +53,12 @@ export interface RooSyncIndexingArgs {
     /** #604: Source de la conversation (pour action=index, détermine l'extracteur de chunks) */
     source?: 'roo' | 'claude-code';
 
+    /** #1658: Âge maximum en jours pour la rétention (pour action=cleanup). Défaut: 90 */
+    max_age_days?: number;
+
+    /** #1658: Filtre optionnel par workspace_name (pour action=cleanup) */
+    workspace_name_filter?: string;
+
     /** #1244: Activer le diagnostic approfondi (scroll sample, distribution source/workspace) — pour action=diagnose */
     deep?: boolean;
 
@@ -74,8 +80,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques)"
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup'],
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658)"
             },
             task_id: {
                 type: 'string',
@@ -118,6 +124,15 @@ export const roosyncIndexingTool: Tool = {
                 type: 'string',
                 enum: ['roo', 'claude-code'],
                 description: "#604: Source de la conversation (pour action=index). 'roo' = tâche Roo standard, 'claude-code' = session Claude Code JSONL. Par défaut: 'roo'"
+            },
+            max_age_days: {
+                type: 'number',
+                description: "#1658: Pour action=cleanup. Âge maximum en jours des vecteurs à conserver. Les vecteurs dont le timestamp est antérieur à (now - max_age_days) seront supprimés. Défaut: 90.",
+                default: 90
+            },
+            workspace_name_filter: {
+                type: 'string',
+                description: "#1658: Pour action=cleanup. Filtre optionnel par workspace_name pour limiter le cleanup à un workspace spécifique."
             },
             deep: {
                 type: 'boolean',
@@ -175,10 +190,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup` }]
         };
     }
 
@@ -332,6 +347,41 @@ export async function handleRooSyncIndexing(
                 isError: false,
                 content: [{ type: 'text', text: JSON.stringify(status, null, 2) }]
             };
+        }
+
+        case 'cleanup': {
+            const { cleanupOldVectors } = await import('../../services/task-indexer/VectorIndexer.js');
+            const maxAgeDays = args.max_age_days || 90;
+            const isDryRun = args.dry_run ?? false;
+
+            try {
+                const result = await cleanupOldVectors(maxAgeDays, isDryRun, args.workspace_name_filter);
+
+                const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'cleanup',
+                            mode: isDryRun ? 'dry_run' : 'executed',
+                            max_age_days: maxAgeDays,
+                            cutoff_date: result.cutoffDate,
+                            workspace_filter: result.workspaceFilter || null,
+                            vectors_affected: result.deletedCount,
+                            summary: `${mode} ${result.deletedCount} vecteurs ${isDryRun ? 'seraient supprimés' : 'supprimés'} (antérieurs au ${result.cutoffDate})`
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors du cleanup: ${error.message}`
+                    }]
+                };
+            }
         }
 
         default:

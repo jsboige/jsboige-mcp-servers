@@ -76,9 +76,9 @@ describe('roosync_indexing - CONS-11', () => {
             expect(roosyncIndexingTool.name).toBe('roosync_indexing');
         });
 
-        it('should have action enum with 6 values', () => {
+        it('should have action enum with 7 values', () => {
             const actionProp = (roosyncIndexingTool.inputSchema as any).properties.action;
-            expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status']);
+            expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup']);
         });
 
         it('should require action parameter', () => {
