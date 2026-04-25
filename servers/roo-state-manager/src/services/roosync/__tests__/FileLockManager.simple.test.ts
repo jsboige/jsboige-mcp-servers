@@ -7,11 +7,13 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const { mockWriteFile, mockReadFile, mockUnlink, mockAccess } = vi.hoisted(() => ({
+const { mockWriteFile, mockReadFile, mockUnlink, mockAccess, mockCopyFile, mockRename } = vi.hoisted(() => ({
 	mockWriteFile: vi.fn(),
 	mockReadFile: vi.fn(),
 	mockUnlink: vi.fn(),
-	mockAccess: vi.fn()
+	mockAccess: vi.fn(),
+	mockCopyFile: vi.fn(),
+	mockRename: vi.fn()
 }));
 
 vi.mock('fs', () => ({
@@ -19,14 +21,18 @@ vi.mock('fs', () => ({
 		writeFile: mockWriteFile,
 		readFile: mockReadFile,
 		unlink: mockUnlink,
-		access: mockAccess
+		access: mockAccess,
+		copyFile: mockCopyFile,
+		rename: mockRename
 	},
 	default: {
 		promises: {
 			writeFile: mockWriteFile,
 			readFile: mockReadFile,
 			unlink: mockUnlink,
-			access: mockAccess
+			access: mockAccess,
+			copyFile: mockCopyFile,
+			rename: mockRename
 		}
 	}
 }));
@@ -256,6 +262,8 @@ describe('FileLockManager', () => {
 		test('updates existing JSON file', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
 			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
 			mockReadFile.mockResolvedValue(JSON.stringify({ count: 1 }));
 
 			const manager = FileLockManager.getInstance();
@@ -266,11 +274,17 @@ describe('FileLockManager', () => {
 
 			expect(result.success).toBe(true);
 			expect(result.data).toEqual({ count: 2 });
+			expect(mockCopyFile).toHaveBeenCalledWith(
+				'/test/data.json',
+				'/test/data.json.bak-1'
+			);
 		});
 
 		test('creates new JSON when file does not exist', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
 			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
 			const enoentError = Object.assign(new Error('Not found'), { code: 'ENOENT' });
 			mockReadFile.mockRejectedValue(enoentError);
 
@@ -287,6 +301,8 @@ describe('FileLockManager', () => {
 		test('auto-repairs corrupt/empty JSON file (#1623)', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
 			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
 			mockReadFile.mockResolvedValue('');
 
 			const manager = FileLockManager.getInstance();
@@ -307,6 +323,8 @@ describe('FileLockManager', () => {
 		test('auto-repairs truncated JSON file (#1623)', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
 			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
 			mockReadFile.mockResolvedValue('{"count":');
 
 			const manager = FileLockManager.getInstance();
@@ -317,6 +335,109 @@ describe('FileLockManager', () => {
 
 			expect(result.success).toBe(true);
 			expect(result.data).toEqual({ count: 0 });
+		});
+	});
+
+	// ============================================================
+	// Backup rotation (#1657)
+	// ============================================================
+
+	describe('backup rotation (#1657)', () => {
+		test('creates .bak-1 on first write', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(JSON.stringify({ v: 1 }));
+
+			const manager = FileLockManager.getInstance();
+			await manager.updateJsonWithLock('/test/f.json', (d) => ({ v: (d?.v ?? 0) + 1 }));
+
+			expect(mockCopyFile).toHaveBeenCalledWith('/test/f.json', '/test/f.json.bak-1');
+		});
+
+		test('rotates .bak-1 -> .bak-2 on second write', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(JSON.stringify({ v: 2 }));
+
+			const manager = FileLockManager.getInstance();
+			await manager.updateJsonWithLock('/test/f.json', (d) => ({ v: (d?.v ?? 0) + 1 }));
+
+			expect(mockRename).toHaveBeenCalledWith('/test/f.json.bak-1', '/test/f.json.bak-2');
+		});
+
+		test('deletes oldest .bak-3 when max backups reached', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(JSON.stringify({ v: 3 }));
+
+			const manager = FileLockManager.getInstance();
+			await manager.updateJsonWithLock('/test/f.json', (d) => ({ v: (d?.v ?? 0) + 1 }));
+
+			expect(mockUnlink).toHaveBeenCalledWith('/test/f.json.bak-3');
+			expect(mockRename).toHaveBeenCalledWith('/test/f.json.bak-2', '/test/f.json.bak-3');
+		});
+
+		test('falls back to .bak-1 when main file is corrupt', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
+			mockReadFile
+				.mockResolvedValueOnce('not-json')
+				.mockResolvedValueOnce(JSON.stringify({ recovered: true }));
+
+			const manager = FileLockManager.getInstance();
+			const result = await manager.updateJsonWithLock<{ recovered: boolean }>(
+				'/test/f.json',
+				(d) => ({ recovered: d?.recovered ?? false })
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.data).toEqual({ recovered: true });
+		});
+
+		test('cascades fallback through .bak-1 -> .bak-2 -> .bak-3', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
+			mockReadFile
+				.mockResolvedValueOnce('bad')
+				.mockResolvedValueOnce('also-bad')
+				.mockResolvedValueOnce('still-bad')
+				.mockResolvedValueOnce(JSON.stringify({ last: true }));
+
+			const manager = FileLockManager.getInstance();
+			const result = await manager.updateJsonWithLock<{ last: boolean }>(
+				'/test/f.json',
+				(d) => ({ last: d?.last ?? false })
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.data).toEqual({ last: true });
+		});
+
+		test('returns undefined when all files are corrupt', async () => {
+			mockWriteFile.mockResolvedValue(undefined);
+			mockUnlink.mockResolvedValue(undefined);
+			mockCopyFile.mockResolvedValue(undefined);
+			mockRename.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue('bad-json');
+
+			const manager = FileLockManager.getInstance();
+			const result = await manager.updateJsonWithLock<{ x: number }>(
+				'/test/f.json',
+				(d) => ({ x: d?.x ?? 42 })
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.data).toEqual({ x: 42 });
 		});
 	});
 });

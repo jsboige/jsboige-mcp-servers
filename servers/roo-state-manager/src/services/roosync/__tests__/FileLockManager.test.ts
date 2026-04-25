@@ -332,10 +332,11 @@ describe('FileLockManager', () => {
       );
     });
 
-    test('retourne success=false si JSON invalide', async () => {
+    test('fallback to undefined si JSON invalide (backup rotation)', async () => {
       mockReadFile.mockResolvedValue('invalid-json{{{');
       const result = await manager.updateJsonWithLock('/tmp/bad.json', (d) => d);
-      expect(result.success).toBe(false);
+      // With backup rotation, corrupt JSON falls back to undefined (no crash)
+      expect(result.success).toBe(true);
     });
   });
 
