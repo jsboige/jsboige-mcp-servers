@@ -15,6 +15,8 @@ from typing import Any, Dict, Literal, Optional
 
 import nbformat
 
+from .async_job_service import get_async_job_service
+
 logger = logging.getLogger(__name__)
 
 
@@ -270,20 +272,18 @@ class ExecuteNotebookConsolidated:
         - Bascule async automatique pour notebooks longs
         """
         try:
-            # Use PapermillExecutor directly (handles parameters natively)
-            executor = self.notebook_service.papermill_executor
-
-            result = await executor.execute_notebook(
+            # Use PapermillExecutor directly (supports parameters natively)
+            result = await self.notebook_service.papermill_executor.execute_notebook(
                 input_path=input_path,
                 output_path=output_path,
-                parameters=parameters,
+                parameters=parameters or {},
                 kernel=kernel_name,
                 timeout=timeout,
             )
 
             execution_time = time.time() - start_time
 
-            # Analyze output notebook if available
+            # Analyser le notebook de sortie si disponible
             if result.success and Path(output_path).exists():
                 analysis = self._analyze_notebook_output(output_path)
                 report = self._format_report(output_path, analysis, report_mode)
@@ -303,6 +303,8 @@ class ExecuteNotebookConsolidated:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             else:
+                # Execution failed
+                error_msg = "; ".join(result.errors) if result.errors else "Execution failed"
                 return {
                     "status": "error",
                     "mode": "sync",
@@ -313,7 +315,7 @@ class ExecuteNotebookConsolidated:
                     "kernel_name": kernel_name or "auto",
                     "error": {
                         "type": "ExecutionError",
-                        "message": "; ".join(result.errors) if result.errors else "Execution failed",
+                        "message": error_msg,
                         "traceback": "",
                     },
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -351,9 +353,7 @@ class ExecuteNotebookConsolidated:
         Délègue à start_notebook_async qui gère le job-based execution.
         """
         try:
-            # Démarrer l'exécution asynchrone via AsyncJobService singleton
-            from .async_job_service import get_async_job_service
-
+            # Use AsyncJobService directly for job-based execution
             async_job_service = get_async_job_service()
             result = async_job_service.start_notebook_async(
                 input_path=input_path,
@@ -520,12 +520,8 @@ class ExecuteNotebookConsolidated:
     def _estimate_duration(self, notebook_path: Path) -> Optional[float]:
         """Estime la durée d'exécution en minutes."""
         try:
-            from .async_job_service import get_async_job_service
-
             async_job_service = get_async_job_service()
-            timeout_seconds = async_job_service._calculate_optimal_timeout(
-                notebook_path
-            )
+            timeout_seconds = async_job_service._calculate_optimal_timeout(notebook_path)
             return round(timeout_seconds / 60, 1)
         except Exception as e:
             logger.warning(f"Error estimating duration: {e}")
