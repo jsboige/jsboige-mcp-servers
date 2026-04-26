@@ -16,6 +16,21 @@ const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 const MAX_INDEXABLE_CONTENT_SIZE = parseInt(process.env.MAX_INDEXABLE_CONTENT_SIZE || '20000', 10);
 
 /**
+ * #1758: Maximum chunks per task_id before hard truncation.
+ * Prevents runaway indexing of worker sessions with 200K+ messages.
+ * Default: 50,000 chunks ≈ ~2000 messages (25 chunks/msg average).
+ * Configurable via MAX_CHUNKS_PER_TASK env var.
+ */
+export const MAX_CHUNKS_PER_TASK = parseInt(process.env.MAX_CHUNKS_PER_TASK || '50000', 10);
+
+/**
+ * #1758: Maximum messages per task before warning + early truncation.
+ * Sessions exceeding this are likely runaway workers (--continue loops).
+ * Default: 10,000 messages. Configurable via MAX_MESSAGES_PER_TASK env var.
+ */
+export const MAX_MESSAGES_PER_TASK = parseInt(process.env.MAX_MESSAGES_PER_TASK || '10000', 10);
+
+/**
  * Truncate content to MAX_INDEXABLE_CONTENT_SIZE, preserving start and end.
  * Keeps first 70% and last 30% to capture both the beginning context and final results.
  */
@@ -148,7 +163,14 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8');
         const apiMessages: ApiMessage[] = JSON.parse(apiHistoryContent);
 
-        for (const msg of apiMessages) {
+        // #1758: Early warning for abnormally large sessions
+        if (apiMessages.length > MAX_MESSAGES_PER_TASK) {
+            console.warn(`⚠️ [#1758] Task ${taskId} has ${apiMessages.length} messages — exceeding MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}. Processing first ${MAX_MESSAGES_PER_TASK} only.`);
+        }
+
+        const messagesToProcess = apiMessages.slice(0, MAX_MESSAGES_PER_TASK);
+
+        for (const msg of messagesToProcess) {
             if (msg.role === 'system') continue;
             if (msg.content) {
                 messageIndex++;
@@ -407,7 +429,14 @@ export async function extractChunksFromClaudeSession(
                 const lines = content.split('\n').filter(line => line.trim());
                 let fileMessageCount = 0;
 
-                for (const line of lines) {
+                // #1758: Early stop for large JSONL files
+                if (lines.length > MAX_MESSAGES_PER_TASK) {
+                    console.warn(`⚠️ [#1758] Claude session ${taskId} has ${lines.length} lines — exceeding MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}. Processing first ${MAX_MESSAGES_PER_TASK} only.`);
+                }
+
+                const linesToProcess = lines.slice(0, MAX_MESSAGES_PER_TASK);
+
+                for (const line of linesToProcess) {
                     try {
                         const entry = JSON.parse(line);
 
