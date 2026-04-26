@@ -162,6 +162,8 @@ export interface ConversationBrowserArgs {
     sources?: Array<'roo' | 'claude' | 'archive'>;
     /** [rebuild] #1244 Couche 1.4 — Si true, force l'enqueue Qdrant pour tous les squelettes (tous tiers). */
     reindex?: boolean;
+    /** [list] #1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. */
+    includeArchives?: boolean;
 }
 
 /**
@@ -663,7 +665,9 @@ async function handleConversationBrowserCore(
                         // #1244 Couche 2.1 — Filtres date/machine cross-machine
                         startDate: args.startDate,
                         endDate: args.endDate,
-                        machineId: args.machineId
+                        machineId: args.machineId,
+                        // #1752 Bug #3 — GDrive archive support
+                        includeArchives: args.includeArchives
                     },
                     conversationCache
                 );
