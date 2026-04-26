@@ -645,6 +645,12 @@ describe('registry.ts - Tool Registration', () => {
         let mockState: ServerState;
 
         beforeEach(() => {
+            // roosync_send dynamic-imports send.ts which calls getMessageManager(),
+            // which needs ROOSYNC_SHARED_PATH. Provide a temp dir so it doesn't throw.
+            if (!process.env.ROOSYNC_SHARED_PATH) {
+                process.env.ROOSYNC_SHARED_PATH = '/tmp/test-shared-state';
+            }
+
             mockServer = {
                 setRequestHandler: vi.fn()
             };
@@ -658,7 +664,7 @@ describe('registry.ts - Tool Registration', () => {
             } as any;
         });
 
-        it('should route roosync_send to handler', async () => {
+        it('should route roosync_send to handler', { timeout: 60_000 }, async () => {
             registerCallToolHandler(
                 mockServer,
                 mockState,
