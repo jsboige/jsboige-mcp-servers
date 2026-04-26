@@ -217,6 +217,12 @@
         "OPEN_TERMINAL_URL": "http://open-terminal-myia:8000",
         "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
       }
+    },
+    {
+      "id": "markitdown",
+      "description": "Document conversion (PDF/DOCX/XLSX/PPTX → Markdown) via Microsoft MarkItDown",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-markitdown"]
     }
   ],
 
