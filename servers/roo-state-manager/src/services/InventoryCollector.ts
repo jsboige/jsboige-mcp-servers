@@ -89,6 +89,126 @@ export interface MachineInventory {
     rooConfig?: string;
     scripts?: string;
   };
+  /**
+   * #1746: VS Code Claude settings (nouveau)
+   * Collecte ~/.claude.json et .claude.json (workspace)
+   */
+  vscodeConfig?: {
+    claudeJson?: {
+      exists: boolean;
+      path?: string;
+      mcpServersCount?: number;
+      mcpServers?: Array<{
+        name: string;
+        command?: string;
+        args?: string[];
+        env?: string[];
+      }>;
+    };
+    workspaceSettings?: {
+      exists: boolean;
+      path?: string;
+      mcpServersCount?: number;
+      mcpServers?: Array<{
+        name: string;
+        command?: string;
+        args?: string[];
+      }>;
+    };
+  };
+  /**
+   * #1746: WSL distros (nouveau)
+   * Liste des distributions WSL installées
+   */
+  wslDistros?: Array<{
+    name: string;
+    state: string;
+    version: string;
+    path: string;
+  }>;
+  /**
+   * #1746: Docker engine details (nouveau)
+   * Containers, images, volumes
+   */
+  dockerDetails?: {
+    containers?: {
+      total: number;
+      running: number;
+      list?: Array<{
+        id: string;
+        name: string;
+        status: string;
+        image: string;
+      }>;
+    };
+    images?: {
+      total: number;
+      list?: Array<{
+        name: string;
+        size: string;
+        created: string;
+      }>;
+    };
+    volumes?: {
+      total: number;
+      list?: Array<{
+        name: string;
+        driver: string;
+        mountpoint: string;
+      }>;
+    };
+    status?: string;
+  };
+  /**
+   * #1746: Python virtual environments (nouveau)
+   * Conda environments et venvs
+   */
+  pythonEnvs?: {
+    conda?: Array<{
+      name: string;
+      path: string;
+    }>;
+    venv?: Array<{
+      path: string;
+      pythonVersion: string;
+    }>;
+  };
+  /**
+   * #1746: Windows critical services (nouveau)
+   * Services Windows critiques (Docker, WSL, NVIDIA, etc.)
+   */
+  windowsServices?: Array<{
+    name: string;
+    displayName: string;
+    status: string;
+    startType?: string;
+  }>;
+  /**
+   * #1746: GPU details from nvidia-smi (nouveau)
+   * GPU détaillés avec nvidia-smi ou fallback WMI
+   */
+  gpuDetails?: Array<{
+    index: number;
+    name: string;
+    memoryTotal: number; // MB
+    memoryFree: number; // MB
+    memoryUsed: number; // MB
+    driverVersion?: string;
+    temperature?: number;
+    source: 'nvidia-smi' | 'WMI';
+  }>;
+  /**
+   * #1746: Listening ports (nouveau)
+   * Ports TCP/UDP en écoute avec processus associé
+   */
+  listeningPorts?: Array<{
+    protocol: 'TCP' | 'UDP';
+    localAddress: string;
+    localPort: number;
+    state: string;
+    processName: string;
+    processId: number;
+  }>;
 }
 
 /**
@@ -307,7 +427,15 @@ export class InventoryCollector {
             lastModified: rawInventory.inventory.rooConfig.modelProfile.lastModified
           } : undefined
         },
-        paths: rawInventory.paths
+        paths: rawInventory.paths,
+        // #1746: Nouveaux champs étendus
+        vscodeConfig: rawInventory.inventory?.vscodeConfig,
+        wslDistros: rawInventory.inventory?.wslDistros || [],
+        dockerDetails: rawInventory.inventory?.dockerDetails,
+        pythonEnvs: rawInventory.inventory?.pythonEnvs,
+        windowsServices: rawInventory.inventory?.windowsServices || [],
+        gpuDetails: rawInventory.inventory?.gpuDetails || [],
+        listeningPorts: rawInventory.inventory?.listeningPorts || []
       };
 
       this.logger.info(`✅ Inventaire structuré pour ${inventory.machineId}`);
@@ -522,7 +650,15 @@ export class InventoryCollector {
               lastModified: raw.inventory.rooConfig.modelProfile.lastModified
             } : undefined
           },
-          paths: raw.paths
+          paths: raw.paths,
+          // #1746: Nouveaux champs étendus
+          vscodeConfig: raw.inventory?.vscodeConfig,
+          wslDistros: raw.inventory?.wslDistros || [],
+          dockerDetails: raw.inventory?.dockerDetails,
+          pythonEnvs: raw.inventory?.pythonEnvs,
+          windowsServices: raw.inventory?.windowsServices || [],
+          gpuDetails: raw.inventory?.gpuDetails || [],
+          listeningPorts: raw.inventory?.listeningPorts || []
         };
       } else if (raw.machineId && raw.timestamp && raw.paths) {
         // Format "baseline" direct

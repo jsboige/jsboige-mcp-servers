@@ -79,6 +79,105 @@ export interface MachineInventory {
     sdddSpecs?: any[];
     rooModes?: any[];
     mcpServers?: any[];
+    /** #1746: VS Code Claude settings */
+    vscodeConfig?: {
+      claudeJson?: {
+        exists: boolean;
+        path?: string;
+        mcpServersCount?: number;
+        mcpServers?: Array<{
+          name: string;
+          command?: string;
+          args?: string[];
+          env?: string[];
+        }>;
+      };
+      workspaceSettings?: {
+        exists: boolean;
+        path?: string;
+        mcpServersCount?: number;
+        mcpServers?: Array<{
+          name: string;
+          command?: string;
+          args?: string[];
+        }>;
+      };
+    };
+    /** #1746: WSL distros */
+    wslDistros?: Array<{
+      name: string;
+      state: string;
+      version: string;
+      path: string;
+    }>;
+    /** #1746: Docker engine details */
+    dockerDetails?: {
+      containers?: {
+        total: number;
+        running: number;
+        list?: Array<{
+          id: string;
+          name: string;
+          status: string;
+          image: string;
+        }>;
+      };
+      images?: {
+        total: number;
+        list?: Array<{
+          name: string;
+          size: string;
+          created: string;
+        }>;
+      };
+      volumes?: {
+        total: number;
+        list?: Array<{
+          name: string;
+          driver: string;
+          mountpoint: string;
+        }>;
+      };
+      status?: string;
+    };
+    /** #1746: Python virtual environments */
+    pythonEnvs?: {
+      conda?: Array<{
+        name: string;
+        path: string;
+      }>;
+      venv?: Array<{
+        path: string;
+        pythonVersion: string;
+      }>;
+    };
+    /** #1746: Windows critical services */
+    windowsServices?: Array<{
+      name: string;
+      displayName: string;
+      status: string;
+      startType?: string;
+    }>;
+    /** #1746: GPU details from nvidia-smi */
+    gpuDetails?: Array<{
+      index: number;
+      name: string;
+      memoryTotal: number;
+      memoryFree: number;
+      memoryUsed: number;
+      driverVersion?: string;
+      temperature?: number;
+      source: 'nvidia-smi' | 'WMI';
+    }>;
+    /** #1746: Listening ports */
+    listeningPorts?: Array<{
+      protocol: 'TCP' | 'UDP';
+      localAddress: string;
+      localPort: number;
+      state: string;
+      processName: string;
+      processId: number;
+    }>;
   };
   metadata?: {
     lastSeen?: string;
