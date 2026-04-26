@@ -54,6 +54,7 @@ export default mergeConfig(baseConfig, defineConfig({
       'tests/integration/new-modules-integration.test.ts',
       'tests/integration/phase3-comprehensive.test.ts',
       'tests/integration/roosync-conflict-integration.test.ts',
+      'tests/integration/debug-commitlog.test.ts',
       'tests/performance/concurrency.test.ts',
       'tests/unit/services/BaselineService.test.ts',
       'tests/unit/services/RooSyncService.test.ts',
@@ -76,10 +77,13 @@ export default mergeConfig(baseConfig, defineConfig({
       'src/tools/roosync/__tests__/send.smoke.test.ts',
       'src/tools/roosync/__tests__/get-status.smoke.test.ts',
       'src/tools/roosync/__tests__/storage-management.smoke.test.ts',
+      'src/tools/roosync/__tests__/machines.smoke.test.ts',
+      'src/tools/roosync/__tests__/list-diffs.smoke.test.ts',
 
       // ===== CI-excluded: APPDATA/GDRIVE (Windows paths + GDrive) =====
       'src/tools/roosync/__tests__/baseline.integration.test.ts',
       'src/tools/roosync/__tests__/baseline.test.ts',
+      'src/tools/roosync/__tests__/compare-config.integration.test.ts',
       'src/tools/roosync/__tests__/config.integration.test.ts',
       'src/tools/roosync/__tests__/decision.integration.test.ts',
       'src/tools/roosync/__tests__/diagnose.integration.test.ts',
