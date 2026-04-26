@@ -91,6 +91,22 @@ describe('roosync_dashboard', () => {
     expect(result.key).toBe('workspace-test-workspace');
   });
 
+  // === Test 4: Double-prefix guard (#1409 item 2) ===
+  it('prevents double-prefix when workspace already starts with workspace-', async () => {
+    // Simulate a caller that passes the full key as workspace name
+    process.env.ROOSYNC_WORKSPACE_ID = 'workspace-Argumentum';
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      content: '# Double-prefix test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-Argumentum'); // NOT workspace-workspace-Argumentum
+    // Restore for other tests
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+  });
+
   // === Test 5: Read dashboard complet ===
   it('reads dashboard with all sections', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test Status' });
