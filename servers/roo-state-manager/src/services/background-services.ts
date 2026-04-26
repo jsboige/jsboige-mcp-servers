@@ -11,6 +11,7 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
+import { SkeletonCacheService } from './skeleton-cache.service.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
@@ -508,6 +509,13 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 export async function initializeBackgroundServices(state: ServerState): Promise<void> {
     try {
         console.log('🚀 Initialisation des services background (zero blocking I/O)...');
+
+        // #1747 — Activate skeleton-cache Tier 2 (Claude local) and Tier 3 (GDrive archives).
+        // Default ON; rollback via SKELETON_CLAUDE_TIER=false / SKELETON_ARCHIVE_TIER=false in .env.
+        const enableClaudeTier = process.env.SKELETON_CLAUDE_TIER !== 'false';
+        const enableArchiveTier = process.env.SKELETON_ARCHIVE_TIER !== 'false';
+        SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
+        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'}`);
 
         // ===== ALL NON-BLOCKING (fire-and-forget) =====
 
