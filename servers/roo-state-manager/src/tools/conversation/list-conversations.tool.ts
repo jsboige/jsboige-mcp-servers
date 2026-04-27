@@ -15,6 +15,9 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 // Profiling instrumentation removed (#832) — was generating ~1131 lines of noise in test output
+// #1752 Bug #3: Add GDrive archive support
+import { TaskArchiver } from '../../services/task-archiver/index.js';
+import { archiveToSkeleton } from '../../services/archive-skeleton-builder.js';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
@@ -535,6 +538,10 @@ export const listConversationsTool = {
                     type: 'string',
                     description: '#1244 Couche 2.1 — Filtre par identifiant machine (cross-machine). Permet d\'isoler les conversations d\'une machine specifique (ex: "myia-po-2025") parmi les archives chargees depuis GDrive.'
                 },
+                includeArchives: {
+                    type: 'boolean',
+                    description: '#1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. Les archives sont chargees depuis ROOSYNC_SHARED_PATH/task-archive/.'
+                },
             },
         },
     },
@@ -557,7 +564,9 @@ export const listConversationsTool = {
             // #1244 Couche 2.1 — Filtres date/machine cross-machine
             startDate?: string,
             endDate?: string,
-            machineId?: string
+            machineId?: string,
+            // #1752 Bug #3 — GDrive archive support
+            includeArchives?: boolean
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
@@ -612,6 +621,45 @@ export const listConversationsTool = {
                 allSkeletons = allSkeletons.concat(claudeSkeletons);
             } catch (claudeError) {
                 console.warn('⚠️ list_conversations: Claude session scan failed or timed out, using Roo-only:', claudeError instanceof Error ? claudeError.message : claudeError);
+            }
+        }
+
+        // #1752 Bug #3: Include GDrive cross-machine archives (Tier 3)
+        if (args.includeArchives) {
+            // PERF: Timeout wrapper (5s) prevents archive scan from blocking list responses
+            // GDrive I/O can be slow — scan must not block foreground tools
+            try {
+                const archivePromise = (async () => {
+                    const archivedTaskIds = await TaskArchiver.listArchivedTasks();
+                    const archiveSkeletons: ConversationSkeleton[] = [];
+
+                    for (const archivedId of archivedTaskIds) {
+                        // Skip if already in cache (Tier 1/2 collision)
+                        if (conversationCache.has(archivedId)) {
+                            continue;
+                        }
+                        try {
+                            const archive = await TaskArchiver.readArchivedTask(archivedId);
+                            if (archive) {
+                                const skeleton = archiveToSkeleton(archive);
+                                archiveSkeletons.push(skeleton);
+                            }
+                        } catch (archiveErr) {
+                            console.warn(`[list_conversations] Failed to read archive ${archivedId}:`, archiveErr);
+                        }
+                    }
+
+                    console.log(`[list_conversations] Loaded ${archiveSkeletons.length} archived tasks from GDrive`);
+                    return archiveSkeletons;
+                })();
+
+                const archiveTimeout = new Promise<ConversationSkeleton[]>((_, reject) =>
+                    setTimeout(() => reject(new Error('Archive scan timeout (5s)')), 5000)
+                );
+                const archiveSkeletons = await Promise.race([archivePromise, archiveTimeout]);
+                allSkeletons = allSkeletons.concat(archiveSkeletons);
+            } catch (archiveError) {
+                console.warn('⚠️ list_conversations: Archive scan failed or timed out (continuing without archives):', archiveError instanceof Error ? archiveError.message : archiveError);
             }
         }
 

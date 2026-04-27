@@ -1,9 +1,14 @@
 /**
  * Outil pour afficher les détails techniques complets d'une tâche
+ * #1752 Bug #1: Support Claude Code JSONL sessions via lazy loading
+ * #1752 Bug #2: Add max_output_length parameter with hard cap
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { ContentTruncator } from '../smart-truncation/content-truncator.js';
+import * as path from 'path';
 
 /**
  * Formate les détails d'une action
@@ -70,13 +75,13 @@ function truncateContent(content: string, lines: number): string {
 export const viewTaskDetailsTool = {
     definition: {
         name: 'view_task_details',
-        description: 'Affiche les détails techniques complets (métadonnées des actions) pour une tâche spécifique',
+        description: 'Affiche les détails techniques complets (métadonnées des actions) pour une tâche spécifique. Supporte les conversations Roo et Claude Code (lazy loading si sequence vide mais messageCount > 0).',
         inputSchema: {
             type: 'object',
             properties: {
                 task_id: {
                     type: 'string',
-                    description: 'L\'ID de la tâche pour laquelle afficher les détails techniques.'
+                    description: 'L\'ID de la tâche pour laquelle afficher les détails techniques. Pour Claude Code, le format est "claude-{projectDir}".'
                 },
                 action_index: {
                     type: 'number',
@@ -86,6 +91,11 @@ export const viewTaskDetailsTool = {
                     type: 'number',
                     description: 'Nombre de lignes à conserver au début et à la fin des contenus longs (0 = complet).',
                     default: 0
+                },
+                max_output_length: {
+                    type: 'number',
+                    description: '#1752 Bug #2 — Limite maximale de caractères en sortie. Un hard cap final est appliqué pour garantir le respect de cette limite.',
+                    default: 100000
                 }
             },
             required: ['task_id']
@@ -94,19 +104,55 @@ export const viewTaskDetailsTool = {
     
     /**
      * Handler pour l'outil view_task_details
+     * #1752 Bug #1: Add lazy loading for Claude Code sessions
+     * #1752 Bug #2: Add max_output_length hard cap
      */
     handler: async (
-        args: { task_id: string, action_index?: number, truncate?: number },
+        args: { task_id: string, action_index?: number, truncate?: number, max_output_length?: number },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
         try {
-            const skeleton = conversationCache.get(args.task_id);
-            
+            const { task_id, action_index, truncate = 0, max_output_length = 100000 } = args;
+            let skeleton = conversationCache.get(task_id);
+
+            // #1752 Bug #1: Lazy load if skeleton exists but sequence is empty
+            if (skeleton && (!skeleton.sequence || skeleton.sequence.length === 0) && skeleton.metadata.messageCount > 0) {
+                const isClaudeTask = task_id.startsWith('claude-')
+                    || (skeleton.metadata as any)?.source === 'claude-code'
+                    || (skeleton.metadata as any)?.dataSource === 'claude';
+
+                if (isClaudeTask) {
+                    console.log(`[view_task_details] Lazy loading Claude Code session ${task_id}`);
+                    const { ClaudeStorageDetector } = await import('../../utils/claude-storage-detector.js');
+                    const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
+                    const projectBasename = task_id.replace(/^claude-/, '');
+                    let claudeProjectPath: string | null = null;
+
+                    // Use prefix match like view-conversation-tree.ts
+                    const candidates = claudeLocations
+                        .filter(loc => projectBasename.startsWith(path.basename(loc.projectPath)))
+                        .sort((a, b) => path.basename(b.projectPath).length - path.basename(a.projectPath).length);
+                    claudeProjectPath = candidates.length > 0 ? candidates[0].projectPath : null;
+
+                    if (claudeProjectPath) {
+                        const fullSkeleton = await ClaudeStorageDetector.analyzeConversation(task_id, claudeProjectPath);
+                        if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
+                            if (!fullSkeleton.metadata) fullSkeleton.metadata = {} as any;
+                            (fullSkeleton.metadata as any).source = 'claude-code';
+                            (fullSkeleton.metadata as any).dataSource = 'claude';
+                            conversationCache.set(task_id, fullSkeleton);
+                            skeleton = fullSkeleton;
+                            console.log(`[view_task_details] Successfully loaded Claude session ${task_id}`);
+                        }
+                    }
+                }
+            }
+
             if (!skeleton) {
                 return {
                     content: [{
                         type: 'text',
-                        text: `❌ Aucune tâche trouvée avec l'ID: ${args.task_id}`
+                        text: `❌ Aucune tâche trouvée avec l'ID: ${task_id}`
                     }]
                 };
             }
@@ -128,17 +174,17 @@ export const viewTaskDetailsTool = {
                 output += "═══════════════════════════════════════════════════════════════════════════════════════════════════════\n\n";
 
                 // Si un index spécifique est demandé
-                if (args.action_index !== undefined) {
-                    if (args.action_index >= 0 && args.action_index < actions.length) {
-                        const action = actions[args.action_index];
-                        output += formatActionDetails(action, args.action_index, args.truncate || 0);
+                if (action_index !== undefined) {
+                    if (action_index >= 0 && action_index < actions.length) {
+                        const action = actions[action_index];
+                        output += formatActionDetails(action, action_index, truncate);
                     } else {
-                        output += `❌ Index ${args.action_index} invalide. Indices disponibles: 0-${actions.length - 1}\n`;
+                        output += `❌ Index ${action_index} invalide. Indices disponibles: 0-${actions.length - 1}\n`;
                     }
                 } else {
                     // Afficher toutes les actions
                     actions.forEach((action: any, index: number) => {
-                        output += formatActionDetails(action, index, args.truncate || 0);
+                        output += formatActionDetails(action, index, truncate);
                         if (index < actions.length - 1) {
                             output += "\n" + "─".repeat(80) + "\n\n";
                         }
@@ -146,10 +192,13 @@ export const viewTaskDetailsTool = {
                 }
             }
 
+            // #1752 Bug #2: Apply hard cap to respect max_output_length
+            const cappedOutput = ContentTruncator.hardCapString(output, max_output_length, { headerKeepChars: 2000 });
+
             return {
                 content: [{
                     type: 'text',
-                    text: output
+                    text: cappedOutput
                 }]
             };
 
