@@ -18,8 +18,8 @@ import * as os from 'os';
 // ====================================================================
 
 export const DiagnoseArgsSchema = z.object({
-  action: z.enum(['env', 'debug', 'reset', 'test'])
-    .describe('Type d\'opération: env (environnement), debug (dashboard), reset (service), test (minimal)'),
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health'])
+    .describe('Type d\'opération: env (environnement), debug (dashboard), reset (service), test (minimal), health (skeleton cache tiers)'),
 
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
@@ -45,7 +45,7 @@ export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
 export const DiagnoseResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si l\'opération a réussi'),
-  action: z.enum(['env', 'debug', 'reset', 'test'])
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health'])
     .describe('Type d\'opération effectuée'),
   timestamp: z.string()
     .describe('Timestamp de l\'opération (ISO 8601)'),
@@ -84,6 +84,9 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 
       case 'test':
         return await handleTestAction(args, timestamp);
+
+      case 'health':
+        return await handleHealthAction(args, timestamp);
 
       default:
         throw new RooSyncServiceError(
@@ -301,18 +304,55 @@ async function handleTestAction(
 }
 
 /**
+ * #1747 sub-issue B: Health-check du cache skeleton 3-tier.
+ * Retourne le nombre de skeletons par tier et la configuration active.
+ */
+async function handleHealthAction(
+  _args: DiagnoseArgs,
+  timestamp: string
+): Promise<DiagnoseResult> {
+  const { SkeletonCacheService } = await import('../../services/skeleton-cache.service.js');
+  const instance = SkeletonCacheService.getInstance();
+  const stats = instance.getCacheTierStats();
+
+  const tierSummary =
+    `Tier1(Roo): ${stats.tier1_roo} | ` +
+    `Tier2(Claude): ${stats.config.enableClaudeTier ? stats.tier2_claude : 'OFF'} | ` +
+    `Tier3(Archives): ${stats.config.enableArchiveTier ? stats.tier3_archives : 'OFF'}`;
+
+  return {
+    success: true,
+    action: 'health',
+    timestamp,
+    message: `Skeleton cache health: ${tierSummary} — Total: ${stats.total}`,
+    data: {
+      tiers: {
+        tier1_roo: { enabled: true, count: stats.tier1_roo },
+        tier2_claude: { enabled: stats.config.enableClaudeTier, count: stats.tier2_claude },
+        tier3_archives: { enabled: stats.config.enableArchiveTier, count: stats.tier3_archives },
+      },
+      totalSkeletons: stats.total,
+      envConfig: {
+        SKELETON_CLAUDE_TIER: stats.config.enableClaudeTier,
+        SKELETON_ARCHIVE_TIER: stats.config.enableArchiveTier,
+      },
+    },
+  };
+}
+
+/**
  * Métadonnées de l'outil pour l'enregistrement MCP
  */
 export const diagnoseToolMetadata = {
   name: 'roosync_diagnose',
-  description: 'Outil de diagnostic et debug complet pour RooSync. Actions disponibles : env (diagnostic environnement système), debug (debug dashboard avec reset instance), reset (réinitialisation service avec confirmation), test (test minimal MCP).',
+  description: 'Outil de diagnostic et debug complet pour RooSync. Actions disponibles : env (diagnostic environnement système), debug (debug dashboard avec reset instance), reset (réinitialisation service avec confirmation), test (test minimal MCP), health (skeleton cache tiers status).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
-        enum: ['env', 'debug', 'reset', 'test'],
-        description: 'Type d\'opération: env (environnement), debug (dashboard), reset (service), test (minimal)'
+        enum: ['env', 'debug', 'reset', 'test', 'health'],
+        description: 'Type d\'opération: env (environnement), debug (dashboard), reset (service), test (minimal), health (skeleton cache tiers)'
       },
       checkDiskSpace: {
         type: 'boolean',

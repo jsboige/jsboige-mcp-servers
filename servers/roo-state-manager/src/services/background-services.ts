@@ -528,6 +528,16 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             state.lastSkeletonRefreshAt = Date.now();
             // Once index is loaded, discover Claude sessions too
             return loadClaudeCodeSessions(state.conversationCache);
+        }).then(() => {
+            // #1747 sub-issue B: Log tier summary after all background loading completes
+            const instance = SkeletonCacheService.getInstance();
+            const stats = instance.getCacheTierStats();
+            console.log(
+                `✅ Skeleton cache loaded: Tier1(Roo)=${stats.tier1_roo} ` +
+                `Tier2(Claude)=${stats.config.enableClaudeTier ? stats.tier2_claude : 'OFF'} ` +
+                `Tier3(Archives)=${stats.config.enableArchiveTier ? stats.tier3_archives : 'OFF'} ` +
+                `— Total: ${stats.total}`
+            );
         }).catch((error: any) => {
             console.warn('[Startup] Background skeleton/Claude load failed (non-blocking):', error?.message || error);
         });
