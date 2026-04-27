@@ -18,7 +18,9 @@ vi.mock('../../../../src/services/openai.js', () => ({
 
 vi.mock('../../../../src/services/task-indexer/ChunkExtractor.js', () => ({
   extractChunksFromTask: vi.fn(),
-  splitChunk: vi.fn()
+  splitChunk: vi.fn(),
+  MAX_CHUNKS_PER_TASK: 50000,
+  MAX_MESSAGES_PER_TASK: 10000
 }));
 
 vi.mock('../../../../src/services/task-indexer/EmbeddingValidator.js', () => ({

@@ -5,7 +5,7 @@ import { Schemas } from '@qdrant/js-client-rest';
 import { getQdrantClient } from '../qdrant.js';
 import getOpenAIClient, { getEmbeddingModel, getEmbeddingDimensions } from '../openai.js';
 import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
-import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk } from './ChunkExtractor.js';
+import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk, MAX_CHUNKS_PER_TASK } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
@@ -382,6 +382,12 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         if (chunks.length === 0) {
             console.log(`No chunks found for task ${taskId}. Skipping.`);
             return [];
+        }
+
+        // #1758: Hard limit on chunks per task to prevent runaway indexing
+        if (chunks.length > MAX_CHUNKS_PER_TASK) {
+            console.warn(`⚠️ [#1758] Task ${taskId} has ${chunks.length} chunks — exceeding MAX_CHUNKS_PER_TASK=${MAX_CHUNKS_PER_TASK}. Truncating to first ${MAX_CHUNKS_PER_TASK} chunks.`);
+            chunks.length = MAX_CHUNKS_PER_TASK;
         }
 
         const pointsToIndex: PointStruct[] = [];
