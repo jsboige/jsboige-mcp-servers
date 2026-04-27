@@ -423,7 +423,7 @@ describe('SkeletonCacheService', () => {
 			expect(cache.has('roo-1')).toBe(true);
 			expect(cache.has('archived-task-A')).toBe(true);
 			expect(cache.has('archived-task-B')).toBe(true);
-			expect(cache.get('archived-task-A')!.metadata.dataSource).toBe('archive');
+			expect(cache.get('archived-task-A')!.metadata.dataSource).toBe('gdrive-archive');
 			expect(cache.get('archived-task-A')!.metadata.machineId).toBe('myia-po-2025');
 		});
 
