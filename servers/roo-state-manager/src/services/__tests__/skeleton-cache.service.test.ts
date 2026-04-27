@@ -491,5 +491,196 @@ describe('SkeletonCacheService', () => {
 			expect(mockClaudeDetectLocations).toHaveBeenCalled();
 			expect(mockListArchivedTasks).toHaveBeenCalled();
 		});
+			// ============================================================
+			// #1747 sub-issue C — Cross-tier integration tests
+			// ============================================================
+
+			test('three-way collision: Tier 1 wins over Tier 3 with same taskId', async () => {
+				const sharedId = 'shared-task';
+
+				setupTier1([sharedId]);
+
+				mockClaudeDetectLocations.mockResolvedValue([
+					{ projectPath: '/home/user/.claude/projects/shared-task' }
+				]);
+				mockClaudeAnalyzeConversation.mockResolvedValue({
+					taskId: 'claude-shared-task',
+					metadata: { title: 'Claude version' },
+					sequence: [{ role: 'user', content: 'from claude', timestamp: '2026-01-01T00:00:00Z' }]
+				});
+
+				mockListArchivedTasks.mockResolvedValue([sharedId]);
+				mockReadArchivedTask.mockResolvedValue({
+					version: 1,
+					taskId: sharedId,
+					machineId: 'myia-po-2023',
+					hostIdentifier: 'host-remote',
+					archivedAt: '2026-04-01T12:00:00Z',
+					metadata: { title: 'Archive version', source: 'roo' },
+					messages: [{ role: 'user', content: 'from archive', timestamp: '2026-04-01T11:59:00Z' }]
+				});
+
+				SkeletonCacheService.configure({ enableClaudeTier: true, enableArchiveTier: true });
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+
+				expect(cache.has(sharedId)).toBe(true);
+				expect(cache.get(sharedId)!.metadata.source).toBe('roo');
+				expect(cache.get(sharedId)!.metadata.machineId).toBeUndefined();
+				expect(mockReadArchivedTask).not.toHaveBeenCalled();
+				expect(cache.has('claude-shared-task')).toBe(true);
+			});
+
+			test('Tier 2 wins over Tier 3 when Tier 1 is absent', async () => {
+				setupTier1(['other-roo-task']);
+
+				mockClaudeDetectLocations.mockResolvedValue([
+					{ projectPath: '/home/user/.claude/projects/proj-x' }
+				]);
+				mockClaudeAnalyzeConversation.mockResolvedValue({
+					taskId: 'claude-proj-x',
+					metadata: { title: 'Claude local' },
+					sequence: [{ role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00Z' }]
+				});
+
+				mockListArchivedTasks.mockResolvedValue(['claude-proj-x']);
+				mockReadArchivedTask.mockResolvedValue({
+					version: 1,
+					taskId: 'claude-proj-x',
+					machineId: 'myia-web1',
+					hostIdentifier: 'h',
+					archivedAt: '2026-04-01T00:00:00Z',
+					metadata: { title: 'Archive version', source: 'claude-code' },
+					messages: []
+				});
+
+				SkeletonCacheService.configure({ enableClaudeTier: true, enableArchiveTier: true });
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+
+				expect(cache.has('claude-proj-x')).toBe(true);
+				expect(cache.get('claude-proj-x')!.metadata.source).toBe('claude-code');
+				expect(cache.get('claude-proj-x')!.metadata.dataSource).toBe('claude');
+				expect(mockReadArchivedTask).not.toHaveBeenCalled();
+			});
+
+			test('forceRefresh reloads all enabled tiers', async () => {
+				setupTier1(['roo-1']);
+				mockClaudeDetectLocations.mockResolvedValue([]);
+				mockListArchivedTasks.mockResolvedValue([]);
+
+				SkeletonCacheService.configure({ enableClaudeTier: true, enableArchiveTier: true });
+				const service = SkeletonCacheService.getInstance();
+				await service.getCache();
+
+				mockClaudeDetectLocations.mockClear();
+				mockListArchivedTasks.mockClear();
+				mockReaddir.mockClear();
+
+				await service.forceRefresh();
+
+				expect(mockReaddir).toHaveBeenCalled();
+				expect(mockClaudeDetectLocations).toHaveBeenCalled();
+				expect(mockListArchivedTasks).toHaveBeenCalled();
+			});
+
+			test('Tier 3 loads archives from multiple machines with correct machineId', async () => {
+				setupTier1(['roo-local']);
+				mockListArchivedTasks.mockResolvedValue(['task-po2023', 'task-web1']);
+				mockReadArchivedTask
+					.mockResolvedValueOnce({
+						version: 1,
+						taskId: 'task-po2023',
+						machineId: 'myia-po-2023',
+						hostIdentifier: 'host-1',
+						archivedAt: '2026-04-01T12:00:00Z',
+						metadata: { title: 'PO2023 task', source: 'roo' },
+						messages: [{ role: 'user', content: 'msg1', timestamp: '2026-04-01T11:59:00Z' }]
+					})
+					.mockResolvedValueOnce({
+						version: 1,
+						taskId: 'task-web1',
+						machineId: 'myia-web1',
+						hostIdentifier: 'host-2',
+						archivedAt: '2026-04-02T12:00:00Z',
+						metadata: { title: 'Web1 task', source: 'claude-code' },
+						messages: []
+					});
+
+				SkeletonCacheService.configure({ enableArchiveTier: true });
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+
+				expect(cache.size).toBe(3);
+				expect(cache.get('task-po2023')!.metadata.machineId).toBe('myia-po-2023');
+				expect(cache.get('task-web1')!.metadata.machineId).toBe('myia-web1');
+				expect(cache.get('task-po2023')!.metadata.dataSource).toBe('archive');
+				expect(cache.get('task-web1')!.metadata.dataSource).toBe('archive');
+			});
+
+			test('Tier 3 handles null archive gracefully', async () => {
+				setupTier1(['roo-1']);
+				mockListArchivedTasks.mockResolvedValue(['ghost-task', 'valid-task']);
+				mockReadArchivedTask
+					.mockResolvedValueOnce(null)
+					.mockResolvedValueOnce({
+						version: 1,
+						taskId: 'valid-task',
+						machineId: 'myia-po-2025',
+						hostIdentifier: 'h',
+						archivedAt: '2026-04-01T00:00:00Z',
+						metadata: { title: 'Valid', source: 'roo' },
+						messages: []
+					});
+
+				SkeletonCacheService.configure({ enableArchiveTier: true });
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+
+				expect(cache.size).toBe(2);
+				expect(cache.has('ghost-task')).toBe(false);
+				expect(cache.has('valid-task')).toBe(true);
+			});
+
+			test('Tier 2 skips entries with empty sequence', async () => {
+				setupTier1(['roo-1']);
+				mockClaudeDetectLocations.mockResolvedValue([
+					{ projectPath: '/home/user/.claude/projects/empty-proj' },
+					{ projectPath: '/home/user/.claude/projects/has-data' }
+				]);
+				mockClaudeAnalyzeConversation
+					.mockResolvedValueOnce({
+						taskId: 'claude-empty-proj',
+						metadata: { title: 'Empty' },
+						sequence: []
+					})
+					.mockResolvedValueOnce({
+						taskId: 'claude-has-data',
+						metadata: { title: 'Has data' },
+						sequence: [{ role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00Z' }]
+					});
+
+				SkeletonCacheService.configure({ enableClaudeTier: true });
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+
+				expect(cache.has('claude-empty-proj')).toBe(false);
+				expect(cache.has('claude-has-data')).toBe(true);
+				expect(cache.size).toBe(2);
+			});
+
+			test('all tiers enabled but no external data returns only Tier 1', async () => {
+				setupTier1(['roo-a', 'roo-b']);
+				mockClaudeDetectLocations.mockResolvedValue([]);
+				mockListArchivedTasks.mockResolvedValue([]);
+
+				SkeletonCacheService.configure({ enableClaudeTier: true, enableArchiveTier: true });
+				const service = SkeletonCacheService.getInstance();
+				const cache = await service.getCache();
+
+				expect(cache.size).toBe(2);
+				expect(cache.has('roo-a')).toBe(true);
+				expect(cache.has('roo-b')).toBe(true);
+			});
 	});
 });
