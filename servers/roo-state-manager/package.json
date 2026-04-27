@@ -30,7 +30,8 @@
     "test:hierarchy": "vitest run tests/unit/services/hierarchy-reconstruction-engine.test.ts",
     "test:baseline": "jest src/tests/BaselineService.test.ts",
     "test:baseline:watch": "jest src/tests/BaselineService.test.ts --watch",
-    "test:baseline:coverage": "jest src/tests/BaselineService.test.ts --coverage"
+    "test:baseline:coverage": "jest src/tests/BaselineService.test.ts --coverage",
+    "postinstall": "node scripts/patch-pathe.mjs"
   },
   "keywords": [
     "mcp",
