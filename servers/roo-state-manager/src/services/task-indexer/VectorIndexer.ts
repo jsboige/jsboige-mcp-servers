@@ -792,3 +792,100 @@ export async function cleanupOldVectors(
     console.log(`✅ Cleanup terminé: ${totalDeleted} vecteurs supprimés (antérieurs à ${cutoffIso}${workspaceFilter ? `, workspace=${workspaceFilter}` : ''})`);
     return { deletedCount: totalDeleted, cutoffDate: cutoffIso, workspaceFilter };
 }
+
+/**
+ * Supprime les vecteurs pour des tâches spécifiques identifiées comme garbage #1786
+ * @param taskIds Liste des IDs de tâches à supprimer
+ * @param dryRun Mode simulation — compte sans supprimer
+ */
+export async function deleteTaskVectors(
+    taskIds: string[],
+    dryRun: boolean = false
+): Promise<{ deletedCount: number; taskIds: string[] }> {
+    if (taskIds.length === 0) {
+        return { deletedCount: 0, taskIds: [] };
+    }
+
+    const filter = {
+        must: [
+            {
+                key: 'task_id',
+                match: {
+                    any: taskIds
+                }
+            }
+        ]
+    };
+
+    // Count candidates first
+    const countResult = await retryWithBackoff(async () => {
+        const qdrant = getQdrantClient();
+        return await qdrant.count(COLLECTION_NAME, {
+            filter,
+            exact: true
+        });
+    }, `Qdrant garbage task count (${taskIds.length} tasks)`);
+
+    const candidateCount = countResult.count;
+    networkMetrics.qdrantCalls++;
+
+    if (candidateCount === 0) {
+        console.log(`Aucun vecteur trouvé pour les tâches garbage: ${taskIds.join(', ')}`);
+        return { deletedCount: 0, taskIds };
+    }
+
+    if (dryRun) {
+        console.log(`[DRY RUN] ${candidateCount} vecteurs seraient supprimés pour les tâches: ${taskIds.join(', ')}`);
+        return { deletedCount: candidateCount, taskIds };
+    }
+
+    // Delete in batches using scroll + delete pattern
+    const BATCH_SIZE = 1000;
+    let totalDeleted = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+        await qdrantRateLimiter.execute(async () => {
+            // Scroll to get a batch of point IDs matching the filter
+            const scrolled = await retryWithBackoff(async () => {
+                const qdrant = getQdrantClient();
+                return await qdrant.scroll(COLLECTION_NAME, {
+                    filter,
+                    limit: BATCH_SIZE,
+                    with_payload: false,
+                    with_vector: false
+                });
+            }, `Qdrant garbage task scroll (batch at ${totalDeleted})`);
+
+            networkMetrics.qdrantCalls++;
+
+            if (!scrolled.points || scrolled.points.length === 0) {
+                hasMore = false;
+                return;
+            }
+
+            const idsToDelete = scrolled.points.map((p: any) => p.id);
+
+            // Delete this batch
+            await retryWithBackoff(async () => {
+                const qdrant = getQdrantClient();
+                await qdrant.delete(COLLECTION_NAME, {
+                    points: idsToDelete,
+                    wait: true
+                });
+            }, `Qdrant garbage task delete batch (${idsToDelete.length} points)`);
+
+            networkMetrics.qdrantCalls++;
+            totalDeleted += idsToDelete.length;
+
+            console.log(`✓ Garbage task cleanup batch: ${idsToDelete.length} vecteurs supprimés (total: ${totalDeleted}/${candidateCount})`);
+
+            if (!scrolled.next_page_offset) {
+                hasMore = false;
+            }
+        });
+    }
+
+    console.log(`✅ Garbage task cleanup terminé: ${totalDeleted} vecteurs supprimés pour ${taskIds.length} tâches`);
+    return { deletedCount: totalDeleted, taskIds };
+}
