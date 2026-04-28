@@ -1,12 +1,21 @@
 /**
  * Tests for view-details.tool.ts
  * Issue #492 - Coverage for view task details tool
+ * #1752 Bug #1 - Claude Code session loading when not in cache
+ * #1752 Bug #2 - max_output_length enforcement
  *
  * @module tools/conversation/__tests__/view-details.tool
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { viewTaskDetailsTool } from '../view-details.tool.js';
+
+// Mock ClaudeStorageDetector for #1752 Bug #1 tests
+vi.mock('../../../utils/claude-storage-detector.js', () => ({
+    ClaudeStorageDetector: {
+        findConversationById: vi.fn(),
+    }
+}));
 
 describe('viewTaskDetailsTool', () => {
 	beforeEach(() => {
@@ -175,5 +184,113 @@ describe('viewTaskDetailsTool', () => {
 
 		expect(result.content[0].text).toContain('Erreur');
 		expect(result.content[0].text).toContain('cache corrupted');
+	});
+});
+
+describe('#1752 Bug #1: Claude Code session fallback', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	test('loads Claude Code session not in cache via findConversationById', async () => {
+		const { ClaudeStorageDetector } = await import('../../../utils/claude-storage-detector.js');
+		const mockFind = ClaudeStorageDetector.findConversationById as ReturnType<typeof vi.fn>;
+		mockFind.mockResolvedValue({
+			taskId: 'claude-test-session',
+			metadata: { title: 'Claude Session', messageCount: 5, totalSize: 1000, lastActivity: '2026-04-28T10:00:00Z' },
+			sequence: [
+				{ name: 'read_file', type: 'command', status: 'success', parameters: { path: '/app.ts' } }
+			]
+		});
+
+		const cache = new Map();
+		const result = await viewTaskDetailsTool.handler(
+			{ task_id: 'claude-test-session' },
+			cache
+		);
+
+		expect(mockFind).toHaveBeenCalledWith('claude-test-session');
+		expect(result.content[0].text).toContain('Claude Session');
+		expect(result.content[0].text).toContain('read_file');
+		// Verify it was cached for subsequent calls
+		expect(cache.has('claude-test-session')).toBe(true);
+	});
+
+	test('returns "not found" when Claude load returns null', async () => {
+		const { ClaudeStorageDetector } = await import('../../../utils/claude-storage-detector.js');
+		const mockFind = ClaudeStorageDetector.findConversationById as ReturnType<typeof vi.fn>;
+		mockFind.mockResolvedValue(null);
+
+		const cache = new Map();
+		const result = await viewTaskDetailsTool.handler(
+			{ task_id: 'claude-missing-session' },
+			cache
+		);
+
+		expect(result.content[0].text).toContain('Aucune tâche');
+	});
+
+	test('does not attempt Claude load for non-claude task_id', async () => {
+		const { ClaudeStorageDetector } = await import('../../../utils/claude-storage-detector.js');
+		const mockFind = ClaudeStorageDetector.findConversationById as ReturnType<typeof vi.fn>;
+
+		const cache = new Map();
+		const result = await viewTaskDetailsTool.handler(
+			{ task_id: 'roo-uuid-abc123' },
+			cache
+		);
+
+		expect(mockFind).not.toHaveBeenCalled();
+		expect(result.content[0].text).toContain('Aucune tâche');
+	});
+
+	test('handles Claude load error gracefully', async () => {
+		const { ClaudeStorageDetector } = await import('../../../utils/claude-storage-detector.js');
+		const mockFind = ClaudeStorageDetector.findConversationById as ReturnType<typeof vi.fn>;
+		mockFind.mockRejectedValue(new Error('disk read error'));
+
+		const cache = new Map();
+		const result = await viewTaskDetailsTool.handler(
+			{ task_id: 'claude-broken-session' },
+			cache
+		);
+
+		// Should fall through to "not found" after load failure
+		expect(result.content[0].text).toContain('Aucune tâche');
+	});
+});
+
+describe('#1752 Bug #2: max_output_length enforcement', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	test('respects max_output_length with hard cap', async () => {
+		// Create a task with many actions to generate long output
+		const actions = [];
+		for (let i = 0; i < 50; i++) {
+			actions.push({
+				name: `action-${i}`,
+				type: 'command',
+				status: 'success',
+				timestamp: '2026-04-28T10:00:00Z',
+				parameters: { path: `/very/long/path/to/file/number/${i}/that/makes/output/bigger.ts` },
+				result: `Result content for action ${i} with some extra text to pad the output length significantly`.repeat(5)
+			});
+		}
+
+		const cache = new Map();
+		cache.set('task-big', {
+			taskId: 'task-big',
+			metadata: { title: 'Big Task', messageCount: 100, totalSize: 50000, lastActivity: '2026-04-28T10:00:00Z' },
+			sequence: actions
+		});
+
+		const result = await viewTaskDetailsTool.handler(
+			{ task_id: 'task-big', max_output_length: 500 },
+			cache
+		);
+
+		expect(result.content[0].text.length).toBeLessThanOrEqual(600); // small margin for header
 	});
 });

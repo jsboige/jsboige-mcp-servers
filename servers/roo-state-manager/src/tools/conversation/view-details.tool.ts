@@ -115,36 +115,27 @@ export const viewTaskDetailsTool = {
             const { task_id, action_index, truncate = 0, max_output_length = 100000 } = args;
             let skeleton = conversationCache.get(task_id);
 
-            // #1752 Bug #1: Lazy load if skeleton exists but sequence is empty
-            if (skeleton && (!skeleton.sequence || skeleton.sequence.length === 0) && skeleton.metadata.messageCount > 0) {
-                const isClaudeTask = task_id.startsWith('claude-')
-                    || (skeleton.metadata as any)?.source === 'claude-code'
-                    || (skeleton.metadata as any)?.dataSource === 'claude';
+            // #1752 Bug #1: Load Claude Code sessions when not in cache or has empty sequence
+            const isClaudeTaskId = task_id.startsWith('claude-');
+            const needsClaudeLoad = !skeleton
+                || (isClaudeTaskId && (!skeleton.sequence || skeleton.sequence.length === 0) && skeleton.metadata.messageCount > 0)
+                || (skeleton && (!skeleton.sequence || skeleton.sequence.length === 0) && skeleton.metadata.messageCount > 0
+                    && ((skeleton.metadata as any)?.source === 'claude-code' || (skeleton.metadata as any)?.dataSource === 'claude'));
 
-                if (isClaudeTask) {
-                    console.log(`[view_task_details] Lazy loading Claude Code session ${task_id}`);
+            if (needsClaudeLoad && (isClaudeTaskId || (skeleton && ((skeleton.metadata as any)?.source === 'claude-code' || (skeleton.metadata as any)?.dataSource === 'claude')))) {
+                try {
                     const { ClaudeStorageDetector } = await import('../../utils/claude-storage-detector.js');
-                    const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
-                    const projectBasename = task_id.replace(/^claude-/, '');
-                    let claudeProjectPath: string | null = null;
-
-                    // Use prefix match like view-conversation-tree.ts
-                    const candidates = claudeLocations
-                        .filter(loc => projectBasename.startsWith(path.basename(loc.projectPath)))
-                        .sort((a, b) => path.basename(b.projectPath).length - path.basename(a.projectPath).length);
-                    claudeProjectPath = candidates.length > 0 ? candidates[0].projectPath : null;
-
-                    if (claudeProjectPath) {
-                        const fullSkeleton = await ClaudeStorageDetector.analyzeConversation(task_id, claudeProjectPath);
-                        if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
-                            if (!fullSkeleton.metadata) fullSkeleton.metadata = {} as any;
-                            (fullSkeleton.metadata as any).source = 'claude-code';
-                            (fullSkeleton.metadata as any).dataSource = 'claude';
-                            conversationCache.set(task_id, fullSkeleton);
-                            skeleton = fullSkeleton;
-                            console.log(`[view_task_details] Successfully loaded Claude session ${task_id}`);
-                        }
+                    const loaded = await ClaudeStorageDetector.findConversationById(task_id);
+                    if (loaded && (loaded.sequence ?? []).length > 0) {
+                        if (!loaded.metadata) loaded.metadata = {} as any;
+                        (loaded.metadata as any).source = 'claude-code';
+                        (loaded.metadata as any).dataSource = 'claude';
+                        conversationCache.set(task_id, loaded);
+                        skeleton = loaded;
+                        console.log(`[view_task_details] Loaded Claude Code session ${task_id} (${(loaded.sequence ?? []).length} elements)`);
                     }
+                } catch (err) {
+                    console.warn(`[view_task_details] Claude Code load failed for ${task_id}:`, err instanceof Error ? err.message : err);
                 }
             }
 
