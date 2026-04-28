@@ -127,6 +127,53 @@ const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 // retries after a user-driven restart of the MCP / LLM endpoint.
 const CONDENSATION_ERROR_DEDUP_MS = 20 * 60 * 1000; // 20 minutes
 
+// #1792: Circuit breaker for condensation — fallback to simple truncation when LLM is down.
+// After CB_FAILURE_THRESHOLD consecutive LLM failures, the circuit opens and subsequent
+// condensation attempts use FIFO truncation instead of LLM summarization. After
+// CB_COOLDOWN_MS, the circuit enters half-open state: one LLM attempt is allowed.
+// Success resets the breaker; failure re-opens it immediately.
+const CB_FAILURE_THRESHOLD = 3;
+const CB_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const FALLBACK_TRUNCATE_KEEP = 15; // Keep more messages in fallback (less aggressive than LLM condense)
+
+interface CircuitState {
+  consecutiveFailures: number;
+  lastFailureTime: number; // epoch ms, 0 = never failed
+}
+const condensationCircuits = new Map<string, CircuitState>();
+
+function getCircuit(key: string): CircuitState {
+  if (!condensationCircuits.has(key)) {
+    condensationCircuits.set(key, { consecutiveFailures: 0, lastFailureTime: 0 });
+  }
+  return condensationCircuits.get(key)!;
+}
+
+function isCircuitOpen(key: string): boolean {
+  const cb = getCircuit(key);
+  if (cb.consecutiveFailures < CB_FAILURE_THRESHOLD) return false;
+  // Half-open: allow one attempt after cooldown
+  if (Date.now() - cb.lastFailureTime > CB_COOLDOWN_MS) return false;
+  return true;
+}
+
+function recordCircuitSuccess(key: string): void {
+  condensationCircuits.delete(key); // Full reset on success
+}
+
+function recordCircuitFailure(key: string): void {
+  const cb = getCircuit(key);
+  cb.consecutiveFailures++;
+  cb.lastFailureTime = Date.now();
+  logger.warn(`Condensation circuit breaker: ${key} failure #${cb.consecutiveFailures}`, {
+    key,
+    consecutiveFailures: cb.consecutiveFailures,
+    threshold: CB_FAILURE_THRESHOLD,
+    circuitOpen: cb.consecutiveFailures >= CB_FAILURE_THRESHOLD,
+    cooldownMinutes: Math.round(CB_COOLDOWN_MS / 60000)
+  });
+}
+
 // === Per-key mutex ===
 //
 // Prevents concurrent condensations/writes on the same dashboard key within
@@ -1018,6 +1065,117 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
 }
 
 /**
+ * #1792: Simple FIFO truncation fallback when LLM is unavailable.
+ * Keeps `keepCount` most recent messages, archives the rest with a template summary.
+ * No LLM calls — deterministic and fast.
+ */
+async function condenseWithFallback(
+  key: string,
+  dashboard: Dashboard,
+  keepCount: number,
+  diagnostic?: CondenseAttemptInfo
+): Promise<Dashboard> {
+  const start = Date.now();
+  const messages = dashboard.intercom.messages;
+  const effectiveKeep = Math.min(keepCount, FALLBACK_TRUNCATE_KEEP);
+  const toArchive = messages.slice(0, messages.length - effectiveKeep);
+  const toKeep = messages.slice(messages.length - effectiveKeep);
+
+  if (toArchive.length === 0) {
+    if (diagnostic) {
+      diagnostic.outcome = 'no-op';
+      diagnostic.elapsedMs = Date.now() - start;
+      diagnostic.archivedMessageCount = 0;
+    }
+    return dashboard;
+  }
+
+  logger.info('Condensation fallback: simple FIFO truncation', {
+    key,
+    totalMessages: messages.length,
+    toArchive: toArchive.length,
+    toKeep: toKeep.length,
+    reason: 'circuit-breaker-open'
+  });
+
+  // Build a simple template summary (no LLM)
+  const archivedAuthors = [...new Set(toArchive.map(m => m.author.machineId))];
+  const archivedSpan = toArchive.length > 0
+    ? `${toArchive[0].timestamp.slice(0, 16)} → ${toArchive[toArchive.length - 1].timestamp.slice(0, 16)}`
+    : 'N/A';
+  const fallbackSummary = `**FALLBACK TRUNCATION** - ${new Date().toISOString()}\n\n`
+    + `${toArchive.length} messages archivés (FIFO, pas de résumé LLM — endpoint indisponible).\n`
+    + `Période: ${archivedSpan}\n`
+    + `Auteurs: ${archivedAuthors.join(', ')}\n`
+    + `Raison: circuit breaker actif après ${CB_FAILURE_THRESHOLD}+ échecs LLM consécutifs.\n`
+    + `Les messages complets sont préservés dans l'archive.`;
+
+  // Archive the old messages (same pattern as condenseIntercom)
+  const archiveDir = getArchiveDir();
+  await fs.mkdir(archiveDir, { recursive: true });
+  const dateStr = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+  const archivePath = path.join(archiveDir, `${key}-${dateStr}.md`);
+  const archiveFrontmatter = yaml.dump({
+    type: 'archive',
+    originalKey: key,
+    archivedAt: new Date().toISOString(),
+    messageCount: toArchive.length,
+    llmGenerated: false,
+    fallback: true,
+    circuitBreaker: true
+  });
+  const archiveMessages = toArchive.map(msg =>
+    `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`
+  ).join('\n\n---\n\n');
+  const archiveContent = `---
+${archiveFrontmatter.trim()}
+---
+
+# Archive (FALLBACK) : ${key}
+
+Archivé le : ${new Date().toISOString()}
+Messages : ${toArchive.length}
+Mode : FIFO truncation (circuit breaker, pas de LLM)
+
+---
+
+${archiveMessages}
+`;
+  await fs.writeFile(archivePath, archiveContent, 'utf8');
+  logger.info('Fallback archive written', { key, count: toArchive.length, archivePath });
+
+  // Build fallback notice message
+  const fallbackNotice: IntercomMessage = {
+    id: generateMessageId('system', 'system'),
+    timestamp: new Date().toISOString(),
+    author: { machineId: 'system', workspace: 'system' },
+    content: `**[FALLBACK] CONDENSATION TRUNCATION** - ${new Date().toISOString()}\n\n`
+      + `${toArchive.length} messages archivés par truncation FIFO (LLM indisponible, circuit breaker actif).\n`
+      + `Période archivée: ${archivedSpan}\n`
+      + `Archive: \`${path.basename(archivePath)}\`\n`
+      + `Messages conservés: ${toKeep.length}`
+  };
+
+  if (diagnostic) {
+    diagnostic.outcome = 'condensed';
+    diagnostic.elapsedMs = Date.now() - start;
+    diagnostic.archivedMessageCount = toArchive.length;
+    diagnostic.llm = undefined;
+  }
+
+  return {
+    ...dashboard,
+    lastModified: new Date().toISOString(),
+    status: { ...dashboard.status, markdown: dashboard.status.markdown },
+    intercom: {
+      ...dashboard.intercom,
+      messages: [...toKeep, fallbackNotice],
+      totalMessages: dashboard.intercom.totalMessages + 1
+    }
+  };
+}
+
+/**
  * Condense les messages intercom : archive les anciens, conserve les récents.
  * Met à jour le statut avec les informations des messages archivés (#858 Phase 2).
  * Si le statut ou le résumé dépasse les limites de taille, auto-condense via LLM.
@@ -1042,6 +1200,16 @@ async function condenseIntercom(
 
   const toArchive = messages.slice(0, messages.length - keepCount);
   const toKeep = messages.slice(messages.length - keepCount);
+
+  // #1792: Circuit breaker — skip LLM and use fallback truncation when breaker is open
+  if (isCircuitOpen(key)) {
+    logger.info('Condensation circuit breaker OPEN — using fallback truncation', {
+      key,
+      circuitState: getCircuit(key),
+      cooldownRemaining: `${Math.round((CB_COOLDOWN_MS - (Date.now() - getCircuit(key).lastFailureTime)) / 60000)}min`
+    });
+    return condenseWithFallback(key, dashboard, keepCount, diagnostic);
+  }
 
   // #858 : Générer les résumés LLM AVANT d'archiver
   // Pass ALL messages to status update so LLM sees full context
@@ -1081,6 +1249,9 @@ async function condenseIntercom(
       summaryOutcome: summaryCall.stats.finalOutcome,
       statusOutcome: statusCall.stats.finalOutcome
     });
+
+    // #1792: Record LLM failure for circuit breaker
+    recordCircuitFailure(key);
 
     // Inject a visible [ERROR] system message so next readers see the failure.
     // Deduped over CONDENSATION_ERROR_DEDUP_MS to avoid filling the dashboard
@@ -1143,6 +1314,8 @@ async function condenseIntercom(
   }
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
+  // #1792: Reset circuit breaker on successful LLM call
+  recordCircuitSuccess(key);
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');
   llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary');
 
