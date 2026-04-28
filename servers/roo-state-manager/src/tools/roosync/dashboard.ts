@@ -127,6 +127,66 @@ const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 // retries after a user-driven restart of the MCP / LLM endpoint.
 const CONDENSATION_ERROR_DEDUP_MS = 20 * 60 * 1000; // 20 minutes
 
+// #1792: Circuit breaker for condensation LLM calls. When the LLM endpoint is
+// down, repeated LLM retries (3× per condense pass, ~69s each) waste time and
+// the dashboard keeps growing (error messages add to bloat). After N consecutive
+// failures, switch to truncation-only mode (no LLM), auto-reset after cooldown.
+const CONDENSE_CB_OPEN_THRESHOLD = 3;   // Open after 3 consecutive LLM failures
+const CONDENSE_CB_RESET_TTL_MS = 30 * 60 * 1000; // 30 min cooldown before retrying LLM
+
+interface CondenseCircuitBreaker {
+  consecutiveFailures: number;
+  lastFailureTime: number;
+  isOpen: boolean;
+}
+
+const condenseCB: CondenseCircuitBreaker = {
+  consecutiveFailures: 0,
+  lastFailureTime: 0,
+  isOpen: false,
+};
+
+function condenseCBRecordFailure(): void {
+  condenseCB.consecutiveFailures++;
+  condenseCB.lastFailureTime = Date.now();
+  if (condenseCB.consecutiveFailures >= CONDENSE_CB_OPEN_THRESHOLD) {
+    condenseCB.isOpen = true;
+    logger.warn('Condensation circuit breaker OPENED', {
+      consecutiveFailures: condenseCB.consecutiveFailures,
+      resetAfterMs: CONDENSE_CB_RESET_TTL_MS,
+    });
+  }
+}
+
+function condenseCBRecordSuccess(): void {
+  if (condenseCB.consecutiveFailures > 0 || condenseCB.isOpen) {
+    logger.info('Condensation circuit breaker RESET (LLM success)', {
+      previousFailures: condenseCB.consecutiveFailures,
+    });
+  }
+  condenseCB.consecutiveFailures = 0;
+  condenseCB.isOpen = false;
+}
+
+function condenseCBShouldBypass(): boolean {
+  if (!condenseCB.isOpen) return false;
+  // Auto-half-open after cooldown
+  if (Date.now() - condenseCB.lastFailureTime > CONDENSE_CB_RESET_TTL_MS) {
+    logger.info('Condensation circuit breaker HALF-OPEN (cooldown elapsed), retrying LLM');
+    condenseCB.isOpen = false;
+    condenseCB.consecutiveFailures = 0;
+    return false;
+  }
+  return true;
+}
+
+/** Reset circuit breaker state (for testing). */
+export function resetCondenseCircuitBreaker(): void {
+  condenseCB.consecutiveFailures = 0;
+  condenseCB.lastFailureTime = 0;
+  condenseCB.isOpen = false;
+}
+
 // === Per-key mutex ===
 //
 // Prevents concurrent condensations/writes on the same dashboard key within
@@ -512,10 +572,12 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  *                           → dashboard returned unchanged, no extra error msg
  *   - `llm-failed-injected`: LLM failed, no recent error → new CONDENSATION
  *                            CANCELLED system message appended
+ *   - `fallback-truncated`  : #1792 circuit breaker open or LLM failed → simple
+ *                            truncation without LLM (keep last N, template summary)
  */
 export interface CondenseAttemptInfo {
   phase: 'preemptive' | 'reactive' | 'manual';
-  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected';
+  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated';
   elapsedMs: number;
   archivedMessageCount: number;
   llm?: {
@@ -1018,6 +1080,107 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
 }
 
 /**
+ * #1792: Truncation fallback when LLM condensation is unavailable (circuit breaker
+ * open or LLM call failed). Keeps the last `keepCount` messages, archives the rest
+ * with a simple template summary (no LLM). Prevents dashboard from growing unbounded
+ * during LLM outages.
+ */
+async function executeTruncationFallback(
+  key: string,
+  dashboard: Dashboard,
+  toArchive: IntercomMessage[],
+  toKeep: IntercomMessage[],
+  diagnostic: CondenseAttemptInfo | undefined,
+  condensationStart: number,
+  failedCalls?: { statusCall?: LLMCallResult; summaryCall?: LLMCallResult }
+): Promise<Dashboard> {
+  const now = new Date().toISOString();
+  const fallbackSummary = `[FALLBACK TRUNCATION] ${toArchive.length} messages archived without LLM summary.`
+    + ` Circuit breaker failures: ${condenseCB.consecutiveFailures}.`
+    + (condenseCB.isOpen ? ` Circuit breaker OPEN (resets after ${Math.round(CONDENSE_CB_RESET_TTL_MS / 60000)}min).` : '');
+
+  // Write archive file with template summary
+  const archiveDir = getArchiveDir();
+  await fs.mkdir(archiveDir, { recursive: true });
+  const dateStr = now.replace(/[:.]/g, '-').substring(0, 19);
+  const archivePath = path.join(archiveDir, `${key}-${dateStr}-fallback.md`);
+
+  const archiveFrontmatter = yaml.dump({
+    type: 'archive',
+    originalKey: key,
+    archivedAt: now,
+    messageCount: toArchive.length,
+    llmGenerated: false,
+    fallbackTruncation: true,
+    circuitBreakerOpen: condenseCB.isOpen,
+  });
+
+  const archiveMessages = toArchive.map(msg => {
+    return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`;
+  }).join('\n\n---\n\n');
+
+  const archiveContent = `---
+${archiveFrontmatter.trim()}
+---
+
+# Archive (fallback): ${key}
+
+Archived: ${now}
+Messages: ${toArchive.length}
+Method: Truncation fallback (LLM unavailable)
+
+${fallbackSummary}
+
+---
+
+${archiveMessages}
+`;
+
+  await fs.writeFile(archivePath, archiveContent, 'utf8');
+  logger.info('Fallback truncation archive written', { key, count: toArchive.length, archivePath });
+
+  // Build system notice message
+  const totalElapsed = Date.now() - condensationStart;
+  let errorDetail = '';
+  if (failedCalls) {
+    const s = failedCalls.statusCall;
+    const sm = failedCalls.summaryCall;
+    if (s) errorDetail += `Status: ${s.stats.finalOutcome}. `;
+    if (sm) errorDetail += `Summary: ${sm.stats.finalOutcome}. `;
+  }
+
+  const noticeMessage: IntercomMessage = {
+    id: generateMessageId('system', 'system'),
+    timestamp: now,
+    author: { machineId: 'system', workspace: 'system' },
+    content: `**[WARN] FALLBACK TRUNCATION** - ${now}\n\n`
+      + `${toArchive.length} messages archived without LLM summary (truncation fallback).\n`
+      + `${toKeep.length} messages retained.\n`
+      + `${errorDetail}`
+      + `Circuit breaker: ${condenseCB.consecutiveFailures}/${CONDENSE_CB_OPEN_THRESHOLD} failures`
+      + (condenseCB.isOpen ? ' (OPEN)' : '') + '.\n'
+      + `Duration: ${Math.round(totalElapsed / 1000)}s\n`
+      + `Archive: \`archive/${path.basename(archivePath)}\``
+  };
+
+  if (diagnostic) {
+    diagnostic.outcome = 'fallback-truncated';
+    diagnostic.elapsedMs = totalElapsed;
+    diagnostic.archivedMessageCount = toArchive.length;
+  }
+
+  return {
+    ...dashboard,
+    lastModified: now,
+    intercom: {
+      messages: [noticeMessage, ...toKeep],
+      totalMessages: dashboard.intercom.totalMessages,
+      lastCondensedAt: now,
+    },
+  };
+}
+
+/**
  * Condense les messages intercom : archive les anciens, conserve les récents.
  * Met à jour le statut avec les informations des messages archivés (#858 Phase 2).
  * Si le statut ou le résumé dépasse les limites de taille, auto-condense via LLM.
@@ -1047,6 +1210,18 @@ async function condenseIntercom(
   // Pass ALL messages to status update so LLM sees full context
   const previousStatus = dashboard.status.markdown;
 
+  // #1792: If circuit breaker is open, skip LLM calls entirely and do truncation fallback
+  if (condenseCBShouldBypass()) {
+    logger.info('Condensation circuit breaker OPEN — using truncation fallback', {
+      key,
+      toArchive: toArchive.length,
+      toKeep: toKeep.length,
+    });
+    return executeTruncationFallback(
+      key, dashboard, toArchive, toKeep, diagnostic, condensationStart
+    );
+  }
+
   // #1497: Run the 2 LLM calls in parallel (status update + summary) — they are
   // independent (both take messages as input, neither depends on the other's
   // output). Halves wall-clock latency from ~2×T to ~T, critical when condense
@@ -1071,9 +1246,9 @@ async function condenseIntercom(
     summaryOutcome: summaryCall.stats.finalOutcome
   });
 
-  // Both LLM calls are MANDATORY — if either fails, cancel condensation
+  // Both LLM calls are MANDATORY — if either fails, use truncation fallback
   if (!llmSummary || !newStatus) {
-    logger.warn('LLM call failed, condensation cancelled', {
+    logger.warn('LLM call failed, using truncation fallback (#1792)', {
       key,
       messageCount: toArchive.length,
       summaryOk: !!llmSummary,
@@ -1081,66 +1256,15 @@ async function condenseIntercom(
       summaryOutcome: summaryCall.stats.finalOutcome,
       statusOutcome: statusCall.stats.finalOutcome
     });
-
-    // Inject a visible [ERROR] system message so next readers see the failure.
-    // Deduped over CONDENSATION_ERROR_DEDUP_MS to avoid filling the dashboard
-    // when LLM stays down across multiple append() triggers.
-    const existing = dashboard.intercom.messages;
-    const lastErrorIdx = [...existing].reverse().findIndex(
-      m => m.author.machineId === 'system'
-        && m.content.includes('[ERROR] CONDENSATION CANCELLED')
+    condenseCBRecordFailure();
+    return executeTruncationFallback(
+      key, dashboard, toArchive, toKeep, diagnostic, condensationStart,
+      { statusCall, summaryCall }
     );
-    const recentErrorExists = lastErrorIdx !== -1
-      && (Date.now() - new Date(
-           existing[existing.length - 1 - lastErrorIdx].timestamp
-         ).getTime()) < CONDENSATION_ERROR_DEDUP_MS;
-
-    if (recentErrorExists) {
-      if (diagnostic) {
-        diagnostic.outcome = 'llm-failed-dedup';
-        diagnostic.elapsedMs = Date.now() - condensationStart;
-        diagnostic.archivedMessageCount = 0;
-      }
-      return dashboard; // Déjà signalé récemment, pas de spam
-    }
-
-    const errorTimestamp = new Date().toISOString();
-    const statusOkLabel = newStatus ? 'OK' : `FAILED (${statusCall.stats.finalOutcome})`;
-    const summaryOkLabel = llmSummary ? 'OK' : `FAILED (${summaryCall.stats.finalOutcome})`;
-    const errorMessage: IntercomMessage = {
-      id: generateMessageId('system', 'system'),
-      timestamp: errorTimestamp,
-      author: { machineId: 'system', workspace: 'system' },
-      content: `**[ERROR] CONDENSATION CANCELLED** - ${errorTimestamp}\n\n`
-        + `LLM calls failed after ${LLM_MAX_RETRIES} retries (backoff 2s/4s/8s):\n`
-        + `- Status update: ${statusOkLabel} (${Math.round(statusCall.stats.elapsedMs / 1000)}s, `
-        + `null×${statusCall.stats.nullCount}, err×${statusCall.stats.errorCount})\n`
-        + `- Summary generation: ${summaryOkLabel} (${Math.round(summaryCall.stats.elapsedMs / 1000)}s, `
-        + `null×${summaryCall.stats.nullCount}, err×${summaryCall.stats.errorCount})\n`
-        + (statusCall.stats.lastError ? `- Status last error: ${statusCall.stats.lastError}\n` : '')
-        + (summaryCall.stats.lastError ? `- Summary last error: ${summaryCall.stats.lastError}\n` : '')
-        + `\nDashboard left unchanged (${dashboard.intercom.messages.length} messages). `
-        + `Verify LLM endpoint (OPENAI_CHAT_API_BASE / OPENAI_CHAT_MODEL_ID) and retry. `
-        + `Next condensation attempt will occur on the next append exceeding the `
-        + `${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB threshold.`
-    };
-
-    if (diagnostic) {
-      diagnostic.outcome = 'llm-failed-injected';
-      diagnostic.elapsedMs = Date.now() - condensationStart;
-      diagnostic.archivedMessageCount = 0;
-    }
-
-    return {
-      ...dashboard,
-      lastModified: errorTimestamp,
-      intercom: {
-        ...dashboard.intercom,
-        messages: [...dashboard.intercom.messages, errorMessage],
-        totalMessages: dashboard.intercom.totalMessages + 1
-      }
-    };
   }
+
+  // LLM succeeded — reset circuit breaker
+  condenseCBRecordSuccess();
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');

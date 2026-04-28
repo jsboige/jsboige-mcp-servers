@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -44,6 +44,8 @@ describe('roosync_dashboard', () => {
     // #858: Default mock = LLM unavailable (throws)
     mockGetChatClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockChatCreate.mockReset();
+    // #1792: Reset circuit breaker between tests
+    resetCondenseCircuitBreaker();
   });
 
   afterEach(async () => {
@@ -1688,6 +1690,130 @@ describe('roosync_dashboard', () => {
 - myia-web1 : active et running maintenant`;
       const contradictions = detectStatusContradictions(status);
       expect(contradictions.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  // ============================================================
+  // Circuit breaker + truncation fallback (#1792)
+  // ============================================================
+  describe('Condensation circuit breaker (#1792)', () => {
+    it('uses truncation fallback when LLM fails (no circuit breaker open yet)', async () => {
+      // LLM returns null content — simulates thinking overrunning max_tokens
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+
+      // #1792: Fallback truncation should archive messages even though LLM failed
+      expect(result.success).toBe(true);
+      const diag = result.condenseDiagnostic![0];
+      expect(diag.outcome).toBe('fallback-truncated');
+      expect(diag.archivedMessageCount).toBe(12); // 15 - 3 = 12
+
+      // Check retained messages count
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const msgs = readResult.data?.intercom?.messages;
+      // 1 fallback notice + 3 kept messages = 4
+      expect(msgs?.length).toBe(4);
+      expect(msgs?.[0]?.content).toContain('FALLBACK TRUNCATION');
+    });
+
+    it('circuit breaker opens after 3 consecutive LLM failures', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // Trigger 3 consecutive failures
+      for (let round = 0; round < 3; round++) {
+        for (let i = 0; i < 15; i++) {
+          await roosyncDashboard({ action: 'append', type: 'global', content: `R${round}M${i}` });
+        }
+        const r = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+        expect(r.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
+      }
+
+      // 4th round — circuit breaker should be OPEN, skipping LLM entirely
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `R3M${i}` });
+      }
+      const r4 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      expect(r4.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
+      // No LLM stats — circuit breaker bypassed LLM calls
+      expect(r4.condenseDiagnostic![0].llm).toBeUndefined();
+    });
+
+    it('circuit breaker resets on LLM success', async () => {
+      // Round 1: fail
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Fail ${i}` });
+      }
+      const rFail = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      expect(rFail.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
+
+      // Round 2: LLM succeeds
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Summary\n\nArchived messages.' } }]
+      });
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Ok ${i}` });
+      }
+      const rOk = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      expect(rOk.condenseDiagnostic![0].outcome).toBe('condensed');
+      expect(rOk.condenseDiagnostic![0].llm).toBeDefined();
+
+      // Round 3: fail again — circuit breaker should NOT be open (was reset)
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Fail2 ${i}` });
+      }
+      const rFail2 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      // LLM was attempted (not bypassed) — outcome is fallback-truncated but LLM stats exist
+      expect(rFail2.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
+      expect(rFail2.condenseDiagnostic![0].llm).toBeDefined();
+    });
+
+    it('fallback notice contains circuit breaker state', async () => {
+      mockGetChatClient.mockReturnValue({
+        chat: { completions: { create: mockChatCreate } }
+      });
+      mockChatCreate.mockResolvedValue({
+        choices: [{ message: { content: null }, finish_reason: 'length' }]
+      });
+
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 15; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const notice = readResult.data?.intercom?.messages?.[0];
+      expect(notice?.content).toContain('FALLBACK TRUNCATION');
+      expect(notice?.content).toContain('Circuit breaker:');
     });
   });
 });
