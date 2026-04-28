@@ -75,6 +75,7 @@ export default defineConfig({
 
     // Coverage configuration
     coverage: {
+      reportOnFailure: true,
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
@@ -143,6 +144,7 @@ export default defineConfig({
 
     // Coverage configuration
     coverage: {
+      reportOnFailure: true,
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
