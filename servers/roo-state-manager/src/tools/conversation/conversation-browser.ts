@@ -449,6 +449,12 @@ export const conversationBrowserTool: Tool = {
                 type: 'boolean',
                 description: '[rebuild] #1244 Couche 1.4 — Si true, force l\'enqueue Qdrant pour tous les squelettes construits/charges (tous tiers).',
                 default: false
+            },
+            // #1752 Bug #3: Expose GDrive archive support in inputSchema
+            includeArchives: {
+                type: 'boolean',
+                description: '[list] #1752 — Inclure les archives cross-machine depuis GDrive (Tier 3). Quand true, conversation_browser list charge les squelettes archives d\'autres machines via TaskArchiver. Defaut: false (seules les conversations locales sont retournees). Requiert ROOSYNC_SHARED_PATH configure.',
+                default: false
             }
         },
         required: ['action']
