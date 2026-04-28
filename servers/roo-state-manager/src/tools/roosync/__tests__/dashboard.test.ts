@@ -507,7 +507,7 @@ describe('roosync_dashboard', () => {
     // Le premier message est le système [FALLBACK TRUNCATION]
     const firstMessage = msgs?.[0];
     expect(firstMessage?.author?.machineId).toBe('system');
-    expect(lastMessage?.content).toContain('[ERROR] CONDENSATION CANCELLED');
+    expect(firstMessage?.content).toContain('FALLBACK TRUNCATION');
   });
 
   // === Test 30: Size-based auto-condensation triggers on large dashboards ===
@@ -528,6 +528,7 @@ describe('roosync_dashboard', () => {
 
     // #1792: Messages archived via fallback, so count < 25 (not 26 as before)
     expect(messageCount).toBeLessThan(25);
+  });
 
   // === Test 31: Small messages don't trigger condensation even with many messages ===
   it('does not condense when total size is under 50KB regardless of message count', async () => {
@@ -912,16 +913,16 @@ describe('roosync_dashboard', () => {
       expect(result.success).toBe(true);
       // #1792: With fallback truncation, archivedCount should be > 0
       expect(result.archivedCount).toBeGreaterThan(0);
-      expect(result.condensed).toBe(false);
+      expect(result.condensed).toBe(true); // Changed: fallback archives messages
       // Diagnostic must show the failure mode
       expect(result.condenseDiagnostic).toBeDefined();
       expect(result.condenseDiagnostic!.length).toBeGreaterThanOrEqual(1);
       const failedPasses = result.condenseDiagnostic!.filter(d =>
-        d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected'
+        d.outcome === 'fallback-truncated' || d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected'
       );
       expect(failedPasses.length).toBeGreaterThanOrEqual(1);
-      // Human-readable message must carry the failure detail
-      expect(result.message).toContain('LLM échoué');
+      // #1792: With circuit breaker fallback, message reports success (not LLM failure)
+      expect(result.message).toContain('auto-condensation');
     });
 
     it('dedup within 20min window does NOT re-inject a second error message', async () => {
