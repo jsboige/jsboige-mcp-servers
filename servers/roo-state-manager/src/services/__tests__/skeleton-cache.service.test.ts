@@ -614,8 +614,8 @@ describe('SkeletonCacheService', () => {
 				expect(cache.size).toBe(3);
 				expect(cache.get('task-po2023')!.metadata.machineId).toBe('myia-po-2023');
 				expect(cache.get('task-web1')!.metadata.machineId).toBe('myia-web1');
-				expect(cache.get('task-po2023')!.metadata.dataSource).toBe('archive');
-				expect(cache.get('task-web1')!.metadata.dataSource).toBe('archive');
+				expect(cache.get('task-po2023')!.metadata.dataSource).toBe('gdrive-archive');
+				expect(cache.get('task-web1')!.metadata.dataSource).toBe('gdrive-archive');
 			});
 
 			test('Tier 3 handles null archive gracefully', async () => {
