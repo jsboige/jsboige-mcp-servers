@@ -24,7 +24,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -67,6 +67,21 @@ export interface RooSyncIndexingArgs {
 
     /** #1244: Nombre de top workspaces à reporter (pour action=diagnose avec deep=true). Défaut 20, max 100 */
     top_n_workspaces?: number;
+
+    /** #1786: Catégorie de garbage à scanner (pour action=garbage_scan) */
+    garbage_category?: 'death_spiral' | 'duplicate' | 'low_value' | 'all';
+
+    /** #1786: Nombre minimum de messages pour être scanné (pour action=garbage_scan). Défaut: 10 */
+    min_messages?: number;
+
+    /** #1786: Nombre max de résultats (pour action=garbage_scan). Défaut: 100 */
+    max_results?: number;
+
+    /** #1786: Supprimer les skeletons (pour action=garbage_scan avec dry_run=false). Défaut: true */
+    remove_skeletons?: boolean;
+
+    /** #1786: Supprimer les vecteurs Qdrant (pour action=garbage_scan avec dry_run=false). Défaut: true */
+    remove_vectors?: boolean;
 }
 
 /**
@@ -80,8 +95,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658)"
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan'],
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658), 'garbage_scan' (détecter/nettoyer les tâches garbage #1786)"
             },
             task_id: {
                 type: 'string',
@@ -148,6 +163,31 @@ export const roosyncIndexingTool: Tool = {
                 type: 'number',
                 description: "#1244: Pour action=diagnose avec deep=true. Nombre de top workspace_name à reporter dans la distribution. Défaut 20, max 100.",
                 default: 20
+            },
+            garbage_category: {
+                type: 'string',
+                enum: ['death_spiral', 'duplicate', 'low_value', 'all'],
+                description: "#1786: Pour action=garbage_scan. Catégorie de garbage à détecter. 'death_spiral' (erreurs en boucle), 'duplicate' (sessions dupliquées), 'low_value' (taux d'erreur élevé, quasi-zéro output assistant), 'all' (toutes). Défaut: all"
+            },
+            min_messages: {
+                type: 'number',
+                description: "#1786: Pour action=garbage_scan. Nombre minimum de messages pour qu'une tâche soit scannée. Défaut: 10.",
+                default: 10
+            },
+            max_results: {
+                type: 'number',
+                description: "#1786: Pour action=garbage_scan. Nombre maximum de résultats retournés. Défaut: 100.",
+                default: 100
+            },
+            remove_skeletons: {
+                type: 'boolean',
+                description: "#1786: Pour action=garbage_scan avec dry_run=false. Supprimer les fichiers skeleton garbage. Défaut: true.",
+                default: true
+            },
+            remove_vectors: {
+                type: 'boolean',
+                description: "#1786: Pour action=garbage_scan avec dry_run=false. Supprimer les vecteurs Qdrant garbage. Défaut: true.",
+                default: true
             }
         },
         required: ['action']
@@ -190,10 +230,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan` }]
         };
     }
 
@@ -379,6 +419,85 @@ export async function handleRooSyncIndexing(
                     content: [{
                         type: 'text',
                         text: `Erreur lors du cleanup: ${error.message}`
+                    }]
+                };
+            }
+        }
+
+        case 'garbage_scan': {
+            const { scanForGarbage, cleanupGarbage } = await import('./garbage-scanner.js');
+            const isDryRun = args.dry_run !== false; // default true for safety
+
+            try {
+                // Phase 1: Scan
+                const scanResult = await scanForGarbage(conversationCache, {
+                    dry_run: isDryRun,
+                    category: args.garbage_category || 'all',
+                    min_messages: args.min_messages,
+                    max_results: args.max_results,
+                    remove_skeletons: args.remove_skeletons,
+                    remove_vectors: args.remove_vectors
+                });
+
+                // Phase 2: Cleanup (only if dry_run=false)
+                let cleanupResult = null;
+                if (!isDryRun && scanResult.flagged.length > 0) {
+                    cleanupResult = await cleanupGarbage(conversationCache, scanResult.flagged, {
+                        dry_run: false,
+                        remove_skeletons: args.remove_skeletons !== false,
+                        remove_vectors: args.remove_vectors !== false,
+                        category: args.garbage_category || 'all',
+                        min_messages: args.min_messages,
+                        max_results: args.max_results
+                    });
+                }
+
+                const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
+                const summary = isDryRun
+                    ? `${mode} ${scanResult.flagged.length} tâches garbage détectées (scan seulement, aucun nettoyage)`
+                    : `${mode} ${cleanupResult?.skeletons_removed || 0} skeletons supprimés, ~${cleanupResult?.vectors_deleted || 0} vecteurs retirés`;
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'garbage_scan',
+                            mode: isDryRun ? 'dry_run' : 'executed',
+                            scan: {
+                                total_scanned: scanResult.total_scanned,
+                                flagged_count: scanResult.flagged.length,
+                                by_category: scanResult.by_category,
+                                total_size_flagged: scanResult.total_size_flagged,
+                                estimated_vectors_flagged: scanResult.estimated_vectors_flagged
+                            },
+                            cleanup: cleanupResult ? {
+                                skeletons_removed: cleanupResult.skeletons_removed,
+                                vectors_deleted: cleanupResult.vectors_deleted,
+                                space_freed_bytes: cleanupResult.space_freed_bytes,
+                                errors: cleanupResult.errors.length > 0 ? cleanupResult.errors : undefined
+                            } : null,
+                            top_flagged: scanResult.flagged.slice(0, 20).map(f => ({
+                                task_id: f.task_id,
+                                category: f.category,
+                                score: f.score,
+                                size: f.details.total_size,
+                                messages: f.details.message_count,
+                                assistant_ratio: f.details.assistant_ratio,
+                                error_ratio: f.details.error_ratio,
+                                death_spiral_count: f.details.death_spiral_count,
+                                duplicate_group_size: f.details.duplicate_group_size
+                            })),
+                            summary
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors du garbage scan: ${error.message}\n${error.stack || ''}`
                     }]
                 };
             }
