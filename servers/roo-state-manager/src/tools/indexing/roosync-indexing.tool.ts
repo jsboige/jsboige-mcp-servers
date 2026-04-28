@@ -24,7 +24,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'scan_garbage';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -67,6 +67,12 @@ export interface RooSyncIndexingArgs {
 
     /** #1244: Nombre de top workspaces à reporter (pour action=diagnose avec deep=true). Défaut 20, max 100 */
     top_n_workspaces?: number;
+
+    /** #1786: Confiance minimum pour scan_garbage. Défaut: 'low' */
+    min_confidence?: 'low' | 'medium' | 'high';
+
+    /** #1786: Supprimer les garbage tasks du skeleton cache après scan. Défaut: false */
+    remove_from_cache?: boolean;
 }
 
 /**
@@ -80,8 +86,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658)"
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'scan_garbage'],
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658), 'scan_garbage' (#1786 — scanner le cache pour les tâches exploded/garbage)"
             },
             task_id: {
                 type: 'string',
@@ -148,6 +154,17 @@ export const roosyncIndexingTool: Tool = {
                 type: 'number',
                 description: "#1244: Pour action=diagnose avec deep=true. Nombre de top workspace_name à reporter dans la distribution. Défaut 20, max 100.",
                 default: 20
+            },
+            min_confidence: {
+                type: 'string',
+                enum: ['low', 'medium', 'high'],
+                description: "#1786: Pour action=scan_garbage. Confiance minimum pour signaler une tâche comme garbage. 'high' = que les cas certains, 'low' = tous les suspects. Défaut: 'low'.",
+                default: 'low'
+            },
+            remove_from_cache: {
+                type: 'boolean',
+                description: "#1786: Pour action=scan_garbage. Si true, supprime les garbage tasks du skeleton cache. Défaut: false (dry-run).",
+                default: false
             }
         },
         required: ['action']
@@ -190,7 +207,7 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'scan_garbage'].includes(args.action)) {
         return {
             isError: true,
             content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup` }]
@@ -380,6 +397,64 @@ export async function handleRooSyncIndexing(
                         type: 'text',
                         text: `Erreur lors du cleanup: ${error.message}`
                     }]
+                };
+            }
+        }
+
+        case 'scan_garbage': {
+            const { scanForGarbage } = await import('../../utils/garbage-detector.js');
+            const minConfidence = (args as any).min_confidence || 'low';
+            const removeFromCache = (args as any).remove_from_cache ?? false;
+
+            try {
+                const garbageTasks = scanForGarbage(conversationCache, { minConfidence });
+
+                let removedCount = 0;
+                if (removeFromCache && garbageTasks.length > 0) {
+                    for (const { taskId } of garbageTasks) {
+                        conversationCache.delete(taskId);
+                        removedCount++;
+                    }
+                }
+
+                const totalGarbageSize = garbageTasks.reduce((sum, g) => sum + g.verdict.totalSizeBytes, 0);
+                const mode = removeFromCache ? '[EXECUTED]' : '[DRY RUN]';
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'scan_garbage',
+                            mode: removeFromCache ? 'executed' : 'dry_run',
+                            min_confidence: minConfidence,
+                            garbage_count: garbageTasks.length,
+                            total_size_bytes: totalGarbageSize,
+                            total_size_mb: (totalGarbageSize / (1024 * 1024)).toFixed(1),
+                            removed_from_cache: removedCount,
+                            tasks: garbageTasks.map(g => ({
+                                task_id: g.taskId,
+                                title: g.title || '(untitled)',
+                                confidence: g.verdict.confidence,
+                                reasons: g.verdict.reasons,
+                                messages: g.verdict.totalMessages,
+                                error_messages: g.verdict.errorMessages,
+                                assistant_messages: g.verdict.assistantMessages,
+                                size_kb: (g.verdict.totalSizeBytes / 1024).toFixed(0),
+                                scores: {
+                                    error_density: g.verdict.scores.errorDensity.toFixed(2),
+                                    assistant_output: g.verdict.scores.assistantOutputRatio.toFixed(2),
+                                    repetition: g.verdict.scores.repetitionScore.toFixed(2),
+                                }
+                            })),
+                            summary: `${mode} ${garbageTasks.length} tâches garbage détectées (${(totalGarbageSize / (1024 * 1024)).toFixed(1)} MB)${removeFromCache ? `, ${removedCount} supprimées du cache` : ''}`
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Erreur scan_garbage: ${error.message}` }]
                 };
             }
         }

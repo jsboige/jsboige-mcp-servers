@@ -76,9 +76,9 @@ describe('roosyncIndexingTool', () => {
 		expect(roosyncIndexingTool.inputSchema.required).toEqual(['action']);
 	});
 
-	test('has action enum with 7 values', () => {
+	test('has action enum with 8 values', () => {
 		const actionProp = (roosyncIndexingTool.inputSchema.properties as any).action;
-		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup']);
+		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'scan_garbage']);
 	});
 
 	// ============================================================
