@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { roosyncDiagnose, DiagnoseArgs, DiagnoseResult } from '../diagnose.js';
 import { RooSyncService, RooSyncServiceError, getRooSyncService } from '../../../services/RooSyncService.js';
+import { SkeletonCacheService } from '../../../services/skeleton-cache.service.js';
 import * as fs from 'fs/promises';
 
 // Mock du module fs
@@ -254,6 +255,75 @@ describe('roosync_diagnose', () => {
       expect(result.success).toBe(true);
       expect(result.action).toBe('test');
       expect(result.data.testMessage).toBe(customMessage);
+    });
+  });
+
+  // ============================================================
+  // Tests action: 'health' (#1747 sub-issue B)
+  // ============================================================
+
+  describe('action: health', () => {
+    it('should return skeleton cache tier statistics', async () => {
+      const mockStats = {
+        tier1_roo: 652,
+        tier2_claude: 9,
+        tier3_archives: 11562,
+        total: 12223,
+        config: { enableClaudeTier: true, enableArchiveTier: true },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => mockStats),
+      } as any);
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('health');
+      expect(result.message).toContain('Tier1(Roo): 652');
+      expect(result.message).toContain('Tier2(Claude): 9');
+      expect(result.message).toContain('Tier3(Archives): 11562');
+      expect(result.message).toContain('Total: 12223');
+      expect(result.data.tiers.tier1_roo.count).toBe(652);
+      expect(result.data.tiers.tier2_claude.enabled).toBe(true);
+      expect(result.data.tiers.tier2_claude.count).toBe(9);
+      expect(result.data.tiers.tier3_archives.enabled).toBe(true);
+      expect(result.data.totalSkeletons).toBe(12223);
+      expect(result.data.envConfig.SKELETON_CLAUDE_TIER).toBe(true);
+    });
+
+    it('should show OFF for disabled tiers', async () => {
+      const mockStats = {
+        tier1_roo: 100,
+        tier2_claude: 0,
+        tier3_archives: 0,
+        total: 100,
+        config: { enableClaudeTier: false, enableArchiveTier: false },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => mockStats),
+      } as any);
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('Tier2(Claude): OFF');
+      expect(result.message).toContain('Tier3(Archives): OFF');
+      expect(result.data.tiers.tier2_claude.enabled).toBe(false);
+      expect(result.data.tiers.tier3_archives.enabled).toBe(false);
+    });
+
+    it('should return valid ISO timestamp', async () => {
+      const mockStats = {
+        tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
+        config: { enableClaudeTier: false, enableArchiveTier: false },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => mockStats),
+      } as any);
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
   });
 

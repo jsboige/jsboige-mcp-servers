@@ -448,6 +448,8 @@ export class SkeletonCacheService {
                         continue;
                     }
                     const skeleton = archiveToSkeleton(archive);
+                    if (!skeleton.metadata) skeleton.metadata = {} as any;
+                    skeleton.metadata.dataSource = 'gdrive-archive';
                     this.cache.set(skeleton.taskId, skeleton);
                     loaded++;
                 } catch (error) {
@@ -463,6 +465,47 @@ export class SkeletonCacheService {
         } catch (error) {
             console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
         }
+    }
+
+    /**
+     * #1747 sub-issue B: Return per-tier skeleton counts for health-check.
+     * Classifies cache entries by their metadata.dataSource tag:
+     *   - undefined/default → Tier 1 (Roo local)
+     *   - 'claude'          → Tier 2 (Claude local)
+     *   - 'gdrive-archive'  → Tier 3 (GDrive archives)
+     */
+    public getCacheTierStats(): {
+        tier1_roo: number;
+        tier2_claude: number;
+        tier3_archives: number;
+        total: number;
+        config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
+    } {
+        let tier1 = 0;
+        let tier2 = 0;
+        let tier3 = 0;
+
+        for (const skeleton of this.cache.values()) {
+            const source = (skeleton as any).metadata?.dataSource;
+            if (source === 'claude') {
+                tier2++;
+            } else if (source === 'gdrive-archive') {
+                tier3++;
+            } else {
+                tier1++;
+            }
+        }
+
+        return {
+            tier1_roo: tier1,
+            tier2_claude: tier2,
+            tier3_archives: tier3,
+            total: this.cache.size,
+            config: {
+                enableClaudeTier: !!SkeletonCacheService.config.enableClaudeTier,
+                enableArchiveTier: !!SkeletonCacheService.config.enableArchiveTier,
+            },
+        };
     }
 
     /**
