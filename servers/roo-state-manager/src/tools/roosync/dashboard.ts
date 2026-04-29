@@ -47,6 +47,7 @@ import {
   resolveMentionTarget
 } from '../../utils/dashboard-helpers.js';
 import type OpenAI from 'openai';
+import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 
 // #1470: Single source of truth schemas from dedicated module
 // No handler logic imported — safe circular-dep-free module
@@ -1686,6 +1687,10 @@ async function handleWrite(
   };
 
   await writeDashboardFile(key, dashboard);
+
+  // #1791: Auto-register heartbeat on dashboard write (fire-and-forget)
+  recordRooSyncActivityAsync('dashboard-write', { key, type: args.type });
+
   return {
     success: true,
     action: 'write',
@@ -2001,6 +2006,9 @@ async function handleAppend(
 
   const totalMs = Date.now() - appendStart;
   const splitSuffix = isMultiPart ? ` [split en ${newMessages.length} parts]` : '';
+
+  // #1791: Auto-register heartbeat on dashboard append (fire-and-forget)
+  recordRooSyncActivityAsync('dashboard-append', { key, type: args.type });
 
   return {
     success: true,
