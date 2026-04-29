@@ -76,9 +76,9 @@ describe('roosync_indexing - CONS-11', () => {
             expect(roosyncIndexingTool.name).toBe('roosync_indexing');
         });
 
-        it('should have action enum with 8 values', () => {
+        it('should have action enum with 9 values', () => {
             const actionProp = (roosyncIndexingTool.inputSchema as any).properties.action;
-            expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan']);
+            expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans']);
         });
 
         it('should require action parameter', () => {
@@ -261,6 +261,41 @@ describe('roosync_indexing - CONS-11', () => {
             // Le diagnostic retourne toujours un résultat structuré
             expect((result.content[0] as any).text).toBeDefined();
             // Ne devrait pas avoir appelé le rebuildHandler
+            expect(rebuildHandler).not.toHaveBeenCalled();
+        });
+    });
+
+    // ============================================================
+    // Tests pour action=cleanup_orphans
+    // ============================================================
+
+    describe('action: cleanup_orphans', () => {
+        it('should return error without confirm in dry-run mode by default', async () => {
+            const result = await handleRooSyncIndexing(
+                { action: 'cleanup_orphans' },
+                conversationCache,
+                ensureCacheFreshCallback,
+                saveSkeletonCallback,
+                qdrantIndexQueue,
+                setQdrantIndexingEnabled,
+                rebuildHandler
+            );
+
+            expect((result.content[0] as any).text).toBeDefined();
+            expect(rebuildHandler).not.toHaveBeenCalled();
+        });
+
+        it('should not call rebuild for cleanup_orphans action', async () => {
+            await handleRooSyncIndexing(
+                { action: 'cleanup_orphans' },
+                conversationCache,
+                ensureCacheFreshCallback,
+                saveSkeletonCallback,
+                qdrantIndexQueue,
+                setQdrantIndexingEnabled,
+                rebuildHandler
+            );
+
             expect(rebuildHandler).not.toHaveBeenCalled();
         });
     });
