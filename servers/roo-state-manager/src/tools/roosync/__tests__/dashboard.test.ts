@@ -116,7 +116,8 @@ describe('roosync_dashboard', () => {
     const result = await roosyncDashboard({
       action: 'read',
       type: 'global',
-      section: 'all'
+      section: 'all',
+    format: 'json',
     });
 
     expect(result.success).toBe(true);
@@ -127,7 +128,7 @@ describe('roosync_dashboard', () => {
   // === Test 6: Read section status uniquement ===
   it('reads only status section', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Status Test' });
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status', format: 'json' });
 
     expect(result.data?.status).toBeDefined();
     expect(result.data?.intercom).toBeUndefined();
@@ -137,7 +138,7 @@ describe('roosync_dashboard', () => {
   it('reads only intercom section', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg test' });
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
 
     expect(result.data?.intercom?.messages).toHaveLength(1);
     expect(result.data?.status).toBeUndefined();
@@ -147,7 +148,7 @@ describe('roosync_dashboard', () => {
   it('write replaces status markdown', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: 'Old content' });
     await roosyncDashboard({ action: 'write', type: 'global', content: 'New content' });
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status', format: 'json' });
 
     expect(result.data?.status?.markdown).toBe('New content');
   });
@@ -157,7 +158,7 @@ describe('roosync_dashboard', () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Message 1' });
     await roosyncDashboard({ action: 'append', type: 'global', content: 'Message 2' });
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
 
     const msgs = result.data?.intercom?.messages;
     expect(msgs).toHaveLength(2);
@@ -175,7 +176,7 @@ describe('roosync_dashboard', () => {
       type: 'global',
       content: 'Plain message'
     });
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const msg = result.data?.intercom?.messages?.[0];
 
     expect(msg?.content).toBe('Plain message');
@@ -211,13 +212,13 @@ describe('roosync_dashboard', () => {
     expect(condenseResult.archivedCount).toBeGreaterThan(0); // Changed: messages archived
 
     // Messages: fallback notice + 3 kept messages (not 11 as before)
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     expect(readResult.data?.intercom?.messages?.length).toBeLessThan(10); // Some were archived
   });
 
   // === Test 12: Read dashboard inexistant ===
   it('returns failure for non-existent dashboard', async () => {
-    const result = await roosyncDashboard({ action: 'read', type: 'global' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', format: 'json' });
 
     expect(result.success).toBe(false);
     expect(result.message).toContain('introuvable');
@@ -241,7 +242,7 @@ describe('roosync_dashboard', () => {
     const author = { machineId: 'myia-po-2025', workspace: 'roo-extensions', worktree: 'wt-123' };
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test', author });
 
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'all' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'all', format: 'json' });
     expect(result.data?.lastModifiedBy?.machineId).toBe('myia-po-2025');
     expect(result.data?.lastModifiedBy?.worktree).toBe('wt-123');
   });
@@ -269,7 +270,8 @@ describe('roosync_dashboard', () => {
       action: 'read',
       type: 'global',
       section: 'intercom',
-      intercomLimit: 3
+      intercomLimit: 3,
+    format: 'json',
     });
 
     expect(result.data?.intercom?.messages?.length).toBe(3);
@@ -285,8 +287,9 @@ describe('roosync_dashboard', () => {
     const result = await roosyncDashboard({
       action: 'read',
       type: 'global',
-      section: 'intercom'
+      section: 'intercom',
       // no intercomLimit — should return all
+      format: 'json',
     });
 
     expect(result.data?.intercom?.messages?.length).toBe(10);
@@ -356,7 +359,7 @@ describe('roosync_dashboard', () => {
     expect(deleteResult.success).toBe(true);
 
     // Vérifier que le dashboard n'existe plus
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global' });
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', format: 'json' });
     expect(readResult.success).toBe(false);
   });
 
@@ -470,7 +473,7 @@ describe('roosync_dashboard', () => {
     expect(condenseResult.condensed).toBe(true); // Changed: fallback archives messages
     expect(condenseResult.archivedCount).toBeGreaterThan(0); // Changed: messages archived
 
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messages = readResult.data?.intercom?.messages;
 
     // Messages: fallback notice + 3 kept (not 11 as before)
@@ -498,7 +501,7 @@ describe('roosync_dashboard', () => {
     // #1792: Circuit breaker — condensation utilise fallback troncation
     expect(condenseResult.condensed).toBe(true); // Changed: fallback archives messages
 
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const msgs = readResult.data?.intercom?.messages;
 
     // Messages: fallback notice + 3 kept (not 11 as before)
@@ -523,7 +526,7 @@ describe('roosync_dashboard', () => {
     }
 
     // #1792: With circuit breaker, fallback truncation archives messages (not cancelled)
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messageCount = result.data?.intercom?.messages?.length ?? 0;
 
     // #1792: Messages archived via fallback, so count < 25 (not 26 as before)
@@ -539,7 +542,7 @@ describe('roosync_dashboard', () => {
       await roosyncDashboard({ action: 'append', type: 'global', content: `ok ${i}` });
     }
 
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messageCount = result.data?.intercom?.messages?.length ?? 0;
 
     // All 100 messages should be preserved — size is under 50KB
@@ -563,7 +566,7 @@ describe('roosync_dashboard', () => {
       keepMessages: 3
     });
 
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messages = readResult.data?.intercom?.messages;
 
     // Aucun message système CONDENSATION ne devrait être présent
@@ -590,7 +593,7 @@ describe('roosync_dashboard', () => {
       content: 'Second message'
     });
 
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messages = result.data?.intercom?.messages;
 
     expect(messages.length).toBe(2);
@@ -616,7 +619,7 @@ describe('roosync_dashboard', () => {
       content: 'After'
     });
 
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messages = result.data?.intercom?.messages;
 
     expect(messages.length).toBe(2);
@@ -634,7 +637,7 @@ describe('roosync_dashboard', () => {
       content: contentWithPipes
     });
 
-    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
     const messages = result.data?.intercom?.messages;
 
     expect(messages.length).toBe(1);
@@ -676,7 +679,7 @@ describe('roosync_dashboard', () => {
       expect(mockChatCreate).toHaveBeenCalled();
 
       // Read dashboard and verify structure
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
       const messages = readResult.data?.intercom?.messages ?? [];
 
       // Should have: 1 CONDENSATION-SUMMARY + 1 CONDENSATION notice + 3 kept = 5
@@ -711,7 +714,7 @@ describe('roosync_dashboard', () => {
 
       await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
 
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'status', format: 'json' });
       expect(readResult.data?.status?.markdown).toBe(newStatus);
     });
 
@@ -944,7 +947,7 @@ describe('roosync_dashboard', () => {
       // First condense — uses truncation fallback (#1792 circuit breaker)
       const r1 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
       expect(r1.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
-      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
       const countAfterFirst = afterFirst.data?.intercom?.messages.length ?? 0;
       // 10 original messages: 6 archived + 3 kept + 1 fallback notice = 4
       expect(countAfterFirst).toBe(4);
@@ -1122,7 +1125,7 @@ describe('roosync_dashboard', () => {
       expect(result.splitCount).toBeGreaterThan(1);
       expect(result.messageCount).toBe(result.splitCount);
       // Each part should be tagged with the PART marker for readers.
-      const dashboard = await roosyncDashboard({ action: 'read', type: 'global' });
+      const dashboard = await roosyncDashboard({ action: 'read', type: 'global', format: 'json' });
       const firstMsg = dashboard.data?.intercom?.messages?.[0];
       expect(firstMsg?.content).toMatch(/^\*\*\[PART 1\//);
     });
@@ -1226,7 +1229,7 @@ describe('roosync_dashboard', () => {
       // because (a) the split itself kept each append small or (b) condense
       // then naturally archived older parts. Either outcome is success — the
       // old bug was "saturated forever".
-      const readBack = await roosyncDashboard({ action: 'read', type: 'global' });
+      const readBack = await roosyncDashboard({ action: 'read', type: 'global', format: 'json' });
       const intercomSize = (readBack.sizes as any).intercomLength;
       const statusSize = (readBack.sizes as any).statusLength;
       const totalSize = intercomSize + statusSize;
@@ -1253,7 +1256,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       expect(result.data?.intercom?.messages.length).toBe(1);
@@ -1270,7 +1274,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       expect(result.data?.intercom?.messages.length).toBe(1);
@@ -1296,7 +1301,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       expect(result.data?.intercom?.messages.length).toBe(2);
@@ -1313,7 +1319,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       expect(result.data?.intercom?.messages.length).toBe(1);
@@ -1337,7 +1344,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       expect(result.data?.intercom?.messages.length).toBe(1);
@@ -1354,7 +1362,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       expect(result.data?.intercom?.messages.length).toBe(1);
@@ -1387,7 +1396,8 @@ describe('roosync_dashboard', () => {
         action: 'read',
         type: 'global',
         section: 'intercom',
-        mentionsOnly: true
+        mentionsOnly: true,
+      format: 'json',
       });
 
       // Should only return messages mentioning test-machine
@@ -1406,7 +1416,8 @@ describe('roosync_dashboard', () => {
       const result = await roosyncDashboard({
         action: 'read',
         type: 'global',
-        section: 'intercom'
+        section: 'intercom',
+      format: 'json',
       });
 
       const content = result.data?.intercom?.messages[0].content || '';
@@ -1426,7 +1437,8 @@ describe('roosync_dashboard', () => {
         action: 'read',
         type: 'global',
         section: 'intercom',
-        mentionsOnly: true
+        mentionsOnly: true,
+      format: 'json',
       });
 
       // Should return 0 messages since no valid mentions
@@ -1538,7 +1550,8 @@ describe('roosync_dashboard', () => {
         const readGlobal = await roosyncDashboard({
           action: 'read',
           type: 'global',
-          section: 'intercom'
+          section: 'intercom',
+        format: 'json',
         });
         const found = (readGlobal.data?.intercom?.messages ?? [])
           .some(m => m.content.includes('Important notice cross-posted to global'));
@@ -1563,7 +1576,8 @@ describe('roosync_dashboard', () => {
         const read = await roosyncDashboard({
           action: 'read',
           type: 'workspace',
-          section: 'intercom'
+          section: 'intercom',
+        format: 'json',
         });
         const count = (read.data?.intercom?.messages ?? [])
           .filter(m => m.content.includes('Self-cross-post should be skipped'))
@@ -1610,7 +1624,8 @@ describe('roosync_dashboard', () => {
         const read = await roosyncDashboard({
           action: 'read',
           type: 'workspace',
-          section: 'intercom'
+          section: 'intercom',
+        format: 'json',
         });
         const messages = read.data?.intercom?.messages ?? [];
         expect(messages.length).toBeGreaterThan(0);
@@ -1713,7 +1728,7 @@ describe('roosync_dashboard', () => {
       expect(diag.archivedMessageCount).toBe(12); // 15 - 3 = 12
 
       // Check retained messages count
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
       const msgs = readResult.data?.intercom?.messages;
       // 1 fallback notice + 3 kept messages = 4
       expect(msgs?.length).toBe(4);
@@ -1802,10 +1817,145 @@ describe('roosync_dashboard', () => {
       }
 
       const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
       const notice = readResult.data?.intercom?.messages?.[0];
       expect(notice?.content).toContain('FALLBACK TRUNCATION');
       expect(notice?.content).toContain('Circuit breaker:');
+    });
+  });
+
+  // ============================================================
+  // Tests markdown format (#1832)
+  // ============================================================
+
+  describe('markdown format (#1832)', () => {
+    it('read returns markdown by default', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Status Text' });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'all',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.markdown).toBeDefined();
+      expect(result.markdown).toContain('## Status');
+      expect(result.markdown).toContain('# Status Text');
+      expect(result.markdown).toContain('## Intercom');
+      expect(result.data).toBeUndefined();
+    });
+
+    it('read with format=json returns structured data', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Status Text' });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'all',
+        format: 'json',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.status?.markdown).toBe('# Status Text');
+      expect(result.data?.intercom).toBeDefined();
+      expect(result.markdown).toBeUndefined();
+    });
+
+    it('read markdown includes intercom messages', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Hello world' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Second msg' });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+      });
+
+      expect(result.markdown).toContain('Hello world');
+      expect(result.markdown).toContain('Second msg');
+      expect(result.markdown).toContain('2 messages');
+    });
+
+    it('read markdown with section=status omits intercom', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Only Status' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Should not appear' });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'status',
+      });
+
+      expect(result.markdown).toContain('# Only Status');
+      expect(result.markdown).not.toContain('Should not appear');
+    });
+
+    it('read markdown with intercomLimit truncates messages', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      for (let i = 0; i < 10; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+        intercomLimit: 3,
+      });
+
+      expect(result.markdown).toContain('3 messages');
+      expect(result.markdown).not.toContain('Msg 0');
+      expect(result.markdown).toContain('Msg 9');
+    });
+
+    it('read markdown shows empty placeholder when no messages', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Status' });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+      });
+
+      expect(result.markdown).toContain('0 messages');
+      expect(result.markdown).toContain('Aucun message');
+    });
+
+    it('read_overview returns markdown by default', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Global Status' });
+      await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Workspace Status' });
+
+      const result = await roosyncDashboard({ action: 'read_overview' });
+
+      expect(result.success).toBe(true);
+      expect(result.markdown).toBeDefined();
+      expect(result.markdown).toContain('# Global Status');
+      expect(result.markdown).toContain('# Workspace Status');
+      expect(result.data).toBeUndefined();
+    });
+
+    it('read_overview with format=json returns structured data', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Global' });
+
+      const result = await roosyncDashboard({ action: 'read_overview', format: 'json' });
+
+      expect(result.success).toBe(true);
+      expect(result.overview).toBeDefined();
+      expect(result.overview?.global).toBeDefined();
+      expect(result.markdown).toBeUndefined();
+    });
+
+    it('read markdown message field equals markdown field', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+      });
+
+      expect(result.message).toBe(result.markdown);
     });
   });
 });

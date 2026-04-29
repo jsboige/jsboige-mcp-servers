@@ -144,6 +144,10 @@ export const DashboardArgsSchema = z.object({
   keepMessages: z.number().optional()
     .describe('Nombre de messages à conserver lors de la condensation (défaut: 10)'),
 
+  // Format de sortie pour read / read_overview (#1832)
+  format: z.enum(['markdown', 'json']).optional()
+    .describe('(read/read_overview) Format de sortie : markdown (défaut, tokens réduits) ou json (structuré, comportement historique)'),
+
   // Pour read_archive
   archiveFile: z.string().optional()
     .describe('(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.')

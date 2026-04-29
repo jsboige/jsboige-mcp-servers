@@ -1454,6 +1454,12 @@ export interface DashboardResult {
   /** Per-target cross-post outcomes (v3 #1363). Present only when args.crossPost was used. */
   crossPost?: Array<{ key: string; ok: boolean; error?: string }>;
   /**
+   * Raw markdown content (#1832). Returned when format=markdown (default for read/read_overview).
+   * Contains the dashboard content as direct markdown, saving ~30-40% tokens vs JSON envelope.
+   * Null/absent when format=json (structured data in `data` field instead).
+   */
+  markdown?: string;
+  /**
    * Per-pass condensation telemetry (2026-04-20). Present whenever condensation
    * was attempted (append with size over threshold, or explicit condense
    * action). Each entry reports phase + outcome + LLM call stats so operators
@@ -1723,27 +1729,60 @@ async function handleRead(
   // The dashboard should stay under 50KB thanks to size-based condensation,
   // so agents always see the full picture without needing to paginate.
   const intercomLimit = args.intercomLimit;
+
+  // Compute filtered messages (shared between both formats)
+  let filteredMessages = intercomLimit
+    ? dashboard.intercom.messages.slice(-intercomLimit)
+    : dashboard.intercom.messages;
+
+  if (args.mentionsOnly) {
+    filteredMessages = filteredMessages.filter(msg => {
+      const mentions = parseMentions(msg.content);
+      return isMentioned(mentions, resolvedMachineId, resolvedWorkspace);
+    });
+  }
+
+  const format = args.format ?? 'markdown'; // #1832: markdown default
+
+  // #1832: Markdown format — return raw markdown string, saving ~30-40% tokens
+  if (format === 'markdown') {
+    const parts: string[] = [];
+
+    if (section === 'status' || section === 'all') {
+      parts.push(`## Status\n\n${dashboard.status.markdown}`);
+    }
+    if (section === 'intercom' || section === 'all') {
+      const msgLines = filteredMessages.length > 0
+        ? filteredMessages.map(msg =>
+            `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`
+          ).join('\n\n---\n\n')
+        : '*Aucun message.*';
+      parts.push(`## Intercom (${filteredMessages.length} messages)\n\n${msgLines}`);
+    }
+
+    return {
+      success: true,
+      action: 'read',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      sizes: buildSizes(dashboard),
+      markdown: parts.join('\n\n'),
+      messageCount: filteredMessages.length,
+      message: parts.join('\n\n')
+    };
+  }
+
+  // JSON format — legacy behavior (structured data)
   let data: Partial<Dashboard> = {};
 
   if (section === 'status' || section === 'all') {
     data.status = dashboard.status;
   }
   if (section === 'intercom' || section === 'all') {
-    let messages = intercomLimit
-      ? dashboard.intercom.messages.slice(-intercomLimit)
-      : dashboard.intercom.messages;
-
-    // Filter by mentionsOnly if requested
-    if (args.mentionsOnly) {
-      messages = messages.filter(msg => {
-        const mentions = parseMentions(msg.content);
-        return isMentioned(mentions, resolvedMachineId, resolvedWorkspace);
-      });
-    }
-
     data.intercom = {
       ...dashboard.intercom,
-      messages
+      messages: filteredMessages
     };
   }
   if (section === 'all') {
@@ -2262,6 +2301,58 @@ async function handleReadOverview(
     { type: 'workspace', label: 'Workspace' },
   ];
 
+  const format = args.format ?? 'markdown'; // #1832: markdown default
+
+  // Collect data for both formats
+  const collected: Array<{
+    type: Dashboard['type'];
+    label: string;
+    key: string;
+    dashboard: Dashboard;
+    truncatedStatus: string;
+  }> = [];
+
+  let foundCount = 0;
+
+  for (const { type, label } of dashboardTypes) {
+    const key = buildDashboardKey(type, resolvedMachineId, resolvedWorkspace);
+    const dashboard = await readDashboardFile(key);
+
+    if (dashboard) {
+      foundCount++;
+      const statusText = dashboard.status.markdown;
+      const truncatedStatus = statusText.length > STATUS_MAX_LENGTH
+        ? statusText.substring(0, STATUS_MAX_LENGTH) + `\n\n... (tronqué, ${statusText.length} chars total)`
+        : statusText;
+      collected.push({ type, label, key, dashboard, truncatedStatus });
+    }
+  }
+
+  // #1832: Markdown format — return concatenated raw markdown
+  if (format === 'markdown') {
+    const parts: string[] = [];
+    for (const { label, truncatedStatus, dashboard } of collected) {
+      const recentMsgs = dashboard.intercom.messages.slice(-intercomLimit);
+      const msgLines = recentMsgs.length > 0
+        ? recentMsgs.map(msg =>
+            `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`
+          ).join('\n\n---\n\n')
+        : '*Aucun message récent.*';
+      parts.push(`# ${label}\n\n${truncatedStatus}\n\n## Intercom (${recentMsgs.length}/${dashboard.intercom.messages.length})\n\n${msgLines}`);
+    }
+
+    return {
+      success: true,
+      action: 'read_overview',
+      key: `overview-${resolvedMachineId}-${resolvedWorkspace}`,
+      type: 'overview',
+      request: requestEcho,
+      markdown: parts.join('\n\n---\n\n'),
+      message: `Vue d'ensemble: ${foundCount}/3 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`
+    };
+  }
+
+  // JSON format — legacy behavior
   const overview: Record<string, {
     key: string;
     status: string;
@@ -2270,30 +2361,21 @@ async function handleReadOverview(
     lastModifiedBy: Author;
   } | null> = {};
 
-  let foundCount = 0;
-
+  for (const { type, key, dashboard, truncatedStatus } of collected) {
+    overview[type] = {
+      key,
+      status: truncatedStatus,
+      intercom: {
+        totalMessages: dashboard.intercom.messages.length,
+        recentMessages: dashboard.intercom.messages.slice(-intercomLimit)
+      },
+      lastModified: dashboard.lastModified,
+      lastModifiedBy: dashboard.lastModifiedBy
+    };
+  }
+  // Fill nulls for missing dashboards
   for (const { type } of dashboardTypes) {
-    const key = buildDashboardKey(type, resolvedMachineId, resolvedWorkspace);
-    const dashboard = await readDashboardFile(key);
-
-    if (dashboard) {
-      foundCount++;
-      const statusText = dashboard.status.markdown;
-      overview[type] = {
-        key,
-        status: statusText.length > STATUS_MAX_LENGTH
-          ? statusText.substring(0, STATUS_MAX_LENGTH) + `\n\n... (tronqué, ${statusText.length} chars total)`
-          : statusText,
-        intercom: {
-          totalMessages: dashboard.intercom.messages.length,
-          recentMessages: dashboard.intercom.messages.slice(-intercomLimit)
-        },
-        lastModified: dashboard.lastModified,
-        lastModifiedBy: dashboard.lastModifiedBy
-      };
-    } else {
-      overview[type] = null;
-    }
+    if (!overview[type]) overview[type] = null;
   }
 
   return {
