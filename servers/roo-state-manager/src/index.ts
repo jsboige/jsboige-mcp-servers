@@ -166,11 +166,17 @@ class RooStateManagerServer {
 
     /**
      * Start heavy initialization in background AFTER transport is connected.
-     * Uses setImmediate to yield the event loop first, so the MCP handshake
-     * (initialize request) can be processed before imports block the event loop.
+     * Uses setTimeout(2000) instead of setImmediate to give the MCP client time
+     * to send tools/list and receive the response before dynamic imports block
+     * the event loop during module evaluation (~70s total on this machine).
+     *
+     * Race condition fixed: setImmediate fires before I/O callbacks (poll phase),
+     * so tools/list was queued but couldn't be processed while imports blocked.
+     * With a 2-second delay, the client sends tools/list, server responds instantly
+     * (static tool definitions), and THEN heavy initialization starts.
      */
     startBackgroundInit(): void {
-        setImmediate(() => {
+        setTimeout(() => {
             this.initializeAsync()
                 .then(() => this._resolveInit())
                 .catch((error: Error) => {
@@ -178,7 +184,7 @@ class RooStateManagerServer {
                     this._initError = error;
                     this._rejectInit(error);
                 });
-        });
+        }, 2000);
     }
 
     /**
