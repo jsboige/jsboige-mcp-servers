@@ -24,7 +24,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -82,6 +82,9 @@ export interface RooSyncIndexingArgs {
 
     /** #1786: Supprimer les vecteurs Qdrant (pour action=garbage_scan avec dry_run=false). Défaut: true */
     remove_vectors?: boolean;
+
+    /** #1821: Confirmation pour suppression orphelins (requis pour action=cleanup_orphans avec dry_run=false). Défaut: false */
+    confirm_orphan_cleanup?: boolean;
 }
 
 /**
@@ -89,14 +92,14 @@ export interface RooSyncIndexingArgs {
  */
 export const roosyncIndexingTool: Tool = {
     name: 'roosync_indexing',
-    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, archive Roo/Claude Code)",
+    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, archive Roo/Claude Code, cleanup orphelins #1821)",
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658), 'garbage_scan' (détecter/nettoyer les tâches garbage #1786)"
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans'],
+                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658), 'garbage_scan' (détecter/nettoyer les tâches garbage #1786), 'cleanup_orphans' (détecter/supprimer les vecteurs Qdrant dont les fichiers source n'existent plus #1821)"
             },
             task_id: {
                 type: 'string',
@@ -188,6 +191,11 @@ export const roosyncIndexingTool: Tool = {
                 type: 'boolean',
                 description: "#1786: Pour action=garbage_scan avec dry_run=false. Supprimer les vecteurs Qdrant garbage. Défaut: true.",
                 default: true
+            },
+            confirm_orphan_cleanup: {
+                type: 'boolean',
+                description: "#1821: Pour action=cleanup_orphans avec dry_run=false. Confirmation obligatoire pour la suppression des vecteurs orphelins. Défaut: false.",
+                default: false
             }
         },
         required: ['action']
@@ -230,10 +238,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans` }]
         };
     }
 
@@ -498,6 +506,58 @@ export async function handleRooSyncIndexing(
                     content: [{
                         type: 'text',
                         text: `Erreur lors du garbage scan: ${error.message}\n${error.stack || ''}`
+                    }]
+                };
+            }
+        }
+
+        case 'cleanup_orphans': {
+            const { detectAndCleanupOrphans } = await import('./cleanup-orphans.js');
+            const isDryRun = args.dry_run !== false; // default true for safety
+            const isConfirmed = args.confirm_orphan_cleanup === true;
+
+            try {
+                const result = await detectAndCleanupOrphans(
+                    conversationCache,
+                    isDryRun,
+                    isConfirmed
+                );
+
+                const mode = isDryRun ? '[DRY RUN]' : (isConfirmed ? '[EXECUTED]' : '[NEEDS CONFIRM]');
+                const summary = isDryRun
+                    ? `${mode} ${result.orphans.length} orphelins détectés sur ${result.total_task_ids_in_qdrant} task_ids Qdrant (aucune suppression)`
+                    : (isConfirmed
+                        ? `${mode} ${result.vectors_deleted} vecteurs supprimés pour ${result.orphans.length} task_ids orphelins`
+                        : `${mode} ${result.orphans.length} orphelins détectés — confirmation requise (confirm_orphan_cleanup=true)`);
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'cleanup_orphans',
+                            mode: isDryRun ? 'dry_run' : (isConfirmed ? 'executed' : 'needs_confirm'),
+                            scan: {
+                                total_task_ids_in_qdrant: result.total_task_ids_in_qdrant,
+                                in_cache: result.in_cache,
+                                on_disk: result.on_disk,
+                                orphans_detected: result.orphans.length,
+                            },
+                            cleanup: !isDryRun && isConfirmed ? {
+                                vectors_deleted: result.vectors_deleted,
+                            } : null,
+                            orphan_task_ids: result.orphans.slice(0, 50),
+                            errors: result.errors.length > 0 ? result.errors : undefined,
+                            summary
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `Erreur lors du cleanup orphelins: ${error.message}\n${error.stack || ''}`
                     }]
                 };
             }
