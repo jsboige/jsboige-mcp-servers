@@ -125,7 +125,7 @@ async function handleViewConversationTreeExecutionAsync(
 ): Promise<CallToolResult> {
     const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
     let { truncate = 0 } = args;
-    
+
     // Gestion intelligente de truncate selon detail_level si non spécifié explicitement
     // NOTE: truncate valeur LIGNES (pas caractères) - pour summary, 100 permet ~200 lignes/message
     if (truncate === 0) {
@@ -159,8 +159,8 @@ async function handleViewConversationTreeExecutionAsync(
         task_id = latestTask.taskId;
     }
 
-    const skeletons = Array.from(conversationCache.values());
-    const skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
+    let skeletons = Array.from(conversationCache.values());
+    let skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
 
     // 🎯 DÉTECTION TÂCHE ACTUELLE : Utiliser current_task_id si fourni, sinon ne rien marquer
     // Note: L'auto-détection par lastActivity est peu fiable car la tâche en cours d'exécution
@@ -389,6 +389,14 @@ async function handleViewConversationTreeExecutionAsync(
             }
         }
     }
+
+    // FIX #1784: Rebuild skeletonMap after lazy loading.
+    // Lazy loading updates conversationCache with full skeletons, but the local
+    // snapshots (skeletons, skeletonMap) were created before loading. This caused
+    // stale data in chain/cluster modes where parent tasks walked via skeletonMap
+    // had empty sequences while the cache had the full data.
+    skeletons = Array.from(conversationCache.values());
+    skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
 
     // #1244 Couche 2.6 — Pagination message-level sur la tache focale
     // Applique avant le dispatch view_mode pour que chain/cluster voient la version paginee.
