@@ -1454,6 +1454,12 @@ export interface DashboardResult {
   /** Per-target cross-post outcomes (v3 #1363). Present only when args.crossPost was used. */
   crossPost?: Array<{ key: string; ok: boolean; error?: string }>;
   /**
+   * Raw markdown content (#1832). Present only when format='markdown' (default)
+   * for read/read_overview. When present, registry returns this directly as text
+   * instead of JSON.stringify of the full DashboardResult.
+   */
+  markdownContent?: string;
+  /**
    * Per-pass condensation telemetry (2026-04-20). Present whenever condensation
    * was attempted (append with size over threshold, or explicit condense
    * action). Each entry reports phase + outcome + LLM call stats so operators
@@ -1699,6 +1705,39 @@ export function splitLargeMessage(
   return rawParts.map((part, idx) => `**[PART ${idx + 1}/${total}]**\n\n${part}`);
 }
 
+/**
+ * Build human-readable markdown from a Dashboard object (#1832).
+ * Reconstructs the same layout as the on-disk format for agent consumption.
+ */
+function buildMarkdownOutput(
+  dashboard: Dashboard,
+  section: 'status' | 'intercom' | 'all',
+  filteredMessages?: IntercomMessage[]
+): string {
+  const parts: string[] = [];
+
+  if (section === 'status' || section === 'all') {
+    parts.push('## Status\n');
+    parts.push(dashboard.status.markdown || '*Aucun contenu.*');
+  }
+
+  if (section === 'intercom' || section === 'all') {
+    const messages = filteredMessages ?? dashboard.intercom.messages;
+    parts.push('\n## Intercom\n');
+    if (messages.length === 0) {
+      parts.push('*Aucun message.*');
+    } else {
+      for (const msg of messages) {
+        parts.push(`### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n`);
+        parts.push(msg.content);
+        parts.push('');
+      }
+    }
+  }
+
+  return parts.join('\n');
+}
+
 async function handleRead(
   key: string,
   args: DashboardArgs,
@@ -1756,7 +1795,7 @@ async function handleRead(
     };
   }
 
-  return {
+  const jsonResult: DashboardResult = {
     success: true,
     action: 'read',
     key,
@@ -1766,6 +1805,13 @@ async function handleRead(
     data,
     messageCount: dashboard.intercom.messages.length
   };
+
+  // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
+  if (args.format !== 'json') {
+    jsonResult.markdownContent = buildMarkdownOutput(dashboard, section, data.intercom?.messages);
+  }
+
+  return jsonResult;
 }
 
 async function handleWrite(
@@ -2296,7 +2342,7 @@ async function handleReadOverview(
     }
   }
 
-  return {
+  const jsonResult: DashboardResult = {
     success: true,
     action: 'read_overview',
     key: `overview-${resolvedMachineId}-${resolvedWorkspace}`,
@@ -2305,6 +2351,28 @@ async function handleReadOverview(
     overview,
     message: `Vue d'ensemble: ${foundCount}/3 dashboards trouvés (machine: ${resolvedMachineId}, workspace: ${resolvedWorkspace})`
   };
+
+  // #1832: markdown format (default) for read_overview
+  if (args.format !== 'json') {
+    const parts: string[] = [`# Dashboard Overview (${resolvedMachineId}/${resolvedWorkspace})\n`];
+    for (const { type, label } of dashboardTypes) {
+      const entry = overview[type];
+      parts.push(`## ${label}${entry ? '' : ' — *non trouvé*'}\n`);
+      if (entry) {
+        parts.push(entry.status);
+        if (entry.intercom.totalMessages > 0) {
+          parts.push(`\n### Intercom (${entry.intercom.totalMessages} messages, ${entry.intercom.recentMessages.length} récents)\n`);
+          for (const msg of entry.intercom.recentMessages) {
+            parts.push(`- **[${msg.timestamp}]** ${msg.author.machineId}|${msg.author.workspace}: ${msg.content.split('\n')[0]}`);
+          }
+        }
+      }
+      parts.push('');
+    }
+    jsonResult.markdownContent = parts.join('\n');
+  }
+
+  return jsonResult;
 }
 
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
