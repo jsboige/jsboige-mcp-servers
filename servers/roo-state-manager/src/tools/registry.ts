@@ -11,19 +11,39 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ServerState } from '../services/state-manager.service.js';
+import type { ServerState } from '../services/state-manager.service.js';
 import { allToolDefinitions } from './tool-definitions.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
-import { RooStorageDetector } from '../utils/roo-storage-detector.js';
-import { ClaudeStorageDetector } from '../utils/claude-storage-detector.js';
-import { autoHeartbeat } from '../utils/auto-heartbeat.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
-import { loadFullSkeleton } from '../services/background-services.js';
 import { createLogger } from '../utils/logger.js';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
+
+// #1817: Lazy-loaded heavy modules — these pull deep ESM dependency chains
+// (roo-storage-detector → glob, cache-manager, skeleton-*; background-services → task-indexer, etc.)
+// Static imports added 7.8s to startup. Lazy loaders defer until first tool call.
+let _rooStorageDetector: typeof import('../utils/roo-storage-detector.js') | null = null;
+async function getRooStorageDetector() {
+	if (!_rooStorageDetector) _rooStorageDetector = await import('../utils/roo-storage-detector.js');
+	return _rooStorageDetector;
+}
+let _claudeStorageDetector: typeof import('../utils/claude-storage-detector.js') | null = null;
+async function getClaudeStorageDetector() {
+	if (!_claudeStorageDetector) _claudeStorageDetector = await import('../utils/claude-storage-detector.js');
+	return _claudeStorageDetector;
+}
+let _autoHeartbeatModule: typeof import('../utils/auto-heartbeat.js') | null = null;
+async function getAutoHeartbeat() {
+	if (!_autoHeartbeatModule) _autoHeartbeatModule = await import('../utils/auto-heartbeat.js');
+	return _autoHeartbeatModule;
+}
+let _bgServices: typeof import('../services/background-services.js') | null = null;
+async function getBackgroundServices() {
+	if (!_bgServices) _bgServices = await import('../services/background-services.js');
+	return _bgServices;
+}
 
 const registryLogger = createLogger('ToolRegistry');
 
@@ -169,6 +189,7 @@ export function registerCallToolHandler(
                             }
                             // #1110: Cache holds headers only (Tier 1 Roo) — load full skeleton on demand
                             if (cached.metadata.messageCount > 0) {
+                                const { loadFullSkeleton } = await getBackgroundServices();
                                 const full = await loadFullSkeleton(id, cache);
                                 if (full) return full;
                                 // Fall through to disk scan if full skeleton load fails
@@ -180,6 +201,7 @@ export function registerCallToolHandler(
                         // 2. Claude Code sessions (taskId starts with 'claude-')
                         if (id.startsWith('claude-')) {
                             try {
+                                const { ClaudeStorageDetector } = await getClaudeStorageDetector();
                                 const skeleton = await ClaudeStorageDetector.findConversationById(id);
                                 if (skeleton) {
                                     cache.set(id, skeleton);
@@ -190,7 +212,8 @@ export function registerCallToolHandler(
                         }
                         // 3. Fallback: scan disk for Roo conversations
                         try {
-                            const locations = await RooStorageDetector.detectStorageLocations();
+                            const { RooStorageDetector } = await getRooStorageDetector();
+                           const locations = await RooStorageDetector.detectStorageLocations();
                             for (const loc of locations) {
                                 // #1325: detectStorageLocations returns base paths, need 'tasks' segment
                                 const taskPath = path.join(loc, 'tasks', id);
@@ -208,7 +231,8 @@ export function registerCallToolHandler(
                     async (rootId: string) => {
                         // Fonction findChildTasks pour le mode cluster
                         try {
-                            const locations = await RooStorageDetector.detectStorageLocations();
+                            const { RooStorageDetector } = await getRooStorageDetector();
+                           const locations = await RooStorageDetector.detectStorageLocations();
                             for (const loc of locations) {
                                 // #1325: detectStorageLocations returns base paths, need 'tasks' segment
                                 const taskPath = path.join(loc, 'tasks', rootId);
@@ -392,6 +416,7 @@ export function registerCallToolHandler(
                        if (cached) return cached;
                        // 2. Fallback: scan disk for Roo conversations (#449)
                        try {
+                           const { RooStorageDetector } = await getRooStorageDetector();
                            const locations = await RooStorageDetector.detectStorageLocations();
                            for (const loc of locations) {
                                const taskPath = path.join(loc, id);
@@ -411,6 +436,7 @@ export function registerCallToolHandler(
                        const allTasks = Array.from(cache.values());
                        // Also check disk for child tasks (#449)
                        try {
+                           const { RooStorageDetector } = await getRooStorageDetector();
                            const locations = await RooStorageDetector.detectStorageLocations();
                            for (const loc of locations) {
                                const taskPath = path.join(loc, rootId);
@@ -893,6 +919,7 @@ export function registerCallToolHandler(
         }
 
         // #1609: Auto-heartbeat on any successful tool call
+        const { autoHeartbeat } = await getAutoHeartbeat();
         await autoHeartbeat(name);
 
         return result;
