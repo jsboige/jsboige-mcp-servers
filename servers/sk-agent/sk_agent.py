@@ -410,27 +410,38 @@ class SKAgentManager:
         )
 
     async def _init_model_pool(self):
-        """Create OpenAI clients and services for each enabled model."""
+        """Create OpenAI clients and services for each enabled model.
+
+        Resilient: failing models are skipped so the remaining ones stay usable.
+        """
         for model_cfg in self.config.models:
             if not model_cfg.enabled:
                 continue
 
-            api_key = model_cfg.resolve_api_key()
-            client = AsyncOpenAI(api_key=api_key, base_url=model_cfg.base_url)
-            self._openai_clients[model_cfg.id] = client
+            try:
+                api_key = model_cfg.resolve_api_key()
+                client = AsyncOpenAI(api_key=api_key, base_url=model_cfg.base_url)
+                self._openai_clients[model_cfg.id] = client
 
-            service = OpenAIChatCompletion(
-                ai_model_id=model_cfg.model_id,
-                async_client=client,
-                service_id=model_cfg.id,
-            )
-            self._services[model_cfg.id] = service
-            log.info(
-                "Model pool: %s -> %s at %s",
-                model_cfg.id,
-                model_cfg.model_id,
-                model_cfg.base_url,
-            )
+                service = OpenAIChatCompletion(
+                    ai_model_id=model_cfg.model_id,
+                    async_client=client,
+                    service_id=model_cfg.id,
+                )
+                self._services[model_cfg.id] = service
+                log.info(
+                    "Model pool: %s -> %s at %s",
+                    model_cfg.id,
+                    model_cfg.model_id,
+                    model_cfg.base_url,
+                )
+            except Exception:
+                log.exception(
+                    "Model pool: FAILED to init model '%s' (%s at %s) — skipping",
+                    model_cfg.id,
+                    model_cfg.model_id,
+                    model_cfg.base_url,
+                )
 
     def _build_execution_settings(self) -> OpenAIChatPromptExecutionSettings | None:
         """Build execution settings from config sampling params."""
@@ -1351,19 +1362,35 @@ _config: SKAgentConfig | None = None
 _conversation_runner: ConversationRunner | None = None
 
 
+_init_error: str | None = None
+
+
 async def _get_manager() -> SKAgentManager:
-    """Get or create the global manager instance."""
-    global _manager, _config, _conversation_runner
+    """Get or create the global manager instance.
+
+    Resilient init: on failure, _manager stays None so the next call retries.
+    The last error is stored in _init_error for diagnostics.
+    """
+    global _manager, _config, _conversation_runner, _init_error
     if _manager is None:
-        _config = load_config()
-        _manager = SKAgentManager(_config)
-        await _manager.start()
-        # Create conversation runner with the manager's agents and lazy factory
-        _conversation_runner = ConversationRunner(
-            _config, _manager._sk_agents, _manager._get_or_create_agent
-        )
-        # Update tool descriptions dynamically
-        _update_tool_descriptions(_config)
+        try:
+            _config = load_config()
+            _manager = SKAgentManager(_config)
+            await _manager.start()
+            # Create conversation runner with the manager's agents and lazy factory
+            _conversation_runner = ConversationRunner(
+                _config, _manager._sk_agents, _manager._get_or_create_agent
+            )
+            # Update tool descriptions dynamically
+            _update_tool_descriptions(_config)
+            _init_error = None
+        except Exception as exc:
+            # Reset so next call retries instead of returning a broken instance
+            _manager = None
+            _conversation_runner = None
+            _init_error = f"{type(exc).__name__}: {exc}"
+            log.exception("SK Agent Manager initialization failed")
+            raise
     return _manager
 
 
@@ -1961,6 +1988,68 @@ async def list_models() -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+@mcp_server.tool()
+async def diagnostics() -> str:
+    """Report sk-agent health status for troubleshooting.
+
+    Returns config status, model pool health, agent availability,
+    kernel state, dependency versions, and last init error (if any).
+    """
+    import importlib.metadata
+
+    result: dict[str, Any] = {
+        "status": "unknown",
+        "config_path": CONFIG_PATH,
+        "python": sys.version,
+    }
+
+    # Dependency versions
+    deps = {}
+    for pkg in ("semantic-kernel", "mcp", "openai", "httpx", "qdrant-client"):
+        try:
+            deps[pkg] = importlib.metadata.version(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            deps[pkg] = "NOT INSTALLED"
+    result["dependencies"] = deps
+
+    # Config check
+    config_path = Path(CONFIG_PATH)
+    if config_path.exists():
+        result["config_file"] = "found"
+        try:
+            _config = load_config()
+            result["agents_configured"] = len(_config.agents)
+            result["models_configured"] = len(_config.models)
+            result["models_enabled"] = sum(
+                1 for m in _config.models if m.enabled
+            )
+        except Exception as exc:
+            result["config_file"] = f"parse_error: {exc}"
+    else:
+        result["config_file"] = "missing"
+
+    # Manager health
+    if _manager is not None:
+        result["status"] = "healthy"
+        result["models_pool"] = list(_manager._services.keys())
+        result["agents_created"] = list(_manager._sk_agents.keys())
+        result["kernels"] = list(_manager._kernels.keys())
+        result["mcp_plugins_loaded"] = list(_manager._mcp_plugins.keys())
+        result["threads_active"] = len(_manager._threads)
+    else:
+        result["status"] = "not_initialized"
+        if _init_error:
+            result["last_init_error"] = _init_error
+
+    # Optional features
+    result["features"] = {
+        "memory": HAS_MEMORY,
+        "qdrant": HAS_QDRANT,
+    }
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
