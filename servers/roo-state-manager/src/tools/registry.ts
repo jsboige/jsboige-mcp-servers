@@ -147,12 +147,6 @@ export function registerCallToolHandler(
                result = await m.handleStorageInfo(args as any);
                break;
            }
-           // [DEPRECATED] list_conversations → conversation_browser action='list'
-           case 'list_conversations': {
-               const m = await import('./conversation/list-conversations.tool.js');
-               result = await m.listConversationsTool.handler(args as any, cache);
-               break;
-           }
            // #519: Anciens outils storage retirés (detect_storage, get_storage_stats)
             case 'touch_mcp_settings':
                 result = await handleTouchMcpSettings();
@@ -251,17 +245,6 @@ export function registerCallToolHandler(
                 );
                 break;
             }
-            // [DEPRECATED] CONS-9: task_browse conservé pour backward compat
-            case 'task_browse': {
-                const m = await import('./task/browse.js');
-                result = await m.handleTaskBrowse(
-                    args as any,
-                    cache,
-                    async () => { await ensureSkeletonCacheIsFresh(); },
-                    CACHE_CONFIG.DEFAULT_WORKSPACE
-                );
-                break;
-            }
             case 'task_export': {
                 const m = await import('./task/export.js');
                 result = await m.handleTaskExport(
@@ -269,12 +252,6 @@ export function registerCallToolHandler(
                     cache,
                     async () => { await ensureSkeletonCacheIsFresh(); }
                 );
-                break;
-            }
-            // [DEPRECATED] #457: view_conversation_tree conservé pour backward compat
-            case 'view_conversation_tree': {
-                const m = await import('./view-conversation-tree.js');
-                result = await m.viewConversationTree.handler(args as any, cache);
                 break;
             }
             case 'view_task_details': {
@@ -405,56 +382,6 @@ export function registerCallToolHandler(
                break;
            }
 
-           // [DEPRECATED] CONS-12→#457: roosync_summarize conservé pour backward compat
-           case 'roosync_summarize': {
-               const m = await import('./summary/roosync-summarize.tool.js');
-               const summaryResult = await m.handleRooSyncSummarize(
-                   args as any,
-                   async (id: string) => {
-                       // 1. Try RAM cache first
-                       const cached = cache.get(id);
-                       if (cached) return cached;
-                       // 2. Fallback: scan disk for Roo conversations (#449)
-                       try {
-                           const { RooStorageDetector } = await getRooStorageDetector();
-                           const locations = await RooStorageDetector.detectStorageLocations();
-                           for (const loc of locations) {
-                               const taskPath = path.join(loc, id);
-                               if (existsSync(taskPath)) {
-                                   const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
-                                   if (skeleton) {
-                                       cache.set(id, skeleton);
-                                       return skeleton;
-                                   }
-                               }
-                           }
-                       } catch { /* disk fallback failed, return null */ }
-                       return null;
-                   },
-                   async (rootId: string) => {
-                       // Fonction findChildTasks pour le mode cluster
-                       const allTasks = Array.from(cache.values());
-                       // Also check disk for child tasks (#449)
-                       try {
-                           const { RooStorageDetector } = await getRooStorageDetector();
-                           const locations = await RooStorageDetector.detectStorageLocations();
-                           for (const loc of locations) {
-                               const taskPath = path.join(loc, rootId);
-                               if (existsSync(taskPath)) {
-                                   const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
-                                   if (skeleton && !cache.has(rootId)) {
-                                       cache.set(rootId, skeleton);
-                                   }
-                               }
-                           }
-                       } catch { /* ignore disk errors */ }
-                       const allTasksUpdated = Array.from(cache.values());
-                       return allTasksUpdated.filter(task => task.metadata?.parentTaskId === rootId);
-                   }
-               );
-               result = { content: [{ type: 'text', text: summaryResult }] };
-               break;
-           }
            // CLEANUP-2: Legacy summary tools handlers retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
            // Remplacés par roosync_summarize (CONS-12)
            // #519: Legacy export tools handlers retirés (CONS-10) - utiliser export_data et export_config
@@ -504,66 +431,6 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // [BACKWARD-COMPAT ONLY] roosync_get_decision_details -> use roosync_decision_info
-          // Kept for compatibility. Consolidation: CONS-5
-          case 'roosync_get_decision_details': {
-              try {
-                  const m = await import('./roosync/get-decision-details.js');
-                  const roosyncResult = await m.roosyncGetDecisionDetails(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_approve_decision -> use roosync_decision(action: 'approve')
-          // Kept for compatibility. Consolidation: CONS-5
-          case 'roosync_approve_decision': {
-              try {
-                  const m = await import('./roosync/approve-decision.js');
-                  const roosyncResult = await m.roosyncApproveDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_reject_decision -> use roosync_decision(action: 'reject')
-          // Kept for compatibility. Consolidation: CONS-5
-          case 'roosync_reject_decision': {
-              try {
-                  const m = await import('./roosync/reject-decision.js');
-                  const roosyncResult = await m.roosyncRejectDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_apply_decision -> use roosync_decision(action: 'apply')
-          // Kept for compatibility. Consolidation: CONS-5
-          case 'roosync_apply_decision': {
-              try {
-                  const m = await import('./roosync/apply-decision.js');
-                  const roosyncResult = await m.roosyncApplyDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_rollback_decision -> use roosync_decision(action: 'rollback')
-          // Kept for compatibility. Consolidation: CONS-5
-          case 'roosync_rollback_decision': {
-              try {
-                  const m = await import('./roosync/rollback-decision.js');
-                  const roosyncResult = await m.roosyncRollbackDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
           case 'roosync_init': {
               try {
                   const m = await import('./roosync/roosync_init.js');
@@ -574,82 +441,10 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // [BACKWARD-COMPAT ONLY] roosync_update_baseline -> use roosync_baseline(action: 'update')
-          // Kept for compatibility. Consolidation: CONS-2
-          case 'roosync_update_baseline': {
-              try {
-                  const m = await import('./roosync/update-baseline.js');
-                  const roosyncResult = await m.roosyncUpdateBaseline(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_manage_baseline -> use roosync_baseline(action: 'manage')
-          // Kept for compatibility. Consolidation: CONS-2
-          case 'roosync_manage_baseline': {
-              try {
-                  const m = await import('./roosync/manage-baseline.js');
-                  const roosyncResult = await m.roosync_manage_baseline(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
           case 'roosync_diagnose': {
               try {
                   const m = await import('./roosync/diagnose.js');
                   const roosyncResult = await m.roosyncDiagnose(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_export_baseline -> use roosync_baseline(action: 'export')
-          // Kept for compatibility. Consolidation: CONS-2
-          case 'roosync_export_baseline': {
-              try {
-                  const m = await import('./roosync/export-baseline.js');
-                  const roosyncResult = await m.roosync_export_baseline(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_collect_config -> use roosync_config(action: 'collect')
-          // Kept for compatibility. Consolidation: CONS-3
-          case 'roosync_collect_config': {
-              try {
-                  const m = await import('./roosync/collect-config.js');
-                  const roosyncResult = await m.roosyncCollectConfig(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_publish_config -> use roosync_config(action: 'publish')
-          // Kept for compatibility. Consolidation: CONS-3
-          case 'roosync_publish_config': {
-              try {
-                  const m = await import('./roosync/publish-config.js');
-                  const roosyncResult = await m.roosyncPublishConfig(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
-          // [BACKWARD-COMPAT ONLY] roosync_apply_config -> use roosync_config(action: 'apply')
-          // Kept for compatibility. Consolidation: CONS-3
-          case 'roosync_apply_config': {
-              try {
-                  const m = await import('./roosync/apply-config.js');
-                  const roosyncResult = await m.roosyncApplyConfig(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
@@ -784,50 +579,6 @@ export function registerCallToolHandler(
                try {
                    const m = await import('./roosync/roosync-attachments.tool.js');
                    result = await m.roosyncAttachments(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
-           // #674: Outils legacy (backward compat — utiliser roosync_attachments à la place)
-           case 'roosync_list_attachments': {
-               try {
-                   const m = await import('./roosync/roosync-attachments.tool.js');
-                   result = await m.roosyncListAttachments(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
-           case 'roosync_get_attachment': {
-               try {
-                   const m = await import('./roosync/roosync-attachments.tool.js');
-                   result = await m.roosyncGetAttachment(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
-           case 'roosync_delete_attachment': {
-               try {
-                   const m = await import('./roosync/roosync-attachments.tool.js');
-                   result = await m.roosyncDeleteAttachment(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
-           // [BACKWARD-COMPAT ONLY] roosync_get_machine_inventory -> use roosync_inventory
-           // Kept for compatibility.
-           case 'roosync_get_machine_inventory': {
-               try {
-                   const m = await import('./roosync/get-machine-inventory.js');
-                   const invResult = await m.getMachineInventoryTool.execute(args as any, {} as any);
-                   if (invResult.success) {
-                       result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
-                   } else {
-                       result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
-                   }
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

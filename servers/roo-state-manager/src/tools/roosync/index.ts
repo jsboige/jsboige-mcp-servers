@@ -41,65 +41,7 @@ export type {
   ListDiffsResult
 } from './list-diffs.js';
 
-export {
-  roosyncApproveDecision,
-  ApproveDecisionArgsSchema,
-  ApproveDecisionResultSchema,
-  approveDecisionToolMetadata
-} from './approve-decision.js';
-
-export type {
-  ApproveDecisionArgs,
-  ApproveDecisionResult
-} from './approve-decision.js';
-
-export {
-  roosyncRejectDecision,
-  RejectDecisionArgsSchema,
-  RejectDecisionResultSchema,
-  rejectDecisionToolMetadata
-} from './reject-decision.js';
-
-export type {
-  RejectDecisionArgs,
-  RejectDecisionResult
-} from './reject-decision.js';
-
-export {
-  roosyncApplyDecision,
-  ApplyDecisionArgsSchema,
-  ApplyDecisionResultSchema,
-  applyDecisionToolMetadata
-} from './apply-decision.js';
-
-export type {
-  ApplyDecisionArgs,
-  ApplyDecisionResult
-} from './apply-decision.js';
-
-export {
-  roosyncRollbackDecision,
-  RollbackDecisionArgsSchema,
-  RollbackDecisionResultSchema,
-  rollbackDecisionToolMetadata
-} from './rollback-decision.js';
-
-export type {
-  RollbackDecisionArgs,
-  RollbackDecisionResult
-} from './rollback-decision.js';
-
-export {
-  roosyncGetDecisionDetails,
-  GetDecisionDetailsArgsSchema,
-  GetDecisionDetailsResultSchema,
-  getDecisionDetailsToolMetadata
-} from './get-decision-details.js';
-
-export type {
-  GetDecisionDetailsArgs,
-  GetDecisionDetailsResult
-} from './get-decision-details.js';
+// [REMOVED Phase B #1863] approve/reject/apply/rollback decision + get-decision-details backward-compat exports
 
 // CONS-5: Outils consolidés de décisions (5→2)
 export {
@@ -138,30 +80,9 @@ export type {
   InitResult
 } from './roosync_init.js';
 
-export {
-  roosyncUpdateBaseline,
-  UpdateBaselineArgsSchema,
-  UpdateBaselineResultSchema,
-  updateBaselineToolMetadata
-} from './update-baseline.js';
+// [REMOVED Phase B #1863] update-baseline backward-compat export
 
-export type {
-  UpdateBaselineArgs,
-  UpdateBaselineResult
-} from './update-baseline.js';
-
-// Outils consolidés v2.3 - Remplacent version-baseline et restore-baseline
-export {
-  roosync_manage_baseline,
-  ManageBaselineArgsSchema,
-  ManageBaselineResultSchema,
-  manageBaselineToolMetadata
-} from './manage-baseline.js';
-
-export type {
-  ManageBaselineArgs,
-  ManageBaselineResult
-} from './manage-baseline.js';
+// [REMOVED Phase B #1863] manage-baseline backward-compat export
 
 export {
   roosync_debug_reset,
@@ -175,16 +96,7 @@ export type {
   DebugResetResult
 } from './debug-reset.js';
 
-export {
-  roosync_export_baseline,
-  ExportBaselineArgsSchema,
-  ExportBaselineResultSchema
-} from './export-baseline.js';
-
-export type {
-  ExportBaselineArgs,
-  ExportBaselineResult
-} from './export-baseline.js';
+// [REMOVED Phase B #1863] export-baseline backward-compat export
 
 // Outil consolidé Baseline (CONS-4) - Remplace update-baseline, manage-baseline et export-baseline
 export {
@@ -202,9 +114,6 @@ export type {
 // Les outils de diff granulaire ont été supprimés en Phase 3
 
 // Export des outils de configuration partagée (Cycle 6)
-export { roosyncCollectConfig, collectConfigToolMetadata } from './collect-config.js';
-export { roosyncPublishConfig, publishConfigToolMetadata } from './publish-config.js';
-export { roosyncApplyConfig, applyConfigToolMetadata } from './apply-config.js';
 
 // CONS-3: Outil consolidé de configuration (collect + publish + apply → roosync_config)
 export { roosyncConfig, ConfigArgsSchema, configToolMetadata } from './config.js';
@@ -263,7 +172,6 @@ export {
 export { inventoryTool, inventoryToolMetadata } from './inventory.js';
 export { roosyncMachines, machinesToolMetadata } from './machines.js';
 // [DEPRECATED] Legacy inventory tool - utiliser inventoryTool à la place
-export { getMachineInventoryTool } from './get-machine-inventory.js';
 
 // #519: Legacy heartbeat tools retirés (7 outils) - utiliser roosync_heartbeat consolidé
 // Modules conservés pour les tests unitaires existants mais non exportés publiquement
@@ -306,13 +214,8 @@ import { listDiffsToolMetadata } from './list-diffs.js';
 import { roosyncDecisionToolMetadata } from './decision.js';
 import { roosyncDecisionInfoToolMetadata } from './decision-info.js';
 import { initToolMetadata } from './roosync_init.js';
-import { updateBaselineToolMetadata } from './update-baseline.js';
-import { manageBaselineToolMetadata } from './manage-baseline.js';
 import { baselineToolMetadata } from './baseline.js';
 import { diagnoseToolMetadata } from './diagnose.js';
-import { collectConfigToolMetadata } from './collect-config.js';
-import { publishConfigToolMetadata } from './publish-config.js';
-import { applyConfigToolMetadata } from './apply-config.js';
 import { configToolMetadata } from './config.js'; // CONS-3
 // Import des métadonnées des outils consolidés Inventory (CONS-6)
 import { inventoryToolMetadata } from './inventory.js';
@@ -396,42 +299,7 @@ export type {
 //   }
 // };
 
-// Métadonnées pour l'outil export baseline
-const exportBaselineToolMetadata = {
-  name: 'roosync_export_baseline',
-  description: 'Exporte une baseline vers différents formats (JSON, YAML, CSV)',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      format: {
-        type: 'string',
-        enum: ['json', 'yaml', 'csv'],
-        description: 'Format d\'exportation'
-      },
-      outputPath: {
-        type: 'string',
-        description: 'Chemin de sortie pour le fichier exporté (optionnel)'
-      },
-      machineId: {
-        type: 'string',
-        description: 'ID de la machine à exporter (optionnel, utilise la baseline actuelle si non spécifié)'
-      },
-      includeHistory: {
-        type: 'boolean',
-        description: 'Inclure l\'historique des modifications (défaut: false)'
-      },
-      includeMetadata: {
-        type: 'boolean',
-        description: 'Inclure les métadonnées complètes (défaut: true)'
-      },
-      prettyPrint: {
-        type: 'boolean',
-        description: 'Formater la sortie pour une meilleure lisibilité (défaut: true)'
-      }
-    },
-    required: ['format']
-  }
-};
+// [REMOVED Phase B #1863] exportBaselineToolMetadata (dead code, source file deleted)
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP

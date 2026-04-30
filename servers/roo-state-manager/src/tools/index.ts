@@ -14,7 +14,6 @@ export * from './storage/index.js';
 export * from './rebuild-and-restart.js';
 export { getMcpBestPractices } from './get_mcp_best_practices.js';
 export * from './manage-mcp-settings.js';
-export { viewConversationTree } from './view-conversation-tree.js';
 export * from './conversation/index.js';
 export * from './task/index.js';
 export * from './search/index.js';
