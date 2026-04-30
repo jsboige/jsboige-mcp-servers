@@ -649,6 +649,20 @@ export const roosyncAttachmentsDefinition = {
 // #1470: Derived from Zod schema in dashboard-schemas.ts (single source of truth)
 export const roosyncDashboardDefinition = dashboardToolMetadata;
 
+// #1855: HUD metrics endpoint for statusline
+export const roosyncHudMetricsDefinition = {
+    name: 'roosync_hud_metrics',
+    description: 'Endpoint léger pour le HUD statusline RooSync. Retourne les métriques temps-réel : machines online/offline, inbox, décisions, dashboards actifs, indexing. Optimisé pour un polling fréquent.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            includeDetails: { type: 'boolean', description: 'Inclure les détails par machine (défaut: false)' },
+            includeIndexing: { type: 'boolean', description: 'Inclure les métriques d\'indexation Qdrant (défaut: false)' }
+        },
+        additionalProperties: false
+    }
+};
+
 // ============================================================
 // allToolDefinitions — the complete ordered list for ListTools
 // This mirrors the order in the current registerListToolsHandler.
@@ -693,5 +707,7 @@ export const allToolDefinitions = [
     roosyncManageDefinition,
     roosyncCleanupMessagesDefinition,
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    // #1855: HUD metrics
+    roosyncHudMetricsDefinition
 ];

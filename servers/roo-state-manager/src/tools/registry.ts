@@ -73,6 +73,7 @@ const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_indexing: ['sharedPath'],
 	roosync_mcp_management: ['sharedPath'],
 	roosync_storage_management: ['sharedPath'],
+	roosync_hud_metrics: ['sharedPath'],
 	conversation_browser: ['sharedPath'],
 	export_data: ['sharedPath'],
 	task_export: ['sharedPath'],
@@ -891,6 +892,23 @@ export function registerCallToolHandler(
                    const m = await import('./roosync/storage-management.js');
                    const storageManagementResult = await m.roosyncStorageManagement(args as any, cache, state);
                    result = { content: [{ type: 'text', text: JSON.stringify(storageManagementResult, null, 2) }] };
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           }
+           // #1855: HUD metrics endpoint for statusline
+           case 'roosync_hud_metrics': {
+               try {
+                   const m = await import('./roosync/hud-metrics.js');
+                   const metricsResult = await m.roosyncHudMetrics(
+                       args as any,
+                       {
+                           queueSize: state.qdrantIndexQueue.size,
+                           enabled: state.isQdrantIndexingEnabled
+                       }
+                   );
+                   result = { content: [{ type: 'text', text: JSON.stringify(metricsResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

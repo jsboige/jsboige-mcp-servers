@@ -367,6 +367,19 @@ export {
   IntercomMessageSchema
 } from './dashboard.js';
 
+// #1855: HUD metrics endpoint for statusline
+export {
+  roosyncHudMetrics,
+  HudMetricsArgsSchema,
+  HudMetricsResultSchema,
+  hudMetricsToolMetadata
+} from './hud-metrics.js';
+
+export type {
+  HudMetricsArgs,
+  HudMetricsResult
+} from './hud-metrics.js';
+
 // #1470: Re-export metadata from single source of truth
 export { dashboardToolMetadata } from './dashboard-schemas.js';
 

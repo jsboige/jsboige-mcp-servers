@@ -42,7 +42,7 @@ import {
     roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 33;
+const EXPECTED_TOOL_COUNT = 34;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // heartbeat sits right after getStatus (not after machines) — see source.
