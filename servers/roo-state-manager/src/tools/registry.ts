@@ -850,7 +850,12 @@ export function registerCallToolHandler(
                try {
                    const m = await import('./roosync/dashboard.js');
                    const dashboardResult = await m.roosyncDashboard(args as any);
-                   result = { content: [{ type: 'text', text: JSON.stringify(dashboardResult, null, 2) }] };
+                   // #1832: Return raw markdown when format=markdown (default) for read/read_overview
+                   if (dashboardResult.markdownContent) {
+                       result = { content: [{ type: 'text', text: dashboardResult.markdownContent }] };
+                   } else {
+                       result = { content: [{ type: 'text', text: JSON.stringify(dashboardResult, null, 2) }] };
+                   }
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

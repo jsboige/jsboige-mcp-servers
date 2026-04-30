@@ -117,6 +117,8 @@ export const DashboardArgsSchema = z.object({
     .describe('Nombre max de messages intercom retournés (défaut: tous). Le dashboard est auto-condensé, donc tous les messages sont normalement visibles.'),
   mentionsOnly: z.boolean().optional()
     .describe('(read) Ne retourner que les messages mentionnant la machine/agent courant (défaut: false)'),
+  format: z.enum(['markdown', 'json']).optional()
+    .describe('(read/read_overview) Format de retour : "markdown" (défaut, raw markdown lisible), "json" (envelope JSON structuré)'),
 
   // Pour write/append
   content: z.string().optional()
