@@ -17,12 +17,17 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  * Schema de validation pour roosync_inventory
  */
 export const InventoryArgsSchema = z.object({
-  type: z.enum(['machine', 'heartbeat', 'all'])
-    .describe('Type d\'inventaire à récupérer'),
+  type: z.enum(['machine', 'heartbeat', 'all', 'machines'])
+    .describe('Type d\'inventaire à récupérer. "machines" = offline/warning machines (fused from roosync_machines)'),
   machineId: z.string().optional()
     .describe('Identifiant optionnel de la machine (défaut: hostname)'),
   includeHeartbeats: z.boolean().optional()
-    .describe('Inclure les données de heartbeat de chaque machine (défaut: true)')
+    .describe('Inclure les données de heartbeat de chaque machine (défaut: true)'),
+  // Pour type="machines" (fused from roosync_machines)
+  status: z.enum(['offline', 'warning', 'all']).optional()
+    .describe('Filtrer par statut machines (type="machines": offline, warning, all)'),
+  includeDetails: z.boolean().optional()
+    .describe('Inclure les détails complets des machines (type="machines", défaut: false)')
 });
 
 export type InventoryArgs = z.infer<typeof InventoryArgsSchema>;
@@ -149,6 +154,50 @@ export const inventoryTool: UnifiedToolContract = {
         };
       }
 
+      // [FUSION A2 #1863] type="machines" — fused from roosync_machines
+      if (type === 'machines') {
+        const rooSyncService = await getRooSyncService();
+        const heartbeatService = rooSyncService.getHeartbeatService();
+        const machinesStatus = input.status || 'all';
+        const wantDetails = input.includeDetails || false;
+
+        if (machinesStatus === 'offline' || machinesStatus === 'all') {
+          const offlineMachines = heartbeatService.getOfflineMachines();
+          if (wantDetails) {
+            const detailed: any[] = [];
+            for (const mid of offlineMachines) {
+              const data = heartbeatService.getHeartbeatData(mid);
+              if (data && data.offlineSince) {
+                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, offlineSince: data.offlineSince, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
+              }
+            }
+            result.offlineMachines = detailed;
+            result.offlineCount = detailed.length;
+          } else {
+            result.offlineMachines = offlineMachines;
+            result.offlineCount = offlineMachines.length;
+          }
+        }
+
+        if (machinesStatus === 'warning' || machinesStatus === 'all') {
+          const warningMachines = heartbeatService.getWarningMachines();
+          if (wantDetails) {
+            const detailed: any[] = [];
+            for (const mid of warningMachines) {
+              const data = heartbeatService.getHeartbeatData(mid);
+              if (data) {
+                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
+              }
+            }
+            result.warningMachines = detailed;
+            result.warningCount = detailed.length;
+          } else {
+            result.warningMachines = warningMachines;
+            result.warningCount = warningMachines.length;
+          }
+        }
+      }
+
       return {
         success: true,
         data: result,
@@ -178,14 +227,14 @@ export const inventoryTool: UnifiedToolContract = {
  */
 export const inventoryToolMetadata = {
   name: 'roosync_inventory',
-  description: 'Récupération de l\'inventaire machine et/ou de l\'état heartbeat.',
+  description: 'Récupération de l\'inventaire machine et/ou de l\'état heartbeat. type="machines" = offline/warning machines (fused from roosync_machines).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       type: {
         type: 'string',
-        enum: ['machine', 'heartbeat', 'all'],
-        description: 'Type d\'inventaire à récupérer'
+        enum: ['machine', 'heartbeat', 'all', 'machines'],
+        description: 'Type d\'inventaire à récupérer. "machines" = offline/warning machines'
       },
       machineId: {
         type: 'string',
@@ -194,6 +243,15 @@ export const inventoryToolMetadata = {
       includeHeartbeats: {
         type: 'boolean',
         description: 'Inclure les données de heartbeat de chaque machine (défaut: true)'
+      },
+      status: {
+        type: 'string',
+        enum: ['offline', 'warning', 'all'],
+        description: 'Filtrer par statut machines (type="machines": offline, warning, all)'
+      },
+      includeDetails: {
+        type: 'boolean',
+        description: 'Inclure les détails complets des machines (type="machines", défaut: false)'
       }
     },
     required: ['type'],

@@ -354,25 +354,27 @@ export const roosyncListDiffsDefinition = {
 // roosync_decision — inlined from zodToJsonSchema(RooSyncDecisionArgsSchema)
 export const roosyncDecisionDefinition = {
     name: 'roosync_decision',
-    description: 'Gère le workflow de décision RooSync (approve/reject/apply/rollback)',
+    description: 'Gère le workflow de décision RooSync (approve/reject/apply/rollback/info). Action "info" = consultation read-only (fused from roosync_decision_info).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['approve', 'reject', 'apply', 'rollback'], description: 'Action à effectuer sur la décision' },
+            action: { type: 'string', enum: ['approve', 'reject', 'apply', 'rollback', 'info'], description: 'Action à effectuer sur la décision. "info" = consultation read-only.' },
             decisionId: { type: 'string', description: 'ID de la décision à traiter' },
             comment: { type: 'string', description: 'Commentaire optionnel (action: approve)' },
             reason: { type: 'string', description: 'Raison requise (action: reject, rollback)' },
             dryRun: { type: 'boolean', description: 'Mode simulation sans modification réelle (action: apply)' },
-            force: { type: 'boolean', description: 'Forcer application même si conflits (action: apply)' }
+            force: { type: 'boolean', description: 'Forcer application même si conflits (action: apply)' },
+            includeHistory: { type: 'boolean', description: "Inclure l'historique complet des actions (action: info, défaut: true)", default: true },
+            includeLogs: { type: 'boolean', description: "Inclure les logs d'exécution (action: info, défaut: true)", default: true }
         },
         required: ['action', 'decisionId']
     }
 };
 
-// roosync_decision_info — inlined from zodToJsonSchema(RooSyncDecisionInfoArgsSchema)
+// DEPRECATED #1863: Fused into roosync_decision(action: "info"). Kept for backward-compat redirect.
 export const roosyncDecisionInfoDefinition = {
     name: 'roosync_decision_info',
-    description: "Consulte les détails d'une décision RooSync (read-only)",
+    description: "[DEPRECATED] Use roosync_decision(action: \"info\"). Consulte les détails d'une décision RooSync (read-only)",
     inputSchema: {
         type: 'object',
         properties: {
@@ -433,22 +435,25 @@ export const roosyncConfigDefinition = {
 
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: "Récupération de l'inventaire machine et/ou de l'état heartbeat.",
+    description: "Récupération de l'inventaire machine et/ou de l'état heartbeat. type=\"machines\" = offline/warning machines (fused from roosync_machines).",
     inputSchema: {
         type: 'object',
         properties: {
-            type: { type: 'string', enum: ['machine', 'heartbeat', 'all'], description: "Type d'inventaire à récupérer" },
+            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines'], description: "Type d'inventaire à récupérer. \"machines\" = offline/warning machines" },
             machineId: { type: 'string', description: 'Identifiant optionnel de la machine (défaut: hostname)' },
-            includeHeartbeats: { type: 'boolean', description: 'Inclure les données de heartbeat de chaque machine (défaut: true)' }
+            includeHeartbeats: { type: 'boolean', description: 'Inclure les données de heartbeat de chaque machine (défaut: true)' },
+            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Filtrer par statut machines (type="machines": offline, warning, all)' },
+            includeDetails: { type: 'boolean', description: 'Inclure les détails complets des machines (type="machines", défaut: false)' }
         },
         required: ['type'],
         additionalProperties: false
     }
 };
 
+// DEPRECATED #1863: Fused into roosync_inventory(type: "machines"). Kept for backward-compat redirect.
 export const roosyncMachinesDefinition = {
     name: 'roosync_machines',
-    description: 'Récupération des machines offline et/ou en avertissement.',
+    description: '[DEPRECATED] Use roosync_inventory(type: "machines"). Récupération des machines offline et/ou en avertissement.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -612,9 +617,10 @@ export const roosyncManageDefinition = {
     }
 };
 
+// DEPRECATED #1863: Fused into roosync_manage(action: "bulk_mark_read"/"bulk_archive"). Kept for backward-compat redirect.
 export const roosyncCleanupMessagesDefinition = {
     name: 'roosync_cleanup_messages',
-    description: "Effectue des opérations de cleanup en masse sur les messages RooSync. Cas d'usage : marquer automatiquement les messages LOW comme lus, ignorer les messages de test (test-machine), nettoyer les anciens messages non lus.",
+    description: '[DEPRECATED] Use roosync_manage(action: "bulk_mark_read"/"bulk_archive"). Effectue des opérations de cleanup en masse sur les messages RooSync.',
     inputSchema: {
         type: 'object',
         properties: {
