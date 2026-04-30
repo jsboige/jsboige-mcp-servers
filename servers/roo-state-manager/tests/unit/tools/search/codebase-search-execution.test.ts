@@ -115,18 +115,18 @@ describe('codebase_search - handleCodebaseSearch - Validation', () => {
 	});
 
 	it('devrait rejeter une query vide', async () => {
-		const result = await handleCodebaseSearch({ query: '' });
+		const result = await handleCodebaseSearch({ query: '', workspace: '/test' });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain('requis');
 	});
 
 	it('devrait rejeter une query avec seulement des espaces', async () => {
-		const result = await handleCodebaseSearch({ query: '   ' });
+		const result = await handleCodebaseSearch({ query: '   ', workspace: '/test' });
 		expect(result.isError).toBe(true);
 	});
 
 	it('devrait rejeter query undefined', async () => {
-		const result = await handleCodebaseSearch({ query: undefined as any });
+		const result = await handleCodebaseSearch({ query: undefined as any, workspace: '/test' });
 		expect(result.isError).toBe(true);
 	});
 });
@@ -149,7 +149,7 @@ describe('codebase_search - handleCodebaseSearch - Collection not found', () => 
 	});
 
 	it('devrait retourner collection_not_found si aucune collection trouvée', async () => {
-		const result = await handleCodebaseSearch({ query: 'test' });
+		const result = await handleCodebaseSearch({ query: 'test', workspace: '/test' });
 		expect(result.isError).toBe(false);
 		const response = JSON.parse(result.content[0].text);
 		expect(response.status).toBe('collection_not_found');
@@ -186,7 +186,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait retourner les résultats formatés', async () => {
-		const result = await hcs({ query: 'test function' });
+		const result = await hcs({ query: 'test function', workspace: '/test' });
 		expect(result.isError).toBe(false);
 		const response = JSON.parse(result.content[0].text);
 		expect(response.status).toBe('success');
@@ -194,7 +194,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait inclure le score et la relevance', async () => {
-		const result = await hcs({ query: 'test' });
+		const result = await hcs({ query: 'test', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.results[0].score).toBe(0.95);
 		expect(response.results[0].relevance).toBe('excellent');
@@ -202,14 +202,14 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait inclure un snippet extrait', async () => {
-		const result = await hcs({ query: 'function' });
+		const result = await hcs({ query: 'function', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.results[0].snippet).toBeDefined();
 		expect(response.results[0].snippet).toContain('function');
 	});
 
 	it('devrait inclure les numéros de ligne', async () => {
-		const result = await hcs({ query: 'test' });
+		const result = await hcs({ query: 'test', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.results[0].lines).toBe('10-12');
 		expect(response.results[0].start_line).toBe(10);
@@ -217,7 +217,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait respecter le paramètre limit', async () => {
-		await hcs({ query: 'test', limit: 5 });
+		await hcs({ query: 'test', workspace: '/test', limit: 5 });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ limit: 5 })
@@ -225,7 +225,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait plafonner le limit à MAX_LIMIT', async () => {
-		await hcs({ query: 'test', limit: 100 });
+		await hcs({ query: 'test', workspace: '/test', limit: 100 });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ limit: 50 })
@@ -233,7 +233,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait utiliser le min_score fourni', async () => {
-		await hcs({ query: 'test', min_score: 0.8 });
+		await hcs({ query: 'test', workspace: '/test', min_score: 0.8 });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ score_threshold: 0.8 })
@@ -241,7 +241,7 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait utiliser le workspace par défaut si non fourni', async () => {
-		const result = await hcs({ query: 'test' });
+		const result = await hcs({ query: 'test', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.workspace).toBeDefined();
 	});
@@ -267,7 +267,7 @@ describe('codebase_search - handleCodebaseSearch - Directory filter', () => {
 	});
 
 	it('devrait construire un filtre pour directory_prefix', async () => {
-		await hcs({ query: 'test', directory_prefix: 'src/services' });
+		await hcs({ query: 'test', workspace: '/test', directory_prefix: 'src/services' });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
@@ -282,7 +282,7 @@ describe('codebase_search - handleCodebaseSearch - Directory filter', () => {
 	});
 
 	it('devrait normaliser les séparateurs', async () => {
-		await hcs({ query: 'test', directory_prefix: 'src\\services' });
+		await hcs({ query: 'test', workspace: '/test', directory_prefix: 'src\\services' });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
@@ -296,7 +296,7 @@ describe('codebase_search - handleCodebaseSearch - Directory filter', () => {
 	});
 
 	it('devrait ignorer les segments vides', async () => {
-		await hcs({ query: 'test', directory_prefix: 'src//services/' });
+		await hcs({ query: 'test', workspace: '/test', directory_prefix: 'src//services/' });
 		expect(mockQuery).toHaveBeenCalled();
 	});
 });
@@ -327,7 +327,7 @@ describe('codebase_search - handleCodebaseSearch - Results filtering', () => {
 			]
 		});
 
-		const result = await hcs({ query: 'test' });
+		const result = await hcs({ query: 'test', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.results_count).toBe(1);
 		expect(response.results[0].file_path).toBe('valid.ts');
@@ -341,7 +341,7 @@ describe('codebase_search - handleCodebaseSearch - Results filtering', () => {
 			]
 		});
 
-		const result = await hcs({ query: 'test' });
+		const result = await hcs({ query: 'test', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.results_count).toBe(1);
 		expect(response.results[0].file_path).toBe('valid.ts');
@@ -354,7 +354,7 @@ describe('codebase_search - handleCodebaseSearch - Results filtering', () => {
 			]
 		});
 
-		const result = await hcs({ query: 'test' });
+		const result = await hcs({ query: 'test', workspace: '/test' });
 		const response = JSON.parse(result.content[0].text);
 		expect(response.results[0].lines).toBeUndefined();
 	});

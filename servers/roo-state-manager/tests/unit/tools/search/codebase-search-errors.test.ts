@@ -83,7 +83,7 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 	it('retourne qdrant_connection_error quand fetch failed', async () => {
 		mockQuery.mockRejectedValue(new Error('fetch failed ECONNREFUSED 127.0.0.1:6333'));
 
-		const result = await hcs({ query: 'test connection error' });
+		const result = await hcs({ query: 'test connection error', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
@@ -96,7 +96,7 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 	it('retourne qdrant_connection_error quand ECONNREFUSED', async () => {
 		mockQuery.mockRejectedValue(new Error('connect ECONNREFUSED ::1:6333'));
 
-		const result = await hcs({ query: 'test econnrefused' });
+		const result = await hcs({ query: 'test econnrefused', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
@@ -106,7 +106,7 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 	it('retourne auth_error quand API key invalide', async () => {
 		mockEmbeddingsCreate.mockRejectedValue(new Error('Invalid API key provided'));
 
-		const result = await hcs({ query: 'test auth error' });
+		const result = await hcs({ query: 'test auth error', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
@@ -118,7 +118,7 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 	it('retourne auth_error quand Unauthorized', async () => {
 		mockEmbeddingsCreate.mockRejectedValue(new Error('Unauthorized: token expired'));
 
-		const result = await hcs({ query: 'test unauthorized' });
+		const result = await hcs({ query: 'test unauthorized', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
@@ -128,7 +128,7 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 	it('retourne error générique pour toute autre erreur', async () => {
 		mockQuery.mockRejectedValue(new Error('Unexpected server error: timeout'));
 
-		const result = await hcs({ query: 'test generic error' });
+		const result = await hcs({ query: 'test generic error', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
