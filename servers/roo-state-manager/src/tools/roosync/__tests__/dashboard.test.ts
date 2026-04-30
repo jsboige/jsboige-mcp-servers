@@ -152,6 +152,96 @@ describe('roosync_dashboard', () => {
     expect(result.data?.status?.markdown).toBe('New content');
   });
 
+  // === #1832: Format parameter tests ===
+  describe('#1832 format parameter', () => {
+    it('read returns markdownContent by default (format not specified)', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# My Status' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Hello world' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global' });
+
+      expect(result.success).toBe(true);
+      expect(result.markdownContent).toBeDefined();
+      expect(result.markdownContent).toContain('# My Status');
+      expect(result.markdownContent).toContain('Hello world');
+      expect(result.markdownContent).toContain('## Status');
+      expect(result.markdownContent).toContain('## Intercom');
+    });
+
+    it('read with format=json returns JSON envelope without markdownContent', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Status' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global', format: 'json' });
+
+      expect(result.success).toBe(true);
+      expect(result.markdownContent).toBeUndefined();
+      expect(result.data?.status?.markdown).toBe('# Status');
+      expect(result.sizes).toBeDefined();
+    });
+
+    it('read with format=markdown returns markdownContent explicitly', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Explicit MD' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global', format: 'markdown' });
+
+      expect(result.markdownContent).toBeDefined();
+      expect(result.markdownContent).toContain('# Explicit MD');
+    });
+
+    it('read with section=status returns only status in markdown', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# StatusOnly' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Should not appear' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+
+      expect(result.markdownContent).toContain('# StatusOnly');
+      expect(result.markdownContent).not.toContain('Should not appear');
+    });
+
+    it('read with section=intercom returns only intercom in markdown', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: 'Should not appear' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'IntercomMsg' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+
+      expect(result.markdownContent).toContain('IntercomMsg');
+      expect(result.markdownContent).not.toContain('Should not appear');
+    });
+
+    it('read_overview returns markdownContent by default', async () => {
+      await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Overview Test' });
+
+      const result = await roosyncDashboard({ action: 'read_overview' });
+
+      expect(result.success).toBe(true);
+      expect(result.markdownContent).toBeDefined();
+      expect(result.markdownContent).toContain('Dashboard Overview');
+    });
+
+    it('read_overview with format=json returns JSON envelope without markdownContent', async () => {
+      await roosyncDashboard({ action: 'write', type: 'workspace', content: '# JSON Overview' });
+
+      const result = await roosyncDashboard({ action: 'read_overview', format: 'json' });
+
+      expect(result.success).toBe(true);
+      expect(result.markdownContent).toBeUndefined();
+      expect(result.overview).toBeDefined();
+    });
+
+    it('read with intercomLimit applies to markdown output', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg 1' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg 2' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg 3' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global', intercomLimit: 1 });
+
+      expect(result.markdownContent).toContain('Msg 3');
+      expect(result.markdownContent).not.toContain('Msg 1');
+      expect(result.markdownContent).not.toContain('Msg 2');
+    });
+  });
+
   // === Test 9: Append ajoute messages en ordre ===
   it('appends messages in order', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
