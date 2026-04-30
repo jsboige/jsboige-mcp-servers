@@ -279,7 +279,7 @@ describe('inventoryTool', () => {
       expect(inventoryToolMetadata.name).toBe('roosync_inventory');
       expect(inventoryToolMetadata.description).toContain('inventaire');
       expect(inventoryToolMetadata.inputSchema.properties.type).toBeDefined();
-      expect(inventoryToolMetadata.inputSchema.properties.type.enum).toEqual(['machine', 'heartbeat', 'all']);
+      expect(inventoryToolMetadata.inputSchema.properties.type.enum).toEqual(['machine', 'heartbeat', 'all', 'machines']);
     });
 
     test('should require type parameter', async () => {

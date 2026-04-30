@@ -667,10 +667,12 @@ export function registerCallToolHandler(
               }
               break;
           }
+          // [FUSION A1 #1863] roosync_decision_info redirects to roosync_decision(action: "info")
           case 'roosync_decision_info': {
               try {
-                  const m = await import('./roosync/decision-info.js');
-                  const roosyncResult = await m.roosyncDecisionInfo(args as any);
+                  const m = await import('./roosync/decision.js');
+                  const redirectArgs = { ...args, action: 'info' as const };
+                  const roosyncResult = await m.roosyncDecision(redirectArgs as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
@@ -712,14 +714,16 @@ export function registerCallToolHandler(
               }
               break;
           }
+          // [FUSION A2 #1863] roosync_machines redirects to roosync_inventory(type: "machines")
           case 'roosync_machines': {
               try {
-                  const m = await import('./roosync/machines.js');
-                  const machResult = await m.roosyncMachines(args as any);
-                  if (machResult.success) {
-                      result = { content: [{ type: 'text', text: JSON.stringify(machResult.data, null, 2) }] };
+                  const m = await import('./roosync/inventory.js');
+                  const redirectArgs = { ...args, type: 'machines' as const };
+                  const invResult = await m.inventoryTool.execute(redirectArgs as any, {} as any);
+                  if (invResult.success) {
+                      result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
                   } else {
-                      result = { content: [{ type: 'text', text: `Error: ${machResult.error?.message}` }], isError: true };
+                      result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
                   }
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
@@ -755,11 +759,17 @@ export function registerCallToolHandler(
                }
                break;
            }
-          // #613 ISS-1: Cleanup en masse des messages RooSync
+          // [FUSION A3 #1863] roosync_cleanup_messages redirects to roosync_manage(bulk_*)
+          // Maps operation: 'mark_read' → action: 'bulk_mark_read', 'archive' → action: 'bulk_archive'
            case 'roosync_cleanup_messages': {
                try {
-                   const m = await import('./roosync/cleanup.js');
-                   result = await m.cleanupMessages(args as any) as CallToolResult;
+                   const m = await import('./roosync/manage.js');
+                   const cleanupArgs = args as Record<string, any>;
+                   const opMap: Record<string, string> = { mark_read: 'bulk_mark_read', archive: 'bulk_archive' };
+                   const mappedAction = opMap[cleanupArgs.operation] || cleanupArgs.operation;
+                   const { operation, verbose, ...rest } = cleanupArgs;
+                   const redirectArgs = { ...rest, action: mappedAction };
+                   result = await m.roosyncManage(redirectArgs as any) as CallToolResult;
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

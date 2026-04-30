@@ -22,6 +22,7 @@ import {
   createBackup,
   restoreBackup
 } from './utils/decision-helpers.js';
+import { roosyncDecisionInfo, RooSyncDecisionInfoResult } from './decision-info.js';
 
 /**
  * Schema de validation pour roosync_decision
@@ -33,8 +34,8 @@ import {
  * - rollback : reason REQUIS
  */
 export const RooSyncDecisionArgsSchema = z.object({
-  action: z.enum(['approve', 'reject', 'apply', 'rollback'])
-    .describe('Action à effectuer sur la décision'),
+  action: z.enum(['approve', 'reject', 'apply', 'rollback', 'info'])
+    .describe('Action à effectuer sur la décision. "info" = consultation read-only (fused from roosync_decision_info)'),
 
   decisionId: z.string()
     .describe('ID de la décision à traiter'),
@@ -52,7 +53,14 @@ export const RooSyncDecisionArgsSchema = z.object({
     .describe('Mode simulation sans modification réelle (action: apply)'),
 
   force: z.boolean().optional()
-    .describe('Forcer application même si conflits (action: apply)')
+    .describe('Forcer application même si conflits (action: apply)'),
+
+  // Pour info (fused from roosync_decision_info)
+  includeHistory: z.boolean().optional().default(true)
+    .describe('Inclure l\'historique complet des actions (action: info, défaut: true)'),
+
+  includeLogs: z.boolean().optional().default(true)
+    .describe('Inclure les logs d\'exécution (action: info, défaut: true)')
 }).superRefine((data, ctx) => {
   // Validation contextuelle : reject requiert reason
   if (data.action === 'reject' && !data.reason) {
@@ -83,7 +91,7 @@ export type RooSyncDecisionArgs = z.infer<typeof RooSyncDecisionArgsSchema>;
 export const RooSyncDecisionResultSchema = z.object({
   success: z.boolean().describe('Indique si l\'action a réussi'),
   decisionId: z.string().describe('ID de la décision'),
-  action: z.enum(['approve', 'reject', 'apply', 'rollback']).describe('Action effectuée'),
+  action: z.enum(['approve', 'reject', 'apply', 'rollback', 'info']).describe('Action effectuée'),
   previousStatus: z.string().describe('Statut précédent'),
   newStatus: z.string().describe('Nouveau statut'),
   timestamp: z.string().describe('Date de l\'action (ISO 8601)'),
@@ -167,6 +175,16 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
     }
 
     const previousStatus = decisionDetails.status;
+
+    // [FUSION A1 #1863] "info" action is read-only, skip status validation
+    if (args.action === 'info') {
+      const infoResult = await roosyncDecisionInfo({
+        decisionId: args.decisionId,
+        includeHistory: args.includeHistory,
+        includeLogs: args.includeLogs
+      });
+      return infoResult as any;
+    }
 
     // Valider la transition de statut
     if (!validateDecisionStatus(previousStatus, args.action)) {
@@ -370,6 +388,6 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
  */
 export const roosyncDecisionToolMetadata = {
   name: 'roosync_decision',
-  description: 'Gère le workflow de décision RooSync (approve/reject/apply/rollback)',
+  description: 'Gère le workflow de décision RooSync (approve/reject/apply/rollback/info). Action "info" = consultation read-only.',
   inputSchema: zodToJsonSchema(RooSyncDecisionArgsSchema as any)
 };
