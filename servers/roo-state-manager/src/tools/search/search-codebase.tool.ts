@@ -133,8 +133,8 @@ export interface CodebaseSearchArgs {
 	/** Requête de recherche sémantique */
 	query: string;
 
-	/** Chemin du workspace (défaut: process.cwd()) */
-	workspace?: string;
+	/** Chemin absolu du workspace (REQUIS — l'auto-détection pointe vers le serveur MCP) */
+	workspace: string;
 
 	/** Préfixe de répertoire pour filtrer les résultats */
 	directory_prefix?: string;
@@ -168,7 +168,7 @@ export const codebaseSearchTool: Tool = {
 			},
 			workspace: {
 				type: 'string',
-				description: 'Chemin absolu du workspace (défaut: répertoire courant)'
+				description: 'Chemin absolu du workspace (REQUIS). Toujours passer explicitement — l\'auto-détection pointe vers le serveur MCP.'
 			},
 			directory_prefix: {
 				type: 'string',
@@ -183,7 +183,7 @@ export const codebaseSearchTool: Tool = {
 				description: 'Score minimum de similarité 0-1 (défaut: 0.5)'
 			}
 		},
-		required: ['query']
+		required: ['query', 'workspace']
 	}
 };
 
@@ -240,13 +240,20 @@ function extractSnippet(codeChunk: string, query: string, maxChars: number = 500
 export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<CallToolResult> {
 	const {
 		query,
-		workspace = process.cwd(),
+		workspace,
 		directory_prefix,
 		limit = DEFAULT_LIMIT,
 		min_score = DEFAULT_MIN_SCORE
 	} = args;
 
-	// Validation
+	// Validation: workspace is required (auto-detection points to MCP server dir)
+	if (!workspace || workspace.trim().length === 0) {
+		return {
+			isError: true,
+			content: [{ type: 'text', text: 'Le paramètre "workspace" est requis. Passez le chemin absolu du workspace, ex: "C:/dev/roo-extensions" ou "/home/user/project". L\'auto-détection par défaut pointe vers le répertoire du serveur MCP, pas votre projet.' }]
+		};
+	}
+
 	if (!query || query.trim().length === 0) {
 		return {
 			isError: true,

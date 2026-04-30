@@ -46,8 +46,8 @@ describe('search-codebase.tool', () => {
 			expect(codebaseSearchTool.name).toBe('codebase_search');
 		});
 
-		test('requires query field', () => {
-			expect(codebaseSearchTool.inputSchema.required).toEqual(['query']);
+		test('requires query and workspace fields', () => {
+			expect(codebaseSearchTool.inputSchema.required).toEqual(['query', 'workspace']);
 		});
 
 		test('has workspace property', () => {
@@ -245,14 +245,20 @@ describe('search-codebase.tool', () => {
 	// ============================================================
 
 	describe('handleCodebaseSearch', () => {
+		test('returns error for missing workspace', async () => {
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '' });
+			expect((result as any).isError).toBe(true);
+			expect(result.content[0].text).toContain('workspace');
+		});
+
 		test('returns error for empty query', async () => {
-			const result = await handleCodebaseSearch({ query: '' });
+			const result = await handleCodebaseSearch({ query: '', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			expect(result.content[0].text).toContain('query');
 		});
 
 		test('returns error for whitespace-only query', async () => {
-			const result = await handleCodebaseSearch({ query: '   ' });
+			const result = await handleCodebaseSearch({ query: '   ', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 		});
 

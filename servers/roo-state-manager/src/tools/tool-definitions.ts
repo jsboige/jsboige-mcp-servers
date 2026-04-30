@@ -159,12 +159,12 @@ export const codebaseSearchDefinition = {
         type: 'object',
         properties: {
             query: { type: 'string', description: 'Requête de recherche sémantique (concept, pas texte exact). Ex: "rate limiting for embeddings", "authentication middleware"' },
-            workspace: { type: 'string', description: 'Chemin absolu du workspace (défaut: répertoire courant)' },
+            workspace: { type: 'string', description: 'Chemin absolu du workspace (REQUIS). Toujours passer explicitement.' },
             directory_prefix: { type: 'string', description: 'Préfixe de répertoire pour filtrer. Ex: "src/services", "mcps/internal"' },
             limit: { type: 'number', description: 'Nombre max de résultats (défaut: 10, max: 30)' },
             min_score: { type: 'number', description: 'Score minimum de similarité 0-1 (défaut: 0.5)' }
         },
-        required: ['query']
+        required: ['query', 'workspace']
     }
 };
 
