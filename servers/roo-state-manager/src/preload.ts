@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+const dotenv = require('dotenv');
 import path from 'path';
 import { fileURLToPath } from 'url';
 

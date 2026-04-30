@@ -12,6 +12,7 @@
  * @version 1.0.1
  */
 
+/// <reference types="node" />
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';

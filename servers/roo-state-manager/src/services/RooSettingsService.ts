@@ -11,6 +11,7 @@
  * Issue: #509, #547
  */
 
+/// <reference types="node" />
 import { promises as fs } from 'fs';
 import { existsSync, copyFileSync } from 'fs';
 import { join } from 'path';

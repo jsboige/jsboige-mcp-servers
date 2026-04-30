@@ -32,6 +32,7 @@
  * @issue #675
  */
 
+/// <reference types="node" />
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';

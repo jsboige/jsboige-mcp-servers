@@ -9,6 +9,7 @@
  * - Claude Code: *.jsonl (JSON Lines format, une conversation par fichier)
  */
 
+/// <reference types="node" />
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';

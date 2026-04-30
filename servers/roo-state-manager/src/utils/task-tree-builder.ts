@@ -3,6 +3,7 @@
  * Phase 1 : Fondations et analyse de l'arborescence de tâches
  */
 
+/// <reference types="node" />
 import {
   TaskTree,
   TreeNode,
