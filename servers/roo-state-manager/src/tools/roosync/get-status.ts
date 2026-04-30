@@ -5,7 +5,7 @@
  * Un seul appel suffit pour décider des prochaines actions.
  *
  * @module tools/roosync/get-status
- * @version 3.1.0 — #1365 Fix false positives (orphan test entries + stale sync)
+ * @version 4.0.0 — #1855 HUD statusline: detail="full" adds active claims & pipeline stages
  */
 
 import { z } from 'zod';
@@ -13,7 +13,7 @@ import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roos
 import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { join } from 'path';
-import { readdirSync, statSync } from 'fs';
+import { readdirSync, readFileSync, statSync } from 'fs';
 
 /**
  * Check if a machine ID is a real production machine (not a test artifact).
@@ -34,7 +34,9 @@ export const GetStatusArgsSchema = z.object({
   machineFilter: z.string().optional()
     .describe('ID de machine pour filtrer les résultats (optionnel)'),
   resetCache: z.boolean().optional()
-    .describe('Forcer la réinitialisation du cache du service (défaut: false)')
+    .describe('Forcer la réinitialisation du cache du service (défaut: false)'),
+  detail: z.enum(['compact', 'full']).optional()
+    .describe('Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)')
 });
 
 export type GetStatusArgs = z.infer<typeof GetStatusArgsSchema>;
@@ -69,7 +71,29 @@ export const GetStatusResultSchema = z.object({
     .describe('Flags actionnables (ex: HEARTBEAT_STALE:myia-po-2025)'),
 
   lastUpdated: z.string()
-    .describe('Timestamp ISO 8601 du snapshot')
+    .describe('Timestamp ISO 8601 du snapshot'),
+
+  // #1855 HUD statusline: extended data when detail="full"
+  hud: z.object({
+    activeClaims: z.array(z.object({
+      machineId: z.string(),
+      issue: z.string(),
+      content: z.string(),
+      timestamp: z.string()
+    })).describe('Claims actifs (<2h) parsés depuis le dashboard intercom'),
+
+    activeStages: z.array(z.object({
+      machineId: z.string(),
+      stage: z.string(),
+      content: z.string(),
+      timestamp: z.string()
+    })).describe('Stages pipeline actifs parsés depuis le dashboard intercom'),
+
+    onlineAgents: z.array(z.object({
+      machineId: z.string(),
+      status: z.string()
+    })).describe('Machines online avec statut détaillé')
+  }).optional().describe('Données étendues pour HUD statusline (uniquement si detail="full")')
 });
 
 export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
@@ -122,6 +146,58 @@ function buildFlags(
   }
 
   return flags;
+}
+
+/**
+ * #1855 HUD: Parse workspace dashboard intercom for active claims and pipeline stages.
+ * Returns messages from the last 2 hours that contain HUD-relevant tags.
+ */
+export function parseHudDataFromDashboard(
+  dashboardContent: string
+): { activeClaims: Array<{ machineId: string; issue: string; content: string; timestamp: string }>; activeStages: Array<{ machineId: string; stage: string; content: string; timestamp: string }> } {
+  const activeClaims: Array<{ machineId: string; issue: string; content: string; timestamp: string }> = [];
+  const activeStages: Array<{ machineId: string; stage: string; content: string; timestamp: string }> = [];
+  const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+
+  const stagePattern = /\[(PLAN|PRD|EXEC|VERIFY|FIX|BLOCKED)\]/g;
+  const claimPattern = /\[CLAIMED\]/;
+
+  // Extract intercom section
+  const intercomMatch = dashboardContent.match(/## Intercom\s*\n([\s\S]+)/);
+  if (!intercomMatch) return { activeClaims, activeStages };
+
+  const intercomMarkdown = intercomMatch[1];
+  if (intercomMarkdown.includes('*Aucun message.*')) return { activeClaims, activeStages };
+
+  const messageBlocks = intercomMarkdown.split(/(?=^### \[)/m).filter(b => b.trim());
+  for (const rawBlock of messageBlocks) {
+    const block = rawBlock.replace(/\n---\s*$/, '').trim();
+    const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)/);
+    if (!headerMatch) continue;
+
+    const [, timestamp, machineId, workspace] = headerMatch;
+    const ts = new Date(timestamp).getTime();
+    if (isNaN(ts) || ts < twoHoursAgo) continue;
+
+    const mid = machineId.trim();
+    const content = block.replace(/### \[[^\]]+\]\s+[^|]+\|[^|\s]+.*\n/, '').trim();
+
+    // Check for CLAIMED tag
+    if (claimPattern.test(content)) {
+      const issueMatch = content.match(/#(\d+)/);
+      const issue = issueMatch ? `#${issueMatch[1]}` : 'unknown';
+      activeClaims.push({ machineId: mid, issue, content: content.substring(0, 200), timestamp });
+    }
+
+    // Check for pipeline stage tags
+    let match;
+    stagePattern.lastIndex = 0;
+    while ((match = stagePattern.exec(content)) !== null) {
+      activeStages.push({ machineId: mid, stage: match[1], content: content.substring(0, 200), timestamp });
+    }
+  }
+
+  return { activeClaims, activeStages };
 }
 
 /**
@@ -266,7 +342,32 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       decisions: { pending: pendingDecisions },
       dashboards: { active: activeDashboards },
       flags,
-      lastUpdated: now
+      lastUpdated: now,
+      // #1855 HUD: extended data when detail="full"
+      ...(args.detail === 'full' ? await (async () => {
+        let hudData: NonNullable<GetStatusResult['hud']> | undefined;
+        try {
+          const dashboardsDir = join(getSharedStatePath(), 'dashboards');
+          const workspaceDashboard = join(dashboardsDir, 'workspace-roo-extensions.md');
+          const content = readFileSync(workspaceDashboard, 'utf-8');
+          const { activeClaims, activeStages } = parseHudDataFromDashboard(content);
+
+          const onlineAgents = filteredOnlineMachines.map(mid => ({
+            machineId: mid,
+            status: 'online'
+          }));
+          filteredWarningMachines.forEach(mid => {
+            if (!onlineAgents.some(a => a.machineId === mid)) {
+              onlineAgents.push({ machineId: mid, status: 'warning' });
+            }
+          });
+
+          hudData = { activeClaims, activeStages, onlineAgents };
+        } catch {
+          hudData = undefined;
+        }
+        return { hud: hudData };
+      })() : {})
     };
   } catch (error) {
     if (error instanceof RooSyncServiceError) {
@@ -285,7 +386,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
  */
 export const getStatusToolMetadata = {
   name: 'roosync_get_status',
-  description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés.',
+  description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés. #1855: detail="full" ajoute claims actifs et pipeline stages pour HUD statusline.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -296,6 +397,11 @@ export const getStatusToolMetadata = {
       resetCache: {
         type: 'boolean',
         description: 'Forcer la réinitialisation du cache du service (défaut: false)'
+      },
+      detail: {
+        type: 'string',
+        enum: ['compact', 'full'],
+        description: 'Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)'
       }
     },
     additionalProperties: false

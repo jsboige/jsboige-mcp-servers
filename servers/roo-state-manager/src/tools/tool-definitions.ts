@@ -310,13 +310,13 @@ export const roosyncInitDefinition = {
 
 export const roosyncGetStatusDefinition = {
     name: 'roosync_get_status',
-    description: 'Obtenir l\'état de synchronisation actuel du système RooSync (fusionné avec read-dashboard)',
+    description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés. #1855: detail="full" ajoute claims actifs et pipeline stages pour HUD statusline.',
     inputSchema: {
         type: 'object',
         properties: {
             machineFilter: { type: 'string', description: 'ID de machine pour filtrer les résultats (optionnel)' },
             resetCache: { type: 'boolean', description: 'Forcer la réinitialisation du cache du service (défaut: false)' },
-            includeDetails: { type: 'boolean', description: 'Inclure les détails complets des différences (défaut: false)' }
+            detail: { type: 'string', enum: ['compact', 'full'], description: 'Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)' }
         },
         additionalProperties: false
     }
