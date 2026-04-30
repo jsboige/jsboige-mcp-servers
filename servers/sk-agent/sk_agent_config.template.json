@@ -68,14 +68,25 @@
       "context_window": 131072
     },
     {
-      "id": "qwen3.5-35b-a3b",
+      "id": "qwen3.6-35b-a3b",
       "enabled": false,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-      "model_id": "qwen3.5-35b-a3b",
+      "model_id": "qwen3.6-35b-a3b",
       "vision": true,
       "thinking": true,
-      "description": "Qwen3.5 35B MoE AWQ — 86 tok/s, 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. GPU 0+1",
+      "description": "Qwen3.6 35B MoE AWQ — 86 tok/s, 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. GPU 0+1",
+      "context_window": 262144
+    },
+    {
+      "id": "qwen3.6-35b-no-thinking",
+      "enabled": false,
+      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+      "model_id": "qwen3.6-35b-a3b",
+      "vision": false,
+      "thinking": false,
+      "description": "Qwen3.6 35B MoE AWQ — no-thinking mode. Faster inference for coding tasks that don't need chain-of-thought. Same hardware as qwen3.6-35b-a3b.",
       "context_window": 262144
     },
 
@@ -224,7 +235,7 @@
     {
       "_comment": "=== Core utility agents ===",
       "id": "analyst",
-      "description": "General analyst with web search and memory. Local: Qwen3.5 (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1 (45.3/113 coding)",
+      "description": "General analyst with web search and memory. Local: Qwen3.6 35B MoE (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1 (45.3/113 coding)",
       "model": "glm-5.1",
       "system_prompt": "You are a helpful analyst with web search and memory capabilities. Use them when needed. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright"],
@@ -235,7 +246,7 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (OmniCoder-9B, thinking+vision, OCR 97.5%)",
+      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (Qwen3.6 35B MoE, thinking+vision, MME 1294.7)",
       "model": "glm-4.6v",
       "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough.",
       "mcps": ["searxng"],
@@ -243,16 +254,16 @@
     },
     {
       "id": "vision-local",
-      "description": "Fast local vision+thinking (OmniCoder-9B — 96-107 tok/s, OCR 97.5%, MME 1258.5). Best for OCR, spatial reasoning, detailed analysis with thinking mode",
-      "model": "omnicoder-9b",
+      "description": "Fast local vision+thinking (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis with thinking mode",
+      "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a vision analysis assistant. Analyze images carefully and describe what you see. Be concise but thorough.",
       "mcps": [],
       "memory": { "enabled": false }
     },
     {
       "id": "coder",
-      "description": "Agentic coding assistant (OmniCoder-9B — 96-107 tok/s, tool call 1.09s, thinking mode). Best for local coding tasks with tool use",
-      "model": "omnicoder-9b",
+      "description": "Agentic coding assistant (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, no-thinking mode for faster inference). Best for local coding tasks with tool use",
+      "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "You are an agentic coding assistant. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use tools when available. Think carefully about edge cases and error handling. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -294,24 +305,24 @@
     },
     {
       "id": "coder-local",
-      "description": "Local coding via OWUI OmniCoder-9B proxy — vision+thinking+tool calling through OWUI",
-      "model": "owui-omnicoder-9b",
+      "description": "Local coding via OWUI Qwen3.6 35B MoE proxy — vision+thinking+tool calling through OWUI",
+      "model": "owui-qwen3.6-35b",
       "system_prompt": "You are a local coding assistant via OWUI proxy with vision and thinking capabilities. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Leverage your vision capability for UI/code screenshot analysis. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
     },
     {
       "id": "vision-local-owui",
-      "description": "Local vision via OWUI Qwen3.5 35B proxy — highest quality local vision+thinking model",
-      "model": "owui-qwen3.5-35b",
+      "description": "Local vision via OWUI Qwen3.6 35B MoE proxy — highest quality local vision+thinking model",
+      "model": "owui-qwen3.6-35b",
       "system_prompt": "You are a vision analysis assistant with advanced reasoning capabilities. Analyze images carefully, describe what you see, and provide detailed insights. Be concise but thorough.",
       "mcps": [],
       "memory": { "enabled": false }
     },
     {
       "id": "qwen-local",
-      "description": "Direct vLLM access to Qwen3.5 35B MoE — 86 tok/s, 262K ctx, vision+thinking. Best local quality, no OWUI overhead",
-      "model": "qwen3.5-35b-a3b",
+      "description": "Direct vLLM access to Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking. Best local quality, no OWUI overhead",
+      "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a helpful assistant with advanced reasoning capabilities. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -320,7 +331,7 @@
     {
       "_comment": "=== Deep Search conversation agents (also usable standalone) ===",
       "id": "researcher",
-      "description": "Investigative researcher with web search and memory. Local: Qwen3.5 (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
+      "description": "Investigative researcher with web search and memory. Local: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
       "model": "glm-5.1",
       "system_prompt": "You are a meticulous investigative researcher. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
       "mcps": ["searxng", "playwright"],
@@ -438,8 +449,8 @@
     },
     {
       "id": "owui-vision",
-      "description": "Vision analysis expert via OWUI (enriched system prompt)",
-      "model": "owui-vision-expert",
+      "description": "Vision analysis via OWUI Qwen3.6 35B MoE proxy (vision+thinking, enriched system prompt)",
+      "model": "owui-qwen3.6-35b",
       "system_prompt": "[OWUI enriched model: vision-expert] Delegate to the OWUI custom model's built-in methodology for expert image and document analysis.",
       "mcps": [],
       "memory": { "enabled": false }
