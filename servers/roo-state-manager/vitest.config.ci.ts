@@ -1,7 +1,7 @@
 /**
  * CI-specific vitest configuration.
  *
- * Extends the base config but excludes tests that:
+ * Extends the unit config but excludes tests that:
  * - Depend on Windows-specific features (APPDATA, PowerShell)
  * - Depend on GDrive shared state paths
  * - Have outdated service mocks (SERVICE_MOCK category)
@@ -15,9 +15,9 @@
  * Last audit: 2026-03-14 (29 files excluded - removed 8 stale entries, see #699)
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
-import baseConfig from './vitest.config.js';
+import unitConfig from './vitest.config.unit.js';
 
-export default mergeConfig(baseConfig, defineConfig({
+export default mergeConfig(unitConfig, defineConfig({
   test: {
     exclude: [
       // ===== Inherited from base config =====
