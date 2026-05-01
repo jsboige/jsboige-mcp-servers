@@ -656,6 +656,27 @@ export const roosyncAttachmentsDefinition = {
 export const roosyncDashboardDefinition = dashboardToolMetadata;
 
 // ============================================================
+// roosync_claim (#1836)
+// ============================================================
+export const roosyncClaimDefinition = {
+    name: 'roosync_claim',
+    description: 'Pre-claim enforcement — prevents concurrent agent collisions. Actions: "claim" (reserve an issue — fails if already claimed), "release" (free a claim), "extend" (prolong ETA), "list" (show active claims), "check" (verify if issue is available). Claims auto-expire after eta * 1.5 minutes.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            action: { type: 'string', enum: ['claim', 'release', 'extend', 'list', 'check'], description: 'Action: "claim" (reserve issue), "release" (free claim), "extend" (prolong), "list" (active claims), "check" (verify issue status)' },
+            issue_number: { type: 'string', description: 'Issue number (e.g., "1836"). Required for claim/check. Optional for release/extend.' },
+            agent: { type: 'string', description: 'Agent identifier (machine ID). Defaults to local machine.' },
+            eta_minutes: { type: 'number', description: 'Estimated time in minutes. Required for claim action.' },
+            branch: { type: 'string', description: 'Git branch name for the claim (optional).' },
+            claim_id: { type: 'string', description: 'Claim ID. Required for release/extend (or use issue_number).' },
+            additional_minutes: { type: 'number', description: 'Additional minutes for extend action.' }
+        },
+        required: ['action']
+    }
+};
+
+// ============================================================
 // allToolDefinitions — the complete ordered list for ListTools
 // This mirrors the order in the current registerListToolsHandler.
 // ============================================================
@@ -699,5 +720,7 @@ export const allToolDefinitions = [
     roosyncManageDefinition,
     roosyncCleanupMessagesDefinition,
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    // #1836: Pre-claim enforcement
+    roosyncClaimDefinition
 ];

@@ -233,10 +233,11 @@ describe('#1863 Fusion A3: cleanup → manage redirect', () => {
 // Cross-cutting: Definition count and deprecation markers
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should still contain all 33 tools (3 deprecated but kept)', () => {
+  it('allToolDefinitions should still contain all 34 tools (3 deprecated but kept)', () => {
     // Before fusions: 33 tools in allToolDefinitions (heartbeat removed in #1609)
-    // After fusions: still 33 (deprecated tools kept for backward compat, not removed from list)
-    expect(allToolDefinitions.length).toBe(33);
+    // After fusions: still 33 + roosync_claim (#1836) = 34
+    // (deprecated tools kept for backward compat, not removed from list)
+    expect(allToolDefinitions.length).toBe(34);
   });
 
   it('deprecated definitions should have DEPRECATED in description', () => {
