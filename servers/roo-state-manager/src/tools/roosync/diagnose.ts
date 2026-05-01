@@ -8,10 +8,20 @@
  */
 
 import { z } from 'zod';
-import { RooSyncService, RooSyncServiceError, getRooSyncService } from '../../services/lazy-roosync.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+
+// Lazy imports — only loaded when needed by debug/reset actions.
+// Static import was causing hangs on action="test" when RooSyncService init blocked (#1910).
+type LazyRooSyncModule = typeof import('../../services/lazy-roosync.js');
+let _lazyModule: LazyRooSyncModule | null = null;
+async function getLazyModule(): Promise<LazyRooSyncModule> {
+  if (!_lazyModule) {
+    _lazyModule = await import('../../services/lazy-roosync.js');
+  }
+  return _lazyModule;
+}
 
 // ====================================================================
 // SCHEMAS DE VALIDATION
@@ -89,20 +99,10 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
         return await handleHealthAction(args, timestamp);
 
       default:
-        throw new RooSyncServiceError(
-          `Action non reconnue: ${action}`,
-          'UNKNOWN_ACTION'
-        );
+        throw new Error(`Action non reconnue: ${action}`);
     }
   } catch (error) {
-    if (error instanceof RooSyncServiceError) {
-      throw error;
-    }
-
-    throw new RooSyncServiceError(
-      `Erreur lors du diagnostic ${args.action}: ${(error as Error).message}`,
-      `DIAGNOSE_${args.action.toUpperCase()}_FAILED`
-    );
+    throw new Error(`Erreur lors du diagnostic ${args.action}: ${(error as Error).message}`);
   }
 }
 
@@ -185,6 +185,7 @@ async function getInstanceWithRetry(
   maxRetries = 5,
   baseDelayMs = 100
 ) {
+  const { RooSyncService } = await getLazyModule();
   let lastError: unknown;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -199,9 +200,8 @@ async function getInstanceWithRetry(
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
-  throw new RooSyncServiceError(
-    `Failed to create RooSyncService instance after ${maxRetries} retries`,
-    'INSTANCE_CREATION_FAILED'
+  throw new Error(
+    `Failed to create RooSyncService instance after ${maxRetries} retries`
   );
 }
 
@@ -213,6 +213,7 @@ async function handleDebugAction(
   args: DiagnoseArgs,
   timestamp: string
 ): Promise<DiagnoseResult> {
+  const { RooSyncService } = await getLazyModule();
   await RooSyncService.resetInstance();
 
   const service = await getInstanceWithRetry({ enabled: false });
@@ -254,6 +255,7 @@ async function handleResetAction(
     };
   }
 
+  const { RooSyncService, getRooSyncService } = await getLazyModule();
   await RooSyncService.resetInstance();
 
   if (args.clearCache) {
