@@ -58,6 +58,7 @@ import {
   MentionSchema,
   CrossPostSchema,
   DashboardArgsSchema,
+  TeamStageSchema,
   type Author,
   type IntercomMessage,
   type UserId,
@@ -65,7 +66,8 @@ import {
   type CrossPost,
   type Dashboard,
   type DashboardFrontmatter,
-  type DashboardArgs
+  type DashboardArgs,
+  type TeamStage
 } from './dashboard-schemas.js';
 
 // Re-export schemas and types for backward compatibility
@@ -76,6 +78,7 @@ export {
   MentionSchema,
   CrossPostSchema,
   DashboardArgsSchema,
+  TeamStageSchema,
   type Author,
   type IntercomMessage,
   type UserId,
@@ -83,7 +86,8 @@ export {
   type CrossPost,
   type Dashboard,
   type DashboardFrontmatter,
-  type DashboardArgs
+  type DashboardArgs,
+  type TeamStage
 };
 
 const logger: Logger = createLogger('DashboardTool');
@@ -1976,7 +1980,9 @@ async function handleAppend(
     // later sort that keys on timestamp alone.
     timestamp: new Date(nowDate.getTime() + idx).toISOString(),
     author,
-    content: partContent
+    content: partContent,
+    // #1853: Team pipeline stage tracking
+    teamStage: (args as any).teamStage
   }));
 
   // Use the FIRST part as the "primary" message for mention/crossPost wiring —

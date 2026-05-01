@@ -23,13 +23,29 @@ export const AuthorSchema = z.object({
 
 export type Author = z.infer<typeof AuthorSchema>;
 
+// === Team Pipeline Stages (#1853) ===
+// Structured stages for complex task execution (inspired by oh-my-claudecode Team mode)
+// MUST be declared before IntercomMessageSchema which references it
+
+export const TeamStageSchema = z.enum([
+  'team-plan',    // Break down task into subtasks
+  'team-prd',     // Clarify requirements and constraints
+  'team-exec',    // Execute the implementation
+  'team-verify',  // Verify the solution (build + tests)
+  'team-fix',     // Fix any issues found in verification (loops until verify passes)
+  'none'          // No team stage (simple tasks)
+]).describe('Team pipeline stage for complex task execution');
+
+export type TeamStage = z.infer<typeof TeamStageSchema>;
+
 // === Intercom Message Schema ===
 
 export const IntercomMessageSchema = z.object({
   id: z.string().describe('ID unique du message (ic-{timestamp})'),
   timestamp: z.string().describe('ISO 8601 timestamp'),
   author: AuthorSchema,
-  content: z.string().describe('Contenu markdown du message')
+  content: z.string().describe('Contenu markdown du message'),
+  teamStage: TeamStageSchema.optional().describe('Team pipeline stage (optionnel)')
 });
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
@@ -134,6 +150,10 @@ export const DashboardArgsSchema = z.object({
   tags: z.array(z.string()).optional()
     .describe('(append) Tags pour le message intercom (ex: ["INFO", "WARN", "ERROR"])'),
 
+  // Pour append — Team pipeline stage (#1853)
+  teamStage: TeamStageSchema.optional()
+    .describe('(append) Team pipeline stage actuel (ex: "team-plan", "team-exec", "team-verify"). Pour tâches complexes (>3 fichiers ou >50 LOC).'),
+
   // Mentions v3 (#1363)
   mentions: z.array(MentionSchema).optional()
     .describe('(append) Mentions structurées. Chaque entrée = userId XOR messageId. Notifie les destinataires via RooSync.'),
@@ -159,6 +179,6 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Dashboards markdown partagés cross-machine. 3 types : global, machine, workspace. Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 3 niveaux en 1 appel).',
+  description: 'Dashboards markdown partagés cross-machine. 3 types : global, machine, workspace. Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 3 niveaux en 1 appel). Supporte Team pipeline stages (#1853) : team-plan, team-prd, team-exec, team-verify, team-fix.',
   inputSchema: zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' })
 };
