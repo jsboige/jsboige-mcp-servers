@@ -18,7 +18,7 @@
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
     "noEmit": false,
-    "types": ["jest", "node", "node/globals"],
+    "types": ["jest", "node"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"]

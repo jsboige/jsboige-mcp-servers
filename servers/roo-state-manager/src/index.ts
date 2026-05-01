@@ -19,7 +19,7 @@ console.log = (...args) => console.error(...args);
 if (process.env.QDRANT_SKIP_TLS_VERIFY === 'true') {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
-const dotenv = require('dotenv');
+import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import path from 'path';
@@ -102,7 +102,7 @@ if (problems.length > 0) {
 
 // #1140: ONLY import what's needed for server creation + handler registration.
 // Everything else loads lazily on first use.
-import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
+import { createMcpServer, SERVER_CONFIG, CACHE_CONFIG } from './config/server-config.js';
 import { registerListToolsHandler, registerCallToolHandler } from './tools/registry.js';
 import { createLogger } from './utils/logger.js';
 
@@ -212,14 +212,17 @@ class RooStateManagerServer {
         const { StateManager } = await getStateManager();
         this.stateManager = new StateManager();
 
-        // #883: Log workspace detection
-        const wsPath = process.env.WORKSPACE_PATH;
-        const cwd = process.cwd();
-        logger.info(`[Workspace] WORKSPACE_PATH env: ${wsPath || '(not set)'}`);
-        logger.info(`[Workspace] process.cwd(): ${cwd}`);
-        logger.info(`[Workspace] DEFAULT_WORKSPACE resolves to: ${wsPath || cwd}`);
-        if (!wsPath) {
-            logger.warn(`[Workspace] ⚠️ WORKSPACE_PATH not set — falling back to process.cwd()`);
+        // #1861: Workspace detection — resolve actual workspace from MCP server location
+        const { ServerWorkspaceDetector } = await import('./utils/server-workspace-detector.js');
+        const detection = await ServerWorkspaceDetector.detectWorkspace();
+        if (detection.confidence !== 'low') {
+            CACHE_CONFIG.DEFAULT_WORKSPACE = detection.workspacePath;
+        }
+        logger.info(`[Workspace] WORKSPACE_PATH env: ${process.env.WORKSPACE_PATH || '(not set)'}`);
+        logger.info(`[Workspace] process.cwd(): ${process.cwd()}`);
+        logger.info(`[Workspace] Detected: ${detection.workspacePath} (${detection.confidence} confidence, via ${detection.method})`);
+        if (detection.confidence === 'low') {
+            logger.warn(`[Workspace] ⚠️ Low confidence detection — keeping WORKSPACE_PATH or cwd()`);
         }
 
         // Initialize notification system (deferred — pulls in MessageManager 3.8s)

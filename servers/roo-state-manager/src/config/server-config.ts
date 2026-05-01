@@ -25,15 +25,11 @@ export const SERVER_CONFIG: ServerConfig = {
     },
 };
 
-// Import du détecteur de workspace
-import { ServerWorkspaceDetector } from '../utils/server-workspace-detector.js';
-
 // Constantes de configuration
 export const CACHE_CONFIG = {
     MAX_CACHE_SIZE: 1000,
     CACHE_TTL_MS: 3600000, // 1 heure
-    // Utilise le détecteur de workspace fiable au lieu de process.cwd()
-    DEFAULT_WORKSPACE: () => ServerWorkspaceDetector.detectWorkspace(),
+    DEFAULT_WORKSPACE: process.env.WORKSPACE_PATH || process.cwd(),
 };
 
 export const INDEXING_CONFIG = {

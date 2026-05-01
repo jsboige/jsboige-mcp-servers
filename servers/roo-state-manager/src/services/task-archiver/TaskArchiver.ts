@@ -8,8 +8,6 @@
  * - Roo: ui_messages.json (primaire) ou api_conversation_history.json (fallback)
  * - Claude Code: *.jsonl (JSON Lines format, une conversation par fichier)
  */
-
-/// <reference types="node" />
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
