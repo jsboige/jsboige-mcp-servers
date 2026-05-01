@@ -1,31 +1,26 @@
 #!/usr/bin/env node
 /**
- * MCP Wrapper v4.0.0 - Pass-through + Déduplication anti-doublons VS Code
+ * MCP Wrapper v4.1.0 - Pass-through + Persisted tools/list cache
  *
- * CHANGEMENT v4: Plus de filtrage d'outils. Tous les outils de roo-state-manager
- * sont exposés à Claude Code (~37 outils après consolidations).
+ * v4.1 (#1894): Persisted tools/list cache to eliminate startup timeout.
+ * The wrapper intercepts tools/list requests and responds from a disk cache
+ * (<1ms) while the server starts in the background (~6s). The server's
+ * response updates the cache for next session.
  *
- * Raisons du changement:
- * - Claude Code a besoin des outils conversation_browser (consolidé #457),
- *   view_task_details, get_raw_conversation pour analyser les runs
- *   du scheduler Roo sans lire manuellement les fichiers JSON.
- * - roosync_search et export_data sont utiles pour la coordination.
- * - ~37 outils est raisonnable pour Claude (pas de threshold comme Roo à 60).
- *
- * Fonctions conservées:
- * - Déduplication cache (VS Code appelle tools/list plusieurs fois)
- * - Suppression des logs stderr bruyants
+ * Previous features retained:
+ * - Deduplication cache (VS Code calls tools/list multiple times)
+ * - Suppression of verbose stderr logs
+ * - stdin/stdout passthrough with JSON-RPC filtering
  */
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const dotenv = require('dotenv');
 
-// Charger le .env du projet AVANT de lancer le serveur
-// Cela évite de dupliquer les variables dans settings.json
+// Load .env BEFORE spawning server
 const envPath = path.join(__dirname, '.env');
-// CRITICAL: dotenv v17+ logs to stdout, which breaks MCP stdio protocol.
-// Temporarily suppress console.log during dotenv.config().
 const _origLog = console.log;
 console.log = () => {};
 const envResult = dotenv.config({ path: envPath });
@@ -34,55 +29,84 @@ if (envResult.error) {
     console.error(`[MCP-WRAPPER] ⚠️  Warning: Could not load .env from ${envPath}`);
     console.error(`[MCP-WRAPPER] Error: ${envResult.error.message}`);
 } else {
-    // FIX: Use stderr, NOT stdout — MCP stdio protocol requires only JSON-RPC on stdout
     console.error(`[MCP-WRAPPER] ✅ Loaded .env from ${envPath}`);
 }
 
-// Chemin vers le serveur MCP réel
+// Path to the real MCP server
 const serverPath = path.join(__dirname, 'build', 'index.js');
 
-// Logger pour les messages de debug (vers stderr)
+// --- Persisted tools/list cache ---
+const CACHE_FILE = path.join(os.tmpdir(), '.mcp-roo-state-tools-cache.json');
+
 function logDebug(message) {
     if (process.env.ROO_DEBUG_LOGS) {
         console.error(`[MCP-WRAPPER] ${message}`);
     }
 }
 
-// Cache pour la réponse tools/list (anti-doublons VS Code)
+function loadPersistedCache() {
+    try {
+        const data = fs.readFileSync(CACHE_FILE, 'utf-8');
+        const cache = JSON.parse(data);
+        const buildStat = fs.statSync(serverPath);
+        if (cache.buildMtime === buildStat.mtime.toISOString() && cache.toolsList) {
+            const toolCount = cache.toolsList.result?.tools?.length || 0;
+            console.error(`[MCP-WRAPPER] 📦 Loaded persisted cache (${toolCount} tools)`);
+            return cache.toolsList;
+        }
+        console.error('[MCP-WRAPPER] Cache stale (build changed), will refresh');
+        return null;
+    } catch {
+        console.error('[MCP-WRAPPER] No persisted cache, will create after server start');
+        return null;
+    }
+}
+
+function savePersistedCache(toolsListResponse) {
+    try {
+        const buildStat = fs.statSync(serverPath);
+        const cache = {
+            buildMtime: buildStat.mtime.toISOString(),
+            toolsList: toolsListResponse,
+        };
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), 'utf-8');
+        logDebug(`Persisted cache saved (${toolsListResponse.result?.tools?.length || 0} tools)`);
+    } catch (e) {
+        logDebug(`Failed to persist cache: ${e.message}`);
+    }
+}
+
+const persistedCache = loadPersistedCache();
+
+// --- State ---
+let answeredFromCache = false;
 let cachedToolsListResponse = null;
+let stdinBuffer = '';
+let stdoutBuffer = '';
 
-// Buffer pour accumuler les messages JSON incomplets
-let buffer = '';
+logDebug('Starting roo-state-manager MCP server v4.1 (pass-through + persisted cache)...');
 
-logDebug('Starting roo-state-manager MCP server v4.0 (pass-through + anti-duplicate)...');
-
-// Capture the original cwd BEFORE overriding with __dirname.
-// When launched by Claude Code or VS Code, cwd is the workspace folder.
-// The server needs this to correctly identify which workspace it serves
-// (critical for RooSync cross-workspace message routing).
+// Capture original cwd BEFORE overriding with __dirname
 const originalCwd = process.cwd();
 
-// #883: Log workspace detection for diagnostics
 console.error(`[MCP-WRAPPER] 🔍 Workspace detection:`);
 console.error(`[MCP-WRAPPER]   process.cwd() (originalCwd): ${originalCwd}`);
 console.error(`[MCP-WRAPPER]   process.env.WORKSPACE_PATH:  ${process.env.WORKSPACE_PATH || '(not set)'}`);
 console.error(`[MCP-WRAPPER]   __dirname:                   ${__dirname}`);
 console.error(`[MCP-WRAPPER]   → WORKSPACE_PATH passed to server: ${process.env.WORKSPACE_PATH || originalCwd}`);
 
-// Spawn le serveur avec stdout et stderr redirigés pour filtrage
+// Spawn server with PIPED stdin so we can intercept tools/list requests
 const server = spawn('node', [serverPath], {
     cwd: __dirname,
     env: {
         ...process.env,
-        // Pass workspace path from the original cwd (set by VS Code/Claude Code)
-        // unless already explicitly set via config
         WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
     },
-    stdio: ['inherit', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true
 });
 
-// Rediriger stderr du serveur vers notre stderr (filtre les logs trop verbeux)
+// --- stderr: filter verbose server logs ---
 server.stderr.on('data', (data) => {
     const output = data.toString();
 
@@ -117,15 +141,59 @@ server.stderr.on('data', (data) => {
     }
 });
 
-// Fonction pour cacher la réponse tools/list (anti-doublons, sans filtrage)
-function cacheToolsList(message) {
+// --- stdin: intercept client → server messages ---
+process.stdin.on('data', (data) => {
+    const input = data.toString();
+    stdinBuffer += input;
+    const lines = stdinBuffer.split('\n');
+    stdinBuffer = lines.pop() || '';
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        // Forward ALL messages to server
+        server.stdin.write(trimmed + '\n');
+
+        // Intercept tools/list for instant cache response (first call only)
+        if (!answeredFromCache && persistedCache) {
+            try {
+                const msg = JSON.parse(trimmed);
+                if (msg.method === 'tools/list') {
+                    const response = JSON.parse(JSON.stringify(persistedCache));
+                    response.id = msg.id;
+                    process.stdout.write(JSON.stringify(response) + '\n');
+                    answeredFromCache = true;
+                    console.error('[MCP-WRAPPER] ⚡ Answered tools/list from persisted cache (<1ms)');
+                }
+            } catch {}
+        }
+    }
+});
+
+process.stdin.on('end', () => {
+    server.stdin.end();
+});
+
+// --- stdout: process server → client messages ---
+// Returns string to forward, or null to suppress
+function processToolsList(message) {
     try {
         const parsed = JSON.parse(message);
 
-        // Si c'est une réponse "tools/list"
         if (parsed.result && parsed.result.tools && Array.isArray(parsed.result.tools)) {
+            // Always update persisted cache with fresh server response
+            savePersistedCache(parsed);
 
-            // Si on a déjà un cache, renvoyer le cache avec le bon ID
+            // If we already answered from cache, suppress server's duplicate
+            if (answeredFromCache) {
+                answeredFromCache = false;
+                cachedToolsListResponse = JSON.stringify(parsed);
+                logDebug('Suppressed server tools/list (already answered from cache)');
+                return null;
+            }
+
+            // Dedup: if already cached, return cached version with updated id
             if (cachedToolsListResponse) {
                 logDebug('Using cached tools/list (preventing duplicates)');
                 const cachedResponse = JSON.parse(cachedToolsListResponse);
@@ -135,11 +203,10 @@ function cacheToolsList(message) {
                 return JSON.stringify(cachedResponse);
             }
 
-            // Premier appel: vérifier unicité et cacher
+            // First real response: deduplicate tool names and cache
             const toolCount = parsed.result.tools.length;
             logDebug(`Tools/list: ${toolCount} tools`);
 
-            // Vérifier l'unicité des noms d'outils
             const toolNames = parsed.result.tools.map(t => t.name);
             const uniqueNames = new Set(toolNames);
             if (toolNames.length !== uniqueNames.size) {
@@ -153,42 +220,27 @@ function cacheToolsList(message) {
                 logDebug(`After dedup: ${parsed.result.tools.length} tools`);
             }
 
-            logDebug(`Tool names: ${parsed.result.tools.map(t => t.name).join(', ')}`);
-
-            // Mettre en cache
             cachedToolsListResponse = JSON.stringify(parsed);
-            logDebug('Tools/list response cached');
-
             return cachedToolsListResponse;
         }
 
-        // Sinon, retourner le message tel quel
         return message;
     } catch (error) {
-        // Si ce n'est pas du JSON valide, retourner tel quel
         return message;
     }
 }
 
-// Traiter stdout : cache anti-doublons + suppression logs non-JSON
 server.stdout.on('data', (data) => {
     const output = data.toString();
-
-    // Ajouter au buffer
-    buffer += output;
-
-    // Traiter chaque ligne complète
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+    stdoutBuffer += output;
+    const lines = stdoutBuffer.split('\n');
+    stdoutBuffer = lines.pop() || '';
 
     lines.forEach(line => {
         const trimmed = line.trim();
         if (!trimmed) return;
 
         if (trimmed.startsWith('{')) {
-            // Only forward genuine JSON-RPC messages. Some services (e.g. BaselineService)
-            // historically wrote JSON.stringify(logEntry) to stdout — those look like JSON
-            // but aren't JSON-RPC, and they break clients like mcp-proxy/pydantic.
             let parsed;
             try {
                 parsed = JSON.parse(trimmed);
@@ -197,21 +249,20 @@ server.stdout.on('data', (data) => {
                 return;
             }
             if (parsed && parsed.jsonrpc === '2.0') {
-                const processed = cacheToolsList(trimmed);
-                process.stdout.write(processed + '\n');
+                const processed = processToolsList(trimmed);
+                if (processed !== null) {
+                    process.stdout.write(processed + '\n');
+                }
             } else {
-                // Valid JSON but not JSON-RPC — route to stderr so it's still visible in logs.
                 process.stderr.write('[MCP-WRAPPER] dropped non-JSONRPC JSON: ' + trimmed.slice(0, 120) + '\n');
             }
         } else if (trimmed.includes('Roo State Manager Server started')) {
-            // FIX: Redirect to stderr, NOT stdout - MCP stdio protocol requires
-            // only JSON-RPC messages on stdout. Non-JSON text breaks the handshake.
             process.stderr.write('[MCP-WRAPPER] ' + line + '\n');
         }
-        // Sinon, c'est un log de debug, on le supprime silencieusement
     });
 });
 
+// --- Process lifecycle ---
 server.on('error', (error) => {
     logDebug(`Failed to start server: ${error.message}`);
     process.exit(1);
@@ -222,13 +273,10 @@ server.on('exit', (code) => {
     process.exit(code || 0);
 });
 
-// #1188: Kill child server process when parent exits (SIGTERM, SIGINT, or uncaught exception)
-// Prevents zombie/orphan processes that linger after VS Code or Claude Code closes.
 function gracefulShutdown(signal) {
     logDebug(`Received ${signal}, killing server process...`);
     try {
         server.kill('SIGTERM');
-        // Give it 3 seconds, then force kill
         setTimeout(() => {
             try { server.kill('SIGKILL'); } catch {}
             process.exit(0);
@@ -241,6 +289,5 @@ function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('exit', () => {
-    // Synchronous cleanup on any exit
     try { server.kill(); } catch {}
 });
