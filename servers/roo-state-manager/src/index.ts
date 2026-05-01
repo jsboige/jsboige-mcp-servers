@@ -100,10 +100,10 @@ if (problems.length > 0) {
     console.error(`✅ Configuration .env validée (${envPath})`);
 }
 
-// #1140: ONLY import what's needed for server creation + handler registration.
-// Everything else loads lazily on first use.
+// #1894: ONLY import what's needed for MCP server creation.
+// registry.ts (and its zod/zod-to-json-schema chain) loads dynamically in run().
+// This cuts static module evaluation from ~5s to <1s.
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
-import { registerListToolsHandler, registerCallToolHandler } from './tools/registry.js';
 import { createLogger } from './utils/logger.js';
 import { recordToolCall } from './utils/tool-call-metrics.js';
 
@@ -152,13 +152,8 @@ class RooStateManagerServer {
         // Create MCP server IMMEDIATELY — no heavy imports yet
         this.server = createMcpServer(SERVER_CONFIG);
 
-        // Register handlers with lazy dependencies
-        this.registerHandlers();
-
-        // #1110: Do NOT start initializeAsync() here.
-        // Dynamic import() blocks the event loop during module evaluation (7s on fast machines, 45s+ on slow).
-        // If started in constructor, run() can't connect transport until imports finish → MCP timeout.
-        // Instead, startBackgroundInit() is called AFTER run() connects the transport.
+        // #1894: Handlers registered dynamically in run() via registerHandlersAsync().
+        // Static import of registry.ts removed — saves ~2-4s of zod/zod-to-json-schema eval.
         this._initPromise = new Promise((resolve, reject) => {
             this._resolveInit = resolve;
             this._rejectInit = reject;
@@ -315,11 +310,16 @@ class RooStateManagerServer {
     }
 
     /**
-     * Enregistre tous les handlers du serveur.
-     * Handlers use lazy imports internally — no heavy deps at registration time.
+     * Register all tool handlers — called from run() BEFORE connect().
+     * #1894: Uses dynamic import of registry.ts to avoid loading zod/zod-to-json-schema
+     * during static module evaluation. The tool definitions themselves are still static
+     * JSON objects — the dynamic import only defers their module evaluation to just
+     * before the server starts listening.
      */
-    private registerHandlers(): void {
-        // Register ListTools handler (already has lazy getToolExports() from PR #54)
+    private async registerHandlersAsync(): Promise<void> {
+        const { registerListToolsHandler, registerCallToolHandler } = await import('./tools/registry.js');
+
+        // Register ListTools handler (static definitions — zero handler imports)
         registerListToolsHandler(this.server);
 
         // Register CallTool handler with lazy state access
@@ -471,12 +471,18 @@ class RooStateManagerServer {
     }
 
     /**
-     * Démarre le serveur — connects transport IMMEDIATELY
+     * Démarre le serveur — register handlers then connect transport ASAP
      */
     async run(): Promise<void> {
+        const t0 = Date.now();
+        // #1894: Register handlers dynamically (loads registry.ts + tool-definitions + zod chain).
+        // This takes ~100-500ms but happens BEFORE connect() so tools/list responds immediately.
+        await this.registerHandlersAsync();
+        logger.info(`[#1894] Handler registration: ${Date.now() - t0}ms`);
+
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
-        logger.info(`Roo State Manager Server started - v${packageJson.version}`);
+        logger.info(`Roo State Manager Server started - v${packageJson.version} (${Date.now() - t0}ms total)`);
 
         // #1817: Start heavy initialization AFTER MCP handshake completes.
         // server.oninitialized fires after client confirms connection.
@@ -566,8 +572,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
 
 // Démarrage du serveur — connect transport ASAP, heavy init in background
+// #1894: Track startup phases for diagnostics using process.uptime()
 (async () => {
     try {
+        const staticEvalMs = Math.round(process.uptime() * 1000);
+        logger.info(`[#1894] Static module eval + env validation: ${staticEvalMs}ms`);
         serverInstance = new RooStateManagerServer();
         serverInstance.run().catch((error) => {
             logger.error('Fatal error during server execution:', { error });
