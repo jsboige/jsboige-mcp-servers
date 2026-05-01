@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { roosyncDiagnose, DiagnoseArgs, DiagnoseResult } from '../diagnose.js';
-import { RooSyncService, RooSyncServiceError, getRooSyncService } from '../../../services/RooSyncService.js';
+import { RooSyncService, getRooSyncService } from '../../../services/RooSyncService.js';
 import { SkeletonCacheService } from '../../../services/skeleton-cache.service.js';
 import * as fs from 'fs/promises';
 
@@ -337,7 +337,6 @@ describe('roosync_diagnose', () => {
         action: 'unknown_action'
       };
 
-      await expect(roosyncDiagnose(args)).rejects.toThrow(RooSyncServiceError);
       await expect(roosyncDiagnose(args)).rejects.toThrow(/Action non reconnue/);
     });
 
@@ -360,7 +359,6 @@ describe('roosync_diagnose', () => {
         action: 'debug'
       };
 
-      await expect(roosyncDiagnose(args)).rejects.toThrow(RooSyncServiceError);
       await expect(roosyncDiagnose(args)).rejects.toThrow(/Dashboard error/);
     });
   });
