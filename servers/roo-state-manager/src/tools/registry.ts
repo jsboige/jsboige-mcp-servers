@@ -88,6 +88,11 @@ const TOOL_CAPABILITIES: Record<string, Capability[]> = {
  * Uses static tool-definitions.ts — zero handler imports, instant startup.
  */
 export function registerListToolsHandler(server: Server): void {
+    // #1861: Inject server reference for workspace auto-detection (listRoots)
+    import('../utils/workspace-resolver.js').then(({ setServerReference }) => {
+        setServerReference(server);
+    }).catch(() => {});
+
     server.setRequestHandler(ListToolsRequestSchema, async () => {
         return {
             tools: allToolDefinitions as any[],
