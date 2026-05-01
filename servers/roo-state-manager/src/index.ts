@@ -105,6 +105,7 @@ if (problems.length > 0) {
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
 import { registerListToolsHandler, registerCallToolHandler } from './tools/registry.js';
 import { createLogger } from './utils/logger.js';
+import { recordToolCall } from './utils/tool-call-metrics.js';
 
 const logger = createLogger('RooStateManagerServer');
 const require = createRequire(import.meta.url);
@@ -372,17 +373,26 @@ class RooStateManagerServer {
                 const helpers = await getServerHelpers();
 
                 let result;
-                if (this.toolInterceptor) {
-                    result = await this.toolInterceptor.interceptToolCall(
-                        request.params.name,
-                        request.params.arguments,
-                        async () => await originalCallTool(request)
-                    );
-                } else {
-                    result = await originalCallTool(request);
+                let hadError = false;
+                try {
+                    if (this.toolInterceptor) {
+                        result = await this.toolInterceptor.interceptToolCall(
+                            request.params.name,
+                            request.params.arguments,
+                            async () => await originalCallTool(request)
+                        );
+                    } else {
+                        result = await originalCallTool(request);
+                    }
+                } catch (toolError) {
+                    hadError = true;
+                    throw toolError;
                 }
 
                 const durationMs = Date.now() - startMs;
+                if (toolName) {
+                    recordToolCall(toolName, durationMs, hadError);
+                }
                 // Inject duration AFTER truncation so the footer is never cut off.
                 return helpers.injectDuration(helpers.truncateResult(result), durationMs, toolName);
             });

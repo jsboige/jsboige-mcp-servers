@@ -81,10 +81,9 @@ describe('get-status (Option B)', () => {
       expect(result.resetCache).toBe(true);
     });
 
-    test('no longer accepts includeDetails (removed in Option B)', () => {
-      // includeDetails was removed — extra properties are stripped
+    test('accepts includeDetails (re-added for tool usage telemetry)', () => {
       const result = GetStatusArgsSchema.parse({ includeDetails: true });
-      expect((result as any).includeDetails).toBeUndefined();
+      expect(result.includeDetails).toBe(true);
     });
   });
 

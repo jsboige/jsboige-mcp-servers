@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getToolUsageSnapshot, type ToolUsageSnapshot } from '../../utils/tool-call-metrics.js';
 import { join } from 'path';
 import { readdirSync, readFileSync, statSync } from 'fs';
 
@@ -36,7 +37,9 @@ export const GetStatusArgsSchema = z.object({
   resetCache: z.boolean().optional()
     .describe('Forcer la réinitialisation du cache du service (défaut: false)'),
   detail: z.enum(['compact', 'full']).optional()
-    .describe('Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)')
+    .describe('Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)'),
+  includeDetails: z.boolean().optional()
+    .describe('Inclure les statistiques détaillées (tool usage, etc.). Défaut: false')
 });
 
 export type GetStatusArgs = z.infer<typeof GetStatusArgsSchema>;
@@ -66,6 +69,28 @@ export const GetStatusResultSchema = z.object({
   dashboards: z.object({
     active: z.number()
   }).describe('Dashboards avec activité récente (<24h)'),
+
+  toolUsage: z.object({
+    sessionStartAt: z.string(),
+    totalCalls: z.number(),
+    uniqueTools: z.number(),
+    topTools: z.array(z.object({
+      name: z.string(),
+      count: z.number(),
+      avgMs: z.number(),
+      lastCallAt: z.string()
+    })),
+    bottomTools: z.array(z.object({
+      name: z.string(),
+      count: z.number(),
+      avgMs: z.number(),
+      lastCallAt: z.string()
+    })),
+    errorTools: z.array(z.object({
+      name: z.string(),
+      errorCount: z.number()
+    }))
+  }).describe('Per-tool usage stats for current session').optional(),
 
   flags: z.array(z.string())
     .describe('Flags actionnables (ex: HEARTBEAT_STALE:myia-po-2025)'),
@@ -331,7 +356,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       }
     }
 
-    return {
+    const result: any = {
       status,
       machines: {
         online: filteredOnlineMachines.length,
@@ -369,6 +394,12 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
         return { hud: hudData };
       })() : {})
     };
+
+    if (args.includeDetails) {
+      result.toolUsage = getToolUsageSnapshot();
+    }
+
+    return result;
   } catch (error) {
     if (error instanceof RooSyncServiceError) {
       throw error;
