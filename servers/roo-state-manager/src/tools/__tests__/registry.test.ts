@@ -291,28 +291,7 @@ describe('registry.ts - Tool Registration', () => {
             expect(result).toHaveProperty('content');
         });
 
-        it('should route task_browse to handler', async () => {
-            registerCallToolHandler(
-                mockServer,
-                mockState,
-                mockHandleTouchMcpSettings,
-                mockEnsureSkeletonCacheIsFresh,
-                mockSaveSkeletonToDisk
-            );
-
-            const handler = mockServer.setRequestHandler.mock.calls[0][1];
-            const request = {
-                params: {
-                    name: 'task_browse',
-                    arguments: { action: 'tree' }
-                }
-            };
-
-            const result = await handler(request);
-
-            expect(result).toBeDefined();
-            expect(result).toHaveProperty('content');
-        });
+        // [REMOVED Phase B #1863] task_browse backward-compat routing removed — use conversation_browser(action='tree')
 
         it('should route task_export to handler', async () => {
             registerCallToolHandler(
@@ -604,40 +583,7 @@ describe('registry.ts - Tool Registration', () => {
             }
         });
 
-        it('CallTool should route list_conversations for backward compat', async () => {
-            const mockServer = {
-                setRequestHandler: vi.fn()
-            } as any;
-
-            const mockState = {
-                conversationCache: new Map(),
-                qdrantIndexQueue: new Set(),
-                isQdrantIndexingEnabled: false
-            } as any;
-
-            registerCallToolHandler(
-                mockServer,
-                mockState,
-                vi.fn().mockResolvedValue({ content: [] }),
-                vi.fn().mockResolvedValue(true),
-                vi.fn().mockResolvedValue(undefined)
-            );
-
-            const handler = mockServer.setRequestHandler.mock.calls[0][1];
-            const request = {
-                params: {
-                    name: 'list_conversations',
-                    arguments: { limit: 5 }
-                }
-            };
-
-            const result = await handler(request);
-
-            expect(result).toBeDefined();
-            expect(result).toHaveProperty('content');
-            // Should return a valid JSON array (possibly empty on test machine)
-            expect(result.content[0].type).toBe('text');
-        });
+        // [REMOVED Phase B #1863] list_conversations backward-compat routing removed — use conversation_browser(action='list')
     });
 
     describe('Additional Tool Coverage - Idle Worker Extension', () => {

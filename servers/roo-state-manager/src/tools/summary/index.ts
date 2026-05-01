@@ -11,4 +11,7 @@
  */
 
 // CONS-12: Outil unifié consolidé
-export { roosyncSummarizeTool, handleRooSyncSummarize } from './roosync-summarize.tool.js';
+export {
+    handleRooSyncSummarize,
+    type RooSyncSummarizeArgs
+} from './roosync-summarize.tool.js';

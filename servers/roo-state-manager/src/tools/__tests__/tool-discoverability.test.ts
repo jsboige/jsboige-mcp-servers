@@ -176,11 +176,9 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
 
         // [REMOVED #625] build_skeleton_cache — not in alwaysAllow, handler removed
 
-        // CONS-9: task_browse replaced by conversation_browser
-        'task_browse',
+        // [REMOVED Phase B #1863] task_browse backward-compat handler removed from registry.ts
 
-        // #457: view_conversation_tree replaced by conversation_browser action=view
-        'view_conversation_tree',
+        // [REMOVED Phase B #1863] view_conversation_tree backward-compat handler removed from registry.ts
 
         // [REMOVED #625] search_tasks_by_content — not in alwaysAllow, handler removed
 
@@ -196,30 +194,19 @@ describe('Category 2: Deprecated Tools Backward Compatibility', () => {
         'diagnose_conversation_bom',
         'repair_conversation_bom',
 
-        // CONS-12→#457: roosync_summarize replaced by conversation_browser action=summarize
-        'roosync_summarize',
+        // [REMOVED Phase B #1863] roosync_summarize backward-compat handler removed from registry.ts
 
         // [REMOVED #625] 6 legacy messaging tools — not in alwaysAllow, handlers removed
         // roosync_send_message, roosync_read_inbox, roosync_get_message,
         // roosync_mark_message_read, roosync_archive_message, roosync_reply_message
 
-        // Legacy RooSync tools with individual CallTool handlers
-        'roosync_get_decision_details',
-        'roosync_approve_decision',
-        'roosync_reject_decision',
-        'roosync_apply_decision',
-        'roosync_rollback_decision',
-        'roosync_update_baseline',
-        'roosync_manage_baseline',
-        'roosync_export_baseline',
-        'roosync_collect_config',
-        'roosync_publish_config',
-        'roosync_apply_config',
+        // [REMOVED Phase B #1863] Legacy decision/baseline/config/inventory backward-compat handlers removed
+        // roosync_get_decision_details, roosync_approve/reject/apply/rollback_decision,
+        // roosync_update/manage/export_baseline, roosync_collect/publish/apply_config,
+        // roosync_get_machine_inventory
         'roosync_sync_event',
-        'roosync_get_machine_inventory',
 
-        // list_conversations replaced by conversation_browser action=list
-        'list_conversations',
+        // [REMOVED Phase B #1863] list_conversations backward-compat handler removed from registry.ts
 
         // B4 (#603): Pre-consolidation tools removed from ListTools
         // Covered by roosync_storage_management (CONS-#443 Groupe 4)
@@ -562,14 +549,10 @@ describe('Category 6: Backward Compatibility Routes', () => {
      * Instead, it should delegate to the consolidated handler.
      */
     const BACKWARD_COMPAT_ROUTES: Record<string, string> = {
-        // CONS-9: task_browse → conversation_browser
-        'task_browse': 'conversation_browser',
-        // #457: view_conversation_tree → conversation_browser(view)
-        'view_conversation_tree': 'conversation_browser',
-        // CONS-12→#457: roosync_summarize → conversation_browser(summarize)
-        'roosync_summarize': 'conversation_browser',
-        // list_conversations → conversation_browser(list)
-        'list_conversations': 'conversation_browser',
+        // [REMOVED Phase B #1863] task_browse backward-compat handler removed
+        // [REMOVED Phase B #1863] view_conversation_tree backward-compat handler removed
+        // [REMOVED Phase B #1863] roosync_summarize backward-compat handler removed
+        // [REMOVED Phase B #1863] list_conversations backward-compat handler removed
         // [REMOVED #625] search_tasks_by_content — handler removed
         // CONS-11: Indexing tools → roosync_indexing
         'index_task_semantic': 'roosync_indexing',
@@ -582,22 +565,10 @@ describe('Category 6: Backward Compatibility Routes', () => {
         // CLEANUP-3: debug → task_export
         'debug_analyze_conversation': 'task_export',
         // [REMOVED #625] 6 legacy messaging handlers removed
-        // Legacy decision tools → roosync_decision
-        'roosync_get_decision_details': 'roosync_decision_info',
-        'roosync_approve_decision': 'roosync_decision',
-        'roosync_reject_decision': 'roosync_decision',
-        'roosync_apply_decision': 'roosync_decision',
-        'roosync_rollback_decision': 'roosync_decision',
-        // Legacy baseline tools → roosync_baseline
-        'roosync_update_baseline': 'roosync_baseline',
-        'roosync_manage_baseline': 'roosync_baseline',
-        'roosync_export_baseline': 'roosync_baseline',
-        // Legacy config tools → roosync_config
-        'roosync_collect_config': 'roosync_config',
-        'roosync_publish_config': 'roosync_config',
-        'roosync_apply_config': 'roosync_config',
-        // Legacy inventory → roosync_inventory
-        'roosync_get_machine_inventory': 'roosync_inventory',
+        // [REMOVED Phase B #1863] Legacy decision/baseline/config/inventory backward-compat handlers removed
+        // roosync_get_decision_details, approve/reject/apply/rollback_decision,
+        // update/manage/export_baseline, collect/publish/apply_config,
+        // get_machine_inventory — no longer in CallTool, agents must use consolidated tools
     };
 
     it('all deprecated tools have working CallTool handlers', async () => {
