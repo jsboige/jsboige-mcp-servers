@@ -11,6 +11,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
+import { resolveWorkspace } from '../../utils/workspace-resolver.js';
 
 /**
  * Génère le nom de collection Qdrant pour un workspace (même convention que Roo)
@@ -133,7 +134,7 @@ export interface CodebaseSearchArgs {
 	/** Requête de recherche sémantique */
 	query: string;
 
-	/** Chemin absolu du workspace (REQUIS — l'auto-détection pointe vers le serveur MCP) */
+	/** Chemin absolu du workspace (optionnel — auto-detecte via MCP roots ou WORKSPACE_PATH) */
 	workspace: string;
 
 	/** Préfixe de répertoire pour filtrer les résultats */
@@ -168,7 +169,7 @@ export const codebaseSearchTool: Tool = {
 			},
 			workspace: {
 				type: 'string',
-				description: 'Chemin absolu du workspace (REQUIS). Toujours passer explicitement — l\'auto-détection pointe vers le serveur MCP.'
+				description: 'Chemin absolu du workspace. Optionnel - auto-detecte via MCP roots ou WORKSPACE_PATH. Passer explicitement si le resultat semble incorrect.'
 			},
 			directory_prefix: {
 				type: 'string',
@@ -183,7 +184,7 @@ export const codebaseSearchTool: Tool = {
 				description: 'Score minimum de similarité 0-1 (défaut: 0.5)'
 			}
 		},
-		required: ['query', 'workspace']
+		required: ['query']
 	}
 };
 
@@ -240,24 +241,30 @@ function extractSnippet(codeChunk: string, query: string, maxChars: number = 500
 export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<CallToolResult> {
 	const {
 		query,
-		workspace,
+		workspace: explicitWorkspace,
 		directory_prefix,
 		limit = DEFAULT_LIMIT,
 		min_score = DEFAULT_MIN_SCORE
 	} = args;
 
-	// Validation: workspace is required (auto-detection points to MCP server dir)
-	if (!workspace || workspace.trim().length === 0) {
-		return {
-			isError: true,
-			content: [{ type: 'text', text: 'Le paramètre "workspace" est requis. Passez le chemin absolu du workspace, ex: "C:/dev/roo-extensions" ou "/home/user/project". L\'auto-détection par défaut pointe vers le répertoire du serveur MCP, pas votre projet.' }]
-		};
-	}
-
 	if (!query || query.trim().length === 0) {
 		return {
 			isError: true,
 			content: [{ type: 'text', text: 'Le paramètre "query" est requis et ne peut pas être vide.' }]
+		};
+	}
+
+	// #1861: Auto-detect workspace when not provided
+	let workspace: string;
+	let workspaceSource: string;
+	try {
+		const resolved = await resolveWorkspace(explicitWorkspace);
+		workspace = resolved.workspace;
+		workspaceSource = resolved.source;
+	} catch {
+		return {
+			isError: true,
+			content: [{ type: 'text', text: 'Le paramètre "workspace" est requis. Passez le chemin absolu du workspace, ex: "C:/dev/roo-extensions" ou "/home/user/project". L\'auto-détection n\'a pas pu résoudre le workspace (MCP roots indisponibles, WORKSPACE_PATH non configuré).' }]
 		};
 	}
 
@@ -398,6 +405,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			status: 'success',
 			query: query,
 			workspace: workspace,
+			workspace_source: workspaceSource,
 			collection: collectionName,
 			results_count: results.length,
 			min_score_used: effectiveMinScore,
