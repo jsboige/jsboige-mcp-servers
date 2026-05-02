@@ -511,8 +511,28 @@ class RooStateManagerServer {
 }
 
 // Gestion des erreurs globales
+// #1918: Classify errors — I/O errors on shared path degrade instead of crash.
+const uncaughtIoErrors = new Set(['EIO', 'ENODEV', 'ENOTCONN', 'ENOENT']);
+
 process.on('uncaughtException', (error) => {
-    logger.error('Uncaught exception:', {
+    const isIoError = error && (error as NodeJS.ErrnoException).code &&
+        uncaughtIoErrors.has((error as NodeJS.ErrnoException).code!);
+    const involvesSharedPath = error?.message?.includes('ROOSYNC_SHARED_PATH') ||
+        error?.message?.includes('.shared-state');
+
+    if (isIoError || involvesSharedPath) {
+        // Shared-path I/O error (GDrive offline) — degrade, don't crash
+        logger.error('#1918 Shared-path I/O error (degrading, NOT crashing):', {
+            errorMessage: error?.message || String(error),
+            errorCode: (error as NodeJS.ErrnoException).code,
+            errorName: error?.constructor?.name,
+        });
+        capabilities.markDegraded('sharedPath', `GDrive offline: ${error?.message || 'I/O error'}`);
+        return;
+    }
+
+    // Fatal error — crash as before
+    logger.error('Uncaught exception (FATAL):', {
         errorMessage: error?.message || String(error),
         errorStack: error?.stack,
         errorName: error?.constructor?.name,
@@ -524,7 +544,21 @@ process.on('unhandledRejection', (reason, promise) => {
     const reasonInfo = reason instanceof Error
         ? { message: reason.message, stack: reason.stack, name: reason.constructor.name }
         : { reason: String(reason) };
-    logger.error('Unhandled rejection at:', { promise: String(promise), ...reasonInfo });
+
+    const isIoError = reason instanceof Error &&
+        (reason as NodeJS.ErrnoException).code &&
+        uncaughtIoErrors.has((reason as NodeJS.ErrnoException).code!);
+    const involvesSharedPath = reason instanceof Error &&
+        (reason.message?.includes('ROOSYNC_SHARED_PATH') ||
+         reason.message?.includes('.shared-state'));
+
+    if (isIoError || involvesSharedPath) {
+        logger.error('#1918 Shared-path I/O rejection (degrading, NOT crashing):', { ...reasonInfo });
+        capabilities.markDegraded('sharedPath', `GDrive offline: ${reason instanceof Error ? reason.message : String(reason)}`);
+        return;
+    }
+
+    logger.error('Unhandled rejection (FATAL) at:', { promise: String(promise), ...reasonInfo });
     process.exit(1);
 });
 
@@ -574,6 +608,42 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+
+// #1918: Periodic GDrive health check — when sharedPath is degraded,
+// probe every 30s and recover when GDrive comes back online.
+let _gdriveHealthInterval: ReturnType<typeof setInterval> | null = null;
+function startGDriveHealthCheck(): void {
+    if (_gdriveHealthInterval) return;
+    _gdriveHealthInterval = setInterval(() => {
+        if (capabilities.isAvailable('sharedPath')) {
+            // Not degraded — stop checking
+            clearInterval(_gdriveHealthInterval!);
+            _gdriveHealthInterval = null;
+            return;
+        }
+        // Probe: try to access shared path
+        const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+        if (sharedPath) {
+            try {
+                const { existsSync: probe } = require('fs');
+                if (probe(sharedPath)) {
+                    logger.info('#1918 GDrive recovered — sharedPath accessible again');
+                    capabilities.recover('sharedPath');
+                    clearInterval(_gdriveHealthInterval!);
+                    _gdriveHealthInterval = null;
+                }
+            } catch {
+                // Still offline — next tick will retry
+            }
+        }
+    }, 30_000);
+}
+// Start health check when sharedPath is first marked degraded
+const origMarkDegraded = capabilities.markDegraded.bind(capabilities);
+capabilities.markDegraded = (cap: any, reason: string) => {
+    origMarkDegraded(cap, reason);
+    if (cap === 'sharedPath') startGDriveHealthCheck();
+};
 
 // Démarrage du serveur — connect transport ASAP, heavy init in background
 // #1894: Track startup phases for diagnostics using process.uptime()
