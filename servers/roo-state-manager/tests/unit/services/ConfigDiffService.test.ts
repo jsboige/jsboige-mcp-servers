@@ -182,7 +182,7 @@ describe('ConfigDiffService', () => {
         { key: 'password', expected: 'critical' },
         { key: 'auth_token', expected: 'critical' },
         { key: 'credentials', expected: 'critical' },
-        { key: 'normal_key', expected: 'info' },
+        { key: 'normal_setting', expected: 'info' },
         { key: 'name', expected: 'info' }
       ];
 
