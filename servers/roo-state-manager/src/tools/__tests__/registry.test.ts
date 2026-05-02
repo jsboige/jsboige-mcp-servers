@@ -6,8 +6,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
     registerListToolsHandler,
-    registerCallToolHandler
+    registerCallToolHandler,
+    TOOL_CAPABILITIES
 } from '../registry.js';
+import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
@@ -822,6 +824,213 @@ describe('registry.ts - Tool Registration', () => {
 
             // touch_mcp_settings has no capability requirement — should work
             expect(result.isError).toBeUndefined();
+        });
+    });
+
+    describe('TOOL_CAPABILITIES Configuration', () => {
+        it('should have capability mapping for all sharedPath-dependent tools', () => {
+            const sharedPathTools = [
+                'roosync_read',
+                'roosync_send',
+                'roosync_manage',
+                'roosync_attachments',
+                'roosync_dashboard',
+                'roosync_update_dashboard',
+                'roosync_refresh_dashboard',
+                'roosync_get_status',
+                'roosync_inventory',
+                'roosync_machines',
+                'roosync_config',
+                'roosync_compare_config',
+                'roosync_list_diffs',
+                'roosync_decision',
+                'roosync_decision_info',
+                'roosync_init',
+                'roosync_diagnose',
+                'roosync_cleanup_messages',
+                'roosync_baseline',
+                'roosync_indexing',
+                'roosync_mcp_management',
+                'roosync_storage_management',
+                'conversation_browser',
+                'export_data',
+                'task_export',
+                'maintenance',
+                'storage_info'
+            ];
+
+            sharedPathTools.forEach(toolName => {
+                expect(TOOL_CAPABILITIES[toolName]).toContain('sharedPath');
+            });
+        });
+
+        it('should have capability mapping for qdrant-dependent tools', () => {
+            const qdrantTools = [
+                'roosync_search',
+                'codebase_search'
+            ];
+
+            qdrantTools.forEach(toolName => {
+                expect(TOOL_CAPABILITIES[toolName]).toContain('qdrant');
+                expect(TOOL_CAPABILITIES[toolName]).toContain('embeddings');
+            });
+        });
+
+        it('should not have capability mapping for tools with no dependencies', () => {
+            const toolsWithoutDeps = [
+                'touch_mcp_settings',
+                'storage_info',
+                'maintenance',
+                'conversation_browser',
+                'task_export',
+                'roosync_send',
+                'debug_analyze_conversation',
+                'read_vscode_logs',
+                'manage_mcp_settings',
+                'index_task_semantic',
+                'reset_qdrant_collection',
+                'rebuild_and_restart_mcp',
+                'get_mcp_best_practices',
+                'rebuild_task_index',
+                'diagnose_conversation_bom',
+                'repair_conversation_bom',
+                'export_data',
+                'export_config',
+                'analyze_roosync_problems'
+            ];
+
+            toolsWithoutDeps.forEach(toolName => {
+                // These tools should not be in TOOL_CAPABILITIES
+                expect(TOOL_CAPABILITIES[toolName]).toBeUndefined();
+            });
+        });
+    });
+
+    describe('Error Handling - GenericError for Unknown Tools', () => {
+        it('should throw GenericError with correct code for unknown tool', async () => {
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'completely_unknown_tool_12345',
+                    arguments: {}
+                }
+            };
+
+            await expect(handler(request)).rejects.toThrow('Tool not found');
+        });
+    });
+
+    describe('Tool Call Duration Logging', () => {
+        let mockServer: any;
+        let mockState: ServerState;
+        let mockHandleTouchMcpSettings: () => Promise<any>;
+
+        beforeEach(() => {
+            mockServer = {
+                setRequestHandler: vi.fn()
+            };
+
+            mockState = {
+                conversationCache: new Map<string, ConversationSkeleton>(),
+                qdrantIndexQueue: new Set<string>(),
+                isQdrantIndexingEnabled: false,
+                xmlExporterService: {},
+                exportConfigManager: {}
+            } as any;
+
+            mockHandleTouchMcpSettings = vi.fn().mockImplementation(() => {
+                return new Promise(resolve => {
+                    // Simulate a slow operation
+                    setTimeout(() => {
+                        resolve({ content: [{ type: 'text', text: 'Settings touched' }] });
+                    }, 6000); // 6 seconds to trigger slow log
+                });
+            });
+        });
+
+        it('should log slow tool calls (over 5 seconds)', async () => {
+            const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                mockHandleTouchMcpSettings,
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'touch_mcp_settings',
+                    arguments: {}
+                }
+            };
+
+            // This will take 6 seconds due to the setTimeout
+            const result = await handler(request);
+
+            expect(consoleSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Tool call SLOW: touch_mcp_settings'),
+                expect.objectContaining({
+                    tool: 'touch_mcp_settings',
+                    elapsed: expect.stringContaining('ms')
+                })
+            );
+
+            consoleSpy.mockRestore();
+        });
+    });
+
+    describe('Lazy Module Loading', () => {
+        it('should lazy load heavy modules only when needed', async () => {
+            // Import a module that uses lazy loading
+            const originalImport = vi.fn(global.import);
+            vi.spyOn(global, 'import').mockImplementation((modulePath: string) => {
+                if (modulePath.includes('roo-storage-detector')) {
+                    return Promise.resolve({
+                        RooStorageDetector: {
+                            detectStorageLocations: vi.fn().mockResolvedValue(['/tmp/test']),
+                            analyzeConversation: vi.fn().mockResolvedValue(null)
+                        }
+                    });
+                }
+                return originalImport(modulePath);
+            });
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            const request = {
+                params: {
+                    name: 'conversation_browser',
+                    arguments: { action: 'view', task_id: 'test-id' }
+                }
+            };
+
+            // This should trigger lazy loading
+            const result = await handler(request);
+
+            // The import should have been called for roo-storage-detector
+            expect(vi.spyOn(global, 'import')).toHaveBeenCalledWith(
+                expect.stringContaining('roo-storage-detector')
+            );
+
+            vi.restoreAllMocks();
         });
     });
 });
