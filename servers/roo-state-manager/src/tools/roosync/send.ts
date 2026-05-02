@@ -460,83 +460,83 @@ Le **contenu original** est préservé dans \`metadata.original_content\` pour t
  */
 export const sendToolMetadata = {
   name: 'roosync_send',
-  description: 'Envoyer un message structuré, répondre à un message existant, ou amender un message envoyé via RooSync',
+  description: 'Send, reply to, or amend a RooSync inter-machine message',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
         enum: ['send', 'reply', 'amend'],
-        description: 'Action à effectuer : send (nouveau message), reply (répondre), amend (modifier)'
+        description: 'Action: send, reply, or amend'
       },
       to: {
         type: 'string',
-        description: 'Destinataire : machine (ex: myia-ai-01) ou machine:workspace (ex: myia-ai-01:roo-extensions). Requis pour action=send'
+        description: 'Recipient: machine or machine:workspace. Required for send.'
       },
       subject: {
         type: 'string',
-        description: 'Sujet du message. Requis pour action=send'
+        description: 'Message subject. Required for send.'
       },
       body: {
         type: 'string',
-        description: 'Corps du message (markdown supporté). Requis pour action=send et reply'
+        description: 'Message body (markdown). Required for send/reply.'
       },
       priority: {
         type: 'string',
         enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
-        description: 'Priorité du message (défaut: MEDIUM)'
+        description: 'Priority (default: MEDIUM)'
       },
       tags: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Tags optionnels pour catégoriser le message'
+        description: 'Optional tags'
       },
       thread_id: {
         type: 'string',
-        description: 'ID du thread pour regrouper les messages'
+        description: 'Thread ID for grouping'
       },
       reply_to: {
         type: 'string',
-        description: 'ID du message auquel on répond (pour action=send)'
+        description: 'Message ID being replied to (for send)'
       },
       message_id: {
         type: 'string',
-        description: 'ID du message (requis pour action=reply et amend)'
+        description: 'Message ID (required for reply/amend)'
       },
       new_content: {
         type: 'string',
-        description: 'Nouveau contenu du message (requis pour action=amend)'
+        description: 'New content (required for amend)'
       },
       reason: {
         type: 'string',
-        description: 'Raison de l\'amendement (optionnel, pour action=amend)'
+        description: 'Amend reason (optional)'
       },
       auto_destruct: {
         type: 'boolean',
-        description: 'Activer l\'auto-destruction du message après lecture (#629). Défaut: false'
+        description: 'Auto-destruct after read (default: false)'
       },
       destruct_after_read_by: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Liste des machines qui doivent lire avant destruction (optionnel). Si vide, détruit après lecture par le destinataire'
+        description: 'Machines that must read before destruction.'
       },
       destruct_after: {
         type: 'string',
-        description: 'Durée TTL avant destruction (ex: "30m", "2h", "1d"). Le message est détruit après ce délai même sans lecture'
+        description: 'TTL before destruction (e.g., "30m", "2h", "1d").'
       },
       attachments: {
         type: 'array',
-        description: 'Pièces jointes à envoyer avec le message (#674)',
+        description: 'File attachments',
         items: {
           type: 'object',
           properties: {
             path: {
               type: 'string',
-              description: 'Chemin local du fichier à attacher'
+              description: 'Local file path'
             },
             filename: {
               type: 'string',
-              description: 'Nom du fichier (optionnel, défaut: basename du path)'
+              description: 'Filename (default: basename)'
             }
           },
           required: ['path']

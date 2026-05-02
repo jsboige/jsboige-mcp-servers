@@ -56,17 +56,8 @@ export type {
   RooSyncDecisionResult
 } from './decision.js';
 
-export {
-  roosyncDecisionInfo,
-  RooSyncDecisionInfoArgsSchema,
-  RooSyncDecisionInfoResultSchema,
-  roosyncDecisionInfoToolMetadata
-} from './decision-info.js';
-
-export type {
-  RooSyncDecisionInfoArgs,
-  RooSyncDecisionInfoResult
-} from './decision-info.js';
+// [REMOVED #1863] Deprecated roosync_decision_info exports — fused into roosync_decision(action: "info")
+// Source file decision-info.ts retained for: decision.ts imports + registry.ts redirect + tests
 
 export {
   roosyncInit,
@@ -143,9 +134,8 @@ export { roosyncRead, readToolMetadata } from './read.js';
 export { roosyncSend, sendToolMetadata } from './send.js';
 export { roosyncManage, manageToolMetadata } from './manage.js';
 
-// #613 ISS-1: Outil de cleanup en masse des messages RooSync
-export { cleanupMessages, cleanupToolMetadata } from './cleanup.js';
-export type { CleanupMessagesArgs } from './cleanup.js';
+// [REMOVED #1863] Deprecated cleanup_messages exports — fused into roosync_manage(action: "bulk_*")
+// Source file cleanup.ts retained for: registry.ts redirect + tests
 
 // #674: Outils de gestion des pièces jointes (legacy — backward compat)
 export {
@@ -170,8 +160,8 @@ export {
 
 // CONS-6: Outils consolidés Inventory (4→2)
 export { inventoryTool, inventoryToolMetadata } from './inventory.js';
-export { roosyncMachines, machinesToolMetadata } from './machines.js';
-// [DEPRECATED] Legacy inventory tool - utiliser inventoryTool à la place
+// [REMOVED #1863] Deprecated roosync_machines exports — fused into roosync_inventory(type: "machines")
+// Source file machines.ts retained for: registry.ts redirect + tests
 
 // #519: Legacy heartbeat tools retirés (7 outils) - utiliser roosync_heartbeat consolidé
 // Modules conservés pour les tests unitaires existants mais non exportés publiquement
@@ -212,14 +202,14 @@ import { compareConfigToolMetadata } from './compare-config.js';
 import { listDiffsToolMetadata } from './list-diffs.js';
 // CONS-5: Legacy decision imports replaced by consolidated
 import { roosyncDecisionToolMetadata } from './decision.js';
-import { roosyncDecisionInfoToolMetadata } from './decision-info.js';
+// [REMOVED #1863] roosyncDecisionInfoToolMetadata import — not used in any array
 import { initToolMetadata } from './roosync_init.js';
 import { baselineToolMetadata } from './baseline.js';
 import { diagnoseToolMetadata } from './diagnose.js';
 import { configToolMetadata } from './config.js'; // CONS-3
 // Import des métadonnées des outils consolidés Inventory (CONS-6)
 import { inventoryToolMetadata } from './inventory.js';
-import { machinesToolMetadata } from './machines.js';
+// [REMOVED #1863] machinesToolMetadata import — not used in any array
 
 // CLEANUP-1: Imports deprecated heartbeat retirés (register, get-offline, get-warning, get-state, start, stop, check)
 // Les modules existent toujours pour backward compat dans registry.ts CallTool handlers
@@ -246,8 +236,7 @@ import { sendToolMetadata } from './send.js';
 import { readToolMetadata } from './read.js';
 import { manageToolMetadata } from './manage.js';
 
-// #613 ISS-1: Import des métadonnées de l'outil cleanup
-import { cleanupToolMetadata } from './cleanup.js';
+// [REMOVED #1863] cleanupToolMetadata import — not used in any array
 
 // #674: Import des métadonnées des outils d'attachments (legacy)
 import {
@@ -303,11 +292,8 @@ export type {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
+ * Version 3.18 : 19 outils (#1863: 3 deprecated definitions removed from tools/list — decision_info, machines, cleanup_messages)
  * Version 3.17 : 22 outils (CONS-7: 3 outils attachments → 1 roosync_attachments)
- * Version 3.16 : 24 outils (#675: roosync_dashboard ajouté + #674: 3 attachments)
- * Version 3.15 : 20 outils (#613 ISS-1: roosync_cleanup_messages ajouté)
- * Version 3.14 : 19 outils (#546: roosync_update_dashboard ajouté)
- * Version 3.13 : 18 outils (#533: roosync_sync_event retiré - jamais utilisé en production)
  *
  * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
  * - Services: inventory (CONS-6), machines (CONS-6)

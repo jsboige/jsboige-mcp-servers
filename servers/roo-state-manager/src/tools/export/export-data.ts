@@ -81,93 +81,81 @@ export interface ExportDataArgs {
  */
 export const exportDataTool: Tool = {
     name: 'export_data',
-    description: `Outil consolidé pour exporter des données au format XML, JSON ou CSV.
-
-Cibles supportées:
-- task: Export d'une tâche individuelle (XML uniquement)
-- conversation: Export d'une conversation complète (tous formats)
-- project: Export d'un projet entier (XML uniquement)
-
-Formats supportés:
-- xml: Format XML structuré
-- json: Format JSON avec variantes light/full
-- csv: Format CSV avec variantes conversations/messages/tools
-
-CONS-10: Remplace export_tasks_xml, export_conversation_xml, export_project_xml, export_conversation_json, export_conversation_csv`,
+    description: 'Export data as XML, JSON or CSV. Targets: task (XML), conversation (all formats), project (XML). JSON variants: light/full. CSV variants: conversations/messages/tools.',
     inputSchema: {
         type: 'object',
         properties: {
             target: {
                 type: 'string',
                 enum: ['task', 'conversation', 'project'],
-                description: 'Cible de l\'export: task, conversation, ou project'
+                description: 'Export target: task, conversation, or project'
             },
             format: {
                 type: 'string',
                 enum: ['xml', 'json', 'csv'],
-                description: 'Format de sortie: xml, json, ou csv'
+                description: 'Output format: xml, json, or csv'
             },
             taskId: {
                 type: 'string',
-                description: 'ID de la tâche (requis pour target=task, ou conversation avec json/csv)'
+                description: 'Task ID (required for target=task, or conversation with json/csv)'
             },
             conversationId: {
                 type: 'string',
-                description: 'ID de la conversation racine (requis pour target=conversation avec xml)'
+                description: 'Root conversation ID (required for target=conversation with xml)'
             },
             projectPath: {
                 type: 'string',
-                description: 'Chemin du projet (requis pour target=project)'
+                description: 'Project path (required for target=project)'
             },
             filePath: {
                 type: 'string',
-                description: 'Chemin de sortie pour le fichier. Si non fourni, retourne le contenu.'
+                description: 'Output file path. If omitted, returns content inline.'
             },
             // Options XML
             includeContent: {
                 type: 'boolean',
-                description: 'Inclure le contenu complet des messages (XML, défaut: false)'
+                description: 'Include full message content (XML, default: false)'
             },
             prettyPrint: {
                 type: 'boolean',
-                description: 'Indenter pour lisibilité (XML, défaut: true)'
+                description: 'Indent for readability (XML, default: true)'
             },
             maxDepth: {
                 type: 'integer',
-                description: 'Profondeur max de l\'arbre de tâches (XML conversation)'
+                description: 'Max tree depth (XML conversation)'
             },
             startDate: {
                 type: 'string',
-                description: 'Date de début ISO 8601 pour filtrer (XML project)'
+                description: 'ISO 8601 start date filter (XML project)'
             },
             endDate: {
                 type: 'string',
-                description: 'Date de fin ISO 8601 pour filtrer (XML project)'
+                description: 'ISO 8601 end date filter (XML project)'
             },
             // Options JSON
             jsonVariant: {
                 type: 'string',
                 enum: ['light', 'full'],
-                description: 'Variante JSON: light (squelette) ou full (détail complet)'
+                description: 'JSON variant: light (skeleton) or full (complete)'
             },
             // Options CSV
             csvVariant: {
                 type: 'string',
                 enum: ['conversations', 'messages', 'tools'],
-                description: 'Variante CSV: conversations, messages, ou tools'
+                description: 'CSV variant: conversations, messages, or tools'
             },
             // Options communes
             truncationChars: {
                 type: 'number',
-                description: 'Max caractères avant troncature (0 = pas de troncature)'
+                description: 'Max chars before truncation (0 = no truncation)'
             },
             startIndex: {
                 type: 'number',
-                description: 'Index de début (1-based) pour plage de messages'
+                description: 'Start index (1-based) for message range'
             },
             endIndex: {
                 type: 'number',
-                description: 'Index de fin (1-based) pour plage de messages'
+                description: 'End index (1-based) for message range'
             }
         },
         required: ['target', 'format']

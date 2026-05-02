@@ -102,24 +102,24 @@ export const taskExportDefinition = {
 // ============================================================
 export const roosyncSearchDefinition = {
     name: 'roosync_search',
-    description: "Outil unifié de recherche dans les tâches Roo (sémantique, textuelle, diagnostic de l'index)",
+    description: 'Search Roo tasks (semantic vector search, text search, or index diagnostic)',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['semantic', 'text', 'diagnose'], description: "Action: 'semantic' (recherche vectorielle Qdrant avec fallback automatique), 'text' (recherche textuelle directe dans le cache), 'diagnose' (diagnostic de l'index sémantique)" },
-            search_query: { type: 'string', description: 'La requête de recherche (requis pour semantic et text)' },
-            conversation_id: { type: 'string', description: 'ID de la conversation à fouiller (filtre optionnel pour semantic)' },
-            max_results: { type: 'number', description: 'Nombre maximum de résultats à retourner' },
-            workspace: { type: 'string', description: 'Filtre par nom de workspace (ex: "roo-extensions"). Auto-défaut: workspace courant du MCP. Pour une recherche globale cross-workspace, passer workspace: "*" ou workspace: "all".' },
-            source: { type: 'string', enum: ['roo', 'claude-code'], description: '#604: Filtre par source de conversation (tâches Roo ou sessions Claude Code)' },
-            chunk_type: { type: 'string', enum: ['message_exchange', 'tool_interaction'], description: '#636: Filter by chunk type (messages vs tool calls)' },
-            role: { type: 'string', enum: ['user', 'assistant'], description: '#636: Filter by message role' },
-            tool_name: { type: 'string', description: '#636: Filter by tool name (e.g., "write_to_file", "roosync_send")' },
-            has_errors: { type: 'boolean', description: '#636: Filter chunks that contain error patterns' },
-            model: { type: 'string', description: '#636: Filter by LLM model (e.g., "opus", "sonnet", "glm-5")' },
-            start_date: { type: 'string', description: '#636 P2: Filter results after this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-01")' },
-            end_date: { type: 'string', description: '#636 P2: Filter results before this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-11")' },
-            exclude_tool_results: { type: 'boolean', description: '#636 P3: Exclude tool_interaction chunks, returning only message_exchange chunks (conversation messages)' }
+            action: { type: 'string', enum: ['semantic', 'text', 'diagnose'], description: 'Action: semantic (Qdrant vector search), text (cache search), diagnose (index health)' },
+            search_query: { type: 'string', description: 'Search query (required for semantic/text)' },
+            conversation_id: { type: 'string', description: 'Conversation ID filter (optional)' },
+            max_results: { type: 'number', description: 'Max results to return' },
+            workspace: { type: 'string', description: 'Workspace filter. Default: MCP workspace. "*" or "all" = global.' },
+            source: { type: 'string', enum: ['roo', 'claude-code'], description: 'Filter by source (Roo or Claude Code)' },
+            chunk_type: { type: 'string', enum: ['message_exchange', 'tool_interaction'], description: 'Filter by chunk type (messages vs tool calls)' },
+            role: { type: 'string', enum: ['user', 'assistant'], description: 'Filter by message role' },
+            tool_name: { type: 'string', description: 'Filter by tool name' },
+            has_errors: { type: 'boolean', description: 'Filter chunks with error patterns' },
+            model: { type: 'string', description: 'Filter by LLM model' },
+            start_date: { type: 'string', description: 'Filter after date (ISO 8601)' },
+            end_date: { type: 'string', description: 'Filter before date (ISO 8601)' },
+            exclude_tool_results: { type: 'boolean', description: 'Exclude tool_interaction chunks' }
         },
         required: ['action']
     }
@@ -130,20 +130,20 @@ export const roosyncSearchDefinition = {
 // ============================================================
 export const roosyncIndexingDefinition = {
     name: 'roosync_indexing',
-    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, archive Roo/Claude Code)",
+    description: 'Manage semantic index and archiving (index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans)',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status'], description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques)" },
-            task_id: { type: 'string', description: 'ID de la tâche à indexer (requis pour action=index)' },
-            confirm: { type: 'boolean', description: 'Confirmation obligatoire pour action=reset', default: false },
-            workspace_filter: { type: 'string', description: 'Filtre optionnel par workspace (pour action=rebuild)' },
-            max_tasks: { type: 'number', description: 'Nombre maximum de tâches à traiter (pour action=rebuild, 0 = toutes)', default: 0 },
-            dry_run: { type: 'boolean', description: 'Mode simulation sans modification (pour action=rebuild)', default: false },
-            machine_id: { type: 'string', description: 'Filtre par machine (pour action=archive, liste les archives de cette machine uniquement)' },
-            claude_code_sessions: { type: 'boolean', description: 'Archiver les sessions Claude Code (pour action=archive)', default: false },
-            max_sessions: { type: 'number', description: 'Nombre max de sessions Claude Code à archiver (pour action=archive avec claude_code_sessions=true, 0 = toutes)', default: 0 },
-            source: { type: 'string', enum: ['roo', 'claude-code'], description: "#604: Source de la conversation (pour action=index). 'roo' = tâche Roo standard, 'claude-code' = session Claude Code JSONL. Par défaut: 'roo'" }
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans'], description: 'Action to perform' },
+            task_id: { type: 'string', description: 'Task ID (required for index)' },
+            confirm: { type: 'boolean', description: 'Confirmation for reset', default: false },
+            workspace_filter: { type: 'string', description: 'Workspace filter (rebuild)' },
+            max_tasks: { type: 'number', description: 'Max tasks (rebuild, 0=all)', default: 0 },
+            dry_run: { type: 'boolean', description: 'Simulation mode', default: false },
+            machine_id: { type: 'string', description: 'Machine filter (archive)' },
+            claude_code_sessions: { type: 'boolean', description: 'BLOCKED - sessions are sanctuary.', default: false },
+            max_sessions: { type: 'number', description: 'Max sessions (0=all)', default: 0 },
+            source: { type: 'string', enum: ['roo', 'claude-code'], description: 'Source for index. Default: "roo".' }
         },
         required: ['action']
     }
@@ -203,26 +203,26 @@ export const getMcpBestPracticesDefinition = {
 // ============================================================
 export const exportDataDefinition = {
     name: 'export_data',
-    description: `Outil consolidé pour exporter des données au format XML, JSON ou CSV.\n\nCibles supportées:\n- task: Export d'une tâche individuelle (XML uniquement)\n- conversation: Export d'une conversation complète (tous formats)\n- project: Export d'un projet entier (XML uniquement)\n\nFormats supportés:\n- xml: Format XML structuré\n- json: Format JSON avec variantes light/full\n- csv: Format CSV avec variantes conversations/messages/tools\n\nCONS-10: Remplace export_tasks_xml, export_conversation_xml, export_project_xml, export_conversation_json, export_conversation_csv`,
+    description: 'Export data as XML, JSON or CSV. Targets: task (XML), conversation (all formats), project (XML). JSON variants: light/full. CSV variants: conversations/messages/tools.',
     inputSchema: {
         type: 'object',
         properties: {
-            target: { type: 'string', enum: ['task', 'conversation', 'project'], description: "Cible de l'export: task, conversation, ou project" },
-            format: { type: 'string', enum: ['xml', 'json', 'csv'], description: 'Format de sortie: xml, json, ou csv' },
-            taskId: { type: 'string', description: 'ID de la tâche (requis pour target=task, ou conversation avec json/csv)' },
-            conversationId: { type: 'string', description: 'ID de la conversation racine (requis pour target=conversation avec xml)' },
-            projectPath: { type: 'string', description: 'Chemin du projet (requis pour target=project)' },
-            filePath: { type: 'string', description: 'Chemin de sortie pour le fichier. Si non fourni, retourne le contenu.' },
-            includeContent: { type: 'boolean', description: 'Inclure le contenu complet des messages (XML, défaut: false)' },
-            prettyPrint: { type: 'boolean', description: 'Indenter pour lisibilité (XML, défaut: true)' },
-            maxDepth: { type: 'integer', description: "Profondeur max de l'arbre de tâches (XML conversation)" },
-            startDate: { type: 'string', description: 'Date de début ISO 8601 pour filtrer (XML project)' },
-            endDate: { type: 'string', description: 'Date de fin ISO 8601 pour filtrer (XML project)' },
-            jsonVariant: { type: 'string', enum: ['light', 'full'], description: 'Variante JSON: light (squelette) ou full (détail complet)' },
-            csvVariant: { type: 'string', enum: ['conversations', 'messages', 'tools'], description: 'Variante CSV: conversations, messages, ou tools' },
-            truncationChars: { type: 'number', description: 'Max caractères avant troncature (0 = pas de troncature)' },
-            startIndex: { type: 'number', description: 'Index de début (1-based) pour plage de messages' },
-            endIndex: { type: 'number', description: 'Index de fin (1-based) pour plage de messages' }
+            target: { type: 'string', enum: ['task', 'conversation', 'project'], description: 'Export target: task, conversation, or project' },
+            format: { type: 'string', enum: ['xml', 'json', 'csv'], description: 'Output format: xml, json, or csv' },
+            taskId: { type: 'string', description: 'Task ID (required for target=task, or conversation with json/csv)' },
+            conversationId: { type: 'string', description: 'Root conversation ID (required for target=conversation with xml)' },
+            projectPath: { type: 'string', description: 'Project path (required for target=project)' },
+            filePath: { type: 'string', description: 'Output file path. If omitted, returns content inline.' },
+            includeContent: { type: 'boolean', description: 'Include full message content (XML, default: false)' },
+            prettyPrint: { type: 'boolean', description: 'Indent for readability (XML, default: true)' },
+            maxDepth: { type: 'integer', description: 'Max tree depth (XML conversation)' },
+            startDate: { type: 'string', description: 'ISO 8601 start date filter (XML project)' },
+            endDate: { type: 'string', description: 'ISO 8601 end date filter (XML project)' },
+            jsonVariant: { type: 'string', enum: ['light', 'full'], description: 'JSON variant: light (skeleton) or full (complete)' },
+            csvVariant: { type: 'string', enum: ['conversations', 'messages', 'tools'], description: 'CSV variant: conversations, messages, or tools' },
+            truncationChars: { type: 'number', description: 'Max chars before truncation (0 = no truncation)' },
+            startIndex: { type: 'number', description: 'Start index (1-based) for message range' },
+            endIndex: { type: 'number', description: 'End index (1-based) for message range' }
         },
         required: ['target', 'format']
     }
@@ -292,7 +292,7 @@ export const analyzeRooSyncProblemsDefinition = {
 };
 
 // ============================================================
-// RooSync tools — static metadata objects (22 tools in roosyncTools array)
+// RooSync tools — static metadata objects (22 tools → 19 after removing 3 deprecated definitions #1863)
 // ============================================================
 
 export const roosyncInitDefinition = {
@@ -371,20 +371,8 @@ export const roosyncDecisionDefinition = {
     }
 };
 
-// DEPRECATED #1863: Fused into roosync_decision(action: "info"). Kept for backward-compat redirect.
-export const roosyncDecisionInfoDefinition = {
-    name: 'roosync_decision_info',
-    description: "[DEPRECATED] Use roosync_decision(action: \"info\"). Consulte les détails d'une décision RooSync (read-only)",
-    inputSchema: {
-        type: 'object',
-        properties: {
-            decisionId: { type: 'string', description: 'ID de la décision à consulter' },
-            includeHistory: { type: 'boolean', description: "Inclure l'historique complet des actions (défaut: true)", default: true },
-            includeLogs: { type: 'boolean', description: "Inclure les logs d'exécution (défaut: true)", default: true }
-        },
-        required: ['decisionId']
-    }
-};
+// [REMOVED #1863] roosyncDecisionInfoDefinition — fused into roosync_decision(action: "info")
+// CallTool redirect in registry.ts preserved for backward compat.
 
 export const roosyncBaselineDefinition = {
     name: 'roosync_baseline',
@@ -412,21 +400,21 @@ export const roosyncBaselineDefinition = {
 
 export const roosyncConfigDefinition = {
     name: 'roosync_config',
-    description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>. Stocke par machineId.',
+    description: 'RooSync config management. Actions: collect (local), publish (to GDrive), apply (from GDrive), apply_profile (model profile). Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['collect', 'publish', 'apply', 'apply_profile'], description: 'Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle)' },
-            machineId: { type: 'string', description: 'ID de la machine (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)' },
-            dryRun: { type: 'boolean', description: "Si true, simule l'opération sans modifier les fichiers. Défaut: false" },
-            scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'Scope Claude Code pour les configs MCP: user (~/.claude.json global), project (.mcp.json projet), settings (~/.claude/settings.json env/hooks). Défaut: user.' },
-            targets: { type: 'array', items: { type: 'string' }, description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]' },
-            packagePath: { type: 'string', description: "Chemin du package créé par collect. Pour action=publish uniquement. Si omis avec targets fourni, fait collect+publish atomique" },
-            version: { type: 'string', description: 'Version de la configuration (ex: "2.3.0"). Requis pour action=publish. Pour action=apply, défaut: "latest"' },
-            description: { type: 'string', description: 'Description des changements. Requis pour action=publish' },
-            backup: { type: 'boolean', description: 'Créer un backup local avant application (défaut: true). Pour action=apply et apply_profile' },
-            profileName: { type: 'string', description: 'Nom du profil à appliquer (requis pour action=apply_profile). Ex: "Production (Qwen 3.5 local + GLM-5 cloud)"' },
-            sourceMachineId: { type: 'string', description: 'ID de la machine source pour charger model-configs.json depuis sa config publiée (optionnel, défaut: fichier local)' }
+            action: { type: 'string', enum: ['collect', 'publish', 'apply', 'apply_profile'], description: 'Action: collect, publish, apply, or apply_profile' },
+            machineId: { type: 'string', description: 'Machine ID (default: ROOSYNC_MACHINE_ID)' },
+            dryRun: { type: 'boolean', description: 'Simulate without modifying files (default: false)' },
+            scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'Claude Code config scope: user (~/.claude.json), project (.mcp.json), settings (~/.claude/settings.json). Default: user.' },
+            targets: { type: 'array', items: { type: 'string' }, description: 'Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>. Default: ["modes", "mcp"]' },
+            packagePath: { type: 'string', description: 'Package path from collect. For publish. If omitted with targets, does collect+publish atomically.' },
+            version: { type: 'string', description: 'Config version. Required for publish. For apply, default: "latest".' },
+            description: { type: 'string', description: 'Change description. Required for publish.' },
+            backup: { type: 'boolean', description: 'Create local backup before apply (default: true). For apply and apply_profile.' },
+            profileName: { type: 'string', description: 'Profile name (required for apply_profile). E.g. "Production (Qwen 3.5 + GLM-5)"' },
+            sourceMachineId: { type: 'string', description: 'Source machine ID for model-configs.json (default: local file)' }
         },
         required: ['action'],
         additionalProperties: false
@@ -450,20 +438,8 @@ export const roosyncInventoryDefinition = {
     }
 };
 
-// DEPRECATED #1863: Fused into roosync_inventory(type: "machines"). Kept for backward-compat redirect.
-export const roosyncMachinesDefinition = {
-    name: 'roosync_machines',
-    description: '[DEPRECATED] Use roosync_inventory(type: "machines"). Récupération des machines offline et/ou en avertissement.',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Statut des machines à récupérer' },
-            includeDetails: { type: 'boolean', description: 'Inclure les détails complets de chaque machine (défaut: false)' }
-        },
-        required: ['status'],
-        additionalProperties: false
-    }
-};
+// [REMOVED #1863] roosyncMachinesDefinition — fused into roosync_inventory(type: "machines")
+// CallTool redirect in registry.ts preserved for backward compat.
 
 // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 export const roosyncMcpManagementDefinition = {
@@ -556,25 +532,25 @@ export const roosyncUpdateDashboardDefinition = {
 
 export const roosyncSendDefinition = {
     name: 'roosync_send',
-    description: 'Envoyer un message structuré, répondre à un message existant, ou amender un message envoyé via RooSync',
+    description: 'Send, reply to, or amend a RooSync inter-machine message',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['send', 'reply', 'amend'], description: 'Action à effectuer : send (nouveau message), reply (répondre), amend (modifier)' },
-            to: { type: 'string', description: 'Destinataire : machine (ex: myia-ai-01) ou machine:workspace (ex: myia-ai-01:roo-extensions). Requis pour action=send' },
-            subject: { type: 'string', description: 'Sujet du message. Requis pour action=send' },
-            body: { type: 'string', description: 'Corps du message (markdown supporté). Requis pour action=send et reply' },
-            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Priorité du message (défaut: MEDIUM)' },
-            tags: { type: 'array', items: { type: 'string' }, description: 'Tags optionnels pour catégoriser le message' },
-            thread_id: { type: 'string', description: 'ID du thread pour regrouper les messages' },
-            reply_to: { type: 'string', description: "ID du message auquel on répond (pour action=send)" },
-            message_id: { type: 'string', description: 'ID du message (requis pour action=reply et amend)' },
-            new_content: { type: 'string', description: 'Nouveau contenu du message (requis pour action=amend)' },
-            reason: { type: 'string', description: "Raison de l'amendement (optionnel, pour action=amend)" },
-            auto_destruct: { type: 'boolean', description: "Activer l'auto-destruction du message après lecture (#629). Défaut: false" },
-            destruct_after_read_by: { type: 'array', items: { type: 'string' }, description: 'Liste des machines qui doivent lire avant destruction (optionnel).' },
-            destruct_after: { type: 'string', description: 'Durée TTL avant destruction (ex: "30m", "2h", "1d").' },
-            attachments: { type: 'array', description: 'Pièces jointes à envoyer avec le message (#674)', items: { type: 'object', properties: { path: { type: 'string', description: 'Chemin local du fichier à attacher' }, filename: { type: 'string', description: 'Nom du fichier (optionnel, défaut: basename du path)' } } } }
+            action: { type: 'string', enum: ['send', 'reply', 'amend'], description: 'Action: send, reply, or amend' },
+            to: { type: 'string', description: 'Recipient: machine or machine:workspace. Required for send.' },
+            subject: { type: 'string', description: 'Message subject. Required for send.' },
+            body: { type: 'string', description: 'Message body (markdown). Required for send/reply.' },
+            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Priority (default: MEDIUM)' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags' },
+            thread_id: { type: 'string', description: 'Thread ID for grouping' },
+            reply_to: { type: 'string', description: 'Message ID being replied to (for send)' },
+            message_id: { type: 'string', description: 'Message ID (required for reply/amend)' },
+            new_content: { type: 'string', description: 'New content (required for amend)' },
+            reason: { type: 'string', description: 'Amend reason (optional)' },
+            auto_destruct: { type: 'boolean', description: 'Auto-destruct after read (default: false)' },
+            destruct_after_read_by: { type: 'array', items: { type: 'string' }, description: 'Machines that must read before destruction.' },
+            destruct_after: { type: 'string', description: 'TTL before destruction (e.g., "30m", "2h", "1d").' },
+            attachments: { type: 'array', description: 'File attachments', items: { type: 'object', properties: { path: { type: 'string', description: 'Local file path' }, filename: { type: 'string', description: 'Filename (default: basename)' } } } }
         }
     }
 };
@@ -617,25 +593,8 @@ export const roosyncManageDefinition = {
     }
 };
 
-// DEPRECATED #1863: Fused into roosync_manage(action: "bulk_mark_read"/"bulk_archive"). Kept for backward-compat redirect.
-export const roosyncCleanupMessagesDefinition = {
-    name: 'roosync_cleanup_messages',
-    description: '[DEPRECATED] Use roosync_manage(action: "bulk_mark_read"/"bulk_archive"). Effectue des opérations de cleanup en masse sur les messages RooSync.',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            operation: { type: 'string', enum: ['mark_read', 'archive'], description: "Opération à effectuer : mark_read (marquer comme lu) ou archive (archiver)" },
-            from: { type: 'string', description: 'Filtre par expéditeur (substring match). Ex: "test-machine" pour ignorer les messages de test' },
-            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Filtre par priorité. Ex: "LOW" pour marquer automatiquement les messages LOW' },
-            before_date: { type: 'string', description: 'Filtre par date (messages antérieurs à cette date). Format ISO-8601: "2026-02-01T00:00:00Z"' },
-            subject_contains: { type: 'string', description: 'Filtre par sujet (substring, case-insensitive)' },
-            tag: { type: 'string', description: 'Filtre par tag' },
-            status: { type: 'string', enum: ['unread', 'read'], description: 'Ne traiter que les messages avec ce statut' },
-            verbose: { type: 'boolean', description: 'Afficher les IDs des messages traités (défaut: true)' }
-        },
-        required: ['operation']
-    }
-};
+// [REMOVED #1863] roosyncCleanupMessagesDefinition — fused into roosync_manage(action: "bulk_mark_read"/"bulk_archive")
+// CallTool redirect in registry.ts preserved for backward compat.
 
 export const roosyncAttachmentsDefinition = {
     name: 'roosync_attachments',
@@ -704,11 +663,11 @@ export const allToolDefinitions = [
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
-    roosyncDecisionInfoDefinition,
+    // [REMOVED #1863] roosyncDecisionInfoDefinition — not listed in tools/list, redirect in registry.ts
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
-    roosyncMachinesDefinition,
+    // [REMOVED #1863] roosyncMachinesDefinition — not listed in tools/list, redirect in registry.ts
     // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
@@ -718,7 +677,7 @@ export const allToolDefinitions = [
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,
-    roosyncCleanupMessagesDefinition,
+    // [REMOVED #1863] roosyncCleanupMessagesDefinition — not listed in tools/list, redirect in registry.ts
     roosyncAttachmentsDefinition,
     roosyncDashboardDefinition,
     // #1836: Pre-claim enforcement

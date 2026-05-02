@@ -338,8 +338,8 @@ describe('roosync_config - Metadata', () => {
     const metadata = module.configToolMetadata;
 
     expect(metadata.name).toBe('roosync_config');
-    expect(metadata.description).toContain('Gestion');
-    expect(metadata.description).toContain('configuration RooSync');
+    expect(metadata.description).toContain('config');
+    expect(metadata.description).toContain('RooSync');
     expect(metadata.inputSchema).toBeDefined();
     expect(metadata.inputSchema.type).toBe('object');
     expect(metadata.inputSchema.properties).toHaveProperty('action');
@@ -366,9 +366,9 @@ describe('roosync_config - Metadata', () => {
     const module = await import('../../../../src/tools/roosync/config.js');
     const metadata = module.configToolMetadata;
 
-    // Test simplifié après cleanup #443 - description compacte sans détails techniques
-    expect(metadata.description).toContain('collecte');
-    expect(metadata.description).toContain('publication');
+    // Test simplifié après #1922 Phase 2 - English descriptions
+    expect(metadata.description).toContain('collect');
+    expect(metadata.description).toContain('publish');
   });
 
   it('devrait avoir enum correct pour action', async () => {

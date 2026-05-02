@@ -92,109 +92,109 @@ export interface RooSyncIndexingArgs {
  */
 export const roosyncIndexingTool: Tool = {
     name: 'roosync_indexing',
-    description: "Outil unifié de gestion de l'index sémantique, du cache et de l'archivage (indexation, reset, rebuild, diagnostic, archive Roo/Claude Code, cleanup orphelins #1821)",
+    description: 'Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans)',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans'],
-                description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'cleanup' (supprimer les vecteurs plus anciens qu'un âge donné #1658), 'garbage_scan' (détecter/nettoyer les tâches garbage #1786), 'cleanup_orphans' (détecter/supprimer les vecteurs Qdrant dont les fichiers source n'existent plus #1821)"
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors)'
             },
             task_id: {
                 type: 'string',
-                description: 'ID de la tâche à indexer (requis pour action=index)'
+                description: 'Task ID to index (required for action=index)'
             },
             confirm: {
                 type: 'boolean',
-                description: 'Confirmation obligatoire pour action=reset',
+                description: 'Required confirmation for action=reset',
                 default: false
             },
             workspace_filter: {
                 type: 'string',
-                description: 'Filtre optionnel par workspace (pour action=rebuild)'
+                description: 'Workspace filter (for rebuild)'
             },
             max_tasks: {
                 type: 'number',
-                description: 'Nombre maximum de tâches à traiter (pour action=rebuild, 0 = toutes)',
+                description: 'Max tasks to process (for rebuild, 0 = all)',
                 default: 0
             },
             dry_run: {
                 type: 'boolean',
-                description: 'Mode simulation sans modification (pour action=rebuild)',
+                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans)',
                 default: false
             },
             machine_id: {
                 type: 'string',
-                description: 'Filtre par machine (pour action=archive, liste les archives de cette machine uniquement)'
+                description: 'Machine filter (for archive, list archives for this machine)'
             },
             claude_code_sessions: {
                 type: 'boolean',
-                description: 'Archiver les sessions Claude Code (pour action=archive) - DÉSACTIVÉ: sessions sanctuarisées #1621',
+                description: 'Archive Claude Code sessions (BLOCKED - sessions are sanctuary).',
                 default: false
             },
             max_sessions: {
                 type: 'number',
-                description: 'Nombre max de sessions Claude Code à archiver (pour action=archive avec claude_code_sessions=true, 0 = toutes)',
+                description: 'Max Claude Code sessions to archive (0 = all).',
                 default: 0
             },
             source: {
                 type: 'string',
                 enum: ['roo', 'claude-code'],
-                description: "#604: Source de la conversation (pour action=index). 'roo' = tâche Roo standard, 'claude-code' = session Claude Code JSONL. Par défaut: 'roo'"
+                description: 'Conversation source for action=index. "roo" (default) or "claude-code".'
             },
             max_age_days: {
                 type: 'number',
-                description: "#1658: Pour action=cleanup. Âge maximum en jours des vecteurs à conserver. Les vecteurs dont le timestamp est antérieur à (now - max_age_days) seront supprimés. Défaut: 90.",
+                description: 'For cleanup. Max age in days of vectors to keep (default: 90).',
                 default: 90
             },
             workspace_name_filter: {
                 type: 'string',
-                description: "#1658: Pour action=cleanup. Filtre optionnel par workspace_name pour limiter le cleanup à un workspace spécifique."
+                description: 'For cleanup. Optional workspace_name filter.'
             },
             deep: {
                 type: 'boolean',
-                description: "#1244: Pour action=diagnose. Active le diagnostic approfondi (scroll d'un échantillon, distribution source/workspace_name, field coverage, payload samples). Permet de détecter les bugs d'indexation (champs manquants, dimension mismatch).",
+                description: 'For diagnose. Enable deep diagnostic (scroll sample, source/workspace distribution, field coverage).',
                 default: false
             },
             sample_size: {
                 type: 'number',
-                description: "#1244: Pour action=diagnose avec deep=true. Taille de l'échantillon Qdrant à scroll. Défaut 1000, max 5000.",
+                description: 'For diagnose with deep=true. Qdrant scroll sample size. Default 1000, max 5000.',
                 default: 1000
             },
             top_n_workspaces: {
                 type: 'number',
-                description: "#1244: Pour action=diagnose avec deep=true. Nombre de top workspace_name à reporter dans la distribution. Défaut 20, max 100.",
+                description: 'For diagnose with deep=true. Top workspace_name count to report. Default 20, max 100.',
                 default: 20
             },
             garbage_category: {
                 type: 'string',
                 enum: ['death_spiral', 'duplicate', 'low_value', 'all'],
-                description: "#1786: Pour action=garbage_scan. Catégorie de garbage à détecter. 'death_spiral' (erreurs en boucle), 'duplicate' (sessions dupliquées), 'low_value' (taux d'erreur élevé, quasi-zéro output assistant), 'all' (toutes). Défaut: all"
+                description: 'For garbage_scan. Category: death_spiral, duplicate, low_value, all. Default: all'
             },
             min_messages: {
                 type: 'number',
-                description: "#1786: Pour action=garbage_scan. Nombre minimum de messages pour qu'une tâche soit scannée. Défaut: 10.",
+                description: 'For garbage_scan. Min messages for a task to be scanned. Default: 10.',
                 default: 10
             },
             max_results: {
                 type: 'number',
-                description: "#1786: Pour action=garbage_scan. Nombre maximum de résultats retournés. Défaut: 100.",
+                description: 'For garbage_scan. Max results returned. Default: 100.',
                 default: 100
             },
             remove_skeletons: {
                 type: 'boolean',
-                description: "#1786: Pour action=garbage_scan avec dry_run=false. Supprimer les fichiers skeleton garbage. Défaut: true.",
+                description: 'For garbage_scan with dry_run=false. Delete garbage skeleton files. Default: true.',
                 default: true
             },
             remove_vectors: {
                 type: 'boolean',
-                description: "#1786: Pour action=garbage_scan avec dry_run=false. Supprimer les vecteurs Qdrant garbage. Défaut: true.",
+                description: 'For garbage_scan with dry_run=false. Delete garbage Qdrant vectors. Default: true.',
                 default: true
             },
             confirm_orphan_cleanup: {
                 type: 'boolean',
-                description: "#1821: Pour action=cleanup_orphans avec dry_run=false. Confirmation obligatoire pour la suppression des vecteurs orphelins. Défaut: false.",
+                description: 'For cleanup_orphans with dry_run=false. Required confirmation. Default: false.',
                 default: false
             }
         },

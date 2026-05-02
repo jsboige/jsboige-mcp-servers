@@ -14,14 +14,14 @@ export type ClaudeCodeScope = 'user' | 'project' | 'settings';
  */
 export const ConfigArgsSchema = z.object({
   // Action requise
-  action: z.enum(['collect', 'publish', 'apply', 'apply_profile']).describe('Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle)'),
+  action: z.enum(['collect', 'publish', 'apply', 'apply_profile']).describe('Action: collect, publish, apply, or apply_profile'),
 
   // Paramètres communs
-  machineId: z.string().optional().describe('ID de la machine (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'),
-  dryRun: z.boolean().optional().describe('Si true, simule l\'opération sans modifier les fichiers. Défaut: false'),
+  machineId: z.string().optional().describe('Machine ID (default: ROOSYNC_MACHINE_ID)'),
+  dryRun: z.boolean().optional().describe('Simulate without modifying files (default: false)'),
 
   // Scope Claude Code (#601)
-  scope: z.enum(['user', 'project', 'settings']).optional().describe('Scope Claude Code pour les configs MCP: user (~/.claude.json), project (.mcp.json), settings (~/.claude/settings.json). Défaut: user'),
+  scope: z.enum(['user', 'project', 'settings']).optional().describe('Claude Code config scope: user (~/.claude.json), project (.mcp.json), settings (~/.claude/settings.json). Default: user'),
 
   // Pour collect et apply
   targets: z.array(z.string()).optional().refine(
@@ -41,19 +41,19 @@ export const ConfigArgsSchema = z.object({
     {
       message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, ou mcp:<nomServeur>"
     }
-  ).describe('Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'),
+  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
-  packagePath: z.string().optional().describe('Chemin du package créé par collect. Si omis avec action=publish et targets fourni, fait collect+publish atomique'),
-  version: z.string().optional().describe('Version de la configuration (ex: "2.3.0"). Requis pour action=publish'),
-  description: z.string().optional().describe('Description des changements. Requis pour action=publish'),
+  packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
+  version: z.string().optional().describe('Config version (e.g., "2.3.0"). Required for publish'),
+  description: z.string().optional().describe('Change description. Required for publish'),
 
   // Pour apply
-  backup: z.boolean().optional().describe('Créer un backup local avant application (défaut: true). Pour action=apply et apply_profile'),
+  backup: z.boolean().optional().describe('Create local backup before apply (default: true). For apply and apply_profile'),
 
   // Pour apply_profile (#498 Phase 2)
-  profileName: z.string().optional().describe('Nom du profil à appliquer (requis pour action=apply_profile). Ex: "Production (Qwen 3.5 local + GLM-5 cloud)"'),
-  sourceMachineId: z.string().optional().describe('ID de la machine source pour charger model-configs.json depuis sa config publiée (optionnel, défaut: fichier local)')
+  profileName: z.string().optional().describe('Profile name (required for apply_profile). E.g. "Production (Qwen 3.5 + GLM-5)"'),
+  sourceMachineId: z.string().optional().describe('Source machine ID for model-configs.json (default: local file)')
 }).refine(
   (data) => {
     // Validation spécifique par action
@@ -303,56 +303,56 @@ export async function roosyncConfig(args: ConfigArgs) {
  */
 export const configToolMetadata = {
   name: 'roosync_config',
-  description: 'Gestion de configuration RooSync. Actions : collect (collecte locale), publish (publication GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle). Cibles : modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>. Stocke par machineId. Issue #601: Support scope Claude Code (user/project/settings).',
+  description: 'RooSync config management. Actions: collect (local), publish (to GDrive), apply (from GDrive), apply_profile (model profile). Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
         enum: ['collect', 'publish', 'apply', 'apply_profile'],
-        description: 'Action à effectuer: collect (collecte config locale), publish (publication vers GDrive), apply (application depuis GDrive), apply_profile (appliquer un profil de modèle)'
+        description: 'Action: collect, publish, apply, or apply_profile'
       },
       machineId: {
         type: 'string',
-        description: 'ID de la machine (optionnel, utilise ROOSYNC_MACHINE_ID par défaut)'
+        description: 'Machine ID (default: ROOSYNC_MACHINE_ID)'
       },
       dryRun: {
         type: 'boolean',
-        description: 'Si true, simule l\'opération sans modifier les fichiers. Défaut: false'
+        description: 'Simulate without modifying files (default: false)'
       },
       scope: {
         type: 'string',
         enum: ['user', 'project', 'settings'],
-        description: 'Scope Claude Code pour les configs MCP: user (~/.claude.json global), project (.mcp.json projet), settings (~/.claude/settings.json env/hooks). Défaut: user. Issue #601.'
+        description: 'Claude Code config scope: user (~/.claude.json), project (.mcp.json), settings (~/.claude/settings.json). Default: user.'
       },
       targets: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Liste des cibles à collecter/appliquer (modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, ou mcp:<nomServeur>). Défaut: ["modes", "mcp"]'
+        description: 'Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>. Default: ["modes", "mcp"]'
       },
       packagePath: {
         type: 'string',
-        description: 'Chemin du package créé par collect. Pour action=publish uniquement. Si omis avec targets fourni, fait collect+publish atomique'
+        description: 'Package path from collect. For publish. If omitted with targets, does collect+publish atomically.'
       },
       version: {
         type: 'string',
-        description: 'Version de la configuration (ex: "2.3.0"). Requis pour action=publish. Pour action=apply, défaut: "latest"'
+        description: 'Config version. Required for publish. For apply, default: "latest".'
       },
       description: {
         type: 'string',
-        description: 'Description des changements. Requis pour action=publish'
+        description: 'Change description. Required for publish.'
       },
       backup: {
         type: 'boolean',
-        description: 'Créer un backup local avant application (défaut: true). Pour action=apply et apply_profile'
+        description: 'Create local backup before apply (default: true). For apply and apply_profile.'
       },
       profileName: {
         type: 'string',
-        description: 'Nom du profil à appliquer (requis pour action=apply_profile). Ex: "Production (Qwen 3.5 local + GLM-5 cloud)"'
+        description: 'Profile name (required for apply_profile). E.g. "Production (Qwen 3.5 + GLM-5)"'
       },
       sourceMachineId: {
         type: 'string',
-        description: 'ID de la machine source pour charger model-configs.json depuis sa config publiée (optionnel, défaut: fichier local)'
+        description: 'Source machine ID for model-configs.json (default: local file)'
       }
     },
     required: ['action'],
