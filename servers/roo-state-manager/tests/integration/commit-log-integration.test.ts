@@ -486,7 +486,7 @@ describe('CommitLogService - Tests d\'Intégration', () => {
     });
   });
 
-  describe('Vérification de cohérence', () => {
+    describe('Vérification de cohérence', () => {
     it('devrait détecter les incohérences dans un commit log corrompu', async () => {
       // Arrange - Ajouter des entrées normales
       const baselineData1: BaselineCommitData = {
@@ -554,6 +554,293 @@ describe('CommitLogService - Tests d\'Intégration', () => {
       expect(result.inconsistentEntries.some(e => e.issue.includes('Hash'))).toBe(true);
 
       await newService.stopAutoSync();
+    });
+
+    it('devrait détecter les incohérences de séquence', async () => {
+      // Arrange - Ajouter des entrées normales
+      const baselineData1: BaselineCommitData = {
+        baselineId: 'baseline-1',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-1'
+      };
+
+      const baselineData2: BaselineCommitData = {
+        baselineId: 'baseline-2',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-2'
+      };
+
+      await commitLogService.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-1',
+        status: CommitStatus.PENDING,
+        data: baselineData1
+      });
+      await commitLogService.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-2',
+        status: CommitStatus.PENDING,
+        data: baselineData2
+      });
+
+      // Corrompre le commit log en modifiant le séquence number
+      const stateFilePath = join(commitLogPath, 'state.json');
+      const stateContent = await readFile(stateFilePath, 'utf-8');
+      const state = JSON.parse(stateContent);
+
+      // Modifier le séquence number sans recalculer le hash
+      state.currentSequenceNumber = 999;
+      if (state.entries) {
+        state.entries['999'] = state.entries['2'];
+        delete state.entries['2'];
+      }
+      await writeFile(stateFilePath, JSON.stringify(state, null, 2));
+
+      // Recréer le service pour charger l'état corrompu
+      await commitLogService.stopAutoSync();
+      const newService = new CommitLogService({
+        commitLogPath,
+        syncInterval: 30000,
+        maxEntries: 10000,
+        maxRetryAttempts: 3,
+        retryDelay: 5000,
+        enableCompression: false,
+        compressionAge: 86400000,
+        enableSigning: false,
+        hashAlgorithm: 'sha256'
+      });
+      // Attendre l'initialisation du nouveau service
+      await newService.waitForInitialization();
+
+      // Act - Vérifier la cohérence
+      const result = await newService.verifyConsistency();
+
+      // Assert - Vérifier que l'incohérence de séquence est détectée
+      expect(result.isConsistent).toBe(false);
+      expect(result.inconsistentEntries.length).toBeGreaterThan(0);
+      expect(result.inconsistentEntries.some(e => e.issue.includes('sequence'))).toBe(true);
+
+      await newService.stopAutoSync();
+    });
+
+    it('devrait réparer les incohérences mineures', async () => {
+      // Arrange - Ajouter des entrées normales
+      const baselineData1: BaselineCommitData = {
+        baselineId: 'baseline-1',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-1'
+      };
+
+      await commitLogService.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-1',
+        status: CommitStatus.PENDING,
+        data: baselineData1
+      });
+
+      // Corrompre le commit log en modifiant une valeur dans le fichier JSON
+      const entryFilePath = join(commitLogPath, '0000001.json');
+      const entryContent = await readFile(entryFilePath, 'utf-8');
+      const entry = JSON.parse(entryContent);
+
+      // Modifier une valeur non critique pour simuler une erreur mineure
+      entry.timestamp = new Date().toISOString();
+      await writeFile(entryFilePath, JSON.stringify(entry, null, 2));
+
+      // Act - Vérifier la cohérence avec réparation
+      const result = await commitLogService.verifyConsistency(true);
+
+      // Assert - Vérifier que l'incohérence est détectée mais non critique
+      expect(result.isConsistent).toBe(true);
+      expect(result.fixedEntries.length).toBeGreaterThan(0);
+
+      // Vérifier que l'entrée a été réparée
+      const entryAfter = await commitLogService.getCommit(1);
+      expect(entryAfter).toBeDefined();
+      expect(entryAfter?.machineId).toBe('machine-1');
+    });
+  });
+
+  describe('Intégration avec Gestion des Conflits', () => {
+    it('devrait gérer les conflits lors de l\'application des commits', async () => {
+      // Arrange - Ajouter le même commit à deux services différents
+      const baselineData: BaselineCommitData = {
+        baselineId: 'baseline-1',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-1'
+      };
+
+      // Premier commit avec status PENDING
+      await commitLogService.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-1',
+        status: CommitStatus.PENDING,
+        data: baselineData
+      });
+
+      // Corriger manuellement le state.json pour simuler un conflit
+      const stateFilePath = join(commitLogPath, 'state.json');
+      const stateContent = await readFile(stateFilePath, 'utf-8');
+      const state = JSON.parse(stateContent);
+
+      // Ajouter un lock pour simuler un conflit
+      if (!state.locks) {
+        state.locks = {};
+      }
+      state.locks['1'] = {
+        acquiredBy: 'another-machine',
+        acquiredAt: Date.now(),
+        expiresAt: Date.now() + 30000
+      };
+      await writeFile(stateFilePath, JSON.stringify(state, null, 2));
+
+      // Act - Essayer d'appliquer le commit alors qu'il est verrouillé
+      const result = await commitLogService.applyCommit(1);
+
+      // Assert - Le commit ne devrait pas être appliqué en raison du conflit
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('conflict');
+
+      // Vérifier que le commit reste en attente
+      const stateAfter = commitLogService.getState();
+      expect(stateAfter.statistics.pendingEntries).toBe(1);
+    });
+
+    it('devrait réinitialiser les commits expirés', async () => {
+      // Arrange - Ajouter un commit
+      const baselineData: BaselineCommitData = {
+        baselineId: 'baseline-1',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-1'
+      };
+
+      await commitLogService.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-1',
+        status: CommitStatus.PENDING,
+        data: baselineData
+      });
+
+      // Simuler un commit expiré
+      const stateFilePath = join(commitLogPath, 'state.json');
+      const stateContent = await readFile(stateFilePath, 'utf-8');
+      const state = JSON.parse(stateContent);
+
+      // Mettre à jour le timestamp à il y a longtemps
+      if (state.entries && state.entries['1']) {
+        state.entries['1'].timestamp = Date.now() - 86400000; // 24 heures ago
+      }
+      await writeFile(stateFilePath, JSON.stringify(state, null, 2));
+
+      // Act - Nettoyer les commits expirés
+      const cleanupResult = await commitLogService.cleanupExpiredCommits();
+
+      // Assert - Le commit expiré devrait être nettoyé
+      expect(cleanupResult.removedCount).toBe(1);
+
+      // Vérifier que l'état est mis à jour
+      const stateAfter = commitLogService.getState();
+      expect(stateAfter.entries.size).toBe(0);
+      expect(stateAfter.statistics.expiredEntries).toBe(1);
+    });
+  });
+
+  describe('Fonctionnalités Compression et Signing', () => {
+    it('devrait compresser les entrées lorsque configuré', async () => {
+      // Arrange - Configurer avec compression
+      const configWithCompression: Partial<TestCommitLogConfig> = {
+        commitLogPath,
+        syncInterval: 30000,
+        maxEntries: 10000,
+        maxRetryAttempts: 3,
+        retryDelay: 5000,
+        enableCompression: true,
+        compressionAge: 0, // Compresser immédiatement
+        enableSigning: false,
+        hashAlgorithm: 'sha256'
+      };
+
+      await commitLogService.stopAutoSync();
+      const serviceWithCompression = new CommitLogService(configWithCompression);
+      await serviceWithCompression.waitForInitialization();
+
+      // Act - Ajouter des entrées
+      const baselineData: BaselineCommitData = {
+        baselineId: 'baseline-1',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-1'
+      };
+
+      await serviceWithCompression.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-1',
+        status: CommitStatus.PENDING,
+        data: baselineData
+      });
+
+      // Assert - Vérifier que l'entrée est compressée
+      const entry = await serviceWithCompression.getCommit(1);
+      expect(entry).toBeDefined();
+      expect(entry?.type).toBe(CommitEntryType.BASELINE);
+
+      // Vérifier que le fichier est plus petit après compression
+      const entryFilePath = join(commitLogPath, '0000001.json');
+      const stats = await import('fs').promises.stat(entryFilePath);
+      expect(stats.size).toBeGreaterThan(0);
+
+      await serviceWithCompression.stopAutoSync();
+    });
+
+    it('devrait signer les entrées lorsque configuré', async () => {
+      // Arrange - Configurer avec signing
+      const configWithSigning: Partial<TestCommitLogConfig> = {
+        commitLogPath,
+        syncInterval: 30000,
+        maxEntries: 10000,
+        maxRetryAttempts: 3,
+        retryDelay: 5000,
+        enableCompression: false,
+        compressionAge: 86400000,
+        enableSigning: true,
+        hashAlgorithm: 'sha256'
+      };
+
+      await commitLogService.stopAutoSync();
+      const serviceWithSigning = new CommitLogService(configWithSigning);
+      await serviceWithSigning.waitForInitialization();
+
+      // Act - Ajouter des entrées
+      const baselineData: BaselineCommitData = {
+        baselineId: 'baseline-1',
+        updateType: 'update',
+        version: '1.0.0',
+        sourceMachineId: 'machine-1'
+      };
+
+      const appendResult = await serviceWithSigning.appendCommit({
+        type: CommitEntryType.BASELINE,
+        machineId: 'machine-1',
+        status: CommitStatus.PENDING,
+        data: baselineData
+      });
+
+      // Assert - Vérifier que l'entrée a une signature
+      const entry = await serviceWithSigning.getCommit(1);
+      expect(entry).toBeDefined();
+      expect(entry?.signature).toBeDefined();
+      expect(typeof entry?.signature).toBe('string');
+
+      // Vérifier que la signature est valide
+      const isValid = await serviceWithSigning.verifyEntrySignature(1);
+      expect(isValid).toBe(true);
+
+      await serviceWithSigning.stopAutoSync();
     });
   });
 });
