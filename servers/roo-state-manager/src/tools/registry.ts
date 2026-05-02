@@ -706,3 +706,6 @@ export function registerCallToolHandler(
         return result;
     });
 }
+
+// Export TOOL_CAPABILITIES for tests
+export { TOOL_CAPABILITIES };
