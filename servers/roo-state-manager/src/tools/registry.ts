@@ -47,6 +47,9 @@ async function getBackgroundServices() {
 
 const registryLogger = createLogger('ToolRegistry');
 
+// #1665: Export registry logger globally for tests
+(global as any).registryLogger = registryLogger;
+
 // #1635: Tool → required capability mapping.
 // Tools not listed here have no capability dependency (always available).
 const TOOL_CAPABILITIES: Record<string, Capability[]> = {
