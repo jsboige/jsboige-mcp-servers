@@ -47,9 +47,12 @@ async function getBackgroundServices() {
 
 const registryLogger = createLogger('ToolRegistry');
 
+// #1665: Export registry logger globally for tests
+(global as any).registryLogger = registryLogger;
+
 // #1635: Tool → required capability mapping.
 // Tools not listed here have no capability dependency (always available).
-const TOOL_CAPABILITIES: Record<string, Capability[]> = {
+export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	// RooSync/sharedPath-dependent tools
 	roosync_read: ['sharedPath'],
 	roosync_send: ['sharedPath'],
