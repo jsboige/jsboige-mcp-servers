@@ -709,6 +709,3 @@ export function registerCallToolHandler(
         return result;
     });
 }
-
-// Export TOOL_CAPABILITIES for external use
-export { TOOL_CAPABILITIES };

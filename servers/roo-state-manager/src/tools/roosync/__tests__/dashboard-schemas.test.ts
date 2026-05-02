@@ -12,6 +12,9 @@ import {
   CrossPostSchema,
   DashboardArgsSchema,
   dashboardToolMetadata,
+  TeamStageSchema,
+  VerificationResultSchema,
+  TeamStageDataSchema,
 } from '../dashboard-schemas.js';
 
 // === AuthorSchema ===
@@ -312,6 +315,286 @@ describe('DashboardArgsSchema', () => {
       action: 'read',
       type: 'workspace',
       section: 'invalid',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+// === TeamStageSchema (#1853 Phase 2) ===
+
+describe('TeamStageSchema', () => {
+  const validStages = ['team-plan', 'team-prd', 'team-exec', 'team-verify', 'team-fix', 'none'];
+
+  it.each(validStages)('accepts valid stage: %s', (stage) => {
+    const result = TeamStageSchema.safeParse(stage);
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid stage', () => {
+    const result = TeamStageSchema.safeParse('team-invalid');
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects "done" (not in enum)', () => {
+    const result = TeamStageSchema.safeParse('done');
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects empty string', () => {
+    const result = TeamStageSchema.safeParse('');
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-string', () => {
+    const result = TeamStageSchema.safeParse(42);
+    expect(result.success).toBe(false);
+  });
+
+  it('has exactly 6 valid values', () => {
+    expect(TeamStageSchema.Values).toEqual({
+      'team-plan': 'team-plan',
+      'team-prd': 'team-prd',
+      'team-exec': 'team-exec',
+      'team-verify': 'team-verify',
+      'team-fix': 'team-fix',
+      none: 'none',
+    });
+  });
+});
+
+// === VerificationResultSchema (#1853 Phase 2) ===
+
+describe('VerificationResultSchema', () => {
+  it('accepts full verification result', () => {
+    const result = VerificationResultSchema.safeParse({
+      buildPassed: true,
+      testsPassed: true,
+      issuesFound: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts partial result (build only)', () => {
+    const result = VerificationResultSchema.safeParse({ buildPassed: false });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts partial result (tests only)', () => {
+    const result = VerificationResultSchema.safeParse({ testsPassed: false });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts issuesFound with strings', () => {
+    const result = VerificationResultSchema.safeParse({
+      testsPassed: false,
+      issuesFound: ['Missing test for X', 'Build fails on Y'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts empty object (all optional)', () => {
+    const result = VerificationResultSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it('strips unknown fields', () => {
+    const result = VerificationResultSchema.safeParse({
+      buildPassed: true,
+      extra: 'should be removed',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data as any).extra).toBeUndefined();
+    }
+  });
+});
+
+// === TeamStageDataSchema (#1853 Phase 2) ===
+
+describe('TeamStageDataSchema', () => {
+  it('accepts stage transition with previousStage', () => {
+    const result = TeamStageDataSchema.safeParse({
+      previousStage: 'team-plan',
+      nextStage: 'team-prd',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts stage transition with verificationResult', () => {
+    const result = TeamStageDataSchema.safeParse({
+      previousStage: 'team-exec',
+      nextStage: 'team-verify',
+      verificationResult: { buildPassed: true, testsPassed: true },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts verification failure with issues', () => {
+    const result = TeamStageDataSchema.safeParse({
+      previousStage: 'team-verify',
+      nextStage: 'team-fix',
+      verificationResult: {
+        buildPassed: true,
+        testsPassed: false,
+        issuesFound: ['test "should handle timeout" failed'],
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts empty object (all optional)', () => {
+    const result = TeamStageDataSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid previousStage', () => {
+    const result = TeamStageDataSchema.safeParse({
+      previousStage: 'invalid-stage',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects invalid verificationResult type', () => {
+    const result = TeamStageDataSchema.safeParse({
+      verificationResult: 'not-an-object',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+// === IntercomMessageSchema with teamStage + teamStageData ===
+
+describe('IntercomMessageSchema — team stages', () => {
+  const baseMsg = {
+    id: 'ic-2026-05-02-test',
+    timestamp: '2026-05-02T12:00:00.000Z',
+    author: { machineId: 'myia-web1', workspace: 'roo-extensions' },
+    content: '## [PROGRESS] team-exec — Implementation started',
+  };
+
+  it('accepts message with teamStage', () => {
+    const result = IntercomMessageSchema.safeParse({
+      ...baseMsg,
+      teamStage: 'team-exec',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts message with teamStage and teamStageData', () => {
+    const result = IntercomMessageSchema.safeParse({
+      ...baseMsg,
+      teamStage: 'team-verify',
+      teamStageData: {
+        previousStage: 'team-exec',
+        verificationResult: { buildPassed: true, testsPassed: true },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts message with teamStage: none', () => {
+    const result = IntercomMessageSchema.safeParse({
+      ...baseMsg,
+      teamStage: 'none',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts message without teamStage (optional)', () => {
+    const result = IntercomMessageSchema.safeParse(baseMsg);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.teamStage).toBeUndefined();
+    }
+  });
+
+  it('rejects invalid teamStage value', () => {
+    const result = IntercomMessageSchema.safeParse({
+      ...baseMsg,
+      teamStage: 'invalid',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+// === DashboardArgsSchema — teamStage + teamStageData in append ===
+
+describe('DashboardArgsSchema — team stage in append', () => {
+  it('accepts append with teamStage only', () => {
+    const result = DashboardArgsSchema.safeParse({
+      action: 'append',
+      type: 'workspace',
+      content: '## [PROGRESS] team-exec',
+      teamStage: 'team-exec',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts append with teamStage and teamStageData', () => {
+    const result = DashboardArgsSchema.safeParse({
+      action: 'append',
+      type: 'workspace',
+      content: '## [DONE] Verification passed',
+      teamStage: 'none',
+      teamStageData: {
+        previousStage: 'team-verify',
+        verificationResult: { buildPassed: true, testsPassed: true },
+      },
+      tags: ['DONE'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts append with verification failure', () => {
+    const result = DashboardArgsSchema.safeParse({
+      action: 'append',
+      type: 'workspace',
+      content: '## [PROGRESS] team-fix — Fixing issues',
+      teamStage: 'team-fix',
+      teamStageData: {
+        previousStage: 'team-verify',
+        nextStage: 'team-verify',
+        verificationResult: {
+          buildPassed: true,
+          testsPassed: false,
+          issuesFound: ['2 tests failed in vitest'],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts append with stage transition chain', () => {
+    // team-plan → team-prd
+    const result = DashboardArgsSchema.safeParse({
+      action: 'append',
+      type: 'workspace',
+      content: '## [PROGRESS] team-prd — Requirements clarified',
+      teamStage: 'team-prd',
+      teamStageData: { previousStage: 'team-plan' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts append with all 5 pipeline stages', () => {
+    const stages = ['team-plan', 'team-prd', 'team-exec', 'team-verify', 'team-fix'] as const;
+    for (const stage of stages) {
+      const result = DashboardArgsSchema.safeParse({
+        action: 'append',
+        type: 'workspace',
+        content: `Stage: ${stage}`,
+        teamStage: stage,
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects append with invalid teamStage', () => {
+    const result = DashboardArgsSchema.safeParse({
+      action: 'append',
+      type: 'workspace',
+      content: 'Bad stage',
+      teamStage: 'not-a-stage',
     });
     expect(result.success).toBe(false);
   });
