@@ -186,10 +186,14 @@ class RooStateManagerServer {
                 });
         };
 
-        // Primary path: wait for MCP handshake to complete
+        // Primary path: wait for MCP handshake to complete.
+        // Use setImmediate to yield to the event loop — the client sends
+        // tools/list right after initialized, and if we start the heavy
+        // init (dynamic import → synchronous ESM graph evaluation) here,
+        // it blocks the event loop and tools/list never gets answered.
         this.server.oninitialized = () => {
-            logger.info("[#1817] MCP handshake complete, starting heavy initialization");
-            startInit();
+            logger.info("[#1817] MCP handshake complete, scheduling heavy initialization after event loop yield");
+            setImmediate(startInit);
         };
 
         // Fallback: if client doesn't send initialized notification within 5s, start anyway

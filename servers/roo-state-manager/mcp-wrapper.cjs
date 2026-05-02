@@ -36,7 +36,9 @@ if (envResult.error) {
 const serverPath = path.join(__dirname, 'build', 'index.js');
 
 // --- Persisted tools/list cache ---
-const CACHE_FILE = path.join(os.tmpdir(), '.mcp-roo-state-tools-cache.json');
+// Use build/ directory (NOT os.tmpdir()) — Windows Disk Cleanup clears %TEMP%,
+// which invalidates the cache multiple times per day, causing the "0 tools" bug.
+const CACHE_FILE = path.join(__dirname, 'build', '.tools-cache.json');
 
 function logDebug(message) {
     if (process.env.ROO_DEBUG_LOGS) {
