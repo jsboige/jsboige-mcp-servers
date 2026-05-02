@@ -171,132 +171,132 @@ export interface ConversationBrowserArgs {
  */
 export const conversationBrowserTool: Tool = {
     name: 'conversation_browser',
-    description: 'Outil consolide pour naviguer, visualiser et resumer les conversations Roo et Claude Code (cross-machine via archives GDrive). Actions: "list" (decouvrir les conversations avec filtres), "tree" (arbre parent-enfant), "current" (tache active du workspace), "view" (zoom contenu d\'une conversation, supporte la pagination message-level), "summarize" (resume/synthese), "rebuild" (reconstruire le cache multi-tier roo+claude+archive). Pattern de zoom: list -> view(detail_level=skeleton) -> view(messageStart/messageEnd) -> summarize. Toujours commencer par "list" pour decouvrir les IDs.',
+    description: 'Navigate Roo/Claude conversations (cross-machine via GDrive). Actions: list, tree, current, view, summarize, rebuild. Zoom pattern: list -> view(skeleton) -> view(messageStart/messageEnd) -> summarize. Always "list" first to discover IDs.',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'],
-                description: 'Action a effectuer. "list" = decouvrir les conversations (filtres workspace, machineId, startDate/endDate, contentPattern, source). "view" = inspecter une tache (detail_level=skeleton/summary/full, messageStart/messageEnd pour pagination). "summarize" = trace/cluster/synthesis. "tree" = arbre parent-enfant. "rebuild" = reconstruire le cache multi-tier (sources=[roo,claude,archive]).'
+                description: 'Action. list=discover (filters: workspace, machineId, dates, contentPattern, source). view=inspect task (detail_level, messageStart/messageEnd). summarize=trace/cluster/synthesis. tree=parent-child tree. rebuild=cache (sources=[roo,claude,archive]).'
             },
             // --- Arguments list ---
             limit: {
                 type: 'number',
-                description: '[list] Nombre maximum de conversations à retourner (défaut: toutes).'
+                description: '[list] Max conversations to return.'
             },
             sortBy: {
                 type: 'string',
                 enum: ['lastActivity', 'messageCount', 'totalSize'],
-                description: '[list] Critère de tri.',
+                description: '[list] Sort criterion.',
                 default: 'lastActivity'
             },
             sortOrder: {
                 type: 'string',
                 enum: ['asc', 'desc'],
-                description: '[list] Ordre de tri.',
+                description: '[list] Sort order.',
                 default: 'desc'
             },
             pendingSubtaskOnly: {
                 type: 'boolean',
-                description: '[list] Ne retourner que les tâches avec sous-tâche en attente.'
+                description: '[list] Only return tasks with pending subtasks.'
             },
             contentPattern: {
                 type: 'string',
-                description: '[list] Filtre les tâches contenant ce texte dans leurs messages.'
+                description: '[list] Filter tasks containing this text.'
             },
             // --- Arguments tree ---
             conversation_id: {
                 type: 'string',
-                description: '[tree] ID de la conversation pour l\'arbre des tâches.'
+                description: '[tree] Conversation ID for task tree.'
             },
             max_depth: {
                 type: 'number',
-                description: '[tree] Profondeur maximale de l\'arbre.'
+                description: '[tree] Max tree depth.'
             },
             include_siblings: {
                 type: 'boolean',
-                description: '[tree] Inclure les tâches sœurs.',
+                description: '[tree] Include sibling tasks.',
                 default: true
             },
             output_format: {
                 type: 'string',
                 enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'],
-                description: '[tree] Format de sortie.',
+                description: '[tree] Output format.',
                 default: 'json'
             },
             current_task_id: {
                 type: 'string',
-                description: '[tree/view] ID de la tâche en cours pour marquage.'
+                description: '[tree/view] Current task ID for marking.'
             },
             truncate_instruction: {
                 type: 'number',
-                description: '[tree] Longueur max de l\'instruction (défaut: 80).',
+                description: '[tree] Max instruction length (default: 80).',
                 default: 80
             },
             show_metadata: {
                 type: 'boolean',
-                description: '[tree] Afficher les métadonnées détaillées.',
+                description: '[tree] Show detailed metadata.',
                 default: false
             },
             // --- Arguments current ---
             workspace: {
                 type: 'string',
-                description: '[current/view] Chemin du workspace (détection auto si omis).'
+                description: '[current/view] Workspace path (auto-detected if omitted).'
             },
             workspacePathMatch: {
                 type: 'string',
                 enum: ['exact', 'normalized', 'substring'],
-                description: '[list] #1244 Couche 2.2 — Strategie de matching du workspace. "exact": comparaison stricte (apres normalisation forward-slash). "normalized" (defaut): match par basename, tolere les variations de chemin parent (`d:/dev/CoursIA` == `d:/CoursIA`) — strategie cross-machine la plus robuste. "substring": test includes lowercase, le plus tolerant.',
+                description: '[list] Workspace matching strategy. exact=strict, normalized(default)=basename match cross-machine, substring=includes match.',
                 default: 'normalized'
             },
             startDate: {
                 type: 'string',
-                description: '[list] #1244 Couche 2.1 — Date debut (ISO 8601 ou YYYY-MM-DD). Filtre les taches dont lastActivity >= startDate. Combinable avec endDate. Exemple: "2026-04-07".'
+                description: '[list] Start date filter (ISO 8601 or YYYY-MM-DD).'
             },
             endDate: {
                 type: 'string',
-                description: '[list] #1244 Couche 2.1 — Date fin (ISO 8601 ou YYYY-MM-DD). Filtre les taches dont lastActivity <= endDate (inclusif jusqu\'a fin de journee). Exemple: "2026-04-08".'
+                description: '[list] End date filter (ISO 8601 or YYYY-MM-DD, inclusive).'
             },
             machineId: {
                 type: 'string',
-                description: '[list] #1244 Couche 2.1 — Filtre par identifiant machine (cross-machine). Permet d\'isoler les conversations d\'une machine specifique parmi les archives chargees depuis GDrive. Exemple: "myia-po-2025".'
+                description: '[list] Filter by machine ID (cross-machine).'
             },
             // --- Arguments view ---
             task_id: {
                 type: 'string',
-                description: '[view/summarize] ID de la tâche à inspecter. Decouvrir les IDs via action="list" en premier. Pour les sessions Claude Code, le prefixe peut etre "claude-" ; les taches Roo et les archives utilisent l\'UUID brut.'
+                description: '[view/summarize] Task ID to inspect. Use "list" first to discover IDs.'
             },
             view_mode: {
                 type: 'string',
                 enum: ['single', 'chain', 'cluster'],
-                description: '[view] Mode d\'affichage. "single" = une tache, "chain" (defaut) = remonte la chaine parent, "cluster" = arbre enfants.',
+                description: '[view] Display mode. single=one task, chain(default)=parent chain, cluster=child tree.',
                 default: 'chain'
             },
             detail_level: {
                 type: 'string',
                 enum: ['skeleton', 'summary', 'full'],
-                description: '[view] Niveau de detail (zoom progressif). "skeleton" (defaut, ~15k chars) = vue overview ; "summary" (~50k) = contenu principal condense ; "full" (~150k) = sequence complete avec tous les outils. Combiner avec messageStart/messageEnd pour pagination message-level.',
+                description: '[view] Detail level. skeleton(default)=overview, summary=condensed, full=complete. Use messageStart/messageEnd for pagination.',
                 default: 'skeleton'
             },
             truncate: {
                 type: 'number',
-                description: '[view] Lignes à conserver au début/fin (0 = défaut intelligent).',
+                description: '[view] Lines to keep at head/tail (0=auto).',
                 default: 0
             },
             max_output_length: {
                 type: 'number',
-                description: '[view] Limite max de caractères en sortie. Un hard cap final est applique pour garantir le respect de cette limite quel que soit le mode de troncature.',
+                description: '[view] Max output chars (hard cap enforced).',
                 default: 300000
             },
             smart_truncation: {
                 type: 'boolean',
-                description: '[view] #1244 Couche 2.5 — Algorithme de troncature intelligente (gradient temporel + priorisation par type, preserve debut/fin de conversation). Active PAR DEFAUT depuis #1244. Passer false uniquement pour debug ou comparaison avec le legacy path.',
+                description: '[view] Smart truncation (gradient + type prioritization). Default: true.',
                 default: true
             },
             smart_truncation_config: {
                 type: 'object',
-                description: '[view] Configuration avancée pour la troncature intelligente.',
+                description: '[view] Smart truncation config.',
                 properties: {
                     gradientStrength: { type: 'number' },
                     minPreservationRate: { type: 'number' },
@@ -305,155 +305,155 @@ export const conversationBrowserTool: Tool = {
             },
             messageStart: {
                 type: 'number',
-                description: '[view] #1244 Couche 2.6 — Index 0-based du premier message a inclure (inclusif). Permet la pagination message-level sur les longues conversations. Defaut: 0 (debut). Pour paginer, re-appeler view avec messageStart = messageEnd precedent.'
+                description: '[view] 0-based start index (inclusive) for message-level pagination.'
             },
             messageEnd: {
                 type: 'number',
-                description: '[view] #1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). Si > total, est clampe a total. Defaut: jusqu\'a la fin. La reponse inclut messageRange: {start, end, total} et truncated: bool pour faciliter la navigation.'
+                description: '[view] 0-based end index (exclusive). Clamped to total. Response includes messageRange for navigation.'
             },
             output_file: {
                 type: 'string',
-                description: '[view] Chemin pour sauvegarder l\'arbre dans un fichier.'
+                description: '[view] File path to save output.'
             },
             // --- Arguments summarize ---
             summarize_type: {
                 type: 'string',
                 enum: ['trace', 'cluster', 'synthesis'],
-                description: '[summarize] Type de résumé (requis si action=summarize). "trace" = statistiques et timeline. "cluster" = grappes parent-enfant. "synthesis" = pipeline LLM avec analyse sémantique et profils d\'acteurs.'
+                description: '[summarize] Summary type (required). trace=stats+timeline, cluster=parent-child groups, synthesis=LLM analysis.'
             },
             taskId: {
                 type: 'string',
-                description: '[summarize] ID de la tâche (ou tâche racine pour cluster).'
+                description: '[summarize] Task ID (or root task for cluster).'
             },
             source: {
                 type: 'string',
                 enum: ['roo', 'claude', 'all'],
-                description: '[list/summarize] Source des conversations: "roo" (défaut, Roo Code), "claude" (Claude Code sessions), "all" (les deux).',
+                description: '[list/summarize] Conversation source: roo, claude, or all.',
                 default: 'roo'
             },
             filePath: {
                 type: 'string',
-                description: '[summarize] Chemin pour sauvegarder le fichier.'
+                description: '[summarize] Save output to this file.'
             },
             summarize_output_format: {
                 type: 'string',
                 enum: ['markdown', 'html', 'json'],
-                description: '[summarize] Format de sortie.',
+                description: '[summarize] Output format.',
                 default: 'markdown'
             },
             detailLevel: {
                 type: 'string',
                 enum: ['Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly'],
-                description: '[summarize] Niveau de détail du résumé.',
+                description: '[summarize] Detail level.',
                 default: 'Full'
             },
             truncationChars: {
                 type: 'number',
-                description: '[summarize] Chars max avant troncature (0 = pas de troncature).',
+                description: '[summarize] Max chars before truncation (0=no limit).',
                 default: 0
             },
             compactStats: {
                 type: 'boolean',
-                description: '[summarize] Format compact pour les statistiques.',
+                description: '[summarize] Compact stats format.',
                 default: false
             },
             includeCss: {
                 type: 'boolean',
-                description: '[summarize] Inclure le CSS embarqué.',
+                description: '[summarize] Include embedded CSS.',
                 default: true
             },
             generateToc: {
                 type: 'boolean',
-                description: '[summarize] Générer la table des matières.',
+                description: '[summarize] Generate table of contents.',
                 default: true
             },
             startIndex: {
                 type: 'number',
-                description: '[summarize] Index de début (1-based).'
+                description: '[summarize] Start index (1-based).'
             },
             endIndex: {
                 type: 'number',
-                description: '[summarize] Index de fin (1-based).'
+                description: '[summarize] End index (1-based).'
             },
             childTaskIds: {
                 type: 'array',
                 items: { type: 'string' },
-                description: '[summarize/cluster] IDs des tâches enfantes.'
+                description: '[summarize/cluster] Child task IDs.'
             },
             clusterMode: {
                 type: 'string',
                 enum: ['aggregated', 'detailed', 'comparative'],
-                description: '[summarize/cluster] Mode de clustering.',
+                description: '[summarize/cluster] Clustering mode.',
                 default: 'aggregated'
             },
             includeClusterStats: {
                 type: 'boolean',
-                description: '[summarize/cluster] Inclure les statistiques de grappe.',
+                description: '[summarize/cluster] Include cluster stats.',
                 default: true
             },
             crossTaskAnalysis: {
                 type: 'boolean',
-                description: '[summarize/cluster] Activer l\'analyse cross-task.',
+                description: '[summarize/cluster] Enable cross-task analysis.',
                 default: false
             },
             maxClusterDepth: {
                 type: 'number',
-                description: '[summarize/cluster] Profondeur max de grappe.',
+                description: '[summarize/cluster] Max cluster depth.',
                 default: 10
             },
             clusterSortBy: {
                 type: 'string',
                 enum: ['chronological', 'size', 'activity', 'alphabetical'],
-                description: '[summarize/cluster] Critère de tri.',
+                description: '[summarize/cluster] Sort criterion.',
                 default: 'chronological'
             },
             includeClusterTimeline: {
                 type: 'boolean',
-                description: '[summarize/cluster] Inclure la timeline.',
+                description: '[summarize/cluster] Include timeline.',
                 default: false
             },
             clusterTruncationChars: {
                 type: 'number',
-                description: '[summarize/cluster] Troncature spécifique aux grappes.',
+                description: '[summarize/cluster] Cluster-specific truncation chars.',
                 default: 0
             },
             showTaskRelationships: {
                 type: 'boolean',
-                description: '[summarize/cluster] Montrer les relations entre tâches.',
+                description: '[summarize/cluster] Show inter-task relationships.',
                 default: true
             },
             // --- Arguments synthesis ---
             synthesis_output_format: {
                 type: 'string',
                 enum: ['json', 'markdown'],
-                description: '[summarize/synthesis] Format de sortie pour la synthèse LLM. "json" retourne l\'analyse complète, "markdown" retourne la section narrative.',
+                description: '[summarize/synthesis] LLM output format. json=full analysis, markdown=narrative section.',
                 default: 'json'
             },
             // --- Arguments rebuild ---
             force_rebuild: {
                 type: 'boolean',
-                description: '[rebuild] Si true, reconstruit TOUS les squelettes (lent). Si false/omis, ne reconstruit que les manquants/obsolètes.',
+                description: '[rebuild] Rebuild all skeletons (slow). If false, only missing/stale ones.',
                 default: false
             },
             task_ids: {
                 type: 'array',
                 items: { type: 'string' },
-                description: '[rebuild] Liste optionnelle d\'IDs de tâches spécifiques à reconstruire.'
+                description: '[rebuild] Specific task IDs to rebuild.'
             },
             sources: {
                 type: 'array',
                 items: { type: 'string', enum: ['roo', 'claude', 'archive'] },
-                description: '[rebuild] #1244 Couche 1.4 — Sources de squelettes a charger. Defaut: ["roo"]. "claude" inclut les sessions Claude Code locales (Tier 2). "archive" inclut les archives cross-machine GDrive (Tier 3, requiert ROOSYNC_SHARED_PATH).'
+                description: '[rebuild] Skeleton sources. Default: ["roo"]. "claude"=local Claude sessions, "archive"=cross-machine GDrive.'
             },
             reindex: {
                 type: 'boolean',
-                description: '[rebuild] #1244 Couche 1.4 — Si true, force l\'enqueue Qdrant pour tous les squelettes construits/charges (tous tiers).',
+                description: '[rebuild] Force Qdrant reindex for all built/loaded skeletons.',
                 default: false
             },
             // #1752 Bug #3: Expose GDrive archive support in inputSchema
             includeArchives: {
                 type: 'boolean',
-                description: '[list] #1752 — Inclure les archives cross-machine depuis GDrive (Tier 3). Quand true, conversation_browser list charge les squelettes archives d\'autres machines via TaskArchiver. Defaut: false (seules les conversations locales sont retournees). Requiert ROOSYNC_SHARED_PATH configure.',
+                description: '[list] Include cross-machine GDrive archives (Tier 3). Requires ROOSYNC_SHARED_PATH.',
                 default: false
             }
         },

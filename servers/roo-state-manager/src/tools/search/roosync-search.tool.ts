@@ -72,69 +72,69 @@ export interface RooSyncSearchArgs {
  */
 export const roosyncSearchTool: Tool = {
     name: 'roosync_search',
-    description: "Outil unifié de recherche dans les tâches Roo (sémantique, textuelle, diagnostic de l'index)",
+    description: 'Search Roo tasks (semantic vector search, text search, or index diagnostic)',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['semantic', 'text', 'diagnose'],
-                description: "Action: 'semantic' (recherche vectorielle Qdrant avec fallback automatique), 'text' (recherche textuelle directe dans le cache), 'diagnose' (diagnostic de l'index sémantique)"
+                description: 'Action: semantic (Qdrant vector search), text (cache search), diagnose (index health)'
             },
             search_query: {
                 type: 'string',
-                description: 'La requête de recherche (requis pour semantic et text)'
+                description: 'Search query (required for semantic/text)'
             },
             conversation_id: {
                 type: 'string',
-                description: 'ID de la conversation à fouiller (filtre optionnel pour semantic)'
+                description: 'Conversation ID filter (optional)'
             },
             max_results: {
                 type: 'number',
-                description: 'Nombre maximum de résultats à retourner'
+                description: 'Max results to return'
             },
             workspace: {
                 type: 'string',
-                description: 'Filtre par nom de workspace (ex: "roo-extensions"). Auto-défaut: workspace courant du MCP. Pour une recherche globale cross-workspace, passer workspace: "*" ou workspace: "all".'
+                description: 'Workspace filter. Default: MCP workspace. "*" or "all" = global.'
             },
             source: {
                 type: 'string',
                 enum: ['roo', 'claude-code'],
-                description: '#604: Filtre par source de conversation (tâches Roo ou sessions Claude Code)'
+                description: 'Filter by source (Roo or Claude Code)'
             },
             chunk_type: {
                 type: 'string',
                 enum: ['message_exchange', 'tool_interaction'],
-                description: '#636: Filter by chunk type (messages vs tool calls)'
+                description: 'Filter by chunk type (messages vs tool calls)'
             },
             role: {
                 type: 'string',
                 enum: ['user', 'assistant'],
-                description: '#636: Filter by message role'
+                description: 'Filter by message role'
             },
             tool_name: {
                 type: 'string',
-                description: '#636: Filter by tool name (e.g., "write_to_file", "roosync_send")'
+                description: 'Filter by tool name'
             },
             has_errors: {
                 type: 'boolean',
-                description: '#636: Filter chunks that contain error patterns'
+                description: 'Filter chunks with error patterns'
             },
             model: {
                 type: 'string',
-                description: '#636: Filter by LLM model (e.g., "opus", "sonnet", "glm-5")'
+                description: 'Filter by LLM model'
             },
             start_date: {
                 type: 'string',
-                description: '#636 P2: Filter results after this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-01")'
+                description: 'Filter after date (ISO 8601)'
             },
             end_date: {
                 type: 'string',
-                description: '#636 P2: Filter results before this date (ISO 8601 or YYYY-MM-DD, e.g., "2026-03-11")'
+                description: 'Filter before date (ISO 8601)'
             },
             exclude_tool_results: {
                 type: 'boolean',
-                description: '#636 P3: Exclude tool_interaction chunks, returning only message_exchange chunks (conversation messages)'
+                description: 'Exclude tool_interaction chunks'
             }
         },
         required: ['action']

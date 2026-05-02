@@ -479,7 +479,7 @@ describe('Category 5: Description Discoverability', () => {
         // Keywords matched case-insensitively against description text
         // Descriptions are mostly in French, so use French keywords where applicable
         'conversation_browser': ['conversation'],
-        'roosync_search': ['recherche', 'tâche'],       // "Outil unifié de recherche dans les tâches Roo"
+        'roosync_search': ['search', 'task'],            // "Search Roo tasks (semantic, text, diagnostic)"
         'roosync_send': ['message'],                     // "Envoyer un message structuré"
         'roosync_read': ['réception', 'message'],        // "Lire la boîte de réception des messages"
         'roosync_config': ['config'],                    // "Gestion de configuration RooSync"

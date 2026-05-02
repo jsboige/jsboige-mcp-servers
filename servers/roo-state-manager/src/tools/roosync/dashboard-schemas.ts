@@ -16,9 +16,9 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 // === Author Schema ===
 
 export const AuthorSchema = z.object({
-  machineId: z.string().describe('ID de la machine'),
+  machineId: z.string().describe('Machine ID'),
   workspace: z.string().describe('Workspace ID'),
-  worktree: z.string().optional().describe('Worktree path (si applicable)')
+  worktree: z.string().optional().describe('Worktree path')
 });
 
 export type Author = z.infer<typeof AuthorSchema>;
@@ -34,18 +34,18 @@ export const TeamStageSchema = z.enum([
   'team-verify',  // Verify the solution (build + tests)
   'team-fix',     // Fix any issues found in verification (loops until verify passes)
   'none'          // No team stage (simple tasks)
-]).describe('Team pipeline stage for complex task execution');
+]).describe('Team pipeline stage');
 
 export type TeamStage = z.infer<typeof TeamStageSchema>;
 
 // === Intercom Message Schema ===
 
 export const IntercomMessageSchema = z.object({
-  id: z.string().describe('ID unique du message (ic-{timestamp})'),
+  id: z.string().describe('Unique message ID'),
   timestamp: z.string().describe('ISO 8601 timestamp'),
   author: AuthorSchema,
-  content: z.string().describe('Contenu markdown du message'),
-  teamStage: TeamStageSchema.optional().describe('Team pipeline stage (optionnel)')
+  content: z.string().describe('Markdown message content'),
+  teamStage: TeamStageSchema.optional().describe('Team pipeline stage')
 });
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
@@ -54,7 +54,7 @@ export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
 // userId = { machineId, workspace } tuple. Exactly one of userId/messageId (XOR).
 
 export const UserIdSchema = z.object({
-  machineId: z.string().describe('ID de la machine'),
+  machineId: z.string().describe('Machine ID'),
   workspace: z.string().describe('Workspace ID')
 });
 
@@ -62,11 +62,11 @@ export type UserId = z.infer<typeof UserIdSchema>;
 
 export const MentionSchema = z.object({
   userId: UserIdSchema.optional()
-    .describe('userId explicite à mentionner (exclusif avec messageId)'),
+    .describe('User to mention (exclusive with messageId)'),
   messageId: z.string().optional()
-    .describe('ID de message à référencer (format: machineId:workspace:ic-...). Résout en userId = auteur du message référencé.'),
+    .describe('Message ID to reference (resolves to author)'),
   note: z.string().optional()
-    .describe('Note optionnelle expliquant la raison de la mention')
+    .describe('Optional note')
 }).refine(
   (m) => (m.userId !== undefined) !== (m.messageId !== undefined),
   { message: 'mention: exactement un de userId ou messageId doit être fourni' }
@@ -76,11 +76,11 @@ export type Mention = z.infer<typeof MentionSchema>;
 
 export const CrossPostSchema = z.object({
   type: z.enum(['global', 'machine', 'workspace'])
-    .describe('Type de dashboard cible'),
+    .describe('Target dashboard type'),
   machineId: z.string().optional()
-    .describe('machineId cible (pour type=machine)'),
+    .describe('Target machineId'),
   workspace: z.string().optional()
-    .describe('workspace cible (pour type=workspace)')
+    .describe('Target workspace')
 });
 
 export type CrossPost = z.infer<typeof CrossPostSchema>;
@@ -115,60 +115,60 @@ export interface DashboardFrontmatter {
 
 export const DashboardArgsSchema = z.object({
   action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'])
-    .describe('Action : read, write, append, condense, list (tous dashboards), delete (supprimer), read_archive (lire archives), read_overview (vue concaténée des 3 niveaux)'),
+    .describe('Action to perform'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
-    .describe('Type de dashboard (requis sauf pour action=list)'),
+    .describe('Dashboard type (required except list/read_overview)'),
 
   machineId: z.string().optional()
-    .describe('ID machine (défaut: machine locale). Utilisé pour type machine'),
+    .describe('Machine ID (default: local)'),
 
   workspace: z.string().optional()
-    .describe('Workspace (défaut: workspace courant). Utilisé pour type workspace'),
+    .describe('Workspace (default: current)'),
 
   // Pour read
   section: z.enum(['status', 'intercom', 'all']).optional()
-    .describe('Section à lire (défaut: all)'),
+    .describe('Section to read (default: all)'),
   intercomLimit: z.number().optional()
-    .describe('Nombre max de messages intercom retournés (défaut: tous). Le dashboard est auto-condensé, donc tous les messages sont normalement visibles.'),
+    .describe('Max messages to return (default: all)'),
   mentionsOnly: z.boolean().optional()
-    .describe('(read) Ne retourner que les messages mentionnant la machine/agent courant (défaut: false)'),
+    .describe('(read) Only messages mentioning local machine/agent'),
   format: z.enum(['markdown', 'json']).optional()
-    .describe('(read/read_overview) Format de retour : "markdown" (défaut, raw markdown lisible), "json" (envelope JSON structuré)'),
+    .describe('(read/read_overview) Output format: markdown (default) or json'),
 
   // Pour write/append
   content: z.string().optional()
-    .describe('Contenu markdown pour write (remplace status.markdown) ou append (nouveau message)'),
+    .describe('Markdown for write (replaces status) or append (new message)'),
   author: AuthorSchema.optional()
-    .describe('Auteur de la modification (requis pour write/append)'),
+    .describe('Author (write/append)'),
   createIfNotExists: z.boolean().optional()
-    .describe('Créer le dashboard s\'il n\'existe pas (défaut: true)'),
+    .describe('Create if missing (default: true)'),
   messageId: z.string().optional()
-    .describe('(append) ID optionnel pour le message. Si absent, généré automatiquement.'),
+    .describe('(append) Custom message ID'),
 
   // Pour append — tags
   tags: z.array(z.string()).optional()
-    .describe('(append) Tags pour le message intercom (ex: ["INFO", "WARN", "ERROR"])'),
+    .describe('(append) Message tags'),
 
   // Pour append — Team pipeline stage (#1853)
   teamStage: TeamStageSchema.optional()
-    .describe('(append) Team pipeline stage actuel (ex: "team-plan", "team-exec", "team-verify"). Pour tâches complexes (>3 fichiers ou >50 LOC).'),
+    .describe('(append) Team pipeline stage'),
 
   // Mentions v3 (#1363)
   mentions: z.array(MentionSchema).optional()
-    .describe('(append) Mentions structurées. Chaque entrée = userId XOR messageId. Notifie les destinataires via RooSync.'),
+    .describe('(append) Mentions (userId XOR messageId)'),
 
   // Cross-post v3 (#1363)
   crossPost: z.array(CrossPostSchema).optional()
-    .describe('(append) Cross-post le même message vers d\'autres dashboards (sans notification RooSync).'),
+    .describe('(append) Cross-post to other dashboards'),
 
   // Pour condense
   keepMessages: z.number().optional()
-    .describe('Nombre de messages à conserver lors de la condensation (défaut: 10)'),
+    .describe('Messages to keep (default: 10)'),
 
   // Pour read_archive
   archiveFile: z.string().optional()
-    .describe('(read_archive) Nom du fichier archive à lire. Si absent, liste les archives disponibles.')
+    .describe('(read_archive) Archive filename (omit to list)')
 }).passthrough();
 
 export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string, any>;
@@ -179,6 +179,6 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Dashboards markdown partagés cross-machine. 3 types : global, machine, workspace. Actions : read, write (status diff), append (message intercom), condense, list (tous dashboards), delete, read_archive, read_overview (vue concaténée des 3 niveaux en 1 appel). Supporte Team pipeline stages (#1853) : team-plan, team-prd, team-exec, team-verify, team-fix.',
+  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, condense, list, delete, read_archive, read_overview. Team stages supported.',
   inputSchema: zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' })
 };
