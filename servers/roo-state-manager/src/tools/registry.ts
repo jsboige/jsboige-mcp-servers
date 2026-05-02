@@ -662,6 +662,16 @@ export function registerCallToolHandler(
                }
                break;
            }
+          // #1836: Pre-claim enforcement — prevents concurrent agent collisions
+          case 'roosync_claim': {
+              try {
+                  const m = await import('./claims/claim.tool.js');
+                  result = await m.handleClaimTool(args as any);
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          }
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
        }

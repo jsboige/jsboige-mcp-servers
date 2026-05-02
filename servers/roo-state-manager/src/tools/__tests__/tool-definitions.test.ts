@@ -39,10 +39,11 @@ import {
     roosyncManageDefinition,
     roosyncCleanupMessagesDefinition,
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    roosyncClaimDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 33;
+const EXPECTED_TOOL_COUNT = 34;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // heartbeat sits right after getStatus (not after machines) — see source.
@@ -80,7 +81,8 @@ const allDefinitions = [
     roosyncManageDefinition,
     roosyncCleanupMessagesDefinition,
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    roosyncClaimDefinition
 ];
 
 describe('tool-definitions.ts — Schema Validation', () => {
