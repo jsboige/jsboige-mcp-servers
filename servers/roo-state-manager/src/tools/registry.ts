@@ -52,7 +52,7 @@ const registryLogger = createLogger('ToolRegistry');
 
 // #1635: Tool → required capability mapping.
 // Tools not listed here have no capability dependency (always available).
-const TOOL_CAPABILITIES: Record<string, Capability[]> = {
+export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	// RooSync/sharedPath-dependent tools
 	roosync_read: ['sharedPath'],
 	roosync_send: ['sharedPath'],
