@@ -44,7 +44,7 @@ class ModelConfig:
     """A model endpoint (shared resource pool)."""
 
     id: str
-    base_url: str = "http://localhost:5001/v1"
+    base_url: str = "https://api.medium.text-generation-webui.myia.io/v1"
     api_key: str = "no-key"
     api_key_env: str = ""
     model_id: str = "default"
@@ -59,7 +59,7 @@ class ModelConfig:
     def from_dict(cls, data: dict) -> ModelConfig:
         return cls(
             id=data.get("id", "unknown"),
-            base_url=data.get("base_url", "http://localhost:5001/v1"),
+            base_url=data.get("base_url", "https://api.medium.text-generation-webui.myia.io/v1"),
             api_key=data.get("api_key", "no-key"),
             api_key_env=data.get("api_key_env", ""),
             model_id=data.get("model_id", data.get("id", "default")),
