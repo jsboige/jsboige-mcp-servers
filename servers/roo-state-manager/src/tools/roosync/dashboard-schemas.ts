@@ -38,6 +38,24 @@ export const TeamStageSchema = z.enum([
 
 export type TeamStage = z.infer<typeof TeamStageSchema>;
 
+// Verification result for team-verify stage
+export const VerificationResultSchema = z.object({
+  buildPassed: z.boolean().optional().describe('Build succeeded'),
+  testsPassed: z.boolean().optional().describe('Tests passed'),
+  issuesFound: z.array(z.string()).optional().describe('Issues found during verification')
+}).describe('Verification result for team-verify stage');
+
+export type VerificationResult = z.infer<typeof VerificationResultSchema>;
+
+// Stage transition metadata
+export const TeamStageDataSchema = z.object({
+  previousStage: TeamStageSchema.optional().describe('Previous team stage'),
+  nextStage: TeamStageSchema.optional().describe('Next team stage'),
+  verificationResult: VerificationResultSchema.optional().describe('Verification result (team-verify)')
+}).describe('Team stage transition data');
+
+export type TeamStageData = z.infer<typeof TeamStageDataSchema>;
+
 // === Intercom Message Schema ===
 
 export const IntercomMessageSchema = z.object({
@@ -45,7 +63,8 @@ export const IntercomMessageSchema = z.object({
   timestamp: z.string().describe('ISO 8601 timestamp'),
   author: AuthorSchema,
   content: z.string().describe('Markdown message content'),
-  teamStage: TeamStageSchema.optional().describe('Team pipeline stage')
+  teamStage: TeamStageSchema.optional().describe('Team pipeline stage'),
+  teamStageData: TeamStageDataSchema.optional().describe('Team stage transition data')
 });
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
@@ -153,6 +172,8 @@ export const DashboardArgsSchema = z.object({
   // Pour append — Team pipeline stage (#1853)
   teamStage: TeamStageSchema.optional()
     .describe('(append) Team pipeline stage'),
+  teamStageData: TeamStageDataSchema.optional()
+    .describe('(append) Team stage transition data'),
 
   // Mentions v3 (#1363)
   mentions: z.array(MentionSchema).optional()
