@@ -481,7 +481,7 @@ describe('Category 5: Description Discoverability', () => {
         'conversation_browser': ['conversation'],
         'roosync_search': ['search', 'task'],            // "Search Roo tasks (semantic, text, diagnostic)"
         'roosync_send': ['message'],                     // "Envoyer un message structuré"
-        'roosync_read': ['réception', 'message'],        // "Lire la boîte de réception des messages"
+        'roosync_read': ['inbox', 'message'],            // "Read RooSync inbox, message details, or attachments"
         'roosync_config': ['config'],                    // "Gestion de configuration RooSync"
         'roosync_compare_config': ['compare', 'config'], // "Compare les configurations Roo"
         // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
@@ -496,7 +496,7 @@ describe('Category 5: Description Discoverability', () => {
         // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
         // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
         'codebase_search': ['recherche', 'code'],        // "Recherche sémantique dans le code"
-        'view_task_details': ['tâche', 'détail'],        // "détails techniques complets... tâche spécifique"
+        'view_task_details': ['task', 'detail'],          // "Full technical details (action metadata) for a specific task"
     };
 
     it('tool descriptions contain discoverable keywords', async () => {
