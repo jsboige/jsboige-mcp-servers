@@ -133,11 +133,11 @@ export interface DashboardFrontmatter {
 // === Dashboard Args Schema (unified for all actions) ===
 
 export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview'])
+  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview', 'refresh', 'update'])
     .describe('Action to perform'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
-    .describe('Dashboard type (required except list/read_overview)'),
+    .describe('Dashboard type (required except list/read_overview/refresh/update)'),
 
   machineId: z.string().optional()
     .describe('Machine ID (default: local)'),
@@ -145,9 +145,9 @@ export const DashboardArgsSchema = z.object({
   workspace: z.string().optional()
     .describe('Workspace (default: current)'),
 
-  // Pour read
-  section: z.enum(['status', 'intercom', 'all']).optional()
-    .describe('Section to read (default: all)'),
+  // Pour read/update — section semantics depend on action
+  section: z.enum(['status', 'intercom', 'all', 'machine', 'global', 'decisions', 'metrics']).optional()
+    .describe('Section to read (status/intercom/all) or update (machine/global/intercom/decisions/metrics)'),
   intercomLimit: z.number().optional()
     .describe('Max messages to return (default: all)'),
   mentionsOnly: z.boolean().optional()
@@ -157,7 +157,7 @@ export const DashboardArgsSchema = z.object({
 
   // Pour write/append
   content: z.string().optional()
-    .describe('Markdown for write (replaces status) or append (new message)'),
+    .describe('Markdown for write (replaces status), append (new message), or update (section content)'),
   author: AuthorSchema.optional()
     .describe('Author (write/append)'),
   createIfNotExists: z.boolean().optional()
@@ -189,7 +189,17 @@ export const DashboardArgsSchema = z.object({
 
   // Pour read_archive
   archiveFile: z.string().optional()
-    .describe('(read_archive) Archive filename (omit to list)')
+    .describe('(read_archive) Archive filename (omit to list)'),
+
+  // Pour refresh (#1935 Cluster B)
+  baseline: z.string().optional()
+    .describe('(refresh) Baseline machine (default: myia-ai-01)'),
+  outputDir: z.string().optional()
+    .describe('(refresh) Output directory (default: $ROOSYNC_SHARED_PATH/dashboards)'),
+
+  // Pour update (#1935 Cluster B)
+  mode: z.enum(['replace', 'append', 'prepend']).optional()
+    .describe('(update) Update mode: replace, append, prepend (default: replace)')
 }).passthrough();
 
 export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string, any>;
@@ -200,6 +210,6 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, condense, list, delete, read_archive, read_overview. Team stages supported.',
+  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, condense, list, delete, read_archive, read_overview, refresh, update. Team stages supported.',
   inputSchema: zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' })
 };

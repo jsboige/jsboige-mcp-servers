@@ -1563,6 +1563,14 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
     return handleReadOverview(resolvedMachineId, resolvedWorkspace, args, requestEcho);
   }
 
+  // #1935 Cluster B: refresh/update actions delegate to legacy tools
+  if (args.action === 'refresh') {
+    return handleRefresh(args, requestEcho);
+  }
+  if (args.action === 'update') {
+    return handleUpdate(args, requestEcho);
+  }
+
   if (!args.type) {
     throw new Error('type est requis pour action=' + args.action);
   }
@@ -1762,16 +1770,18 @@ async function handleRead(
   }
 
   const section = args.section ?? 'all';
+  // #1935: section now includes update-specific values — narrow to read-safe values
+  const readSection = (section === 'status' || section === 'intercom' || section === 'all') ? section : 'all';
   // intercomLimit is kept as an optional safety net but defaults to returning ALL messages.
   // The dashboard should stay under 50KB thanks to size-based condensation,
   // so agents always see the full picture without needing to paginate.
   const intercomLimit = args.intercomLimit;
   let data: Partial<Dashboard> = {};
 
-  if (section === 'status' || section === 'all') {
+  if (readSection === 'status' || readSection === 'all') {
     data.status = dashboard.status;
   }
-  if (section === 'intercom' || section === 'all') {
+  if (readSection === 'intercom' || readSection === 'all') {
     let messages = intercomLimit
       ? dashboard.intercom.messages.slice(-intercomLimit)
       : dashboard.intercom.messages;
@@ -1789,7 +1799,7 @@ async function handleRead(
       messages
     };
   }
-  if (section === 'all') {
+  if (readSection === 'all') {
     data = {
       type: dashboard.type,
       key: dashboard.key,
@@ -1812,7 +1822,7 @@ async function handleRead(
 
   // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
   if (args.format !== 'json') {
-    jsonResult.markdownContent = buildMarkdownOutput(dashboard, section, data.intercom?.messages);
+    jsonResult.markdownContent = buildMarkdownOutput(dashboard, readSection, data.intercom?.messages);
   }
 
   return jsonResult;
@@ -2609,4 +2619,59 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     }
     throw error;
   }
+}
+
+// === #1935 Cluster B: refresh/update handlers ===
+
+async function handleRefresh(
+  args: DashboardArgs,
+  requestEcho: DashboardRequestEcho
+): Promise<DashboardResult> {
+  const { roosyncRefreshDashboard } = await import('./refresh-dashboard.js');
+  const result = await roosyncRefreshDashboard({
+    baseline: args.baseline,
+    outputDir: args.outputDir
+  });
+  return {
+    success: result.success,
+    action: 'refresh',
+    key: 'mcp-inventory',
+    type: 'inventory',
+    request: requestEcho,
+    data: result as unknown as Partial<Dashboard>,
+    message: result.success
+      ? `Dashboard MCP rafraîchi: ${result.metrics.totalMachines} machines`
+      : `Erreur rafraîchissement: ${(result as any).message ?? 'unknown'}`
+  };
+}
+
+async function handleUpdate(
+  args: DashboardArgs,
+  requestEcho: DashboardRequestEcho
+): Promise<DashboardResult> {
+  if (!args.section || !['machine', 'global', 'intercom', 'decisions', 'metrics'].includes(args.section)) {
+    throw new Error('section (machine/global/intercom/decisions/metrics) est requis pour action=update');
+  }
+  if (!args.content) {
+    throw new Error('content est requis pour action=update');
+  }
+  const { roosyncUpdateDashboard } = await import('./update-dashboard.js');
+  const result = await roosyncUpdateDashboard({
+    section: args.section as 'machine' | 'global' | 'intercom' | 'decisions' | 'metrics',
+    content: args.content,
+    machine: args.machineId,
+    workspace: args.workspace,
+    mode: args.mode
+  });
+  return {
+    success: result.success,
+    action: 'update',
+    key: 'hierarchical',
+    type: 'hierarchical',
+    request: requestEcho,
+    data: result as unknown as Partial<Dashboard>,
+    message: result.success
+      ? `Section '${result.section}' mise à jour (${result.mode})`
+      : `Erreur mise à jour: ${result.dashboardPath ?? 'unknown'}`
+  };
 }

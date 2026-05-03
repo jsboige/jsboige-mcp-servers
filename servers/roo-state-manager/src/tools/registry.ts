@@ -592,23 +592,28 @@ export function registerCallToolHandler(
                }
                break;
            }
-           // NOUVEAU: Outil de refresh dashboard (T3.17)
+           // #1935 Cluster B: Backward-compat redirect → roosync_dashboard(action: "refresh")
            case 'roosync_refresh_dashboard': {
                try {
-                   const m = await import('./roosync/refresh-dashboard.js');
-                   const roosyncResult = await m.roosyncRefreshDashboard(args as any);
-                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                   const m = await import('./roosync/dashboard.js');
+                   const dashboardResult = await m.roosyncDashboard({ ...args, action: 'refresh' } as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(dashboardResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
                break;
            }
-           // #546: Dashboard hiérarchique
+           // #1935 Cluster B: Backward-compat redirect → roosync_dashboard(action: "update")
            case 'roosync_update_dashboard': {
                try {
-                   const m = await import('./roosync/update-dashboard.js');
-                   const roosyncResult = await m.roosyncUpdateDashboard(args as any);
-                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                   const m = await import('./roosync/dashboard.js');
+                   const updateArgs = { ...args, action: 'update' };
+                   // Map old 'machine' param to machineId
+                   if ((args as any).machine && !(args as any).machineId) {
+                       (updateArgs as any).machineId = (args as any).machine;
+                   }
+                   const dashboardResult = await m.roosyncDashboard(updateArgs as any);
+                   result = { content: [{ type: 'text', text: JSON.stringify(dashboardResult, null, 2) }] };
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }
