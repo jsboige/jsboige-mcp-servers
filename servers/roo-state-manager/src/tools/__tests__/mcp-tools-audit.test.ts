@@ -56,7 +56,8 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'export_config': 'export/export-config.ts',
 
   // Diagnostic tools
-  'analyze_roosync_problems': 'diagnostic/analyze_problems.ts',
+  // #1935 Cluster D: analyze_roosync_problems fused into roosync_diagnose(action: "analyze")
+  'analyze_roosync_problems': 'roosync/diagnose.ts',
   // diagnose_env: removed in #681/#698 — consolidated into roosync_diagnose (roosync/diagnose.ts)
   'read_vscode_logs': 'read-vscode-logs.ts',
 

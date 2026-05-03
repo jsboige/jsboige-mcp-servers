@@ -130,7 +130,7 @@ describe('Category 1: ListTools → CallTool Consistency', () => {
 
     it('ListTools should expose a reasonable number of tools (20-50 range)', async () => {
         const toolNames = await getListToolsNames();
-        // Currently 24 tools. This guards against accidental mass removal or explosion
+        // Currently 23 tools (24 after #297 - 1 Cluster D fusion). This guards against accidental mass removal or explosion
         expect(toolNames.length).toBeGreaterThanOrEqual(20);
         expect(toolNames.length).toBeLessThanOrEqual(50);
     });

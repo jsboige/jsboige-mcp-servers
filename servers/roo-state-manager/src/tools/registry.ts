@@ -399,9 +399,16 @@ export function registerCallToolHandler(
           // CONS-9: export_task_tree_markdown retiré (remplacé par task_export action='markdown')
 
           // Diagnostic Tools - WP4
+          // #1935 Cluster D: analyze_roosync_problems redirects to roosync_diagnose(action: "analyze")
           case 'analyze_roosync_problems': {
-              const m = await import('./diagnostic/analyze_problems.js');
-              result = await m.analyzeRooSyncProblems(args as any) as any;
+              try {
+                  const m = await import('./roosync/diagnose.js');
+                  const redirectArgs = { ...args, action: 'analyze' as const };
+                  const diagResult = await m.roosyncDiagnose(redirectArgs as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(diagResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
               break;
           }
 
