@@ -307,10 +307,31 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
     // #1365: Filter out orphan test entries (test-machine, persistent-machine, etc.)
     // Only keep machines matching the known pattern: myia-*
-    const filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
-    const filteredOfflineMachines = (heartbeatState?.offlineMachines ?? []).filter(isKnownMachine);
-    const filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
+    let filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
+    let filteredOfflineMachines = (heartbeatState?.offlineMachines ?? []).filter(isKnownMachine);
+    let filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
     const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
+
+    // #1953: Cross-check heartbeat-derived status against dashboard activity.
+    // Dashboard message timestamps are embedded in file content (immune to GDrive
+    // propagation latency on file mod time), preventing false OFFLINE detection.
+    let dashboardOverrides: string[] = [];
+    try {
+      const dashboardsDir = join(getSharedStatePath(), 'dashboards');
+      const workspaceDashboard = join(dashboardsDir, 'workspace-roo-extensions.md');
+      const dashboardContent = readFileSync(workspaceDashboard, 'utf-8');
+      const { crossCheckWithDashboard } = await import('../../utils/dashboard-activity.js');
+      const crossChecked = crossCheckWithDashboard(
+        { onlineMachines: filteredOnlineMachines, offlineMachines: filteredOfflineMachines, warningMachines: filteredWarningMachines },
+        dashboardContent
+      );
+      filteredOnlineMachines = crossChecked.onlineMachines;
+      filteredOfflineMachines = crossChecked.offlineMachines;
+      filteredWarningMachines = crossChecked.warningMachines;
+      dashboardOverrides = crossChecked.overrides;
+    } catch {
+      // Dashboard file may not exist yet — skip cross-check silently
+    }
 
     // #1409: Use machine registry as authoritative source for total count
     const registryMachineIds = service.getKnownMachineIds();
@@ -361,7 +382,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       machines: {
         online: filteredOnlineMachines.length,
         offline: filteredOfflineMachines.length,
-        total: totalMachines
+        total: totalMachines,
+        ...(dashboardOverrides.length > 0 ? { dashboardOverrides } : {})
       },
       inbox: inboxStats,
       decisions: { pending: pendingDecisions },
