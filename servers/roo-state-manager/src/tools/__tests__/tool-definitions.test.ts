@@ -1,6 +1,10 @@
 /**
- * Tests for tool-definitions.ts — static schema validation for all 30 tool definitions.
+ * Tests for tool-definitions.ts — static schema validation for all 24 tool definitions.
  * Ensures structural integrity, naming conventions, and schema correctness.
+ * #1863: 3 deprecated definitions (decision_info, machines, cleanup_messages) removed from tools/list.
+ * #1922: 3 more deprecated removed (same as #1863 Pass 4).
+ * #1841: 6 more definitions removed from allToolDefinitions (best practices, export_config, view_task_details,
+ *        get_raw_conversation, refresh_dashboard, update_dashboard). Handlers preserved via registry.ts redirects.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -40,7 +44,7 @@ import {
     roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 30;
+const EXPECTED_TOOL_COUNT = 24;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 const allDefinitions = [
@@ -50,11 +54,11 @@ const allDefinitions = [
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
-    getMcpBestPracticesDefinition,
+    // [REMOVED #291] getMcpBestPracticesDefinition — removed from allToolDefinitions
     exportDataDefinition,
-    exportConfigDefinition,
-    viewTaskDetailsDefinition,
-    getRawConversationDefinition,
+    // [REMOVED #291] exportConfigDefinition — removed from allToolDefinitions
+    // [REMOVED #291] viewTaskDetailsDefinition — removed from allToolDefinitions
+    // [REMOVED #291] getRawConversationDefinition — removed from allToolDefinitions
     analyzeRooSyncProblemsDefinition,
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
@@ -68,8 +72,8 @@ const allDefinitions = [
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
-    roosyncRefreshDashboardDefinition,
-    roosyncUpdateDashboardDefinition,
+    // [REMOVED #291] roosyncRefreshDashboardDefinition — removed from allToolDefinitions
+    // [REMOVED #291] roosyncUpdateDashboardDefinition — removed from allToolDefinitions
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,
@@ -80,7 +84,7 @@ const allDefinitions = [
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 34 tool definitions', () => {
+        it('should have exactly 24 tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 
@@ -354,7 +358,8 @@ describe('tool-definitions.ts — Schema Validation', () => {
             // #1609: roosyncHeartbeatDefinition removed
             // #1863: roosyncMachinesDefinition removed
             roosyncMcpManagementDefinition, roosyncStorageManagementDefinition,
-            roosyncDiagnoseDefinition, roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition
+            roosyncDiagnoseDefinition
+            // [REMOVED #291] roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition
         ];
 
         it.each(strictTools.map(d => [d.name, d]))(

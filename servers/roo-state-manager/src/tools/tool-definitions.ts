@@ -622,12 +622,12 @@ export const allToolDefinitions = [
     // #452 Phase 2: codebase_search
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
-    getMcpBestPracticesDefinition,
+    // [REMOVED #1841] getMcpBestPracticesDefinition — converted to static doc: docs/mcp-best-practices.md, redirect in registry.ts
     // CONS-10: Export
     exportDataDefinition,
-    exportConfigDefinition,
-    viewTaskDetailsDefinition,
-    getRawConversationDefinition,
+    // [REMOVED #1841] exportConfigDefinition — rarely used, config accessible via export_data settings, redirect in registry.ts
+    // [REMOVED #1841] viewTaskDetailsDefinition — conversation_browser(action: "view", detail_level: "Full") provides equivalent, redirect in registry.ts
+    // [REMOVED #1841] getRawConversationDefinition — export_data(format: "json", target: "task") provides equivalent, redirect in registry.ts
     // WP4: Diagnostic
     analyzeRooSyncProblemsDefinition,
     // RooSync tools (20) — same order as roosyncTools array in roosync/index.ts
@@ -643,8 +643,8 @@ export const allToolDefinitions = [
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
-    roosyncRefreshDashboardDefinition,
-    roosyncUpdateDashboardDefinition,
+    // [REMOVED #1935 Cluster B] roosyncRefreshDashboardDefinition — fused into roosync_dashboard(action: "refresh"), redirect in registry.ts
+    // [REMOVED #1935 Cluster B] roosyncUpdateDashboardDefinition — fused into roosync_dashboard(action: "update"), redirect in registry.ts
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,

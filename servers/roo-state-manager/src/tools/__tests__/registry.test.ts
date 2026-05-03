@@ -130,18 +130,8 @@ describe('registry.ts - Tool Registration', () => {
             expect(toolNames).toContain('export_data');
         });
 
-        it('should include export_config tool', async () => {
-            const mockServer = {
-                setRequestHandler: vi.fn()
-            } as any;
-
-            registerListToolsHandler(mockServer);
-
-            const handler = mockServer.setRequestHandler.mock.calls[0][1];
-            const result = await handler();
-            const toolNames = result.tools.map((t: any) => t.name);
-            expect(toolNames).toContain('export_config');
-        });
+        // [REMOVED #291] export_config test removed — tool removed from allToolDefinitions (ListTools)
+        // Backward compat redirect preserved in registry.ts for CallTool
 
         it('should have tools count greater than 20', async () => {
             const mockServer = {
