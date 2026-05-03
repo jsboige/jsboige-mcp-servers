@@ -1,7 +1,6 @@
 /**
- * Tests for tool-definitions.ts — static schema validation for all 31 tool definitions.
+ * Tests for tool-definitions.ts — static schema validation for all 30 tool definitions.
  * Ensures structural integrity, naming conventions, and schema correctness.
- * #1863: 3 deprecated definitions (decision_info, machines, cleanup_messages) removed from tools/list.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -24,12 +23,11 @@ import {
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
-    // [REMOVED #1863] roosyncDecisionInfoDefinition — fused into roosync_decision(action: "info")
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
-    // [REMOVED #1863] roosyncMachinesDefinition — fused into roosync_inventory(type: "machines")
     // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
+    // #1863: roosyncDecisionInfoDefinition, roosyncMachinesDefinition, roosyncCleanupMessagesDefinition removed
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
@@ -38,16 +36,13 @@ import {
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,
-    // [REMOVED #1863] roosyncCleanupMessagesDefinition — fused into roosync_manage(action: "bulk_*")
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition,
-    roosyncClaimDefinition
+    roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 31;
+const EXPECTED_TOOL_COUNT = 30;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
-// #1863: 3 deprecated definitions removed from allToolDefinitions
 const allDefinitions = [
     conversationBrowserDefinition,
     taskExportDefinition,
@@ -66,11 +61,9 @@ const allDefinitions = [
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
-    // [REMOVED #1863] roosyncDecisionInfoDefinition
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
-    // [REMOVED #1863] roosyncMachinesDefinition
     // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
@@ -80,16 +73,14 @@ const allDefinitions = [
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,
-    // [REMOVED #1863] roosyncCleanupMessagesDefinition
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition,
-    roosyncClaimDefinition
+    roosyncDashboardDefinition
 ];
 
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 31 tool definitions', () => {
+        it('should have exactly 34 tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 
@@ -291,9 +282,6 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(actions).toContain('maintenance');
         });
 
-        // #1863: roosync_cleanup_messages test removed — definition removed from tools/list
-        // Backward compat redirect preserved in registry.ts
-
         it('roosync_compare_config should support full granularity', () => {
             const granularity = (roosyncCompareConfigDefinition.inputSchema.properties.granularity as Record<string, unknown>).enum as string[];
             expect(granularity).toContain('full');
@@ -314,9 +302,6 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(roosyncDecisionDefinition.inputSchema.required).toContain('decisionId');
         });
 
-        // #1863: roosync_decision_info test removed — definition removed from tools/list
-        // Use roosync_decision(action: "info") instead
-
         it('roosync_attachments should require action', () => {
             expect(roosyncAttachmentsDefinition.inputSchema.required).toContain('action');
         });
@@ -324,9 +309,6 @@ describe('tool-definitions.ts — Schema Validation', () => {
         it('roosync_inventory should require type', () => {
             expect(roosyncInventoryDefinition.inputSchema.required).toContain('type');
         });
-
-        // #1863: roosync_machines test removed — definition removed from tools/list
-        // Use roosync_inventory(type: "machines") instead
 
         it('export_config should require action', () => {
             expect(exportConfigDefinition.inputSchema.required).toContain('action');
@@ -369,8 +351,8 @@ describe('tool-definitions.ts — Schema Validation', () => {
             roosyncInitDefinition, roosyncGetStatusDefinition, roosyncCompareConfigDefinition,
             roosyncListDiffsDefinition, roosyncBaselineDefinition, roosyncConfigDefinition,
             roosyncInventoryDefinition,
-            // #1863: roosyncMachinesDefinition removed from tools/list
             // #1609: roosyncHeartbeatDefinition removed
+            // #1863: roosyncMachinesDefinition removed
             roosyncMcpManagementDefinition, roosyncStorageManagementDefinition,
             roosyncDiagnoseDefinition, roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition
         ];
