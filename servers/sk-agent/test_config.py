@@ -474,7 +474,7 @@ class TestDataclasses:
 
     def test_model_config_defaults(self):
         m = ModelConfig(id="test")
-        assert m.base_url == "http://localhost:5001/v1"
+        assert m.base_url == "https://api.medium.text-generation-webui.myia.io/v1"
         assert m.vision is False
         assert m.enabled is True
         assert m.context_window == 32_000

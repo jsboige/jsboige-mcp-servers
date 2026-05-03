@@ -69,7 +69,7 @@
     },
     {
       "id": "qwen3.6-35b-a3b",
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
       "model_id": "qwen3.6-35b-a3b",
@@ -80,7 +80,7 @@
     },
     {
       "id": "qwen3.6-35b-no-thinking",
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
       "api_key": "YOUR_MEDIUM_API_KEY_HERE",
       "model_id": "qwen3.6-35b-a3b",
@@ -115,7 +115,7 @@
     },
     {
       "id": "owui-omnicoder-9b",
-      "enabled": true,
+      "enabled": false,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "Local.omnicoder-9b",
@@ -167,7 +167,7 @@
       "model_id": "vision-expert",
       "vision": true,
       "thinking": false,
-      "description": "OWUI Expert Vision (wrapper omnicoder-9b).",
+      "description": "OWUI Expert Vision (wrapper qwen3.6-35b-a3b).",
       "context_window": 131072
     }
   ],
@@ -278,17 +278,17 @@
     },
     {
       "id": "fast-local",
-      "description": "Quick local responses via OWUI (~1-5s), no tools, no thinking. Requires OWUI proxy",
-      "model": "owui-glm-4.7-flash-fast",
-      "system_prompt": "You are a fast local assistant via OWUI proxy. Respond concisely and accurately without thinking mode. Always respond in the same language as the user.",
+      "description": "Quick local responses via direct vLLM Qwen3.6 35B no-thinking mode (86 tok/s, 262K ctx). No tools, no thinking overhead",
+      "model": "qwen3.6-35b-no-thinking",
+      "system_prompt": "You are a fast local assistant. Respond concisely and accurately without thinking mode. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
     },
     {
       "id": "fast-local-thinking",
-      "description": "Local responses with thinking mode via OWUI GLM-4.7-Flash. Better reasoning, slightly slower",
-      "model": "owui-glm-4.7-flash-thinking",
-      "system_prompt": "You are a local assistant with thinking mode via OWUI proxy. Think step by step before responding, showing your reasoning. Always respond in the same language as the user.",
+      "description": "Local responses with thinking mode via direct vLLM Qwen3.6 35B (86 tok/s, 262K ctx, vision+thinking). Better reasoning, slightly slower",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "You are a local assistant with thinking mode. Think step by step before responding, showing your reasoning. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
     },
