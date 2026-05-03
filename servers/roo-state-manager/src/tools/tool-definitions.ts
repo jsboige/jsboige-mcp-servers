@@ -18,56 +18,56 @@ import { dashboardToolMetadata } from './roosync/dashboard-schemas.js';
 // ============================================================
 export const conversationBrowserDefinition = {
     name: 'conversation_browser',
-    description: 'Outil consolidé pour naviguer, visualiser et résumer les conversations. Actions: "list" (lister les conversations récentes), "tree" (arbre des tâches), "current" (tâche active), "view" (vue conversation), "summarize" (résumé/synthèse — types: "trace", "cluster", "synthesis" pour analyse LLM complète), "rebuild" (reconstruire le cache de squelettes sur disque). Commencez par "list" pour découvrir les IDs de tâches.',
+    description: 'Navigate, view, and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster/synthesis), rebuild. Start with "list".',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'], description: 'Action à effectuer. Utilisez "list" pour découvrir les conversations disponibles et leurs IDs. "rebuild" force la reconstruction du cache de squelettes.' },
-            limit: { type: 'number', description: '[list] Nombre maximum de conversations à retourner (défaut: toutes).' },
-            sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'], description: '[list] Critère de tri.', default: 'lastActivity' },
-            sortOrder: { type: 'string', enum: ['asc', 'desc'], description: '[list] Ordre de tri.', default: 'desc' },
-            pendingSubtaskOnly: { type: 'boolean', description: '[list] Ne retourner que les tâches avec sous-tâche en attente.' },
-            contentPattern: { type: 'string', description: '[list] Filtre les tâches contenant ce texte dans leurs messages.' },
-            conversation_id: { type: 'string', description: "[tree] ID de la conversation pour l'arbre des tâches." },
-            max_depth: { type: 'number', description: "[tree] Profondeur maximale de l'arbre." },
-            include_siblings: { type: 'boolean', description: '[tree] Inclure les tâches sœurs.', default: true },
-            output_format: { type: 'string', enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'], description: '[tree] Format de sortie.', default: 'json' },
-            current_task_id: { type: 'string', description: '[tree/view] ID de la tâche en cours pour marquage.' },
-            truncate_instruction: { type: 'number', description: "[tree] Longueur max de l'instruction (défaut: 80).", default: 80 },
-            show_metadata: { type: 'boolean', description: '[tree] Afficher les métadonnées détaillées.', default: false },
-            workspace: { type: 'string', description: '[current/view] Chemin du workspace (détection auto si omis).' },
-            task_id: { type: 'string', description: '[view] ID de la tâche de départ.' },
-            view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], description: "[view] Mode d'affichage.", default: 'chain' },
-            detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], description: '[view] Niveau de détail.', default: 'skeleton' },
-            truncate: { type: 'number', description: '[view] Lignes à conserver au début/fin (0 = défaut intelligent).', default: 0 },
-            max_output_length: { type: 'number', description: '[view] Limite max de caractères en sortie.', default: 300000 },
-            smart_truncation: { type: 'boolean', description: '[view] Activer la troncature intelligente avec gradient.', default: false },
-            smart_truncation_config: { type: 'object', description: '[view] Configuration avancée pour la troncature intelligente.', properties: { gradientStrength: { type: 'number' }, minPreservationRate: { type: 'number' }, maxTruncationRate: { type: 'number' } } },
-            output_file: { type: 'string', description: "[view] Chemin pour sauvegarder l'arbre dans un fichier." },
-            summarize_type: { type: 'string', enum: ['trace', 'cluster', 'synthesis'], description: '[summarize] Type de résumé (requis si action=summarize). "trace" = statistiques et timeline. "cluster" = grappes parent-enfant. "synthesis" = pipeline LLM avec analyse sémantique et profils d\'acteurs.' },
-            taskId: { type: 'string', description: '[summarize] ID de la tâche (ou tâche racine pour cluster).' },
-            source: { type: 'string', enum: ['roo', 'claude', 'all'], description: '[list/summarize] Source des conversations: "roo" (défaut, Roo Code), "claude" (Claude Code sessions), "all" (les deux).', default: 'roo' },
-            filePath: { type: 'string', description: '[summarize] Chemin pour sauvegarder le fichier.' },
-            summarize_output_format: { type: 'string', enum: ['markdown', 'html', 'json'], description: '[summarize] Format de sortie.', default: 'markdown' },
-            detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly'], description: '[summarize] Niveau de détail du résumé.', default: 'Full' },
-            truncationChars: { type: 'number', description: '[summarize] Chars max avant troncature (0 = pas de troncature).', default: 0 },
-            compactStats: { type: 'boolean', description: '[summarize] Format compact pour les statistiques.', default: false },
-            includeCss: { type: 'boolean', description: '[summarize] Inclure le CSS embarqué.', default: true },
-            generateToc: { type: 'boolean', description: '[summarize] Générer la table des matières.', default: true },
-            startIndex: { type: 'number', description: '[summarize] Index de début (1-based).' },
-            endIndex: { type: 'number', description: '[summarize] Index de fin (1-based).' },
-            childTaskIds: { type: 'array', items: { type: 'string' }, description: '[summarize/cluster] IDs des tâches enfantes.' },
-            clusterMode: { type: 'string', enum: ['aggregated', 'detailed', 'comparative'], description: '[summarize/cluster] Mode de clustering.', default: 'aggregated' },
-            includeClusterStats: { type: 'boolean', description: '[summarize/cluster] Inclure les statistiques de grappe.', default: true },
-            crossTaskAnalysis: { type: 'boolean', description: "[summarize/cluster] Activer l'analyse cross-task.", default: false },
-            maxClusterDepth: { type: 'number', description: '[summarize/cluster] Profondeur max de grappe.', default: 10 },
-            clusterSortBy: { type: 'string', enum: ['chronological', 'size', 'activity', 'alphabetical'], description: '[summarize/cluster] Critère de tri.', default: 'chronological' },
-            includeClusterTimeline: { type: 'boolean', description: '[summarize/cluster] Inclure la timeline.', default: false },
-            clusterTruncationChars: { type: 'number', description: '[summarize/cluster] Troncature spécifique aux grappes.', default: 0 },
-            showTaskRelationships: { type: 'boolean', description: '[summarize/cluster] Montrer les relations entre tâches.', default: true },
-            synthesis_output_format: { type: 'string', enum: ['json', 'markdown'], description: '[summarize/synthesis] Format de sortie pour la synthèse LLM. "json" retourne l\'analyse complète, "markdown" retourne la section narrative.', default: 'json' },
-            force_rebuild: { type: 'boolean', description: '[rebuild] Si true, reconstruit TOUS les squelettes (lent). Si false/omis, ne reconstruit que les manquants/obsolètes.', default: false },
-            task_ids: { type: 'array', items: { type: 'string' }, description: '[rebuild] Liste optionnelle d\'IDs de tâches spécifiques à reconstruire.' }
+            action: { type: 'string', enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'], description: 'Action. Use "list" first to discover task IDs.' },
+            limit: { type: 'number', description: '[list] Max conversations to return.' },
+            sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'], description: '[list] Sort criterion.', default: 'lastActivity' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'], description: '[list] Sort order.', default: 'desc' },
+            pendingSubtaskOnly: { type: 'boolean', description: '[list] Only tasks with pending subtasks.' },
+            contentPattern: { type: 'string', description: '[list] Filter tasks containing this text.' },
+            conversation_id: { type: 'string', description: '[tree] Conversation ID.' },
+            max_depth: { type: 'number', description: '[tree] Max tree depth.' },
+            include_siblings: { type: 'boolean', description: '[tree] Include sibling tasks.', default: true },
+            output_format: { type: 'string', enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'], description: '[tree] Output format.', default: 'json' },
+            current_task_id: { type: 'string', description: '[tree/view] Current task ID for highlighting.' },
+            truncate_instruction: { type: 'number', description: '[tree] Max instruction length.', default: 80 },
+            show_metadata: { type: 'boolean', description: '[tree] Show detailed metadata.', default: false },
+            workspace: { type: 'string', description: '[current/view] Workspace path (auto-detected if omitted).' },
+            task_id: { type: 'string', description: '[view] Starting task ID.' },
+            view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], description: '[view] Display mode.', default: 'chain' },
+            detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], description: '[view] Detail level.', default: 'skeleton' },
+            truncate: { type: 'number', description: '[view] Lines to keep at start/end.', default: 0 },
+            max_output_length: { type: 'number', description: '[view] Max output chars.', default: 300000 },
+            smart_truncation: { type: 'boolean', description: '[view] Smart gradient truncation.', default: false },
+            smart_truncation_config: { type: 'object', description: '[view] Smart truncation config.', properties: { gradientStrength: { type: 'number' }, minPreservationRate: { type: 'number' }, maxTruncationRate: { type: 'number' } } },
+            output_file: { type: 'string', description: '[view] Save tree to file.' },
+            summarize_type: { type: 'string', enum: ['trace', 'cluster', 'synthesis'], description: '[summarize] Summary type: trace (stats), cluster (parent-child), synthesis (LLM analysis).' },
+            taskId: { type: 'string', description: '[summarize] Task ID (or root for cluster).' },
+            source: { type: 'string', enum: ['roo', 'claude', 'all'], description: '[list/summarize] Source: roo, claude, or all.', default: 'roo' },
+            filePath: { type: 'string', description: '[summarize] Save to file path.' },
+            summarize_output_format: { type: 'string', enum: ['markdown', 'html', 'json'], description: '[summarize] Output format.', default: 'markdown' },
+            detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly'], description: '[summarize] Detail level.', default: 'Full' },
+            truncationChars: { type: 'number', description: '[summarize] Max chars before truncation (0 = none).', default: 0 },
+            compactStats: { type: 'boolean', description: '[summarize] Compact stats format.', default: false },
+            includeCss: { type: 'boolean', description: '[summarize] Include embedded CSS.', default: true },
+            generateToc: { type: 'boolean', description: '[summarize] Generate table of contents.', default: true },
+            startIndex: { type: 'number', description: '[summarize] Start index (1-based).' },
+            endIndex: { type: 'number', description: '[summarize] End index (1-based).' },
+            childTaskIds: { type: 'array', items: { type: 'string' }, description: '[summarize/cluster] Child task IDs.' },
+            clusterMode: { type: 'string', enum: ['aggregated', 'detailed', 'comparative'], description: '[summarize/cluster] Clustering mode.', default: 'aggregated' },
+            includeClusterStats: { type: 'boolean', description: '[summarize/cluster] Include cluster stats.', default: true },
+            crossTaskAnalysis: { type: 'boolean', description: '[summarize/cluster] Cross-task analysis.', default: false },
+            maxClusterDepth: { type: 'number', description: '[summarize/cluster] Max cluster depth.', default: 10 },
+            clusterSortBy: { type: 'string', enum: ['chronological', 'size', 'activity', 'alphabetical'], description: '[summarize/cluster] Sort criterion.', default: 'chronological' },
+            includeClusterTimeline: { type: 'boolean', description: '[summarize/cluster] Include timeline.', default: false },
+            clusterTruncationChars: { type: 'number', description: '[summarize/cluster] Truncation limit.', default: 0 },
+            showTaskRelationships: { type: 'boolean', description: '[summarize/cluster] Show task relationships.', default: true },
+            synthesis_output_format: { type: 'string', enum: ['json', 'markdown'], description: '[summarize/synthesis] Output format.', default: 'json' },
+            force_rebuild: { type: 'boolean', description: '[rebuild] Rebuild all skeletons (slow).', default: false },
+            task_ids: { type: 'array', items: { type: 'string' }, description: '[rebuild] Specific task IDs to rebuild.' }
         },
         required: ['action']
     }
@@ -82,16 +82,16 @@ export const taskExportDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['markdown', 'debug'], description: 'Action à effectuer: "markdown" pour exporter l\'arbre, "debug" pour diagnostiquer le parsing.' },
-            conversation_id: { type: 'string', description: "[markdown] ID de la conversation pour laquelle exporter l'arbre des tâches." },
-            filePath: { type: 'string', description: '[markdown] Chemin optionnel pour sauvegarder le fichier. Si omis, le contenu est retourné.' },
-            max_depth: { type: 'number', description: "[markdown] Profondeur maximale de l'arbre à inclure dans l'export." },
-            include_siblings: { type: 'boolean', description: '[markdown] Inclure les tâches sœurs (même parent) dans l\'arbre.', default: true },
-            output_format: { type: 'string', enum: ['ascii-tree', 'markdown', 'hierarchical', 'json'], description: '[markdown] Format de sortie: ascii-tree (défaut), markdown, hierarchical, ou json.', default: 'ascii-tree' },
-            current_task_id: { type: 'string', description: "[markdown] ID de la tâche en cours d'exécution pour marquage explicite." },
-            truncate_instruction: { type: 'number', description: "[markdown] Longueur maximale de l'instruction affichée (défaut: 80).", default: 80 },
-            show_metadata: { type: 'boolean', description: '[markdown] Afficher les métadonnées détaillées (défaut: false).', default: false },
-            task_id: { type: 'string', description: '[debug] ID de la tâche à analyser en détail.' }
+            action: { type: 'string', enum: ['markdown', 'debug'], description: 'Action: "markdown" (export tree) or "debug" (parsing diagnostic).' },
+            conversation_id: { type: 'string', description: '[markdown] Conversation ID to export.' },
+            filePath: { type: 'string', description: '[markdown] Output file path. If omitted, returns inline.' },
+            max_depth: { type: 'number', description: '[markdown] Max tree depth.' },
+            include_siblings: { type: 'boolean', description: '[markdown] Include sibling tasks.', default: true },
+            output_format: { type: 'string', enum: ['ascii-tree', 'markdown', 'hierarchical', 'json'], description: '[markdown] Output format.', default: 'ascii-tree' },
+            current_task_id: { type: 'string', description: '[markdown] Current task ID for highlighting.' },
+            truncate_instruction: { type: 'number', description: '[markdown] Max instruction length.', default: 80 },
+            show_metadata: { type: 'boolean', description: '[markdown] Show detailed metadata.', default: false },
+            task_id: { type: 'string', description: '[debug] Task ID to analyze.' }
         },
         required: ['action']
     }
@@ -158,8 +158,8 @@ export const codebaseSearchDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            query: { type: 'string', description: 'Requête de recherche sémantique (concept, pas texte exact). Ex: "rate limiting for embeddings", "authentication middleware"' },
-            workspace: { type: 'string', description: 'Chemin absolu du workspace (REQUIS). Toujours passer explicitement.' },
+            query: { type: 'string', description: 'Semantic search query (concept, not exact text). English works best.' },
+            workspace: { type: 'string', description: 'Absolute workspace path. REQUIRED, always pass explicitly.' },
             directory_prefix: { type: 'string', description: 'Préfixe de répertoire pour filtrer. Ex: "src/services", "mcps/internal"' },
             limit: { type: 'number', description: 'Nombre max de résultats (défaut: 10, max: 30)' },
             min_score: { type: 'number', description: 'Score minimum de similarité 0-1 (défaut: 0.5)' }
@@ -173,7 +173,7 @@ export const codebaseSearchDefinition = {
 // ============================================================
 export const readVscodeLogsDefinition = {
     name: 'read_vscode_logs',
-    description: 'Scans the VS Code log directory to automatically find and read the latest logs from the Extension Host, Renderer, and Roo-Code Output Channels.',
+    description: 'Read latest VS Code logs (Extension Host, Renderer, Roo-Code Output Channels).',
     inputSchema: {
         type: 'object',
         properties: {
@@ -189,7 +189,7 @@ export const readVscodeLogsDefinition = {
 // ============================================================
 export const getMcpBestPracticesDefinition = {
     name: 'get_mcp_best_practices',
-    description: '📚 **BONNES PRATIQUES MCP** - Guide de référence sur les patterns de configuration et de débogage pour les MCPs, basé sur l\'expérience de stabilisation. Inclut des recommandations essentielles pour la maintenabilité et la performance.',
+    description: 'MCP configuration and debugging best practices guide.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -203,7 +203,7 @@ export const getMcpBestPracticesDefinition = {
 // ============================================================
 export const exportDataDefinition = {
     name: 'export_data',
-    description: 'Export data as XML, JSON or CSV. Targets: task (XML), conversation (all formats), project (XML). JSON variants: light/full. CSV variants: conversations/messages/tools.',
+    description: 'Export data as XML, JSON or CSV. Targets: task, conversation, project.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -233,12 +233,12 @@ export const exportDataDefinition = {
 // ============================================================
 export const exportConfigDefinition = {
     name: 'export_config',
-    description: `Gère les paramètres de configuration des exports.\n\nActions supportées:\n- get: Récupère la configuration actuelle\n- set: Met à jour la configuration (nécessite le paramètre config)\n- reset: Remet la configuration aux valeurs par défaut\n\nCONS-10: Remplace configure_xml_export`,
+    description: 'Gère la configuration des exports. Actions: get, set (requiert config), reset.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['get', 'set', 'reset'], description: "L'opération à effectuer: get, set, ou reset" },
-            config: { type: 'object', description: "L'objet de configuration à appliquer pour l'action set" }
+            action: { type: 'string', enum: ['get', 'set', 'reset'], description: 'Operation: get, set, or reset' },
+            config: { type: 'object', description: 'Config object (required for set)' }
         },
         required: ['action']
     }
@@ -249,13 +249,13 @@ export const exportConfigDefinition = {
 // ============================================================
 export const viewTaskDetailsDefinition = {
     name: 'view_task_details',
-    description: 'Affiche les détails techniques complets (métadonnées des actions) pour une tâche spécifique',
+    description: 'Full technical details (action metadata) for a specific task.',
     inputSchema: {
         type: 'object',
         properties: {
-            task_id: { type: 'string', description: "L'ID de la tâche pour laquelle afficher les détails techniques." },
-            action_index: { type: 'number', description: "Index optionnel d'une action spécifique à examiner (commence à 0)." },
-            truncate: { type: 'number', description: 'Nombre de lignes à conserver au début et à la fin des contenus longs (0 = complet).', default: 0 }
+            task_id: { type: 'string', description: 'Task ID.' },
+            action_index: { type: 'number', description: 'Optional action index (0-based).' },
+            truncate: { type: 'number', description: 'Lines to keep at start/end (0 = full).', default: 0 }
         },
         required: ['task_id']
     }
@@ -266,11 +266,11 @@ export const viewTaskDetailsDefinition = {
 // ============================================================
 export const getRawConversationDefinition = {
     name: 'get_raw_conversation',
-    description: "Récupère le contenu brut d'une conversation (fichiers JSON) sans condensation.",
+    description: 'Raw conversation content (JSON files) without condensation.',
     inputSchema: {
         type: 'object',
         properties: {
-            taskId: { type: 'string', description: "L'identifiant de la tâche à récupérer." }
+            taskId: { type: 'string', description: 'Task ID to retrieve.' }
         },
         required: ['taskId']
     }
@@ -281,12 +281,12 @@ export const getRawConversationDefinition = {
 // ============================================================
 export const analyzeRooSyncProblemsDefinition = {
     name: 'analyze_roosync_problems',
-    description: 'Analyse le fichier sync-roadmap.md pour détecter les problèmes structurels et incohérences (doublons, statuts invalides, corruption).',
+    description: 'Analyse sync-roadmap.md pour détecter problèmes structurels et incohérences.',
     inputSchema: {
         type: 'object',
         properties: {
-            roadmapPath: { type: 'string', description: 'Chemin vers le fichier sync-roadmap.md (optionnel, défaut: autodetecté)' },
-            generateReport: { type: 'boolean', description: 'Générer un rapport Markdown dans roo-config/reports (défaut: false)' }
+            roadmapPath: { type: 'string', description: 'Path to sync-roadmap.md (auto-detected if omitted)' },
+            generateReport: { type: 'boolean', description: 'Generate report in roo-config/reports' }
         }
     }
 };
@@ -301,8 +301,8 @@ export const roosyncInitDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            force: { type: 'boolean', description: 'Forcer la réinitialisation même si les fichiers existent (défaut: false)' },
-            createRoadmap: { type: 'boolean', description: 'Créer un fichier sync-roadmap.md initial (défaut: true)' }
+            force: { type: 'boolean', description: 'Force reinit even if files exist' },
+            createRoadmap: { type: 'boolean', description: 'Create initial sync-roadmap.md' }
         },
         additionalProperties: false
     }
@@ -310,13 +310,13 @@ export const roosyncInitDefinition = {
 
 export const roosyncGetStatusDefinition = {
     name: 'roosync_get_status',
-    description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés. #1855: detail="full" ajoute claims actifs et pipeline stages pour HUD statusline.',
+    description: 'Snapshot compact de l\'état RooSync. detail="full" ajoute claims et pipeline stages.',
     inputSchema: {
         type: 'object',
         properties: {
-            machineFilter: { type: 'string', description: 'ID de machine pour filtrer les résultats (optionnel)' },
-            resetCache: { type: 'boolean', description: 'Forcer la réinitialisation du cache du service (défaut: false)' },
-            detail: { type: 'string', enum: ['compact', 'full'], description: 'Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)' }
+            machineFilter: { type: 'string', description: 'Machine ID filter' },
+            resetCache: { type: 'boolean', description: 'Force service cache reset' },
+            detail: { type: 'string', enum: ['compact', 'full'], description: '"compact" (minimal) or "full" (adds claims + pipeline stages)' }
         },
         additionalProperties: false
     }
@@ -324,15 +324,15 @@ export const roosyncGetStatusDefinition = {
 
 export const roosyncCompareConfigDefinition = {
     name: 'roosync_compare_config',
-    description: 'Compare les configurations Roo entre deux machines et détecte les différences réelles. Détection multi-niveaux : Configuration Roo (modes, MCPs, settings) - CRITICAL, Environment (EMBEDDING_*, QDRANT_*) - CRITICAL/WARNING, Hardware (CPU, RAM, disques, GPU) - IMPORTANT, Software (PowerShell, Node, Python) - WARNING, System (OS, architecture) - INFO. Modes de granularité : mcp, mode, settings, claude, modes-yaml, full.',
+    description: 'Compare les configurations Roo entre deux machines (modes, MCPs, settings, env). Granularité: mcp, mode, settings, claude, modes-yaml, full.',
     inputSchema: {
         type: 'object',
         properties: {
-            source: { type: 'string', description: 'ID de la machine source (optionnel, défaut: local_machine)' },
-            target: { type: 'string', description: 'ID de la machine cible ou du profil (optionnel, défaut: remote_machine)' },
-            force_refresh: { type: 'boolean', description: "Forcer la collecte d'inventaire même si cache valide (défaut: false)" },
-            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'], description: 'Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète)' },
-            filter: { type: 'string', description: 'Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)' }
+            source: { type: 'string', description: 'Source machine ID (default: local)' },
+            target: { type: 'string', description: 'Target machine ID or profile (default: remote)' },
+            force_refresh: { type: 'boolean', description: 'Force inventory collection even with valid cache' },
+            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'], description: 'Granularity: mcp, mode, settings, claude, modes-yaml, full' },
+            filter: { type: 'string', description: 'Path filter (e.g. "jupyter")' }
         },
         additionalProperties: false
     }
@@ -344,8 +344,8 @@ export const roosyncListDiffsDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            filterType: { type: 'string', enum: ['all', 'config', 'files', 'settings'], description: 'Filtrer par type de différence', default: 'all' },
-            forceRefresh: { type: 'boolean', description: "Force le rafraîchissement du cache d'inventaire (évite les données périmées)", default: false }
+            filterType: { type: 'string', enum: ['all', 'config', 'files', 'settings'], description: 'Filter by diff type', default: 'all' },
+            forceRefresh: { type: 'boolean', description: 'Force cache refresh to avoid stale data', default: false }
         },
         additionalProperties: false
     }
@@ -358,14 +358,14 @@ export const roosyncDecisionDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['approve', 'reject', 'apply', 'rollback', 'info'], description: 'Action à effectuer sur la décision. "info" = consultation read-only.' },
-            decisionId: { type: 'string', description: 'ID de la décision à traiter' },
-            comment: { type: 'string', description: 'Commentaire optionnel (action: approve)' },
-            reason: { type: 'string', description: 'Raison requise (action: reject, rollback)' },
-            dryRun: { type: 'boolean', description: 'Mode simulation sans modification réelle (action: apply)' },
-            force: { type: 'boolean', description: 'Forcer application même si conflits (action: apply)' },
-            includeHistory: { type: 'boolean', description: "Inclure l'historique complet des actions (action: info, défaut: true)", default: true },
-            includeLogs: { type: 'boolean', description: "Inclure les logs d'exécution (action: info, défaut: true)", default: true }
+            action: { type: 'string', enum: ['approve', 'reject', 'apply', 'rollback', 'info'], description: 'Decision action. "info" = read-only.' },
+            decisionId: { type: 'string', description: 'Decision ID' },
+            comment: { type: 'string', description: 'Comment (approve)' },
+            reason: { type: 'string', description: 'Reason (reject/rollback)' },
+            dryRun: { type: 'boolean', description: 'Simulation mode (apply)' },
+            force: { type: 'boolean', description: 'Force apply despite conflicts' },
+            includeHistory: { type: 'boolean', description: 'Include full history (info)', default: true },
+            includeLogs: { type: 'boolean', description: 'Include execution logs (info)', default: true }
         },
         required: ['action', 'decisionId']
     }
@@ -380,19 +380,19 @@ export const roosyncBaselineDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['update', 'version', 'restore', 'export', 'list_versions', 'current_version'], description: 'Action à effectuer sur la baseline' },
-            machineId: { type: 'string', description: '[update] ID de la machine ou nom du profil' },
-            mode: { type: 'string', enum: ['standard', 'profile'], description: '[update] Mode de mise à jour' },
-            aggregationConfig: { type: 'object', description: "[update] Configuration d'agrégation (mode profile uniquement)" },
-            version: { type: 'string', description: '[update/version] Version de la baseline' },
-            createBackup: { type: 'boolean', description: '[update/restore] Créer une sauvegarde (défaut: true)' },
-            updateReason: { type: 'string', description: '[update/restore] Raison de la modification' },
-            updatedBy: { type: 'string', description: '[update] Auteur de la mise à jour' },
-            message: { type: 'string', description: '[version] Message du tag Git' },
-            pushTags: { type: 'boolean', description: '[version] Pousser les tags (défaut: true)' },
-            createChangelog: { type: 'boolean', description: '[version] Mettre à jour CHANGELOG (défaut: true)' },
-            source: { type: 'string', description: '[restore] Source de restauration (tag Git ou chemin sauvegarde)' },
-            targetVersion: { type: 'string', description: '[restore] Version cible' }
+            action: { type: 'string', enum: ['update', 'version', 'restore', 'export', 'list_versions', 'current_version'], description: 'Baseline action' },
+            machineId: { type: 'string', description: '[update] Machine ID or profile name' },
+            mode: { type: 'string', enum: ['standard', 'profile'], description: '[update] Update mode' },
+            aggregationConfig: { type: 'object', description: '[update] Aggregation config (profile mode only)' },
+            version: { type: 'string', description: '[update/version] Baseline version' },
+            createBackup: { type: 'boolean', description: '[update/restore] Create backup (default: true)' },
+            updateReason: { type: 'string', description: '[update/restore] Reason for change' },
+            updatedBy: { type: 'string', description: '[update] Author' },
+            message: { type: 'string', description: '[version] Git tag message' },
+            pushTags: { type: 'boolean', description: '[version] Push tags (default: true)' },
+            createChangelog: { type: 'boolean', description: '[version] Update CHANGELOG (default: true)' },
+            source: { type: 'string', description: '[restore] Restore source (git tag or backup path)' },
+            targetVersion: { type: 'string', description: '[restore] Target version' }
         },
         additionalProperties: false
     }
@@ -400,21 +400,21 @@ export const roosyncBaselineDefinition = {
 
 export const roosyncConfigDefinition = {
     name: 'roosync_config',
-    description: 'RooSync config management. Actions: collect (local), publish (to GDrive), apply (from GDrive), apply_profile (model profile). Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>.',
+    description: 'RooSync config management. Actions: collect, publish, apply, apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>.',
     inputSchema: {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['collect', 'publish', 'apply', 'apply_profile'], description: 'Action: collect, publish, apply, or apply_profile' },
             machineId: { type: 'string', description: 'Machine ID (default: ROOSYNC_MACHINE_ID)' },
             dryRun: { type: 'boolean', description: 'Simulate without modifying files (default: false)' },
-            scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'Claude Code config scope: user (~/.claude.json), project (.mcp.json), settings (~/.claude/settings.json). Default: user.' },
-            targets: { type: 'array', items: { type: 'string' }, description: 'Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>. Default: ["modes", "mcp"]' },
-            packagePath: { type: 'string', description: 'Package path from collect. For publish. If omitted with targets, does collect+publish atomically.' },
-            version: { type: 'string', description: 'Config version. Required for publish. For apply, default: "latest".' },
-            description: { type: 'string', description: 'Change description. Required for publish.' },
-            backup: { type: 'boolean', description: 'Create local backup before apply (default: true). For apply and apply_profile.' },
-            profileName: { type: 'string', description: 'Profile name (required for apply_profile). E.g. "Production (Qwen 3.5 + GLM-5)"' },
-            sourceMachineId: { type: 'string', description: 'Source machine ID for model-configs.json (default: local file)' }
+            scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'Claude Code config scope: user, project, or settings' },
+            targets: { type: 'array', items: { type: 'string' }, description: 'Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>' },
+            packagePath: { type: 'string', description: 'Package path (publish). If omitted with targets, collect+publish atomically.' },
+            version: { type: 'string', description: 'Config version. Required for publish.' },
+            description: { type: 'string', description: 'Change description (required for publish).' },
+            backup: { type: 'boolean', description: 'Backup before apply (default: true).' },
+            profileName: { type: 'string', description: 'Profile name (required for apply_profile).' },
+            sourceMachineId: { type: 'string', description: 'Source machine for model-configs.json.' }
         },
         required: ['action'],
         additionalProperties: false
@@ -423,15 +423,15 @@ export const roosyncConfigDefinition = {
 
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: "Récupération de l'inventaire machine et/ou de l'état heartbeat. type=\"machines\" = offline/warning machines (fused from roosync_machines).",
+    description: 'Machine inventory and heartbeat status. type="machines" for offline/warning machines.',
     inputSchema: {
         type: 'object',
         properties: {
-            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines'], description: "Type d'inventaire à récupérer. \"machines\" = offline/warning machines" },
-            machineId: { type: 'string', description: 'Identifiant optionnel de la machine (défaut: hostname)' },
-            includeHeartbeats: { type: 'boolean', description: 'Inclure les données de heartbeat de chaque machine (défaut: true)' },
-            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Filtrer par statut machines (type="machines": offline, warning, all)' },
-            includeDetails: { type: 'boolean', description: 'Inclure les détails complets des machines (type="machines", défaut: false)' }
+            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines'], description: 'Inventory type. "machines" = offline/warning only.' },
+            machineId: { type: 'string', description: 'Machine ID (default: hostname)' },
+            includeHeartbeats: { type: 'boolean', description: 'Include heartbeat data (default: true)' },
+            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Filter by status (type="machines")' },
+            includeDetails: { type: 'boolean', description: 'Full machine details (type="machines")' }
         },
         required: ['type'],
         additionalProperties: false
@@ -444,18 +444,18 @@ export const roosyncInventoryDefinition = {
 // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
-    description: 'Gestion complète des serveurs MCP. Actions : manage (read/write/backup/update/toggle/update_server_field/sync_always_allow configuration), rebuild (build npm + restart MCP avec watchPaths), touch (force reload de tous les serveurs MCP).',
+    description: 'Gestion des serveurs MCP. Actions: manage (read/write/backup/update/toggle/sync_always_allow), rebuild (build+restart), touch (force reload).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['manage', 'rebuild', 'touch'], description: "Type d'opération MCP: manage (configuration), rebuild (build+restart), touch (force reload)" },
-            subAction: { type: 'string', enum: ['read', 'write', 'backup', 'update_server', 'update_server_field', 'toggle_server', 'sync_always_allow'], description: 'Sous-action pour manage: read, write, backup, update_server (REMPLACE tout le bloc), update_server_field (FUSIONNE champs sans écraser), toggle_server, sync_always_allow' },
-            server_name: { type: 'string', description: 'Nom du serveur MCP (pour update_server, update_server_field, toggle_server, sync_always_allow)' },
-            server_config: { type: 'object', description: 'Configuration du serveur (pour update_server: REMPLACE tout) ou champs à modifier (pour update_server_field: FUSIONNE)' },
+            action: { type: 'string', enum: ['manage', 'rebuild', 'touch'], description: 'Operation: manage (config), rebuild (build+restart), touch (force reload)' },
+            subAction: { type: 'string', enum: ['read', 'write', 'backup', 'update_server', 'update_server_field', 'toggle_server', 'sync_always_allow'], description: 'manage sub-action: read, write, backup, update_server, update_server_field, toggle_server, sync_always_allow' },
+            server_name: { type: 'string', description: 'MCP server name (for update/toggle/sync operations)' },
+            server_config: { type: 'object', description: 'Server config. update_server: replaces all. update_server_field: merges.' },
             settings: { type: 'object', description: 'Paramètres complets (pour write)' },
-            backup: { type: 'boolean', description: 'Créer une sauvegarde avant modification (défaut: true pour manage)' },
-            tools: { type: 'array', items: { type: 'string' }, description: "Liste des noms d'outils à auto-approuver (pour sync_always_allow)" },
-            mcp_name: { type: 'string', description: 'Nom du MCP à rebuild (requis pour action rebuild)' }
+            backup: { type: 'boolean', description: 'Backup before modify (default: true)' },
+            tools: { type: 'array', items: { type: 'string' }, description: 'Tool names to auto-approve (sync_always_allow)' },
+            mcp_name: { type: 'string', description: 'MCP name to rebuild (required for rebuild)' }
         },
         required: ['action'],
         additionalProperties: false
@@ -464,18 +464,18 @@ export const roosyncMcpManagementDefinition = {
 
 export const roosyncStorageManagementDefinition = {
     name: 'roosync_storage_management',
-    description: 'Gestion complète du stockage Roo : inspection et maintenance. Actions : storage (detect=localiser stockage, stats=statistiques par workspace), maintenance (cache_rebuild=reconstruire cache conversations, diagnose_bom=diagnostiquer problèmes BOM UTF-8, repair_bom=réparer fichiers corrompus).',
+    description: 'Inspection et maintenance du stockage Roo. Actions: storage (detect/stats), maintenance (cache_rebuild/diagnose_bom/repair_bom).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['storage', 'maintenance'], description: "Type d'opération: storage (inspection) ou maintenance (réparation/rebuild)" },
-            storageAction: { type: 'string', enum: ['detect', 'stats'], description: 'Sous-action pour storage: detect (localiser le stockage Roo) ou stats (statistiques de stockage)' },
-            maintenanceAction: { type: 'string', enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom'], description: 'Sous-action pour maintenance: cache_rebuild (reconstruire le cache), diagnose_bom (diagnostiquer BOM), repair_bom (réparer BOM)' },
-            force_rebuild: { type: 'boolean', description: 'Force la reconstruction complète du cache (maintenance: cache_rebuild)' },
-            workspace_filter: { type: 'string', description: 'Filtre par workspace (maintenance: cache_rebuild)' },
-            task_ids: { type: 'array', items: { type: 'string' }, description: "Liste d'IDs de tâches spécifiques à construire (maintenance: cache_rebuild)" },
-            fix_found: { type: 'boolean', description: 'Réparer automatiquement les fichiers corrompus trouvés (maintenance: diagnose_bom)' },
-            dry_run: { type: 'boolean', description: 'Simuler la réparation sans modifier les fichiers (maintenance: repair_bom)' }
+            action: { type: 'string', enum: ['storage', 'maintenance'], description: 'Operation: storage (inspect) or maintenance (repair/rebuild)' },
+            storageAction: { type: 'string', enum: ['detect', 'stats'], description: 'storage sub-action: detect or stats' },
+            maintenanceAction: { type: 'string', enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom'], description: 'maintenance sub-action: cache_rebuild, diagnose_bom, repair_bom' },
+            force_rebuild: { type: 'boolean', description: 'Force full cache rebuild' },
+            workspace_filter: { type: 'string', description: 'Workspace filter (cache_rebuild)' },
+            task_ids: { type: 'array', items: { type: 'string' }, description: 'Specific task IDs to rebuild' },
+            fix_found: { type: 'boolean', description: 'Auto-fix corrupted files (diagnose_bom)' },
+            dry_run: { type: 'boolean', description: 'Simulate without modifying files (repair_bom)' }
         },
         required: ['action'],
         additionalProperties: false
@@ -484,16 +484,16 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'Outil de diagnostic et debug complet pour RooSync. Actions disponibles : env (diagnostic environnement système), debug (debug dashboard avec reset instance), reset (réinitialisation service avec confirmation), test (test minimal MCP).',
+    description: 'Diagnostic et debug RooSync. Actions: env, debug, reset, test.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test'], description: "Type d'opération: env (environnement), debug (dashboard), reset (service), test (minimal)" },
-            checkDiskSpace: { type: 'boolean', description: 'Vérifier l\'espace disque (action: env)' },
-            verbose: { type: 'boolean', description: 'Mode verbeux pour debug (action: debug)' },
-            clearCache: { type: 'boolean', description: 'Vider le cache lors du reset (action: reset)' },
-            confirm: { type: 'boolean', description: 'Confirmation requise pour reset (action: reset)' },
-            message: { type: 'string', description: 'Message de test personnalisé (action: test)' }
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test'], description: 'Operation: env, debug, reset, test' },
+            checkDiskSpace: { type: 'boolean', description: 'Check disk space (env)' },
+            verbose: { type: 'boolean', description: 'Verbose mode (debug)' },
+            clearCache: { type: 'boolean', description: 'Clear cache on reset' },
+            confirm: { type: 'boolean', description: 'Confirmation for reset' },
+            message: { type: 'string', description: 'Custom test message (test)' }
         },
         required: ['action'],
         additionalProperties: false
@@ -506,8 +506,8 @@ export const roosyncRefreshDashboardDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            baseline: { type: 'string', description: 'Machine à utiliser comme baseline (défaut: myia-ai-01)' },
-            outputDir: { type: 'string', description: 'Répertoire de sortie pour le dashboard (défaut: $ROOSYNC_SHARED_PATH/dashboards)' }
+            baseline: { type: 'string', description: 'Baseline machine (default: myia-ai-01)' },
+            outputDir: { type: 'string', description: 'Output directory (default: $ROOSYNC_SHARED_PATH/dashboards)' }
         },
         additionalProperties: false
     }
@@ -519,11 +519,11 @@ export const roosyncUpdateDashboardDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            section: { type: 'string', enum: ['machine', 'global', 'intercom', 'decisions', 'metrics'], description: 'Section du dashboard à mettre à jour' },
-            content: { type: 'string', description: 'Contenu markdown à insérer dans la section' },
-            machine: { type: 'string', description: 'ID de la machine (requis si section=machine, défaut: ROOSYNC_MACHINE_ID)' },
-            workspace: { type: 'string', description: 'Workspace (défaut: roo-extensions)' },
-            mode: { type: 'string', enum: ['replace', 'append', 'prepend'], description: 'Mode de mise à jour: replace (remplacer), append (ajouter à la fin), prepend (ajouter au début)' }
+            section: { type: 'string', enum: ['machine', 'global', 'intercom', 'decisions', 'metrics'], description: 'Dashboard section to update' },
+            content: { type: 'string', description: 'Markdown content to insert' },
+            machine: { type: 'string', description: 'Machine ID (required for section=machine)' },
+            workspace: { type: 'string', description: 'Workspace (default: roo-extensions)' },
+            mode: { type: 'string', enum: ['replace', 'append', 'prepend'], description: 'Update mode: replace, append, prepend' }
         },
         required: ['section', 'content'],
         additionalProperties: false
@@ -557,7 +557,7 @@ export const roosyncSendDefinition = {
 
 export const roosyncReadDefinition = {
     name: 'roosync_read',
-    description: "Lire la boîte de réception des messages RooSync, obtenir les détails complets d'un message spécifique, ou lister les pièces jointes d'un message",
+    description: 'Read RooSync inbox, message details, or attachments.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -568,8 +568,8 @@ export const roosyncReadDefinition = {
             per_page: { type: 'number', description: 'Messages per page. Requires page. Recommended: 20.' },
             message_id: { type: 'string', description: "ID du message à récupérer (requis pour mode=message ou mode=attachments)" },
             mark_as_read: { type: 'boolean', description: 'Marquer automatiquement comme lu (mode message, défaut: false)' },
-            workspace: { type: 'string', description: "(mode inbox, #1498) Override workspace filter. Défaut: workspace du process MCP. Permet à un scheduler tournant dans workspace X de lire l'inbox adressée à workspace Y sur la même machine (dashboard-watcher multi-workspace)." },
-            to_machine: { type: 'string', description: '(mode inbox, #1498, avancé) Override machine filter. Défaut: machine locale. Normalement tu veux ta propre machine.' }
+            workspace: { type: 'string', description: '(mode inbox) Override workspace filter for multi-workspace schedulers.' },
+            to_machine: { type: 'string', description: '(mode inbox) Override machine filter. Default: local machine.' }
         },
         required: ['mode']
     }
@@ -577,17 +577,17 @@ export const roosyncReadDefinition = {
 
 export const roosyncManageDefinition = {
     name: 'roosync_manage',
-    description: 'Gérer le cycle de vie des messages RooSync : marquer lu, archiver, opérations bulk, cleanup automatique, statistiques inbox',
+    description: 'Manage RooSync messages: mark_read, archive, bulk ops, cleanup, inbox stats.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['mark_read', 'archive', 'bulk_mark_read', 'bulk_archive', 'cleanup', 'stats'], description: 'Action: mark_read/archive (un message), bulk_mark_read/bulk_archive (avec filtres), cleanup (auto-nettoyage), stats (statistiques inbox)' },
-            message_id: { type: 'string', description: 'ID du message (requis pour mark_read/archive)' },
-            from: { type: 'string', description: 'Filtre par expéditeur (substring, pour bulk/cleanup)' },
-            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Filtre par priorité (pour bulk)' },
-            before_date: { type: 'string', description: 'Filtre messages avant cette date ISO-8601 (pour bulk)' },
-            subject_contains: { type: 'string', description: 'Filtre par sujet contenant ce texte (pour bulk)' },
-            tag: { type: 'string', description: 'Filtre par tag (pour bulk)' }
+            action: { type: 'string', enum: ['mark_read', 'archive', 'bulk_mark_read', 'bulk_archive', 'cleanup', 'stats'], description: 'Action: mark_read, archive, bulk_*, cleanup, stats' },
+            message_id: { type: 'string', description: 'Message ID (mark_read/archive)' },
+            from: { type: 'string', description: 'Filter by sender (bulk/cleanup)' },
+            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Filter by priority (bulk)' },
+            before_date: { type: 'string', description: 'Filter before ISO-8601 date (bulk)' },
+            subject_contains: { type: 'string', description: 'Filter by subject (bulk)' },
+            tag: { type: 'string', description: 'Filter by tag (bulk)' }
         },
         required: ['action']
     }
@@ -598,14 +598,14 @@ export const roosyncManageDefinition = {
 
 export const roosyncAttachmentsDefinition = {
     name: 'roosync_attachments',
-    description: "Gestion consolidée des pièces jointes RooSync (CONS-7). Actions : list (lister), get (récupérer vers chemin local), delete (supprimer). Remplace roosync_list_attachments, roosync_get_attachment, roosync_delete_attachment.",
+    description: 'Gestion des pièces jointes RooSync. Actions: list, get, delete.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['list', 'get', 'delete'], description: "Action : list (lister), get (récupérer), delete (supprimer)" },
-            message_id: { type: 'string', description: 'ID du message (pour action=list : filtre optionnel ; pour get/delete : optionnel si uuid fourni)' },
-            uuid: { type: 'string', description: "UUID de la pièce jointe (requis pour action=get et action=delete)" },
-            targetPath: { type: 'string', description: 'Chemin local de destination (requis pour action=get)' }
+            action: { type: 'string', enum: ['list', 'get', 'delete'], description: 'Action: list, get, delete' },
+            message_id: { type: 'string', description: 'Message ID (list: optional filter; get/delete: optional if uuid given)' },
+            uuid: { type: 'string', description: 'Attachment UUID (required for get/delete)' },
+            targetPath: { type: 'string', description: 'Local destination path (required for get)' }
         },
         required: ['action']
     }
@@ -619,7 +619,7 @@ export const roosyncDashboardDefinition = dashboardToolMetadata;
 // ============================================================
 export const roosyncClaimDefinition = {
     name: 'roosync_claim',
-    description: 'Pre-claim enforcement — prevents concurrent agent collisions. Actions: "claim" (reserve an issue — fails if already claimed), "release" (free a claim), "extend" (prolong ETA), "list" (show active claims), "check" (verify if issue is available). Claims auto-expire after eta * 1.5 minutes.',
+    description: 'Pre-claim enforcement for concurrent agent collision prevention. Actions: claim, release, extend, list, check. Auto-expire after eta * 1.5 min.',
     inputSchema: {
         type: 'object',
         properties: {
