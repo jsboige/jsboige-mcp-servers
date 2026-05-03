@@ -60,7 +60,7 @@ describe('roosync_inventory tool', () => {
 
     it('has correct tool metadata', () => {
         expect(inventoryTool.name).toBe('roosync_inventory');
-        expect(inventoryTool.version).toBe('3.0.0');
+        expect(inventoryTool.version).toBe('4.0.0');
     });
 
     describe('type=machine', () => {

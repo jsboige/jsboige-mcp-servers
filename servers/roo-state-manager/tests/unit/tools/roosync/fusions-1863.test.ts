@@ -190,13 +190,15 @@ describe('#1863 Fusion A3: cleanup → manage redirect', () => {
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 23 tools (3 deprecated #1863 + 6 low-usage #1841 + 1 Cluster D fusion removed)', () => {
-    // Before: 33 tools → #1922 Pass 4 removed 3 deprecated → 30
+  it('allToolDefinitions should contain 22 tools (3 deprecated #1863 + 6 low-usage #1841 + 1 Cluster D fusion + 1 Cluster E fusion removed)', () => {
+    // Before: 32 tools → #1922 Pass 4 removed 3 deprecated → 29
     // #1841 removed 6 low-usage (get_mcp_best_practices, export_config, view_task_details,
-    //   get_raw_conversation, refresh_dashboard, update_dashboard) → 24
+    //   get_raw_conversation, refresh_dashboard, update_dashboard) → 23 (wait: 29-6=23)
+    // Actually #297 consolidated to 24 active in ListTools (less low-usage). allToolDefinitions baseline = 24.
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose(action: "analyze"): 24 → 23
+    // Cluster E (#1935) fused get_status → inventory(type: "status"): 23 → 22
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(23);
+    expect(allToolDefinitions.length).toBe(22);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {

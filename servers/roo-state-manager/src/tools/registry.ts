@@ -413,11 +413,17 @@ export function registerCallToolHandler(
           }
 
           // RooSync tools - Batch 6 synchronization
+          // #1935 Cluster E: roosync_get_status redirects to roosync_inventory(type: "status")
           case 'roosync_get_status': {
               try {
-                  const m = await import('./roosync/get-status.js');
-                  const roosyncResult = await m.roosyncGetStatus(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  const m = await import('./roosync/inventory.js');
+                  const redirectArgs = { ...args, type: 'status' as const };
+                  const invResult = await m.inventoryTool.execute(redirectArgs as any, {} as any);
+                  if (invResult.success) {
+                      result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
+                  } else {
+                      result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
+                  }
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }
