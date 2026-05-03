@@ -502,7 +502,7 @@ export const roosyncDiagnoseDefinition = {
 
 export const roosyncRefreshDashboardDefinition = {
     name: 'roosync_refresh_dashboard',
-    description: 'Rafraîchit le dashboard MCP en exécutant le script generate-mcp-dashboard.ps1',
+    description: '[DEPRECATED #1935] Use roosync_dashboard(action: "refresh") instead. Rafraîchit le dashboard MCP en exécutant le script generate-mcp-dashboard.ps1',
     inputSchema: {
         type: 'object',
         properties: {
@@ -515,7 +515,7 @@ export const roosyncRefreshDashboardDefinition = {
 
 export const roosyncUpdateDashboardDefinition = {
     name: 'roosync_update_dashboard',
-    description: 'Met à jour une section du dashboard hiérarchique RooSync sur GDrive (#546)',
+    description: '[DEPRECATED #1935] Use roosync_dashboard(action: "update") instead. Met à jour une section du dashboard hiérarchique RooSync sur GDrive (#546)',
     inputSchema: {
         type: 'object',
         properties: {
