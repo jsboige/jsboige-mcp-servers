@@ -63,15 +63,12 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_refresh_dashboard: ['sharedPath'],
 	roosync_get_status: ['sharedPath'],
 	roosync_inventory: ['sharedPath'],
-	roosync_machines: ['sharedPath'],
 	roosync_config: ['sharedPath'],
 	roosync_compare_config: ['sharedPath'],
 	roosync_list_diffs: ['sharedPath'],
 	roosync_decision: ['sharedPath'],
-	roosync_decision_info: ['sharedPath'],
 	roosync_init: ['sharedPath'],
 	roosync_diagnose: ['sharedPath'],
-	roosync_cleanup_messages: ['sharedPath'],
 	roosync_baseline: ['sharedPath'],
 	roosync_indexing: ['sharedPath'],
 	roosync_mcp_management: ['sharedPath'],
@@ -470,18 +467,7 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // [FUSION A1 #1863] roosync_decision_info redirects to roosync_decision(action: "info")
-          case 'roosync_decision_info': {
-              try {
-                  const m = await import('./roosync/decision.js');
-                  const redirectArgs = { ...args, action: 'info' as const };
-                  const roosyncResult = await m.roosyncDecision(redirectArgs as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
+          // #1863 FUSION A1: roosync_decision_info removed — redirects to roosync_decision(action: "info")
           // Consolidated tools: CallTool handlers for CONS-2/3/4/6 consolidated tools
           case 'roosync_baseline': {
               try {
@@ -517,22 +503,7 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // [FUSION A2 #1863] roosync_machines redirects to roosync_inventory(type: "machines")
-          case 'roosync_machines': {
-              try {
-                  const m = await import('./roosync/inventory.js');
-                  const redirectArgs = { ...args, type: 'machines' as const };
-                  const invResult = await m.inventoryTool.execute(redirectArgs as any, {} as any);
-                  if (invResult.success) {
-                      result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
-                  } else {
-                      result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
-                  }
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
-              break;
-          }
+          // #1863 FUSION A2: roosync_machines removed — redirects to roosync_inventory(type: "machines")
           // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
           // CONS-1: Outils messagerie consolidés (6→3)
            case 'roosync_send': {
@@ -562,22 +533,7 @@ export function registerCallToolHandler(
                }
                break;
            }
-          // [FUSION A3 #1863] roosync_cleanup_messages redirects to roosync_manage(bulk_*)
-          // Maps operation: 'mark_read' → action: 'bulk_mark_read', 'archive' → action: 'bulk_archive'
-           case 'roosync_cleanup_messages': {
-               try {
-                   const m = await import('./roosync/manage.js');
-                   const cleanupArgs = args as Record<string, any>;
-                   const opMap: Record<string, string> = { mark_read: 'bulk_mark_read', archive: 'bulk_archive' };
-                   const mappedAction = opMap[cleanupArgs.operation] || cleanupArgs.operation;
-                   const { operation, verbose, ...rest } = cleanupArgs;
-                   const redirectArgs = { ...rest, action: mappedAction };
-                   result = await m.roosyncManage(redirectArgs as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
+          // #1863 FUSION A3: roosync_cleanup_messages removed — redirects to roosync_manage(action: "bulk_mark_read"/"bulk_archive")
           // [REMOVED] 6 legacy messaging wrappers — #625 dead code cleanup (not in alwaysAllow)
            // roosync_send_message, roosync_read_inbox, roosync_get_message,
            // roosync_mark_message_read, roosync_archive_message, roosync_reply_message

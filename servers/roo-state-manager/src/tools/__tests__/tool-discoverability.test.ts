@@ -292,7 +292,7 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
         },
         'roosync_decision': {
             field: 'action',
-            actions: ['approve', 'reject', 'apply', 'rollback'],
+            actions: ['approve', 'reject', 'apply', 'rollback', 'info'],
         },
         'roosync_baseline': {
             field: 'action',
@@ -479,9 +479,9 @@ describe('Category 5: Description Discoverability', () => {
         // Keywords matched case-insensitively against description text
         // Descriptions are mostly in French, so use French keywords where applicable
         'conversation_browser': ['conversation'],
-        'roosync_search': ['search', 'task'],            // "Search Roo tasks (semantic, text, diagnostic)"
+        'roosync_search': ['recherche', 'tâches'],       // "Outil unifié de recherche dans les tâches Roo..."
         'roosync_send': ['message'],                     // "Envoyer un message structuré"
-        'roosync_read': ['inbox', 'message'],            // "Read RooSync inbox, message details, or attachments"
+        'roosync_read': ['réception', 'messages'],       // "Lire la boîte de réception des messages RooSync..."
         'roosync_config': ['config'],                    // "Gestion de configuration RooSync"
         'roosync_compare_config': ['compare', 'config'], // "Compare les configurations Roo"
         // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
@@ -496,7 +496,7 @@ describe('Category 5: Description Discoverability', () => {
         // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
         // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
         'codebase_search': ['recherche', 'code'],        // "Recherche sémantique dans le code"
-        'view_task_details': ['task', 'detail'],          // "Full technical details (action metadata) for a specific task"
+        'view_task_details': ['détails', 'tâche'],        // "Affiche les détails techniques complets... pour une tâche spécifique"
     };
 
     it('tool descriptions contain discoverable keywords', async () => {

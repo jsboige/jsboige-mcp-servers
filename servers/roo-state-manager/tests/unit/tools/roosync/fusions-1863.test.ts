@@ -1,15 +1,17 @@
 /**
  * #1863 Phase A — Tool Fusions Test Matrix
  *
- * 3 fusions × 3 scenarios = 9 test cases:
+ * 3 fusions × 2 scenarios = 6 test cases:
  *   Fusion A1: decision_info → decision(action: "info")
  *   Fusion A2: machines → inventory(type: "machines")
  *   Fusion A3: cleanup → manage redirect
  *
  * Scenarios per fusion:
  *   1. Canonical call — new API path works
- *   2. Redirected call — deprecated tools REMOVED from tools/list
- *   3. Error case — invalid input handled correctly
+ *   2. Error case — invalid input handled correctly
+ *
+ * Note: Backward-compat definitions (roosync_decision_info, roosync_machines,
+ * roosync_cleanup_messages) were removed in #1922 Pass 4 — 644 tokens saved.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -18,7 +20,7 @@ import { InventoryArgsSchema } from '../../../../src/tools/roosync/inventory.js'
 import {
   allToolDefinitions,
   roosyncDecisionDefinition,
-  roosyncInventoryDefinition
+  roosyncInventoryDefinition,
 } from '../../../../src/tools/tool-definitions.js';
 
 // ============================================================
@@ -61,13 +63,6 @@ describe('#1863 Fusion A1: decision_info → decision(action: "info")', () => {
         expect(result.data.includeLogs).toBe(true);
       }
     });
-  });
-
-  describe('Scenario 2: Deprecated tool removed from tools/list', () => {
-    it('should NOT have roosync_decision_info in allToolDefinitions', () => {
-      const names = allToolDefinitions.map(d => d.name);
-      expect(names).not.toContain('roosync_decision_info');
-    });
 
     it('should have "info" in decision definition action enum', () => {
       const actionEnum = (roosyncDecisionDefinition.inputSchema as any).properties.action.enum;
@@ -81,7 +76,7 @@ describe('#1863 Fusion A1: decision_info → decision(action: "info")', () => {
     });
   });
 
-  describe('Scenario 3: Error case — invalid info parameters', () => {
+  describe('Scenario 2: Error case — invalid info parameters', () => {
     it('should reject info action without decisionId', () => {
       const result = RooSyncDecisionArgsSchema.safeParse({
         action: 'info'
@@ -149,13 +144,6 @@ describe('#1863 Fusion A2: machines → inventory(type: "machines")', () => {
         expect(result.data.includeDetails).toBe(true);
       }
     });
-  });
-
-  describe('Scenario 2: Deprecated tool removed from tools/list', () => {
-    it('should NOT have roosync_machines in allToolDefinitions', () => {
-      const names = allToolDefinitions.map(d => d.name);
-      expect(names).not.toContain('roosync_machines');
-    });
 
     it('should have "machines" in inventory definition type enum', () => {
       const typeEnum = (roosyncInventoryDefinition.inputSchema as any).properties.type.enum;
@@ -169,7 +157,7 @@ describe('#1863 Fusion A2: machines → inventory(type: "machines")', () => {
     });
   });
 
-  describe('Scenario 3: Error case — invalid machines parameters', () => {
+  describe('Scenario 2: Error case — invalid machines parameters', () => {
     it('should reject invalid status value', () => {
       const result = InventoryArgsSchema.safeParse({
         type: 'machines',
@@ -189,60 +177,32 @@ describe('#1863 Fusion A2: machines → inventory(type: "machines")', () => {
 // FUSION A3: cleanup → manage redirect
 // ============================================================
 describe('#1863 Fusion A3: cleanup → manage redirect', () => {
-  describe('Scenario 1: Canonical call via manage(bulk_mark_read/bulk_archive)', () => {
+  describe('Canonical call via manage(bulk_mark_read/bulk_archive)', () => {
     it('should have bulk_mark_read in manage definition action enum', () => {
       const actionEnum = (allToolDefinitions.find(d => d.name === 'roosync_manage')!.inputSchema as any).properties.action.enum;
       expect(actionEnum).toContain('bulk_mark_read');
       expect(actionEnum).toContain('bulk_archive');
     });
   });
-
-  describe('Scenario 2: Deprecated tool removed from tools/list', () => {
-    it('should NOT have roosync_cleanup_messages in allToolDefinitions', () => {
-      const names = allToolDefinitions.map(d => d.name);
-      expect(names).not.toContain('roosync_cleanup_messages');
-    });
-  });
-
-  describe('Scenario 3: Canonical manage tool covers cleanup use cases', () => {
-    it('should have bulk_mark_read and bulk_archive in manage definition', () => {
-      const manageDef = allToolDefinitions.find(d => d.name === 'roosync_manage')!;
-      const actionEnum = (manageDef.inputSchema as any).properties.action.enum;
-      expect(actionEnum).toContain('bulk_mark_read');
-      expect(actionEnum).toContain('bulk_archive');
-    });
-
-    it('manage definition should have filter properties for bulk operations', () => {
-      const manageDef = allToolDefinitions.find(d => d.name === 'roosync_manage')!;
-      const props = (manageDef.inputSchema as any).properties;
-      expect(props).toHaveProperty('from');
-      expect(props).toHaveProperty('before_date');
-      expect(props).toHaveProperty('subject_contains');
-      expect(props).toHaveProperty('tag');
-    });
-  });
 });
 
 // ============================================================
-// Cross-cutting: Definition count and deprecation markers
+// Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
-describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 31 tools (3 deprecated definitions removed from tools/list)', () => {
-    // Before: 34 tools (33 + roosync_claim #1836)
-    // After removing 3 deprecated tool definitions: 31
-    // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(31);
+describe('#1863 Cross-cutting: tool count after deprecated removal', () => {
+  it('allToolDefinitions should contain 30 tools (3 deprecated removed in #1922 Pass 4)', () => {
+    expect(allToolDefinitions.length).toBe(30);
+  });
+
+  it('deprecated tools should NOT be in allToolDefinitions', () => {
+    const names = allToolDefinitions.map(d => d.name);
+    expect(names).not.toContain('roosync_decision_info');
+    expect(names).not.toContain('roosync_machines');
+    expect(names).not.toContain('roosync_cleanup_messages');
   });
 
   it('canonical tools should not be deprecated', () => {
     expect(roosyncDecisionDefinition.description).not.toContain('DEPRECATED');
     expect(roosyncInventoryDefinition.description).not.toContain('DEPRECATED');
-  });
-
-  it('deprecated tool names should NOT appear in tools/list', () => {
-    const names = allToolDefinitions.map(d => d.name);
-    expect(names).not.toContain('roosync_decision_info');
-    expect(names).not.toContain('roosync_machines');
-    expect(names).not.toContain('roosync_cleanup_messages');
   });
 });
