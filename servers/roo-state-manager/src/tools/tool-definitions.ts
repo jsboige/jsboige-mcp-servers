@@ -308,19 +308,8 @@ export const roosyncInitDefinition = {
     }
 };
 
-export const roosyncGetStatusDefinition = {
-    name: 'roosync_get_status',
-    description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés. #1855: detail="full" ajoute claims actifs et pipeline stages pour HUD statusline.',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            machineFilter: { type: 'string', description: 'ID de machine pour filtrer les résultats (optionnel)' },
-            resetCache: { type: 'boolean', description: 'Forcer la réinitialisation du cache du service (défaut: false)' },
-            detail: { type: 'string', enum: ['compact', 'full'], description: 'Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)' }
-        },
-        additionalProperties: false
-    }
-};
+// [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
+// CallTool redirect in registry.ts preserved for backward compat.
 
 export const roosyncCompareConfigDefinition = {
     name: 'roosync_compare_config',
@@ -421,15 +410,17 @@ export const roosyncConfigDefinition = {
 
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: "Récupération de l'inventaire machine et/ou de l'état heartbeat. type=\"machines\" = offline/warning machines (fused from roosync_machines).",
+    description: 'Machine inventory, heartbeat status, and system snapshot. type="status" for compact RooSync status with actionable flags (fused from roosync_get_status).',
     inputSchema: {
         type: 'object',
         properties: {
-            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines'], description: "Type d'inventaire à récupérer. \"machines\" = offline/warning machines" },
-            machineId: { type: 'string', description: 'Identifiant optionnel de la machine (défaut: hostname)' },
-            includeHeartbeats: { type: 'boolean', description: 'Inclure les données de heartbeat de chaque machine (défaut: true)' },
-            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Filtrer par statut machines (type="machines": offline, warning, all)' },
-            includeDetails: { type: 'boolean', description: 'Inclure les détails complets des machines (type="machines", défaut: false)' }
+            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'], description: 'Inventory type. "machines" = offline/warning only. "status" = compact system snapshot with flags.' },
+            machineId: { type: 'string', description: 'Machine ID (default: hostname). For type="status", acts as machineFilter.' },
+            includeHeartbeats: { type: 'boolean', description: 'Include heartbeat data (default: true, type=heartbeat|all)' },
+            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Filter by status (type="machines")' },
+            includeDetails: { type: 'boolean', description: 'Full machine details (type="machines") or tool usage stats (type="status")' },
+            detail: { type: 'string', enum: ['compact', 'full'], description: 'Detail level for type="status". "full" adds claims + pipeline stages (#1855 HUD)' },
+            resetCache: { type: 'boolean', description: 'Force service cache reset (type="status" only, default: false)' }
         },
         required: ['type'],
         additionalProperties: false
@@ -632,7 +623,7 @@ export const allToolDefinitions = [
     analyzeRooSyncProblemsDefinition,
     // RooSync tools (20) — same order as roosyncTools array in roosync/index.ts
     roosyncInitDefinition,
-    roosyncGetStatusDefinition,
+    // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,

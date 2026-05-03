@@ -74,7 +74,8 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'repair_conversation_bom': 'repair/repair-conversation-bom.tool.ts',
 
   // RooSync tools
-  'roosync_get_status': 'roosync/get-status.ts',
+  // #1935 Cluster E: roosync_get_status backward-compat redirect → roosync_inventory(type: "status")
+  'roosync_get_status': 'roosync/inventory.ts',
   'roosync_compare_config': 'roosync/compare-config.ts',
   'roosync_list_diffs': 'roosync/list-diffs.ts',
   // [REMOVED] roosync_get_decision_details — Phase B #1863: backward-compat wrapper, consolidated into roosync_decision
