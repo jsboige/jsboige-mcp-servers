@@ -8,6 +8,8 @@
  * This breaks ALL cycles through the roosync/* → server-helpers edge.
  * #1628 FIX: Added .env file fallback for resilience when env var is missing
  * (e.g., Roo MCP config doesn't pass ROOSYNC_SHARED_PATH in its env section).
+ * #1918 FIX: Added tryGetSharedStatePath() for runtime callers that should
+ * degrade gracefully instead of crashing when GDrive disconnects.
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -71,4 +73,31 @@ export function getSharedStatePath(): string {
         'This variable is required to prevent file pollution in the repository. ' +
         'Please set ROOSYNC_SHARED_PATH to your Google Drive shared state path.'
     );
+}
+
+/**
+ * #1918: Safe variant that returns null instead of throwing.
+ * Use in runtime code paths (heartbeat intervals, background services)
+ * where a missing/offline path should degrade rather than crash.
+ */
+export function tryGetSharedStatePath(): string | null {
+    try {
+        return getSharedStatePath();
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * #1918: Check if the shared path is currently accessible (GDrive online).
+ * Lightweight probe — just tests directory existence, no writes.
+ */
+export function isSharedPathAccessible(): boolean {
+    const sharedPath = tryGetSharedStatePath();
+    if (!sharedPath) return false;
+    try {
+        return existsSync(sharedPath);
+    } catch {
+        return false;
+    }
 }
