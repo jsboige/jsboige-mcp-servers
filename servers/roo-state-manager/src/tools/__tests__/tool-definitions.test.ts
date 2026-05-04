@@ -45,11 +45,12 @@ import {
     roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 23;
+const EXPECTED_TOOL_COUNT = 22;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // #1863: 3 deprecated definitions removed from allToolDefinitions
 // #1935 Cluster D: analyze_roosync_problems removed — fused into roosync_diagnose(action: "analyze")
+// #1935 Cluster E: get_status removed — fused into roosync_inventory(type: "status")
 const allDefinitions = [
     conversationBrowserDefinition,
     taskExportDefinition,

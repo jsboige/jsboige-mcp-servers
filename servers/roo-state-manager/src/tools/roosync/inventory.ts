@@ -136,13 +136,13 @@ export const inventoryTool: UnifiedToolContract = {
 
       // #1935 Cluster E: type="status" — fused from roosync_get_status
       if (type === 'status') {
-        const { roosyncGetStatus } = await import('./get-status.js');
-        const statusArgs: any = {
+        const { roosyncGetStatus, GetStatusArgsSchema } = await import('./get-status.js');
+        const statusArgs = GetStatusArgsSchema.parse({
           machineFilter: machineId,
           resetCache: input.resetCache,
           detail: input.detail,
           includeDetails: input.includeDetails,
-        };
+        });
         const statusResult = await roosyncGetStatus(statusArgs);
         return {
           success: true,
