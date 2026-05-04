@@ -189,8 +189,6 @@ export class ConfigComparator {
         allMachines.add(this.config.machineId);
       }
 
-      console.log('[DEBUG] listDiffs - allMachines trouvées:', Array.from(allMachines));
-
       const allDiffs: Array<{
         type: string;
         path: string;

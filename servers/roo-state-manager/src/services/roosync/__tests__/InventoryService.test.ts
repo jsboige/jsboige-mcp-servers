@@ -170,7 +170,7 @@ describe('InventoryService', () => {
         os: 'Windows_NT 10.0.19045',
         hostname: 'test-machine',
         username: 'test-user',
-        powershellVersion: '7.x',
+        powershellVersion: expect.any(String),
       });
     });
 

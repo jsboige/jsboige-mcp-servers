@@ -87,8 +87,8 @@ export class InventoryService {
     slashCommands: [], // Not implemented in script
     terminalCommands: { allowed: [], restricted: [] }, // Not implemented in script
     rooModes: await this.collectRooModes(),
-    sdddSpecs: await this.collectSdddSpecs(),
-    scripts: await this.collectScripts(),
+    sdddSpecs: [], // #1843 LOW #9: stubs inlined (never collected, bloats inventory)
+    scripts: { categories: {}, all: [] },
     tools: {}, // Skipped in script
     systemInfo: {
       os: `${os.type()} ${os.release()}`,
@@ -220,39 +220,14 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
     }
   }
 
-  /**
-   * SIMPLIFICATION "Écuries d'Augias" : Ne plus collecter les specs SDDD
-   * Ces fichiers ne sont pas utiles pour la comparaison des configurations
-   * et gonflent inutilement l'inventaire.
-   */
-  private async collectSdddSpecs(): Promise<any[]> {
-     // Retourner un tableau vide pour alléger l'inventaire
-     return [];
-  }
-
-  /**
-   * SIMPLIFICATION "Écuries d'Augias" : Ne plus collecter les scripts PowerShell
-   * Ces fichiers ne sont pas utiles pour la comparaison des configurations
-   * et gonflent l'inventaire de 70+ KB à cause de la récursion.
-   */
-  private async collectScripts(): Promise<{ categories: { [key: string]: ScriptInfo[] }; all: ScriptInfo[] }> {
-      // Retourner un objet vide pour alléger l'inventaire
-      return {
-          categories: {},
-          all: []
-      };
-  }
 
   private async getPowershellVersion(): Promise<string> {
-      // In a real environment, we might execute 'pwsh -v' or '$PSVersionTable'
-      // For now, returning a placeholder or executing a simple command if possible
-      // Since we don't have direct command execution easily available in this service context without external dependencies
-      // We will try to use the PowerShellExecutor if available or return default.
       try {
-           // Placeholder: assuming PWSH 7 for this environment as per system info
-           return "7.x";
+          const { execSync } = await import('child_process');
+          const output = execSync('pwsh -NoProfile -Command "$PSVersionTable.PSVersion.ToString()"', { timeout: 5000 }).toString().trim();
+          return output || 'Unknown';
       } catch {
-          return "Unknown";
+          return 'Unknown';
       }
   }
 
