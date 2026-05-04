@@ -504,7 +504,7 @@ export const listConversationsTool = {
         inputSchema: {
             type: 'object',
             properties: {
-                limit: { type: 'number', description: 'Alias for per_page (backward compat). Clamped to [10, 100].' },
+                limit: { type: 'number', description: 'Hard cap on total results. When only limit is provided (no per_page), it sets page size with no minimum floor. Cap: 100.' },
                 page: { type: 'number', description: 'Page number (1-based). Default: 1.' },
                 per_page: { type: 'number', description: 'Results per page. Default: 10 (keeps output <50KB so Claude Code displays inline). Min: 10. Max: 100 (opt-in large pages — above ~50KB the host redirects output to a file).' },
                 sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },

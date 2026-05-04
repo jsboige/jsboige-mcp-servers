@@ -180,7 +180,7 @@ describe('roosync_manage', () => {
     describe('action=bulk_mark_read', () => {
         it('calls bulk operation with filters', async () => {
             mockBulkOperation.mockResolvedValue({
-                operation: 'mark_read', matched: 3, processed: 3, errors: 0, message_ids: ['a', 'b', 'c'],
+                operation: 'mark_read', matched: 3, processed: 3, errors: 0, message_ids: ['a', 'b', 'c'], failed_ids: [],
             });
             const result = await roosyncManage({
                 action: 'bulk_mark_read', from: 'test-machine', priority: 'LOW',
@@ -194,7 +194,7 @@ describe('roosync_manage', () => {
 
         it('handles zero matches', async () => {
             mockBulkOperation.mockResolvedValue({
-                operation: 'mark_read', matched: 0, processed: 0, errors: 0, message_ids: [],
+                operation: 'mark_read', matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [],
             });
             const result = await roosyncManage({ action: 'bulk_mark_read' });
             expect(result.content[0].text).toContain('0');
@@ -204,7 +204,7 @@ describe('roosync_manage', () => {
     describe('action=bulk_archive', () => {
         it('calls bulk operation with archive operation', async () => {
             mockBulkOperation.mockResolvedValue({
-                operation: 'archive', matched: 5, processed: 5, errors: 0, message_ids: ['x1', 'x2', 'x3', 'x4', 'x5'],
+                operation: 'archive', matched: 5, processed: 5, errors: 0, message_ids: ['x1', 'x2', 'x3', 'x4', 'x5'], failed_ids: [],
             });
             const result = await roosyncManage({
                 action: 'bulk_archive', before_date: '2026-04-01T00:00:00Z',
@@ -222,7 +222,7 @@ describe('roosync_manage', () => {
             mockCleanupExpiredMessages.mockResolvedValue(2);
             mockSendExpiryReminders.mockResolvedValue(1);
             mockBulkOperation.mockResolvedValue({
-                operation: 'mark_read', matched: 3, processed: 3, errors: 0, message_ids: [],
+                operation: 'mark_read', matched: 3, processed: 3, errors: 0, message_ids: [], failed_ids: [],
             });
             mockGetInboxStats.mockResolvedValue({
                 total: 10, unread: 2, read: 8,
@@ -238,7 +238,7 @@ describe('roosync_manage', () => {
 
         it('handles empty cleanup', async () => {
             mockBulkOperation.mockResolvedValue({
-                operation: 'mark_read', matched: 0, processed: 0, errors: 0, message_ids: [],
+                operation: 'mark_read', matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [],
             });
             mockGetInboxStats.mockResolvedValue({
                 total: 0, unread: 0, read: 0,

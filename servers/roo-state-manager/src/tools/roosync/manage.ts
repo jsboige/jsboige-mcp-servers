@@ -308,17 +308,30 @@ async function cleanupMessages(
   logger.info('🧹 Starting cleanup operation');
   const machineId = getLocalMachineId();
   const results: string[] = [];
+  const allFailedIds: string[] = [];
 
   // 0a. Cleanup expired auto-destruct messages (#629)
-  const expiredCount = await messageManager.cleanupExpiredMessages();
-  if (expiredCount > 0) {
-    results.push(`- 💀 Messages auto-destruct expirés détruits : **${expiredCount}**`);
+  try {
+    const expiredCount = await messageManager.cleanupExpiredMessages();
+    if (expiredCount > 0) {
+      results.push(`- 💀 Messages auto-destruct expirés détruits : **${expiredCount}**`);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    results.push(`- 💀 Auto-destruct cleanup échoué : ${msg}`);
+    logger.error('Auto-destruct cleanup failed', error);
   }
 
   // 0b. Send expiry reminders for approaching TTL (#629)
-  const remindersCount = await messageManager.sendExpiryReminders();
-  if (remindersCount > 0) {
-    results.push(`- ⏰ Rappels d'expiration envoyés : **${remindersCount}**`);
+  try {
+    const remindersCount = await messageManager.sendExpiryReminders();
+    if (remindersCount > 0) {
+      results.push(`- ⏰ Rappels d'expiration envoyés : **${remindersCount}**`);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    results.push(`- ⏰ Envoi rappels échoué : ${msg}`);
+    logger.error('Expiry reminders failed', error);
   }
 
   // 1. Mark test messages as read
@@ -328,6 +341,10 @@ async function cleanupMessages(
   );
   if (testResult.processed > 0) {
     results.push(`- 🧪 Messages de test marqués lus : **${testResult.processed}**`);
+  }
+  if (testResult.failed_ids.length > 0) {
+    results.push(`- ⚠️ Échecs test mark_read : ${testResult.failed_ids.length} (${testResult.failed_ids.slice(0, 5).join(', ')}${testResult.failed_ids.length > 5 ? '…' : ''})`);
+    allFailedIds.push(...testResult.failed_ids);
   }
 
   // 2. Archive old read messages (>30 days)
@@ -340,6 +357,10 @@ async function cleanupMessages(
   if (oldReadResult.processed > 0) {
     results.push(`- 📦 Messages lus >30j archivés : **${oldReadResult.processed}**`);
   }
+  if (oldReadResult.failed_ids.length > 0) {
+    results.push(`- ⚠️ Échecs archive >30j : ${oldReadResult.failed_ids.length} (${oldReadResult.failed_ids.slice(0, 5).join(', ')}${oldReadResult.failed_ids.length > 5 ? '…' : ''})`);
+    allFailedIds.push(...oldReadResult.failed_ids);
+  }
 
   // 3. Mark old LOW priority messages as read (>7 days)
   const sevenDaysAgo = new Date();
@@ -351,15 +372,23 @@ async function cleanupMessages(
   if (oldLowResult.processed > 0) {
     results.push(`- 📭 Messages LOW >7j marqués lus : **${oldLowResult.processed}**`);
   }
+  if (oldLowResult.failed_ids.length > 0) {
+    results.push(`- ⚠️ Échecs LOW mark_read : ${oldLowResult.failed_ids.length} (${oldLowResult.failed_ids.slice(0, 5).join(', ')}${oldLowResult.failed_ids.length > 5 ? '…' : ''})`);
+    allFailedIds.push(...oldLowResult.failed_ids);
+  }
 
   // 4. Get current stats
   const stats = await messageManager.getInboxStats(machineId);
+
+  const errorSection = allFailedIds.length > 0
+    ? `\n\n### Échecs (${allFailedIds.length} messages)\n${allFailedIds.slice(0, 10).map(id => `- \`${id}\``).join('\n')}${allFailedIds.length > 10 ? `\n… et ${allFailedIds.length - 10} autres` : ''}`
+    : '';
 
   return `🧹 **Cleanup terminé**
 
 ---
 
-${results.length > 0 ? `### Actions effectuées\n${results.join('\n')}` : '### Aucune action nécessaire\nTous les messages sont déjà dans un état propre.'}
+${results.length > 0 ? `### Actions effectuées\n${results.join('\n')}` : '### Aucune action nécessaire\nTous les messages sont déjà dans un état propre.'}${errorSection}
 
 ### État de la boîte après cleanup
 
