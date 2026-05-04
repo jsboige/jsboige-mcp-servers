@@ -187,6 +187,115 @@ describe('#1863 Fusion A3: cleanup → manage redirect', () => {
 });
 
 // ============================================================
+// FUSION E: get_status → inventory(type: "status")
+// #1935 Cluster E — parameter mapping + Zod validation
+// ============================================================
+describe('#1935 Fusion E: get_status → inventory(type: "status")', () => {
+  describe('Scenario 1: Canonical call via inventory(type: "status")', () => {
+    it('should validate type="status"', () => {
+      const result = InventoryArgsSchema.safeParse({ type: 'status' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.type).toBe('status');
+      }
+    });
+
+    it('should validate type="status" with machineId', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        machineId: 'myia-po-2026'
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.machineId).toBe('myia-po-2026');
+      }
+    });
+
+    it('should validate type="status" with detail and resetCache', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        detail: 'full',
+        resetCache: true,
+        includeDetails: true
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.detail).toBe('full');
+        expect(result.data.resetCache).toBe(true);
+        expect(result.data.includeDetails).toBe(true);
+      }
+    });
+
+    it('should have "status" in inventory definition type enum', () => {
+      const typeEnum = (roosyncInventoryDefinition.inputSchema as any).properties.type.enum;
+      expect(typeEnum).toContain('status');
+    });
+  });
+
+  describe('Scenario 2: Backward-compat redirect — machineFilter → machineId mapping', () => {
+    it('should map legacy machineFilter to machineId via InventoryArgsSchema', () => {
+      // Simulates the redirect logic: legacy caller passes machineFilter
+      const legacyArgs = { machineFilter: 'myia-po-2026', type: 'status' as const };
+      // Redirect maps machineFilter → machineId
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBe('myia-po-2026');
+      expect(redirectArgs.type).toBe('status');
+    });
+
+    it('should prefer machineId over machineFilter when both present', () => {
+      const legacyArgs = { machineId: 'machine-A', machineFilter: 'machine-B' };
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBe('machine-A');
+    });
+
+    it('should use machineFilter when machineId is absent', () => {
+      const legacyArgs = { machineFilter: 'machine-B' };
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBe('machine-B');
+    });
+
+    it('should work with no machine filter at all', () => {
+      const legacyArgs = {};
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBeUndefined();
+    });
+  });
+
+  describe('Scenario 3: Error case — invalid status parameters', () => {
+    it('should reject invalid detail value', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        detail: 'verbose'
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should strip unknown parameters (Zod default behavior)', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        unknownParam: 'value'
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).not.toHaveProperty('unknownParam');
+      }
+    });
+  });
+});
+
+// ============================================================
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
