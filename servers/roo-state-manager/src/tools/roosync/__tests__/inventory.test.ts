@@ -312,4 +312,57 @@ describe('inventoryTool', () => {
       expect(result.metrics.executionTime).toBeGreaterThanOrEqual(0);
     });
   });
+
+  // ============================================================
+  // Tests for summary mode (#1411)
+  // ============================================================
+
+  describe('summary mode', () => {
+    test('should return markdown summary for type=all with summary=true', async () => {
+      const result = await inventoryTool.execute(
+        { type: 'all', summary: true },
+        mockExecutionContext
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data.summary).toBeDefined();
+      expect(result.data.summary).toContain('Inventory Summary');
+      expect(result.data.summary).toContain('Machine:');
+      expect(result.data.summary).toContain('Cluster status:');
+      expect(result.data.summary).toContain('Online');
+      expect(result.data.summary).toContain('Offline');
+    });
+
+    test('should not return full JSON when summary=true', async () => {
+      const result = await inventoryTool.execute(
+        { type: 'all', summary: true },
+        mockExecutionContext
+      );
+
+      expect(result.data.machineInventory).toBeUndefined();
+      expect(result.data.heartbeatState).toBeUndefined();
+    });
+
+    test('should return full JSON when summary=false (default)', async () => {
+      const result = await inventoryTool.execute(
+        { type: 'all', summary: false },
+        mockExecutionContext
+      );
+
+      expect(result.data.machineInventory).toBeDefined();
+      expect(result.data.heartbeatState).toBeDefined();
+      expect(result.data.summary).toBeUndefined();
+    });
+
+    test('should return summary for type=machine', async () => {
+      const result = await inventoryTool.execute(
+        { type: 'machine', summary: true },
+        mockExecutionContext
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data.summary).toContain('Machine:');
+      expect(result.data.summary).toContain('MCPs:');
+    });
+  });
 });

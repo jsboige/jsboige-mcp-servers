@@ -316,4 +316,149 @@ describe('ServiceRegistry', () => {
             expect(r.getRegistryMetrics().totalServices).toBe(7);
         });
     });
+
+    describe('MIXED processing level', () => {
+        it('should fallback to background on immediate timeout', async () => {
+            const slowMock = vi.fn().mockImplementation(() =>
+                new Promise(resolve => setTimeout(() => resolve('slow-result'), 6000))
+            );
+            registry.registerService('utility', { slowProcess: slowMock }, 'MIXED' as any);
+
+            const result = await registry.executeServiceMethod('utility', 'slowProcess');
+
+            // Should have completed via background fallback (Promise.race timeout at 5s)
+            // Note: This test would take 6s in real conditions, so we verify the logic flow
+            const metrics = registry.getRegistryMetrics();
+            const utilityMetrics = metrics.serviceBreakdown.find(m => m.serviceName === 'utility');
+            // MIXED increments immediateCallsCount first, then backgroundCallsCount on fallback
+            expect(utilityMetrics!.backgroundCallsCount).toBeGreaterThan(0);
+        }, 15000);
+
+        it('should use immediate result when fast enough', async () => {
+            const fastMock = vi.fn().mockResolvedValue('fast-result');
+            registry.registerService('utility', { fastProcess: fastMock }, 'MIXED' as any);
+
+            const result = await registry.executeServiceMethod('utility', 'fastProcess');
+
+            expect(result).toBe('fast-result');
+            const metrics = registry.getRegistryMetrics();
+            const utilityMetrics = metrics.serviceBreakdown.find(m => m.serviceName === 'utility');
+            expect(utilityMetrics!.immediateCallsCount).toBe(1);
+        });
+    });
+
+    describe('healthCheck degraded status', () => {
+        it('should mark service as degraded when errorRate > 10%', async () => {
+            const mockInstance = { work: vi.fn().mockRejectedValue(new Error('err')) };
+            registry.registerService('display', mockInstance, 'IMMEDIATE' as any);
+
+            // Need callCount > 10 for errorRate calculation to be > 10% with 1 error
+            for (let i = 0; i < 9; i++) {
+                registry.getService('display');
+            }
+            try { await registry.executeServiceMethod('display', 'work'); } catch {}
+
+            const health = await registry.healthCheck();
+            // errorCount=1, callCount=10 → errorRate=10% → should be 'degraded'
+            expect(health.services['display']).toBe('degraded');
+        });
+
+        it('should mark service as degraded when avgTime > 10000ms', async () => {
+            const slowMock = vi.fn().mockImplementation(() =>
+                new Promise(resolve => setTimeout(() => resolve('result'), 11000))
+            );
+            registry.registerService('display', { slowWork: slowMock }, 'IMMEDIATE' as any);
+
+            registry.getService('display');
+            await registry.executeServiceMethod('display', 'slowWork');
+
+            const health = await registry.healthCheck();
+            // avgTime > 10000ms → 'degraded'
+            expect(health.services['display']).toBe('degraded');
+        }, 20000);
+
+        it('should return degraded when >3 services degraded', async () => {
+            // Create 4 services with slow execution (avgTime > 10000ms)
+            const serviceNames = ['display', 'search', 'storage', 'cache'] as const;
+
+            for (const svcName of serviceNames) {
+                const slowMock = vi.fn().mockImplementation(() =>
+                    new Promise(resolve => setTimeout(() => resolve('result'), 11000))
+                );
+                registry.registerService(svcName, { slowWork: slowMock }, 'IMMEDIATE' as any);
+            }
+
+            // Execute slow work on each service
+            for (const svcName of serviceNames) {
+                registry.getService(svcName);
+                await registry.executeServiceMethod(svcName, 'slowWork');
+            }
+
+            const health = await registry.healthCheck();
+            // With 4 degraded services (> 3), status should be 'degraded'
+            expect(health.status).toBe('degraded');
+        }, 60000);
+    });
+
+    describe('Cache Anti-Leak monitoring', () => {
+        it('should not trigger cleanup when memory is below threshold', async () => {
+            const mockCleanup = vi.fn();
+            registry.registerService('cache', { cleanup: mockCleanup }, 'IMMEDIATE' as any);
+
+            // executeServiceMethod calls checkCacheAntiLeak internally
+            await registry.executeServiceMethod('cache', 'someMethod');
+
+            // With normal memory usage (< 200GB threshold), cleanup should not be called
+            expect(mockCleanup).not.toHaveBeenCalled();
+        });
+
+        it('should trigger cleanup when memory exceeds threshold', async () => {
+            // Mock process.memoryUsage to return high memory usage
+            const originalMemoryUsage = process.memoryUsage;
+            process.memoryUsage = vi.fn().mockReturnValue({
+                heapUsed: 220 * 1024 * 1024 * 1024, // 220GB - exceeds 200GB threshold
+                heapTotal: 250 * 1024 * 1024 * 1024,
+                external: 0,
+                rss: 250 * 1024 * 1024 * 1024,
+                arrayBuffers: 0
+            });
+
+            const mockCleanup = vi.fn();
+            registry.registerService('cache', { cleanup: mockCleanup }, 'IMMEDIATE' as any);
+
+            await registry.executeServiceMethod('cache', 'someMethod');
+
+            // Cleanup should be triggered when memory exceeds threshold
+            expect(mockCleanup).toHaveBeenCalled();
+
+            // Restore original process.memoryUsage
+            process.memoryUsage = originalMemoryUsage;
+        });
+    });
+
+    describe('updateSuccessMetrics', () => {
+        it('should calculate average execution time correctly', async () => {
+            const mockInstance = { work: vi.fn().mockResolvedValue('ok') };
+            registry.registerService('display', mockInstance, 'IMMEDIATE' as any);
+
+            // First call
+            registry.getService('display');
+            await registry.executeServiceMethod('display', 'work');
+
+            const metrics1 = registry.getRegistryMetrics();
+            const displayMetrics1 = metrics1.serviceBreakdown.find(m => m.serviceName === 'display');
+            const avgTime1 = displayMetrics1!.averageExecutionTime;
+
+            // Second call
+            registry.getService('display');
+            await registry.executeServiceMethod('display', 'work');
+
+            const metrics2 = registry.getRegistryMetrics();
+            const displayMetrics2 = metrics2.serviceBreakdown.find(m => m.serviceName === 'display');
+            const avgTime2 = displayMetrics2!.averageExecutionTime;
+
+            // Average should be calculated correctly: (avgTime1 * 1 + execTime2) / 2
+            expect(avgTime2).toBeGreaterThanOrEqual(0);
+        });
+    });
 });

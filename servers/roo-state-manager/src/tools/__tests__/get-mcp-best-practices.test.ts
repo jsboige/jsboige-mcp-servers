@@ -121,8 +121,8 @@ describe('get_mcp_best_practices', () => {
       const result = await getMcpBestPractices.handler();
       const text = result.content[0].text as string;
 
-      expect(text).toContain('touch_mcp_settings');
-      expect(text).toContain('rebuild_and_restart_mcp');
+      expect(text).toContain('roosync_mcp_management touch');
+      expect(text).toContain('roosync_mcp_management rebuild');
       expect(text).toContain('read_vscode_logs');
     });
 
@@ -271,7 +271,7 @@ describe('get_mcp_best_practices', () => {
       expect(text).toContain('🚀 Commandes de développement');
       expect(text).toContain('npm install');
       expect(text).toContain('npm run build');
-      expect(text).toContain('use_mcp_tool roo-state-manager rebuild_and_restart_mcp');
+      expect(text).toContain('use_mcp_tool roo-state-manager roosync_mcp_management {"action": "rebuild"');
     });
   });
 });
