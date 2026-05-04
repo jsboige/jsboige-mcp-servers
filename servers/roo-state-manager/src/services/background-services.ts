@@ -6,6 +6,8 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import os from 'os';
+import lockfile from 'proper-lockfile';
 import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
@@ -157,7 +159,8 @@ export async function loadFullSkeleton(
 
 /**
  * Generate or update the skeleton index file from current cache.
- * Called in background after skeleton loading or periodically by the refresh worker.
+ * #1984: Uses proper-lockfile + atomic rename to prevent race conditions
+ * between 12+ concurrent MCP instances.
  */
 export async function saveSkeletonIndex(
     conversationCache: Map<string, SkeletonHeader>
@@ -181,8 +184,29 @@ export async function saveSkeletonIndex(
         };
 
         const content = JSON.stringify(index);
-        await fs.writeFile(indexPath, content, 'utf8');
-        console.log(`[Index] Saved skeleton index: ${entries.length} entries (${Math.round(content.length / 1024)}KB)`);
+
+        // #1984: Acquire file lock before writing to prevent concurrent writes
+        let release: (() => Promise<void>) | undefined;
+        try {
+            // Ensure file exists for lockfile (it needs a real file to lock)
+            try { await fs.access(indexPath); } catch { await fs.writeFile(indexPath, '{}', 'utf8'); }
+            release = await lockfile.lock(indexPath, { retries: 3, stale: 15000 });
+        } catch (lockError: any) {
+            // Lock acquisition failed — proceed without lock rather than blocking
+            console.warn(`[#1984] Lock acquisition failed for skeleton index: ${lockError?.message || lockError}`);
+        }
+
+        try {
+            // #1984: Atomic write via temp file + rename
+            const tmpPath = path.join(skeletonsCacheDir, `${SKELETON_INDEX_FILENAME}.tmp-${process.pid}`);
+            await fs.writeFile(tmpPath, content, 'utf8');
+            await fs.rename(tmpPath, indexPath);
+            console.log(`[Index] Saved skeleton index (atomic): ${entries.length} entries (${Math.round(content.length / 1024)}KB)`);
+        } finally {
+            if (release) {
+                try { await release(); } catch { /* ignore unlock errors */ }
+            }
+        }
     } catch (error: any) {
         console.warn('[Index] Failed to save skeleton index:', error?.message || error);
     }
@@ -398,7 +422,14 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                 const taskPath = path.join(tasksDir, entry.name);
                                 const skeleton = await RooStorageDetector.analyzeConversation(entry.name, taskPath);
                                 if (skeleton) {
-                                    state.conversationCache.set(entry.name, toHeader(skeleton));
+                                    const newHeader = toHeader(skeleton);
+                                    // #1984: Preserve existing indexingState when refreshing
+                                    // analyzeConversation may not carry indexingState from .skeleton files
+                                    if (existingSkeleton?.metadata?.indexingState && !newHeader.metadata?.indexingState) {
+                                        if (!newHeader.metadata) newHeader.metadata = {} as any;
+                                        newHeader.metadata.indexingState = existingSkeleton.metadata.indexingState;
+                                    }
+                                    state.conversationCache.set(entry.name, newHeader);
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
                                     const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
                                     if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
@@ -448,7 +479,13 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     if (skeleton && (skeleton.sequence ?? []).length > 0) {
                                         if (!skeleton.metadata) skeleton.metadata = {} as any;
                                         skeleton.metadata.dataSource = 'claude';
-                                        state.conversationCache.set(taskId, toHeader(skeleton));
+                                        const newHeader = toHeader(skeleton);
+                                        // #1984: Preserve existing indexingState when refreshing
+                                        if (existingSkeleton?.metadata?.indexingState && !newHeader.metadata?.indexingState) {
+                                            if (!newHeader.metadata) newHeader.metadata = {} as any;
+                                            newHeader.metadata.indexingState = existingSkeleton.metadata.indexingState;
+                                        }
+                                        state.conversationCache.set(taskId, newHeader);
                                         const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
                                         if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                             state.qdrantIndexQueue.add(taskId);
