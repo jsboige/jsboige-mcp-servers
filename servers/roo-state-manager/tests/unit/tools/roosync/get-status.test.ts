@@ -56,11 +56,17 @@ vi.mock('../../../../src/utils/tool-call-metrics.js', () => ({
     getToolUsageSnapshot: mockGetToolUsageSnapshot,
 }));
 
-vi.mock('fs', () => ({
-    readdirSync: mockReaddirSync,
-    statSync: mockStatSync,
-    readFileSync: mockReadFileSync,
-}));
+// Partial mock — preserve existsSync/mkdirSync etc. for Logger.ensureLogDirectory()
+// when this test runs in suite ordering that instantiates loggers after the mock.
+vi.mock('fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('fs')>();
+    return {
+        ...actual,
+        readdirSync: mockReaddirSync,
+        statSync: mockStatSync,
+        readFileSync: mockReadFileSync,
+    };
+});
 
 function setupMocks(overrides: Record<string, any> = {}) {
     const heartbeatState = overrides.heartbeatState || {
