@@ -113,6 +113,10 @@ export default mergeConfig(unitConfig, defineConfig({
       // ===== CI-excluded: LIVE SERVICES (require Qdrant + Embedding service) =====
       'src/tools/search/__tests__/search-live.integration.test.ts',
 
+      // ===== CI-excluded: STRESS (hardware-dependent timing thresholds) =====
+      // These tests have timing thresholds that fail on slower machines (16GB RAM, --maxWorkers=1)
+      'src/tools/roosync/__tests__/stress-large-inbox.test.ts',
+
       // ===== E2E (already excluded in base) =====
       'tests/e2e/**',
     ],
