@@ -465,42 +465,6 @@ export class BaselineManager {
   }
 
   /**
-   * Créer une baseline non-nominative
-   */
-  public async createNonNominativeBaseline(
-    name: string,
-    description: string,
-    profiles: any[]
-  ): Promise<any> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'NonNominativeBaselineService non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    return await this.nonNominativeService.createBaseline(
-      name,
-      description,
-      profiles
-    );
-  }
-
-  /**
-   * Obtenir la baseline non-nominative active
-   */
-  public async getActiveNonNominativeBaseline(): Promise<any> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'NonNominativeBaselineService non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    return this.nonNominativeService.getActiveBaseline();
-  }
-
-  /**
    * Migrer depuis l'ancien système nominatif vers le nouveau système non-nominatif
    */
   public async migrateToNonNominative(options?: {
@@ -957,50 +921,6 @@ export class BaselineManager {
       profileIds: activeBaseline.profiles?.map((p: any) => p.profileId) || [],
       mappedAt: new Date().toISOString()
     };
-  }
-
-  /**
-   * Compare plusieurs machines avec la baseline non-nominative
-   * @param machineIds IDs des machines à comparer
-   * @returns Comparaison des machines
-   */
-  public async compareMachinesNonNominative(machineIds: string[]): Promise<any> {
-    if (!this.nonNominativeService) {
-      throw new RooSyncServiceError(
-        'NonNominativeBaselineService non disponible',
-        'SERVICE_NOT_AVAILABLE'
-      );
-    }
-
-    return await this.nonNominativeService.compareMachines(machineIds);
-  }
-
-  /**
-   * Obtient l'état du système non-nominatif
-   * @returns État actuel du système non-nominatif
-   */
-  public getNonNominativeState(): any {
-    if (!this.nonNominativeService) {
-      return {
-        available: false,
-        error: 'NonNominativeBaselineService non disponible'
-      };
-    }
-
-    return this.nonNominativeService.getState();
-  }
-
-  /**
-   * Obtient les mappings de machines non-nominatives
-   * @returns Liste des mappings machine → baseline
-   */
-  public getNonNominativeMachineMappings(): any[] {
-    if (!this.nonNominativeService) {
-      return [];
-    }
-
-    const state = this.nonNominativeService.getState();
-    return state.mappings || [];
   }
 
   /**

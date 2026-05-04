@@ -577,53 +577,6 @@ describe('BaselineManager — Non-nominative additional methods', () => {
       await expect(mgrNoNN.mapMachineToNonNominativeBaseline('machine-x')).rejects.toThrow('NonNominativeBaselineService non disponible');
     });
   });
-
-  describe('compareMachinesNonNominative', () => {
-    it('delegates to nonNominativeService.compareMachines', async () => {
-      mockNN.compareMachines.mockResolvedValue({ matches: true, diffs: [] });
-      const result = await mgr.compareMachinesNonNominative(['m1', 'm2']);
-      expect(mockNN.compareMachines).toHaveBeenCalledWith(['m1', 'm2']);
-      expect(result.matches).toBe(true);
-    });
-
-    it('throws when non-nominative service unavailable', async () => {
-      const mgrNoNN = createManager();
-      await expect(mgrNoNN.compareMachinesNonNominative(['m1'])).rejects.toThrow('NonNominativeBaselineService non disponible');
-    });
-  });
-
-  describe('getNonNominativeState', () => {
-    it('returns state from service', () => {
-      mockNN.getState.mockReturnValue({ available: true, mappings: [{ id: 1 }] });
-      const state = mgr.getNonNominativeState();
-      expect(state.available).toBe(true);
-    });
-
-    it('returns error object when service unavailable', () => {
-      const mgrNoNN = createManager();
-      const state = mgrNoNN.getNonNominativeState();
-      expect(state.available).toBe(false);
-      expect(state.error).toBeDefined();
-    });
-  });
-
-  describe('getNonNominativeMachineMappings', () => {
-    it('returns mappings from state', () => {
-      mockNN.getState.mockReturnValue({ mappings: [{ machineId: 'm1' }, { machineId: 'm2' }] });
-      const mappings = mgr.getNonNominativeMachineMappings();
-      expect(mappings).toHaveLength(2);
-    });
-
-    it('returns empty array when service unavailable', () => {
-      const mgrNoNN = createManager();
-      expect(mgrNoNN.getNonNominativeMachineMappings()).toEqual([]);
-    });
-
-    it('returns empty array when state has no mappings', () => {
-      mockNN.getState.mockReturnValue({});
-      expect(mgr.getNonNominativeMachineMappings()).toEqual([]);
-    });
-  });
 });
 
 // ─── restoreFromRollbackPoint additional edge cases ─────────────────

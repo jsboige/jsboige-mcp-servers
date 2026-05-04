@@ -788,7 +788,7 @@ export class RooSyncService {
     description: string,
     aggregationConfig?: any
   ): Promise<any> {
-    const baseline = await this.baselineManager.createNonNominativeBaseline(name, description, aggregationConfig);
+    const baseline = await this.nonNominativeBaselineService.createBaseline(name, description, aggregationConfig);
     // Rafraîchir l'état local après création
     this.nonNominativeBaselineService.getState();
     return baseline;
@@ -837,7 +837,7 @@ export class RooSyncService {
       const inventories = [compatibleInventory];
       
       // Créer la baseline via le BaselineManager
-      await this.baselineManager.createNonNominativeBaseline(
+      await this.nonNominativeBaselineService.createBaseline(
         `Baseline ${options.version || 'Auto'}`,
         options.updateReason || `Mise à jour depuis ${machineId}`,
         [] // Config par défaut (tableau vide)
@@ -882,7 +882,7 @@ export class RooSyncService {
    * Compare plusieurs machines avec la baseline non-nominative
    */
   public async compareMachinesNonNominative(machineIds: string[]): Promise<any> {
-    return await this.baselineManager.compareMachinesNonNominative(machineIds);
+    return await this.nonNominativeBaselineService.compareMachines(machineIds);
   }
 
   /**
@@ -899,21 +899,21 @@ export class RooSyncService {
    * Obtient l'état du système non-nominatif
    */
   public getNonNominativeState(): any {
-    return this.baselineManager.getNonNominativeState();
+    return this.nonNominativeBaselineService.getState();
   }
 
   /**
    * Obtient la baseline non-nominative active
    */
   public getActiveNonNominativeBaseline(): any {
-    return this.baselineManager.getActiveNonNominativeBaseline();
+    return this.nonNominativeBaselineService.getActiveBaseline();
   }
 
   /**
    * Obtient tous les mappings de machines non-nominatives
    */
   public getNonNominativeMachineMappings(): any[] {
-    return this.baselineManager.getNonNominativeMachineMappings();
+    return this.nonNominativeBaselineService.getState()?.machineMappings || [];
   }
 
   /**
@@ -1028,7 +1028,7 @@ export class RooSyncService {
           const compatibleInventory: any = inventory;
           
           // Créer une nouvelle baseline agrégée
-          await this.baselineManager.createNonNominativeBaseline(
+          await this.nonNominativeBaselineService.createBaseline(
             `Baseline Auto (Offline: ${machineId})`,
             `Mise à jour automatique suite à détection offline de ${machineId}`,
             []
@@ -1072,7 +1072,7 @@ export class RooSyncService {
           const compatibleInventory: any = inventory;
           
           // Créer une nouvelle baseline agrégée
-          await this.baselineManager.createNonNominativeBaseline(
+          await this.nonNominativeBaselineService.createBaseline(
             `Baseline Auto (Online: ${machineId})`,
             `Mise à jour automatique suite au retour online de ${machineId}`,
             []
