@@ -759,7 +759,7 @@ describe('background-services', () => {
       expect(state.indexingDecisionService.markIndexingSuccess).toHaveBeenCalledWith(skeleton);
     });
 
-    it('should call TaskIndexer.indexTask with correct source for claude-code', async () => {
+    it('should skip claude-code sessions (#1985 sanctuary protection)', async () => {
       const state = createMockState();
       const skeleton = createMockSkeleton('task-001');
       skeleton.metadata = {
@@ -784,7 +784,8 @@ describe('background-services', () => {
 
       await indexTaskInQdrant('task-001', state);
 
-      expect(mockIndexTask).toHaveBeenCalledWith('task-001', 'claude-code');
+      // #1985: Claude Code sessions must NOT be indexed via background path
+      expect(mockIndexTask).not.toHaveBeenCalled();
     });
 
     it('should update metrics on success', async () => {

@@ -858,6 +858,16 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
 
         // #604: Determine source from skeleton metadata
         const source: 'roo' | 'claude-code' = skeleton.metadata?.dataSource === 'claude' ? 'claude-code' : 'roo';
+
+        // #1985: Claude Code sessions are sanctuary — skip automatic background indexing.
+        // Manual indexing via roosync_indexing(action: "index") is still allowed.
+        // Root cause: Claude Code sessions get new UUIDs on resume/compact, causing
+        // 3-4x duplicate vectors (49% of Qdrant storage = duplicates).
+        if (source === 'claude-code') {
+            console.log(`[SKIP] Task ${taskId}: Claude Code session — automatic indexing blocked (#1985 sanctuary protection)`);
+            return;
+        }
+
         const taskIndexer = new TaskIndexer();
         await taskIndexer.indexTask(taskId, source);
 
