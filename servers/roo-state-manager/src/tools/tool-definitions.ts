@@ -489,35 +489,9 @@ export const roosyncDiagnoseDefinition = {
     }
 };
 
-export const roosyncRefreshDashboardDefinition = {
-    name: 'roosync_refresh_dashboard',
-    description: 'Rafraîchit le dashboard MCP en exécutant le script generate-mcp-dashboard.ps1',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            baseline: { type: 'string', description: 'Machine à utiliser comme baseline (défaut: myia-ai-01)' },
-            outputDir: { type: 'string', description: 'Répertoire de sortie pour le dashboard (défaut: $ROOSYNC_SHARED_PATH/dashboards)' }
-        },
-        additionalProperties: false
-    }
-};
-
-export const roosyncUpdateDashboardDefinition = {
-    name: 'roosync_update_dashboard',
-    description: 'Met à jour une section du dashboard hiérarchique RooSync sur GDrive (#546)',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            section: { type: 'string', enum: ['machine', 'global', 'intercom', 'decisions', 'metrics'], description: 'Section du dashboard à mettre à jour' },
-            content: { type: 'string', description: 'Contenu markdown à insérer dans la section' },
-            machine: { type: 'string', description: 'ID de la machine (requis si section=machine, défaut: ROOSYNC_MACHINE_ID)' },
-            workspace: { type: 'string', description: 'Workspace (défaut: roo-extensions)' },
-            mode: { type: 'string', enum: ['replace', 'append', 'prepend'], description: 'Mode de mise à jour: replace (remplacer), append (ajouter à la fin), prepend (ajouter au début)' }
-        },
-        required: ['section', 'content'],
-        additionalProperties: false
-    }
-};
+// [#1935 Cluster B] DEPRECATED: roosync_refresh_dashboard + roosync_update_dashboard
+// Removed from tools/list. Callers should use roosync_dashboard(action: "refresh"|"update").
+// Backward-compat CallTool handlers remain in registry.ts (redirect to roosyncDashboard).
 
 export const roosyncSendDefinition = {
     name: 'roosync_send',

@@ -102,8 +102,8 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'roosync_archive_message': 'roosync/archive_message.ts',
   'roosync_reply_message': 'roosync/reply_message.ts',
   // [REMOVED] roosync_get_machine_inventory — Phase B #1863: backward-compat wrapper, consolidated into roosync_inventory
-  'roosync_refresh_dashboard': 'roosync/refresh-dashboard.ts',
-  'roosync_update_dashboard': 'roosync/update-dashboard.ts',
+  // [REMOVED from tools/list] roosync_refresh_dashboard — #1935 Cluster B: consolidated into roosync_dashboard(action: "refresh")
+  // [REMOVED from tools/list] roosync_update_dashboard — #1935 Cluster B: consolidated into roosync_dashboard(action: "update")
   'roosync_sync_event': 'roosync/sync-event.ts',
   'roosync_mcp_management': 'roosync/mcp-management.ts',
   'roosync_storage_management': 'roosync/storage-management.ts',
@@ -145,13 +145,13 @@ const ALL_MCP_TOOLS = [
   'roosync_publish_config',
   'roosync_read',
   'roosync_read_inbox',
-  'roosync_refresh_dashboard',
+  // 'roosync_refresh_dashboard': removed from tools/list — #1935 Cluster B, use roosync_dashboard(action: "refresh")
   'roosync_reply_message',
   'roosync_send',
   'roosync_send_message',
   'roosync_storage_management',
   'roosync_sync_event',
-  'roosync_update_dashboard',
+  // 'roosync_update_dashboard': removed from tools/list — #1935 Cluster B, use roosync_dashboard(action: "update")
   'roosync_summarize', // deprecated but has handler
   'roosync_search',
   'roosync_indexing',

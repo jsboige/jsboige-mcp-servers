@@ -36,8 +36,7 @@ import {
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
-    roosyncRefreshDashboardDefinition,
-    roosyncUpdateDashboardDefinition,
+    // #1935 Cluster B: roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition removed from tools/list
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,
@@ -334,9 +333,11 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(filterTypes).toContain('settings');
         });
 
-        it('roosync_update_dashboard should require section and content', () => {
-            expect(roosyncUpdateDashboardDefinition.inputSchema.required).toContain('section');
-            expect(roosyncUpdateDashboardDefinition.inputSchema.required).toContain('content');
+        // #1935 Cluster B: roosync_update_dashboard definition removed — merged into roosync_dashboard
+        it('roosync_dashboard should support refresh and update actions', () => {
+            const actions = (roosyncDashboardDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
+            expect(actions).toContain('refresh');
+            expect(actions).toContain('update');
         });
     });
 
