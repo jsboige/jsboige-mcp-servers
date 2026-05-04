@@ -130,13 +130,16 @@ describe('SMOKE: conversation_browser', () => {
       { role: 'assistant', content: 'Assistant response' }
     ], 'c:/dev/roo-extensions');
 
-    // Step 2: Initial call to get baseline (should list 1 conversation)
+    const cache = new Map();
+
+    // Step 2: Initial call triggers fire-and-forget disk scan
+    // First call may return empty since scan is async
     const result1 = await handleConversationBrowser(
       {
         action: 'list',
         limit: 10
       },
-      new Map(),
+      cache,
       async () => {},
       'roo-extensions',
       async (id) => null
@@ -145,12 +148,25 @@ describe('SMOKE: conversation_browser', () => {
     expect(result1.content).toBeDefined();
     expect(result1.content[0].type).toBe('text');
 
-    // Verify initial result contains conversations (at least the one we created)
-    const result1Text = result1.content[0].text;
-    // The result should be valid JSON with a conversations array
-    const result1Json = JSON.parse(result1Text);
-    expect(result1Json.conversations).toBeDefined();
-    expect(result1Json.conversations.length).toBeGreaterThan(0);
+    // Wait for fire-and-forget scan to discover and cache the conversation
+    await vi.waitFor(() => expect(cache.size).toBeGreaterThan(0), { timeout: 5000 });
+
+    // Step 2b: Second call now has the conversation in cache
+    const result1b = await handleConversationBrowser(
+      {
+        action: 'list',
+        limit: 10
+      },
+      cache,
+      async () => {},
+      'roo-extensions',
+      async (id) => null
+    );
+
+    const result1bText = result1b.content[0].text;
+    const result1bJson = JSON.parse(result1bText);
+    expect(result1bJson.conversations).toBeDefined();
+    expect(result1bJson.conversations.length).toBeGreaterThan(0);
 
     // Step 3: Add more conversations
     const task2Id = 'smoke-test-task-2';
@@ -168,24 +184,41 @@ describe('SMOKE: conversation_browser', () => {
     invalidateDiskScanCache();
 
     // Step 4: Second call to list (should detect new conversations)
+    // Note: Use the same cache so fire-and-forget from step 2 populated it
+    invalidateDiskScanCache();
     const result2 = await handleConversationBrowser(
       {
         action: 'list',
         limit: 10
       },
-      new Map(),
+      cache,
+      async () => {},
+      'roo-extensions',
+      async (id) => null
+    );
+
+    // Wait for fire-and-forget scan to discover new conversations
+    await vi.waitFor(() => expect(cache.size).toBeGreaterThan(1), { timeout: 5000 });
+
+    // Call again to get updated results
+    const result2b = await handleConversationBrowser(
+      {
+        action: 'list',
+        limit: 10
+      },
+      cache,
       async () => {},
       'roo-extensions',
       async (id) => null
     );
 
     // Step 5: Verify that result2 reflects the state change (fresh list, not stale)
-    expect(result2.content[0].type).toBe('text');
-    const result2Text = result2.content[0].text;
+    expect(result2b.content[0].type).toBe('text');
+    const result2Text = result2b.content[0].text;
     const result2Json = JSON.parse(result2Text);
 
     // Should have more conversations than initial result
-    expect(result2Json.conversations.length).toBeGreaterThan(result1Json.conversations.length);
+    expect(result2Json.conversations.length).toBeGreaterThan(result1bJson.conversations.length);
 
     // This validates that the list is computed fresh from filesystem,
     // not from stale cached data

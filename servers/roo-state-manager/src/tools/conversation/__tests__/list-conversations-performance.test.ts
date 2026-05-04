@@ -179,27 +179,30 @@ describe('list_conversations performance & caching', () => {
       expect(mockScanDiskForNewTasks).toHaveBeenCalledTimes(5);
     });
 
-    test('scan results are integrated regardless of cache state', async () => {
+    test('scan results are integrated on subsequent call (fire-and-forget)', async () => {
       const cache = makeCache(makeConversation('base-task'));
 
-      // First call: scan returns task-A
+      // First call: scan returns task-A (fire-and-forget — won't be in this response)
       mockScanDiskForNewTasks.mockResolvedValueOnce([makeConversation('task-A')]);
       const result1 = await listConversationsTool.handler({}, cache);
       const _response1 = JSON.parse((result1.content[0] as any).text);
       const parsed1 = _response1.conversations ?? _response1;
-      expect(parsed1.map((t: any) => t.taskId)).toContain('task-A');
+      // Only base-task is in cache at response time (scan is async)
+      expect(parsed1.map((t: any) => t.taskId)).toContain('base-task');
 
-      // Second call: scan returns task-B (simulating cache expiration in scanner)
+      // Wait for fire-and-forget scan to complete and update cache
+      await vi.waitFor(() => expect(cache.has('task-A')).toBe(true));
+
+      // Second call: now task-A is in cache from the previous scan
+      // scan returns task-B (simulating cache expiration in scanner)
       mockScanDiskForNewTasks.mockResolvedValueOnce([makeConversation('task-B')]);
       const result2 = await listConversationsTool.handler({}, cache);
       const _response2 = JSON.parse((result2.content[0] as any).text);
       const parsed2 = _response2.conversations ?? _response2;
 
-      // Both task-A (from cache map) and task-B (from scan) should appear
       const taskIds2 = parsed2.map((t: any) => t.taskId);
       expect(taskIds2).toContain('base-task');
       expect(taskIds2).toContain('task-A');
-      expect(taskIds2).toContain('task-B');
     });
   });
 
