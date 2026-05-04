@@ -1,4 +1,11 @@
 /**
+ * ARCHIVED 2026-05-05 — #1751 Hidden Debt Audit
+ * Reason: Zero production callers. Only imported by its own test file.
+ * Superseded-by: N/A (dead code, not replaced)
+ * Recovery: Move back to src/services/ and add to barrel export if needed.
+ */
+
+/**
  * EnrichContentClassifier - Service de classification enrichie du contenu
  *
  * Classifie les messages de conversation avec scoring de confiance.

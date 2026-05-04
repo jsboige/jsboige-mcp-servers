@@ -33,6 +33,7 @@
     "src/**/__tests__/**",
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
-    "src/**/_archive/**"
+    "src/**/_archive/**",
+    "src/**/_archives/**"
   ]
 }

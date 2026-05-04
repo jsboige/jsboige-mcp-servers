@@ -33,6 +33,7 @@ export default defineConfig({
       '**/build/**',
       '**/dist/**',
       '**/backups/**',
+      '**/_archives/**',
       '**/vitest-migration/backups/**',
       'vitest-migration/backups/**',
       'tests/unit/parent-child-validation.test.ts',
