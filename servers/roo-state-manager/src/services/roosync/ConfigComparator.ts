@@ -189,7 +189,7 @@ export class ConfigComparator {
         allMachines.add(this.config.machineId);
       }
 
-      console.log('[DEBUG] listDiffs - allMachines trouvées:', Array.from(allMachines));
+      console.debug(`[ConfigComparator] listDiffs - allMachines: ${Array.from(allMachines).join(', ')}`);
 
       const allDiffs: Array<{
         type: string;
@@ -329,8 +329,7 @@ export class ConfigComparator {
     } catch (error) {
       // CORRECTION SDDD: Capturer l'erreur détaillée du BaselineService
       const originalError = error as Error;
-      console.error('[DEBUG] Erreur originale dans compareRealConfigurations:', originalError);
-      console.error('[DEBUG] Stack trace:', originalError.stack);
+      console.error('[ConfigComparator] compareRealConfigurations error:', originalError.message);
 
       throw new RooSyncServiceError(
         `Erreur lors de la comparaison réelle: ${originalError.message}`,
