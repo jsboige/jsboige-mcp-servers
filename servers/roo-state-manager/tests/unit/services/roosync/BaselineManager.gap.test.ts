@@ -35,6 +35,16 @@ vi.mock('fs', () => ({
 vi.mock('../../../../src/services/BaselineService.js');
 vi.mock('../../../../src/services/roosync/ConfigComparator.js');
 
+const mockLogger = {
+  info: vi.fn(),
+  debug: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+};
+vi.mock('../../../../src/utils/logger.js', () => ({
+  createLogger: vi.fn(() => mockLogger),
+}));
+
 // Suppress console.warn/error during tests
 const originalWarn = console.warn;
 const originalError = console.error;

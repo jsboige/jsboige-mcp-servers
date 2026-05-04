@@ -12,6 +12,7 @@ import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../../types/errors.js';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
+import { createLogger } from '../../utils/logger.js';
 
 /**
  * Registre central des machines pour éviter les conflits d'identité
@@ -59,6 +60,7 @@ export interface RollbackRestoreResult {
 }
 
 export class BaselineManager {
+  private logger = createLogger('BaselineManager');
   private machineRegistry: MachineRegistry;
 
   constructor(
@@ -77,7 +79,7 @@ export class BaselineManager {
     if (!this.nonNominativeService) {
       // Note: NonNominativeBaselineService n'est pas importé, on laisse undefined
       // Le service sera initialisé ailleurs si nécessaire
-      console.warn('[BaselineManager] NonNominativeBaselineService non disponible');
+      this.logger.warn('NonNominativeBaselineService non disponible');
     }
 
     // Charger le registre existant s'il y en a un
@@ -100,10 +102,10 @@ export class BaselineManager {
           )
         );
 
-        console.log(`[BaselineManager] Registre des machines chargé: ${this.machineRegistry.machines.size} machines`);
+        this.logger.info(`Registre des machines chargé: ${this.machineRegistry.machines.size} machines`);
       }
     } catch (error) {
-      console.warn('[BaselineManager] Erreur chargement registre des machines:', error);
+      this.logger.warn('Erreur chargement registre des machines:', { error });
       // Continuer avec un registre vide
       this.machineRegistry.machines = new Map();
     }
@@ -125,9 +127,9 @@ export class BaselineManager {
         'utf-8'
       );
 
-      console.log('[BaselineManager] Registre des machines sauvegardé');
+      this.logger.info('Registre des machines sauvegardé');
     } catch (error) {
-      console.error('[BaselineManager] Erreur sauvegarde registre des machines:', error);
+      this.logger.error('Erreur sauvegarde registre des machines:', error);
     }
   }
 
@@ -156,7 +158,7 @@ export class BaselineManager {
     // Conflit détecté : même machineId depuis des sources différentes
     const warningMessage = `⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ: MachineId "${machineId}" déjà utilisé par la source "${existingMachine.source}" (première vue: ${existingMachine.firstSeen}). Tentative d'ajout depuis la source "${source}".`;
 
-    console.warn(warningMessage);
+    this.logger.warn(warningMessage);
 
     return {
       isValid: false,
@@ -180,7 +182,7 @@ export class BaselineManager {
 
     if (!validation.isValid) {
       // Ne pas ajouter la machine en conflit, mais logger l'avertissement
-      console.error(`[BaselineManager] REFUS D'AJOUT: ${validation.warningMessage}`);
+      this.logger.error(`REFUS D'AJOUT: ${validation.warningMessage}`);
       return validation;
     }
 
@@ -191,7 +193,7 @@ export class BaselineManager {
       // Mise à jour d'une machine existante
       existingMachine.lastSeen = now;
       existingMachine.status = status;
-      console.log(`[BaselineManager] Machine ${machineId} mise à jour dans le registre`);
+      this.logger.info(`Machine ${machineId} mise à jour dans le registre`);
     } else {
       // Nouvelle machine
       this.machineRegistry.machines.set(machineId, {
@@ -201,7 +203,7 @@ export class BaselineManager {
         source,
         status
       });
-      console.log(`[BaselineManager] Nouvelle machine ${machineId} ajoutée au registre depuis la source ${source}`);
+      this.logger.info(`Nouvelle machine ${machineId} ajoutée au registre depuis la source ${source}`);
     }
 
     // Sauvegarder le registre
@@ -246,16 +248,16 @@ export class BaselineManager {
     cacheCallback: (key: string, fetchFn: () => Promise<RooSyncDashboard>) => Promise<RooSyncDashboard>
   ): Promise<RooSyncDashboard> {
     return cacheCallback('dashboard', async () => {
-      console.log('[BaselineManager] loadDashboard appelée à', new Date().toISOString());
+      this.logger.info(`loadDashboard appelée à ${new Date().toISOString()}`);
 
       // Vérifier d'abord si le dashboard existe déjà
       const dashboardPath = this.getRooSyncFilePath('sync-dashboard.json');
       if (existsSync(dashboardPath)) {
-        console.log('[BaselineManager] Dashboard existant trouvé, chargement depuis:', dashboardPath);
+        this.logger.info(`Dashboard existant trouvé, chargement depuis: ${dashboardPath}`);
         try {
           const dashboardContent = readFileSync(dashboardPath, 'utf-8');
           const dashboard = JSON.parse(dashboardContent);
-          console.log('[BaselineManager] Dashboard chargé avec succès depuis le fichier existant');
+          this.logger.info('Dashboard chargé avec succès depuis le fichier existant');
 
           // S'assurer que le dashboard a bien la propriété machines
           if (!dashboard.machines) {
@@ -264,7 +266,7 @@ export class BaselineManager {
 
           // S'assurer que la machine courante existe dans le dashboard avec validation d'unicité
           if (!dashboard.machines[this.config.machineId]) {
-            console.log(`[BaselineManager] Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant`);
+            this.logger.info(`Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant`);
 
             // Valider l'unicité avant d'ajouter
             const validation = await this.addMachineToRegistry(this.config.machineId, 'dashboard');
@@ -276,25 +278,25 @@ export class BaselineManager {
                 diffsCount: 0,
                 pendingDecisions: 0
               };
-              console.log(`[BaselineManager] Machine ${this.config.machineId} ajoutée avec succès au dashboard`);
+              this.logger.info(`Machine ${this.config.machineId} ajoutée avec succès au dashboard`);
             } else {
-              console.error(`[BaselineManager] ÉCHEC AJOUT DASHBOARD: ${validation.warningMessage}`);
+              this.logger.error(`ÉCHEC AJOUT DASHBOARD: ${validation.warningMessage}`);
               // Ne pas écraser la machine existante, mais logger le conflit
               if (validation.conflictingMachineId && dashboard.machines[validation.conflictingMachineId]) {
-                console.warn(`[BaselineManager] Préservation de la machine existante ${validation.conflictingMachineId} dans le dashboard`);
+                this.logger.warn(`Préservation de la machine existante ${validation.conflictingMachineId} dans le dashboard`);
               }
             }
           } else {
             // La machine existe déjà, valider que ce n'est pas un conflit
             const existingMachine = this.getMachineFromRegistry(this.config.machineId);
             if (existingMachine && existingMachine.source !== 'dashboard') {
-              console.warn(`[BaselineManager] ATTENTION: Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
+              this.logger.warn(`ATTENTION: Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
             }
           }
 
           return dashboard as RooSyncDashboard;
         } catch (error) {
-          console.warn('[BaselineManager] Erreur lecture dashboard existant, recalcule depuis baseline:', error);
+          this.logger.warn('Erreur lecture dashboard existant, recalcule depuis baseline:', { error });
         }
       }
 
@@ -306,7 +308,7 @@ export class BaselineManager {
    * Calculer le dashboard à partir de la baseline
    */
   private async calculateDashboardFromBaseline(): Promise<RooSyncDashboard> {
-    console.log('[BaselineManager] calculateDashboardFromBaseline - début de la méthode');
+    this.logger.info('calculateDashboardFromBaseline - début de la méthode');
     const dashboardPath = this.getRooSyncFilePath('sync-dashboard.json');
 
     // S'assurer que la baseline est chargée
@@ -336,14 +338,14 @@ export class BaselineManager {
       try {
         const dashboardContent = readFileSync(dashboardPath, 'utf-8');
         const existingDashboard = JSON.parse(dashboardContent);
-        console.log('[BaselineManager] Dashboard existant trouvé, vérification de la machine courante');
+        this.logger.info('Dashboard existant trouvé, vérification de la machine courante');
 
         if (!existingDashboard.machines) {
           existingDashboard.machines = {};
         }
 
         if (!existingDashboard.machines[this.config.machineId]) {
-          console.log(`[BaselineManager] Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant (calculateDashboardFromBaseline)`);
+          this.logger.info(`Tentative d'ajout de la machine ${this.config.machineId} au dashboard existant (calculateDashboardFromBaseline)`);
 
           // Valider l'unicité avant d'ajouter
           const validation = await this.addMachineToRegistry(this.config.machineId, 'dashboard');
@@ -355,23 +357,23 @@ export class BaselineManager {
               diffsCount: totalDiffs,
               pendingDecisions: 0
             };
-            console.log(`[BaselineManager] Machine ${this.config.machineId} ajoutée avec succès au dashboard (calculateDashboardFromBaseline)`);
+            this.logger.info(`Machine ${this.config.machineId} ajoutée avec succès au dashboard (calculateDashboardFromBaseline)`);
           } else {
-            console.error(`[BaselineManager] ÉCHEC AJOUT DASHBOARD (calculate): ${validation.warningMessage}`);
+            this.logger.error(`ÉCHEC AJOUT DASHBOARD (calculate): ${validation.warningMessage}`);
             // Ne pas écraser la machine existante, mais logger le conflit
             if (validation.conflictingMachineId && existingDashboard.machines[validation.conflictingMachineId]) {
-              console.warn(`[BaselineManager] Préservation de la machine existante ${validation.conflictingMachineId} dans le dashboard (calculate)`);
+              this.logger.warn(`Préservation de la machine existante ${validation.conflictingMachineId} dans le dashboard (calculate)`);
             }
           }
         } else {
           // La machine existe déjà, valider que ce n'est pas un conflit
           const existingMachine = this.getMachineFromRegistry(this.config.machineId);
           if (existingMachine && existingMachine.source !== 'dashboard') {
-            console.warn(`[BaselineManager] ATTENTION (calculate): Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
+            this.logger.warn(`ATTENTION (calculate): Machine ${this.config.machineId} existe dans le dashboard mais provient de la source ${existingMachine.source}`);
           }
         }
       } catch (error) {
-        console.warn('[BaselineManager] Erreur lecture dashboard existant, fallback sur calcul:', error);
+        this.logger.warn('Erreur lecture dashboard existant, fallback sur calcul:', { error });
       }
     }
 
@@ -1021,7 +1023,7 @@ export class BaselineManager {
 
       return hash.digest('hex').substring(0, 16);
     } catch (error) {
-      console.warn('[RollbackManager] Impossible de calculer le checksum:', error);
+      this.logger.warn('Impossible de calculer le checksum:', { error });
       return 'unknown';
     }
   }
@@ -1069,7 +1071,7 @@ export class BaselineManager {
         return dateB.getTime() - dateA.getTime();
       });
     } catch (error) {
-      console.error('[RollbackManager] Erreur listRollbackPoints:', error);
+      this.logger.error('Erreur listRollbackPoints:', error);
       return [];
     }
   }
@@ -1142,10 +1144,10 @@ export class BaselineManager {
           const backupPath = join(rollbackDir, backupName);
 
           if (options.dryRun) {
-            console.log(`[RollbackManager] [DRY RUN] Supprimer: ${backupName}`);
+            this.logger.info(`[DRY RUN] Supprimer: ${backupName}`);
           } else {
             await fs.rm(backupPath, { recursive: true, force: true });
-            console.log(`[RollbackManager] 🗑️ Supprimé: ${backupName}`);
+            this.logger.info(`🗑️ Supprimé: ${backupName}`);
           }
 
           deleted.push(backupName);
@@ -1160,7 +1162,7 @@ export class BaselineManager {
         errors
       };
     } catch (error) {
-      console.error('[RollbackManager] Erreur cleanupOldRollbacks:', error);
+      this.logger.error('Erreur cleanupOldRollbacks:', error);
       return {
         deleted: [],
         kept: [],
@@ -1232,10 +1234,10 @@ export class BaselineManager {
           metadata = JSON.parse(metadataContent);
           files = metadata.files || [];
         } catch (error) {
-          console.warn(`[RollbackManager] Erreur lecture metadata: ${error}`);
+          this.logger.warn(`Erreur lecture metadata: ${error}`);
         }
       } else {
-        console.warn(`[RollbackManager] ⚠️ Metadata introuvable, utilisation des fichiers par défaut`);
+        this.logger.warn(`Metadata introuvable, utilisation des fichiers par défaut`);
       }
 
       // Vérifier l'intégrité des fichiers
@@ -1273,7 +1275,7 @@ export class BaselineManager {
         errors
       };
     } catch (error) {
-      console.error('[RollbackManager] Erreur validateRollbackPoint:', error);
+      this.logger.error('Erreur validateRollbackPoint:', error);
       return {
         isValid: false,
         checksum: undefined,
