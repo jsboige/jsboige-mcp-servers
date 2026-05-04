@@ -2,6 +2,7 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
+import { execSync } from 'child_process';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
@@ -223,11 +224,21 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
 
   private async getPowershellVersion(): Promise<string> {
       try {
-          const { execSync } = await import('child_process');
-          const output = execSync('pwsh -NoProfile -Command "$PSVersionTable.PSVersion.ToString()"', { timeout: 5000 }).toString().trim();
+          const output = execSync('pwsh -NoProfile -Command "$PSVersionTable.PSVersion.ToString()"', {
+              timeout: 5000,
+              encoding: 'utf-8'
+          }).trim();
           return output || 'Unknown';
       } catch {
-          return 'Unknown';
+          try {
+              const output = execSync('powershell -NoProfile -Command "$PSVersionTable.PSVersion.ToString()"', {
+                  timeout: 5000,
+                  encoding: 'utf-8'
+              }).trim();
+              return output || 'Unknown';
+          } catch {
+              return 'Unknown';
+          }
       }
   }
 
