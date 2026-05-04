@@ -5,9 +5,23 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+// Block readFromDotenv() from finding the real .env file on disk.
+// Without this, tests that delete process.env.ROOSYNC_SHARED_PATH still get
+// the value back via readFromDotenv() reading mcps/internal/servers/roo-state-manager/.env.
+vi.mock('fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('fs')>();
+    return {
+        ...actual,
+        existsSync: vi.fn((path: string) => {
+            if (typeof path === 'string' && path.endsWith('.env') && path.includes('roo-state-manager')) return false;
+            return actual.existsSync(path);
+        }),
+    };
+});
 
 // We need to test the module with controlled env, so we isolate via dynamic import
 // and cache-bust between test groups
