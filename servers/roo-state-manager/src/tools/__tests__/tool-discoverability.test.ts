@@ -128,10 +128,10 @@ describe('Category 1: ListTools → CallTool Consistency', () => {
         expect(missingHandlers).toEqual([]);
     });
 
-    it('ListTools should expose a reasonable number of tools (30-50 range)', async () => {
+    it('ListTools should expose a reasonable number of tools (20-50 range)', async () => {
         const toolNames = await getListToolsNames();
-        // Currently ~35 tools. This guards against accidental mass removal or explosion
-        expect(toolNames.length).toBeGreaterThanOrEqual(30);
+        // Currently 24 tools. This guards against accidental mass removal or explosion
+        expect(toolNames.length).toBeGreaterThanOrEqual(20);
         expect(toolNames.length).toBeLessThanOrEqual(50);
     });
 
@@ -286,10 +286,7 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
             field: 'target',
             actions: ['task', 'conversation', 'project'],
         },
-        'export_config': {
-            field: 'action',
-            actions: ['get', 'set', 'reset'],
-        },
+        // [REMOVED #291] export_config removed from allToolDefinitions — backward compat via registry.ts redirect
         'roosync_decision': {
             field: 'action',
             actions: ['approve', 'reject', 'apply', 'rollback', 'info'],
@@ -409,8 +406,8 @@ describe('Category 4: Essential Tools for Agent Workflows', () => {
         // Navigation & Discovery
         'conversation_browser',  // list/tree/current/view/summarize
         'roosync_search',        // find tasks by content
-        'view_task_details',     // inspect task details
-        'get_raw_conversation',  // raw conversation data
+        // [REMOVED #291] view_task_details removed from allToolDefinitions — backward compat via registry.ts redirect
+        // [REMOVED #291] get_raw_conversation removed from allToolDefinitions — backward compat via registry.ts redirect
 
         // Communication
         'roosync_send',          // send messages
@@ -491,12 +488,12 @@ describe('Category 5: Description Discoverability', () => {
         'roosync_baseline': ['baseline'],                // "baselines RooSync"
         'roosync_indexing': ['index'],                   // "index sémantique"
         'export_data': ['export'],                       // "exporter des données"
-        'export_config': ['export', 'config'],           // "paramètres de configuration des exports"
+        // [REMOVED #291] export_config removed from allToolDefinitions
         'task_export': ['export', 'tâche'],              // "exporter/diagnostiquer les tâches"
         // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
         // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
         'codebase_search': ['recherche', 'code'],        // "Recherche sémantique dans le code"
-        'view_task_details': ['détails', 'tâche'],        // "Affiche les détails techniques complets... pour une tâche spécifique"
+        // [REMOVED #291] view_task_details removed from allToolDefinitions
     };
 
     it('tool descriptions contain discoverable keywords', async () => {
