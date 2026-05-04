@@ -15,6 +15,9 @@ import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getToolUsageSnapshot, type ToolUsageSnapshot } from '../../utils/tool-call-metrics.js';
 import { join } from 'path';
 import { readdirSync, readFileSync, statSync } from 'fs';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('GetStatus');
 
 /**
  * Check if a machine ID is a real production machine (not a test artifact).
@@ -254,7 +257,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           const heartbeatService = service.getHeartbeatService();
           await heartbeatService.checkHeartbeats();
           return heartbeatService.getState();
-        } catch {
+        } catch (err) {
+          logger.warn('Heartbeat check failed', { error: String(err) });
           return { onlineMachines: [] as string[], offlineMachines: [] as string[], warningMachines: [] as string[] };
         }
       })(),
@@ -267,7 +271,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
             unread: stats.unread,
             urgent: stats.by_priority?.URGENT ?? 0
           };
-        } catch {
+        } catch (err) {
+          logger.warn('Inbox stats failed', { error: String(err) });
           return { unread: 0, urgent: 0 };
         }
       })(),
@@ -301,16 +306,37 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           }
         }
       }
-    } catch {
-      // dashboards dir may not exist yet
+    } catch (err) {
+      logger.debug('Dashboards dir not accessible', { error: String(err) });
     }
 
     // #1365: Filter out orphan test entries (test-machine, persistent-machine, etc.)
     // Only keep machines matching the known pattern: myia-*
-    const filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
-    const filteredOfflineMachines = (heartbeatState?.offlineMachines ?? []).filter(isKnownMachine);
-    const filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
+    let filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
+    let filteredOfflineMachines = (heartbeatState?.offlineMachines ?? []).filter(isKnownMachine);
+    let filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
     const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
+
+    // #1953: Cross-check heartbeat-derived status against dashboard activity.
+    // Dashboard message timestamps are embedded in file content (immune to GDrive
+    // propagation latency on file mod time), preventing false OFFLINE detection.
+    let dashboardOverrides: string[] = [];
+    try {
+      const dashboardsDir = join(getSharedStatePath(), 'dashboards');
+      const workspaceDashboard = join(dashboardsDir, 'workspace-roo-extensions.md');
+      const dashboardContent = readFileSync(workspaceDashboard, 'utf-8');
+      const { crossCheckWithDashboard } = await import('../../utils/dashboard-activity.js');
+      const crossChecked = crossCheckWithDashboard(
+        { onlineMachines: filteredOnlineMachines, offlineMachines: filteredOfflineMachines, warningMachines: filteredWarningMachines },
+        dashboardContent
+      );
+      filteredOnlineMachines = crossChecked.onlineMachines;
+      filteredOfflineMachines = crossChecked.offlineMachines;
+      filteredWarningMachines = crossChecked.warningMachines;
+      dashboardOverrides = crossChecked.overrides;
+    } catch (err) {
+      logger.debug('Dashboard cross-check skipped', { error: String(err) });
+    }
 
     // #1409: Use machine registry as authoritative source for total count
     const registryMachineIds = service.getKnownMachineIds();
@@ -361,7 +387,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       machines: {
         online: filteredOnlineMachines.length,
         offline: filteredOfflineMachines.length,
-        total: totalMachines
+        total: totalMachines,
+        ...(dashboardOverrides.length > 0 ? { dashboardOverrides } : {})
       },
       inbox: inboxStats,
       decisions: { pending: pendingDecisions },
@@ -388,7 +415,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           });
 
           hudData = { activeClaims, activeStages, onlineAgents };
-        } catch {
+        } catch (err) {
+          logger.debug('HUD data unavailable', { error: String(err) });
           hudData = undefined;
         }
         return { hud: hudData };

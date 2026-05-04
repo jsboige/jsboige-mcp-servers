@@ -41,6 +41,16 @@ vi.mock('../../../services/MessageManager.js', () => ({
   }))
 }));
 
+// #1953: Mock dashboard cross-check to prevent real GDrive file reads in tests
+vi.mock('../../../utils/dashboard-activity.js', () => ({
+  crossCheckWithDashboard: vi.fn((state: any) => ({
+    ...state,
+    overrides: []
+  })),
+  extractMachineActivity: vi.fn(() => new Map()),
+  isRecentlyActive: vi.fn(() => false)
+}));
+
 describe('get-status (Option B)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
