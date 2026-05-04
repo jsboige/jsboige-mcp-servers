@@ -1,10 +1,11 @@
 /**
- * Tests for tool-definitions.ts — static schema validation for all 24 tool definitions.
+ * Tests for tool-definitions.ts — static schema validation for all 23 tool definitions.
  * Ensures structural integrity, naming conventions, and schema correctness.
  * #1863: 3 deprecated definitions (decision_info, machines, cleanup_messages) removed from tools/list.
  * #1922: 3 more deprecated removed (same as #1863 Pass 4).
  * #1841: 6 more definitions removed from allToolDefinitions (best practices, export_config, view_task_details,
  *        get_raw_conversation, refresh_dashboard, update_dashboard). Handlers preserved via registry.ts redirects.
+ * #1935 Cluster D: analyze_roosync_problems removed — fused into roosync_diagnose(action: "analyze").
  */
 
 import { describe, it, expect } from 'vitest';
@@ -21,7 +22,7 @@ import {
     exportConfigDefinition,
     viewTaskDetailsDefinition,
     getRawConversationDefinition,
-    analyzeRooSyncProblemsDefinition,
+    // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose(action: "analyze")
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
     roosyncCompareConfigDefinition,
@@ -44,9 +45,11 @@ import {
     roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 24;
+const EXPECTED_TOOL_COUNT = 23;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
+// #1863: 3 deprecated definitions removed from allToolDefinitions
+// #1935 Cluster D: analyze_roosync_problems removed — fused into roosync_diagnose(action: "analyze")
 const allDefinitions = [
     conversationBrowserDefinition,
     taskExportDefinition,
@@ -59,7 +62,7 @@ const allDefinitions = [
     // [REMOVED #291] exportConfigDefinition — removed from allToolDefinitions
     // [REMOVED #291] viewTaskDetailsDefinition — removed from allToolDefinitions
     // [REMOVED #291] getRawConversationDefinition — removed from allToolDefinitions
-    analyzeRooSyncProblemsDefinition,
+    // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
     roosyncCompareConfigDefinition,
@@ -243,12 +246,13 @@ describe('tool-definitions.ts — Schema Validation', () => {
 
         // #1609: roosync_heartbeat test removed — auto-heartbeat on any tool call
 
-        it('roosync_diagnose should have env/debug/reset/test actions', () => {
+        it('roosync_diagnose should have env/debug/reset/test/analyze actions', () => {
             const actions = (roosyncDiagnoseDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
             expect(actions).toContain('env');
             expect(actions).toContain('debug');
             expect(actions).toContain('reset');
             expect(actions).toContain('test');
+            expect(actions).toContain('analyze'); // #1935 Cluster D: fused from analyze_roosync_problems
         });
 
         it('roosync_config should support collect/publish/apply/apply_profile', () => {

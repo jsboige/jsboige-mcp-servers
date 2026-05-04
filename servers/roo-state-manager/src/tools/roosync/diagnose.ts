@@ -28,9 +28,8 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 // ====================================================================
 
 export const DiagnoseArgsSchema = z.object({
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health'])
-    .describe('Type d\'opération: env (environnement), debug (dashboard), reset (service), test (minimal), health (skeleton cache tiers)'),
-
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze'])
+    .describe('Type d\'opération: env, debug, reset, test, health, analyze (roadmap analysis, fused from analyze_roosync_problems)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Vérifier l\'espace disque (action: env)'),
@@ -47,7 +46,13 @@ export const DiagnoseArgsSchema = z.object({
 
   // Paramètres pour action: 'test'
   message: z.string().optional()
-    .describe('Message de test personnalisé (action: test)')
+    .describe('Message de test personnalisé (action: test)'),
+
+  // #1935 Cluster D: Paramètres pour action: 'analyze' (fused from analyze_roosync_problems)
+  roadmapPath: z.string().optional()
+    .describe('Chemin vers sync-roadmap.md (action: analyze, auto-détecté si omis)'),
+  generateReport: z.boolean().optional()
+    .describe('Générer un rapport dans roo-config/reports (action: analyze)')
 });
 
 export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
@@ -55,7 +60,7 @@ export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
 export const DiagnoseResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si l\'opération a réussi'),
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health'])
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze'])
     .describe('Type d\'opération effectuée'),
   timestamp: z.string()
     .describe('Timestamp de l\'opération (ISO 8601)'),
@@ -97,6 +102,18 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 
       case 'health':
         return await handleHealthAction(args, timestamp);
+
+      // #1935 Cluster D: fused from analyze_roosync_problems
+      case 'analyze': {
+        const m = await import('../diagnostic/analyze_problems.js');
+        const analyzeResult = await m.analyzeRooSyncProblems(args as any) as any;
+        return {
+          success: true,
+          action: 'analyze',
+          timestamp,
+          data: analyzeResult
+        };
+      }
 
       default:
         throw new Error(`Action non reconnue: ${action}`);

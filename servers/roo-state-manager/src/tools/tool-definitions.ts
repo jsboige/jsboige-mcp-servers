@@ -279,17 +279,8 @@ export const getRawConversationDefinition = {
 // ============================================================
 // analyze_roosync_problems
 // ============================================================
-export const analyzeRooSyncProblemsDefinition = {
-    name: 'analyze_roosync_problems',
-    description: 'Analyse le fichier sync-roadmap.md pour détecter les problèmes structurels et incohérences (doublons, statuts invalides, corruption).',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            roadmapPath: { type: 'string', description: 'Chemin vers le fichier sync-roadmap.md (optionnel, défaut: autodetecté)' },
-            generateReport: { type: 'boolean', description: 'Générer un rapport Markdown dans roo-config/reports (défaut: false)' }
-        }
-    }
-};
+// [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose(action: "analyze")
+// CallTool redirect in registry.ts preserved for backward compat.
 
 // ============================================================
 // RooSync tools — static metadata objects (22 tools in roosyncTools array)
@@ -480,16 +471,18 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'Outil de diagnostic et debug complet pour RooSync. Actions disponibles : env (diagnostic environnement système), debug (debug dashboard avec reset instance), reset (réinitialisation service avec confirmation), test (test minimal MCP).',
+    description: 'Diagnostic et debug RooSync. Actions: env, debug, reset, test, analyze (fused from analyze_roosync_problems).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test'], description: "Type d'opération: env (environnement), debug (dashboard), reset (service), test (minimal)" },
-            checkDiskSpace: { type: 'boolean', description: 'Vérifier l\'espace disque (action: env)' },
-            verbose: { type: 'boolean', description: 'Mode verbeux pour debug (action: debug)' },
-            clearCache: { type: 'boolean', description: 'Vider le cache lors du reset (action: reset)' },
-            confirm: { type: 'boolean', description: 'Confirmation requise pour reset (action: reset)' },
-            message: { type: 'string', description: 'Message de test personnalisé (action: test)' }
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'analyze'], description: 'Operation: env, debug, reset, test, analyze (roadmap analysis)' },
+            checkDiskSpace: { type: 'boolean', description: 'Check disk space (env)' },
+            verbose: { type: 'boolean', description: 'Verbose mode (debug)' },
+            clearCache: { type: 'boolean', description: 'Clear cache on reset' },
+            confirm: { type: 'boolean', description: 'Confirmation for reset' },
+            message: { type: 'string', description: 'Custom test message (test)' },
+            roadmapPath: { type: 'string', description: 'Path to sync-roadmap.md (action: analyze, auto-detected if omitted)' },
+            generateReport: { type: 'boolean', description: 'Generate report in roo-config/reports (action: analyze)' }
         },
         required: ['action'],
         additionalProperties: false
@@ -629,8 +622,8 @@ export const allToolDefinitions = [
     // [REMOVED #1841] viewTaskDetailsDefinition — conversation_browser(action: "view", detail_level: "Full") provides equivalent, redirect in registry.ts
     // [REMOVED #1841] getRawConversationDefinition — export_data(format: "json", target: "task") provides equivalent, redirect in registry.ts
     // WP4: Diagnostic
-    analyzeRooSyncProblemsDefinition,
-    // RooSync tools (20) — same order as roosyncTools array in roosync/index.ts
+    // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose(action: "analyze")
+    // RooSync tools (23) — same order as roosyncTools array in roosync/index.ts
     roosyncInitDefinition,
     roosyncGetStatusDefinition,
     roosyncCompareConfigDefinition,
