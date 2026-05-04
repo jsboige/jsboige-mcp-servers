@@ -363,6 +363,91 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
 }
 
 /**
+ * #1985: Deduplicate points by contentHash before upserting to Qdrant.
+ * Queries Qdrant for existing points with matching contentHash values.
+ * Prevents re-indexing of already-indexed content (especially Claude Code /resume sessions).
+ */
+async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]> {
+    if (points.length === 0) return points;
+
+    const contentHashes = points
+        .map(p => (p.payload as any)?.contentHash as string | undefined)
+        .filter((h): h is string => !!h);
+
+    if (contentHashes.length === 0) return points;
+
+    try {
+        const qdrant = getQdrantClient();
+
+        // Batch-check content hashes (Qdrant scroll with filter)
+        const uniqueHashes = [...new Set(contentHashes)];
+        const existingHashes = new Set<string>();
+
+        // Query in batches of 100 to avoid payload filter limits
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
+            const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
+            try {
+                const results = await qdrant.scroll(COLLECTION_NAME, {
+                    filter: {
+                        should: batch.map(hash => ({
+                            key: 'contentHash',
+                            match: { value: hash },
+                        })),
+                    },
+                    limit: 1000,
+                    with_payload: false,
+                    with_vector: false,
+                });
+
+                for (const point of results.points) {
+                    const hash = (point.payload as any)?.contentHash as string | undefined;
+                    if (hash) existingHashes.add(hash);
+                }
+
+                // Continue scrolling if there are more results
+                while (results.next_page_offset) {
+                    const nextResults = await qdrant.scroll(COLLECTION_NAME, {
+                        filter: {
+                            should: batch.map(hash => ({
+                                key: 'contentHash',
+                                match: { value: hash },
+                            })),
+                        },
+                        limit: 1000,
+                        offset: results.next_page_offset,
+                        with_payload: false,
+                        with_vector: false,
+                    });
+                    for (const point of nextResults.points) {
+                        const hash = (point.payload as any)?.contentHash as string | undefined;
+                        if (hash) existingHashes.add(hash);
+                    }
+                    if (!nextResults.next_page_offset) break;
+                }
+            } catch (scrollError: any) {
+                // Non-fatal: if scroll fails, proceed without dedup (don't block indexing)
+                console.warn(`[#1985] Dedup scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
+            }
+        }
+
+        if (existingHashes.size === 0) return points;
+
+        const before = points.length;
+        const filtered = points.filter(p => {
+            const hash = (p.payload as any)?.contentHash as string | undefined;
+            return !hash || !existingHashes.has(hash);
+        });
+        console.log(`[#1985] Content-hash dedup: ${before - filtered.length}/${before} points already in Qdrant`);
+        return filtered;
+    } catch (error: any) {
+        // Non-fatal: if dedup check fails entirely, proceed without dedup
+        console.warn(`[#1985] Dedup check failed (non-blocking): ${error?.message || error}`);
+        return points;
+    }
+}
+
+/**
  * Indexe une seule tâche en créant des chunks granulaires, en générant des embeddings
  * sélectivement et en les stockant dans Qdrant.
  * @param taskId L'ID de la tâche à indexer.
@@ -390,7 +475,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             chunks.length = MAX_CHUNKS_PER_TASK;
         }
 
-        const pointsToIndex: PointStruct[] = [];
+        let pointsToIndex: PointStruct[] = [];
 
         for (const chunk of chunks) {
             if (chunk.indexed) {
@@ -455,11 +540,23 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     const point: PointStruct = {
                         id: subChunk.chunk_id,
                         vector: vector,
-                        payload: { ...subChunk, source: source },
+                        payload: { ...subChunk, source: source, contentHash },
                     };
                     pointsToIndex.push(point);
                 }
             }
+        }
+
+        /**
+         * #1985: Dedup pre-indexation — skip points whose contentHash already exists in Qdrant
+         * Prevents Claude Code session re-indexing creating duplicate vectors on /resume or /compact.
+         */
+        if (pointsToIndex.length > 0) {
+            const deduplicated = await dedupByContentHash(pointsToIndex);
+            if (deduplicated.length < pointsToIndex.length) {
+                console.log(`[#1985] Dedup: ${pointsToIndex.length - deduplicated.length}/${pointsToIndex.length} points already indexed, indexing ${deduplicated.length} new`);
+            }
+            pointsToIndex = deduplicated;
         }
 
         /**
