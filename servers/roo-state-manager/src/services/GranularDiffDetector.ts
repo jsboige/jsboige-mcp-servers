@@ -447,66 +447,99 @@ export class GranularDiffDetector {
         targetMap.get(identity).push({ index: i, value: target[i] });
       }
 
-      // Détecter les ajouts
+      // #1410: Collect additions and removals by identity, then cross-match
+      // by discriminant name (name/id/title/key) to detect false positives
+      // where the same logical item appears as both "added" and "removed"
+      // because createIdentity() includes all key-value pairs.
+      const additions: Array<{ index: number; value: any; name: string | null }> = [];
+      const removals: Array<{ index: number; value: any; name: string | null }> = [];
+
       for (const [identity, targetItems] of targetMap) {
         if (!sourceMap.has(identity)) {
           for (const item of targetItems) {
-            const itemName = this.extractItemName(item.value);
-            const elementPath = itemName
-              ? `${currentPath}.${itemName}`
-              : `${currentPath}[${item.index}]`;
-            const description = itemName
-              ? `Élément ajouté: '${itemName}'`
-              : `Élément ajouté à l'index ${item.index}`;
-            diffs.push(this.createDiffResult(
-              elementPath,
-              'added',
-              'INFO',
-              'array',
-              description,
-              undefined,
-              item.value,
-              undefined,
-              undefined,
-              JSON.stringify({ arrayIndex: item.index.toString() })
-            ));
+            additions.push({ index: item.index, value: item.value, name: this.extractItemName(item.value) });
           }
         }
       }
 
-      // Détecter les suppressions
       for (const [identity, sourceItems] of sourceMap) {
         if (!targetMap.has(identity)) {
           for (const item of sourceItems) {
-            const itemName = this.extractItemName(item.value);
-            const elementPath = itemName
-              ? `${currentPath}.${itemName}`
-              : `${currentPath}[${item.index}]`;
-            const description = itemName
-              ? `Élément supprimé: '${itemName}'`
-              : `Élément supprimé à l'index ${item.index}`;
-            diffs.push(this.createDiffResult(
-              elementPath,
-              'removed',
-              'WARNING',
-              'array',
-              description,
-              item.value,
-              undefined,
-              undefined,
-              undefined,
-              JSON.stringify({ arrayIndex: item.index.toString() })
-            ));
+            removals.push({ index: item.index, value: item.value, name: this.extractItemName(item.value) });
           }
         }
       }
 
-      // Détecter les déplacements et modifications
+      // Cross-match additions and removals by discriminant name
+      const matchedRemovalIndices = new Set<number>();
+      for (const addition of additions) {
+        if (addition.name === null) continue;
+        const removalIdx = removals.findIndex(
+          (r, ri) => !matchedRemovalIndices.has(ri) && r.name === addition.name
+        );
+        if (removalIdx !== -1) {
+          matchedRemovalIndices.add(removalIdx);
+          const removal = removals[removalIdx];
+          const elementPath = `${currentPath}.${addition.name}`;
+          diffs.push(this.createDiffResult(
+            elementPath,
+            'modified',
+            'WARNING',
+            'array',
+            `Élément modifié: '${addition.name}'`,
+            removal.value,
+            addition.value,
+            undefined,
+            undefined,
+            undefined
+          ));
+        }
+      }
+
+      // Unmatched additions are genuine new items
+      for (let ai = 0; ai < additions.length; ai++) {
+        const addition = additions[ai];
+        // Skip if this addition was matched by name to a removal
+        if (addition.name !== null) {
+          const wasMatched = removals.some(
+            (r, ri) => matchedRemovalIndices.has(ri) && r.name === addition.name
+          );
+          if (wasMatched) continue;
+        }
+        const elementPath = addition.name
+          ? `${currentPath}.${addition.name}`
+          : `${currentPath}[${addition.index}]`;
+        const description = addition.name
+          ? `Élément ajouté: '${addition.name}'`
+          : `Élément ajouté à l'index ${addition.index}`;
+        diffs.push(this.createDiffResult(
+          elementPath, 'added', 'INFO', 'array', description,
+          undefined, addition.value, undefined, undefined,
+          JSON.stringify({ arrayIndex: addition.index.toString() })
+        ));
+      }
+
+      // Unmatched removals are genuine deletions
+      for (let ri = 0; ri < removals.length; ri++) {
+        if (matchedRemovalIndices.has(ri)) continue;
+        const removal = removals[ri];
+        const elementPath = removal.name
+          ? `${currentPath}.${removal.name}`
+          : `${currentPath}[${removal.index}]`;
+        const description = removal.name
+          ? `Élément supprimé: '${removal.name}'`
+          : `Élément supprimé à l'index ${removal.index}`;
+        diffs.push(this.createDiffResult(
+          elementPath, 'removed', 'WARNING', 'array', description,
+          removal.value, undefined, undefined, undefined,
+          JSON.stringify({ arrayIndex: removal.index.toString() })
+        ));
+      }
+
+      // Détecter les déplacements et modifications (identical identity, different count)
       for (const [identity, sourceItems] of sourceMap) {
         if (targetMap.has(identity)) {
           const targetItems = targetMap.get(identity);
-          
-          // Si le nombre d'occurrences est différent
           if (sourceItems.length !== targetItems.length) {
             const elementPath = `${currentPath}[${sourceItems[0].index}]`;
             diffs.push(this.createDiffResult(
