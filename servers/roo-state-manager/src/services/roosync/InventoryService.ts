@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo } from '../../types/inventory';
-import { PowerShellExecutor } from '../PowerShellExecutor';
+import { execFile } from 'child_process';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
@@ -244,16 +244,18 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
   }
 
   private async getPowershellVersion(): Promise<string> {
-      // In a real environment, we might execute 'pwsh -v' or '$PSVersionTable'
-      // For now, returning a placeholder or executing a simple command if possible
-      // Since we don't have direct command execution easily available in this service context without external dependencies
-      // We will try to use the PowerShellExecutor if available or return default.
-      try {
-           // Placeholder: assuming PWSH 7 for this environment as per system info
-           return "7.x";
-      } catch {
-          return "Unknown";
-      }
+      return new Promise<string>((resolve) => {
+          execFile('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], (error, stdout) => {
+              if (error) {
+                  // Fallback: try powershell (Windows PowerShell 5.x)
+                  execFile('powershell', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], (err2, stdout2) => {
+                      resolve(err2 ? 'Unknown' : stdout2.trim());
+                  });
+                  return;
+              }
+              resolve(stdout.trim());
+          });
+      });
   }
 
   private async fileExists(filePath: string): Promise<boolean> {
