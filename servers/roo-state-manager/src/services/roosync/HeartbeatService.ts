@@ -14,6 +14,7 @@
 import { promises as fs, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, renameSync as fsRenameSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../../utils/logger.js';
+import { getServerCapabilities } from '../../utils/server-capabilities.js';
 
 const logger = createLogger('HeartbeatService');
 
@@ -216,6 +217,14 @@ export class HeartbeatService {
   }
 
   /**
+   * #1918: Check if shared path (GDrive) is accessible for disk I/O.
+   * When degraded, heartbeat data stays in-memory only.
+   */
+  private isDiskAvailable(): boolean {
+    return getServerCapabilities().isAvailable('sharedPath');
+  }
+
+  /**
    * Returns the file path for a machine's heartbeat file
    */
   private getMachineFilePath(machineId: string): string {
@@ -390,6 +399,11 @@ export class HeartbeatService {
    * Reload all per-machine files from disk (useful before checkHeartbeats)
    */
   public reloadFromDisk(): void {
+    if (!this.isDiskAvailable()) {
+      // #1918: GDrive offline — keep in-memory state, skip disk reads
+      this.updateMachineStatus();
+      return;
+    }
     this.state.heartbeats.clear();
     if (existsSync(this.heartbeatsDir)) {
       this.loadFromPerMachineFiles();
@@ -401,6 +415,10 @@ export class HeartbeatService {
    * Save a single machine's heartbeat data to its own file
    */
   private async saveMachineHeartbeat(machineId: string): Promise<void> {
+    if (!this.isDiskAvailable()) {
+      // #1918: GDrive offline — keep heartbeat in-memory only
+      return;
+    }
     try {
       await fs.mkdir(this.heartbeatsDir, { recursive: true });
 
@@ -418,6 +436,7 @@ export class HeartbeatService {
    * Delete a machine's heartbeat file
    */
   private async removeMachineFile(machineId: string): Promise<void> {
+    if (!this.isDiskAvailable()) return;
     try {
       const filePath = this.getMachineFilePath(machineId);
       if (existsSync(filePath)) {
@@ -432,6 +451,7 @@ export class HeartbeatService {
    * Sauvegarde l'état de TOUTES les machines (used at stop/config update)
    */
   private async saveState(): Promise<void> {
+    if (!this.isDiskAvailable()) return;
     try {
       await fs.mkdir(this.heartbeatsDir, { recursive: true });
 
