@@ -56,6 +56,12 @@ const MOCK_CONFIG_PATH = '/mock/home/.vscode/xml_export_config.json';
 
 const DEFAULT_CONFIG_SNAPSHOT = {
   defaults: { prettyPrint: true, includeContent: false, compression: 'none' },
+  templates: {},
+  filters: {},
+};
+
+const TEST_CONFIG_WITH_PRESETS = {
+  defaults: { prettyPrint: true, includeContent: false, compression: 'none' },
   templates: {
     jira_export: { format: 'simplified', fields: ['taskId', 'title', 'user_messages_only'] },
     full_export: { format: 'complete', fields: ['taskId', 'title', 'metadata', 'sequence'] },
@@ -131,7 +137,7 @@ describe('ExportConfigManager', () => {
     test('fusionne le fichier avec les valeurs par défaut manquantes', async () => {
       const partialConfig = {
         defaults: { prettyPrint: false, includeContent: true, compression: 'none' as const },
-        // templates et filters absents → doivent être fusionnés avec les défauts
+        // templates et filters absents → doivent être fusionnés avec les défauts (vides)
       };
       mockAccess.mockResolvedValue(undefined);
       mockReadFile.mockResolvedValue(JSON.stringify(partialConfig));
@@ -139,9 +145,9 @@ describe('ExportConfigManager', () => {
       const manager = makeManager();
       const config = await manager.getConfig();
 
-      // Les templates par défaut doivent être présents
-      expect(config.templates).toHaveProperty('jira_export');
-      expect(config.templates).toHaveProperty('full_export');
+      // Les sections templates/filters sont fusionnées (vides par défaut)
+      expect(config.templates).toBeDefined();
+      expect(config.filters).toBeDefined();
     });
 
     test('nettoie le BOM UTF-8 si présent', async () => {
@@ -223,8 +229,6 @@ describe('ExportConfigManager', () => {
 
       const config = await manager.getConfig();
       expect(config.templates).toHaveProperty('my_template');
-      // Les templates par défaut sont préservés
-      expect(config.templates).toHaveProperty('jira_export');
     });
 
     test('appelle writeFile lors de updateConfig', async () => {
@@ -317,7 +321,7 @@ describe('ExportConfigManager', () => {
 
     test('removeTemplate supprime un template existant et retourne true', async () => {
       mockAccess.mockResolvedValue(undefined);
-      mockReadFile.mockResolvedValue(JSON.stringify(DEFAULT_CONFIG_SNAPSHOT));
+      mockReadFile.mockResolvedValue(JSON.stringify(TEST_CONFIG_WITH_PRESETS));
 
       const manager = makeManager();
       await manager.getConfig();
@@ -366,7 +370,7 @@ describe('ExportConfigManager', () => {
 
     test('removeFilter supprime un filtre existant et retourne true', async () => {
       mockAccess.mockResolvedValue(undefined);
-      mockReadFile.mockResolvedValue(JSON.stringify(DEFAULT_CONFIG_SNAPSHOT));
+      mockReadFile.mockResolvedValue(JSON.stringify(TEST_CONFIG_WITH_PRESETS));
 
       const manager = makeManager();
       await manager.getConfig();
