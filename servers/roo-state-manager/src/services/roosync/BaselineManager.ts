@@ -580,211 +580,58 @@ export class BaselineManager {
    * Transformer une baseline nominative en profils non-nominatifs
    */
   private transformBaselineToProfiles(baseline: any): any[] {
+    const now = Date.now();
+    const timestamp = new Date().toISOString();
+    const baseMetadata = { createdAt: timestamp, updatedAt: timestamp, version: '1.0.0', tags: ['migrated'], stability: 'stable' } as const;
+    const emptyCompat = { requiredProfiles: [] as string[], conflictingProfiles: [] as string[], optionalProfiles: [] as string[] };
+
+    const defs: Array<{ guard: any; entries: Array<{ id: string; category: string; name: string; desc: string; config: any }> }> = [
+      {
+        guard: baseline.config?.roo,
+        entries: [{ id: 'roo-core', category: 'roo-core', name: 'Profil Roo Core', desc: 'Configuration Roo de base',
+          config: { modes: baseline.config?.roo?.modes || [], mcpSettings: baseline.config?.roo?.mcpSettings || {} } }]
+      },
+      {
+        guard: baseline.config?.hardware,
+        entries: [
+          { id: 'hardware-cpu', category: 'hardware-cpu', name: 'Profil Hardware CPU', desc: 'Configuration CPU', config: baseline.config?.hardware?.cpu || {} },
+          { id: 'hardware-memory', category: 'hardware-memory', name: 'Profil Hardware Mémoire', desc: 'Configuration Mémoire', config: baseline.config?.hardware?.memory || {} },
+          { id: 'hardware-storage', category: 'hardware-storage', name: 'Profil Hardware Stockage', desc: 'Configuration Stockage', config: baseline.config?.hardware?.disks || [] }
+        ]
+      },
+      {
+        guard: baseline.config?.software,
+        entries: [
+          { id: 'software-powershell', category: 'software-powershell', name: 'Profil Software PowerShell', desc: 'Version PowerShell', config: { version: baseline.config?.software?.powershell || 'Unknown' } },
+          { id: 'software-node', category: 'software-node', name: 'Profil Software Node.js', desc: 'Version Node.js', config: { version: baseline.config?.software?.node || 'Unknown' } },
+          { id: 'software-python', category: 'software-python', name: 'Profil Software Python', desc: 'Version Python', config: { version: baseline.config?.software?.python || 'Unknown' } }
+        ]
+      },
+      {
+        guard: baseline.config?.system,
+        entries: [
+          { id: 'system-os', category: 'system-os', name: 'Profil Système OS', desc: "Système d'exploitation", config: { os: baseline.config?.system?.os || 'Unknown' } },
+          { id: 'system-architecture', category: 'system-architecture', name: 'Profil Architecture Système', desc: 'Architecture système', config: { arch: baseline.config?.system?.architecture || 'Unknown' } }
+        ]
+      }
+    ];
+
     const profiles: any[] = [];
-
-    // Transformer la configuration Roo
-    if (baseline.config?.roo) {
-      profiles.push({
-        profileId: `profile-roo-core-${Date.now()}`,
-        category: 'roo-core',
-        name: 'Profil Roo Core',
-        description: 'Configuration Roo de base',
-        configuration: {
-          modes: baseline.config.roo.modes || [],
-          mcpSettings: baseline.config.roo.mcpSettings || {}
-        },
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
+    for (const group of defs) {
+      if (!group.guard) continue;
+      for (const e of group.entries) {
+        profiles.push({
+          profileId: `profile-${e.id}-${now}`,
+          category: e.category,
+          name: e.name,
+          description: e.desc,
+          configuration: e.config,
+          priority: 100,
+          compatibility: emptyCompat,
+          metadata: { ...baseMetadata }
+        });
+      }
     }
-
-    // Transformer la configuration hardware
-    if (baseline.config?.hardware) {
-      profiles.push({
-        profileId: `profile-hardware-cpu-${Date.now()}`,
-        category: 'hardware-cpu',
-        name: 'Profil Hardware CPU',
-        description: 'Configuration CPU',
-        configuration: baseline.config.hardware.cpu || {},
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-
-      profiles.push({
-        profileId: `profile-hardware-memory-${Date.now()}`,
-        category: 'hardware-memory',
-        name: 'Profil Hardware Mémoire',
-        description: 'Configuration Mémoire',
-        configuration: baseline.config.hardware.memory || {},
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-
-      profiles.push({
-        profileId: `profile-hardware-storage-${Date.now()}`,
-        category: 'hardware-storage',
-        name: 'Profil Hardware Stockage',
-        description: 'Configuration Stockage',
-        configuration: baseline.config.hardware.disks || [],
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-    }
-
-    // Transformer la configuration software
-    if (baseline.config?.software) {
-      profiles.push({
-        profileId: `profile-software-powershell-${Date.now()}`,
-        category: 'software-powershell',
-        name: 'Profil Software PowerShell',
-        description: 'Version PowerShell',
-        configuration: { version: baseline.config.software.powershell || 'Unknown' },
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-
-      profiles.push({
-        profileId: `profile-software-node-${Date.now()}`,
-        category: 'software-node',
-        name: 'Profil Software Node.js',
-        description: 'Version Node.js',
-        configuration: { version: baseline.config.software.node || 'Unknown' },
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-
-      profiles.push({
-        profileId: `profile-software-python-${Date.now()}`,
-        category: 'software-python',
-        name: 'Profil Software Python',
-        description: 'Version Python',
-        configuration: { version: baseline.config.software.python || 'Unknown' },
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-    }
-
-    // Transformer la configuration system
-    if (baseline.config?.system) {
-      profiles.push({
-        profileId: `profile-system-os-${Date.now()}`,
-        category: 'system-os',
-        name: 'Profil Système OS',
-        description: 'Système d\'exploitation',
-        configuration: { os: baseline.config.system.os || 'Unknown' },
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-
-      profiles.push({
-        profileId: `profile-system-architecture-${Date.now()}`,
-        category: 'system-architecture',
-        name: 'Profil Architecture Système',
-        description: 'Architecture système',
-        configuration: { arch: baseline.config.system.architecture || 'Unknown' },
-        priority: 100,
-        compatibility: {
-          requiredProfiles: [],
-          conflictingProfiles: [],
-          optionalProfiles: []
-        },
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: '1.0.0',
-          tags: ['migrated'],
-          stability: 'stable'
-        }
-      });
-    }
-
     return profiles;
   }
 
