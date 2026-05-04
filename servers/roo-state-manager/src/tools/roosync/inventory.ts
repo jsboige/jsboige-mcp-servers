@@ -27,7 +27,9 @@ export const InventoryArgsSchema = z.object({
   status: z.enum(['offline', 'warning', 'all']).optional()
     .describe('Filtrer par statut machines (type="machines": offline, warning, all)'),
   includeDetails: z.boolean().optional()
-    .describe('Inclure les détails complets des machines (type="machines", défaut: false)')
+    .describe('Inclure les détails complets des machines (type="machines", défaut: false)'),
+  summary: z.boolean().optional()
+    .describe('Retourner un résumé compact (markdown) au lieu du JSON complet (défaut: false)')
 });
 
 export type InventoryArgs = z.infer<typeof InventoryArgsSchema>;
@@ -124,7 +126,7 @@ export const inventoryTool: UnifiedToolContract = {
   execute: async (input: z.infer<typeof InventoryArgsSchema>, context: any): Promise<ToolResult<any>> => {
     const startTime = Date.now();
     try {
-      const { type, machineId, includeHeartbeats = true } = input;
+      const { type, machineId, includeHeartbeats = true, summary = false } = input;
       const retrievedAt = new Date().toISOString();
 
       const result: any = {
@@ -132,10 +134,18 @@ export const inventoryTool: UnifiedToolContract = {
         retrievedAt
       };
 
+      // Collect data
+      let machineInventory: any = null;
+      let heartbeatState: any = null;
+      let machinesData: any = null;
+
       // Récupérer l'inventaire machine si demandé
       if (type === 'machine' || type === 'all') {
         const inventoryService = InventoryService.getInstance();
-        result.machineInventory = await inventoryService.getMachineInventory(machineId);
+        machineInventory = await inventoryService.getMachineInventory(machineId);
+        if (!summary) {
+          result.machineInventory = machineInventory;
+        }
       }
 
       // Récupérer l'état heartbeat si demandé
@@ -144,7 +154,7 @@ export const inventoryTool: UnifiedToolContract = {
         const heartbeatService = rooSyncService.getHeartbeatService();
         const state = heartbeatService.getState();
 
-        result.heartbeatState = {
+        heartbeatState = {
           onlineMachines: state.onlineMachines,
           offlineMachines: state.offlineMachines,
           warningMachines: state.warningMachines,
@@ -152,6 +162,9 @@ export const inventoryTool: UnifiedToolContract = {
           heartbeats: includeHeartbeats ? Object.fromEntries(state.heartbeats) : undefined,
           retrievedAt
         };
+        if (!summary) {
+          result.heartbeatState = heartbeatState;
+        }
       }
 
       // [FUSION A2 #1863] type="machines" — fused from roosync_machines
@@ -160,6 +173,8 @@ export const inventoryTool: UnifiedToolContract = {
         const heartbeatService = rooSyncService.getHeartbeatService();
         const machinesStatus = input.status || 'all';
         const wantDetails = input.includeDetails || false;
+
+        machinesData = { offlineMachines: [], offlineCount: 0, warningMachines: [], warningCount: 0 };
 
         if (machinesStatus === 'offline' || machinesStatus === 'all') {
           const offlineMachines = heartbeatService.getOfflineMachines();
@@ -171,11 +186,11 @@ export const inventoryTool: UnifiedToolContract = {
                 detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, offlineSince: data.offlineSince, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
               }
             }
-            result.offlineMachines = detailed;
-            result.offlineCount = detailed.length;
+            machinesData.offlineMachines = detailed;
+            machinesData.offlineCount = detailed.length;
           } else {
-            result.offlineMachines = offlineMachines;
-            result.offlineCount = offlineMachines.length;
+            machinesData.offlineMachines = offlineMachines;
+            machinesData.offlineCount = offlineMachines.length;
           }
         }
 
@@ -189,13 +204,55 @@ export const inventoryTool: UnifiedToolContract = {
                 detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
               }
             }
-            result.warningMachines = detailed;
-            result.warningCount = detailed.length;
+            machinesData.warningMachines = detailed;
+            machinesData.warningCount = detailed.length;
           } else {
-            result.warningMachines = warningMachines;
-            result.warningCount = warningMachines.length;
+            machinesData.warningMachines = warningMachines;
+            machinesData.warningCount = warningMachines.length;
           }
         }
+        if (!summary) {
+          Object.assign(result, machinesData);
+        }
+      }
+
+      // Summary mode: return compact markdown instead of full JSON
+      if (summary) {
+        const lines: string[] = [`**Inventory Summary** (${retrievedAt})`, ''];
+
+        if (machineInventory) {
+          const inv = machineInventory as any;
+          lines.push(`**Machine:** ${inv.systemInfo?.hostname || machineId || 'unknown'}`);
+          lines.push(`- OS: ${inv.systemInfo?.os || 'N/A'}`);
+          const mcpCount = inv.mcpServers ? Object.keys(inv.mcpServers).length : 0;
+          lines.push(`- MCPs: ${mcpCount} servers`);
+          const modes = inv.rooModes?.modes ? Object.keys(inv.rooModes.modes).length : 0;
+          lines.push(`- Roo modes: ${modes}`);
+          lines.push('');
+        }
+
+        if (heartbeatState) {
+          const hs = heartbeatState;
+          lines.push(`**Cluster status:** ${hs.statistics.totalMachines} machines`);
+          lines.push(`- Online (${hs.onlineMachines.length}): ${hs.onlineMachines.join(', ') || 'none'}`);
+          lines.push(`- Offline (${hs.offlineMachines.length}): ${hs.offlineMachines.join(', ') || 'none'}`);
+          lines.push(`- Warning (${hs.warningMachines.length}): ${hs.warningMachines.join(', ') || 'none'}`);
+          lines.push('');
+        }
+
+        if (machinesData) {
+          lines.push(`**Filtered machines:** offline=${machinesData.offlineCount}, warning=${machinesData.warningCount}`);
+          lines.push('');
+        }
+
+        return {
+          success: true,
+          data: { summary: lines.join('\n'), retrievedAt },
+          metrics: {
+            executionTime: Date.now() - startTime,
+            processingLevel: ProcessingLevel.IMMEDIATE
+          }
+        };
       }
 
       return {
@@ -252,6 +309,10 @@ export const inventoryToolMetadata = {
       includeDetails: {
         type: 'boolean',
         description: 'Inclure les détails complets des machines (type="machines", défaut: false)'
+      },
+      summary: {
+        type: 'boolean',
+        description: 'Retourner un résumé compact (markdown) au lieu du JSON complet (défaut: false)'
       }
     },
     required: ['type'],
