@@ -17,8 +17,8 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  * Schema de validation pour roosync_inventory
  */
 export const InventoryArgsSchema = z.object({
-  type: z.enum(['machine', 'heartbeat', 'all', 'machines'])
-    .describe('Type d\'inventaire à récupérer. "machines" = offline/warning machines (fused from roosync_machines)'),
+  type: z.enum(['machine', 'heartbeat', 'all', 'machines', 'status'])
+    .describe('Type d\'inventaire à récupérer. "machines" = offline/warning machines. "status" = compact system snapshot (fused from roosync_get_status)'),
   machineId: z.string().optional()
     .describe('Identifiant optionnel de la machine (défaut: hostname)'),
   includeHeartbeats: z.boolean().optional()
@@ -27,9 +27,14 @@ export const InventoryArgsSchema = z.object({
   status: z.enum(['offline', 'warning', 'all']).optional()
     .describe('Filtrer par statut machines (type="machines": offline, warning, all)'),
   includeDetails: z.boolean().optional()
-    .describe('Inclure les détails complets des machines (type="machines", défaut: false)'),
+    .describe('Inclure les détails complets des machines (type="machines") ou stats outil (type="status")'),
   summary: z.boolean().optional()
-    .describe('Retourner un résumé compact (markdown) au lieu du JSON complet (défaut: false)')
+    .describe('Retourner un résumé compact (markdown) au lieu du JSON complet (défaut: false)'),
+  // #1935 Cluster E: fused from roosync_get_status
+  detail: z.enum(['compact', 'full']).optional()
+    .describe('Niveau de détail pour type="status". "full" ajoute claims + pipeline stages'),
+  resetCache: z.boolean().optional()
+    .describe('Forcer la réinitialisation du cache (type="status" uniquement)')
 });
 
 export type InventoryArgs = z.infer<typeof InventoryArgsSchema>;
@@ -118,16 +123,36 @@ export type InventoryResult = z.infer<typeof InventoryResultSchema>;
  */
 export const inventoryTool: UnifiedToolContract = {
   name: 'roosync_inventory',
-  description: 'Récupération de l\'inventaire machine et/ou de l\'état heartbeat.',
+  description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système.',
   category: ToolCategory.UTILITY,
   processingLevel: ProcessingLevel.IMMEDIATE,
-  version: '3.0.0',
+  version: '4.0.0',
   inputSchema: InventoryArgsSchema,
   execute: async (input: z.infer<typeof InventoryArgsSchema>, context: any): Promise<ToolResult<any>> => {
     const startTime = Date.now();
     try {
       const { type, machineId, includeHeartbeats = true, summary = false } = input;
       const retrievedAt = new Date().toISOString();
+
+      // #1935 Cluster E: type="status" — fused from roosync_get_status
+      if (type === 'status') {
+        const { roosyncGetStatus, GetStatusArgsSchema } = await import('./get-status.js');
+        const statusArgs = GetStatusArgsSchema.parse({
+          machineFilter: machineId,
+          resetCache: input.resetCache,
+          detail: input.detail,
+          includeDetails: input.includeDetails,
+        });
+        const statusResult = await roosyncGetStatus(statusArgs);
+        return {
+          success: true,
+          data: statusResult,
+          metrics: {
+            executionTime: Date.now() - startTime,
+            processingLevel: ProcessingLevel.IMMEDIATE
+          }
+        };
+      }
 
       const result: any = {
         success: true,
@@ -284,18 +309,18 @@ export const inventoryTool: UnifiedToolContract = {
  */
 export const inventoryToolMetadata = {
   name: 'roosync_inventory',
-  description: 'Récupération de l\'inventaire machine et/ou de l\'état heartbeat. type="machines" = offline/warning machines (fused from roosync_machines).',
+  description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système. type="status" pour snapshot compact avec flags actionnables (fused from roosync_get_status).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       type: {
         type: 'string',
-        enum: ['machine', 'heartbeat', 'all', 'machines'],
-        description: 'Type d\'inventaire à récupérer. "machines" = offline/warning machines'
+        enum: ['machine', 'heartbeat', 'all', 'machines', 'status'],
+        description: 'Type d\'inventaire. "machines" = offline/warning. "status" = snapshot système avec flags.'
       },
       machineId: {
         type: 'string',
-        description: 'Identifiant optionnel de la machine (défaut: hostname)'
+        description: 'Identifiant optionnel de la machine (défaut: hostname). Pour type="status", filtre par machine.'
       },
       includeHeartbeats: {
         type: 'boolean',
@@ -308,11 +333,20 @@ export const inventoryToolMetadata = {
       },
       includeDetails: {
         type: 'boolean',
-        description: 'Inclure les détails complets des machines (type="machines", défaut: false)'
+        description: 'Détails machines (type="machines") ou stats outil (type="status")'
       },
       summary: {
         type: 'boolean',
         description: 'Retourner un résumé compact (markdown) au lieu du JSON complet (défaut: false)'
+      },
+      detail: {
+        type: 'string',
+        enum: ['compact', 'full'],
+        description: 'Niveau de détail (type="status"). "full" ajoute claims + pipeline stages'
+      },
+      resetCache: {
+        type: 'boolean',
+        description: 'Forcer la réinitialisation du cache (type="status")'
       }
     },
     required: ['type'],

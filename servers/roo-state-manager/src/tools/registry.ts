@@ -13,6 +13,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ServerState } from '../services/state-manager.service.js';
 import { allToolDefinitions } from './tool-definitions.js';
+import { InventoryArgsSchema } from './roosync/inventory.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
@@ -413,11 +414,25 @@ export function registerCallToolHandler(
           }
 
           // RooSync tools - Batch 6 synchronization
+          // #1935 Cluster E: roosync_get_status redirects to roosync_inventory(type: "status")
           case 'roosync_get_status': {
               try {
-                  const m = await import('./roosync/get-status.js');
-                  const roosyncResult = await m.roosyncGetStatus(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+                  const m = await import('./roosync/inventory.js');
+                  // Map legacy parameter: machineFilter → machineId for inventory schema
+                  const legacyArgs = args as Record<string, unknown>;
+                  const redirectArgs = InventoryArgsSchema.parse({
+                      type: 'status',
+                      machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+                      resetCache: legacyArgs.resetCache,
+                      detail: legacyArgs.detail,
+                      includeDetails: legacyArgs.includeDetails,
+                  });
+                  const invResult = await m.inventoryTool.execute(redirectArgs, {} as any);
+                  if (invResult.success) {
+                      result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
+                  } else {
+                      result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
+                  }
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
               }

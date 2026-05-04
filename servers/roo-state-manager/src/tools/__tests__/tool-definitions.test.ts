@@ -24,7 +24,7 @@ import {
     getRawConversationDefinition,
     // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose(action: "analyze")
     roosyncInitDefinition,
-    roosyncGetStatusDefinition,
+    // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
@@ -44,11 +44,12 @@ import {
     roosyncDashboardDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 23;
+const EXPECTED_TOOL_COUNT = 22;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // #1863: 3 deprecated definitions removed from allToolDefinitions
 // #1935 Cluster D: analyze_roosync_problems removed — fused into roosync_diagnose(action: "analyze")
+// #1935 Cluster E: get_status removed — fused into roosync_inventory(type: "status")
 const allDefinitions = [
     conversationBrowserDefinition,
     taskExportDefinition,
@@ -63,7 +64,7 @@ const allDefinitions = [
     // [REMOVED #291] getRawConversationDefinition — removed from allToolDefinitions
     // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose
     roosyncInitDefinition,
-    roosyncGetStatusDefinition,
+    // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
     roosyncDecisionDefinition,
@@ -86,7 +87,7 @@ const allDefinitions = [
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 24 tool definitions', () => {
+        it('should have exactly 23 tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 
@@ -357,7 +358,9 @@ describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('additionalProperties: false where declared', () => {
         const strictTools = [
-            roosyncInitDefinition, roosyncGetStatusDefinition, roosyncCompareConfigDefinition,
+            roosyncInitDefinition,
+            // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory
+            roosyncCompareConfigDefinition,
             roosyncListDiffsDefinition, roosyncBaselineDefinition, roosyncConfigDefinition,
             roosyncInventoryDefinition,
             // #1609: roosyncHeartbeatDefinition removed

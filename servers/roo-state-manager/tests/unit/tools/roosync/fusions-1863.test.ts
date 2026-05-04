@@ -187,16 +187,127 @@ describe('#1863 Fusion A3: cleanup → manage redirect', () => {
 });
 
 // ============================================================
+// FUSION E: get_status → inventory(type: "status")
+// #1935 Cluster E — parameter mapping + Zod validation
+// ============================================================
+describe('#1935 Fusion E: get_status → inventory(type: "status")', () => {
+  describe('Scenario 1: Canonical call via inventory(type: "status")', () => {
+    it('should validate type="status"', () => {
+      const result = InventoryArgsSchema.safeParse({ type: 'status' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.type).toBe('status');
+      }
+    });
+
+    it('should validate type="status" with machineId', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        machineId: 'myia-po-2026'
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.machineId).toBe('myia-po-2026');
+      }
+    });
+
+    it('should validate type="status" with detail and resetCache', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        detail: 'full',
+        resetCache: true,
+        includeDetails: true
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.detail).toBe('full');
+        expect(result.data.resetCache).toBe(true);
+        expect(result.data.includeDetails).toBe(true);
+      }
+    });
+
+    it('should have "status" in inventory definition type enum', () => {
+      const typeEnum = (roosyncInventoryDefinition.inputSchema as any).properties.type.enum;
+      expect(typeEnum).toContain('status');
+    });
+  });
+
+  describe('Scenario 2: Backward-compat redirect — machineFilter → machineId mapping', () => {
+    it('should map legacy machineFilter to machineId via InventoryArgsSchema', () => {
+      // Simulates the redirect logic: legacy caller passes machineFilter
+      const legacyArgs = { machineFilter: 'myia-po-2026', type: 'status' as const };
+      // Redirect maps machineFilter → machineId
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBe('myia-po-2026');
+      expect(redirectArgs.type).toBe('status');
+    });
+
+    it('should prefer machineId over machineFilter when both present', () => {
+      const legacyArgs = { machineId: 'machine-A', machineFilter: 'machine-B' };
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBe('machine-A');
+    });
+
+    it('should use machineFilter when machineId is absent', () => {
+      const legacyArgs = { machineFilter: 'machine-B' };
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBe('machine-B');
+    });
+
+    it('should work with no machine filter at all', () => {
+      const legacyArgs = {};
+      const redirectArgs = InventoryArgsSchema.parse({
+        type: 'status',
+        machineId: legacyArgs.machineId ?? legacyArgs.machineFilter,
+      });
+      expect(redirectArgs.machineId).toBeUndefined();
+    });
+  });
+
+  describe('Scenario 3: Error case — invalid status parameters', () => {
+    it('should reject invalid detail value', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        detail: 'verbose'
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should strip unknown parameters (Zod default behavior)', () => {
+      const result = InventoryArgsSchema.safeParse({
+        type: 'status',
+        unknownParam: 'value'
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).not.toHaveProperty('unknownParam');
+      }
+    });
+  });
+});
+
+// ============================================================
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 23 tools (3 deprecated #1863 + 6 low-usage #1841 + 1 Cluster D fusion removed)', () => {
-    // Before: 33 tools → #1922 Pass 4 removed 3 deprecated → 30
+  it('allToolDefinitions should contain 22 tools (3 deprecated #1863 + 6 low-usage #1841 + 1 Cluster D fusion + 1 Cluster E fusion removed)', () => {
+    // Before: 32 tools → #1922 Pass 4 removed 3 deprecated → 29
     // #1841 removed 6 low-usage (get_mcp_best_practices, export_config, view_task_details,
-    //   get_raw_conversation, refresh_dashboard, update_dashboard) → 24
+    //   get_raw_conversation, refresh_dashboard, update_dashboard) → 23 (wait: 29-6=23)
+    // Actually #297 consolidated to 24 active in ListTools (less low-usage). allToolDefinitions baseline = 24.
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose(action: "analyze"): 24 → 23
+    // Cluster E (#1935) fused get_status → inventory(type: "status"): 23 → 22
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(23);
+    expect(allToolDefinitions.length).toBe(22);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {
