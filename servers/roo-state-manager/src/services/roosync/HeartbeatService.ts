@@ -50,11 +50,11 @@ export interface HeartbeatConfig {
   /** Nombre de heartbeats manqués avant alerte */
   missedHeartbeatThreshold: number;
 
-  /** Activer la synchronisation automatique */
-  autoSyncEnabled: boolean;
+  /** @deprecated Auto-sync removed — kept for backward compat in tool schemas */
+  autoSyncEnabled?: boolean;
 
-  /** Intervalle de synchronisation automatique en millisecondes */
-  autoSyncInterval: number;
+  /** @deprecated Auto-sync removed — kept for backward compat in tool schemas */
+  autoSyncInterval?: number;
 
   /**
    * Intervalle minimal entre deux écritures sur disque en millisecondes (défaut: 5min).
@@ -158,7 +158,6 @@ export class HeartbeatService {
   private legacyHeartbeatPath: string;
   private state: HeartbeatServiceState;
   private heartbeatInterval: NodeJS.Timeout | null = null;
-  private autoSyncInterval: NodeJS.Timeout | null = null;
   private heartbeatCheckerInterval: NodeJS.Timeout | null = null;
   private config: HeartbeatConfig;
   private onOfflineDetectedCallback?: (machineId: string) => void;
@@ -178,8 +177,6 @@ export class HeartbeatService {
       heartbeatInterval: 60000,  // 1 minute (réduit de 30s)
       offlineTimeout: 1200000,   // 20 minutes (4x persistence interval, tolerates GDrive sync delay) (#1409)
       missedHeartbeatThreshold: 4,
-      autoSyncEnabled: true,
-      autoSyncInterval: 60000,   // 1 minute
       persistenceInterval: 300000, // 5 minutes entre écritures GDrive (#607)
       ...config
     };
@@ -687,71 +684,20 @@ export class HeartbeatService {
 
     // Démarrer la vérification des heartbeats
     this.startHeartbeatChecker();
-
-    // Démarrer la synchronisation automatique si activée
-    if (this.config.autoSyncEnabled) {
-      this.startAutoSync();
-    }
   }
 
   /**
    * Démarre le vérificateur de heartbeat
    */
   private startHeartbeatChecker(): void {
+    // Callbacks are already invoked inside checkHeartbeats() — no need to duplicate here
     this.heartbeatCheckerInterval = setInterval(async () => {
       try {
-        const result = await this.checkHeartbeats();
-
-        // Notifier les callbacks stockés
-        if (this.onOfflineDetectedCallback) {
-          for (const machineId of result.newlyOfflineMachines) {
-            this.onOfflineDetectedCallback(machineId);
-          }
-        }
-
-        if (this.onOnlineRestoredCallback) {
-          for (const machineId of result.newlyOnlineMachines) {
-            this.onOnlineRestoredCallback(machineId);
-          }
-        }
+        await this.checkHeartbeats();
       } catch (error) {
         logger.error('Erreur vérification heartbeat:', error);
       }
     }, this.config.heartbeatInterval);
-  }
-
-  /**
-   * Démarre la synchronisation automatique
-   */
-  private startAutoSync(): void {
-    logger.info('Démarrage de la synchronisation automatique', {
-      interval: this.config.autoSyncInterval
-    });
-
-    this.autoSyncInterval = setInterval(async () => {
-      try {
-        await this.performAutoSync();
-      } catch (error) {
-        logger.error('Erreur synchronisation automatique:', error);
-      }
-    }, this.config.autoSyncInterval);
-  }
-
-  /**
-   * Effectue la synchronisation automatique
-   */
-  private async performAutoSync(): Promise<void> {
-    logger.info('Exécution de la synchronisation automatique');
-
-    // Vérifier les machines offline
-    if (this.state.offlineMachines.length > 0) {
-      logger.warn(`Machines offline détectées: ${this.state.offlineMachines.join(', ')}`);
-    }
-
-    // Vérifier les machines en avertissement
-    if (this.state.warningMachines.length > 0) {
-      logger.warn(`Machines en avertissement: ${this.state.warningMachines.join(', ')}`);
-    }
   }
 
   /**
@@ -768,11 +714,6 @@ export class HeartbeatService {
     if (this.heartbeatCheckerInterval) {
       clearInterval(this.heartbeatCheckerInterval);
       this.heartbeatCheckerInterval = null;
-    }
-
-    if (this.autoSyncInterval) {
-      clearInterval(this.autoSyncInterval);
-      this.autoSyncInterval = null;
     }
 
     await this.saveState();
@@ -827,12 +768,11 @@ export class HeartbeatService {
 
     logger.info('Configuration mise à jour', {
       heartbeatInterval: this.config.heartbeatInterval,
-      offlineTimeout: this.config.offlineTimeout,
-      autoSyncEnabled: this.config.autoSyncEnabled
+      offlineTimeout: this.config.offlineTimeout
     });
 
     // Redémarrer les intervalles si nécessaire
-    if (this.heartbeatInterval || this.autoSyncInterval) {
+    if (this.heartbeatInterval || this.heartbeatCheckerInterval) {
       await this.stopHeartbeatService();
       // Note: Le redémarrage nécessite d'appeler startHeartbeatService
     }
