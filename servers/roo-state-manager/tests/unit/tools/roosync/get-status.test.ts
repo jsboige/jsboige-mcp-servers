@@ -22,6 +22,8 @@ const {
     mockReaddirSync,
     mockStatSync,
     mockReadFileSync,
+    mockExistsSync,
+    mockMkdirSync,
 } = vi.hoisted(() => ({
     mockGetRooSyncService: vi.fn(),
     mockGetMessageManager: vi.fn(),
@@ -30,6 +32,8 @@ const {
     mockReaddirSync: vi.fn(),
     mockStatSync: vi.fn(),
     mockReadFileSync: vi.fn(),
+    mockExistsSync: vi.fn().mockReturnValue(true),
+    mockMkdirSync: vi.fn(),
 }));
 
 vi.mock('../../../../src/services/lazy-roosync.js', () => ({
@@ -60,6 +64,8 @@ vi.mock('fs', () => ({
     readdirSync: mockReaddirSync,
     statSync: mockStatSync,
     readFileSync: mockReadFileSync,
+    existsSync: mockExistsSync,
+    mkdirSync: mockMkdirSync,
 }));
 
 function setupMocks(overrides: Record<string, any> = {}) {
