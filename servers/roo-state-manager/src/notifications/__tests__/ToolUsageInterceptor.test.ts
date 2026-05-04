@@ -1,22 +1,21 @@
 /**
- * Tests unitaires pour ToolUsageInterceptor
+ * Tests unitaires pour ToolUsageInterceptor v2
  *
- * Couvre :
- * - interceptToolCall : exécution de l'outil sans bloquer
- * - interceptToolCall : avec refreshCache=true (non-bloquant)
- * - interceptToolCall : avec checkInbox=true + messages non lus → notification
- * - interceptToolCall : avec checkInbox=true + aucun message
- * - interceptToolCall : erreur dans execute → propagée
- * - calculateHighestPriority (via notifyNewMessages)
- * - meetsPriorityThreshold (via notifyNewMessages)
- * - updateConfig
- * - getStats
+ * FIX #1356 v2: Inbox check moved to background interval.
+ * Tests verify:
+ * - interceptToolCall is zero-I/O for inbox (no readInbox call)
+ * - Background interval triggers inbox checks
+ * - dispose() cleans up interval
+ * - updateConfig toggles background check
+ * - Notification emission via background path
+ * - Cache refresh still works (non-blocking)
+ * - Error resilience
  *
  * @module notifications/__tests__/ToolUsageInterceptor.test
- * @version 1.0.0 (#492)
+ * @version 2.0.0
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─────────────────── mocks (vi.hoisted pour éviter TDZ) ───────────────────
 
@@ -28,12 +27,23 @@ vi.mock('../../tools/task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
 }));
 
+vi.mock('../../utils/message-helpers.js', () => ({
+  getLocalWorkspaceId: () => 'test-workspace',
+}));
+
 import { ToolUsageInterceptor } from '../ToolUsageInterceptor.js';
 import { NotificationService } from '../NotificationService.js';
 import type { InterceptorConfig } from '../ToolUsageInterceptor.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
+
+/** Flush microtask queue (needed with vi.useFakeTimers for async chains) */
+const flushMicrotasks = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
 
 function makeConfig(overrides: Partial<InterceptorConfig> = {}): InterceptorConfig {
   return {
@@ -76,9 +86,14 @@ let conversationCache: Map<string, ConversationSkeleton>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers();
   notificationService = new NotificationService();
   conversationCache = new Map();
   mockScanDiskForNewTasks.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 // ─────────────────── tests ───────────────────
@@ -98,6 +113,7 @@ describe('ToolUsageInterceptor', () => {
         conversationCache,
         config
       );
+      interceptor.dispose();
 
       const stats = interceptor.getStats();
       expect(stats.config.machineId).toBe('my-machine');
@@ -111,6 +127,7 @@ describe('ToolUsageInterceptor', () => {
         conversationCache,
         makeConfig({ checkInbox: true })
       );
+      interceptor.dispose();
       expect(interceptor.getStats().isActive).toBe(true);
     });
 
@@ -160,11 +177,57 @@ describe('ToolUsageInterceptor', () => {
         conversationCache,
         makeConfig({ checkInbox: true, refreshCache: true })
       );
+      interceptor.dispose();
 
       interceptor.updateConfig({ machineId: 'new-machine' });
 
       expect(interceptor.getStats().config.checkInbox).toBe(true);
       expect(interceptor.getStats().config.refreshCache).toBe(true);
+      interceptor.dispose();
+    });
+
+    test('enables background check when checkInbox toggled on', async () => {
+      const msgManager = makeMockMessageManager();
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: false })
+      );
+
+      // No inbox check initially
+      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      expect(msgManager.readInbox).not.toHaveBeenCalled();
+
+      // Toggle on
+      interceptor.updateConfig({ checkInbox: true });
+
+      // Trigger the initial delay (5s)
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
+
+      interceptor.dispose();
+    });
+
+    test('disposes background check when checkInbox toggled off', async () => {
+      const msgManager = makeMockMessageManager();
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true })
+      );
+
+      // Trigger initial check
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
+
+      // Toggle off
+      interceptor.updateConfig({ checkInbox: false });
+
+      // Advance past interval — should NOT trigger another check
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -186,7 +249,7 @@ describe('ToolUsageInterceptor', () => {
       expect(result).toBe('expected-result');
     });
 
-    test('propage l\'erreur de la fonction execute', async () => {
+    test("propage l'erreur de la fonction execute", async () => {
       const interceptor = new ToolUsageInterceptor(
         notificationService,
         makeMockMessageManager() as any,
@@ -217,6 +280,31 @@ describe('ToolUsageInterceptor', () => {
   });
 
   // ============================================================
+  // FIX #1356 v2: interceptToolCall does NOT call readInbox
+  // ============================================================
+
+  describe('interceptToolCall - zero I/O for inbox', () => {
+    test('readInbox is NOT called during interceptToolCall', async () => {
+      const msgManager = makeMockMessageManager();
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true })
+      );
+
+      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      await interceptor.interceptToolCall('tool2', {}, async () => 'ok2');
+      await interceptor.interceptToolCall('tool3', {}, async () => 'ok3');
+
+      // Tool calls should NOT trigger readInbox
+      expect(msgManager.readInbox).not.toHaveBeenCalled();
+
+      interceptor.dispose();
+    });
+  });
+
+  // ============================================================
   // interceptToolCall - refreshCache=true
   // ============================================================
 
@@ -231,8 +319,7 @@ describe('ToolUsageInterceptor', () => {
 
       await interceptor.interceptToolCall('tool', {}, async () => 'ok');
 
-      // Attendre micro-tick pour que la promesse non-bloquante s'exécute
-      await new Promise(r => setTimeout(r, 10));
+      await vi.advanceTimersByTimeAsync(10);
       expect(mockScanDiskForNewTasks).toHaveBeenCalled();
     });
 
@@ -245,18 +332,17 @@ describe('ToolUsageInterceptor', () => {
         makeConfig({ refreshCache: true })
       );
 
-      // Should not throw
       const result = await interceptor.interceptToolCall('tool', {}, async () => 'ok');
       expect(result).toBe('ok');
     });
   });
 
   // ============================================================
-  // interceptToolCall - checkInbox=true
+  // Background inbox check
   // ============================================================
 
-  describe('interceptToolCall - checkInbox=true', () => {
-    test('lit la boîte de réception', async () => {
+  describe('background inbox check', () => {
+    test('first check fires after initial delay', async () => {
       const msgManager = makeMockMessageManager([]);
       const interceptor = new ToolUsageInterceptor(
         notificationService,
@@ -265,29 +351,49 @@ describe('ToolUsageInterceptor', () => {
         makeConfig({ checkInbox: true })
       );
 
-      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      // Before delay
+      expect(msgManager.readInbox).not.toHaveBeenCalled();
 
-      expect(msgManager.readInbox).toHaveBeenCalled();
+      // After initial delay (5s)
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
+
+      interceptor.dispose();
     });
 
-    test('sans nouveaux messages : ne notifie pas', async () => {
-      const notifySpy = vi.spyOn(notificationService, 'notify');
+    test('subsequent checks fire at interval', async () => {
+      const msgManager = makeMockMessageManager([]);
       const interceptor = new ToolUsageInterceptor(
         notificationService,
-        makeMockMessageManager([]) as any,
+        msgManager as any,
         conversationCache,
         makeConfig({ checkInbox: true })
       );
 
-      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      // Initial delay
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
 
-      expect(notifySpy).not.toHaveBeenCalled();
+      // First interval
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(2);
+
+      // Second interval
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(3);
+
+      interceptor.dispose();
     });
 
     test('avec nouveaux messages : émet une notification', async () => {
       const msg = makeMessage({ id: 'msg-1', priority: 'HIGH' });
       const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
       const notifySpy = vi.spyOn(notificationService, 'notify').mockResolvedValue(undefined);
+
+      notificationService.loadFilterRules([{
+        id: 'allow-all', eventType: 'new_message', condition: {},
+        action: 'allow', notifyUser: false,
+      }]);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService,
@@ -296,43 +402,23 @@ describe('ToolUsageInterceptor', () => {
         makeConfig({ checkInbox: true, minPriority: 'LOW' })
       );
 
-      // Load a permissive filter rule
-      notificationService.loadFilterRules([{
-        id: 'allow-all',
-        eventType: 'new_message',
-        condition: {},
-        action: 'allow',
-        notifyUser: false,
-      }]);
+      // Trigger initial delay + let async chain resolve
+      await vi.advanceTimersByTimeAsync(6_000);
+      // Allow the promise chain (readInbox → getMessage → notifyNewMessages) to settle
+      await flushMicrotasks();
+      // Flush remaining microtasks
+      await vi.advanceTimersByTimeAsync(0);
 
-      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
-
-      // FIX #1356: inbox check is fire-and-forget; wait for background notification
-      await vi.waitFor(() => expect(notifySpy).toHaveBeenCalledWith(
+      expect(notifySpy).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'new_message' })
-      ));
-    });
-
-    test('message en dessous du seuil minPriority : pas de notification', async () => {
-      const msg = makeMessage({ id: 'msg-low', priority: 'LOW' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-low' }], { 'msg-low': msg });
-      const notifySpy = vi.spyOn(notificationService, 'notify');
-
-      const interceptor = new ToolUsageInterceptor(
-        notificationService,
-        msgManager as any,
-        conversationCache,
-        makeConfig({ checkInbox: true, minPriority: 'HIGH' })
       );
 
-      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
-
-      expect(notifySpy).not.toHaveBeenCalled();
+      interceptor.dispose();
     });
 
-    test('erreur readInbox ne bloque pas l\'outil', async () => {
-      const msgManager = makeMockMessageManager();
-      msgManager.readInbox.mockRejectedValue(new Error('Inbox unavailable'));
+    test('sans nouveaux messages : ne notifie pas', async () => {
+      const msgManager = makeMockMessageManager([]);
+      const notifySpy = vi.spyOn(notificationService, 'notify');
 
       const interceptor = new ToolUsageInterceptor(
         notificationService,
@@ -341,14 +427,106 @@ describe('ToolUsageInterceptor', () => {
         makeConfig({ checkInbox: true })
       );
 
-      const result = await interceptor.interceptToolCall('tool', {}, async () => 'safe');
+      await vi.advanceTimersByTimeAsync(6_000);
 
-      expect(result).toBe('safe');
+      expect(notifySpy).not.toHaveBeenCalled();
+
+      interceptor.dispose();
+    });
+
+    test('déduit les messages déjà notifiés', async () => {
+      const msg = makeMessage({ id: 'msg-1', priority: 'HIGH' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const notifySpy = vi.spyOn(notificationService, 'notify').mockResolvedValue(undefined);
+
+      notificationService.loadFilterRules([{
+        id: 'allow-all', eventType: 'new_message', condition: {},
+        action: 'allow', notifyUser: false,
+      }]);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      // First check — notifies
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+      expect(notifySpy).toHaveBeenCalledTimes(1);
+
+      // Second check — same message, should NOT notify again
+      notifySpy.mockClear();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushMicrotasks();
+      expect(notifySpy).not.toHaveBeenCalled();
+
+      interceptor.dispose();
+    });
+
+    test('erreur readInbox ne crash pas le background check', async () => {
+      const msgManager = makeMockMessageManager();
+      msgManager.readInbox.mockRejectedValue(new Error('GDrive down'));
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true })
+      );
+
+      // Should not throw
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      // Subsequent interval should still fire (resilient)
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(2);
+
+      interceptor.dispose();
     });
   });
 
   // ============================================================
-  // refreshCache - cache integration (regression: scan results were discarded)
+  // dispose
+  // ============================================================
+
+  describe('dispose', () => {
+    test('stops background interval', async () => {
+      const msgManager = makeMockMessageManager([]);
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true })
+      );
+
+      // Trigger initial check
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
+
+      interceptor.dispose();
+
+      // Advance past interval — should NOT trigger another check
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(msgManager.readInbox).toHaveBeenCalledTimes(1);
+    });
+
+    test('safe to call dispose when no interval active', () => {
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        makeMockMessageManager() as any,
+        conversationCache,
+        makeConfig({ checkInbox: false })
+      );
+
+      // Should not throw
+      interceptor.dispose();
+    });
+  });
+
+  // ============================================================
+  // refreshCache - cache integration
   // ============================================================
 
   describe('interceptToolCall - refreshCache integrates new tasks into cache', () => {
@@ -378,11 +556,8 @@ describe('ToolUsageInterceptor', () => {
       );
 
       await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      await vi.advanceTimersByTimeAsync(50);
 
-      // Wait for the non-blocking cache refresh to complete
-      await new Promise(r => setTimeout(r, 50));
-
-      // The cache should now contain the discovered task
       expect(conversationCache.has('discovered-task-123')).toBe(true);
       expect(conversationCache.get('discovered-task-123')?.taskId).toBe('discovered-task-123');
     });
@@ -410,16 +585,15 @@ describe('ToolUsageInterceptor', () => {
       );
 
       await interceptor.interceptToolCall('tool', {}, async () => 'ok');
-      await new Promise(r => setTimeout(r, 50));
+      await vi.advanceTimersByTimeAsync(50);
 
-      // Existing task should still be there
       expect(conversationCache.has('existing-task')).toBe(true);
       expect(conversationCache.size).toBe(1);
     });
   });
 
   // ============================================================
-  // calculateHighestPriority (indirect via notifyNewMessages)
+  // Priority handling (via background check)
   // ============================================================
 
   describe('priorité maximale des messages', () => {
@@ -444,12 +618,35 @@ describe('ToolUsageInterceptor', () => {
         makeConfig({ checkInbox: true, minPriority: 'LOW' })
       );
 
-      await interceptor.interceptToolCall('tool', {}, async () => 'ok');
+      // Trigger background check
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
 
-      // FIX #1356: inbox check is fire-and-forget; wait for background notification
-      await vi.waitFor(() => expect(notifySpy).toHaveBeenCalledWith(
+      expect(notifySpy).toHaveBeenCalledWith(
         expect.objectContaining({ priority: 'URGENT' })
-      ));
+      );
+
+      interceptor.dispose();
+    });
+
+    test('message en dessous du seuil minPriority : pas de notification', async () => {
+      const msg = makeMessage({ id: 'msg-low', priority: 'LOW' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-low' }], { 'msg-low': msg });
+      const notifySpy = vi.spyOn(notificationService, 'notify');
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'HIGH' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      expect(notifySpy).not.toHaveBeenCalled();
+
+      interceptor.dispose();
     });
   });
 });
