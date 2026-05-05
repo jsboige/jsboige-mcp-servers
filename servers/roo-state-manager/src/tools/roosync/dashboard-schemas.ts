@@ -64,7 +64,10 @@ export const IntercomMessageSchema = z.object({
   author: AuthorSchema,
   content: z.string().describe('Markdown message content'),
   teamStage: TeamStageSchema.optional().describe('Team pipeline stage'),
-  teamStageData: TeamStageDataSchema.optional().describe('Team stage transition data')
+  teamStageData: TeamStageDataSchema.optional().describe('Team stage transition data'),
+  reply_to: z.string().optional().describe('Message ID being replied to (#1956)'),
+  acknowledged_at: z.record(z.string(), z.string()).optional()
+    .describe('Machine ID → ISO timestamp of acknowledgment (#1956)')
 });
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;

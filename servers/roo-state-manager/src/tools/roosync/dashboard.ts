@@ -328,20 +328,63 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
         // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
         // Le segment optionnel `\s+\[([^\]]+)\]` est l'ancien format tags — toujours toléré, jamais réutilisé.
         // v3 (#1363): ligne `[msg: <id>]` optionnelle immédiatement après le header, avant le contenu.
-        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n(?:\[msg: ([^\]]+)\]\n)?\n([\s\S]+)/);
+        // #1956: optional `[reply-to: <id>]` and `[ack: <data>]` metadata lines after [msg:]
+        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)( \[[^\]]+\])?\n([\s\S]+)/);
         if (headerMatch) {
-          const [, timestamp, machineId, workspace, , persistedId, content] = headerMatch;
-          // FIX #1123: Unescape "### [" that was escaped during write to prevent false splits
-          const unescapedContent = content.trim().replace(/^\\#\\#\\# \[/gm, '### [');
+          const [, timestamp, machineId, workspace, , afterHeader] = headerMatch;
           const mid = machineId.trim();
           const ws = workspace.trim();
-          messages.push({
-            // v3: use persisted ID if present, else regen (legacy fallback)
+
+          // Parse metadata lines ([msg:], [reply-to:], [ack:]) then content
+          let persistedId: string | undefined;
+          let replyTo: string | undefined;
+          let ackRaw: string | undefined;
+          let remaining = afterHeader;
+
+          // [msg: <id>]
+          const msgMatch = remaining.match(/^\[msg: ([^\]]+)\]\n([\s\S]*)/);
+          if (msgMatch) {
+            persistedId = msgMatch[1];
+            remaining = msgMatch[2];
+          }
+          // [reply-to: <id>]
+          const replyMatch = remaining.match(/^\[reply-to: ([^\]]+)\]\n([\s\S]*)/);
+          if (replyMatch) {
+            replyTo = replyMatch[1];
+            remaining = replyMatch[2];
+          }
+          // [ack: machine1:ts1, machine2:ts2]
+          const ackMatch = remaining.match(/^\[ack: ([^\]]+)\]\n([\s\S]*)/);
+          if (ackMatch) {
+            ackRaw = ackMatch[1];
+            remaining = ackMatch[2];
+          }
+
+          // Content starts after optional blank line
+          const content = remaining.replace(/^\n/, '');
+          const unescapedContent = content.trim().replace(/^\\#\\#\\# \[/gm, '### [');
+
+          // Parse acknowledged_at from raw string
+          let acknowledged_at: Record<string, string> | undefined;
+          if (ackRaw) {
+            const entries = ackRaw.split(', ').map((entry: string) => {
+              const colonIdx = entry.indexOf(':');
+              return [entry.slice(0, colonIdx), entry.slice(colonIdx + 1)];
+            });
+            acknowledged_at = Object.fromEntries(entries);
+          }
+
+          const msg: IntercomMessage = {
             id: persistedId || generateMessageId(mid, ws),
             timestamp,
             author: { machineId: mid, workspace: ws },
             content: unescapedContent
-          });
+          };
+          if (replyTo) msg.reply_to = replyTo;
+          if (acknowledged_at && Object.keys(acknowledged_at).length > 0) {
+            msg.acknowledged_at = acknowledged_at;
+          }
+          messages.push(msg);
         }
       }
     }
@@ -396,7 +439,14 @@ async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<vo
   const intercomSection = dashboard.intercom.messages.length > 0
     ? dashboard.intercom.messages.map(msg => {
         // v3 (#1363): persist message id on a dedicated line below header
-        return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${escapeContent(msg.content)}`;
+        // #1956: persist reply_to and acknowledged_at metadata
+        let metaLines = `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]`;
+        if (msg.reply_to) metaLines += `\n[reply-to: ${msg.reply_to}]`;
+        if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
+          const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
+          metaLines += `\n[ack: ${ackStr}]`;
+        }
+        return `${metaLines}\n\n${escapeContent(msg.content)}`;
       }).join('\n\n---\n\n')
     : '*Aucun message.*';
 
@@ -1741,6 +1791,11 @@ function buildMarkdownOutput(
     } else {
       for (const msg of messages) {
         parts.push(`### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n`);
+        // #1956: show ACK status if present
+        if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
+          const ackMachines = Object.keys(msg.acknowledged_at).join(', ');
+          parts.push(`*(ACKed by: ${ackMachines})*\n`);
+        }
         parts.push(msg.content);
         parts.push('');
       }
@@ -1772,6 +1827,30 @@ async function handleRead(
   const section = args.section ?? 'all';
   // #1935: section now includes update-specific values — narrow to read-safe values
   const readSection = (section === 'status' || section === 'intercom' || section === 'all') ? section : 'all';
+
+  // #1956: Auto-ACK — when reading intercom, mark replies to our messages as acknowledged
+  if (readSection === 'intercom' || readSection === 'all') {
+    const myMessageIds = new Set(
+      dashboard.intercom.messages
+        .filter(m => m.author.machineId === resolvedMachineId)
+        .map(m => m.id)
+    );
+    let ackDirty = false;
+    const now = new Date().toISOString();
+    for (const msg of dashboard.intercom.messages) {
+      if (msg.reply_to && myMessageIds.has(msg.reply_to)) {
+        if (!msg.acknowledged_at || !msg.acknowledged_at[resolvedMachineId]) {
+          msg.acknowledged_at = { ...(msg.acknowledged_at || {}), [resolvedMachineId]: now };
+          ackDirty = true;
+        }
+      }
+    }
+    if (ackDirty) {
+      await writeDashboardFile(key, dashboard).catch(err =>
+        logger.warn('Auto-ACK write failed', { key, error: String(err) })
+      );
+    }
+  }
   // intercomLimit is kept as an optional safety net but defaults to returning ALL messages.
   // The dashboard should stay under 50KB thanks to size-based condensation,
   // so agents always see the full picture without needing to paginate.
@@ -2013,6 +2092,15 @@ async function handleAppend(
   }
 
   const now = nowDate.toISOString();
+
+  // #1956: If mentions reference a messageId, set reply_to on the primary message
+  if (args.mentions && args.mentions.length > 0) {
+    const msgRef = args.mentions.find(m => m.messageId !== undefined);
+    if (msgRef && msgRef.messageId) {
+      message.reply_to = msgRef.messageId;
+    }
+  }
+
   const updatedDashboard: Dashboard = {
     ...dashboard,
     lastModified: now,
@@ -2579,16 +2667,29 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
     for (const rawBlock of messageBlocks) {
       const block = rawBlock.replace(/\n---\s*$/, '').trim();
-      // v3 (#1363): persisted `[msg: <id>]` line optionnelle
-      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n(?:\[msg: ([^\]]+)\]\n)?\n([\s\S]+)/);
+      // v3 (#1363) + #1956: parse header then metadata lines
+      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n([\s\S]+)/);
       if (headerMatch) {
-        const [, timestamp, machineId, workspace, , persistedId, msgContent] = headerMatch;
-        messages.push({
+        const [, timestamp, machineId, workspace, , afterHeader] = headerMatch;
+        let persistedId: string | undefined;
+        let replyTo: string | undefined;
+        let remaining = afterHeader;
+
+        const msgMatch = remaining.match(/^\[msg: ([^\]]+)\]\n([\s\S]*)/);
+        if (msgMatch) { persistedId = msgMatch[1]; remaining = msgMatch[2]; }
+        const replyMatch = remaining.match(/^\[reply-to: ([^\]]+)\]\n([\s\S]*)/);
+        if (replyMatch) { replyTo = replyMatch[1]; remaining = replyMatch[2]; }
+        // Skip [ack:] for archive reading — not needed
+
+        const content = remaining.replace(/^\n/, '').trim();
+        const msg: IntercomMessage = {
           id: persistedId || generateMessageId(machineId, workspace),
           timestamp,
           author: { machineId, workspace },
-          content: msgContent.trim()
-        });
+          content
+        };
+        if (replyTo) msg.reply_to = replyTo;
+        messages.push(msg);
       }
     }
 

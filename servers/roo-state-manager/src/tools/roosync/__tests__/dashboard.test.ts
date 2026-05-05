@@ -1898,4 +1898,94 @@ describe('roosync_dashboard', () => {
       expect(notice?.content).toContain('Circuit breaker:');
     });
   });
+
+  // #1956: Auto-ACK + reply_to + acknowledged_at
+  describe('#1956 Dashboard ACK loop', () => {
+    it('auto-ACK: reading machine marks replies to its messages as acknowledged', async () => {
+      // test-machine (local) posts a message
+      await roosyncDashboard({
+        action: 'append', type: 'global',
+        content: '[ASK] Needs task assignment',
+      });
+
+      // Read to get the message ID
+      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const firstMsg = afterFirst.data?.intercom?.messages?.[0];
+      expect(firstMsg).toBeDefined();
+      const originalMsgId = firstMsg!.id;
+
+      // Another machine replies with mention referencing the original message
+      await roosyncDashboard({
+        action: 'append', type: 'global',
+        content: '[REPLY] Task assigned: #1987 Qdrant audit',
+        author: { machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+        mentions: [{ messageId: originalMsgId }]
+      });
+
+      // Local machine reads the dashboard — triggers auto-ACK for replies to its messages
+      const result = await roosyncDashboard({
+        action: 'read', type: 'global', section: 'intercom', format: 'json'
+      });
+      const messages = result.data?.intercom?.messages;
+      const replyMsg = messages?.find((m: any) => m.reply_to === originalMsgId);
+      expect(replyMsg).toBeDefined();
+      expect(replyMsg!.acknowledged_at).toBeDefined();
+      expect(replyMsg!.acknowledged_at!['test-machine']).toBeDefined();
+    });
+
+    it('reply_to is set when mention references a messageId', async () => {
+      // Post original
+      await roosyncDashboard({
+        action: 'append', type: 'global',
+        content: 'Original question',
+        author: { machineId: 'myia-po-2023', workspace: 'roo-extensions' }
+      });
+
+      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const originalId = afterFirst.data?.intercom?.messages?.[0]?.id;
+
+      // Reply with mention
+      await roosyncDashboard({
+        action: 'append', type: 'global',
+        content: 'My reply',
+        author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+        mentions: [{ messageId: originalId }]
+      });
+
+      const afterReply = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
+      const replyMsg = afterReply.data?.intercom?.messages?.find((m: any) => m.reply_to === originalId);
+      expect(replyMsg).toBeDefined();
+      expect(replyMsg!.reply_to).toBe(originalId);
+    });
+
+    it('acknowledged_at persists in dashboard file format', async () => {
+      await roosyncDashboard({
+        action: 'write', type: 'global', content: '# Test'
+      });
+      // Local machine posts a message
+      await roosyncDashboard({
+        action: 'append', type: 'global',
+        content: 'Message needing ACK'
+      });
+
+      const afterMsg = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
+      const msgId = afterMsg.data?.intercom?.messages?.[0]?.id;
+
+      // Another machine replies
+      await roosyncDashboard({
+        action: 'append', type: 'global',
+        content: 'Reply message',
+        author: { machineId: 'myia-ai-01', workspace: 'roo-extensions' },
+        mentions: [{ messageId: msgId }]
+      });
+
+      // Read as local machine — triggers auto-ACK
+      await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
+
+      // Read again to verify persistence
+      const result2 = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom', format: 'json' });
+      const replyMsg = result2.data?.intercom?.messages?.find((m: any) => m.reply_to === msgId);
+      expect(replyMsg?.acknowledged_at?.['test-machine']).toBeDefined();
+    });
+  });
 });

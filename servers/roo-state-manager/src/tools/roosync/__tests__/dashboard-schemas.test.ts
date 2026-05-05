@@ -100,6 +100,44 @@ describe('IntercomMessageSchema', () => {
     const result = IntercomMessageSchema.safeParse(noContent);
     expect(result.success).toBe(false);
   });
+
+  // #1956: reply_to and acknowledged_at fields
+  it('accepts message with reply_to (#1956)', () => {
+    const result = IntercomMessageSchema.safeParse({
+      ...validMessage,
+      reply_to: 'ic-2026-04-24T1100-parent',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.reply_to).toBe('ic-2026-04-24T1100-parent');
+    }
+  });
+
+  it('accepts message with acknowledged_at (#1956)', () => {
+    const result = IntercomMessageSchema.safeParse({
+      ...validMessage,
+      acknowledged_at: {
+        'myia-po-2025': '2026-05-04T21:30:00.000Z',
+        'myia-po-2026': '2026-05-04T21:35:00.000Z',
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.acknowledged_at).toEqual({
+        'myia-po-2025': '2026-05-04T21:30:00.000Z',
+        'myia-po-2026': '2026-05-04T21:35:00.000Z',
+      });
+    }
+  });
+
+  it('accepts message without reply_to or acknowledged_at (backward compat)', () => {
+    const result = IntercomMessageSchema.safeParse(validMessage);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.reply_to).toBeUndefined();
+      expect(result.data.acknowledged_at).toBeUndefined();
+    }
+  });
 });
 
 // === UserIdSchema ===
