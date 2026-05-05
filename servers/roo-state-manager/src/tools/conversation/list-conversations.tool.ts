@@ -311,6 +311,10 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
         meta.totalSize = node.metadata.totalSize;
         const sizeHuman = formatBytes(node.metadata.totalSize);
         if (sizeHuman) meta.sizeHuman = sizeHuman;
+        // #1608 R2: Warn agents about large sessions that can saturate GLM context
+        if (node.metadata.totalSize > 10_000_000) { // >10 MB
+            summary.sizeWarning = `Session is ${sizeHuman} — use smart_truncation: true with max_output_length: 50000 when viewing`;
+        }
     }
     if (node.metadata.mode) meta.mode = node.metadata.mode;
     if (node.metadata.workspace) {
