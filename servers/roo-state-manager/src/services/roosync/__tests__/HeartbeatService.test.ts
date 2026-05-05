@@ -341,17 +341,19 @@ describe('HeartbeatService', () => {
       expect(service.getHeartbeatData('machine-b')!.missedHeartbeats).toBe(0);
     });
 
-    test('writes per-machine file on registration', async () => {
+    test('#1953 ADR 008: registerHeartbeat is in-memory only (no file writes)', async () => {
       const service = new HeartbeatService(TEST_PATH);
 
       await service.registerHeartbeat('machine-y');
 
-      expect(mockMkdir).toHaveBeenCalledWith(HEARTBEATS_DIR, { recursive: true });
-      // Atomic write: writeFile gets .tmp path, then rename to final path
-      const writeFileCalls = mockWriteFile.mock.calls;
-      expect(writeFileCalls.length).toBeGreaterThanOrEqual(1);
-      expect(writeFileCalls[0][0]).toContain(join(HEARTBEATS_DIR, 'machine-y.json'));
-      expect(mockRename).toHaveBeenCalled();
+      // ADR 008 Phase 1: registerHeartbeat is in-memory only
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(mockRename).not.toHaveBeenCalled();
+
+      // But machine is registered in memory
+      expect(service.getHeartbeatData('machine-y')).toBeDefined();
+      expect(service.getHeartbeatData('machine-y')!.status).toBe('online');
     });
 
     test('enregistre plusieurs machines indépendamment', async () => {
@@ -373,10 +375,7 @@ describe('HeartbeatService', () => {
       await service.registerHeartbeat('MyIA-AI-01');
 
       expect(service.getHeartbeatData('myia-ai-01')).toBeDefined();
-      // Atomic write: writeFile gets .tmp path
-      const writeFileCalls = mockWriteFile.mock.calls;
-      expect(writeFileCalls.length).toBeGreaterThanOrEqual(1);
-      expect(writeFileCalls[0][0]).toContain(join(HEARTBEATS_DIR, 'myia-ai-01.json'));
+      // ADR 008 Phase 1: in-memory only, no file writes during registration
     });
   });
 
@@ -404,61 +403,45 @@ describe('HeartbeatService', () => {
       expect(result.newlyOnlineMachines).toEqual([]);
     });
 
-    test('détecte une machine offline (lastHeartbeat trop ancien)', async () => {
-      const service = new HeartbeatService(TEST_PATH, {
-        offlineTimeout: 100,      // 100ms
-        heartbeatInterval: 30,
-        missedHeartbeatThreshold: 4,
-      });
+    test('détecte une machine UNKNOWN (lastHeartbeat >120 min) #1953 ADR 008', async () => {
+      const service = new HeartbeatService(TEST_PATH);
 
-      // Set up disk with stale heartbeat
-      const staleData = {
-        ...makeOnlineMachine('slow-machine'),
-        lastHeartbeat: new Date(Date.now() - 200).toISOString(),
-      };
-      setupPerMachineFiles({ 'slow-machine': staleData });
+      // Register machine then make its heartbeat stale (>120 min = UNKNOWN)
+      await service.registerHeartbeat('slow-machine');
+      const hb = service.getHeartbeatData('slow-machine')!;
+      hb.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString(); // 150 min ago
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).toContain('slow-machine');
+      expect(result.newlyOfflineMachines).toContain('slow-machine'); // UNKNOWN maps to offlineMachines
       expect(service.getOfflineMachines()).toContain('slow-machine');
+      expect(service.getHeartbeatData('slow-machine')!.status).toBe('unknown');
     });
 
-    test('détecte une machine en warning (threshold atteint mais pas offline)', async () => {
-      const service = new HeartbeatService(TEST_PATH, {
-        offlineTimeout: 500,      // offline après 500ms
-        heartbeatInterval: 100,   // intervalle 100ms
-        missedHeartbeatThreshold: 4,  // warning à (4-1)*100 = 300ms
-      });
+    test('détecte une machine IDLE (30-120 min) #1953 ADR 008', async () => {
+      const service = new HeartbeatService(TEST_PATH);
 
-      // 350ms → > warningThreshold (300ms), < offlineTimeout (500ms)
-      const warningData = {
-        ...makeOnlineMachine('warning-machine'),
-        lastHeartbeat: new Date(Date.now() - 350).toISOString(),
-      };
-      setupPerMachineFiles({ 'warning-machine': warningData });
+      // Register machine then make heartbeat 45 min old → IDLE
+      await service.registerHeartbeat('idle-machine');
+      const hb = service.getHeartbeatData('idle-machine')!;
+      hb.lastHeartbeat = new Date(Date.now() - 45 * 60 * 1000).toISOString(); // 45 min ago
 
       const result = await service.checkHeartbeats();
 
-      expect(result.warningMachines).toContain('warning-machine');
-      expect(service.getWarningMachines()).toContain('warning-machine');
+      expect(result.warningMachines).toContain('idle-machine'); // IDLE maps to warningMachines
+      expect(service.getWarningMachines()).toContain('idle-machine');
+      expect(service.getHeartbeatData('idle-machine')!.status).toBe('idle');
     });
 
-    test('machine offline revient online', async () => {
-      const service = new HeartbeatService(TEST_PATH, {
-        offlineTimeout: 100,
-        heartbeatInterval: 30,
-        missedHeartbeatThreshold: 4,
-      });
+    test('machine UNKNOWN revient online after re-registration #1953 ADR 008', async () => {
+      const service = new HeartbeatService(TEST_PATH);
 
-      // Set up stale machine on disk
-      const staleData = {
-        ...makeOnlineMachine('recovering-machine'),
-        lastHeartbeat: new Date(Date.now() - 200).toISOString(),
-      };
-      setupPerMachineFiles({ 'recovering-machine': staleData });
+      // Register machine then make its heartbeat stale (>120 min)
+      await service.registerHeartbeat('recovering-machine');
+      const hb = service.getHeartbeatData('recovering-machine')!;
+      hb.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString(); // 150 min ago
 
-      // First check → detected offline
+      // First check → detected UNKNOWN
       await service.checkHeartbeats();
       expect(service.getOfflineMachines()).toContain('recovering-machine');
 
@@ -468,16 +451,11 @@ describe('HeartbeatService', () => {
       expect(service.getOfflineMachines()).not.toContain('recovering-machine');
     });
 
-    test('machine online stable reste online', async () => {
-      const service = new HeartbeatService(TEST_PATH, {
-        offlineTimeout: 5000,
-        heartbeatInterval: 1000,
-        missedHeartbeatThreshold: 4,
-      });
+    test('machine online stable reste online #1953 ADR 008', async () => {
+      const service = new HeartbeatService(TEST_PATH);
 
-      // Set up recent heartbeat on disk
-      const recentData = makeOnlineMachine('stable-machine');
-      setupPerMachineFiles({ 'stable-machine': recentData });
+      // Register with current timestamp → stays ONLINE
+      await service.registerHeartbeat('stable-machine');
 
       const result = await service.checkHeartbeats();
 
