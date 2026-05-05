@@ -22,6 +22,9 @@ export interface RooSyncConfig {
   /** Chemin absolu vers le répertoire Google Drive partagé */
   sharedPath: string;
 
+  /** #1918: Whether the shared path is currently accessible (GDrive may be disconnected) */
+  pathAccessible: boolean;
+
   /** Identifiant unique de cette machine */
   machineId: string;
 
@@ -91,6 +94,7 @@ export function loadRooSyncConfig(): RooSyncConfig {
 
     return {
       sharedPath: process.env.ROOSYNC_SHARED_PATH!,
+      pathAccessible: true, // In test mode, env is always valid
       machineId: process.env.ROOSYNC_MACHINE_ID!.toLowerCase(),
       autoSync,
       conflictStrategy: conflictStrategy as 'manual' | 'auto-local' | 'auto-remote',
@@ -124,9 +128,13 @@ export function loadRooSyncConfig(): RooSyncConfig {
   }
 
   const resolvedPath = resolve(sharedPath);
-  if (!existsSync(resolvedPath)) {
-    throw new RooSyncConfigError(
-      `Le chemin ROOSYNC_SHARED_PATH n'existe pas: ${resolvedPath}`
+  const pathAccessible = existsSync(resolvedPath);
+  if (!pathAccessible) {
+    // #1918: Don't crash — GDrive may be temporarily disconnected.
+    // The MCP starts in degraded mode; tools return clear errors until path recovers.
+    logger.warn(
+      `⚠️ ROOSYNC_SHARED_PATH n'existe pas: ${resolvedPath} — ` +
+      `GDrive probablement déconnecté. Mode dégradé, les outils RooSync retourneront des erreurs claires.`
     );
   }
 
@@ -193,11 +201,26 @@ export function loadRooSyncConfig(): RooSyncConfig {
   // 7. Retourner la configuration validée
   return {
     sharedPath: resolvedPath,
+    pathAccessible,
     machineId,
     autoSync,
     conflictStrategy,
     logLevel
   };
+}
+
+/**
+ * #1918: Check if the shared path is currently accessible.
+ * Can be called periodically to detect GDrive reconnection.
+ */
+export function isSharedPathAccessible(config?: RooSyncConfig): boolean {
+  const sharedPath = config?.sharedPath || process.env.ROOSYNC_SHARED_PATH;
+  if (!sharedPath) return false;
+  try {
+    return existsSync(resolve(sharedPath));
+  } catch {
+    return false;
+  }
 }
 
 /**

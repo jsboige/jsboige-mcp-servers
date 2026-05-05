@@ -223,9 +223,12 @@ describe('roosync-config', () => {
 			expect(() => loadRooSyncConfig()).toThrow('absolu');
 		});
 
-		test('throws on non-existent path', () => {
+		// #1918: Non-existent path no longer throws — MCP starts in degraded mode
+		test('returns config with pathAccessible=false on non-existent path', () => {
 			process.env.ROOSYNC_SHARED_PATH = '/this/path/does/not/exist/at/all';
-			expect(() => loadRooSyncConfig()).toThrow('existe pas');
+			const config = loadRooSyncConfig();
+			expect(config.pathAccessible).toBe(false);
+			expect(config.sharedPath).toContain('does');
 		});
 
 		test('throws on reserved machineId', () => {

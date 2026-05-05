@@ -10,7 +10,7 @@
 
 import { existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
-import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
+import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId, isSharedPathAccessible } from '../config/roosync-config.js';
 import {
   type RooSyncDecision,
   type RooSyncDashboard
@@ -70,22 +70,22 @@ export class RooSyncService {
   private config: RooSyncConfig;
   private cache: Map<string, CacheEntry<any>>;
   private cacheOptions: Required<CacheOptions>;
-  private powershellExecutor: PowerShellExecutor;
-  private inventoryCollector: InventoryCollector;
-  private diffDetector: DiffDetector;
-  private baselineService: BaselineService;
-  private configService: ConfigService;
-  private configSharingService: ConfigSharingService;
+  private powershellExecutor!: PowerShellExecutor;
+  private inventoryCollector!: InventoryCollector;
+  private diffDetector!: DiffDetector;
+  private baselineService!: BaselineService;
+  private configService!: ConfigService;
+  private configSharingService!: ConfigSharingService;
 
   // Modules délégués
-  private syncDecisionManager: SyncDecisionManager;
-  private configComparator: ConfigComparator;
-  private baselineManager: BaselineManager;
-  private messageHandler: MessageHandler;
-  private presenceManager: PresenceManager;
-  private identityManager: IdentityManager;
-  private nonNominativeBaselineService: NonNominativeBaselineService;
-  private heartbeatService: HeartbeatService;
+  private syncDecisionManager!: SyncDecisionManager;
+  private configComparator!: ConfigComparator;
+  private baselineManager!: BaselineManager;
+  private messageHandler!: MessageHandler;
+  private presenceManager!: PresenceManager;
+  private identityManager!: IdentityManager;
+  private nonNominativeBaselineService!: NonNominativeBaselineService;
+  private heartbeatService!: HeartbeatService;
 
   /**
    * Constructeur privé (Singleton)
@@ -114,7 +114,18 @@ export class RooSyncService {
        this.config = config || loadRooSyncConfig();
        console.log('[DEBUG] RooSyncService config loaded:', this.config);
        debugLog('Config chargée', { configLoaded: !!this.config });
- 
+
+       // #1918: If shared path is inaccessible (GDrive disconnected), skip heavy init.
+       // Tools will return clear errors. Path is re-checked on each tool call.
+       if (!this.config.pathAccessible) {
+         console.warn('[RooSyncService] ⚠️ Shared path inaccessible — starting in degraded mode.');
+         console.warn(`[RooSyncService] Path: ${this.config.sharedPath}`);
+         console.warn('[RooSyncService] RooSync tools will return errors until GDrive reconnects.');
+         this.cache = new Map();
+         this.cacheOptions = { ttl: 5 * 60 * 1000, enabled: true };
+         return;
+       }
+
        // Validation d'unicité au démarrage du service (non bloquant)
        this.validateServiceStartup().catch(error => {
          console.error('[RooSyncService] Erreur validation démarrage (non bloquant):', error);

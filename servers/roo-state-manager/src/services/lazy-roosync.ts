@@ -37,6 +37,29 @@ async function _ensureLoaded(): Promise<NonNullable<typeof import('./RooSyncServ
  * First call triggers dynamic import of RooSyncService.ts and all its dependencies.
  * Subsequent calls return the cached instance.
  */
+/**
+ * #1918: Check if RooSync shared path is accessible.
+ * Returns null if available, or an error message string if GDrive is offline.
+ * Tools should call this before file operations and return the error to the caller.
+ */
+export async function checkRooSyncAvailable(): Promise<string | null> {
+    const mod = await _ensureLoaded();
+    const service = mod.getRooSyncService();
+    if (!service) return 'RooSync service not initialized';
+    const config = service.getConfig();
+    if (!config.pathAccessible) {
+        // Re-check — GDrive may have reconnected since startup
+        const { isSharedPathAccessible } = await import('../config/roosync-config.js');
+        if (isSharedPathAccessible(config)) {
+            config.pathAccessible = true;
+            return null;
+        }
+        return `GDrive déconnecté — ROOSYNC_SHARED_PATH inaccessible: ${config.sharedPath}. ` +
+               `Les outils RooSync sont indisponibles jusqu'à la reconnexion de Google Drive.`;
+    }
+    return null;
+}
+
 export async function getRooSyncService() {
     const mod = await _ensureLoaded();
     return mod.getRooSyncService();
