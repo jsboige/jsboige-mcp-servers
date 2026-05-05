@@ -460,10 +460,16 @@ describe('saveSkeletonIndex', () => {
       expect.stringContaining('.skeletons'),
       { recursive: true },
     );
-    expect(mockFs.writeFile).toHaveBeenCalledTimes(1);
 
-    const writtenPath = mockFs.writeFile.mock.calls[0]?.[0] as string;
-    const writtenContent = mockFs.writeFile.mock.calls[0]?.[1] as string;
+    // #1984: FileLockManager writes a .lock file before the actual index write
+    // Find the call that writes to _skeleton_index.json (not .lock)
+    const indexWriteCall = mockFs.writeFile.mock.calls.find(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('_skeleton_index.json') && !call[0].endsWith('.lock')
+    );
+    expect(indexWriteCall).toBeDefined();
+
+    const writtenPath = indexWriteCall?.[0] as string;
+    const writtenContent = indexWriteCall?.[1] as string;
     expect(writtenPath).toContain('_skeleton_index.json');
 
     const parsed = JSON.parse(writtenContent);

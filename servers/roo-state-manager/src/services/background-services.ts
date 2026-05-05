@@ -14,6 +14,8 @@ import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
+// #1984: FileLockManager for concurrent-safe skeleton index writes
+import { getFileLockManager } from './roosync/FileLockManager.simple.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
 // Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
 // import { RooSyncService } from './RooSyncService.js';
@@ -158,6 +160,10 @@ export async function loadFullSkeleton(
 /**
  * Generate or update the skeleton index file from current cache.
  * Called in background after skeleton loading or periodically by the refresh worker.
+ *
+ * #1984: Uses FileLockManager for concurrent-safe read-modify-write.
+ * Multiple MCP instances (one per VS Code workspace) share the same index file.
+ * Without locking, last-write-wins causes indexingState loss for ~96% of entries.
  */
 export async function saveSkeletonIndex(
     conversationCache: Map<string, SkeletonHeader>
@@ -170,19 +176,57 @@ export async function saveSkeletonIndex(
         await fs.mkdir(skeletonsCacheDir, { recursive: true });
         const indexPath = path.join(skeletonsCacheDir, SKELETON_INDEX_FILENAME);
 
-        // Cache already contains SkeletonHeaders — serialize directly
-        const entries = Array.from(conversationCache.values());
+        const lockManager = getFileLockManager();
+        const result = await lockManager.withLock(indexPath, async () => {
+            // Phase 1: Read existing index to preserve indexingState from other instances
+            const existingStates = new Map<string, NonNullable<SkeletonHeader['metadata']>['indexingState']>();
+            try {
+                let existingContent = await fs.readFile(indexPath, 'utf8');
+                if (existingContent.charCodeAt(0) === 0xFEFF) {
+                    existingContent = existingContent.slice(1);
+                }
+                const existingIndex: SkeletonIndex = JSON.parse(existingContent);
+                if (existingIndex.entries) {
+                    for (const entry of existingIndex.entries) {
+                        if (entry.taskId && entry.metadata?.indexingState) {
+                            existingStates.set(entry.taskId, entry.metadata.indexingState);
+                        }
+                    }
+                }
+            } catch {
+                // No existing index — first write
+            }
 
-        const index: SkeletonIndex = {
-            version: 1,
-            generatedAt: new Date().toISOString(),
-            count: entries.length,
-            entries,
-        };
+            // Phase 2: Merge — current cache entries, enriched with preserved indexingState
+            const entries = Array.from(conversationCache.values());
+            let preservedCount = 0;
+            for (const entry of entries) {
+                const preservedState = existingStates.get(entry.taskId);
+                if (preservedState && !entry.metadata?.indexingState) {
+                    if (!entry.metadata) entry.metadata = {} as any;
+                    entry.metadata.indexingState = preservedState;
+                    preservedCount++;
+                }
+            }
 
-        const content = JSON.stringify(index);
-        await fs.writeFile(indexPath, content, 'utf8');
-        console.log(`[Index] Saved skeleton index: ${entries.length} entries (${Math.round(content.length / 1024)}KB)`);
+            // Phase 3: Write merged index
+            const index: SkeletonIndex = {
+                version: 1,
+                generatedAt: new Date().toISOString(),
+                count: entries.length,
+                entries,
+            };
+
+            const content = JSON.stringify(index);
+            await fs.writeFile(indexPath, content, 'utf8');
+            console.log(
+                `[Index] Saved skeleton index: ${entries.length} entries, ${preservedCount} indexingState preserved (${Math.round(content.length / 1024)}KB)`
+            );
+        });
+
+        if (!result.success) {
+            console.warn('[Index] Failed to save skeleton index (lock error):', result.error?.message || result.error);
+        }
     } catch (error: any) {
         console.warn('[Index] Failed to save skeleton index:', error?.message || error);
     }
