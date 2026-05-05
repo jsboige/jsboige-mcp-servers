@@ -5,6 +5,9 @@ import * as path from 'path';
 import { InventoryService } from '../InventoryService';
 
 vi.mock('fs/promises');
+vi.mock('child_process', () => ({
+  execSync: vi.fn(() => '7.4.6'),
+}));
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
   return {
@@ -170,7 +173,7 @@ describe('InventoryService', () => {
         os: 'Windows_NT 10.0.19045',
         hostname: 'test-machine',
         username: 'test-user',
-        powershellVersion: '7.x',
+        powershellVersion: '7.4.6',
       });
     });
 
@@ -465,7 +468,7 @@ describe('InventoryService', () => {
       const remoteInventory = {
         machineId: 'remote-machine',
         timestamp: '2026-04-01T00:00:00Z',
-        inventory: { mcpServers: [], rooModes: [], sdddSpecs: [], scripts: { categories: {}, all: [] }, tools: {}, slashCommands: [], terminalCommands: { allowed: [], restricted: [] }, systemInfo: { os: 'Windows_NT', hostname: 'remote-machine', username: 'user', powershellVersion: '7.x' } },
+        inventory: { mcpServers: [], rooModes: [], sdddSpecs: [], scripts: { categories: {}, all: [] }, tools: {}, slashCommands: [], terminalCommands: { allowed: [], restricted: [] }, systemInfo: { os: 'Windows_NT', hostname: 'remote-machine', username: 'user', powershellVersion: '7.4.6' } },
         paths: {},
       };
 
