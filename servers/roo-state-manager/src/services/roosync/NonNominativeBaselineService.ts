@@ -31,6 +31,7 @@ import {
 import { MachineInventory as LegacyMachineInventory, BaselineConfig, BaselineFileConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode } from '../../types/baseline.js';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
+import { ProfileApplicabilityHelper } from './ProfileApplicabilityHelper.js';
 
 /**
  * Service pour la gestion des baselines non-nominatives
@@ -557,8 +558,7 @@ export class NonNominativeBaselineService {
    * Vérifie si un profil est applicable à une machine
    */
   private isProfileApplicable(profile: ConfigurationProfile, inventory: MachineInventory): boolean {
-    // Implémentation simplifiée - à améliorer avec des règles plus complexes
-    return true;
+    return ProfileApplicabilityHelper.isApplicable(profile, inventory);
   }
 
   /**
