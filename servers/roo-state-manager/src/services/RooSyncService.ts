@@ -10,6 +10,7 @@
 
 import { existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
+import os from 'os';
 import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
 import {
   type RooSyncDecision,
@@ -933,9 +934,11 @@ export class RooSyncService {
 
   /**
    * Enregistre un heartbeat pour la machine courante
+   * #1953 ADR 008: Identity source = os.hostname() (not config.machineId)
    */
   public async registerHeartbeat(metadata?: Record<string, any>): Promise<void> {
-    return this.heartbeatService.registerHeartbeat(this.config.machineId, metadata);
+    const realMachineId = os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    return this.heartbeatService.registerHeartbeat(realMachineId, metadata);
   }
 
   /**

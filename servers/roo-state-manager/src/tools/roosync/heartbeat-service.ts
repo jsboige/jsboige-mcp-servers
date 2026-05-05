@@ -42,7 +42,7 @@ export const RegisterResultSchema = z.object({
     .describe('Identifiant de la machine'),
   timestamp: z.string()
     .describe('Timestamp du heartbeat (ISO 8601)'),
-  status: z.enum(['online', 'offline', 'warning'])
+  status: z.enum(['online', 'offline', 'warning', 'idle', 'unknown'])
     .describe('Statut de la machine apres l\'enregistrement'),
   isNewMachine: z.boolean()
     .describe('Indique si c\'est une nouvelle machine')

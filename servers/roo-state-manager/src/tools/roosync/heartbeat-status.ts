@@ -35,7 +35,7 @@ export const HeartbeatDataSchema = z.object({
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
-  status: z.enum(['online', 'offline', 'warning'])
+  status: z.enum(['online', 'offline', 'warning', 'idle', 'unknown'])
     .describe('Statut de la machine'),
   missedHeartbeats: z.number()
     .describe('Nombre de heartbeats manques consecutifs'),
