@@ -32,17 +32,13 @@ export const OfflineMachineDetailsSchema = z.object({
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
-  offlineSince: z.string()
-    .describe('Timestamp depuis lequel la machine est offline (ISO 8601)'),
-  missedHeartbeats: z.number()
-    .describe('Nombre de heartbeats manqués'),
+  status: z.enum(['online', 'idle', 'unknown'])
+    .describe('Statut de la machine'),
   metadata: z.object({
     firstSeen: z.string()
       .describe('Timestamp de première détection (ISO 8601)'),
     lastUpdated: z.string()
-      .describe('Timestamp de dernière mise à jour (ISO 8601)'),
-    version: z.string()
-      .describe('Version du service')
+      .describe('Timestamp de dernière mise à jour (ISO 8601)')
   })
 });
 
@@ -56,15 +52,13 @@ export const WarningMachineDetailsSchema = z.object({
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
-  missedHeartbeats: z.number()
-    .describe('Nombre de heartbeats manqués'),
+  status: z.enum(['online', 'idle', 'unknown'])
+    .describe('Statut de la machine'),
   metadata: z.object({
     firstSeen: z.string()
       .describe('Timestamp de première détection (ISO 8601)'),
     lastUpdated: z.string()
-      .describe('Timestamp de dernière mise à jour (ISO 8601)'),
-    version: z.string()
-      .describe('Version du service')
+      .describe('Timestamp de dernière mise à jour (ISO 8601)')
   })
 });
 
@@ -76,20 +70,20 @@ export type WarningMachineDetails = z.infer<typeof WarningMachineDetailsSchema>;
 export const MachinesResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si la récupération a réussi'),
-  offlineMachines: z.union([
-    z.array(z.string()).describe('Liste des IDs des machines offline'),
-    z.array(OfflineMachineDetailsSchema).describe('Liste détaillée des machines offline')
+  unknownMachines: z.union([
+    z.array(z.string()).describe('Liste des IDs des machines unknown'),
+    z.array(OfflineMachineDetailsSchema).describe('Liste détaillée des machines unknown')
   ]).optional()
-    .describe('Liste des machines offline (IDs ou détails selon includeDetails)'),
-  warningMachines: z.union([
-    z.array(z.string()).describe('Liste des IDs des machines en avertissement'),
-    z.array(WarningMachineDetailsSchema).describe('Liste détaillée des machines en avertissement')
+    .describe('Liste des machines unknown (IDs ou détails selon includeDetails)'),
+  idleMachines: z.union([
+    z.array(z.string()).describe('Liste des IDs des machines idle'),
+    z.array(WarningMachineDetailsSchema).describe('Liste détaillée des machines idle')
   ]).optional()
-    .describe('Liste des machines en avertissement (IDs ou détails selon includeDetails)'),
-  offlineCount: z.number().optional()
-    .describe('Nombre de machines offline'),
-  warningCount: z.number().optional()
-    .describe('Nombre de machines en avertissement'),
+    .describe('Liste des machines idle (IDs ou détails selon includeDetails)'),
+  unknownCount: z.number().optional()
+    .describe('Nombre de machines unknown'),
+  idleCount: z.number().optional()
+    .describe('Nombre de machines idle'),
   checkedAt: z.string()
     .describe('Timestamp de la vérification (ISO 8601)')
 });
@@ -123,58 +117,57 @@ export const machinesTool: UnifiedToolContract = {
 
       // Récupérer les machines offline si demandé
       if (status === 'offline' || status === 'all') {
-        const offlineMachines = heartbeatService.getOfflineMachines();
+        const unknownMachines = heartbeatService.getUnknownMachines();
 
         if (includeDetails) {
           const detailedMachines: OfflineMachineDetails[] = [];
 
-          for (const machineId of offlineMachines) {
-            const heartbeatData = heartbeatService.getHeartbeatData(machineId);
-
-            if (heartbeatData && heartbeatData.offlineSince) {
-              detailedMachines.push({
-                machineId: heartbeatData.machineId,
-                lastHeartbeat: heartbeatData.lastHeartbeat,
-                offlineSince: heartbeatData.offlineSince,
-                missedHeartbeats: heartbeatData.missedHeartbeats,
-                metadata: heartbeatData.metadata
-              });
-            }
-          }
-
-          result.offlineMachines = detailedMachines;
-          result.offlineCount = detailedMachines.length;
-        } else {
-          result.offlineMachines = offlineMachines;
-          result.offlineCount = offlineMachines.length;
-        }
-      }
-
-      // Récupérer les machines en avertissement si demandé
-      if (status === 'warning' || status === 'all') {
-        const warningMachines = heartbeatService.getWarningMachines();
-
-        if (includeDetails) {
-          const detailedMachines: WarningMachineDetails[] = [];
-
-          for (const machineId of warningMachines) {
+          for (const machineId of unknownMachines) {
             const heartbeatData = heartbeatService.getHeartbeatData(machineId);
 
             if (heartbeatData) {
               detailedMachines.push({
                 machineId: heartbeatData.machineId,
                 lastHeartbeat: heartbeatData.lastHeartbeat,
-                missedHeartbeats: heartbeatData.missedHeartbeats,
+                status: heartbeatData.status,
                 metadata: heartbeatData.metadata
               });
             }
           }
 
-          result.warningMachines = detailedMachines;
-          result.warningCount = detailedMachines.length;
+          result.unknownMachines = detailedMachines;
+          result.unknownCount = detailedMachines.length;
         } else {
-          result.warningMachines = warningMachines;
-          result.warningCount = warningMachines.length;
+          result.unknownMachines = unknownMachines;
+          result.unknownCount = unknownMachines.length;
+        }
+      }
+
+      // Récupérer les machines en avertissement si demandé
+      if (status === 'warning' || status === 'all') {
+        const idleMachines = heartbeatService.getIdleMachines();
+
+        if (includeDetails) {
+          const detailedMachines: WarningMachineDetails[] = [];
+
+          for (const machineId of idleMachines) {
+            const heartbeatData = heartbeatService.getHeartbeatData(machineId);
+
+            if (heartbeatData) {
+              detailedMachines.push({
+                machineId: heartbeatData.machineId,
+                lastHeartbeat: heartbeatData.lastHeartbeat,
+                status: heartbeatData.status,
+                metadata: heartbeatData.metadata
+              });
+            }
+          }
+
+          result.idleMachines = detailedMachines;
+          result.idleCount = detailedMachines.length;
+        } else {
+          result.idleMachines = idleMachines;
+          result.idleCount = idleMachines.length;
         }
       }
 

@@ -130,20 +130,20 @@ export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
  * Génère les flags actionnables à partir des données collectées
  */
 function buildFlags(
-  heartbeatState: { onlineMachines: string[]; offlineMachines: string[]; warningMachines: string[] },
+  heartbeatState: { onlineMachines: string[]; unknownMachines: string[]; idleMachines: string[] },
   inboxStats: { unread: number; urgent: number },
   pendingDecisions: number,
   machines: Array<{ id: string; status: string; lastSync?: string }>
 ): string[] {
   const flags: string[] = [];
 
-  // Offline machines
-  for (const machineId of heartbeatState.offlineMachines) {
+  // Unknown machines (ADR 008: was "offline")
+  for (const machineId of heartbeatState.unknownMachines) {
     flags.push(`OFFLINE:${machineId}`);
   }
 
-  // Warning machines (heartbeat stale)
-  for (const machineId of heartbeatState.warningMachines) {
+  // Idle machines (ADR 008: was "warning"/heartbeat stale)
+  for (const machineId of heartbeatState.idleMachines) {
     flags.push(`HEARTBEAT_STALE:${machineId}`);
   }
 
@@ -167,7 +167,7 @@ function buildFlags(
   for (const m of machines) {
     if (m.lastSync) {
       const syncDate = new Date(m.lastSync).getTime();
-      if (!isNaN(syncDate) && syncDate < oneDayAgo && m.status !== 'offline') {
+      if (!isNaN(syncDate) && syncDate < oneDayAgo && m.status !== 'unknown') {
         flags.push(`SYNC_STALE:${m.id}`);
       }
     }
@@ -259,7 +259,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           return heartbeatService.getState();
         } catch (err) {
           logger.warn('Heartbeat check failed', { error: String(err) });
-          return { onlineMachines: [] as string[], offlineMachines: [] as string[], warningMachines: [] as string[] };
+          return { onlineMachines: [] as string[], unknownMachines: [] as string[], idleMachines: [] as string[] };
         }
       })(),
       (async () => {
@@ -313,8 +313,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     // #1365: Filter out orphan test entries (test-machine, persistent-machine, etc.)
     // Only keep machines matching the known pattern: myia-*
     let filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
-    let filteredOfflineMachines = (heartbeatState?.offlineMachines ?? []).filter(isKnownMachine);
-    let filteredWarningMachines = (heartbeatState?.warningMachines ?? []).filter(isKnownMachine);
+    let filteredUnknownMachines = (heartbeatState?.unknownMachines ?? []).filter(isKnownMachine);
+    let filteredIdleMachines = (heartbeatState?.idleMachines ?? []).filter(isKnownMachine);
     const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
 
     // #1953: Cross-check heartbeat-derived status against dashboard activity.
@@ -327,12 +327,12 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       const dashboardContent = readFileSync(workspaceDashboard, 'utf-8');
       const { crossCheckWithDashboard } = await import('../../utils/dashboard-activity.js');
       const crossChecked = crossCheckWithDashboard(
-        { onlineMachines: filteredOnlineMachines, offlineMachines: filteredOfflineMachines, warningMachines: filteredWarningMachines },
+        { onlineMachines: filteredOnlineMachines, offlineMachines: filteredUnknownMachines, warningMachines: filteredIdleMachines },
         dashboardContent
       );
       filteredOnlineMachines = crossChecked.onlineMachines;
-      filteredOfflineMachines = crossChecked.offlineMachines;
-      filteredWarningMachines = crossChecked.warningMachines;
+      filteredUnknownMachines = crossChecked.offlineMachines;
+      filteredIdleMachines = crossChecked.warningMachines;
       dashboardOverrides = crossChecked.overrides;
     } catch (err) {
       logger.debug('Dashboard cross-check skipped', { error: String(err) });
@@ -340,7 +340,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
     // #1409: Use machine registry as authoritative source for total count
     const registryMachineIds = service.getKnownMachineIds();
-    const heartbeatTotal = filteredOnlineMachines.length + filteredOfflineMachines.length;
+    const heartbeatTotal = filteredOnlineMachines.length + filteredUnknownMachines.length;
     const totalMachines = Math.max(
       registryMachineIds.length,
       filteredDashboardMachines.length,
@@ -351,8 +351,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     const flags = buildFlags(
       {
         onlineMachines: filteredOnlineMachines,
-        offlineMachines: filteredOfflineMachines,
-        warningMachines: filteredWarningMachines
+        unknownMachines: filteredUnknownMachines,
+        idleMachines: filteredIdleMachines
       },
       inboxStats,
       pendingDecisions,
@@ -361,9 +361,9 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
     // Derive overall status (based on KNOWN machines only)
     let status: 'HEALTHY' | 'WARNING' | 'CRITICAL' = 'HEALTHY';
-    if (filteredOfflineMachines.length > 0 || inboxStats.urgent > 0) {
+    if (filteredUnknownMachines.length > 0 || inboxStats.urgent > 0) {
       status = 'CRITICAL';
-    } else if (inboxStats.unread > 5 || filteredWarningMachines.length > 0) {
+    } else if (inboxStats.unread > 5 || filteredIdleMachines.length > 0) {
       // WARNING if: high unread count OR heartbeat warning machines (but no offline)
       status = 'WARNING';
     }
@@ -372,7 +372,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     if (args.machineFilter) {
       const machineExists = filteredDashboardMachines.some(m => m.id === args.machineFilter) ||
         filteredOnlineMachines.includes(args.machineFilter) ||
-        filteredOfflineMachines.includes(args.machineFilter);
+        filteredUnknownMachines.includes(args.machineFilter);
 
       if (!machineExists) {
         throw new RooSyncServiceError(
@@ -386,7 +386,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       status,
       machines: {
         online: filteredOnlineMachines.length,
-        offline: filteredOfflineMachines.length,
+        offline: filteredUnknownMachines.length,
         total: totalMachines,
         ...(dashboardOverrides.length > 0 ? { dashboardOverrides } : {})
       },
@@ -408,9 +408,9 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
             machineId: mid,
             status: 'online'
           }));
-          filteredWarningMachines.forEach(mid => {
+          filteredIdleMachines.forEach((mid: string) => {
             if (!onlineAgents.some(a => a.machineId === mid)) {
-              onlineAgents.push({ machineId: mid, status: 'warning' });
+              onlineAgents.push({ machineId: mid, status: 'idle' });
             }
           });
 

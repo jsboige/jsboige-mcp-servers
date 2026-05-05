@@ -66,8 +66,8 @@ describe('get-status (Option B)', () => {
       checkHeartbeats: vi.fn(),
       getState: vi.fn(() => ({
         onlineMachines: ['myia-ai-01', 'myia-po-2023'],
-        offlineMachines: [],
-        warningMachines: []
+        unknownMachines: [],
+        idleMachines: []
       }))
     });
     mockGetInboxStats.mockResolvedValue({ unread: 0, urgent: 0, by_priority: {} });
@@ -160,8 +160,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: ['myia-po-2025'],
-          warningMachines: []
+          unknownMachines: ['myia-po-2025'],
+          idleMachines: []
         }))
       });
 
@@ -211,8 +211,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: [],
-          warningMachines: ['myia-po-2023']
+          unknownMachines: [],
+          idleMachines: ['myia-po-2023']
         }))
       });
 
@@ -270,8 +270,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01', 'myia-po-2023', 'myia-po-2024'],
-          offlineMachines: ['test-machine', 'persistent-machine', 'machine-2'],
-          warningMachines: []
+          unknownMachines: ['test-machine', 'persistent-machine', 'machine-2'],
+          idleMachines: []
         }))
       });
 
@@ -306,8 +306,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: [],
-          warningMachines: ['test-machine']  // Orphan, should be filtered
+          unknownMachines: [],
+          idleMachines: ['test-machine']  // Orphan, should be filtered
         }))
       });
 
@@ -323,8 +323,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: ['myia-po-2025', 'test-machine'],  // 1 real + 1 orphan
-          warningMachines: []
+          unknownMachines: ['myia-po-2025', 'test-machine'],  // 1 real + 1 orphan
+          idleMachines: []
         }))
       });
 

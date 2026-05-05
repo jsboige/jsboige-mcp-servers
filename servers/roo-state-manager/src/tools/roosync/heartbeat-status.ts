@@ -1,10 +1,10 @@
 /**
  * Outil MCP : roosync_heartbeat_status
  *
- * État complet du service de heartbeat (machines online, offline, warning).
+ * État complet du service de heartbeat (machines online, idle, unknown).
  *
  * @module tools/roosync/heartbeat-status
- * @version 3.1.0
+ * @version 4.0.0 (ADR 008 Phase 2)
  */
 
 import { z } from 'zod';
@@ -15,8 +15,8 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  * Schema de validation pour roosync_heartbeat_status
  */
 export const HeartbeatStatusArgsSchema = z.object({
-  filter: z.enum(['all', 'online', 'offline', 'warning']).optional()
-    .describe('Filtrer par statut de machine (defaut: all)'),
+  filter: z.enum(['all', 'online', 'idle', 'unknown', 'offline', 'warning']).optional()
+    .describe('Filtrer par statut de machine (defaut: all). "offline" and "warning" are mapped to "unknown" for backward compat)'),
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les donnees de heartbeat de chaque machine (defaut: true)'),
   forceCheck: z.boolean().optional()
@@ -35,19 +35,13 @@ export const HeartbeatDataSchema = z.object({
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
-  status: z.enum(['online', 'offline', 'warning', 'idle', 'unknown'])
+  status: z.enum(['online', 'idle', 'unknown'])
     .describe('Statut de la machine'),
-  missedHeartbeats: z.number()
-    .describe('Nombre de heartbeats manques consecutifs'),
-  offlineSince: z.string().optional()
-    .describe('Timestamp de premiere detection offline (ISO 8601)'),
   metadata: z.object({
     firstSeen: z.string()
       .describe('Timestamp de premiere detection (ISO 8601)'),
     lastUpdated: z.string()
-      .describe('Timestamp de derniere mise a jour (ISO 8601)'),
-    version: z.string()
-      .describe('Version du service')
+      .describe('Timestamp de derniere mise a jour (ISO 8601)')
   })
 });
 
@@ -61,10 +55,10 @@ export const HeartbeatStatisticsSchema = z.object({
     .describe('Nombre total de machines'),
   onlineCount: z.number()
     .describe('Nombre de machines online'),
-  offlineCount: z.number()
-    .describe('Nombre de machines offline'),
-  warningCount: z.number()
-    .describe('Nombre de machines en avertissement'),
+  idleCount: z.number()
+    .describe('Nombre de machines idle'),
+  unknownCount: z.number()
+    .describe('Nombre de machines unknown'),
   lastHeartbeatCheck: z.string()
     .describe('Timestamp de la derniere verification (ISO 8601)')
 });
@@ -75,12 +69,12 @@ export type HeartbeatStatistics = z.infer<typeof HeartbeatStatisticsSchema>;
  * Changements de statut (si forceCheck ou includeChanges)
  */
 export const StatusChangesSchema = z.object({
-  newlyOfflineMachines: z.array(z.string())
-    .describe('Machines nouvellement detectees offline'),
+  newlyUnknownMachines: z.array(z.string())
+    .describe('Machines nouvellement detectees unknown'),
   newlyOnlineMachines: z.array(z.string())
     .describe('Machines redevenues online'),
-  newWarnings: z.array(z.string())
-    .describe('Nouvelles machines en avertissement'),
+  newlyIdleMachines: z.array(z.string())
+    .describe('Machines nouvellement detectees idle'),
   totalChanges: z.number()
     .describe('Nombre total de changements')
 });
@@ -95,10 +89,10 @@ export const HeartbeatStatusResultSchema = z.object({
     .describe('Indique si la recuperation a reussi'),
   onlineMachines: z.array(z.string())
     .describe('Liste des IDs des machines online'),
-  offlineMachines: z.array(z.string())
-    .describe('Liste des IDs des machines offline'),
-  warningMachines: z.array(z.string())
-    .describe('Liste des IDs des machines en avertissement'),
+  idleMachines: z.array(z.string())
+    .describe('Liste des IDs des machines idle'),
+  unknownMachines: z.array(z.string())
+    .describe('Liste des IDs des machines unknown'),
   statistics: HeartbeatStatisticsSchema
     .describe('Statistiques du service'),
   heartbeats: z.record(HeartbeatDataSchema).optional()
@@ -139,44 +133,47 @@ export async function roosyncHeartbeatStatus(args: HeartbeatStatusArgs): Promise
     if (forceCheck || includeChanges) {
       const checkResult = await heartbeatService.checkHeartbeats();
       changes = {
-        newlyOfflineMachines: checkResult.newlyOfflineMachines,
+        newlyUnknownMachines: checkResult.newlyUnknownMachines,
         newlyOnlineMachines: checkResult.newlyOnlineMachines,
-        newWarnings: checkResult.warningMachines,
-        totalChanges: checkResult.newlyOfflineMachines.length +
+        newlyIdleMachines: checkResult.newlyIdleMachines,
+        totalChanges: checkResult.newlyUnknownMachines.length +
                       checkResult.newlyOnlineMachines.length +
-                      checkResult.warningMachines.length
+                      checkResult.newlyIdleMachines.length
       };
     }
 
     // Recuperer l'etat actuel
     const state = heartbeatService.getState();
 
+    // Backward compat: map legacy filter values to new ones
+    const effectiveFilter = filter === 'offline' || filter === 'warning' ? 'unknown' : filter;
+
     // Appliquer le filtre si necessaire
     let onlineMachines = state.onlineMachines;
-    let offlineMachines = state.offlineMachines;
-    let warningMachines = state.warningMachines;
+    let idleMachines = state.idleMachines;
+    let unknownMachines = state.unknownMachines;
 
-    if (filter === 'online') {
-      offlineMachines = [];
-      warningMachines = [];
-    } else if (filter === 'offline') {
+    if (effectiveFilter === 'online') {
+      idleMachines = [];
+      unknownMachines = [];
+    } else if (effectiveFilter === 'idle') {
       onlineMachines = [];
-      warningMachines = [];
-    } else if (filter === 'warning') {
+      unknownMachines = [];
+    } else if (effectiveFilter === 'unknown') {
       onlineMachines = [];
-      offlineMachines = [];
+      idleMachines = [];
     }
 
     // Filtrer les heartbeats si necessaire
     let heartbeats: Record<string, HeartbeatData> | undefined;
     if (includeHeartbeats) {
       const allHeartbeats = Object.fromEntries(state.heartbeats);
-      if (filter === 'all') {
+      if (effectiveFilter === 'all') {
         heartbeats = allHeartbeats;
       } else {
-        const filteredIds = filter === 'online' ? onlineMachines :
-                           filter === 'offline' ? offlineMachines :
-                           warningMachines;
+        const filteredIds = effectiveFilter === 'online' ? onlineMachines :
+                           effectiveFilter === 'idle' ? idleMachines :
+                           unknownMachines;
         heartbeats = {};
         for (const id of filteredIds) {
           if (allHeartbeats[id]) {
@@ -189,8 +186,8 @@ export async function roosyncHeartbeatStatus(args: HeartbeatStatusArgs): Promise
     return {
       success: true,
       onlineMachines,
-      offlineMachines,
-      warningMachines,
+      idleMachines,
+      unknownMachines,
       statistics: state.statistics,
       heartbeats,
       changes,
@@ -213,14 +210,14 @@ export async function roosyncHeartbeatStatus(args: HeartbeatStatusArgs): Promise
  */
 export const heartbeatStatusToolMetadata = {
   name: 'roosync_heartbeat_status',
-  description: 'État complet du service de heartbeat (machines online, offline, warning, heartbeats).',
+  description: 'État complet du service de heartbeat (machines online, idle, unknown, heartbeats).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       filter: {
         type: 'string',
-        enum: ['all', 'online', 'offline', 'warning'],
-        description: 'Filtrer par statut de machine (defaut: all)'
+        enum: ['all', 'online', 'idle', 'unknown', 'offline', 'warning'],
+        description: 'Filtrer par statut de machine (defaut: all). "offline" and "warning" map to "unknown"'
       },
       includeHeartbeats: {
         type: 'boolean',

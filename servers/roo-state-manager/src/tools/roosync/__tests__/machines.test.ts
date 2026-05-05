@@ -19,24 +19,18 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.mock('../../../services/RooSyncService.js', () => ({
   getRooSyncService: vi.fn(() => ({
     getHeartbeatService: vi.fn(() => ({
-      getOfflineMachines: vi.fn(() => ['machine-3', 'machine-5']),
-      getWarningMachines: vi.fn(() => ['machine-4', 'machine-6']),
+      getUnknownMachines: vi.fn(() => ['machine-3', 'machine-5']),
+      getIdleMachines: vi.fn(() => ['machine-4', 'machine-6']),
       getHeartbeatData: vi.fn((machineId) => {
         const data: any = {
           machineId,
           lastHeartbeat: new Date().toISOString(),
-          missedHeartbeats: 3,
+          status: (machineId === 'machine-3' || machineId === 'machine-5') ? 'unknown' : 'idle',
           metadata: {
             firstSeen: new Date().toISOString(),
-            lastUpdated: new Date().toISOString(),
-            version: '1.0.0'
+            lastUpdated: new Date().toISOString()
           }
         };
-
-        // Ajouter offlineSince pour les machines offline
-        if (machineId === 'machine-3' || machineId === 'machine-5') {
-          data.offlineSince = new Date(Date.now() - 3600000).toISOString();
-        }
 
         return data;
       })
@@ -128,8 +122,8 @@ describe('machinesTool', () => {
 
       expect(result.success).toBe(true);
       expect(result.data).toBeDefined();
-      expect(result.data.offlineMachines).toEqual(['machine-3', 'machine-5']);
-      expect(result.data.warningMachines).toBeUndefined();
+      expect(result.data.unknownMachines).toEqual(['machine-3', 'machine-5']);
+      expect(result.data.idleMachines).toBeUndefined();
     });
 
     test('should return offline machines with details', async () => {
@@ -139,7 +133,7 @@ describe('machinesTool', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.data.offlineMachines![0].offlineSince).toBeDefined();
+      expect(result.data.unknownMachines![0].status).toBe('unknown');
     });
 
     test('should handle errors gracefully', async () => {
@@ -172,8 +166,8 @@ describe('machinesTool', () => {
 
       expect(result.success).toBe(true);
       expect(result.data).toBeDefined();
-      expect(result.data.warningMachines).toEqual(['machine-4', 'machine-6']);
-      expect(result.data.offlineMachines).toBeUndefined();
+      expect(result.data.idleMachines).toEqual(['machine-4', 'machine-6']);
+      expect(result.data.unknownMachines).toBeUndefined();
     });
 
     test('should return warning machines with details', async () => {
@@ -183,7 +177,7 @@ describe('machinesTool', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.data.warningMachines![0].missedHeartbeats).toBe(3);
+      expect(result.data.idleMachines![0].status).toBe('idle');
     });
   });
 
@@ -199,8 +193,8 @@ describe('machinesTool', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.data.offlineMachines).toEqual(['machine-3', 'machine-5']);
-      expect(result.data.warningMachines).toEqual(['machine-4', 'machine-6']);
+      expect(result.data.unknownMachines).toEqual(['machine-3', 'machine-5']);
+      expect(result.data.idleMachines).toEqual(['machine-4', 'machine-6']);
     });
 
     test('should include details when requested', async () => {
@@ -209,8 +203,8 @@ describe('machinesTool', () => {
         mockExecutionContext
       );
 
-      expect(result.data.offlineMachines![0].offlineSince).toBeDefined();
-      expect(result.data.warningMachines![0].missedHeartbeats).toBe(3);
+      expect(result.data.unknownMachines![0].status).toBe('unknown');
+      expect(result.data.idleMachines![0].status).toBe('idle');
     });
   });
 

@@ -134,11 +134,11 @@ describe('roosyncSyncEvent', () => {
 
   describe('action: online', () => {
     test('should sync online successfully with default options', async () => {
-      // Setup: machine online avec durée offline
+      // Setup: machine online
       mockGetHeartbeatData.mockReturnValue({
         status: 'online',
         machineId: 'test-machine-5',
-        offlineSince: new Date(Date.now() - 3600000).toISOString() // 1h ago
+        lastHeartbeat: new Date().toISOString()
       });
 
       const args: SyncEventArgs = {
@@ -154,8 +154,7 @@ describe('roosyncSyncEvent', () => {
       expect(result.backupCreated).toBe(true); // défaut: true
       expect(result.backupPath).toContain('online-sync-test-machine-5');
       expect(result.message).toContain('Synchronisation online effectuée');
-      expect(result.changes.offlineDuration).toBeGreaterThan(0); // durée calculée
-      expect(result.changes.offlineDuration).toBeLessThanOrEqual(3600000 + 1000); // ~1h + marge
+      expect(result.changes.offlineDuration).toBeUndefined(); // offlineSince removed in ADR 008 Phase 2
     });
 
     test('should sync online in dry-run mode', async () => {
@@ -217,8 +216,8 @@ describe('roosyncSyncEvent', () => {
     test('should sync online without offlineDuration when offlineSince is missing', async () => {
       mockGetHeartbeatData.mockReturnValue({
         status: 'online',
-        machineId: 'test-machine-9'
-        // pas de offlineSince
+        machineId: 'test-machine-9',
+        lastHeartbeat: new Date().toISOString()
       });
 
       const args: SyncEventArgs = {
@@ -332,7 +331,7 @@ describe('roosyncSyncEvent', () => {
       mockGetHeartbeatData.mockReturnValue({
         status: 'online',
         machineId: 'format-test-2',
-        offlineSince: new Date(Date.now() - 1000).toISOString()
+        lastHeartbeat: new Date().toISOString()
       });
 
       const result = await roosyncSyncEvent({
@@ -345,9 +344,9 @@ describe('roosyncSyncEvent', () => {
       expect(result).toHaveProperty('action');
       expect(result).toHaveProperty('machineId');
 
-      // Propriété spécifique online
+      // Propriété spécifique online — offlineDuration undefined since ADR 008 Phase 2
       expect(result.changes).toHaveProperty('offlineDuration');
-      expect(typeof result.changes.offlineDuration).toBe('number');
+      expect(result.changes.offlineDuration).toBeUndefined();
     });
   });
 });
