@@ -187,16 +187,8 @@ export const readVscodeLogsDefinition = {
 // ============================================================
 // get_mcp_best_practices
 // ============================================================
-export const getMcpBestPracticesDefinition = {
-    name: 'get_mcp_best_practices',
-    description: '📚 **BONNES PRATIQUES MCP** - Guide de référence sur les patterns de configuration et de débogage pour les MCPs, basé sur l\'expérience de stabilisation. Inclut des recommandations essentielles pour la maintenabilité et la performance.',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            mcp_name: { type: 'string', description: 'Nom optionnel du MCP spécifique à analyser (ex: "roo-state-manager", "quickfiles", etc.). Si fourni, inclut l\'arborescence de développement et la configuration du MCP.' }
-        }
-    }
-};
+// [REMOVED #1935 Cluster D] getMcpBestPracticesDefinition — fused into roosync_diagnose(action: "best-practices")
+// CallTool redirect in registry.ts preserved for backward compat.
 
 // ============================================================
 // export_data
@@ -462,18 +454,19 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'Diagnostic et debug RooSync. Actions: env, debug, reset, test, analyze (fused from analyze_roosync_problems).',
+    description: 'Diagnostic et debug RooSync. Actions: env, debug, reset, test, analyze (fused from analyze_roosync_problems), best-practices (fused from get_mcp_best_practices).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'analyze'], description: 'Operation: env, debug, reset, test, analyze (roadmap analysis)' },
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'analyze', 'best-practices'], description: 'Operation: env, debug, reset, test, analyze (roadmap), best-practices (MCP guide)' },
             checkDiskSpace: { type: 'boolean', description: 'Check disk space (env)' },
             verbose: { type: 'boolean', description: 'Verbose mode (debug)' },
             clearCache: { type: 'boolean', description: 'Clear cache on reset' },
             confirm: { type: 'boolean', description: 'Confirmation for reset' },
             message: { type: 'string', description: 'Custom test message (test)' },
             roadmapPath: { type: 'string', description: 'Path to sync-roadmap.md (action: analyze, auto-detected if omitted)' },
-            generateReport: { type: 'boolean', description: 'Generate report in roo-config/reports (action: analyze)' }
+            generateReport: { type: 'boolean', description: 'Generate report in roo-config/reports (action: analyze)' },
+            mcp_name: { type: 'string', description: 'MCP name to analyze (action: best-practices)' }
         },
         required: ['action'],
         additionalProperties: false
