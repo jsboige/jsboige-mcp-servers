@@ -221,13 +221,6 @@ export class BaselineManager {
   }
 
   /**
-   * Vérifier si une machine existe dans le registre
-   */
-  private machineExistsInRegistry(machineId: string): boolean {
-    return this.machineRegistry.machines.has(machineId.toLowerCase());
-  }
-
-  /**
    * Obtenir les informations d'une machine depuis le registre
    */
   private getMachineFromRegistry(machineId: string) {
@@ -531,9 +524,6 @@ export class BaselineManager {
       );
     }
 
-    // Obtenir l'inventaire de la machine
-    const machineInventory = await this.getMachineInventory(machineId);
-
     // Comparer avec la baseline
     const comparison = await this.nonNominativeService.compareMachines(
       [this.nonNominativeService.generateMachineHash(machineId)]
@@ -599,33 +589,6 @@ export class BaselineManager {
       }
     }
     return profiles;
-  }
-
-  /**
-   * Obtenir l'inventaire d'une machine pour la comparaison
-   */
-  private async getMachineInventory(machineId: string): Promise<any> {
-    // Cette méthode devrait être implémentée pour collecter l'inventaire
-    // Pour l'instant, on retourne un inventaire vide
-    return {
-      machineId,
-      timestamp: new Date().toISOString(),
-      config: {
-        roo: {
-          modes: [],
-          mcpSettings: {}
-        },
-        hardware: {},
-        software: {},
-        system: {}
-      },
-      metadata: {
-        lastSeen: new Date().toISOString(),
-        version: '1.0.0',
-        source: 'baseline-manager',
-        collectionDuration: 0
-      }
-    };
   }
 
   /**
@@ -1026,13 +989,23 @@ export class BaselineManager {
         ? now - (options.olderThanDays * 24 * 60 * 60 * 1000)
         : 0;
 
+      // Filter backups by age if cutoff specified
+      const ageFiltered = cutoffTime > 0
+        ? allBackups.filter(backupName => {
+            const dateMatch = backupName.match(/_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})/);
+            if (!dateMatch) return true;
+            const backupDate = new Date(`${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}T${dateMatch[4]}:${dateMatch[5]}`).getTime();
+            return backupDate < cutoffTime;
+          })
+        : allBackups;
+
       const deleted: string[] = [];
       const kept: string[] = [];
       const errors: string[] = [];
 
       // Grouper par décision
       const decisionGroups = new Map<string, string[]>();
-      for (const backupName of allBackups) {
+      for (const backupName of ageFiltered) {
         const match = backupName.match(/^([^_]+)_/);
         if (match) {
           const decisionId = match[1];

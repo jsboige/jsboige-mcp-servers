@@ -27,7 +27,6 @@ import { ConfigSharingService } from './ConfigSharingService.js';
 import { SyncDecisionManager, DecisionExecutionResult } from './roosync/SyncDecisionManager.js';
 import { ConfigComparator } from './roosync/ConfigComparator.js';
 import { BaselineManager, RollbackRestoreResult } from './roosync/BaselineManager.js';
-import { MessageHandler } from './roosync/MessageHandler.js';
 import { PresenceManager } from './roosync/PresenceManager.js';
 import { IdentityManager } from './roosync/IdentityManager.js';
 import { NonNominativeBaselineService } from './roosync/NonNominativeBaselineService.js';
@@ -81,7 +80,6 @@ export class RooSyncService {
   private syncDecisionManager: SyncDecisionManager;
   private configComparator: ConfigComparator;
   private baselineManager: BaselineManager;
-  private messageHandler: MessageHandler;
   private presenceManager: PresenceManager;
   private identityManager: IdentityManager;
   private nonNominativeBaselineService: NonNominativeBaselineService;
@@ -162,7 +160,6 @@ export class RooSyncService {
       this.syncDecisionManager = new SyncDecisionManager(this.config, this.powershellExecutor);
       this.configComparator = new ConfigComparator(this.config, this.baselineService);
       this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator);
-      this.messageHandler = new MessageHandler(this.config);
       this.presenceManager = new PresenceManager(this.config);
       this.identityManager = new IdentityManager(this.config, this.presenceManager);
       this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
