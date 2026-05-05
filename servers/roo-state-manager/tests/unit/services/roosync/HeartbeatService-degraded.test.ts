@@ -79,7 +79,7 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       expect(files).toHaveLength(0);
     });
 
-    it('resumes disk writes after recovery', async () => {
+    it('resumes disk writes after recovery via stopHeartbeatService #1953 ADR 008', async () => {
       caps.markDegraded('sharedPath', 'GDrive offline');
 
       await heartbeatService.registerHeartbeat('recovery-machine');
@@ -88,11 +88,8 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       // Recover GDrive
       caps.recover('sharedPath');
 
-      // Wait for persistenceInterval to elapse (100ms in test config)
-      await new Promise(resolve => setTimeout(resolve, 150));
-
-      // Register again — should now write to disk
-      await heartbeatService.registerHeartbeat('recovery-machine');
+      // ADR 008 Phase 1: registerHeartbeat is always in-memory, disk writes happen via saveState
+      await heartbeatService.stopHeartbeatService();
 
       const heartbeatsDir = join(sharedPath, 'heartbeats');
       const files = await readdir(heartbeatsDir);

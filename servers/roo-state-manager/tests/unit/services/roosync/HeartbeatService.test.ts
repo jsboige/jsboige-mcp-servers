@@ -117,12 +117,12 @@ describe('HeartbeatService - Tests Unitaires', () => {
       const heartbeatPath = join(sharedPath, 'heartbeat.json');
       const state = heartbeatService.getState();
       
-      // Modifier le timestamp pour simuler une machine offline
+      // #1953 ADR 008: UNKNOWN threshold is >120 min (hardcoded in checkHeartbeats)
       const heartbeatData = state.heartbeats.get('machine-1');
       if (heartbeatData) {
-        heartbeatData.lastHeartbeat = new Date(Date.now() - 130000).toISOString(); // Plus de 2 minutes
+        heartbeatData.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString(); // 150 min ago → UNKNOWN
         state.heartbeats.set('machine-1', heartbeatData);
-        
+
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
@@ -131,7 +131,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
           statistics: state.statistics
         }, null, 2));
       }
-      
+
       // Recréer le service pour charger l'état modifié
       await heartbeatService.stopHeartbeatService();
       heartbeatService = new HeartbeatService(sharedPath, {
@@ -141,18 +141,16 @@ describe('HeartbeatService - Tests Unitaires', () => {
         autoSyncEnabled: false,
         autoSyncInterval: 60000
       });
-      
+
       // Act - Vérifier les heartbeats
       const result = await heartbeatService.checkHeartbeats();
-      
+
       // Assert
       expect(result.success).toBe(true);
-      expect(result.newlyOfflineMachines).toContain('machine-1');
-      
+      expect(result.newlyOfflineMachines).toContain('machine-1'); // UNKNOWN maps to offlineMachines
+
       const heartbeatDataAfter = heartbeatService.getHeartbeatData('machine-1');
-      expect(heartbeatDataAfter?.status).toBe('offline');
-      expect(heartbeatDataAfter?.offlineSince).toBeDefined();
-      expect(heartbeatDataAfter?.missedHeartbeats).toBeGreaterThan(0);
+      expect(heartbeatDataAfter?.status).toBe('unknown'); // ADR 008: no more 'offline', use 'unknown'
     });
 
     it('devrait détecter une machine en avertissement avant offline', async () => {
@@ -165,9 +163,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
       
       const heartbeatData = state.heartbeats.get('machine-1');
       if (heartbeatData) {
-        // Mettre le timestamp à 119 secondes pour déclencher l'avertissement
-        // (>= 4 * 30s = 120s pour warning, mais < 120s pour offline)
-        heartbeatData.lastHeartbeat = new Date(Date.now() - 119000).toISOString();
+        // #1953 ADR 008: IDLE threshold is 30-120 min
+        heartbeatData.lastHeartbeat = new Date(Date.now() - 45 * 60 * 1000).toISOString(); // 45 min → IDLE
         state.heartbeats.set('machine-1', heartbeatData);
         
         await fs.writeFile(heartbeatPath, JSON.stringify({
@@ -197,8 +194,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
       expect(result.warningMachines).toContain('machine-1');
       
       const heartbeatDataAfter = heartbeatService.getHeartbeatData('machine-1');
-      expect(heartbeatDataAfter?.status).toBe('warning');
-      expect(heartbeatDataAfter?.missedHeartbeats).toBe(3); // 119s / 30s = 3 heartbeats manqués
+      expect(heartbeatDataAfter?.status).toBe('idle'); // ADR 008: 'idle' replaces 'warning'
+      expect(heartbeatDataAfter?.missedHeartbeats).toBe(1);
     });
 
     it('devrait détecter le retour online d\'une machine', async () => {
@@ -469,15 +466,15 @@ describe('HeartbeatService - Tests Unitaires', () => {
       // Enregistrer un heartbeat initial
       await heartbeatService.registerHeartbeat('machine-1');
       
-      // Simuler une machine offline en modifiant directement le fichier
+      // #1953 ADR 008: UNKNOWN threshold is >120 min
       const heartbeatPath = join(sharedPath, 'heartbeat.json');
       const state = heartbeatService.getState();
-      
+
       const heartbeatData = state.heartbeats.get('machine-1');
       if (heartbeatData) {
-        heartbeatData.lastHeartbeat = new Date(Date.now() - 130000).toISOString();
+        heartbeatData.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString(); // 150 min → UNKNOWN
         state.heartbeats.set('machine-1', heartbeatData);
-        
+
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
@@ -486,7 +483,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
           statistics: state.statistics
         }, null, 2));
       }
-      
+
       // Recréer le service avec callbacks
       await heartbeatService.stopHeartbeatService();
       heartbeatService = new HeartbeatService(sharedPath, {
@@ -616,6 +613,9 @@ describe('HeartbeatService - Tests Unitaires', () => {
     it('should write heartbeat files atomically (no 0-byte on interrupt)', async () => {
       await heartbeatService.registerHeartbeat('test-atomic');
 
+      // #1953 ADR 008: registerHeartbeat is in-memory only, must stop to persist
+      await heartbeatService.stopHeartbeatService();
+
       // Verify the heartbeat file exists and is valid JSON
       const heartbeatDir = join(sharedPath, 'heartbeats');
       const filePath = join(heartbeatDir, 'test-atomic.json');
@@ -631,15 +631,17 @@ describe('HeartbeatService - Tests Unitaires', () => {
       // Register a machine first
       await heartbeatService.registerHeartbeat('machine-clean');
 
-      // Create a 0-byte file simulating corruption
+      // #1953 ADR 008: must stop to persist to disk before creating corrupt file
+      await heartbeatService.stopHeartbeatService();
+
+      // Create a 0-byte file simulating corruption (directory exists after stopHeartbeatService)
       const heartbeatDir = join(sharedPath, 'heartbeats');
       const corruptPath = join(heartbeatDir, 'corrupt-machine.json');
       await fs.writeFile(corruptPath, '', 'utf-8'); // 0-byte file
 
       expect(existsSync(corruptPath)).toBe(true);
 
-      // Stop and reload — should clean up the 0-byte file
-      await heartbeatService.stopHeartbeatService();
+      // Reload — should clean up the 0-byte file
       const newService = new HeartbeatService(sharedPath, {
         heartbeatInterval: 30000,
         offlineTimeout: 120000,

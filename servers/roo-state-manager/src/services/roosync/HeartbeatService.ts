@@ -75,7 +75,7 @@ export interface HeartbeatData {
   lastHeartbeat: string;
 
   /** Statut de la machine */
-  status: 'online' | 'offline' | 'warning';
+  status: 'online' | 'offline' | 'warning' | 'idle' | 'unknown';
 
   /** Nombre de heartbeats manqués consécutifs */
   missedHeartbeats: number;
@@ -463,6 +463,7 @@ export class HeartbeatService {
 
   /**
    * Enregistre un heartbeat pour une machine
+   * #1953 ADR 008 Phase 1: In-memory only, no GDrive writes.
    */
   public async registerHeartbeat(
     machineId: string,
@@ -470,15 +471,10 @@ export class HeartbeatService {
   ): Promise<void> {
     machineId = machineId.toLowerCase();
     const now = new Date().toISOString();
-    const nowMs = Date.now();
 
     let heartbeatData = this.state.heartbeats.get(machineId);
-    let isNew = false;
-    let statusChanged = false;
 
     if (!heartbeatData) {
-      // Nouvelle machine - toujours écrire sur disque
-      isNew = true;
       heartbeatData = {
         machineId,
         lastHeartbeat: now,
@@ -487,57 +483,27 @@ export class HeartbeatService {
         metadata: {
           firstSeen: now,
           lastUpdated: now,
-          version: '3.1.0'
+          version: '3.2.0'
         }
       };
-
       logger.info(`Nouvelle machine enregistrée: ${machineId}`);
     } else {
-      const previousStatus = heartbeatData.status;
-
-      // Si la machine était offline/warning, logger le retour online
-      if (heartbeatData.offlineSince) {
-        logger.info(`Machine redevenue online: ${machineId}`, {
-          offlineDuration: nowMs - new Date(heartbeatData.offlineSince).getTime()
-        });
-      }
-
-      // Mise à jour heartbeat existant
       heartbeatData.lastHeartbeat = now;
       heartbeatData.status = 'online';
       heartbeatData.missedHeartbeats = 0;
       heartbeatData.offlineSince = undefined;
       heartbeatData.metadata.lastUpdated = now;
-
-      // Détecter si le statut a changé (non-online → online)
-      if (previousStatus !== 'online') {
-        statusChanged = true;
-      }
     }
 
     this.state.heartbeats.set(machineId, heartbeatData);
     this.updateMachineStatus();
-
-    // Fix #607: Dirty-flag write optimization - évite sync GDrive perpétuelle.
-    // N'écrire sur disque que si: nouvelle machine, changement de statut,
-    // ou > persistenceInterval depuis dernière écriture.
-    const lastWrite = this.lastDiskWrite.get(machineId) ?? 0;
-    const timeSinceLastWrite = nowMs - lastWrite;
-    const shouldWrite = isNew || statusChanged || timeSinceLastWrite >= this.config.persistenceInterval;
-
-    if (shouldWrite) {
-      await this.saveMachineHeartbeat(machineId);
-      this.lastDiskWrite.set(machineId, nowMs);
-    }
   }
 
   /**
-   * Vérifie les heartbeats et détecte les machines offline
+   * Vérifie les heartbeats et dérive le statut des machines
+   * #1953 ADR 008 Phase 1: In-memory only, status = ONLINE/IDLE/UNKNOWN (no OFFLINE).
    */
   public async checkHeartbeats(): Promise<HeartbeatCheckResult> {
-    // Reload fresh data from per-machine files
-    this.reloadFromDisk();
-
     const now = Date.now();
     const result: HeartbeatCheckResult = {
       success: true,
@@ -551,50 +517,36 @@ export class HeartbeatService {
       const lastHeartbeatTime = new Date(heartbeatData.lastHeartbeat).getTime();
       const timeSinceLastHeartbeat = now - lastHeartbeatTime;
 
-      // Calculer le nombre de heartbeats manqués
-      const missedHeartbeats = Math.floor(timeSinceLastHeartbeat / this.config.heartbeatInterval);
+      // #1953 ADR 008: ONLINE (<30min), IDLE (30-120min), UNKNOWN (>120min)
+      // No OFFLINE status — true machine failure detected by external tools
+      const ONLINE_THRESHOLD = 30 * 60 * 1000;  // 30 min
+      const IDLE_THRESHOLD = 120 * 60 * 1000;   // 120 min
 
-      // Vérifier d'abord si la machine est en avertissement (avant offline)
-      // Le warning se déclenche à (missedHeartbeatThreshold - 1) * heartbeatInterval
-      const warningThreshold = this.config.heartbeatInterval * (this.config.missedHeartbeatThreshold - 1);
+      const previousStatus = heartbeatData.status;
 
-      if (timeSinceLastHeartbeat > this.config.offlineTimeout) {
-        // Machine offline
-        if (heartbeatData.status !== 'offline') {
-          heartbeatData.status = 'offline';
-          heartbeatData.missedHeartbeats = missedHeartbeats;
-
-          if (!heartbeatData.offlineSince) {
-            heartbeatData.offlineSince = new Date().toISOString();
-          }
-
+      if (timeSinceLastHeartbeat > IDLE_THRESHOLD) {
+        // UNKNOWN — no recent activity, not necessarily down
+        if (previousStatus !== 'unknown') {
+          heartbeatData.status = 'unknown';
           result.newlyOfflineMachines.push(machineId);
-          logger.warn(`Machine détectée offline: ${machineId}`, {
-            timeSinceLastHeartbeat,
-            offlineSince: heartbeatData.offlineSince
-          });
+          logger.info(`Machine status → UNKNOWN: ${machineId}`, { timeSinceLastHeartbeat });
         }
-      } else if (timeSinceLastHeartbeat >= warningThreshold) {
-        // Machine en avertissement (heartbeats manqués mais pas encore offline)
-        if (heartbeatData.status !== 'warning') {
-          heartbeatData.status = 'warning';
-          heartbeatData.missedHeartbeats = missedHeartbeats;
-
+      } else if (timeSinceLastHeartbeat > ONLINE_THRESHOLD) {
+        // IDLE — machine active within last 2h but not in last 30min
+        if (previousStatus !== 'idle' && previousStatus !== 'warning') {
+          heartbeatData.status = 'idle';
+          heartbeatData.missedHeartbeats = 1;
           result.warningMachines.push(machineId);
-          logger.warn(`Machine en avertissement: ${machineId}`, {
-            missedHeartbeats: heartbeatData.missedHeartbeats,
-            timeSinceLastHeartbeat
-          });
+          logger.info(`Machine status → IDLE: ${machineId}`, { timeSinceLastHeartbeat });
         }
       } else {
-        // Machine online
-        if (heartbeatData.status !== 'online') {
+        // ONLINE — active within last 30min
+        if (previousStatus !== 'online') {
           heartbeatData.status = 'online';
           heartbeatData.missedHeartbeats = 0;
           heartbeatData.offlineSince = undefined;
-
           result.newlyOnlineMachines.push(machineId);
-          logger.info(`Machine redevenue online: ${machineId}`);
+          logger.info(`Machine status → ONLINE: ${machineId}`);
         }
       }
 
@@ -603,11 +555,8 @@ export class HeartbeatService {
     }
 
     this.updateMachineStatus();
-    // Status is computed in-memory, not persisted to other machines' files
-
     this.state.statistics.lastHeartbeatCheck = new Date().toISOString();
 
-    // Appeler les callbacks stockés pour les changements de statut
     if (this.onOfflineDetectedCallback) {
       for (const machineId of result.newlyOfflineMachines) {
         this.onOfflineDetectedCallback(machineId);
@@ -637,9 +586,11 @@ export class HeartbeatService {
           onlineMachines.push(machineId);
           break;
         case 'offline':
+        case 'unknown':
           offlineMachines.push(machineId);
           break;
         case 'warning':
+        case 'idle':
           warningMachines.push(machineId);
           break;
       }
