@@ -379,11 +379,9 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
     try {
         const qdrant = getQdrantClient();
 
-        // Batch-check content hashes (Qdrant scroll with filter)
         const uniqueHashes = [...new Set(contentHashes)];
         const existingHashes = new Set<string>();
 
-        // Query in batches of 100 to avoid payload filter limits
         const BATCH_SIZE = 100;
         for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
             const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
@@ -405,7 +403,6 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
                     if (hash) existingHashes.add(hash);
                 }
 
-                // Continue scrolling if there are more results
                 while (results.next_page_offset) {
                     const nextResults = await qdrant.scroll(COLLECTION_NAME, {
                         filter: {
@@ -426,7 +423,6 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
                     if (!nextResults.next_page_offset) break;
                 }
             } catch (scrollError: any) {
-                // Non-fatal: if scroll fails, proceed without dedup (don't block indexing)
                 console.warn(`[#1985] Dedup scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
             }
         }
@@ -441,9 +437,69 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
         console.log(`[#1985] Content-hash dedup: ${before - filtered.length}/${before} points already in Qdrant`);
         return filtered;
     } catch (error: any) {
-        // Non-fatal: if dedup check fails entirely, proceed without dedup
         console.warn(`[#1985] Dedup check failed (non-blocking): ${error?.message || error}`);
         return points;
+    }
+}
+
+/**
+ * #2018 Phase 2: Pre-flight dedup using deterministic chunk_ids.
+ * Checks Qdrant for existing points BEFORE computing expensive embeddings.
+ * Uses retrieve() API (O(1) per ID) instead of scroll-based contentHash filter.
+ *
+ * This eliminates the race condition window: with deterministic chunk_ids from Phase 1,
+ * concurrent MCPs that write the same chunk_id produce identical points (idempotent upsert).
+ * The pre-flight check skips embedding computation entirely for already-indexed chunks.
+ */
+async function preflightDedupByChunkId(
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>
+): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
+    if (subChunks.length === 0) return subChunks;
+
+    try {
+        const qdrant = getQdrantClient();
+        const chunkIds = subChunks.map(sc => sc.chunk.chunk_id);
+        const existingContentHashes = new Map<string, string>(); // chunk_id -> contentHash
+
+        // Batch retrieve — check which chunk_ids already exist (O(1) per ID)
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < chunkIds.length; i += BATCH_SIZE) {
+            const batch = chunkIds.slice(i, i + BATCH_SIZE);
+            try {
+                const points = await qdrant.retrieve(COLLECTION_NAME, {
+                    ids: batch,
+                    with_payload: true,
+                    with_vector: false,
+                });
+
+                for (const point of points) {
+                    const hash = (point.payload as any)?.contentHash as string | undefined;
+                    if (hash) existingContentHashes.set(point.id as string, hash);
+                }
+            } catch (retrieveError: any) {
+                console.warn(`[#2018] Preflight retrieve failed for batch ${i}: ${retrieveError?.message || retrieveError}`);
+            }
+        }
+
+        if (existingContentHashes.size === 0) return subChunks;
+
+        // Filter: skip chunks that exist with same contentHash (unchanged content)
+        const newSubChunks = subChunks.filter(sc => {
+            const existingHash = existingContentHashes.get(sc.chunk.chunk_id);
+            if (!existingHash) return true; // Doesn't exist — needs indexing
+            return existingHash !== sc.contentHash; // Keep if content changed
+        });
+
+        const skipped = subChunks.length - newSubChunks.length;
+        if (skipped > 0) {
+            console.log(`[#2018] Preflight dedup: ${skipped}/${subChunks.length} chunks already indexed, computing embeddings for ${newSubChunks.length}`);
+        }
+
+        return newSubChunks;
+    } catch (error: any) {
+        // Non-fatal: if pre-flight fails, proceed with all chunks (fall through to post-dedup)
+        console.warn(`[#2018] Preflight dedup failed (non-blocking): ${error?.message || error}`);
+        return subChunks;
     }
 }
 
@@ -475,76 +531,83 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             chunks.length = MAX_CHUNKS_PER_TASK;
         }
 
-        let pointsToIndex: PointStruct[] = [];
+        // Phase A: Extract all subChunks with contentHashes (cheap — no API calls)
+        const allSubChunks: Array<{ chunk: Chunk; contentHash: string }> = [];
 
         for (const chunk of chunks) {
             if (chunk.indexed) {
                 const subChunks = splitChunk(chunk, MAX_CHUNK_SIZE);
-                console.log(`📊 Original chunk size: ${chunk.content?.length || 0} chars, split into ${subChunks.length} subchunks`);
-
                 for (const subChunk of subChunks) {
-                    if(!subChunk.content || subChunk.content.trim() === '') continue;
-
-                    console.log(`📝 Processing subchunk: ${subChunk.content.length} characters (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
-
-                    // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
-                    const now = Date.now();
-                    operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
-                    if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
-                        console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
-                        await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
-                        operationTimestamps = []; // Reset after wait
-                    }
-
-                    // 🛡️ CACHE EMBEDDINGS pour éviter appels OpenAI répétés
+                    if (!subChunk.content || subChunk.content.trim() === '') continue;
                     const contentHash = crypto.createHash('sha256').update(subChunk.content).digest('hex');
-                    let vector: number[];
-
-                    const cached = embeddingCache.get(contentHash);
-
-                    if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
-                        console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
-                        vector = cached.vector;
-                    } else {
-                        const embeddingModel = getEmbeddingModel();
-                        const expectedDims = getEmbeddingDimensions();
-
-                        const embeddingResponse = await getOpenAIClient().embeddings.create({
-                            model: embeddingModel,
-                            input: subChunk.content,
-                        });
-                        vector = embeddingResponse.data[0].embedding;
-
-                        console.log(`[DEBUG] Embedding response reçu:`, {
-                            model: embeddingResponse.model,
-                            usage: embeddingResponse.usage,
-                            vectorLength: vector?.length || 'undefined',
-                            chunkId: subChunk.chunk_id
-                        });
-
-                        if (!vector || !Array.isArray(vector)) {
-                            console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
-                            continue;
-                        }
-
-                        if (vector.length !== expectedDims) {
-                            console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id}`);
-                            console.warn(`⚠️ [indexTask] Modèle utilisé: ${embeddingModel}`);
-                        }
-
-                        embeddingCache.set(contentHash, { vector, timestamp: now });
-                        operationTimestamps.push(now);
-                        console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id} (dimension: ${vector.length})`);
-                    }
-
-                    const point: PointStruct = {
-                        id: subChunk.chunk_id,
-                        vector: vector,
-                        payload: { ...subChunk, source: source, contentHash },
-                    };
-                    pointsToIndex.push(point);
+                    allSubChunks.push({ chunk: subChunk, contentHash });
                 }
             }
+        }
+
+        // Phase B: #2018 Phase 2 — Pre-flight dedup (skip already-indexed chunks BEFORE embeddings)
+        const subChunksToEmbed = await preflightDedupByChunkId(allSubChunks);
+
+        // Phase C: Compute embeddings only for new/changed chunks
+        let pointsToIndex: PointStruct[] = [];
+
+        for (const { chunk: subChunk, contentHash } of subChunksToEmbed) {
+            console.log(`📝 Processing subchunk: ${subChunk.content.length} chars (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
+
+            // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
+            const now = Date.now();
+            operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
+            if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
+                console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
+                await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
+                operationTimestamps = [];
+            }
+
+            let vector: number[];
+
+            const cached = embeddingCache.get(contentHash);
+
+            if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
+                console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
+                vector = cached.vector;
+            } else {
+                const embeddingModel = getEmbeddingModel();
+                const expectedDims = getEmbeddingDimensions();
+
+                const embeddingResponse = await getOpenAIClient().embeddings.create({
+                    model: embeddingModel,
+                    input: subChunk.content,
+                });
+                vector = embeddingResponse.data[0].embedding;
+
+                console.log(`[DEBUG] Embedding response reçu:`, {
+                    model: embeddingResponse.model,
+                    usage: embeddingResponse.usage,
+                    vectorLength: vector?.length || 'undefined',
+                    chunkId: subChunk.chunk_id
+                });
+
+                if (!vector || !Array.isArray(vector)) {
+                    console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
+                    continue;
+                }
+
+                if (vector.length !== expectedDims) {
+                    console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id}`);
+                    console.warn(`⚠️ [indexTask] Modèle utilisé: ${embeddingModel}`);
+                }
+
+                embeddingCache.set(contentHash, { vector, timestamp: now });
+                operationTimestamps.push(now);
+                console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id} (dimension: ${vector.length})`);
+            }
+
+            const point: PointStruct = {
+                id: subChunk.chunk_id,
+                vector: vector,
+                payload: { ...subChunk, source: source, contentHash },
+            };
+            pointsToIndex.push(point);
         }
 
         /**

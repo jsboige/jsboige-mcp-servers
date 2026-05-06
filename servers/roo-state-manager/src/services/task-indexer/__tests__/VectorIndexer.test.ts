@@ -6,26 +6,54 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as crypto from 'crypto';
+
+// Hoisted mock declarations (accessible in vi.mock factories)
+const { mockGetCollections, mockCreateCollection, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
+	mockGetCollections: vi.fn(),
+	mockCreateCollection: vi.fn(),
+	mockUpsert: vi.fn(),
+	mockDeleteCollection: vi.fn(),
+	mockCount: vi.fn(),
+	mockRetrieve: vi.fn(),
+	mockScroll: vi.fn()
+}));
+
+const { mockEmbeddingsCreate } = vi.hoisted(() => ({
+	mockEmbeddingsCreate: vi.fn().mockResolvedValue({
+		data: [{ embedding: new Array(1536).fill(0.1) }],
+		model: 'text-embedding-3-small',
+		usage: { prompt_tokens: 10, total_tokens: 10 }
+	})
+}));
+
+/** Re-apply embeddings mock after vi.clearAllMocks() resets return values */
+function setupEmbeddingMock() {
+	mockEmbeddingsCreate.mockResolvedValue({
+		data: [{ embedding: new Array(1536).fill(0.1) }],
+		model: 'text-embedding-3-small',
+		usage: { prompt_tokens: 10, total_tokens: 10 }
+	});
+	mockUpsert.mockResolvedValue(undefined);
+}
 
 // Mock external dependencies
-const mockGetCollections = vi.fn();
-const mockCreateCollection = vi.fn();
-const mockUpsert = vi.fn();
-const mockDeleteCollection = vi.fn();
-const mockCount = vi.fn();
-
 vi.mock('../../qdrant.js', () => ({
 	getQdrantClient: vi.fn(() => ({
 		getCollections: mockGetCollections,
 		createCollection: mockCreateCollection,
 		upsert: mockUpsert,
 		deleteCollection: mockDeleteCollection,
-		count: mockCount
+		count: mockCount,
+		retrieve: mockRetrieve,
+		scroll: mockScroll
 	}))
 }));
 
 vi.mock('../../openai.js', () => ({
-	default: vi.fn(),
+	default: vi.fn(() => ({
+		embeddings: { create: mockEmbeddingsCreate }
+	})),
 	getEmbeddingModel: vi.fn(() => 'text-embedding-3-small'),
 	getEmbeddingDimensions: vi.fn(() => 1536)
 }));
@@ -37,7 +65,9 @@ vi.mock('../EmbeddingValidator.js', () => ({
 
 vi.mock('../ChunkExtractor.js', () => ({
 	extractChunksFromTask: vi.fn().mockResolvedValue([]),
-	splitChunk: vi.fn((chunk: any) => [chunk])
+	splitChunk: vi.fn((chunk: any) => [chunk]),
+	MAX_CHUNKS_PER_TASK: 5000,
+	computeChunkId: vi.fn(() => 'mock-deterministic-uuid')
 }));
 
 vi.mock('../QdrantHealthMonitor.js', () => ({
@@ -379,6 +409,127 @@ describe('VectorIndexer', () => {
 		test('is an exported function', async () => {
 			const mod = await import('../VectorIndexer.js');
 			expect(typeof mod.updateSkeletonIndexTimestamp).toBe('function');
+		});
+	});
+
+	// ============================================================
+	// #2018 Phase 2 — preflightDedupByChunkId tests
+	// ============================================================
+
+	describe('#2018 Phase 2: preflightDedupByChunkId', () => {
+		test('skips chunks that already exist with same contentHash', async () => {
+			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
+			const { splitChunk } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			const chunkContent = 'Hello world test content';
+			const contentHash = crypto.createHash('sha256').update(chunkContent).digest('hex');
+			const chunkId = 'test-chunk-id-1';
+
+			(extractChunksFromTask as any).mockResolvedValue([{
+				chunk_id: chunkId, content: chunkContent, indexed: true,
+				sequence_order: 0, chunk_type: 'message_exchange', role: 'user',
+				total_chunks: 1, chunk_index: 0
+			}]);
+			(splitChunk as any).mockImplementation((c: any) => [c]);
+
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+
+			// Simulate: Qdrant retrieve finds the chunk already exists
+			mockRetrieve.mockResolvedValue([{
+				id: chunkId,
+				payload: { contentHash }
+			}]);
+
+			const result = await indexTask('task-dedup-1', '/fake/path');
+
+			// Should skip embedding entirely (no upsert needed)
+			expect(mockUpsert).not.toHaveBeenCalled();
+			expect(result).toEqual([]);
+		});
+
+		test('indexes chunks not present in Qdrant', async () => {
+			vi.useRealTimers();
+			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
+			const { splitChunk } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			setupEmbeddingMock();
+
+			(extractChunksFromTask as any).mockResolvedValue([{
+				chunk_id: 'new-chunk-1', content: 'New content to index', indexed: true,
+				sequence_order: 0, chunk_type: 'message_exchange', role: 'user',
+				total_chunks: 1, chunk_index: 0
+			}]);
+			(splitChunk as any).mockImplementation((c: any) => [c]);
+
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+
+			// Simulate: Qdrant retrieve finds nothing
+			mockRetrieve.mockResolvedValue([]);
+
+			const result = await indexTask('task-new-1', '/fake/path');
+
+			expect(mockUpsert).toHaveBeenCalled();
+			expect(result.length).toBeGreaterThan(0);
+		});
+
+		test('re-indexes chunks with changed contentHash (content edit)', async () => {
+			vi.useRealTimers();
+			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
+			const { splitChunk } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			setupEmbeddingMock();
+
+			(extractChunksFromTask as any).mockResolvedValue([{
+				chunk_id: 'chunk-edit-1', content: 'Updated content after edit', indexed: true,
+				sequence_order: 0, chunk_type: 'message_exchange', role: 'user',
+				total_chunks: 1, chunk_index: 0
+			}]);
+			(splitChunk as any).mockImplementation((c: any) => [c]);
+
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+
+			// Qdrant has old version with different contentHash
+			mockRetrieve.mockResolvedValue([{
+				id: 'chunk-edit-1',
+				payload: { contentHash: 'old-hash-different-from-current' }
+			}]);
+
+			const result = await indexTask('task-edit-1', '/fake/path');
+
+			expect(mockUpsert).toHaveBeenCalled();
+		});
+
+		test('falls through gracefully on retrieve failure', async () => {
+			vi.useRealTimers();
+			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
+			const { splitChunk } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			setupEmbeddingMock();
+
+			(extractChunksFromTask as any).mockResolvedValue([{
+				chunk_id: 'chunk-fail-1', content: 'Content despite failure', indexed: true,
+				sequence_order: 0, chunk_type: 'message_exchange', role: 'user',
+				total_chunks: 1, chunk_index: 0
+			}]);
+			(splitChunk as any).mockImplementation((c: any) => [c]);
+
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+
+			// Qdrant retrieve throws
+			mockRetrieve.mockRejectedValue(new Error('Network timeout'));
+
+			const result = await indexTask('task-fail-1', '/fake/path');
+
+			// Should proceed with embedding + upsert (fallback path)
+			expect(mockUpsert).toHaveBeenCalled();
 		});
 	});
 });
