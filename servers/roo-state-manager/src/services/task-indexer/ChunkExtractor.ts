@@ -1,11 +1,33 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+import * as crypto from 'crypto';
+import { v5 as uuidv5 } from 'uuid';
 import { StateManagerError } from '../../types/errors.js';
 
 // Namespace pour UUID v5 (généré aléatoirement une fois, constant pour le projet)
 const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+
+/**
+ * #2018: Compute a deterministic chunk_id from logical chunk identity.
+ *
+ * Same (task_id, chunk_type, sequence_order, content) → same UUID.
+ * Re-indexation upserts existing points instead of creating duplicates.
+ *
+ * Seed: `${task_id}|${chunk_type}|seq:${sequence_order}|${sha256_16}`
+ * sha256 truncated to 16 hex chars: 64-bit collision resistance, sufficient
+ * intra-task where the seq+task_id already disambiguate non-content collisions.
+ */
+export function computeChunkId(
+    taskId: string,
+    chunkType: string,
+    sequenceOrder: number,
+    content: string
+): string {
+    const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+    const seed = `${taskId}|${chunkType}|seq:${sequenceOrder}|${contentHash}`;
+    return uuidv5(seed, UUID_NAMESPACE);
+}
 
 /**
  * Maximum content size (in chars) before truncation for indexing.
@@ -207,13 +229,14 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         lowerContent.includes('❌') ||
                         lowerContent.includes('erreur');
 
+                    const seq = sequenceOrder++;
                     chunks.push({
-                        chunk_id: uuidv4(),
+                        chunk_id: computeChunkId(taskId, 'message_exchange', seq, contentText),
                         task_id: taskId,
                         parent_task_id: parentTaskId || null,
                         root_task_id: null,
                         chunk_type: 'message_exchange',
-                        sequence_order: sequenceOrder++,
+                        sequence_order: seq,
                         timestamp: msg.timestamp || new Date().toISOString(),
                         indexed: true,
                         content: contentText,
@@ -248,13 +271,14 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         `tool_call:${toolCall.function.name}`
                     );
 
+                    const seq = sequenceOrder++;
                     chunks.push({
-                        chunk_id: uuidv4(),
+                        chunk_id: computeChunkId(taskId, 'tool_interaction', seq, toolContent),
                         task_id: taskId,
                         parent_task_id: parentTaskId || null,
                         root_task_id: null,
                         chunk_type: 'tool_interaction',
-                        sequence_order: sequenceOrder++,
+                        sequence_order: seq,
                         timestamp: msg.timestamp || new Date().toISOString(),
                         indexed: false,
                         content: toolContent,
@@ -307,13 +331,14 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
 
             const uiContent = truncateForIndexing(msg.text || '', `ui_message:${msg.author}`);
 
+            const seq = sequenceOrder++;
             chunks.push({
-                chunk_id: uuidv4(),
+                chunk_id: computeChunkId(taskId, 'ui_message', seq, uiContent),
                 task_id: taskId,
                 parent_task_id: parentTaskId || null,
                 root_task_id: null,
                 chunk_type: 'message_exchange',
-                sequence_order: sequenceOrder++,
+                sequence_order: seq,
                 timestamp: msg.timestamp || new Date().toISOString(),
                 indexed: true,
                 content: uiContent,
@@ -355,8 +380,8 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
         const contentPart = content.substring(0, maxSize);
         content = content.substring(maxSize);
 
-        // 🚨 FIX CRITIQUE: Qdrant exige des UUIDs valides pour les IDs
-        // On utilise uuidv5 pour générer un UUID déterministe à partir de l'ID composite
+        // #2018: chunk.chunk_id is now deterministic upstream (computeChunkId),
+        // so the split parts inherit determinism: same input → same UUIDs.
         const compositeId = `${chunk.chunk_id}_part_${chunkIndex}`;
         const deterministicUuid = uuidv5(compositeId, UUID_NAMESPACE);
 
@@ -473,13 +498,14 @@ export async function extractChunksFromClaudeSession(
                         const ccLower = contentText.toLowerCase();
                         const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
 
+                        const seq = sequenceOrder++;
                         chunks.push({
-                            chunk_id: uuidv4(),
+                            chunk_id: computeChunkId(taskId, 'claude_message', seq, contentText),
                             task_id: taskId,
                             parent_task_id: null,
                             root_task_id: null,
                             chunk_type: 'message_exchange',
-                            sequence_order: sequenceOrder++,
+                            sequence_order: seq,
                             timestamp: entry.timestamp || new Date().toISOString(),
                             indexed: true,
                             content: contentText,

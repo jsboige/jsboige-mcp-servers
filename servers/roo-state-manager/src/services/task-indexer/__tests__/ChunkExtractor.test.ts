@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { splitChunk, getHostIdentifier, Chunk } from '../ChunkExtractor.js';
+import { splitChunk, getHostIdentifier, computeChunkId, Chunk } from '../ChunkExtractor.js';
 
 // Reset uuid mock and use real implementation
 vi.mock('uuid', () => vi.importActual('uuid'));
@@ -247,4 +247,83 @@ describe('ChunkExtractor', () => {
   // which is not compatible with vitest's vi.spyOn for ESM modules.
   // These tests should be implemented in a separate test file with proper vi.mock setup.
   // See: https://vitest.dev/guide/browser/#limitations
+
+  describe('computeChunkId (#2018)', () => {
+    const uuidV5Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    it('returns a valid UUID v5', () => {
+      const id = computeChunkId('task-1', 'message_exchange', 0, 'hello');
+      expect(id).toMatch(uuidV5Pattern);
+    });
+
+    it('is deterministic — same input produces same UUID', () => {
+      const id1 = computeChunkId('task-abc', 'message_exchange', 5, 'content here');
+      const id2 = computeChunkId('task-abc', 'message_exchange', 5, 'content here');
+      expect(id1).toBe(id2);
+    });
+
+    it('different sequence_order produces different UUIDs', () => {
+      const id0 = computeChunkId('task-1', 'message_exchange', 0, 'same content');
+      const id1 = computeChunkId('task-1', 'message_exchange', 1, 'same content');
+      expect(id0).not.toBe(id1);
+    });
+
+    it('different content produces different UUIDs', () => {
+      const idA = computeChunkId('task-1', 'message_exchange', 0, 'content A');
+      const idB = computeChunkId('task-1', 'message_exchange', 0, 'content B');
+      expect(idA).not.toBe(idB);
+    });
+
+    it('different chunk_type produces different UUIDs', () => {
+      const idMsg = computeChunkId('task-1', 'message_exchange', 0, 'shared');
+      const idTool = computeChunkId('task-1', 'tool_interaction', 0, 'shared');
+      expect(idMsg).not.toBe(idTool);
+    });
+
+    it('different task_id produces different UUIDs', () => {
+      const idA = computeChunkId('task-A', 'message_exchange', 0, 'shared');
+      const idB = computeChunkId('task-B', 'message_exchange', 0, 'shared');
+      expect(idA).not.toBe(idB);
+    });
+
+    it('handles empty content', () => {
+      const id = computeChunkId('task-1', 'message_exchange', 0, '');
+      expect(id).toMatch(uuidV5Pattern);
+    });
+
+    it('handles unicode content deterministically', () => {
+      const text = 'Héllo Wörld 日本語 🎉';
+      const id1 = computeChunkId('task-1', 'message_exchange', 0, text);
+      const id2 = computeChunkId('task-1', 'message_exchange', 0, text);
+      expect(id1).toBe(id2);
+    });
+
+    it('splitChunk produces deterministic UUIDs given a deterministic input chunk_id', () => {
+      const taskId = 'task-deterministic';
+      const content = 'x'.repeat(250);
+      const inputId = computeChunkId(taskId, 'message_exchange', 0, content);
+
+      const chunkA: Chunk = {
+        chunk_id: inputId,
+        task_id: taskId,
+        parent_task_id: null,
+        root_task_id: null,
+        chunk_type: 'message_exchange',
+        sequence_order: 0,
+        timestamp: '2024-01-01T00:00:00Z',
+        indexed: true,
+        content,
+      };
+      const chunkB: Chunk = { ...chunkA };
+
+      const partsA = splitChunk(chunkA, 100);
+      const partsB = splitChunk(chunkB, 100);
+
+      expect(partsA).toHaveLength(3);
+      expect(partsB).toHaveLength(3);
+      partsA.forEach((part, i) => {
+        expect(part.chunk_id).toBe(partsB[i].chunk_id);
+      });
+    });
+  });
 });
