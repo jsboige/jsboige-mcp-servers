@@ -56,7 +56,7 @@ export const GetStatusResultSchema = z.object({
 
   machines: z.object({
     online: z.number(),
-    offline: z.number(),
+    unknown: z.number(),
     total: z.number()
   }).describe('Compteurs machines par état'),
 
@@ -139,7 +139,7 @@ function buildFlags(
 
   // Unknown machines (ADR 008: was "offline")
   for (const machineId of heartbeatState.unknownMachines) {
-    flags.push(`OFFLINE:${machineId}`);
+    flags.push(`UNKNOWN:${machineId}`);
   }
 
   // Idle machines (ADR 008: was "warning"/heartbeat stale)
@@ -373,7 +373,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     if (filteredUnknownMachines.length > 0 || inboxStats.urgent > 0) {
       status = 'CRITICAL';
     } else if (inboxStats.unread > 5 || filteredIdleMachines.length > 0) {
-      // WARNING if: high unread count OR heartbeat warning machines (but no offline)
+      // WARNING if: high unread count OR heartbeat idle machines (but no unknown)
       status = 'WARNING';
     }
 
@@ -395,7 +395,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       status,
       machines: {
         online: filteredOnlineMachines.length,
-        offline: filteredUnknownMachines.length,
+        unknown: filteredUnknownMachines.length,
         total: totalMachines,
         ...(dashboardOverrides.length > 0 ? { dashboardOverrides } : {})
       },

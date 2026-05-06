@@ -2,8 +2,8 @@
  * Tests unitaires pour roosync_machines
  *
  * Couvre tous les status de l'outil consolidé :
- * - status: 'offline' : Machines offline
- * - status: 'warning' : Machines en avertissement
+ * - status: 'unknown' : Machines unknown
+ * - status: 'idle' : Machines idle
  * - status: 'all' : Les deux
  *
  * Framework: Vitest
@@ -110,13 +110,13 @@ describe('machinesTool', () => {
   });
 
   // ============================================================
-  // Tests pour status: 'offline'
+  // Tests pour status: 'unknown'
   // ============================================================
 
-  describe('status: offline', () => {
-    test('should return offline machines', async () => {
+  describe('status: unknown', () => {
+    test('should return unknown machines', async () => {
       const result = await machinesTool.execute(
-        { status: 'offline' },
+        { status: 'unknown' },
         mockExecutionContext
       );
 
@@ -126,9 +126,9 @@ describe('machinesTool', () => {
       expect(result.data.idleMachines).toBeUndefined();
     });
 
-    test('should return offline machines with details', async () => {
+    test('should return unknown machines with details', async () => {
       const result = await machinesTool.execute(
-        { status: 'offline', includeDetails: true },
+        { status: 'unknown', includeDetails: true },
         mockExecutionContext
       );
 
@@ -143,7 +143,7 @@ describe('machinesTool', () => {
       });
 
       const result = await machinesTool.execute(
-        { status: 'offline' },
+        { status: 'unknown' },
         mockExecutionContext
       );
 
@@ -154,13 +154,13 @@ describe('machinesTool', () => {
   });
 
   // ============================================================
-  // Tests pour status: 'warning'
+  // Tests pour status: 'idle'
   // ============================================================
 
-  describe('status: warning', () => {
-    test('should return warning machines', async () => {
+  describe('status: idle', () => {
+    test('should return idle machines', async () => {
       const result = await machinesTool.execute(
-        { status: 'warning' },
+        { status: 'idle' },
         mockExecutionContext
       );
 
@@ -170,9 +170,9 @@ describe('machinesTool', () => {
       expect(result.data.unknownMachines).toBeUndefined();
     });
 
-    test('should return warning machines with details', async () => {
+    test('should return idle machines with details', async () => {
       const result = await machinesTool.execute(
-        { status: 'warning', includeDetails: true },
+        { status: 'idle', includeDetails: true },
         mockExecutionContext
       );
 
@@ -186,7 +186,7 @@ describe('machinesTool', () => {
   // ============================================================
 
   describe('status: all', () => {
-    test('should return both offline and warning machines', async () => {
+    test('should return both unknown and idle machines', async () => {
       const result = await machinesTool.execute(
         { status: 'all' },
         mockExecutionContext
@@ -217,7 +217,7 @@ describe('machinesTool', () => {
       expect(machinesToolMetadata.name).toBe('roosync_machines');
       expect(machinesToolMetadata.description).toContain('machines');
       expect(machinesToolMetadata.inputSchema.properties.status).toBeDefined();
-      expect(machinesToolMetadata.inputSchema.properties.status.enum).toEqual(['offline', 'warning', 'all']);
+      expect(machinesToolMetadata.inputSchema.properties.status.enum).toEqual(['unknown', 'idle', 'all']);
     });
 
     test('should require status parameter', () => {
@@ -231,8 +231,8 @@ describe('machinesTool', () => {
 
   describe('integration', () => {
     test('should handle multiple calls with different status', async () => {
-      const r1 = await machinesTool.execute({ status: 'offline' }, mockExecutionContext);
-      const r2 = await machinesTool.execute({ status: 'warning' }, mockExecutionContext);
+      const r1 = await machinesTool.execute({ status: 'unknown' }, mockExecutionContext);
+      const r2 = await machinesTool.execute({ status: 'idle' }, mockExecutionContext);
       const r3 = await machinesTool.execute({ status: 'all' }, mockExecutionContext);
 
       expect(r1.success).toBe(true);
@@ -242,7 +242,7 @@ describe('machinesTool', () => {
 
     test('should return execution time metrics', async () => {
       const result = await machinesTool.execute(
-        { status: 'offline' },
+        { status: 'unknown' },
         mockExecutionContext
       );
 

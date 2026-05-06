@@ -113,23 +113,23 @@ describe('roosync_inventory tool', () => {
     });
 
     describe('type=machines (fused from roosync_machines)', () => {
-        it('returns offline machines when status=offline', async () => {
+        it('returns unknown machines when status=unknown', async () => {
             mockGetUnknownMachines.mockReturnValue(['web1', 'po-2024']);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'offline' }, {});
+            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown' }, {});
             expect(result.success).toBe(true);
             expect(result.data.unknownMachines).toEqual(['web1', 'po-2024']);
             expect(result.data.unknownCount).toBe(2);
         });
 
-        it('returns warning machines when status=warning', async () => {
+        it('returns idle machines when status=idle', async () => {
             mockGetIdleMachines.mockReturnValue(['po-2023']);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'warning' }, {});
+            const result = await inventoryTool.execute({ type: 'machines', status: 'idle' }, {});
             expect(result.success).toBe(true);
             expect(result.data.idleMachines).toEqual(['po-2023']);
             expect(result.data.idleCount).toBe(1);
         });
 
-        it('returns both offline and warning when status=all (default)', async () => {
+        it('returns both unknown and idle when status=all (default)', async () => {
             mockGetUnknownMachines.mockReturnValue(['web1']);
             mockGetIdleMachines.mockReturnValue(['po-2023']);
             const result = await inventoryTool.execute({ type: 'machines' }, {});
@@ -148,21 +148,21 @@ describe('roosync_inventory tool', () => {
                 };
                 return null;
             });
-            const result = await inventoryTool.execute({ type: 'machines', status: 'offline', includeDetails: true }, {});
+            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown', includeDetails: true }, {});
             expect(result.data.unknownMachines).toHaveLength(1);
             expect(result.data.unknownMachines[0].machineId).toBe('web1');
             expect(result.data.unknownMachines[0].status).toBe('unknown');
             expect(result.data.unknownCount).toBe(1);
         });
 
-        it('skips machines without heartbeat data in detailed offline mode', async () => {
+        it('skips machines without heartbeat data in detailed unknown mode', async () => {
             mockGetUnknownMachines.mockReturnValue(['web1']);
             mockGetHeartbeatData.mockReturnValue(null);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'offline', includeDetails: true }, {});
+            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown', includeDetails: true }, {});
             expect(result.data.unknownMachines).toHaveLength(0);
         });
 
-        it('returns detailed warning machines', async () => {
+        it('returns detailed idle machines', async () => {
             mockGetIdleMachines.mockReturnValue(['po-2023']);
             mockGetHeartbeatData.mockImplementation((mid: string) => ({
                 machineId: mid,
@@ -170,7 +170,7 @@ describe('roosync_inventory tool', () => {
                 status: 'idle',
                 metadata: { firstSeen: '2026-01-01', lastUpdated: '2026-05-04' },
             }));
-            const result = await inventoryTool.execute({ type: 'machines', status: 'warning', includeDetails: true }, {});
+            const result = await inventoryTool.execute({ type: 'machines', status: 'idle', includeDetails: true }, {});
             expect(result.data.idleMachines).toHaveLength(1);
             expect(result.data.idleMachines[0].machineId).toBe('po-2023');
         });
@@ -178,7 +178,7 @@ describe('roosync_inventory tool', () => {
         it('skips null heartbeat data in detailed mode', async () => {
             mockGetUnknownMachines.mockReturnValue(['unknown']);
             mockGetHeartbeatData.mockReturnValue(null);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'offline', includeDetails: true }, {});
+            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown', includeDetails: true }, {});
             expect(result.data.unknownMachines).toHaveLength(0);
         });
     });

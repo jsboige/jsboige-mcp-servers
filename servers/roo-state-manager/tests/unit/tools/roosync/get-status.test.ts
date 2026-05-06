@@ -170,7 +170,7 @@ describe('roosync_get_status', () => {
             expect(result.status).toBe('HEALTHY');
         });
 
-        it('returns CRITICAL when machines offline', async () => {
+        it('returns CRITICAL when machines unknown', async () => {
             setupMocks({
                 heartbeatState: {
                     onlineMachines: ['myia-ai-01'],
@@ -180,7 +180,7 @@ describe('roosync_get_status', () => {
             });
             const result = await roosyncGetStatus({});
             expect(result.status).toBe('CRITICAL');
-            expect(result.flags).toContain('OFFLINE:myia-web1');
+            expect(result.flags).toContain('UNKNOWN:myia-web1');
         });
 
         it('returns CRITICAL when urgent messages', async () => {

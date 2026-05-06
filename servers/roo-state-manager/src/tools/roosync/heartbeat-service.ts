@@ -42,7 +42,7 @@ export const RegisterResultSchema = z.object({
     .describe('Identifiant de la machine'),
   timestamp: z.string()
     .describe('Timestamp du heartbeat (ISO 8601)'),
-  status: z.enum(['online', 'offline', 'warning', 'idle', 'unknown'])
+  status: z.enum(['online', 'idle', 'unknown'])
     .describe('Statut de la machine apres l\'enregistrement'),
   isNewMachine: z.boolean()
     .describe('Indique si c\'est une nouvelle machine')
@@ -175,13 +175,13 @@ export async function roosyncHeartbeatService(args: HeartbeatServiceArgs): Promi
         // Demarrer le service de heartbeat
         await heartbeatService.startHeartbeatService(
           args.machineId,
-          // Callback pour detection offline
-          (offlineMachineId) => {
-            console.log(`[Heartbeat] Machine offline detectee: ${offlineMachineId}`);
+          // Callback pour detection unknown (no heartbeat)
+          (unknownMachineId) => {
+            console.log(`[Heartbeat] Machine unknown detectee: ${unknownMachineId}`);
           },
           // Callback pour retour online
           (onlineMachineId) => {
-            console.log(`[Heartbeat] Machine redevenue online: ${onlineMachineId}`);
+            console.log(`[Heartbeat] Machine online again: ${onlineMachineId}`);
           }
         );
 
