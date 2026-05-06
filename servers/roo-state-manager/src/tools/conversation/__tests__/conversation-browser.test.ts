@@ -721,7 +721,7 @@ describe('conversation_browser', () => {
 		});
 
 		test('list respects limit as hard cap (#1410: limit is total cap, not page size)', async () => {
-			// mockCache has 3 tasks. limit=2 gets clamped to 10 → all 3 returned in sorted order.
+			// mockCache has 3 tasks. limit=2 caps total to 2, totalPages=1, has_next=false.
 			const result = await handleConversationBrowser(
 				{ action: 'list', limit: 2, sortBy: 'lastActivity', sortOrder: 'desc' },
 				mockCache,
@@ -734,6 +734,10 @@ describe('conversation_browser', () => {
 			expect(parsed.length).toBe(2);
 			expect(parsed[0].taskId).toBe('task-new');
 			expect(parsed[1].taskId).toBe('task-middle');
+			// #1410 fix: total_count and has_next must be capped by limit
+			expect(_response.pagination.total_count).toBe(2);
+			expect(_response.pagination.total_pages).toBe(1);
+			expect(_response.pagination.has_next).toBe(false);
 		});
 
 		test('list filters by workspace when specified', async () => {
