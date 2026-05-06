@@ -40,6 +40,10 @@ export interface ConversationBrowserArgs {
     // ===== Arguments pour action='list' (via list_conversations) =====
     /** [list] Nombre maximum de conversations à retourner */
     limit?: number;
+    /** [list] Page number (1-based). Requires per_page. */
+    page?: number;
+    /** [list] Results per page (10-100). Default: 10. */
+    per_page?: number;
     /** [list] Critère de tri */
     sortBy?: 'lastActivity' | 'messageCount' | 'totalSize';
     /** [list] Ordre de tri */
@@ -184,6 +188,14 @@ export const conversationBrowserTool: Tool = {
             limit: {
                 type: 'number',
                 description: '[list] Max conversations to return.'
+            },
+            page: {
+                type: 'number',
+                description: '[list] Page number (1-based). Default: 1.'
+            },
+            per_page: {
+                type: 'number',
+                description: '[list] Results per page. Default: 10. Min: 10. Max: 100.'
             },
             sortBy: {
                 type: 'string',
@@ -661,6 +673,8 @@ async function handleConversationBrowserCore(
                 return await listConversationsTool.handler(
                     {
                         limit: args.limit,
+                        page: args.page,
+                        per_page: args.per_page,
                         sortBy: args.sortBy,
                         sortOrder: args.sortOrder,
                         workspace: args.workspace,
