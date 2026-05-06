@@ -14,6 +14,12 @@
  *   uuidv5(parent_chunk_id + "_part_N", namespace) — see ChunkExtractor.ts:386
  * If sub-chunks exist in the collection, a second pass with --sub-chunks mode is needed.
  *
+ * CHUNK_TYPE RECOVERY:
+ * ChunkExtractor stores chunk_type='message_exchange' for API, UI, and Claude messages,
+ * but computes IDs with 'message_exchange', 'ui_message', or 'claude_message' respectively.
+ * This script recovers the original type from payload fields (source, message_index).
+ * See recoverChunkType() for the mapping logic.
+ *
  * Algorithm mirrors: ChunkExtractor.ts computeChunkId() (uuidv5 with same namespace/seed)
  *
  * Usage:
@@ -83,6 +89,34 @@ function computeDeterministicId(taskId, chunkType, sequenceOrder, content) {
     return uuidv5(seed, UUID_NAMESPACE);
 }
 
+/**
+ * Recover the original chunkType passed to computeChunkId() during indexing.
+ *
+ * ChunkExtractor.ts normalizes chunk_type to 'message_exchange' in the Qdrant payload,
+ * but uses different types for ID computation:
+ *   - 'message_exchange' → stored as 'message_exchange' (API/Roo messages)
+ *   - 'tool_interaction'  → stored as 'tool_interaction' (correct)
+ *   - 'ui_message'        → stored as 'message_exchange' (MISMATCH)
+ *   - 'claude_message'    → stored as 'message_exchange' (MISMATCH)
+ *
+ * Recovery heuristics (from ChunkExtractor.ts payload fields):
+ *   - source === 'claude-code' → 'claude_message'
+ *   - no source, no message_index → 'ui_message' (API messages always have message_index)
+ *   - otherwise → use stored chunk_type
+ */
+function recoverChunkType(payload) {
+    if (payload.source === 'claude-code' && payload.chunk_type === 'message_exchange') {
+        return 'claude_message';
+    }
+    if (payload.chunk_type === 'message_exchange' && !payload.source) {
+        // API messages always set message_index + total_messages; UI messages don't
+        if (payload.message_index === undefined && payload.total_messages === undefined) {
+            return 'ui_message';
+        }
+    }
+    return payload.chunk_type;
+}
+
 function loadState() {
     if (!RESUME) return null;
     try {
@@ -115,6 +149,7 @@ async function migrate() {
     let totalMigrated = savedState?.migrated || 0;
     let totalErrors = savedState?.errors || 0;
     let batchNum = savedState?.batch_num || 0;
+    const chunkTypeStats = { message_exchange: 0, tool_interaction: 0, ui_message: 0, claude_message: 0, other: 0 };
 
     if (savedState) {
         console.log(`Resuming from batch ${batchNum}, offset: ${offset || 'start'}`);
@@ -177,10 +212,14 @@ async function migrate() {
                 continue;
             }
 
+            // Recover original chunkType (payload.chunk_type is normalized, but IDs use the original)
+            const effectiveChunkType = recoverChunkType(payload);
+            chunkTypeStats[effectiveChunkType] = (chunkTypeStats[effectiveChunkType] || 0) + 1;
+
             // Compute deterministic ID
             const newId = computeDeterministicId(
                 payload.task_id,
-                payload.chunk_type,
+                effectiveChunkType,
                 payload.sequence_order,
                 payload.content
             );
@@ -273,6 +312,7 @@ async function migrate() {
     console.log(`Batches processed: ${batchNum}`);
     console.log(`Elapsed: ${totalElapsed}s`);
     console.log(`Mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE'}`);
+    console.log(`Chunk types recovered: ${JSON.stringify(chunkTypeStats)}`);
 
     if (DRY_RUN && totalMigrated > 0) {
         console.log('\nThis was a dry run. To apply changes, run without --dry-run.');
