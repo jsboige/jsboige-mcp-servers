@@ -17,7 +17,7 @@ import {
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
-    getMcpBestPracticesDefinition,
+    // [REMOVED #1935 Cluster D] getMcpBestPracticesDefinition — fused into roosync_diagnose(action: "best-practices")
     exportDataDefinition,
     exportConfigDefinition,
     viewTaskDetailsDefinition,
@@ -246,13 +246,20 @@ describe('tool-definitions.ts — Schema Validation', () => {
 
         // #1609: roosync_heartbeat test removed — auto-heartbeat on any tool call
 
-        it('roosync_diagnose should have env/debug/reset/test/analyze actions', () => {
+        it('roosync_diagnose should have env/debug/reset/test/analyze/best-practices actions', () => {
             const actions = (roosyncDiagnoseDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
             expect(actions).toContain('env');
             expect(actions).toContain('debug');
             expect(actions).toContain('reset');
             expect(actions).toContain('test');
             expect(actions).toContain('analyze'); // #1935 Cluster D: fused from analyze_roosync_problems
+            expect(actions).toContain('best-practices'); // #1935 Cluster D: fused from get_mcp_best_practices
+        });
+
+        it('roosync_diagnose should have mcp_name parameter for best-practices', () => {
+            const props = roosyncDiagnoseDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('mcp_name');
+            expect((props.mcp_name as Record<string, unknown>).description).toContain('best-practices');
         });
 
         it('roosync_config should support collect/publish/apply/apply_profile', () => {
