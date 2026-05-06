@@ -503,14 +503,23 @@ describe('listConversationsTool.handler', () => {
 
       mockScanDiskForNewTasks.mockResolvedValue([newTask]);
 
+      // First call triggers fire-and-forget scan — new task won't be in response yet
       const result = await listConversationsTool.handler({}, cache);
       const _response = JSON.parse((result.content[0] as any).text);
       const parsed = _response.conversations ?? _response;
 
-      // Should contain both the existing and the newly discovered task
+      // Existing task is always present (from cache)
       const taskIds = parsed.map((t: any) => t.taskId);
       expect(taskIds).toContain('existing-task');
-      expect(taskIds).toContain('new-disk-task');
+
+      // Wait for fire-and-forget scan to integrate new task into cache
+      await vi.waitFor(() => expect(cache.has('new-disk-task')).toBe(true));
+
+      // Second call now sees the new task in cache
+      const result2 = await listConversationsTool.handler({}, cache);
+      const _response2 = JSON.parse((result2.content[0] as any).text);
+      const parsed2 = _response2.conversations ?? _response2;
+      expect(parsed2.map((t: any) => t.taskId)).toContain('new-disk-task');
     });
 
     test('new task is added to the cache map (side effect)', async () => {
