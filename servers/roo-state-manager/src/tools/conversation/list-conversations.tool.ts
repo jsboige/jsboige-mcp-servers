@@ -946,15 +946,22 @@ export const listConversationsTool = {
         //   When only `limit` is provided (no `per_page`), it acts as both page size and total cap.
         //   The floor of 10 does NOT apply to `limit` — the caller explicitly asked for fewer.
         const hasExplicitPerPage = args.per_page !== undefined && args.per_page !== null;
+        const hasLimit = !hasExplicitPerPage && args.limit !== undefined && args.limit !== null;
         const rawPerPage = (hasExplicitPerPage ? args.per_page : (args.limit || 10)) as number;
         const perPage = hasExplicitPerPage
             ? Math.min(Math.max(rawPerPage, 10), 100)
             : Math.min(rawPerPage, 100);
         const page = Math.max(args.page || 1, 1);
-        const totalCount = forest.length;
-        const totalPages = Math.ceil(totalCount / perPage);
-        const startIdx = (page - 1) * perPage;
-        const paginatedForest = forest.slice(startIdx, startIdx + perPage);
+        const totalCount = hasLimit
+            ? Math.min(forest.length, args.limit!)
+            : forest.length;
+        const totalPages = hasLimit
+            ? 1
+            : Math.ceil(totalCount / perPage);
+        const startIdx = hasLimit ? 0 : (page - 1) * perPage;
+        const paginatedForest = hasLimit
+            ? forest.slice(0, Math.min(args.limit!, perPage))
+            : forest.slice(startIdx, startIdx + perPage);
 
         // Phase 2: Détecter les synthèses UNIQUEMENT pour les nœuds de la page courante
         // #834: Moved AFTER pagination — was running on ALL 3000+ skeletons before,
