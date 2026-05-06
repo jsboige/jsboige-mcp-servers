@@ -22,14 +22,14 @@ interface GetRawArgs {
 export const getRawConversationTool = {
     definition: {
         name: 'get_raw_conversation',
-        description: 'Récupère le contenu brut d\'une conversation (fichiers JSON) sans condensation. #252: Supports pagination via startMessage/endMessage (1-based indices) and includeToolResults filter.',
+        description: 'Récupère le contenu brut d\'une conversation (fichiers JSON) sans condensation. #252: Supports pagination via startMessage/endMessage (1-based, post-filter indices) and includeToolResults filter. Validates: positive integers only, start <= end.',
         inputSchema: {
             type: 'object',
             properties: {
                 taskId: { type: 'string', description: 'L\'identifiant de la tâche à récupérer.' },
-                startMessage: { type: 'number', description: '1-based start index for api_conversation_history messages. Default: 1 (first message).' },
-                endMessage: { type: 'number', description: '1-based end index (inclusive) for api_conversation_history messages. Default: last message.' },
-                includeToolResults: { type: 'boolean', description: 'Include tool_result blocks in api_conversation_history. Default: true.' },
+                startMessage: { type: 'number', description: '1-based start index (post-filter). Must be >= 1. Default: 1 (first message).' },
+                endMessage: { type: 'number', description: '1-based end index inclusive (post-filter). Must be >= startMessage. Default: last message.' },
+                includeToolResults: { type: 'boolean', description: 'Include tool_result AND tool_use blocks. Default: true. When false, both tool calls and results are filtered before pagination is applied.' },
             },
             required: ['taskId'],
         },
@@ -58,6 +58,26 @@ export const getRawConversationTool = {
         if (!UUID_REGEX.test(taskId) && !CLAUDE_SESSION_REGEX.test(taskId)) {
             throw new GenericError(
                 `Invalid taskId format: '${taskId.slice(0, 20)}...'. Expected UUID or claude- session ID.`,
+                GenericErrorCode.INVALID_ARGUMENT
+            );
+        }
+
+        // #335 follow-up: Validate pagination parameters
+        if (endMessage != null && endMessage <= 0) {
+            throw new GenericError(
+                `endMessage must be a positive integer, got ${endMessage}.`,
+                GenericErrorCode.INVALID_ARGUMENT
+            );
+        }
+        if (startMessage != null && startMessage <= 0) {
+            throw new GenericError(
+                `startMessage must be a positive integer, got ${startMessage}.`,
+                GenericErrorCode.INVALID_ARGUMENT
+            );
+        }
+        if (startMessage != null && endMessage != null && startMessage > endMessage) {
+            throw new GenericError(
+                `startMessage (${startMessage}) must be <= endMessage (${endMessage}).`,
                 GenericErrorCode.INVALID_ARGUMENT
             );
         }
@@ -134,6 +154,8 @@ export const getRawConversationTool = {
                     // #252: Pagination metadata
                     pagination: {
                         totalMessages,
+                        filteredMessages: totalMessages - (Array.isArray(apiResult.data) ? apiResult.data.length : totalMessages),
+                        note: 'Pagination is post-filter: indices apply to the filtered message list (tool results excluded when includeToolResults=false)',
                         requestedRange: {
                             start: startMessage ?? 1,
                             end: endMessage ?? totalMessages,
