@@ -133,7 +133,7 @@ describe('registry.ts - Tool Registration', () => {
         // [REMOVED #291] export_config test removed — tool removed from allToolDefinitions (ListTools)
         // Backward compat redirect preserved in registry.ts for CallTool
 
-        it('should have tools count greater than 20', async () => {
+        it('should have tools count greater than 15', async () => {
             const mockServer = {
                 setRequestHandler: vi.fn()
             } as any;
@@ -142,7 +142,7 @@ describe('registry.ts - Tool Registration', () => {
 
             const handler = mockServer.setRequestHandler.mock.calls[0][1];
             const result = await handler();
-            expect(result.tools.length).toBeGreaterThan(20);
+            expect(result.tools.length).toBeGreaterThan(15);
         });
     });
 
@@ -561,13 +561,11 @@ describe('registry.ts - Tool Registration', () => {
             // These tools form the minimum viable agent workflow:
             // 1. conversation_browser (list → get IDs, tree → navigate, current → active task, view → inspect)
             // 2. roosync_search (find tasks by content)
-            // 3. roosync_send/read/manage (communicate)
+            // 3. roosync_messages (consolidated messaging, #1841 Cluster G)
             const essentialTools = [
                 'conversation_browser',
                 'roosync_search',
-                'roosync_send',
-                'roosync_read',
-                'roosync_manage',
+                'roosync_messages',
             ];
 
             for (const tool of essentialTools) {

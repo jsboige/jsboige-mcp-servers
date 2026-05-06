@@ -134,6 +134,9 @@ export { roosyncRead, readToolMetadata } from './read.js';
 export { roosyncSend, sendToolMetadata } from './send.js';
 export { roosyncManage, manageToolMetadata } from './manage.js';
 
+// CONS-8 (#1841 Cluster G): Outil consolide messagerie (4→1: send+read+manage+attachments)
+export { roosyncMessages, messagesToolMetadata } from './messages.js';
+
 // [REMOVED #1863] Deprecated cleanup_messages exports — fused into roosync_manage(action: "bulk_*")
 // Source file cleanup.ts retained for: registry.ts redirect + tests
 

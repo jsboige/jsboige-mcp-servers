@@ -177,9 +177,9 @@ describe('#1863 Fusion A2: machines → inventory(type: "machines")', () => {
 // FUSION A3: cleanup → manage redirect
 // ============================================================
 describe('#1863 Fusion A3: cleanup → manage redirect', () => {
-  describe('Canonical call via manage(bulk_mark_read/bulk_archive)', () => {
-    it('should have bulk_mark_read in manage definition action enum', () => {
-      const actionEnum = (allToolDefinitions.find(d => d.name === 'roosync_manage')!.inputSchema as any).properties.action.enum;
+  describe('Canonical call via messages(action: bulk_mark_read/bulk_archive)', () => {
+    it('should have bulk_mark_read in messages definition action enum', () => {
+      const actionEnum = (allToolDefinitions.find(d => d.name === 'roosync_messages')!.inputSchema as any).properties.action.enum;
       expect(actionEnum).toContain('bulk_mark_read');
       expect(actionEnum).toContain('bulk_archive');
     });
@@ -306,8 +306,9 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     // Actually #297 consolidated to 24 active in ListTools (less low-usage). allToolDefinitions baseline = 24.
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose(action: "analyze"): 24 → 23
     // Cluster E (#1935) fused get_status → inventory(type: "status"): 23 → 22
+    // Cluster G (#1841) fused send+read+manage+attachments → roosync_messages: 22 → 19
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(22);
+    expect(allToolDefinitions.length).toBe(19);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {

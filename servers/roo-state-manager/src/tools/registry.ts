@@ -59,6 +59,7 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_send: ['sharedPath'],
 	roosync_manage: ['sharedPath'],
 	roosync_attachments: ['sharedPath'],
+	roosync_messages: ['sharedPath'], // #1841 Cluster G: consolidated messaging
 	roosync_dashboard: ['sharedPath'],
 	roosync_update_dashboard: ['sharedPath'],
 	roosync_refresh_dashboard: ['sharedPath'],
@@ -551,6 +552,16 @@ export function registerCallToolHandler(
                try {
                    const m = await import('./roosync/manage.js');
                    result = await m.roosyncManage(args as any) as CallToolResult;
+               } catch (error) {
+                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+               }
+               break;
+           }
+          // #1841 Cluster G: Outil consolide messagerie (4→1: send+read+manage+attachments)
+           case 'roosync_messages': {
+               try {
+                   const m = await import('./roosync/messages.js');
+                   result = await m.roosyncMessages(args as any) as CallToolResult;
                } catch (error) {
                    result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
                }

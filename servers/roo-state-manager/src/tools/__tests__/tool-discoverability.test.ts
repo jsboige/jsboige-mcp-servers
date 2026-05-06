@@ -130,8 +130,8 @@ describe('Category 1: ListTools → CallTool Consistency', () => {
 
     it('ListTools should expose a reasonable number of tools (20-50 range)', async () => {
         const toolNames = await getListToolsNames();
-        // Currently 22 tools (24 after #297 - 1 Cluster D fusion - 1 Cluster E fusion). This guards against accidental mass removal or explosion
-        expect(toolNames.length).toBeGreaterThanOrEqual(20);
+        // Currently 19 tools (#1841 Cluster G: 22 - 3 net after send+read+manage+attachments→messages). This guards against accidental mass removal or explosion
+        expect(toolNames.length).toBeGreaterThanOrEqual(15);
         expect(toolNames.length).toBeLessThanOrEqual(50);
     });
 
@@ -312,20 +312,17 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
             field: 'action',
             actions: ['env', 'debug', 'reset', 'test'],
         },
-        'roosync_send': {
-            field: 'action',
-            actions: ['send', 'reply', 'amend'],
-        },
-        'roosync_read': {
-            field: 'mode',
-            actions: ['inbox', 'message'],
-        },
-        'roosync_manage': {
-            field: 'action',
-            actions: ['mark_read', 'archive'],
-        },
+        // #1841 Cluster G: roosync_send/read/manage removed from allToolDefinitions — fused into roosync_messages
+        // Backward compat handlers preserved in registry.ts
         // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
         // CallTool handler preserved for backward compat
+        // #1841 Cluster G: consolidated messaging tool
+        'roosync_messages': {
+            field: 'action',
+            actions: ['send', 'reply', 'amend', 'inbox', 'message', 'mark_read', 'archive',
+                      'bulk_mark_read', 'bulk_archive', 'cleanup', 'stats',
+                      'attachments_list', 'attachments_get', 'attachments_delete'],
+        },
     };
 
     it('consolidated tools must declare their action/mode enum in inputSchema', async () => {
@@ -410,9 +407,8 @@ describe('Category 4: Essential Tools for Agent Workflows', () => {
         // [REMOVED #291] get_raw_conversation removed from allToolDefinitions — backward compat via registry.ts redirect
 
         // Communication
-        'roosync_send',          // send messages
-        'roosync_read',          // read inbox
-        'roosync_manage',        // manage messages
+        // #1841 Cluster G: send+read+manage+attachments fused into roosync_messages
+        'roosync_messages',      // consolidated messaging
 
         // Configuration & Management
         'roosync_config',        // collect/publish/apply config
@@ -477,8 +473,8 @@ describe('Category 5: Description Discoverability', () => {
         // Descriptions are mostly in French, so use French keywords where applicable
         'conversation_browser': ['conversation'],
         'roosync_search': ['recherche', 'tâches'],       // "Outil unifié de recherche dans les tâches Roo..."
-        'roosync_send': ['message'],                     // "Envoyer un message structuré"
-        'roosync_read': ['réception', 'messages'],       // "Lire la boîte de réception des messages RooSync..."
+        // #1841 Cluster G: roosync_send/read removed from allToolDefinitions — fused into roosync_messages
+        'roosync_messages': ['messagerie', 'send', 'inbox'], // #1841 Cluster G: consolidated messaging
         'roosync_config': ['config'],                    // "Gestion de configuration RooSync"
         'roosync_compare_config': ['compare', 'config'], // "Compare les configurations Roo"
         // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
