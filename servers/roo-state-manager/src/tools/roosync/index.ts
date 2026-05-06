@@ -167,11 +167,8 @@ export { inventoryTool, inventoryToolMetadata } from './inventory.js';
 // Source file machines.ts retained for: registry.ts redirect + tests
 
 // #519: Legacy heartbeat tools retirés (7 outils) - utiliser roosync_heartbeat consolidé
-// Modules conservés pour les tests unitaires existants mais non exportés publiquement
-
-// CONS-#443 Groupe 1: Outil consolidé de heartbeat (2→1)
-// Remplace heartbeat_status + heartbeat_service
-export { roosyncHeartbeat, heartbeatToolMetadata } from './heartbeat.js';
+// ADR 008 Phase 2: Dead heartbeat tools removed (heartbeat.ts, heartbeat-service.ts, heartbeat-status.ts)
+// Active: heartbeat-activity.ts (utility), auto-heartbeat.ts (utility), HeartbeatService.ts (in-memory core)
 
 // CONS-#443 Groupe 2: Outil consolidé de synchronisation automatique (2→1)
 // Remplace sync-on-offline + sync-on-online
@@ -214,11 +211,7 @@ import { configToolMetadata } from './config.js'; // CONS-3
 import { inventoryToolMetadata } from './inventory.js';
 // [REMOVED #1863] machinesToolMetadata import — not used in any array
 
-// CLEANUP-1: Imports deprecated heartbeat retirés (register, get-offline, get-warning, get-state, start, stop, check)
-// Les modules existent toujours pour backward compat dans registry.ts CallTool handlers
-
-// CONS-#443 Groupe 1: Import de l'outil consolidé de heartbeat
-import { heartbeatToolMetadata } from './heartbeat.js';
+// ADR 008 Phase 2: heartbeatToolMetadata import removed (dead file deleted)
 
 // CONS-#443 Groupe 2: Import de l'outil consolidé de synchronisation
 import { syncEventToolMetadata } from './sync-event.js';
@@ -302,7 +295,7 @@ export type {
  * - Services: inventory (CONS-6), machines (CONS-6)
  * - Presentation: get-status, list-diffs, refresh-dashboard
  * - Decision (CONS-5): roosync_decision, roosync_decision_info
- * - Heartbeat (CONS-#443 Groupe 1): roosync_heartbeat
+ * - Heartbeat: ADR 008 passive model (heartbeat.ts/heartbeat-service.ts/heartbeat-status.ts removed Phase 2)
  * - [DEPRECATED] Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event retiré (#533)
  * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage, roosync_cleanup_messages
  * - Attachments (CONS-7): roosync_attachments (remplace roosync_list/get/delete_attachment)
