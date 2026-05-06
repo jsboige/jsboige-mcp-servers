@@ -355,6 +355,64 @@ describe('compare-config', () => {
 			expect(mockCompareRealConfigurations).toHaveBeenCalledWith('ai-01', 'po-2023', false);
 		});
 
+		// #1410: Deduplicate baseline-induced false positives
+		test('deduplicates identical diffs from baseline comparison', async () => {
+			mockLoadDashboard.mockResolvedValue({
+				machines: {
+					'ai-01': { status: 'online' },
+					'po-2023': { status: 'online' }
+				}
+			});
+			// Simulates compareRealConfigurations output where both machines
+			// deviate from baseline identically (e.g. both have "Unknown" GPU)
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'ai-01',
+				targetMachine: 'po-2023',
+				hostId: 'ai-01',
+				differences: [
+					{
+						category: 'hardware',
+						severity: 'INFO',
+						path: 'hardware.gpu',
+						description: 'GPU diff : Unknown vs None',
+						recommendedAction: 'Check GPU config',
+						machineId: 'ai-01'
+					},
+					{
+						category: 'hardware',
+						severity: 'INFO',
+						path: 'hardware.gpu',
+						description: 'GPU diff : Unknown vs None',
+						recommendedAction: 'Check GPU config',
+						machineId: 'po-2023'
+					},
+					{
+						category: 'software',
+						severity: 'INFO',
+						path: 'software.node',
+						description: 'Node diff : Unknown vs N/A',
+						recommendedAction: 'Update Node',
+						machineId: 'ai-01'
+					},
+					{
+						category: 'software',
+						severity: 'INFO',
+						path: 'software.node',
+						description: 'Node diff : Unknown vs N/A',
+						recommendedAction: 'Update Node',
+						machineId: 'po-2023'
+					}
+				]
+			});
+
+			const result = await roosyncCompareConfig({ target: 'po-2023' });
+
+			// 4 raw diffs -> 2 deduplicated (plus possible env diffs)
+			const nonEnvDiffs = result.differences.filter(d => d.category !== 'environment');
+			expect(nonEnvDiffs.length).toBe(2);
+			expect(nonEnvDiffs.map(d => d.path).sort()).toEqual(['hardware.gpu', 'software.node']);
+		});
+
 		// ============================================================
 		// Settings granularity tests (#498/#547)
 		// ============================================================
