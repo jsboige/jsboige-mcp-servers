@@ -63,9 +63,16 @@ export { RooSyncServiceError };
 
 /**
  * Service Singleton pour gérer RooSync
+ *
+ * #2017 FIX: Resilient shared path — getInstance() retries initialization
+ * when ROOSYNC_SHARED_PATH is unavailable (GDrive not mounted at boot).
+ * Retries every call with a 30s backoff. No cached absence.
  */
 export class RooSyncService {
   private static instance: RooSyncService | null = null;
+  private static _initError: Error | null = null;
+  private static _lastInitAttempt: number = 0;
+  private static readonly INIT_RETRY_INTERVAL_MS = 30_000; // 30s backoff
 
   private config: RooSyncConfig;
   private cache: Map<string, CacheEntry<any>>;
@@ -376,23 +383,54 @@ export class RooSyncService {
   /**
    * Obtenir l'instance du service (Singleton)
    *
+   * #2017 FIX: Retries initialization when shared path was unavailable.
+   * If the previous attempt failed, checks if the path is now accessible
+   * and retries automatically. Returns user-friendly errors during backoff.
+   *
    * @param cacheOptions Options de cache (utilisées seulement à la première création)
    * @param config Configuration optionnelle (pour injection de dépendance/tests)
    * @returns Instance du service
    */
   public static getInstance(cacheOptions?: CacheOptions, config?: RooSyncConfig): RooSyncService {
-    console.log('[DEBUG] getInstance() appelé, instance existe:', !!RooSyncService.instance);
-    if (!RooSyncService.instance) {
-      console.log('[DEBUG] Création nouvelle instance RooSyncService...');
-      try {
-        RooSyncService.instance = new RooSyncService(cacheOptions, config);
-        console.log('[DEBUG] Instance RooSyncService créée avec succès. Config sharedPath:', RooSyncService.instance.config.sharedPath);
-      } catch (error) {
-        console.error('[DEBUG] Erreur lors création instance RooSyncService:', error);
-        throw error;
-      }
+    if (RooSyncService.instance) {
+      return RooSyncService.instance;
     }
-    return RooSyncService.instance;
+
+    const now = Date.now();
+
+    // If a previous init failed, check backoff before retrying
+    if (RooSyncService._initError && RooSyncService._lastInitAttempt) {
+      const elapsed = now - RooSyncService._lastInitAttempt;
+      if (elapsed < RooSyncService.INIT_RETRY_INTERVAL_MS) {
+        const retryInSec = Math.ceil((RooSyncService.INIT_RETRY_INTERVAL_MS - elapsed) / 1000);
+        throw new RooSyncServiceError(
+          `RooSync non disponible: ${RooSyncService._initError.message}. ` +
+          `Le chemin partagé n'est pas accessible — réessai automatique dans ${retryInSec}s.`,
+          'ROOSYNC_PATH_UNAVAILABLE'
+        );
+      }
+      // Backoff elapsed — retry initialization
+      console.log(`[RooSyncService] Retrying initialization after ${Math.round(elapsed / 1000)}s (previous error: ${RooSyncService._initError.message})`);
+    }
+
+    // Attempt to create instance
+    try {
+      RooSyncService.instance = new RooSyncService(cacheOptions, config);
+      RooSyncService._initError = null;
+      RooSyncService._lastInitAttempt = 0;
+      console.log('[RooSyncService] Instance created successfully. sharedPath:', RooSyncService.instance.config.sharedPath);
+      return RooSyncService.instance;
+    } catch (error) {
+      RooSyncService.instance = null;
+      RooSyncService._initError = error as Error;
+      RooSyncService._lastInitAttempt = now;
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new RooSyncServiceError(
+        `RooSync non disponible: ${msg}. ` +
+        `GDrive non monté ou chemin partagé inaccessible — réessai automatique dans 30s.`,
+        'ROOSYNC_PATH_UNAVAILABLE'
+      );
+    }
   }
 
   /**
@@ -400,6 +438,23 @@ export class RooSyncService {
    */
   public static resetInstance(): void {
     RooSyncService.instance = null;
+    RooSyncService._initError = null;
+    RooSyncService._lastInitAttempt = 0;
+  }
+
+  /**
+   * Vérifier si le service est en état dégradé (path indisponible)
+   * #2017: Permet aux outils de vérifier l'état sans déclencher un retry.
+   */
+  public static isDegraded(): boolean {
+    return RooSyncService.instance === null && RooSyncService._initError !== null;
+  }
+
+  /**
+   * Obtenir la dernière erreur d'initialisation (pour diagnostics)
+   */
+  public static getInitError(): Error | null {
+    return RooSyncService._initError;
   }
 
   /**
