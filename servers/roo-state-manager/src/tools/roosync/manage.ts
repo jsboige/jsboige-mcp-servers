@@ -282,8 +282,12 @@ async function bulkOperationHandler(
   if (args.tag) filtersDesc.push(`tag: ${args.tag}`);
 
   const failedIds = result.failed_ids ?? [];
+  const failedReasons = (result as any).failed_reasons as Record<string, string> | undefined;
   const failedSection = failedIds.length > 0
-    ? `\n\n**IDs en échec (${failedIds.length}) :** ${failedIds.slice(0, 10).map(id => `❌ \`${id}\``).join(', ')}${failedIds.length > 10 ? ` ... et ${failedIds.length - 10} autres` : ''}`
+    ? `\n\n**IDs en échec (${failedIds.length}) :** ${failedIds.slice(0, 10).map(id => {
+      const reason = failedReasons?.[id];
+      return reason ? `❌ \`${id}\` (${reason})` : `❌ \`${id}\``;
+    }).join(', ')}${failedIds.length > 10 ? ` ... et ${failedIds.length - 10} autres` : ''}`
     : '';
 
   return `✅ **Opération bulk terminée : ${opName}**
@@ -309,6 +313,7 @@ async function cleanupMessages(
   const machineId = getLocalMachineId();
   const results: string[] = [];
   const allFailedIds: string[] = [];
+  const allFailedReasons: Record<string, string> = {};
 
   // 0a. Cleanup expired auto-destruct messages (#629)
   try {
@@ -345,6 +350,7 @@ async function cleanupMessages(
   if (testResult.failed_ids.length > 0) {
     results.push(`- ⚠️ Échecs test mark_read : ${testResult.failed_ids.length} (${testResult.failed_ids.slice(0, 5).join(', ')}${testResult.failed_ids.length > 5 ? '…' : ''})`);
     allFailedIds.push(...testResult.failed_ids);
+    Object.assign(allFailedReasons, testResult.failed_reasons || {});
   }
 
   // 2. Archive old read messages (>30 days)
@@ -360,6 +366,7 @@ async function cleanupMessages(
   if (oldReadResult.failed_ids.length > 0) {
     results.push(`- ⚠️ Échecs archive >30j : ${oldReadResult.failed_ids.length} (${oldReadResult.failed_ids.slice(0, 5).join(', ')}${oldReadResult.failed_ids.length > 5 ? '…' : ''})`);
     allFailedIds.push(...oldReadResult.failed_ids);
+    Object.assign(allFailedReasons, oldReadResult.failed_reasons || {});
   }
 
   // 3. Mark old LOW priority messages as read (>7 days)
@@ -375,13 +382,17 @@ async function cleanupMessages(
   if (oldLowResult.failed_ids.length > 0) {
     results.push(`- ⚠️ Échecs LOW mark_read : ${oldLowResult.failed_ids.length} (${oldLowResult.failed_ids.slice(0, 5).join(', ')}${oldLowResult.failed_ids.length > 5 ? '…' : ''})`);
     allFailedIds.push(...oldLowResult.failed_ids);
+    Object.assign(allFailedReasons, oldLowResult.failed_reasons || {});
   }
 
   // 4. Get current stats
   const stats = await messageManager.getInboxStats(machineId);
 
   const errorSection = allFailedIds.length > 0
-    ? `\n\n### Échecs (${allFailedIds.length} messages)\n${allFailedIds.slice(0, 10).map(id => `- \`${id}\``).join('\n')}${allFailedIds.length > 10 ? `\n… et ${allFailedIds.length - 10} autres` : ''}`
+    ? `\n\n### Échecs (${allFailedIds.length} messages)\n${allFailedIds.slice(0, 10).map(id => {
+      const reason = allFailedReasons[id];
+      return reason ? `- \`${id}\` — ${reason}` : `- \`${id}\``;
+    }).join('\n')}${allFailedIds.length > 10 ? `\n… et ${allFailedIds.length - 10} autres` : ''}`
     : '';
 
   return `🧹 **Cleanup terminé**
