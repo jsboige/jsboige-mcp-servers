@@ -1038,6 +1038,19 @@ async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: st
     const normalizedPattern = pattern.toLowerCase().trim();
     if (normalizedPattern.length === 0) return true;
 
+    // 0. Fast path — check cached fields first (no I/O)
+    // #251: Avoids disk reads for the majority of cases where the pattern
+    // matches in the title or truncated instruction.
+    const cachedFields = [
+        skeleton.metadata?.title,
+        skeleton.truncatedInstruction,
+    ];
+    for (const field of cachedFields) {
+        if (field && field.toLowerCase().includes(normalizedPattern)) {
+            return true;
+        }
+    }
+
     // 1. Sequence deja chargee (Tier 2 Claude / Tier 3 Archive) — recherche memoire
     const sequence = (skeleton as any).sequence;
     if (Array.isArray(sequence) && sequence.length > 0) {
@@ -1049,7 +1062,7 @@ async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: st
     }
 
     // 2. Tier 1 (Roo local) — lire api_conversation_history depuis le disque
-    //    (les taches Roo n'ont pas de sequence en cache, juste un SkeletonHeader)
+    //    #251: Only reached if cached fields didn't match — dramatically reduces I/O
     if (!skeleton.taskId.startsWith('claude-')) {
         try {
             const apiMessages = await loadApiMessages(skeleton.taskId);
@@ -1063,7 +1076,7 @@ async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: st
         }
     }
 
-    // 3. Claude session without cached sequence (Tier 2 disabled / load failed) — pas de fallback fiable
+    // 3. Claude session without cached sequence — pas de fallback fiable
     return false;
 }
 
