@@ -36,10 +36,26 @@ async function _ensureLoaded(): Promise<NonNullable<typeof import('./RooSyncServ
  * Get the RooSyncService singleton (lazy-loaded).
  * First call triggers dynamic import of RooSyncService.ts and all its dependencies.
  * Subsequent calls return the cached instance.
+ *
+ * #2017: If the singleton init failed (e.g. GDrive not mounted), retries on each call.
+ * This means RooSync recovers automatically once the shared path becomes available.
  */
 export async function getRooSyncService() {
     const mod = await _ensureLoaded();
-    return mod.getRooSyncService();
+    try {
+        return mod.getRooSyncService();
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Enhance with actionable guidance for the most common failure
+        if (msg.includes('ROOSYNC_SHARED_PATH') || msg.includes("n'existe pas")) {
+            throw new Error(
+                `RooSync unavailable: shared path not accessible. ` +
+                `If GDrive is still syncing, retry in a few seconds. ` +
+                `Original error: ${msg}`
+            );
+        }
+        throw error;
+    }
 }
 
 /**

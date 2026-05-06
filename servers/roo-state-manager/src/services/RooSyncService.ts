@@ -173,10 +173,9 @@ export class RooSyncService {
         errorStack: error instanceof Error ? error.stack : null,
         errorName: error instanceof Error ? error.name : null
       });
-      
-      // S'assurer que l'instance n'est pas créée en cas d'erreur
-      RooSyncService.instance = null;
-      
+
+      // #2017: Do NOT set instance = null here — getInstance() handles cleanup.
+      // The constructor doesn't assign to RooSyncService.instance anymore.
       throw error;
     }
   }
@@ -385,9 +384,15 @@ export class RooSyncService {
     if (!RooSyncService.instance) {
       console.log('[DEBUG] Création nouvelle instance RooSyncService...');
       try {
-        RooSyncService.instance = new RooSyncService(cacheOptions, config);
-        console.log('[DEBUG] Instance RooSyncService créée avec succès. Config sharedPath:', RooSyncService.instance.config.sharedPath);
+        // #2017: Build into local variable first — only assign on success.
+        // Prevents exposing half-built instance if constructor throws
+        // (e.g. ROOSYNC_SHARED_PATH not ready because GDrive not mounted).
+        const instance = new RooSyncService(cacheOptions, config);
+        RooSyncService.instance = instance;
+        console.log('[DEBUG] Instance RooSyncService créée avec succès. Config sharedPath:', instance.config.sharedPath);
       } catch (error) {
+        // Ensure instance stays null so next call will retry
+        RooSyncService.instance = null;
         console.error('[DEBUG] Erreur lors création instance RooSyncService:', error);
         throw error;
       }

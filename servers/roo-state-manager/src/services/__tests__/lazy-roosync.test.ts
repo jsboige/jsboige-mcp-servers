@@ -95,4 +95,44 @@ describe('lazy-roosync', () => {
             expect(results[1]).toBe(results[2]);
         });
     });
+
+    // #2017: Enhanced error handling for ROOSYNC_SHARED_PATH failures
+    describe('getRooSyncService error enhancement (#2017)', () => {
+        it('should enhance ROOSYNC_SHARED_PATH errors with actionable guidance', async () => {
+            const { getRooSyncService: freshGet } = await importIsolated();
+            const mockMod = await import('../RooSyncService.js');
+            (mockMod.getRooSyncService as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+                throw new Error("Le chemin ROOSYNC_SHARED_PATH n'existe pas: G:/Mon Drive/...");
+            });
+
+            await expect(freshGet()).rejects.toThrow(/RooSync unavailable.*shared path not accessible/);
+        });
+
+        it('should pass through non-path errors unchanged', async () => {
+            const { getRooSyncService: freshGet } = await importIsolated();
+            const mockMod = await import('../RooSyncService.js');
+            (mockMod.getRooSyncService as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+                throw new Error('Some other error');
+            });
+
+            await expect(freshGet()).rejects.toThrow('Some other error');
+        });
+    });
 });
+
+// Helper to get a fresh import of lazy-roosync (resets module cache)
+async function importIsolated() {
+    vi.resetModules();
+    // Re-mock before re-importing
+    vi.doMock('../RooSyncService.js', () => ({
+        RooSyncServiceError: class MockRooSyncServiceError extends Error {
+            constructor(message: string) { super(message); this.name = 'RooSyncServiceError'; }
+        },
+        getRooSyncService: vi.fn(() => Promise.resolve('mock-service-instance')),
+        RooSyncService: {
+            resetInstance: vi.fn(),
+            getInstance: vi.fn((options) => Promise.resolve({ options, name: 'mock-instance' })),
+        },
+    }));
+    return await import('../lazy-roosync.js');
+}

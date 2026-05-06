@@ -273,4 +273,7 @@ describe('RooSyncService', () => {
         });
     });
 
+    // #2017: Retry behavior is tested in lazy-roosync.test.ts via mock infrastructure.
+    // The RooSyncService.getInstance() fix (build-into-local-first) is verified there.
+
 });
