@@ -319,7 +319,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
     // #1953: Cross-check heartbeat-derived status against dashboard activity.
     // Dashboard message timestamps are embedded in file content (immune to GDrive
-    // propagation latency on file mod time), preventing false OFFLINE detection.
+    // propagation latency on file mod time), preventing false UNKNOWN detection.
     let dashboardOverrides: string[] = [];
     try {
       const dashboardsDir = join(getSharedStatePath(), 'dashboards');
@@ -327,12 +327,12 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       const dashboardContent = readFileSync(workspaceDashboard, 'utf-8');
       const { crossCheckWithDashboard } = await import('../../utils/dashboard-activity.js');
       const crossChecked = crossCheckWithDashboard(
-        { onlineMachines: filteredOnlineMachines, offlineMachines: filteredUnknownMachines, warningMachines: filteredIdleMachines },
+        { onlineMachines: filteredOnlineMachines, unknownMachines: filteredUnknownMachines, idleMachines: filteredIdleMachines },
         dashboardContent
       );
       filteredOnlineMachines = crossChecked.onlineMachines;
-      filteredUnknownMachines = crossChecked.offlineMachines;
-      filteredIdleMachines = crossChecked.warningMachines;
+      filteredUnknownMachines = crossChecked.unknownMachines;
+      filteredIdleMachines = crossChecked.idleMachines;
       dashboardOverrides = crossChecked.overrides;
     } catch (err) {
       logger.debug('Dashboard cross-check skipped', { error: String(err) });

@@ -18,14 +18,14 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  */
 export const InventoryArgsSchema = z.object({
   type: z.enum(['machine', 'heartbeat', 'all', 'machines', 'status'])
-    .describe('Type d\'inventaire à récupérer. "machines" = offline/warning machines. "status" = compact system snapshot (fused from roosync_get_status)'),
+    .describe('Type d\'inventaire à récupérer. "machines" = unknown/idle machines. "status" = compact system snapshot (fused from roosync_get_status)'),
   machineId: z.string().optional()
     .describe('Identifiant optionnel de la machine (défaut: hostname)'),
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les données de heartbeat de chaque machine (défaut: true)'),
   // Pour type="machines" (fused from roosync_machines)
   status: z.enum(['offline', 'warning', 'all']).optional()
-    .describe('Filtrer par statut machines (type="machines": offline, warning, all)'),
+    .describe('Filtrer par statut machines (type="machines": offline=unknown, warning=idle, all)'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets des machines (type="machines") ou stats outil (type="status")'),
   summary: z.boolean().optional()
@@ -310,7 +310,7 @@ export const inventoryToolMetadata = {
       type: {
         type: 'string',
         enum: ['machine', 'heartbeat', 'all', 'machines', 'status'],
-        description: 'Type d\'inventaire. "machines" = offline/warning. "status" = snapshot système avec flags.'
+        description: 'Type d\'inventaire. "machines" = unknown/idle. "status" = snapshot système avec flags.'
       },
       machineId: {
         type: 'string',
@@ -323,7 +323,7 @@ export const inventoryToolMetadata = {
       status: {
         type: 'string',
         enum: ['offline', 'warning', 'all'],
-        description: 'Filtrer par statut machines (type="machines": offline, warning, all)'
+        description: 'Filtrer par statut machines (type="machines": offline=unknown, warning=idle, all)'
       },
       includeDetails: {
         type: 'boolean',

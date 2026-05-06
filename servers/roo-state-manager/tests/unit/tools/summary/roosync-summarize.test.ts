@@ -234,9 +234,8 @@ describe('roosync_summarize - CONS-12', () => {
                     truncationChars: 1000,
                     compactStats: false,
                     includeCss: true,
-                    generateToc: true,
-                    startIndex: 1,
-                    endIndex: 10
+                    generateToc: true
+                    // Note: startIndex/endIndex removed because mock returns empty sequence
                 },
                 getConversationSkeletonMock
             );

@@ -788,9 +788,9 @@ describe('ContentClassifier', () => {
             expect(result[2].content).toBe('msg4');
         });
 
-        it('should warn on invalid range', () => {
+        it('should throw on invalid range (start >= end)', () => {
             const conv = makeSkeleton([makeMessage('user', 'msg1')]);
-            classifier.classifyConversationContent(conv, {
+            expect(() => classifier.classifyConversationContent(conv, {
                 startIndex: 10,
                 endIndex: 20,
                 detailLevel: 'Full',
@@ -799,8 +799,21 @@ describe('ContentClassifier', () => {
                 includeCss: false,
                 generateToc: false,
                 outputFormat: 'markdown',
-            });
-            expect(consoleWarnSpy).toHaveBeenCalled();
+            })).toThrow('Invalid range: startIndex (10) must be less than endIndex (20).');
+        });
+
+        it('should throw on negative endIndex', () => {
+            const conv = makeSkeleton([makeMessage('user', 'msg1')]);
+            expect(() => classifier.classifyConversationContent(conv, {
+                startIndex: 1,
+                endIndex: -5,
+                detailLevel: 'Full',
+                truncationChars: 1000,
+                compactStats: false,
+                includeCss: false,
+                generateToc: false,
+                outputFormat: 'markdown',
+            })).toThrow('Invalid endIndex: -5. Must be >= 1');
         });
 
         it('should set toolType and resultType for ToolResult user messages', () => {

@@ -25,9 +25,9 @@ export const MachinesArgsSchema = z.object({
 export type MachinesArgs = z.infer<typeof MachinesArgsSchema>;
 
 /**
- * Détails d'une machine offline
+ * Détails d'une machine unknown
  */
-export const OfflineMachineDetailsSchema = z.object({
+export const UnknownMachineDetailsSchema = z.object({
   machineId: z.string()
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
@@ -42,12 +42,12 @@ export const OfflineMachineDetailsSchema = z.object({
   })
 });
 
-export type OfflineMachineDetails = z.infer<typeof OfflineMachineDetailsSchema>;
+export type UnknownMachineDetails = z.infer<typeof UnknownMachineDetailsSchema>;
 
 /**
- * Détails d'une machine en avertissement
+ * Détails d'une machine idle
  */
-export const WarningMachineDetailsSchema = z.object({
+export const IdleMachineDetailsSchema = z.object({
   machineId: z.string()
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
@@ -62,7 +62,7 @@ export const WarningMachineDetailsSchema = z.object({
   })
 });
 
-export type WarningMachineDetails = z.infer<typeof WarningMachineDetailsSchema>;
+export type IdleMachineDetails = z.infer<typeof IdleMachineDetailsSchema>;
 
 /**
  * Schema de retour pour roosync_machines
@@ -72,12 +72,12 @@ export const MachinesResultSchema = z.object({
     .describe('Indique si la récupération a réussi'),
   unknownMachines: z.union([
     z.array(z.string()).describe('Liste des IDs des machines unknown'),
-    z.array(OfflineMachineDetailsSchema).describe('Liste détaillée des machines unknown')
+    z.array(UnknownMachineDetailsSchema).describe('Liste détaillée des machines unknown')
   ]).optional()
     .describe('Liste des machines unknown (IDs ou détails selon includeDetails)'),
   idleMachines: z.union([
     z.array(z.string()).describe('Liste des IDs des machines idle'),
-    z.array(WarningMachineDetailsSchema).describe('Liste détaillée des machines idle')
+    z.array(IdleMachineDetailsSchema).describe('Liste détaillée des machines idle')
   ]).optional()
     .describe('Liste des machines idle (IDs ou détails selon includeDetails)'),
   unknownCount: z.number().optional()
@@ -115,12 +115,12 @@ export const machinesTool: UnifiedToolContract = {
         checkedAt
       };
 
-      // Récupérer les machines offline si demandé
+      // Récupérer les machines unknown si demandé
       if (status === 'offline' || status === 'all') {
         const unknownMachines = heartbeatService.getUnknownMachines();
 
         if (includeDetails) {
-          const detailedMachines: OfflineMachineDetails[] = [];
+          const detailedMachines: UnknownMachineDetails[] = [];
 
           for (const machineId of unknownMachines) {
             const heartbeatData = heartbeatService.getHeartbeatData(machineId);
@@ -143,12 +143,12 @@ export const machinesTool: UnifiedToolContract = {
         }
       }
 
-      // Récupérer les machines en avertissement si demandé
+      // Récupérer les machines idle si demandé
       if (status === 'warning' || status === 'all') {
         const idleMachines = heartbeatService.getIdleMachines();
 
         if (includeDetails) {
-          const detailedMachines: WarningMachineDetails[] = [];
+          const detailedMachines: IdleMachineDetails[] = [];
 
           for (const machineId of idleMachines) {
             const heartbeatData = heartbeatService.getHeartbeatData(machineId);

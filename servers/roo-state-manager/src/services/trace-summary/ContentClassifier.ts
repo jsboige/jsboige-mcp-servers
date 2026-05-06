@@ -32,17 +32,27 @@ export class ContentClassifier {
 
         // Appliquer le filtrage par plage si spécifié
         if (options && (options.startIndex !== undefined || options.endIndex !== undefined)) {
+            // Validate negative endIndex - throw error instead of allowing negative slice
+            if (options.endIndex !== undefined && options.endIndex < 1) {
+                throw new Error(`Invalid endIndex: ${options.endIndex}. Must be >= 1 (1-based index).`);
+            }
+
             const startIdx = options.startIndex ? Math.max(1, options.startIndex) - 1 : 0; // Convert to 0-based
             const endIdx = options.endIndex ? Math.min(messages.length, options.endIndex) : messages.length; // Convert to 0-based + 1
 
-            // Valider les indices
-            if (startIdx < messages.length && endIdx > startIdx) {
-                messages = messages.slice(startIdx, endIdx);
-                // Log pour debugging
-                console.log(`[Range Filter] Processing messages ${startIdx + 1} to ${endIdx} (${messages.length} messages)`);
-            } else {
-                console.warn(`[Range Filter] Invalid range: start=${options.startIndex}, end=${options.endIndex}, total=${(conversation.sequence ?? []).length}`);
+            // Validate indices - throw error if start >= end
+            if (startIdx >= endIdx) {
+                throw new Error(`Invalid range: startIndex (${options.startIndex ?? 1}) must be less than endIndex (${options.endIndex ?? messages.length}).`);
             }
+
+            // Validate start is within bounds
+            if (startIdx >= messages.length) {
+                throw new Error(`Invalid startIndex: ${options.startIndex ?? 1}. Total filtered messages: ${messages.length}.`);
+            }
+
+            messages = messages.slice(startIdx, endIdx);
+            // Log pour debugging
+            console.log(`[Range Filter] Processing messages ${startIdx + 1} to ${endIdx} (${messages.length} messages)`);
         }
 
         for (const message of messages) {
