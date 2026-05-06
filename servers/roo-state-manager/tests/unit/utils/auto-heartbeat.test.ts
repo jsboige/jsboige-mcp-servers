@@ -30,16 +30,18 @@ describe('auto-heartbeat', () => {
         mockRegisterHeartbeat.mockClear();
     });
 
-    it('initializes with current timestamp', () => {
+    it('initializes with zero timestamp (init gap fix #2030)', () => {
         const state = getAutoHeartbeatState();
         expect(state.isInitialized).toBe(true);
-        expect(state.lastHeartbeatAt).toBe(Date.now());
+        expect(state.lastHeartbeatAt).toBe(0); // #2030: Force first-call heartbeat
     });
 
-    it('skips heartbeat within 15-minute interval', async () => {
+    it('first call always triggers heartbeat (init gap fix #2030)', async () => {
         const result = await autoHeartbeat('roosync_read');
-        expect(result).toBe(false);
-        expect(mockRegisterHeartbeat).not.toHaveBeenCalled();
+        expect(result).toBe(true); // lastHeartbeatAt=0 means always triggers on first call
+        expect(mockRegisterHeartbeat).toHaveBeenCalledWith({
+            triggeredBy: 'roosync_read',
+        });
     });
 
     it('triggers heartbeat after 15-minute interval', async () => {
