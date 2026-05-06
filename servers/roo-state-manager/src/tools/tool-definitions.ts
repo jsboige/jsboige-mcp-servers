@@ -556,6 +556,72 @@ export const roosyncAttachmentsDefinition = {
     }
 };
 
+// #1841 Cluster G: Outil consolide messagerie (4→1: send+read+manage+attachments)
+export const roosyncMessagesDefinition = {
+    name: 'roosync_messages',
+    description: `Gestion complète de la messagerie inter-machines RooSync (CONS-8). Actions :
+- send, reply, amend : envoyer / répondre / modifier un message
+- inbox, message : lire la boîte de réception / détails d'un message
+- mark_read, archive : gestion individuelle
+- bulk_mark_read, bulk_archive : opérations en lot (filtres: from, priority, before_date, subject_contains, tag)
+- cleanup : nettoyage automatique, stats : statistiques inbox
+- attachments_list, attachments_get, attachments_delete : gestion des pièces jointes
+
+Remplace : roosync_send + roosync_read + roosync_manage + roosync_attachments (4→1, #1841 Cluster G)`,
+    inputSchema: {
+        type: 'object' as const,
+        properties: {
+            action: {
+                type: 'string',
+                enum: [
+                    'send', 'reply', 'amend',
+                    'inbox', 'message',
+                    'mark_read', 'archive', 'bulk_mark_read', 'bulk_archive', 'cleanup', 'stats',
+                    'attachments_list', 'attachments_get', 'attachments_delete'
+                ],
+                description: 'Action à effectuer'
+            },
+            to: { type: 'string', description: 'Destinataire (send): machine ou machine:workspace' },
+            subject: { type: 'string', description: 'Sujet (send)' },
+            body: { type: 'string', description: 'Corps du message (send/reply)' },
+            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Priorité (défaut: MEDIUM)' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Tags optionnels' },
+            thread_id: { type: 'string', description: 'ID thread' },
+            reply_to: { type: 'string', description: 'ID message référence (send)' },
+            message_id: { type: 'string', description: 'ID message (reply/amend/mark_read/archive/message/attachments_list)' },
+            new_content: { type: 'string', description: 'Nouveau contenu (amend)' },
+            reason: { type: 'string', description: 'Raison (amend)' },
+            auto_destruct: { type: 'boolean', description: 'Auto-destruction après lecture' },
+            destruct_after_read_by: { type: 'array', items: { type: 'string' }, description: 'Machines devant lire avant destruction' },
+            destruct_after: { type: 'string', description: 'TTL destruction (30m, 2h, 1d)' },
+            attachments: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: { path: { type: 'string' }, filename: { type: 'string' } },
+                    required: ['path']
+                },
+                description: 'Pièces jointes (send)'
+            },
+            status: { type: 'string', enum: ['unread', 'read', 'all'], description: 'Filtre inbox (défaut: all)' },
+            limit: { type: 'number', description: 'Max messages inbox' },
+            page: { type: 'number', description: 'Page (1-based)' },
+            per_page: { type: 'number', description: 'Messages par page' },
+            mark_as_read: { type: 'boolean', description: 'Marquer lu (message, défaut: false)' },
+            workspace: { type: 'string', description: 'Override workspace (#1498)' },
+            to_machine: { type: 'string', description: 'Override machine (#1498)' },
+            from: { type: 'string', description: 'Filtre expediteur (bulk)' },
+            before_date: { type: 'string', description: 'Filtre avant date ISO (bulk)' },
+            subject_contains: { type: 'string', description: 'Filtre sujet (bulk)' },
+            tag: { type: 'string', description: 'Filtre tag (bulk)' },
+            uuid: { type: 'string', description: 'UUID pièce jointe (attachments_get/delete)' },
+            targetPath: { type: 'string', description: 'Chemin local destination (attachments_get)' }
+        },
+        required: ['action'],
+        additionalProperties: false
+    }
+};
+
 // #1470: Derived from Zod schema in dashboard-schemas.ts (single source of truth)
 export const roosyncDashboardDefinition = dashboardToolMetadata;
 
@@ -596,9 +662,10 @@ export const allToolDefinitions = [
     roosyncDiagnoseDefinition,
     // [REMOVED #1935 Cluster B] roosyncRefreshDashboardDefinition — fused into roosync_dashboard(action: "refresh"), redirect in registry.ts
     // [REMOVED #1935 Cluster B] roosyncUpdateDashboardDefinition — fused into roosync_dashboard(action: "update"), redirect in registry.ts
-    roosyncSendDefinition,
-    roosyncReadDefinition,
-    roosyncManageDefinition,
-    roosyncAttachmentsDefinition,
+    // [REMOVED #1841 Cluster G] roosyncSendDefinition — fused into roosync_messages(action: "send"/"reply"/"amend"), redirect in registry.ts
+    // [REMOVED #1841 Cluster G] roosyncReadDefinition — fused into roosync_messages(action: "inbox"/"message"), redirect in registry.ts
+    // [REMOVED #1841 Cluster G] roosyncManageDefinition — fused into roosync_messages(action: "mark_read"/"archive"/"bulk_*"/"cleanup"/"stats"), redirect in registry.ts
+    // [REMOVED #1841 Cluster G] roosyncAttachmentsDefinition — fused into roosync_messages(action: "attachments_*"), redirect in registry.ts
+    roosyncMessagesDefinition,
     roosyncDashboardDefinition
 ];

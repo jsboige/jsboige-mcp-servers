@@ -37,14 +37,16 @@ import {
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
     // #1935 Cluster B: roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition removed from tools/list
+    // #1841 Cluster G: roosyncSend/Read/Manage/Attachments removed — fused into roosync_messages
     roosyncSendDefinition,
     roosyncReadDefinition,
     roosyncManageDefinition,
     roosyncAttachmentsDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    roosyncMessagesDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 22;
+const EXPECTED_TOOL_COUNT = 19;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // #1863: 3 deprecated definitions removed from allToolDefinitions
@@ -77,17 +79,18 @@ const allDefinitions = [
     roosyncDiagnoseDefinition,
     // [REMOVED #291] roosyncRefreshDashboardDefinition — removed from allToolDefinitions
     // [REMOVED #291] roosyncUpdateDashboardDefinition — removed from allToolDefinitions
-    roosyncSendDefinition,
-    roosyncReadDefinition,
-    roosyncManageDefinition,
-    roosyncAttachmentsDefinition,
+    // [REMOVED #1841 Cluster G] roosyncSendDefinition — fused into roosync_messages
+    // [REMOVED #1841 Cluster G] roosyncReadDefinition — fused into roosync_messages
+    // [REMOVED #1841 Cluster G] roosyncManageDefinition — fused into roosync_messages
+    // [REMOVED #1841 Cluster G] roosyncAttachmentsDefinition — fused into roosync_messages
+    roosyncMessagesDefinition,
     roosyncDashboardDefinition
 ];
 
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 23 tool definitions', () => {
+        it('should have exactly 19 tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 
