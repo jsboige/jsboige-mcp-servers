@@ -273,12 +273,8 @@ export class SyncDecisionManager {
   }
 
   /**
-   * Génère des décisions RooSync depuis un rapport de comparaison
-   */
-  /**
-   * Generates decisions from a comparison report.
+   * Count CRITICAL/IMPORTANT diffs from a comparison report.
    * NOTE: Decision creation is not yet implemented (#783).
-   * Currently counts CRITICAL/IMPORTANT diffs but does not persist decisions.
    */
   public async generateDecisionsFromReport(report: any): Promise<number> {
     let count = 0;
