@@ -1,5 +1,6 @@
 /**
  * Outil pour récupérer le contenu brut d'une conversation (fichiers JSON) sans condensation
+ * #252: Added pagination (startMessage/endMessage) and includeToolResults filter.
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -8,27 +9,37 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
+interface GetRawArgs {
+    taskId: string;
+    startMessage?: number;
+    endMessage?: number;
+    includeToolResults?: boolean;
+}
+
 /**
  * Définition de l'outil get_raw_conversation
  */
 export const getRawConversationTool = {
     definition: {
         name: 'get_raw_conversation',
-        description: 'Récupère le contenu brut d\'une conversation (fichiers JSON) sans condensation.',
+        description: 'Récupère le contenu brut d\'une conversation (fichiers JSON) sans condensation. #252: Supports pagination via startMessage/endMessage (1-based indices) and includeToolResults filter.',
         inputSchema: {
             type: 'object',
             properties: {
                 taskId: { type: 'string', description: 'L\'identifiant de la tâche à récupérer.' },
+                startMessage: { type: 'number', description: '1-based start index for api_conversation_history messages. Default: 1 (first message).' },
+                endMessage: { type: 'number', description: '1-based end index (inclusive) for api_conversation_history messages. Default: last message.' },
+                includeToolResults: { type: 'boolean', description: 'Include tool_result blocks in api_conversation_history. Default: true.' },
             },
             required: ['taskId'],
         },
     },
-    
+
     /**
      * Handler pour l'outil get_raw_conversation
      */
-    handler: async (args: { taskId: string }): Promise<CallToolResult> => {
-        const { taskId } = args;
+    handler: async (args: GetRawArgs): Promise<CallToolResult> => {
+        const { taskId, startMessage, endMessage, includeToolResults = true } = args;
         if (!taskId) {
             throw new GenericError("taskId is required.", GenericErrorCode.INVALID_ARGUMENT);
         }
@@ -84,6 +95,32 @@ export const getRawConversationTool = {
 
                 const taskStats = await fs.stat(taskPath).catch(() => null);
 
+                // #252: Apply pagination and filtering to api_conversation_history
+                let apiHistory = apiResult.data;
+                const totalMessages = Array.isArray(apiHistory) ? apiHistory.length : 0;
+
+                if (Array.isArray(apiHistory)) {
+                    // Filter out tool_result blocks if requested
+                    if (!includeToolResults) {
+                        apiHistory = apiHistory.filter((msg: any) => {
+                            // Keep messages that are not pure tool_result responses
+                            if (msg.role === 'tool' || msg.type === 'tool_result') return false;
+                            // Filter tool_result content blocks from assistant messages
+                            if (Array.isArray(msg.content)) {
+                                msg.content = msg.content.filter((block: any) =>
+                                    block.type !== 'tool_result' && block.type !== 'tool_use'
+                                );
+                            }
+                            return true;
+                        });
+                    }
+
+                    // Apply message range (1-based, inclusive)
+                    const start = startMessage != null ? Math.max(1, startMessage) - 1 : 0;
+                    const end = endMessage != null ? Math.min(apiHistory.length, endMessage) : apiHistory.length;
+                    apiHistory = apiHistory.slice(start, end);
+                }
+
                 const rawData = {
                     taskId,
                     taskStats: taskStats ? {
@@ -92,8 +129,18 @@ export const getRawConversationTool = {
                         size: taskStats.size
                     } : null,
                     metadata: metaResult.data,
-                    api_conversation_history: apiResult.data,
+                    api_conversation_history: apiHistory,
                     ui_messages: uiResult.data,
+                    // #252: Pagination metadata
+                    pagination: {
+                        totalMessages,
+                        requestedRange: {
+                            start: startMessage ?? 1,
+                            end: endMessage ?? totalMessages,
+                        },
+                        returnedMessages: Array.isArray(apiHistory) ? apiHistory.length : 0,
+                        includeToolResults,
+                    },
                     ...(parseErrors.length > 0 ? { _parseErrors: parseErrors } : {}),
                 };
 
