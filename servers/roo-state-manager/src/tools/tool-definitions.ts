@@ -400,7 +400,7 @@ export const roosyncInventoryDefinition = {
             type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'], description: 'Inventory type. "machines" = offline/warning only. "status" = compact system snapshot with flags.' },
             machineId: { type: 'string', description: 'Machine ID (default: hostname). For type="status", acts as machineFilter.' },
             includeHeartbeats: { type: 'boolean', description: 'Include heartbeat data (default: true, type=heartbeat|all)' },
-            status: { type: 'string', enum: ['offline', 'warning', 'all'], description: 'Filter by status (type="machines")' },
+            status: { type: 'string', enum: ['unknown', 'idle', 'all', 'offline', 'warning'], description: 'Filter by status (type="machines")' },
             includeDetails: { type: 'boolean', description: 'Full machine details (type="machines") or tool usage stats (type="status")' },
             detail: { type: 'string', enum: ['compact', 'full'], description: 'Detail level for type="status". "full" adds claims + pipeline stages (#1855 HUD)' },
             resetCache: { type: 'boolean', description: 'Force service cache reset (type="status" only, default: false)' }

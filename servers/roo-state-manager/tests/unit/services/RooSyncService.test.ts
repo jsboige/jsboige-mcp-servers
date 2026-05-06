@@ -346,8 +346,8 @@ describe('RooSyncService', () => {
       });
     });
 
-    describe('getOfflineMachines', () => {
-      it('devrait retourner la liste des machines offline', async () => {
+    describe('getUnknownMachines', () => {
+      it('devrait retourner la liste des machines unknown', async () => {
         // Arrange
         const service = getRooSyncService();
         const heartbeatService = service.getHeartbeatService();
@@ -362,8 +362,7 @@ describe('RooSyncService', () => {
         const machineData = {
           machineId: 'test-machine-1',
           lastHeartbeat: new Date(Date.now() - 300000).toISOString(), // 5 minutes avant
-          status: 'offline',
-          missedHeartbeats: 10,
+          status: 'unknown',
           metadata: {
             firstSeen: new Date().toISOString(),
             lastUpdated: new Date().toISOString(),
@@ -379,15 +378,15 @@ describe('RooSyncService', () => {
         const newService = getRooSyncService();
 
         // Act
-        const offlineMachines = newService.getOfflineMachines();
+        const unknownMachines = newService.getUnknownMachines();
 
         // Assert
-        expect(offlineMachines).toContain('test-machine-1');
+        expect(unknownMachines).toContain('test-machine-1');
       });
     });
 
-    describe('getWarningMachines', () => {
-      it('devrait retourner la liste des machines en avertissement', async () => {
+    describe('getIdleMachines', () => {
+      it('devrait retourner la liste des machines idle', async () => {
         // Arrange
         const service = getRooSyncService();
         const heartbeatService = service.getHeartbeatService();
@@ -402,8 +401,7 @@ describe('RooSyncService', () => {
         const machineData = {
           machineId: 'test-machine-2',
           lastHeartbeat: new Date(Date.now() - 90000).toISOString(), // 90 secondes avant
-          status: 'warning',
-          missedHeartbeats: 3,
+          status: 'idle',
           metadata: {
             firstSeen: new Date().toISOString(),
             lastUpdated: new Date().toISOString(),
@@ -417,10 +415,10 @@ describe('RooSyncService', () => {
         const newService = getRooSyncService();
 
         // Act
-        const warningMachines = newService.getWarningMachines();
+        const idleMachines = newService.getIdleMachines();
 
         // Assert
-        expect(warningMachines).toContain('test-machine-2');
+        expect(idleMachines).toContain('test-machine-2');
       });
     });
 
@@ -441,8 +439,8 @@ describe('RooSyncService', () => {
         expect(state).toBeDefined();
         expect(state.heartbeats).toBeInstanceOf(Map);
         expect(state.onlineMachines).toBeInstanceOf(Array);
-        expect(state.offlineMachines).toBeInstanceOf(Array);
-        expect(state.warningMachines).toBeInstanceOf(Array);
+        expect(state.unknownMachines).toBeInstanceOf(Array);
+        expect(state.idleMachines).toBeInstanceOf(Array);
         expect(state.statistics).toBeDefined();
         expect(state.statistics.totalMachines).toBeGreaterThanOrEqual(2);
       });
@@ -530,9 +528,9 @@ describe('RooSyncService', () => {
         expect(result).toBeDefined();
         expect(result.success).toBe(true);
         expect(result.checkedAt).toBeDefined();
-        expect(Array.isArray(result.newlyOfflineMachines)).toBe(true);
+        expect(Array.isArray(result.newlyUnknownMachines)).toBe(true);
         expect(Array.isArray(result.newlyOnlineMachines)).toBe(true);
-        expect(Array.isArray(result.warningMachines)).toBe(true);
+        expect(Array.isArray(result.newlyIdleMachines)).toBe(true);
       });
     });
   });

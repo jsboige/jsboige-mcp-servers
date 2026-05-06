@@ -994,17 +994,31 @@ export class RooSyncService {
   }
 
   /**
-   * Obtient les machines actuellement offline
+   * @deprecated Use getUnknownMachines() — terminology rename
    */
   public getOfflineMachines(): string[] {
-    return this.heartbeatService.getOfflineMachines();
+    return this.heartbeatService.getUnknownMachines();
   }
 
   /**
-   * Obtient les machines en avertissement
+   * Obtient les machines avec statut UNKNOWN (offline)
+   */
+  public getUnknownMachines(): string[] {
+    return this.heartbeatService.getUnknownMachines();
+  }
+
+  /**
+   * @deprecated Use getIdleMachines() — terminology rename
    */
   public getWarningMachines(): string[] {
-    return this.heartbeatService.getWarningMachines();
+    return this.heartbeatService.getIdleMachines();
+  }
+
+  /**
+   * Obtient les machines avec statut IDLE (warning)
+   */
+  public getIdleMachines(): string[] {
+    return this.heartbeatService.getIdleMachines();
   }
 
   /**
