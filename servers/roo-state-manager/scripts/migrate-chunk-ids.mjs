@@ -9,6 +9,13 @@
  * Idempotent — skips points where new_id == old_id.
  * Resumable — saves progress to migration-state.json after each batch.
  *
+ * LIMITATION: This script handles primary chunk IDs only (computeChunkId algorithm).
+ * Sub-chunks (large content split into parts) use a different ID scheme:
+ *   uuidv5(parent_chunk_id + "_part_N", namespace) — see ChunkExtractor.ts:386
+ * If sub-chunks exist in the collection, a second pass with --sub-chunks mode is needed.
+ *
+ * Algorithm mirrors: ChunkExtractor.ts computeChunkId() (uuidv5 with same namespace/seed)
+ *
  * Usage:
  *   node scripts/migrate-chunk-ids.mjs [--dry-run] [--batch-size N] [--source-filter VALUE]
  *                                      [--max-points N] [--max-minutes N] [--resume] [--pause-ms N]
@@ -188,6 +195,12 @@ async function migrate() {
             const contentHash = crypto.createHash('sha256').update(payload.content).digest('hex').slice(0, 16);
             const newPayload = { ...payload, contentHash };
 
+            if (!point.vector) {
+                console.warn(`  Point ${point.id}: no vector, skipping`);
+                totalSkipped++;
+                continue;
+            }
+
             upserts.push({
                 id: newId,
                 vector: point.vector,
@@ -199,16 +212,16 @@ async function migrate() {
         // Apply batch
         if (upserts.length > 0 && !DRY_RUN) {
             try {
-                // Upsert new points first
+                // Upsert new points — wait for confirmation before deleting old ones
                 await client.upsert(COLLECTION, {
                     points: upserts,
-                    wait: false, // Async for performance
+                    wait: true, // Data integrity: confirm persistence before deleting originals
                 });
 
-                // Then delete old points
+                // Delete old points only after upsert confirmed
                 await client.delete(COLLECTION, {
                     points: deletes,
-                    wait: false,
+                    wait: false, // Delete is less critical, can be async
                 });
 
                 totalMigrated += upserts.length;
