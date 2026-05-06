@@ -1060,12 +1060,13 @@ export class MessageManager {
     errors: number;
     message_ids: string[];
     failed_ids: string[];
+    failed_reasons: Record<string, string>;
   }> {
     const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
     logger.info(`Bulk ${operation} for ${machineId}:${effectiveWorkspaceId}`, { filters });
 
     if (!existsSync(this.inboxPath)) {
-      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [] };
+      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [], failed_reasons: {} };
     }
 
     // Use cached data for filtering (#638 perf optimization)
@@ -1116,21 +1117,24 @@ export class MessageManager {
 
     // Apply the operation to matched messages
     let processed = 0;
+    const failedReasons: Record<string, string> = {};
     for (const id of matchedIds) {
       try {
         if (operation === 'mark_read') {
           const success = await this.markAsRead(id, machineId);
           if (success) processed++;
-          else { errors++; failedIds.push(id); }
+          else { errors++; failedIds.push(id); failedReasons[id] = 'mark_read returned false'; }
         } else if (operation === 'archive') {
           const success = await this.archiveMessage(id);
           if (success) processed++;
-          else { errors++; failedIds.push(id); }
+          else { errors++; failedIds.push(id); failedReasons[id] = 'archive returned false'; }
         }
       } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
         logger.error(`Error processing message ${id}`, error);
         errors++;
         failedIds.push(id);
+        failedReasons[id] = msg;
       }
     }
 
@@ -1141,7 +1145,8 @@ export class MessageManager {
       processed,
       errors,
       message_ids: matchedIds,
-      failed_ids: failedIds
+      failed_ids: failedIds,
+      failed_reasons: failedReasons
     };
   }
 
