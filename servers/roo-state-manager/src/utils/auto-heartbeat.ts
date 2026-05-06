@@ -24,7 +24,10 @@ let isInitialized = false;
  * Must be called once at server startup.
  */
 export function initAutoHeartbeat(): void {
-    lastHeartbeatAt = Date.now();
+    // Start at 0 so the first tool call always triggers a heartbeat
+    // (Date.now() - 0 > HEARTBEAT_INTERVAL_MS is always true).
+    // Previously Date.now() caused the first call to silently skip.
+    lastHeartbeatAt = 0;
     isInitialized = true;
 }
 
