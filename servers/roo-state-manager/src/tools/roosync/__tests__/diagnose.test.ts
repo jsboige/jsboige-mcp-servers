@@ -328,6 +328,47 @@ describe('roosync_diagnose', () => {
   });
 
   // ============================================================
+  // Tests action: 'best-practices' (#1935 Cluster D)
+  // ============================================================
+
+  describe('action: best-practices', () => {
+    it('should dispatch to getMcpBestPractices and return structured result', async () => {
+      const mockResult = {
+        content: [{ type: 'text' as const, text: '# MCP Best Practices\n\nGeneral guidance...' }]
+      };
+
+      vi.doMock('../../../tools/get_mcp_best_practices.js', () => ({
+        getMcpBestPractices: {
+          handler: vi.fn().mockResolvedValue(mockResult)
+        }
+      }));
+
+      const args: DiagnoseArgs = { action: 'best-practices' };
+      const result = await roosyncDiagnose(args);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('best-practices');
+      expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(result.data).toEqual(mockResult);
+    });
+
+    it('should forward mcp_name to handler', async () => {
+      const mockHandler = vi.fn().mockResolvedValue({
+        content: [{ type: 'text' as const, text: 'Specific MCP guide' }]
+      });
+
+      vi.doMock('../../../tools/get_mcp_best_practices.js', () => ({
+        getMcpBestPractices: { handler: mockHandler }
+      }));
+
+      const args: DiagnoseArgs = { action: 'best-practices', mcp_name: 'roo-state-manager' };
+      await roosyncDiagnose(args);
+
+      expect(mockHandler).toHaveBeenCalledWith({ mcp_name: 'roo-state-manager' });
+    });
+  });
+
+  // ============================================================
   // Tests d'erreurs
   // ============================================================
 

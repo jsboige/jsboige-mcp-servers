@@ -349,8 +349,9 @@ export function registerCallToolHandler(
                 break;
             }
             case 'get_mcp_best_practices': {
+                // #1935 Cluster D: backward compat — call original handler directly
                 const m = await import('./get_mcp_best_practices.js');
-                result = await m.getMcpBestPractices.handler();
+                result = await m.getMcpBestPractices.handler({ mcp_name: (args as any)?.mcp_name });
                 break;
             }
             // #814: rebuild_task_index redirects to new implementation (backward compat)

@@ -28,8 +28,8 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 // ====================================================================
 
 export const DiagnoseArgsSchema = z.object({
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze'])
-    .describe('Type d\'opération: env, debug, reset, test, health, analyze (roadmap analysis, fused from analyze_roosync_problems)'),
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'])
+    .describe('Operation: env, debug, reset, test, health, analyze (roadmap), best-practices (MCP guide, fused from get_mcp_best_practices)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Vérifier l\'espace disque (action: env)'),
@@ -52,7 +52,11 @@ export const DiagnoseArgsSchema = z.object({
   roadmapPath: z.string().optional()
     .describe('Chemin vers sync-roadmap.md (action: analyze, auto-détecté si omis)'),
   generateReport: z.boolean().optional()
-    .describe('Générer un rapport dans roo-config/reports (action: analyze)')
+    .describe('Générer un rapport dans roo-config/reports (action: analyze)'),
+
+  // #1935 Cluster D: Paramètres pour action: 'best-practices' (fused from get_mcp_best_practices)
+  mcp_name: z.string().optional()
+    .describe('Nom du MCP spécifique à analyser (action: best-practices)')
 });
 
 export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
@@ -60,7 +64,7 @@ export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
 export const DiagnoseResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si l\'opération a réussi'),
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze'])
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'])
     .describe('Type d\'opération effectuée'),
   timestamp: z.string()
     .describe('Timestamp de l\'opération (ISO 8601)'),
@@ -112,6 +116,18 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
           action: 'analyze',
           timestamp,
           data: analyzeResult
+        };
+      }
+
+      // #1935 Cluster D: fused from get_mcp_best_practices
+      case 'best-practices': {
+        const m = await import('../get_mcp_best_practices.js');
+        const result = await m.getMcpBestPractices.handler({ mcp_name: args.mcp_name });
+        return {
+          success: true,
+          action: 'best-practices',
+          timestamp,
+          data: result
         };
       }
 
