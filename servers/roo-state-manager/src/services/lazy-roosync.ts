@@ -51,6 +51,8 @@ export async function getRooSyncService() {
 export interface LazyRooSyncServiceStatic {
     resetInstance(): Promise<void>;
     getInstance(options?: { enabled?: boolean }): Promise<import('./RooSyncService.js').RooSyncService>;
+    isDegraded(): Promise<boolean>;
+    getInitError(): Promise<Error | null>;
 }
 
 export const RooSyncService: LazyRooSyncServiceStatic = {
@@ -61,5 +63,13 @@ export const RooSyncService: LazyRooSyncServiceStatic = {
     async getInstance(options?: { enabled?: boolean }) {
         const mod = await _ensureLoaded();
         return mod.RooSyncService.getInstance(options);
+    },
+    async isDegraded(): Promise<boolean> {
+        const mod = await _ensureLoaded();
+        return mod.RooSyncService.isDegraded();
+    },
+    async getInitError(): Promise<Error | null> {
+        const mod = await _ensureLoaded();
+        return mod.RooSyncService.getInitError();
     },
 };
