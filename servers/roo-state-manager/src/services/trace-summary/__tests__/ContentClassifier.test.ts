@@ -788,9 +788,9 @@ describe('ContentClassifier', () => {
             expect(result[2].content).toBe('msg4');
         });
 
-        it('should warn on invalid range', () => {
+        it('should return empty on startIndex exceeding message count', () => {
             const conv = makeSkeleton([makeMessage('user', 'msg1')]);
-            classifier.classifyConversationContent(conv, {
+            const result = classifier.classifyConversationContent(conv, {
                 startIndex: 10,
                 endIndex: 20,
                 detailLevel: 'Full',
@@ -800,7 +800,34 @@ describe('ContentClassifier', () => {
                 generateToc: false,
                 outputFormat: 'markdown',
             });
-            expect(consoleWarnSpy).toHaveBeenCalled();
+            expect(result).toHaveLength(0);
+        });
+
+        it('should throw on negative endIndex', () => {
+            const conv = makeSkeleton([makeMessage('user', 'msg1')]);
+            expect(() => classifier.classifyConversationContent(conv, {
+                endIndex: -5,
+                detailLevel: 'Full',
+                truncationChars: 1000,
+                compactStats: false,
+                includeCss: false,
+                generateToc: false,
+                outputFormat: 'markdown',
+            })).toThrow(/endIndex.*must be >= 0/);
+        });
+
+        it('should throw on startIndex >= endIndex', () => {
+            const conv = makeSkeleton([makeMessage('user', 'msg1')]);
+            expect(() => classifier.classifyConversationContent(conv, {
+                startIndex: 5,
+                endIndex: 3,
+                detailLevel: 'Full',
+                truncationChars: 1000,
+                compactStats: false,
+                includeCss: false,
+                generateToc: false,
+                outputFormat: 'markdown',
+            })).toThrow(/startIndex.*>=.*endIndex/);
         });
 
         it('should set toolType and resultType for ToolResult user messages', () => {

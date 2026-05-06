@@ -35,7 +35,7 @@ describe('SMOKE: roosync_machines', () => {
    */
   function makeHeartbeatData(
     machineId: string,
-    status: 'online' | 'offline' | 'warning',
+    status: 'online' | 'unknown' | 'idle',
     minutesAgo: number = 0
   ): Record<string, any> {
     const now = Date.now();
@@ -45,20 +45,12 @@ describe('SMOKE: roosync_machines', () => {
       machineId,
       lastHeartbeat,
       status,
-      missedHeartbeats: 0,
       metadata: {
         firstSeen: lastHeartbeat,
         lastUpdated: new Date(now).toISOString(),
         version: '3.1.0',
       },
     };
-
-    // For offline machines, include offlineSince timestamp
-    // (HeartbeatService sets this when marking a machine as offline)
-    if (status === 'offline') {
-      data.offlineSince = lastHeartbeat;
-      data.missedHeartbeats = Math.floor(minutesAgo / 5); // ~5 min heartbeat interval
-    }
 
     return data;
   }
@@ -128,7 +120,7 @@ describe('SMOKE: roosync_machines', () => {
 
     expect(result1.success).toBe(true);
     expect(result1.data).toBeDefined();
-    expect(result1.data.offlineMachines).toHaveLength(0); // No offline machines initially
+    expect(result1.data.unknownMachines).toHaveLength(0); // No offline machines initially
 
     // Step 3: Modify the underlying state (simulate machine going offline)
     const modifiedMachines = {
@@ -146,8 +138,8 @@ describe('SMOKE: roosync_machines', () => {
 
     // Step 5: Verify that result2 reflects the state change (fresh offline list, not cached)
     expect(result2.success).toBe(true);
-    expect(result2.data.offlineMachines).toHaveLength(1);
-    expect(result2.data.offlineMachines[0].machineId).toBe('test-machine-1');
+    expect(result2.data.unknownMachines).toHaveLength(1);
+    expect(result2.data.unknownMachines[0].machineId).toBe('test-machine-1');
 
     // This validates that offline machines are read fresh from heartbeat state,
     // not from stale cached data that would show 0 offline machines
@@ -165,8 +157,8 @@ describe('SMOKE: roosync_machines', () => {
     const result1 = await roosyncMachines({ status: 'warning', includeDetails: true });
 
     expect(result1.success).toBe(true);
-    expect(result1.data.warningMachines).toBeDefined();
-    expect(result1.data.warningMachines).toHaveLength(0); // No warning machines initially
+    expect(result1.data.idleMachines).toBeDefined();
+    expect(result1.data.idleMachines).toHaveLength(0); // No warning machines initially
 
     // Step 3: Modify the underlying state (simulate machine entering warning state)
     const modifiedMachines = {
@@ -183,8 +175,8 @@ describe('SMOKE: roosync_machines', () => {
 
     // Step 5: Verify that result2 reflects the state change (fresh warning list, not cached)
     expect(result2.success).toBe(true);
-    expect(result2.data.warningMachines).toHaveLength(1);
-    expect(result2.data.warningMachines[0].machineId).toBe('test-machine-3');
+    expect(result2.data.idleMachines).toHaveLength(1);
+    expect(result2.data.idleMachines[0].machineId).toBe('test-machine-3');
 
     // This validates that warning machines are read fresh from heartbeat state,
     // not returning stale cached results
@@ -202,8 +194,8 @@ describe('SMOKE: roosync_machines', () => {
     const result1 = await roosyncMachines({ status: 'all', includeDetails: true });
 
     expect(result1.success).toBe(true);
-    expect(result1.data.offlineMachines).toHaveLength(0);
-    expect(result1.data.warningMachines).toHaveLength(0);
+    expect(result1.data.unknownMachines).toHaveLength(0);
+    expect(result1.data.idleMachines).toHaveLength(0);
 
     // Step 3: Modify the underlying state (add more machines with different statuses)
     const modifiedMachines = {
@@ -222,13 +214,13 @@ describe('SMOKE: roosync_machines', () => {
 
     // Step 5: Verify that result2 reflects the state change
     expect(result2.success).toBe(true);
-    // With status: 'all', we get both offlineMachines and warningMachines
-    expect(result2.data.offlineMachines).toHaveLength(1);
-    expect(result2.data.warningMachines).toHaveLength(1);
+    // With status: 'all', we get both unknownMachines and idleMachines
+    expect(result2.data.unknownMachines).toHaveLength(1);
+    expect(result2.data.idleMachines).toHaveLength(1);
 
     // Verify machine IDs are correct
-    expect(result2.data.offlineMachines[0].machineId).toBe('test-machine-5');
-    expect(result2.data.warningMachines[0].machineId).toBe('test-machine-6');
+    expect(result2.data.unknownMachines[0].machineId).toBe('test-machine-5');
+    expect(result2.data.idleMachines[0].machineId).toBe('test-machine-6');
 
     // This validates that the machine list is computed fresh from heartbeat state,
     // not showing stale list that would only have 1 machine
