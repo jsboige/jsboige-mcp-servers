@@ -186,4 +186,50 @@ describe('MessageExtractionCoordinator', () => {
 			// May or may not have errors depending on implementation
 		});
 	});
+
+	// ============================================================
+	// Debug mode — logExtractionSummary and logError paths
+	// ============================================================
+
+	describe('debug mode paths', () => {
+		test('logExtractionSummary runs when debug is enabled via options', () => {
+			coordinator.setDebugEnabled(true);
+			const messages = [
+				{ type: 'say', say: 'text', text: 'Hello debug' },
+			];
+			// Enable debug via options to hit logExtractionSummary path
+			const result = coordinator.extractFromMessages(messages, { enableDebug: true });
+			expect(result.processedMessages).toBe(1);
+			// No console errors thrown — just coverage of log paths
+		});
+
+		test('logError path is covered when extractor throws with debug enabled', () => {
+			coordinator.setDebugEnabled(true);
+			// Use a message that triggers an extractor but in a way that could error
+			// Passing a message with type that an extractor handles but with malformed data
+			const result = coordinator.extractFromMessages([
+				{ type: 'ask', ask: 'tool', text: 'not-valid-json' },
+			], { enableDebug: true });
+			expect(result.processedMessages).toBe(1);
+		});
+
+		test('extractFromMessage with debug enabled covers logExtractionSummary', () => {
+			coordinator.setDebugEnabled(true);
+			const result = coordinator.extractFromMessage(
+				{ type: 'say', say: 'text', text: 'single message debug' },
+				{ enableDebug: true }
+			);
+			expect(result.processedMessages).toBe(1);
+		});
+
+		test('no-match debug log when no extractor handles the message', () => {
+			coordinator.setDebugEnabled(true);
+			const result = coordinator.extractFromMessages(
+				[{ type: 'completely_unknown_type', text: 'nothing matches' }],
+				{ enableDebug: true }
+			);
+			expect(result.processedMessages).toBe(1);
+			expect(result.instructions).toHaveLength(0);
+		});
+	});
 });
