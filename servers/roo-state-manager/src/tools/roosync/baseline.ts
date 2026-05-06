@@ -1276,13 +1276,13 @@ function countParameters(config: any): number {
  */
 export const baselineToolMetadata = {
   name: 'roosync_baseline',
-  description: 'Outil consolidé pour gérer les baselines RooSync (update, version, restore, export, list_versions)',
+  description: 'Outil consolidé pour gérer les baselines RooSync (update, version, restore, export, list_versions, current_version)',
   inputSchema: {
     type: 'object' as const,
     properties: {
       action: {
         type: 'string',
-        enum: ['update', 'version', 'restore', 'export', 'list_versions'],
+        enum: ['update', 'version', 'restore', 'export', 'list_versions', 'current_version'],
         description: 'Action à effectuer sur la baseline'
       },
       machineId: {
