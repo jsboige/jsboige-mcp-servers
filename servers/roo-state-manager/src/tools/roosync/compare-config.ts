@@ -608,7 +608,7 @@ function formatComparisonReport(report: any, granularity: string = 'full'): Comp
   // Vérifier les variables d'environnement critiques manquantes (#495)
   const envDiffs = checkMissingEnvVars();
 
-  const allDifferences = [
+  const rawDifferences = [
     ...report.differences.map((diff: any) => ({
       category: diff.category,
       severity: diff.severity,
@@ -618,6 +618,17 @@ function formatComparisonReport(report: any, granularity: string = 'full'): Comp
     })),
     ...envDiffs
   ];
+
+  // #1410: Deduplicate — compareRealConfigurations compares each machine vs baseline,
+  // then combines. Same diff on both machines produces duplicates.
+  // Dedup key = (category, path, description).
+  const seen = new Set<string>();
+  const allDifferences = rawDifferences.filter(diff => {
+    const dedupKey = `${diff.category}|${diff.path}|${diff.description}`;
+    if (seen.has(dedupKey)) return false;
+    seen.add(dedupKey);
+    return true;
+  });
 
   // Recalculer le summary avec les env vars
   const summary = {
