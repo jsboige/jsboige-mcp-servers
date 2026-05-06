@@ -2480,6 +2480,9 @@ async function handleReadOverview(
 }
 
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
+  // #1410 item 4: auto-cleanup stale worktree dashboards before listing
+  const cleanedUp = await cleanupStaleWorktreeDashboards();
+
   const dir = getDashboardsDir();
   try {
     await fs.mkdir(dir, { recursive: true });
@@ -2511,6 +2514,7 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
     }
 
     summaries.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
+    const cleanupNote = cleanedUp > 0 ? ` (${cleanedUp} worktree(s) expiré(s) archivé(s))` : '';
     return {
       success: true,
       action: 'list',
@@ -2518,7 +2522,7 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
       type: '',
       request: requestEcho,
       dashboards: summaries,
-      message: `${summaries.length} dashboard(s) trouvé(s)`
+      message: `${summaries.length} dashboard(s) trouvé(s)${cleanupNote}`
     };
   } catch (error) {
     return {
@@ -2538,6 +2542,72 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
  * Protection against accidental mass-deletion by agents (incident 2026-04-05 #1128).
  */
 const DASHBOARD_PROTECTION_DAYS = 7;
+
+// #1410 item 4: Worktree dashboard cleanup thresholds
+const WORKTREE_DASHBOARD_PATTERN = /^workspace-wt-/;
+const WORKTREE_CLEANUP_MAX_STATUS_LENGTH = 100;
+
+/**
+ * #1410 item 4: Clean up stale worktree dashboards.
+ *
+ * When agents run in worktrees (.claude/worktrees/wt-*), the worktree detection
+ * (#1364) resolves the parent workspace. But before that fix, or if detection fails,
+ * orphan dashboard files like `workspace-wt-worker-*` accumulate. This function
+ * archives dashboards matching the worktree pattern that are both:
+ *   - Older than DASHBOARD_PROTECTION_DAYS (7 days)
+ *   - Have a status section shorter than WORKTREE_CLEANUP_MAX_STATUS_LENGTH chars
+ *
+ * Called during `list` action so stale entries don't pollute the dashboard list.
+ * Archives (not deletes) for safety.
+ */
+async function cleanupStaleWorktreeDashboards(): Promise<number> {
+  const dir = getDashboardsDir();
+  try {
+    const files = await fs.readdir(dir);
+    const wtFiles = files.filter(f =>
+      f.endsWith('.md') && WORKTREE_DASHBOARD_PATTERN.test(f.replace(/\.md$/, ''))
+    );
+
+    if (wtFiles.length === 0) return 0;
+
+    let archived = 0;
+    const now = Date.now();
+
+    for (const file of wtFiles) {
+      const key = file.replace(/\.md$/, '');
+      try {
+        const dashboard = await readDashboardFile(key);
+        if (!dashboard) continue;
+
+        const ageMs = now - new Date(dashboard.lastModified).getTime();
+        const ageDays = ageMs / (1000 * 60 * 60 * 24);
+        const sizes = buildSizes(dashboard);
+
+        if (ageDays >= DASHBOARD_PROTECTION_DAYS && sizes.statusLength < WORKTREE_CLEANUP_MAX_STATUS_LENGTH) {
+          const archiveDir = getArchiveDir();
+          await fs.mkdir(archiveDir, { recursive: true });
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          const archivePath = path.join(archiveDir, `${key}-wt-cleanup-${timestamp}.md`);
+          const originalPath = path.join(dir, file);
+          const content = await fs.readFile(originalPath, 'utf8');
+          await fs.writeFile(archivePath, content, 'utf8');
+          await fs.unlink(originalPath);
+          archived++;
+          logger.info('Archived stale worktree dashboard', {
+            key, ageDays: ageDays.toFixed(1), statusLength: sizes.statusLength
+          });
+        }
+      } catch (e) {
+        logger.warn('Failed to process worktree dashboard for cleanup', {
+          key, error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
+    return archived;
+  } catch {
+    return 0;
+  }
+}
 
 async function handleDelete(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   const filePath = getDashboardPath(key);

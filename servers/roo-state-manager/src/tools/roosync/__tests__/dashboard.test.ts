@@ -1988,4 +1988,73 @@ describe('roosync_dashboard', () => {
       expect(replyMsg?.acknowledged_at?.['test-machine']).toBeDefined();
     });
   });
+
+  // #1410 item 4: Worktree dashboard cleanup
+  describe('worktree dashboard cleanup', () => {
+    it('archives stale worktree dashboards (>7 days, <100 chars status)', async () => {
+      // Create a stale worktree dashboard
+      await roosyncDashboard({
+        action: 'write', type: 'workspace',
+        content: 'short status',
+        workspace: 'wt-worker-test-cleanup'
+      });
+
+      // Backdate the file to be >7 days old
+      const dashboardsDir = path.join(tmpDir, 'dashboards');
+      const wtFile = path.join(dashboardsDir, 'workspace-wt-worker-test-cleanup.md');
+      const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+      const content = await import('fs/promises').then(f => f.readFile(wtFile, 'utf8'));
+      const updated = content.replace(/lastModified: .+/, `lastModified: ${oldDate}`);
+      await import('fs/promises').then(f => f.writeFile(wtFile, updated, 'utf8'));
+
+      // List triggers cleanup
+      const result = await roosyncDashboard({ action: 'list' });
+      expect(result.success).toBe(true);
+
+      // The stale worktree dashboard should be gone from the list
+      const keys = result.dashboards?.map((d: any) => d.key) ?? [];
+      expect(keys).not.toContain('workspace-wt-worker-test-cleanup');
+
+      // But it should be in the archive
+      const archiveDir = path.join(dashboardsDir, 'archive');
+      const { readdirSync } = await import('fs');
+      const archives = readdirSync(archiveDir);
+      const wtArchive = archives.find(f => f.includes('wt-worker-test-cleanup'));
+      expect(wtArchive).toBeDefined();
+    });
+
+    it('preserves recent worktree dashboards (<7 days)', async () => {
+      // Create a recent worktree dashboard
+      await roosyncDashboard({
+        action: 'write', type: 'workspace',
+        content: 'short status',
+        workspace: 'wt-worker-recent'
+      });
+
+      const result = await roosyncDashboard({ action: 'list' });
+      const keys = result.dashboards?.map((d: any) => d.key) ?? [];
+      expect(keys).toContain('workspace-wt-worker-recent');
+    });
+
+    it('preserves worktree dashboards with substantial status (>100 chars)', async () => {
+      const longStatus = 'x'.repeat(200);
+      await roosyncDashboard({
+        action: 'write', type: 'workspace',
+        content: longStatus,
+        workspace: 'wt-worker-substantial'
+      });
+
+      // Backdate
+      const dashboardsDir = path.join(tmpDir, 'dashboards');
+      const wtFile = path.join(dashboardsDir, 'workspace-wt-worker-substantial.md');
+      const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+      const content = await import('fs/promises').then(f => f.readFile(wtFile, 'utf8'));
+      const updated = content.replace(/lastModified: .+/, `lastModified: ${oldDate}`);
+      await import('fs/promises').then(f => f.writeFile(wtFile, updated, 'utf8'));
+
+      const result = await roosyncDashboard({ action: 'list' });
+      const keys = result.dashboards?.map((d: any) => d.key) ?? [];
+      expect(keys).toContain('workspace-wt-worker-substantial');
+    });
+  });
 });
