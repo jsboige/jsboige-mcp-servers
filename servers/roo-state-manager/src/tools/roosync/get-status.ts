@@ -317,22 +317,31 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     let filteredIdleMachines = (heartbeatState?.idleMachines ?? []).filter(isKnownMachine);
     const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
 
-    // #1953: Cross-check heartbeat-derived status against dashboard activity.
+    // #1953, #2016: Cross-check heartbeat-derived status against dashboard activity.
     // Dashboard message timestamps are embedded in file content (immune to GDrive
-    // propagation latency on file mod time), preventing false OFFLINE detection.
+    // propagation latency on file mod time), preventing false UNKNOWN detection.
+    // #2016: Aggregate ALL dashboards (workspace-*, machine-*, global) so a machine
+    // active on any dashboard counts as ONLINE — not only roo-extensions workspace.
     let dashboardOverrides: string[] = [];
     try {
       const dashboardsDir = join(getSharedStatePath(), 'dashboards');
-      const workspaceDashboard = join(dashboardsDir, 'workspace-roo-extensions.md');
-      const dashboardContent = readFileSync(workspaceDashboard, 'utf-8');
+      const dashboardContents: string[] = [];
+      for (const file of readdirSync(dashboardsDir)) {
+        if (!file.endsWith('.md') || file.endsWith('.tmp')) continue;
+        try {
+          dashboardContents.push(readFileSync(join(dashboardsDir, file), 'utf-8'));
+        } catch (err) {
+          logger.debug(`Dashboard ${file} unreadable`, { error: String(err) });
+        }
+      }
       const { crossCheckWithDashboard } = await import('../../utils/dashboard-activity.js');
       const crossChecked = crossCheckWithDashboard(
-        { onlineMachines: filteredOnlineMachines, offlineMachines: filteredUnknownMachines, warningMachines: filteredIdleMachines },
-        dashboardContent
+        { onlineMachines: filteredOnlineMachines, unknownMachines: filteredUnknownMachines, idleMachines: filteredIdleMachines },
+        dashboardContents
       );
       filteredOnlineMachines = crossChecked.onlineMachines;
-      filteredUnknownMachines = crossChecked.offlineMachines;
-      filteredIdleMachines = crossChecked.warningMachines;
+      filteredUnknownMachines = crossChecked.unknownMachines;
+      filteredIdleMachines = crossChecked.idleMachines;
       dashboardOverrides = crossChecked.overrides;
     } catch (err) {
       logger.debug('Dashboard cross-check skipped', { error: String(err) });
