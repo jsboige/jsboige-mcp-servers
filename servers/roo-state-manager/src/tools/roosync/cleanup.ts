@@ -78,14 +78,22 @@ function formatCleanupResult(result: {
   errors: number;
   message_ids: string[];
   failed_ids?: string[];
+  failed?: Array<{ id: string; reason: string }>;
 }, verbose: boolean = true): string {
   let output = `## 🧹 Cleanup RooSync - ${result.operation}\n\n`;
   output += `**Messages correspondants :** ${result.matched}\n`;
   output += `**Messages traités :** ${result.processed}\n`;
   output += `**Erreurs :** ${result.errors}\n\n`;
 
+  const failedItems = result.failed ?? [];
   const failedIds = result.failed_ids ?? [];
-  if (failedIds.length > 0) {
+  if (failedItems.length > 0) {
+    output += `**Messages en échec** (${failedItems.length}) :\n\n`;
+    for (const item of failedItems) {
+      output += `- ❌ \`${item.id}\` — ${item.reason}\n`;
+    }
+    output += '\n';
+  } else if (failedIds.length > 0) {
     output += `**IDs en échec** (${failedIds.length}) :\n\n`;
     for (const id of failedIds) {
       output += `- ❌ ${id}\n`;
