@@ -1,155 +1,34 @@
 /**
  * Tests unitaires pour HeartbeatService
  *
+ * ADR 008 Phase 2 — in-memory passive model.
+ * No disk I/O, no background intervals, no GDrive writes.
+ *
  * Couvre :
- * - Initialisation avec per-machine files (heartbeats/ dir)
- * - Initialisation sans fichier → état vide
- * - Initialisation avec fichier corrompu → skip gracieux
- * - Migration: legacy heartbeat.json → per-machine files
- * - registerHeartbeat : nouvelle machine + writes per-machine file
- * - registerHeartbeat : machine existante (update)
- * - checkHeartbeats : reloads from disk, détecte offline/warning/online
- * - getOnlineMachines / getOfflineMachines / getWarningMachines
+ * - Initialisation → état vide (no disk load)
+ * - registerHeartbeat : nouvelle machine + machine existante (update)
+ * - checkHeartbeats : détection IDLE/UNKNOWN/ONLINE (computed from lastHeartbeat age)
+ * - getOnlineMachines / getOfflineMachines (deprecated alias) / getWarningMachines (deprecated alias)
  * - getHeartbeatData : défini après register, undefined avant
- * - getState : retourne copie défensive
- * - removeMachine : suppression + file deletion
- * - cleanupOldOfflineMachines : supprime anciennes, garde récentes
- * - stopHeartbeatService : saves all per-machine files
- * - updateConfig : accepte config partielle
+ * - getState : retourne copie défensive avec nouvelles clés (idleMachines, unknownMachines)
+ * - removeMachine : suppression in-memory
+ * - cleanupOldOfflineMachines : no-op (returns 0)
+ * - stopHeartbeatService : no-op
+ * - updateConfig : no-op
+ * - reloadFromDisk : no-op
  *
  * @module services/roosync/__tests__/HeartbeatService.test
- * @version 2.0.0 (per-machine files)
+ * @version 4.0.0 (ADR 008 Phase 2 — in-memory only)
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { join } from 'path';
-
-// ─────────────────── hoisted mocks ───────────────────
-
-const {
-  mockExistsSync,
-  mockReadFileSync,
-  mockReaddirSync,
-  mockMkdirSync,
-  mockWriteFileSync,
-  mockUnlinkSync,
-  mockStatSync,
-  mockRenameSync,
-  mockWriteFile,
-  mockMkdir,
-  mockUnlink,
-  mockRename,
-} = vi.hoisted(() => ({
-  mockExistsSync: vi.fn().mockReturnValue(false),
-  mockReadFileSync: vi.fn().mockReturnValue('{}'),
-  mockReaddirSync: vi.fn().mockReturnValue([] as string[]),
-  mockMkdirSync: vi.fn(),
-  mockWriteFileSync: vi.fn(),
-  mockUnlinkSync: vi.fn(),
-  mockStatSync: vi.fn().mockReturnValue({ size: 100 }),
-  mockRenameSync: vi.fn(),
-  mockWriteFile: vi.fn().mockResolvedValue(undefined),
-  mockMkdir: vi.fn().mockResolvedValue(undefined),
-  mockUnlink: vi.fn().mockResolvedValue(undefined),
-  mockRename: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('fs', () => ({
-  existsSync: mockExistsSync,
-  readFileSync: mockReadFileSync,
-  readdirSync: mockReaddirSync,
-  mkdirSync: mockMkdirSync,
-  writeFileSync: mockWriteFileSync,
-  unlinkSync: mockUnlinkSync,
-  statSync: mockStatSync,
-  renameSync: mockRenameSync,
-  promises: {
-    writeFile: (...args: any[]) => mockWriteFile(...args),
-    mkdir: (...args: any[]) => mockMkdir(...args),
-    unlink: (...args: any[]) => mockUnlink(...args),
-    rename: (...args: any[]) => mockRename(...args),
-  },
-}));
 
 import { HeartbeatService } from '../HeartbeatService.js';
-
-// ─────────────────── helpers ───────────────────
-
-const TEST_PATH = '/test/shared';
-const HEARTBEATS_DIR = join(TEST_PATH, 'heartbeats');
-const LEGACY_PATH = join(TEST_PATH, 'heartbeat.json');
-
-function makeOnlineMachine(machineId: string): Record<string, any> {
-  return {
-    machineId,
-    lastHeartbeat: new Date().toISOString(),
-    status: 'online',
-    missedHeartbeats: 0,
-    metadata: {
-      firstSeen: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-      version: '3.1.0',
-    },
-  };
-}
-
-/**
- * Configure mocks to simulate per-machine files on disk.
- * Each key in `machines` is a machineId, value is the heartbeat data object.
- */
-function setupPerMachineFiles(machines: Record<string, any>): void {
-  const machineIds = Object.keys(machines);
-
-  mockExistsSync.mockImplementation((p: string) => {
-    if (p === HEARTBEATS_DIR) return true;
-    for (const id of machineIds) {
-      if (p === join(HEARTBEATS_DIR, `${id}.json`)) return true;
-    }
-    return false;
-  });
-
-  mockReaddirSync.mockReturnValue(machineIds.map(id => `${id}.json`));
-
-  mockReadFileSync.mockImplementation((p: string, _enc?: string) => {
-    for (const [id, data] of Object.entries(machines)) {
-      if (p === join(HEARTBEATS_DIR, `${id}.json`)) {
-        return JSON.stringify(data);
-      }
-    }
-    throw new Error(`ENOENT: ${p}`);
-  });
-}
-
-/**
- * Configure mocks to simulate a legacy heartbeat.json file.
- */
-function setupLegacyFile(machines: Record<string, any>): void {
-  mockExistsSync.mockImplementation((p: string) => p === LEGACY_PATH);
-
-  mockReadFileSync.mockReturnValue(JSON.stringify({
-    heartbeats: machines,
-    statistics: {
-      totalMachines: Object.keys(machines).length,
-      onlineCount: 0,
-      offlineCount: 0,
-      warningCount: 0,
-      lastHeartbeatCheck: new Date().toISOString(),
-    },
-  }));
-}
 
 // ─────────────────── setup ───────────────────
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockExistsSync.mockReturnValue(false);
-  mockReadFileSync.mockReturnValue('{}');
-  mockReaddirSync.mockReturnValue([]);
-  mockStatSync.mockReturnValue({ size: 100 });
-  mockWriteFile.mockResolvedValue(undefined);
-  mockMkdir.mockResolvedValue(undefined);
-  mockUnlink.mockResolvedValue(undefined);
-  mockRename.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -161,132 +40,38 @@ afterEach(() => {
 describe('HeartbeatService', () => {
 
   // ============================================================
-  // Initialisation (per-machine files)
+  // Initialisation (in-memory — always empty)
   // ============================================================
 
   describe('initialisation', () => {
-    test('état vide si pas de fichier heartbeat', () => {
-      mockExistsSync.mockReturnValue(false);
-
-      const service = new HeartbeatService(TEST_PATH);
+    test('état vide par défaut (pas de chargement disque)', () => {
+      const service = new HeartbeatService();
 
       expect(service.getOnlineMachines()).toEqual([]);
       expect(service.getOfflineMachines()).toEqual([]);
       expect(service.getWarningMachines()).toEqual([]);
+      expect(service.getUnknownMachines()).toEqual([]);
+      expect(service.getIdleMachines()).toEqual([]);
     });
 
-    test('charge les machines depuis le répertoire per-machine', () => {
-      const data = makeOnlineMachine('myia-ai-01');
-      setupPerMachineFiles({ 'myia-ai-01': data });
-
-      const service = new HeartbeatService(TEST_PATH);
-
-      expect(service.getOnlineMachines()).toContain('myia-ai-01');
-    });
-
-    test('état vide si fichier per-machine corrompu (pas de throw)', () => {
-      mockExistsSync.mockImplementation((p: string) => p === HEARTBEATS_DIR);
-      mockReaddirSync.mockReturnValue(['corrupted.json']);
-      mockReadFileSync.mockReturnValue('INVALID{{JSON');
-
-      // Ne doit pas throw
-      const service = new HeartbeatService(TEST_PATH);
+    test('accepte un sharedPath sans l\'utiliser', () => {
+      const service = new HeartbeatService('/some/path');
 
       expect(service.getOnlineMachines()).toEqual([]);
     });
 
-    test('charge les machines offline depuis les fichiers per-machine', () => {
-      const offlineMachine = {
-        ...makeOnlineMachine('offline-machine'),
-        status: 'offline',
-        offlineSince: new Date(Date.now() - 5000).toISOString(),
-      };
-      setupPerMachineFiles({ 'offline-machine': offlineMachine });
-
-      const service = new HeartbeatService(TEST_PATH);
-
-      expect(service.getOfflineMachines()).toContain('offline-machine');
-    });
-
-    test('charge plusieurs machines depuis les fichiers per-machine', () => {
-      setupPerMachineFiles({
-        'machine-a': makeOnlineMachine('machine-a'),
-        'machine-b': makeOnlineMachine('machine-b'),
+    test('accepte une config complète', () => {
+      const service = new HeartbeatService('/path', {
+        heartbeatInterval: 30000,
+        offlineTimeout: 120000,
+        missedHeartbeatThreshold: 4,
+        autoSyncEnabled: false,
+        autoSyncInterval: 60000,
+        persistenceInterval: 100,
       });
 
-      const service = new HeartbeatService(TEST_PATH);
-
-      expect(service.getOnlineMachines()).toContain('machine-a');
-      expect(service.getOnlineMachines()).toContain('machine-b');
-    });
-  });
-
-  // ============================================================
-  // Migration from legacy heartbeat.json
-  // ============================================================
-
-  describe('migration from legacy file', () => {
-    test('migrates legacy heartbeat.json to per-machine files', () => {
-      setupLegacyFile({
-        'machine-a': makeOnlineMachine('machine-a'),
-        'machine-b': makeOnlineMachine('machine-b'),
-      });
-
-      const service = new HeartbeatService(TEST_PATH);
-
-      // Machines loaded in memory
-      expect(service.getOnlineMachines()).toContain('machine-a');
-      expect(service.getOnlineMachines()).toContain('machine-b');
-
-      // Per-machine files written
-      expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
-
-      // Legacy file deleted
-      expect(mockUnlinkSync).toHaveBeenCalledWith(LEGACY_PATH);
-
-      // Dir created
-      expect(mockMkdirSync).toHaveBeenCalled();
-    });
-
-    test('handles corrupted legacy file gracefully', () => {
-      mockExistsSync.mockImplementation((p: string) => p === LEGACY_PATH);
-      mockReadFileSync.mockReturnValue('CORRUPTED{{JSON');
-
-      const service = new HeartbeatService(TEST_PATH);
-
+      expect(service).toBeDefined();
       expect(service.getOnlineMachines()).toEqual([]);
-    });
-
-    test('directory takes precedence over legacy file', () => {
-      const dirData = makeOnlineMachine('from-dir');
-
-      // Both dir and legacy exist
-      mockExistsSync.mockImplementation((p: string) =>
-        p === HEARTBEATS_DIR || p === LEGACY_PATH
-      );
-      mockReaddirSync.mockReturnValue(['from-dir.json']);
-      mockReadFileSync.mockImplementation((p: string, _enc?: string) => {
-        if (p === join(HEARTBEATS_DIR, 'from-dir.json')) return JSON.stringify(dirData);
-        if (p === LEGACY_PATH) return JSON.stringify({ heartbeats: { 'from-legacy': makeOnlineMachine('from-legacy') } });
-        throw new Error(`ENOENT: ${p}`);
-      });
-
-      const service = new HeartbeatService(TEST_PATH);
-
-      // Dir wins, legacy not loaded
-      expect(service.getOnlineMachines()).toContain('from-dir');
-      expect(service.getOnlineMachines()).not.toContain('from-legacy');
-    });
-
-    test('continues if legacy file delete fails', () => {
-      setupLegacyFile({ 'machine-c': makeOnlineMachine('machine-c') });
-      mockUnlinkSync.mockImplementation(() => { throw new Error('EBUSY'); });
-
-      // Should not throw
-      const service = new HeartbeatService(TEST_PATH);
-
-      // Machine still loaded
-      expect(service.getOnlineMachines()).toContain('machine-c');
     });
   });
 
@@ -296,7 +81,7 @@ describe('HeartbeatService', () => {
 
   describe('registerHeartbeat', () => {
     test('enregistre une nouvelle machine avec statut online', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('new-machine');
 
@@ -304,11 +89,12 @@ describe('HeartbeatService', () => {
       expect(data).toBeDefined();
       expect(data!.machineId).toBe('new-machine');
       expect(data!.status).toBe('online');
-      expect(data!.missedHeartbeats).toBe(0);
+      expect(data!.metadata.firstSeen).toBeDefined();
+      expect(data!.metadata.lastUpdated).toBeDefined();
     });
 
     test('la nouvelle machine apparaît dans getOnlineMachines', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('machine-x');
 
@@ -316,7 +102,7 @@ describe('HeartbeatService', () => {
     });
 
     test('met à jour le lastHeartbeat d\'une machine existante', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('machine-a');
       const first = service.getHeartbeatData('machine-a')!.lastHeartbeat;
@@ -325,39 +111,15 @@ describe('HeartbeatService', () => {
       await new Promise(r => setTimeout(r, 5));
       await service.registerHeartbeat('machine-a');
 
-      expect(service.getHeartbeatData('machine-a')!.machineId).toBe('machine-a');
-      expect(service.getHeartbeatData('machine-a')!.status).toBe('online');
-    });
-
-    test('remet missedHeartbeats à 0 lors d\'une mise à jour', async () => {
-      const service = new HeartbeatService(TEST_PATH);
-
-      await service.registerHeartbeat('machine-b');
-      const hb = service.getHeartbeatData('machine-b')!;
-      hb.missedHeartbeats = 5; // Simuler des heartbeats manqués
-
-      await service.registerHeartbeat('machine-b');
-
-      expect(service.getHeartbeatData('machine-b')!.missedHeartbeats).toBe(0);
-    });
-
-    test('#1953 ADR 008: registerHeartbeat is in-memory only (no file writes)', async () => {
-      const service = new HeartbeatService(TEST_PATH);
-
-      await service.registerHeartbeat('machine-y');
-
-      // ADR 008 Phase 1: registerHeartbeat is in-memory only
-      expect(mockMkdir).not.toHaveBeenCalled();
-      expect(mockWriteFile).not.toHaveBeenCalled();
-      expect(mockRename).not.toHaveBeenCalled();
-
-      // But machine is registered in memory
-      expect(service.getHeartbeatData('machine-y')).toBeDefined();
-      expect(service.getHeartbeatData('machine-y')!.status).toBe('online');
+      const updated = service.getHeartbeatData('machine-a')!;
+      expect(updated.machineId).toBe('machine-a');
+      expect(updated.status).toBe('online');
+      // lastHeartbeat should be >= first
+      expect(new Date(updated.lastHeartbeat).getTime()).toBeGreaterThanOrEqual(new Date(first).getTime());
     });
 
     test('enregistre plusieurs machines indépendamment', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('machine-1');
       await service.registerHeartbeat('machine-2');
@@ -370,12 +132,20 @@ describe('HeartbeatService', () => {
     });
 
     test('normalizes machineId to lowercase', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('MyIA-AI-01');
 
       expect(service.getHeartbeatData('myia-ai-01')).toBeDefined();
-      // ADR 008 Phase 1: in-memory only, no file writes during registration
+    });
+
+    test('accepte des métadonnées optionnelles (ignorées)', async () => {
+      const service = new HeartbeatService();
+
+      await service.registerHeartbeat('meta-machine', { customField: 'value' });
+
+      expect(service.getHeartbeatData('meta-machine')).toBeDefined();
+      expect(service.getHeartbeatData('meta-machine')!.status).toBe('online');
     });
   });
 
@@ -385,7 +155,7 @@ describe('HeartbeatService', () => {
 
   describe('checkHeartbeats', () => {
     test('retourne success=true et checkedAt', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       const result = await service.checkHeartbeats();
 
@@ -395,16 +165,17 @@ describe('HeartbeatService', () => {
     });
 
     test('retourne des tableaux vides si aucune machine', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).toEqual([]);
+      expect(result.newlyUnknownMachines).toEqual([]);
       expect(result.newlyOnlineMachines).toEqual([]);
+      expect(result.newlyIdleMachines).toEqual([]);
     });
 
     test('détecte une machine UNKNOWN (lastHeartbeat >120 min) #1953 ADR 008', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       // Register machine then make its heartbeat stale (>120 min = UNKNOWN)
       await service.registerHeartbeat('slow-machine');
@@ -413,13 +184,14 @@ describe('HeartbeatService', () => {
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).toContain('slow-machine'); // UNKNOWN maps to offlineMachines
-      expect(service.getOfflineMachines()).toContain('slow-machine');
+      expect(result.newlyUnknownMachines).toContain('slow-machine');
+      expect(service.getOfflineMachines()).toContain('slow-machine'); // deprecated alias
+      expect(service.getUnknownMachines()).toContain('slow-machine');
       expect(service.getHeartbeatData('slow-machine')!.status).toBe('unknown');
     });
 
     test('détecte une machine IDLE (30-120 min) #1953 ADR 008', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       // Register machine then make heartbeat 45 min old → IDLE
       await service.registerHeartbeat('idle-machine');
@@ -428,13 +200,14 @@ describe('HeartbeatService', () => {
 
       const result = await service.checkHeartbeats();
 
-      expect(result.warningMachines).toContain('idle-machine'); // IDLE maps to warningMachines
-      expect(service.getWarningMachines()).toContain('idle-machine');
+      expect(result.newlyIdleMachines).toContain('idle-machine');
+      expect(service.getWarningMachines()).toContain('idle-machine'); // deprecated alias
+      expect(service.getIdleMachines()).toContain('idle-machine');
       expect(service.getHeartbeatData('idle-machine')!.status).toBe('idle');
     });
 
     test('machine UNKNOWN revient online after re-registration #1953 ADR 008', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       // Register machine then make its heartbeat stale (>120 min)
       await service.registerHeartbeat('recovering-machine');
@@ -452,68 +225,45 @@ describe('HeartbeatService', () => {
     });
 
     test('machine online stable reste online #1953 ADR 008', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       // Register with current timestamp → stays ONLINE
       await service.registerHeartbeat('stable-machine');
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).not.toContain('stable-machine');
+      expect(result.newlyUnknownMachines).not.toContain('stable-machine');
       expect(service.getOnlineMachines()).toContain('stable-machine');
     });
 
-    test('does not write files (status is computed in-memory only)', async () => {
-      const service = new HeartbeatService(TEST_PATH, {
-        offlineTimeout: 100,
-        heartbeatInterval: 30,
-        missedHeartbeatThreshold: 4,
-      });
+    test('no status change if checkHeartbeats called on fresh machine', async () => {
+      const service = new HeartbeatService();
 
-      const staleData = {
-        ...makeOnlineMachine('check-machine'),
-        lastHeartbeat: new Date(Date.now() - 200).toISOString(),
-      };
-      setupPerMachineFiles({ 'check-machine': staleData });
-      vi.clearAllMocks();
+      await service.registerHeartbeat('fresh-machine');
+      const result = await service.checkHeartbeats();
 
-      await service.checkHeartbeats();
-
-      // checkHeartbeats should NOT write files (status computed in-memory)
-      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(result.newlyUnknownMachines).toEqual([]);
+      expect(result.newlyIdleMachines).toEqual([]);
+      expect(result.newlyOnlineMachines).toEqual([]);
+      expect(service.getHeartbeatData('fresh-machine')!.status).toBe('online');
     });
   });
 
   // ============================================================
-  // reloadFromDisk
+  // reloadFromDisk (no-op in ADR 008)
   // ============================================================
 
   describe('reloadFromDisk', () => {
-    test('clears state and reloads from per-machine files', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('no-op: in-memory state is preserved', async () => {
+      const service = new HeartbeatService();
 
-      // Register a machine in memory
-      await service.registerHeartbeat('in-memory-only');
-      expect(service.getOnlineMachines()).toContain('in-memory-only');
-
-      // Set up disk with different machine
-      setupPerMachineFiles({ 'from-disk': makeOnlineMachine('from-disk') });
+      await service.registerHeartbeat('in-memory-machine');
+      expect(service.getOnlineMachines()).toContain('in-memory-machine');
 
       service.reloadFromDisk();
 
-      // In-memory machine gone, disk machine loaded
-      expect(service.getOnlineMachines()).not.toContain('in-memory-only');
-      expect(service.getOnlineMachines()).toContain('from-disk');
-    });
-
-    test('empty state if heartbeats dir does not exist', async () => {
-      const service = new HeartbeatService(TEST_PATH);
-      await service.registerHeartbeat('some-machine');
-
-      mockExistsSync.mockReturnValue(false);
-      service.reloadFromDisk();
-
-      expect(service.getOnlineMachines()).toEqual([]);
+      // State unchanged — reloadFromDisk is a no-op
+      expect(service.getOnlineMachines()).toContain('in-memory-machine');
     });
   });
 
@@ -523,13 +273,13 @@ describe('HeartbeatService', () => {
 
   describe('getHeartbeatData', () => {
     test('retourne undefined si machine inconnue', () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       expect(service.getHeartbeatData('unknown-machine')).toBeUndefined();
     });
 
     test('retourne les données après registerHeartbeat', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('known-machine');
 
@@ -544,21 +294,21 @@ describe('HeartbeatService', () => {
   // ============================================================
 
   describe('getState', () => {
-    test('retourne un état complet avec statistiques', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('retourne un état complet avec statistiques (ADR 008 naming)', async () => {
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('stat-machine');
 
       const state = service.getState();
       expect(state.heartbeats).toBeDefined();
       expect(state.onlineMachines).toBeDefined();
-      expect(state.offlineMachines).toBeDefined();
-      expect(state.warningMachines).toBeDefined();
+      expect(state.idleMachines).toBeDefined();
+      expect(state.unknownMachines).toBeDefined();
       expect(state.statistics).toBeDefined();
     });
 
     test('les listes de machines sont des copies (pas des références)', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('copy-machine');
 
@@ -570,13 +320,24 @@ describe('HeartbeatService', () => {
     });
 
     test('state.statistics.totalMachines correspond au nombre de machines', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('m1');
       await service.registerHeartbeat('m2');
 
       const state = service.getState();
       expect(state.statistics.totalMachines).toBe(2);
+    });
+
+    test('state.statistics contient onlineCount, idleCount, unknownCount', async () => {
+      const service = new HeartbeatService();
+
+      await service.registerHeartbeat('stat-m1');
+
+      const state = service.getState();
+      expect(state.statistics.onlineCount).toBe(1);
+      expect(state.statistics.idleCount).toBe(0);
+      expect(state.statistics.unknownCount).toBe(0);
     });
   });
 
@@ -586,7 +347,7 @@ describe('HeartbeatService', () => {
 
   describe('removeMachine', () => {
     test('supprime la machine des listes', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('to-remove');
       expect(service.getOnlineMachines()).toContain('to-remove');
@@ -598,32 +359,30 @@ describe('HeartbeatService', () => {
     });
 
     test('supprimer une machine inexistante ne throw pas', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await expect(service.removeMachine('nonexistent')).resolves.not.toThrow();
     });
 
-    test('deletes per-machine file on removal', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('mise à jour des statistiques après suppression', async () => {
+      const service = new HeartbeatService();
 
-      await service.registerHeartbeat('to-remove-2');
-      vi.clearAllMocks();
+      await service.registerHeartbeat('m1');
+      await service.registerHeartbeat('m2');
+      expect(service.getState().statistics.totalMachines).toBe(2);
 
-      // The file "exists" on disk
-      mockExistsSync.mockReturnValue(true);
-      await service.removeMachine('to-remove-2');
-
-      expect(mockUnlink).toHaveBeenCalledWith(join(HEARTBEATS_DIR, 'to-remove-2.json'));
+      await service.removeMachine('m1');
+      expect(service.getState().statistics.totalMachines).toBe(1);
     });
   });
 
   // ============================================================
-  // cleanupOldOfflineMachines
+  // cleanupOldOfflineMachines (no-op in ADR 008)
   // ============================================================
 
   describe('cleanupOldOfflineMachines', () => {
-    test('retourne 0 si aucune machine offline', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('retourne toujours 0 (no-op ADR 008)', async () => {
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('active-machine');
 
@@ -632,122 +391,54 @@ describe('HeartbeatService', () => {
       expect(removed).toBe(0);
     });
 
-    test('garde les machines offline anciennes en statut offline (#1409)', async () => {
-      const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
-
-      await service.registerHeartbeat('myia-old-offline');
-      const hb = service.getHeartbeatData('myia-old-offline')!;
-      hb.status = 'offline';
-      hb.offlineSince = new Date(Date.now() - 100_000).toISOString(); // offline depuis 100s
-
-      const removed = await service.cleanupOldOfflineMachines(50_000); // maxAge = 50s
-
-      expect(removed).toBe(1);
-      // #1409: Production machines (myia-*) kept in state as offline, not deleted
-      expect(service.getHeartbeatData('myia-old-offline')).toBeDefined();
-      expect(service.getHeartbeatData('myia-old-offline')!.status).toBe('offline');
-    });
-
-    test('garde les machines offline récentes', async () => {
-      const service = new HeartbeatService(TEST_PATH);
-
-      await service.registerHeartbeat('recent-offline');
-      const hb = service.getHeartbeatData('recent-offline')!;
-      hb.status = 'offline';
-      hb.offlineSince = new Date().toISOString(); // offline depuis maintenant
-
-      const removed = await service.cleanupOldOfflineMachines(86_400_000); // maxAge = 24h
-
-      expect(removed).toBe(0);
-      expect(service.getHeartbeatData('recent-offline')).toBeDefined();
-    });
-
-    test('ne touche pas aux machines sans offlineSince', async () => {
-      const service = new HeartbeatService(TEST_PATH);
-
-      await service.registerHeartbeat('online-machine');
-
-      const removed = await service.cleanupOldOfflineMachines(0); // maxAge = 0
-
-      expect(removed).toBe(0);
-    });
-
-    test('supprime les machines non-production (test artifacts) offline anciennes (#1409)', async () => {
-      const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
+    test('ne supprime aucune machine (no-op ADR 008)', async () => {
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('test-artifact-machine');
-      const hb = service.getHeartbeatData('test-artifact-machine')!;
-      hb.status = 'offline';
-      hb.offlineSince = new Date(Date.now() - 100_000).toISOString();
 
-      mockExistsSync.mockReturnValue(true);
+      const removed = await service.cleanupOldOfflineMachines(0);
 
-      await service.cleanupOldOfflineMachines(50_000);
-
-      // #1409: Non-production machines (not myia-*) ARE deleted
-      expect(service.getHeartbeatData('test-artifact-machine')).toBeUndefined();
-    });
-
-    test('garde les machines production offline sans supprimer le fichier (#1409)', async () => {
-      const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
-
-      await service.registerHeartbeat('myia-cleanup-target');
-      const hb = service.getHeartbeatData('myia-cleanup-target')!;
-      hb.status = 'offline';
-      hb.offlineSince = new Date(Date.now() - 100_000).toISOString();
-
-      mockExistsSync.mockReturnValue(true);
-
-      await service.cleanupOldOfflineMachines(50_000);
-
-      // #1409: Production machines (myia-*) kept as offline, files NOT deleted
-      expect(mockUnlink).not.toHaveBeenCalled();
-      expect(service.getHeartbeatData('myia-cleanup-target')).toBeDefined();
+      expect(removed).toBe(0);
+      expect(service.getHeartbeatData('test-artifact-machine')).toBeDefined();
     });
   });
 
   // ============================================================
-  // stopHeartbeatService
+  // stopHeartbeatService (no-op in ADR 008)
   // ============================================================
 
   describe('stopHeartbeatService', () => {
     test('s\'arrête sans erreur si jamais démarré', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+      const service = new HeartbeatService();
 
       await expect(service.stopHeartbeatService()).resolves.not.toThrow();
     });
 
-    test('saves all per-machine files on stop', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('no-op: ne modifie pas l\'état', async () => {
+      const service = new HeartbeatService();
 
       await service.registerHeartbeat('persisted-machine');
-      vi.clearAllMocks();
-
       await service.stopHeartbeatService();
 
-      expect(mockMkdir).toHaveBeenCalledWith(HEARTBEATS_DIR, { recursive: true });
-      // Atomic write: writeFile gets .tmp path, then rename to final path
-      const writeFileCalls = mockWriteFile.mock.calls;
-      expect(writeFileCalls.length).toBeGreaterThanOrEqual(1);
-      expect(writeFileCalls[0][0]).toContain(join(HEARTBEATS_DIR, 'persisted-machine.json'));
-      expect(mockRename).toHaveBeenCalled();
+      // Machine still in memory (no disk write, no state change)
+      expect(service.getHeartbeatData('persisted-machine')).toBeDefined();
+      expect(service.getHeartbeatData('persisted-machine')!.status).toBe('online');
     });
   });
 
   // ============================================================
-  // Configuration
+  // Configuration (no-op in ADR 008)
   // ============================================================
 
   describe('configuration', () => {
-    test('utilise la config par défaut (heartbeatInterval=30s)', () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('utilise la config par défaut', () => {
+      const service = new HeartbeatService();
 
-      // Si le service démarre sans erreur avec la config par défaut, OK
       expect(service).toBeDefined();
     });
 
     test('accepte une config partielle', () => {
-      const service = new HeartbeatService(TEST_PATH, {
+      const service = new HeartbeatService('/path', {
         heartbeatInterval: 5_000,
         offlineTimeout: 30_000,
       });
@@ -755,11 +446,82 @@ describe('HeartbeatService', () => {
       expect(service).toBeDefined();
     });
 
-    test('updateConfig met à jour la configuration', async () => {
-      const service = new HeartbeatService(TEST_PATH);
+    test('updateConfig est un no-op (ne throw pas)', async () => {
+      const service = new HeartbeatService();
 
-      // Ne doit pas throw
       await expect(service.updateConfig({ heartbeatInterval: 10_000 })).resolves.not.toThrow();
+    });
+  });
+
+  // ============================================================
+  // onStatusChange callback
+  // ============================================================
+
+  describe('onStatusChange callback', () => {
+    test('appelé quand une machine passe de online à unknown', async () => {
+      const service = new HeartbeatService();
+      const callback = vi.fn();
+
+      service.onStatusChange(callback);
+
+      await service.registerHeartbeat('cb-machine');
+      // Make it stale
+      const hb = service.getHeartbeatData('cb-machine')!;
+      hb.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString();
+
+      await service.checkHeartbeats();
+
+      expect(callback).toHaveBeenCalledWith('cb-machine', 'online', 'unknown');
+    });
+
+    test('appelé quand une machine passe de unknown à online', async () => {
+      const service = new HeartbeatService();
+      const callback = vi.fn();
+
+      service.onStatusChange(callback);
+
+      await service.registerHeartbeat('cb-machine-2');
+      // Make it stale → unknown
+      const hb = service.getHeartbeatData('cb-machine-2')!;
+      hb.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString();
+      await service.checkHeartbeats();
+
+      expect(callback).toHaveBeenCalledWith('cb-machine-2', 'online', 'unknown');
+
+      // Re-register → online
+      callback.mockClear();
+      await service.registerHeartbeat('cb-machine-2');
+
+      expect(callback).toHaveBeenCalledWith('cb-machine-2', 'unknown', 'online');
+    });
+  });
+
+  // ============================================================
+  // startHeartbeatService (no-op, sets callbacks)
+  // ============================================================
+
+  describe('startHeartbeatService', () => {
+    test('no-op: ne throw pas', async () => {
+      const service = new HeartbeatService();
+
+      await expect(service.startHeartbeatService('local-machine')).resolves.not.toThrow();
+    });
+
+    test('enregistre les callbacks offline/online', async () => {
+      const service = new HeartbeatService();
+      const offlineCb = vi.fn();
+      const onlineCb = vi.fn();
+
+      await service.startHeartbeatService('local-machine', offlineCb, onlineCb);
+
+      // Register a machine, make it stale → unknown
+      await service.registerHeartbeat('remote-machine');
+      const hb = service.getHeartbeatData('remote-machine')!;
+      hb.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString();
+
+      await service.checkHeartbeats();
+
+      expect(offlineCb).toHaveBeenCalledWith('remote-machine');
     });
   });
 });

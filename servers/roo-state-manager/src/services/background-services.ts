@@ -592,26 +592,8 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
         });
 
-        // Heartbeat service: disabled by default to prevent GDrive sync storm (#607)
-        if (process.env.HEARTBEAT_AUTO_START === 'true') {
-            // #1140: Dynamic import to avoid loading RooSyncService at startup
-            const { RooSyncService } = await import('./RooSyncService.js');
-            const rooSyncService = RooSyncService.getInstance();
-            rooSyncService.startHeartbeatService(
-                (machineId: string) => {
-                    console.log(`[Heartbeat] Machine offline: ${machineId}`);
-                },
-                (machineId: string) => {
-                    console.log(`[Heartbeat] Machine online: ${machineId}`);
-                }
-            ).then(() => {
-                console.log('✅ Heartbeat service auto-started');
-            }).catch((error: any) => {
-                console.warn('⚠️ Heartbeat init failed (non-blocking):', error.message);
-            });
-        } else {
-            console.log('ℹ️ Heartbeat auto-start disabled (#607). Use roosync_heartbeat tool or set HEARTBEAT_AUTO_START=true');
-        }
+        // Heartbeat: ADR 008 passive model — no auto-start needed.
+        // Every MCP tool call IS the heartbeat. Status derived from timestamps.
 
         console.log('✅ Services background lancés');
     } catch (error: any) {

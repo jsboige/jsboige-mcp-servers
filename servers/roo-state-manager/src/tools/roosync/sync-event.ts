@@ -98,9 +98,8 @@ export async function roosyncSyncEvent(args: SyncEventArgs): Promise<SyncEventRe
 
     // Calculer la durée offline si action=online et disponible
     let offlineDuration: number | undefined;
-    if (action === 'online' && heartbeatData.offlineSince) {
-      offlineDuration = Date.now() - new Date(heartbeatData.offlineSince).getTime();
-    }
+    // Note: offlineSince removed in ADR 008 Phase 2 — duration calculation no longer available
+    // offlineDuration remains undefined until a replacement mechanism is implemented
 
     // En mode simulation, retourner un résultat factice
     if (dryRun) {

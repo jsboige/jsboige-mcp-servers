@@ -47,19 +47,13 @@ export const HeartbeatDataSchema = z.object({
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
-  status: z.enum(['online', 'offline', 'warning'])
+  status: z.enum(['online', 'idle', 'unknown'])
     .describe('Statut de la machine'),
-  missedHeartbeats: z.number()
-    .describe('Nombre de heartbeats manqués consécutifs'),
-  offlineSince: z.string().optional()
-    .describe('Timestamp de première détection offline (ISO 8601)'),
   metadata: z.object({
     firstSeen: z.string()
       .describe('Timestamp de première détection (ISO 8601)'),
     lastUpdated: z.string()
-      .describe('Timestamp de dernière mise à jour (ISO 8601)'),
-    version: z.string()
-      .describe('Version du service')
+      .describe('Timestamp de dernière mise à jour (ISO 8601)')
   })
 });
 
@@ -73,10 +67,10 @@ export const HeartbeatStatisticsSchema = z.object({
     .describe('Nombre total de machines'),
   onlineCount: z.number()
     .describe('Nombre de machines online'),
-  offlineCount: z.number()
-    .describe('Nombre de machines offline'),
-  warningCount: z.number()
-    .describe('Nombre de machines en avertissement'),
+  idleCount: z.number()
+    .describe('Nombre de machines idle'),
+  unknownCount: z.number()
+    .describe('Nombre de machines unknown'),
   lastHeartbeatCheck: z.string()
     .describe('Timestamp de la dernière vérification (ISO 8601)')
 });
@@ -94,10 +88,10 @@ export const InventoryResultSchema = z.object({
   heartbeatState: z.object({
     onlineMachines: z.array(z.string())
       .describe('Liste des IDs des machines online'),
-    offlineMachines: z.array(z.string())
-      .describe('Liste des IDs des machines offline'),
-    warningMachines: z.array(z.string())
-      .describe('Liste des IDs des machines en avertissement'),
+    unknownMachines: z.array(z.string())
+      .describe('Liste des IDs des machines unknown'),
+    idleMachines: z.array(z.string())
+      .describe('Liste des IDs des machines idle'),
     statistics: HeartbeatStatisticsSchema
       .describe('Statistiques du service'),
     heartbeats: z.record(HeartbeatDataSchema).optional()
@@ -181,8 +175,8 @@ export const inventoryTool: UnifiedToolContract = {
 
         heartbeatState = {
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics,
           heartbeats: includeHeartbeats ? Object.fromEntries(state.heartbeats) : undefined,
           retrievedAt
@@ -199,41 +193,41 @@ export const inventoryTool: UnifiedToolContract = {
         const machinesStatus = input.status || 'all';
         const wantDetails = input.includeDetails || false;
 
-        machinesData = { offlineMachines: [], offlineCount: 0, warningMachines: [], warningCount: 0 };
+        machinesData = { unknownMachines: [], unknownCount: 0, idleMachines: [], idleCount: 0 };
 
         if (machinesStatus === 'offline' || machinesStatus === 'all') {
-          const offlineMachines = heartbeatService.getOfflineMachines();
+          const unknownMachines = heartbeatService.getUnknownMachines();
           if (wantDetails) {
             const detailed: any[] = [];
-            for (const mid of offlineMachines) {
+            for (const mid of unknownMachines) {
               const data = heartbeatService.getHeartbeatData(mid);
-              if (data && data.offlineSince) {
-                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, offlineSince: data.offlineSince, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
+              if (data) {
+                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, status: data.status, metadata: data.metadata });
               }
             }
-            machinesData.offlineMachines = detailed;
-            machinesData.offlineCount = detailed.length;
+            machinesData.unknownMachines = detailed;
+            machinesData.unknownCount = detailed.length;
           } else {
-            machinesData.offlineMachines = offlineMachines;
-            machinesData.offlineCount = offlineMachines.length;
+            machinesData.unknownMachines = unknownMachines;
+            machinesData.unknownCount = unknownMachines.length;
           }
         }
 
         if (machinesStatus === 'warning' || machinesStatus === 'all') {
-          const warningMachines = heartbeatService.getWarningMachines();
+          const idleMachines = heartbeatService.getIdleMachines();
           if (wantDetails) {
             const detailed: any[] = [];
-            for (const mid of warningMachines) {
+            for (const mid of idleMachines) {
               const data = heartbeatService.getHeartbeatData(mid);
               if (data) {
-                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
+                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, status: data.status, metadata: data.metadata });
               }
             }
-            machinesData.warningMachines = detailed;
-            machinesData.warningCount = detailed.length;
+            machinesData.idleMachines = detailed;
+            machinesData.idleCount = detailed.length;
           } else {
-            machinesData.warningMachines = warningMachines;
-            machinesData.warningCount = warningMachines.length;
+            machinesData.idleMachines = idleMachines;
+            machinesData.idleCount = idleMachines.length;
           }
         }
         if (!summary) {
@@ -260,13 +254,13 @@ export const inventoryTool: UnifiedToolContract = {
           const hs = heartbeatState;
           lines.push(`**Cluster status:** ${hs.statistics.totalMachines} machines`);
           lines.push(`- Online (${hs.onlineMachines.length}): ${hs.onlineMachines.join(', ') || 'none'}`);
-          lines.push(`- Offline (${hs.offlineMachines.length}): ${hs.offlineMachines.join(', ') || 'none'}`);
-          lines.push(`- Warning (${hs.warningMachines.length}): ${hs.warningMachines.join(', ') || 'none'}`);
+          lines.push(`- Unknown (${hs.unknownMachines.length}): ${hs.unknownMachines.join(', ') || 'none'}`);
+          lines.push(`- Idle (${hs.idleMachines.length}): ${hs.idleMachines.join(', ') || 'none'}`);
           lines.push('');
         }
 
         if (machinesData) {
-          lines.push(`**Filtered machines:** offline=${machinesData.offlineCount}, warning=${machinesData.warningCount}`);
+          lines.push(`**Filtered machines:** unknown=${machinesData.unknownCount}, idle=${machinesData.idleCount}`);
           lines.push('');
         }
 

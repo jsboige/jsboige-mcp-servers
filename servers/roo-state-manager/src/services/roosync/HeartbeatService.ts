@@ -1,145 +1,73 @@
 /**
  * Service de Heartbeat pour RooSync
  *
- * Responsable de la gestion des heartbeats entre agents,
- * la détection des machines offline et la synchronisation automatique.
+ * ADR 008: Passive activity derivation — every MCP tool call IS the heartbeat.
+ * No disk I/O, no background intervals, no GDrive writes.
  *
- * v3.1.0: Per-machine files to avoid GDrive sync conflicts.
- * Each machine writes ONLY its own file in heartbeats/{machineId}.json.
+ * Status model: ONLINE (<30min), IDLE (30-120min), UNKNOWN (>120min)
+ * No OFFLINE status — true machine failure detected by external tools.
  *
  * @module HeartbeatService
- * @version 3.1.0
+ * @version 4.0.0 (ADR 008 Phase 2)
  */
 
-import { promises as fs, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, renameSync as fsRenameSync } from 'fs';
-import { join } from 'path';
 import { createLogger } from '../../utils/logger.js';
-import { getServerCapabilities } from '../../utils/server-capabilities.js';
 
 const logger = createLogger('HeartbeatService');
 
-/**
- * Atomic write: write to .tmp then rename. Prevents 0-byte corruption on GDrive/Windows
- * when the process is interrupted mid-write.
- */
-async function atomicWriteFile(filePath: string, data: string): Promise<void> {
-  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmpPath, data, 'utf-8');
-  await fs.rename(tmpPath, filePath);
-}
+// Status thresholds (ADR 008)
+const ONLINE_THRESHOLD = 30 * 60 * 1000;  // 30 min
+const IDLE_THRESHOLD = 120 * 60 * 1000;   // 120 min
 
-/**
- * Synchronous atomic write for use during migration (called from sync context).
- */
-function atomicWriteFileSync(filePath: string, data: string): void {
-  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmpPath, data, 'utf-8');
-  fsRenameSync(tmpPath, filePath);
-}
+export type MachineStatus = 'online' | 'idle' | 'unknown';
 
-/**
- * Configuration du heartbeat
- */
 export interface HeartbeatConfig {
-  /** Intervalle de heartbeat en millisecondes (défaut: 60s) */
-  heartbeatInterval: number;
-
-  /** Timeout avant de considérer une machine offline en millisecondes (défaut: 10min) */
-  offlineTimeout: number;
-
-  /** Nombre de heartbeats manqués avant alerte */
-  missedHeartbeatThreshold: number;
-
-  /** @deprecated Auto-sync removed — kept for backward compat in tool schemas */
+  /** @deprecated No longer used — kept for backward compat in tool schemas */
+  heartbeatInterval?: number;
+  /** @deprecated No longer used — kept for backward compat in tool schemas */
+  offlineTimeout?: number;
+  /** @deprecated No longer used */
+  missedHeartbeatThreshold?: number;
+  /** @deprecated No longer used — no disk writes */
   autoSyncEnabled?: boolean;
-
-  /** @deprecated Auto-sync removed — kept for backward compat in tool schemas */
+  /** @deprecated No longer used — no disk writes */
   autoSyncInterval?: number;
-
-  /**
-   * Intervalle minimal entre deux écritures sur disque en millisecondes (défaut: 5min).
-   * Réduit les syncs GDrive en n'écrivant que lors de changements de statut
-   * ou après ce délai minimum. Fix #607.
-   */
-  persistenceInterval: number;
+  /** @deprecated No longer used — no disk writes */
+  persistenceInterval?: number;
 }
 
-/**
- * Données de heartbeat d'une machine
- */
 export interface HeartbeatData {
-  /** Identifiant de la machine */
   machineId: string;
-
-  /** Timestamp du dernier heartbeat */
   lastHeartbeat: string;
-
-  /** Statut de la machine */
-  status: 'online' | 'offline' | 'warning' | 'idle' | 'unknown';
-
-  /** Nombre de heartbeats manqués consécutifs */
-  missedHeartbeats: number;
-
-  /** Timestamp de première détection offline */
-  offlineSince?: string;
-
-  /** Métadonnées */
+  status: MachineStatus;
   metadata: {
     firstSeen: string;
     lastUpdated: string;
-    version: string;
   };
 }
 
-/**
- * État du service de heartbeat
- */
 export interface HeartbeatServiceState {
-  /** Données de heartbeat par machine */
   heartbeats: Map<string, HeartbeatData>;
-
-  /** Machines actuellement online */
   onlineMachines: string[];
-
-  /** Machines actuellement offline */
-  offlineMachines: string[];
-
-  /** Machines en avertissement */
-  warningMachines: string[];
-
-  /** Statistiques */
+  idleMachines: string[];
+  unknownMachines: string[];
   statistics: {
     totalMachines: number;
     onlineCount: number;
-    offlineCount: number;
-    warningCount: number;
+    idleCount: number;
+    unknownCount: number;
     lastHeartbeatCheck: string;
   };
 }
 
-/**
- * Résultat de vérification de heartbeat
- */
 export interface HeartbeatCheckResult {
-  /** Succès de la vérification */
   success: boolean;
-
-  /** Machines détectées offline */
-  newlyOfflineMachines: string[];
-
-  /** Machines redevenues online */
+  newlyUnknownMachines: string[];
   newlyOnlineMachines: string[];
-
-  /** Machines en avertissement */
-  warningMachines: string[];
-
-  /** Timestamp de la vérification */
+  newlyIdleMachines: string[];
   checkedAt: string;
 }
 
-/**
- * Erreur du service de heartbeat
- */
 export class HeartbeatServiceError extends Error {
   constructor(message: string, public readonly code?: string) {
     super(`[HeartbeatService] ${message}`);
@@ -148,642 +76,244 @@ export class HeartbeatServiceError extends Error {
 }
 
 /**
- * Service de Heartbeat pour RooSync
+ * HeartbeatService — ADR 008 in-memory passive model
  *
- * Uses per-machine files in heartbeats/ subdirectory to avoid
- * GDrive sync conflicts from concurrent writes to a single file.
+ * No disk I/O. No background intervals. State lives in process memory.
+ * Server restart → all machines start UNKNOWN → first tool call → ONLINE.
  */
 export class HeartbeatService {
-  private heartbeatsDir: string;
-  private legacyHeartbeatPath: string;
   private state: HeartbeatServiceState;
-  private heartbeatInterval: NodeJS.Timeout | null = null;
-  private heartbeatCheckerInterval: NodeJS.Timeout | null = null;
   private config: HeartbeatConfig;
-  private onOfflineDetectedCallback?: (machineId: string) => void;
-  private onOnlineRestoredCallback?: (machineId: string) => void;
-  /** Tracks last disk write timestamp per machine for dirty-flag optimization (#607) */
-  private lastDiskWrite: Map<string, number> = new Map();
+  private onStatusChangeCallback?: (machineId: string, oldStatus: MachineStatus, newStatus: MachineStatus) => void;
 
   constructor(
-    private sharedPath: string,
+    _sharedPath?: string,
     config?: Partial<HeartbeatConfig>
   ) {
-    this.heartbeatsDir = join(sharedPath, 'heartbeats');
-    this.legacyHeartbeatPath = join(sharedPath, 'heartbeat.json');
-
-    // Configuration par défaut (#607 fix: réduit fréquence d'écriture GDrive)
-    this.config = {
-      heartbeatInterval: 60000,  // 1 minute (réduit de 30s)
-      offlineTimeout: 1200000,   // 20 minutes (4x persistence interval, tolerates GDrive sync delay) (#1409)
-      missedHeartbeatThreshold: 4,
-      persistenceInterval: 300000, // 5 minutes entre écritures GDrive (#607)
-      ...config
-    };
-
+    this.config = { ...config };
     this.state = {
       heartbeats: new Map(),
       onlineMachines: [],
-      offlineMachines: [],
-      warningMachines: [],
+      idleMachines: [],
+      unknownMachines: [],
       statistics: {
         totalMachines: 0,
         onlineCount: 0,
-        offlineCount: 0,
-        warningCount: 0,
+        idleCount: 0,
+        unknownCount: 0,
         lastHeartbeatCheck: new Date().toISOString()
       }
     };
-
-    this.initializeService();
+    logger.info('HeartbeatService v4.0 initialized (ADR 008 in-memory model)');
   }
 
   /**
-   * Initialise le service et charge les données existantes
-   */
-  private initializeService(): void {
-    try {
-      this.loadState();
-      logger.info('Service de heartbeat initialisé', {
-        heartbeatInterval: this.config.heartbeatInterval,
-        offlineTimeout: this.config.offlineTimeout
-      });
-    } catch (error) {
-      logger.error('Erreur lors de l\'initialisation', error);
-    }
-  }
-
-  /**
-   * #1918: Check if shared path (GDrive) is accessible for disk I/O.
-   * When degraded, heartbeat data stays in-memory only.
-   */
-  private isDiskAvailable(): boolean {
-    return getServerCapabilities().isAvailable('sharedPath');
-  }
-
-  /**
-   * Returns the file path for a machine's heartbeat file
-   */
-  private getMachineFilePath(machineId: string): string {
-    return join(this.heartbeatsDir, `${machineId.toLowerCase()}.json`);
-  }
-
-  /**
-   * Ensures the heartbeats/ directory exists
-   */
-  private ensureHeartbeatsDir(): void {
-    try {
-      if (!existsSync(this.heartbeatsDir)) {
-        mkdirSync(this.heartbeatsDir, { recursive: true });
-      }
-    } catch (error) {
-      logger.error('Erreur création répertoire heartbeats', error);
-    }
-  }
-
-  /**
-   * Charge l'état du service depuis le disque (synchrone)
-   * Checks per-machine files first, falls back to legacy single file with migration.
-   */
-  private loadState(): void {
-    try {
-      if (existsSync(this.heartbeatsDir)) {
-        // New format: per-machine files
-        this.loadFromPerMachineFiles();
-      } else if (existsSync(this.legacyHeartbeatPath)) {
-        // Legacy format: migrate from single file
-        this.migrateFromLegacyFile();
-      }
-      // else: fresh start with empty state
-
-      this.updateMachineStatus();
-
-      logger.info('État du service chargé', {
-        totalMachines: this.state.heartbeats.size,
-        online: this.state.onlineMachines.length,
-        offline: this.state.offlineMachines.length,
-        warning: this.state.warningMachines.length
-      });
-    } catch (error) {
-      logger.error('Erreur chargement état', error);
-      this.state.heartbeats = new Map();
-      this.updateMachineStatus();
-    }
-  }
-
-  /**
-   * Load heartbeat data from per-machine files in heartbeats/ directory
-   */
-  private loadFromPerMachineFiles(): void {
-    try {
-      const files = readdirSync(this.heartbeatsDir);
-      const jsonFiles = files.filter(f => f.endsWith('.json'));
-
-      for (const file of jsonFiles) {
-        try {
-          const filePath = join(this.heartbeatsDir, file);
-
-          // Clean up 0-byte files (corruption from interrupted non-atomic writes)
-          const stat = statSync(filePath);
-          if (stat.size === 0) {
-            logger.warn(`Suppression fichier heartbeat vide (0 bytes): ${file}`);
-            try { unlinkSync(filePath); } catch (_) { /* ignore cleanup failure */ }
-            continue;
-          }
-
-          const content = readFileSync(filePath, 'utf-8');
-          const data = JSON.parse(content) as HeartbeatData;
-          const machineId = data.machineId?.toLowerCase() || file.replace('.json', '').toLowerCase();
-          this.state.heartbeats.set(machineId, data);
-        } catch (fileError) {
-          logger.warn(`Erreur lecture fichier heartbeat ${file}`, { error: String(fileError) });
-        }
-      }
-
-      // Identity dedup: merge stale unprefixed files into myia-prefixed ones
-      // e.g. po-2025.json → myia-po-2025.json (the canonical identity)
-      this.dedupMachineIdentities();
-    } catch (error) {
-      logger.error('Erreur lecture répertoire heartbeats', error);
-    }
-  }
-
-  /**
-   * Deduplicate heartbeat files where a machine has both "shortname" and "myia-shortname" entries.
-   * Keeps the more recent entry, removes the stale one.
-   */
-  private dedupMachineIdentities(): void {
-    const entries = Array.from(this.state.heartbeats.entries());
-    const toRemove: string[] = [];
-
-    for (const [machineId, data] of entries) {
-      // Check if this is an unprefixed variant of a myia-prefixed machine
-      if (!machineId.startsWith('myia-')) {
-        const prefixedId = `myia-${machineId}`;
-        if (this.state.heartbeats.has(prefixedId)) {
-          const prefixedData = this.state.heartbeats.get(prefixedId)!;
-          // Keep the one with the most recent timestamp
-          const unprefixedTime = new Date(data.lastHeartbeat || 0).getTime();
-          const prefixedTime = new Date(prefixedData.lastHeartbeat || 0).getTime();
-
-          if (prefixedTime >= unprefixedTime) {
-            // Prefixed is newer or same — remove unprefixed
-            toRemove.push(machineId);
-            logger.info(`Dedup: suppression identité dupliquée ${machineId} (conserve ${prefixedId})`);
-          } else {
-            // Unprefixed is newer — merge into prefixed, remove unprefixed
-            this.state.heartbeats.set(prefixedId, data);
-            toRemove.push(machineId);
-            logger.info(`Dedup: fusion ${machineId} → ${prefixedId} (données plus récentes)`);
-          }
-
-          // Clean up the orphan file
-          try {
-            const orphanPath = this.getMachineFilePath(machineId);
-            if (existsSync(orphanPath)) {
-              unlinkSync(orphanPath);
-            }
-          } catch (e) {
-            logger.warn(`Dedup: impossible de supprimer fichier orphelin pour ${machineId}`, { error: String(e) });
-          }
-        }
-      }
-    }
-
-    for (const id of toRemove) {
-      this.state.heartbeats.delete(id);
-    }
-  }
-
-  /**
-   * Migrate from legacy single heartbeat.json to per-machine files
-   */
-  private migrateFromLegacyFile(): void {
-    try {
-      const content = readFileSync(this.legacyHeartbeatPath, 'utf-8');
-      const data = JSON.parse(content);
-      const heartbeats = data.heartbeats || {};
-
-      this.ensureHeartbeatsDir();
-
-      for (const [key, value] of Object.entries(heartbeats)) {
-        const machineId = key.toLowerCase();
-        const heartbeatData = value as HeartbeatData;
-        this.state.heartbeats.set(machineId, heartbeatData);
-
-        // Write individual file
-        try {
-          const filePath = this.getMachineFilePath(machineId);
-          atomicWriteFileSync(filePath, JSON.stringify(heartbeatData, null, 2));
-        } catch (writeError) {
-          logger.warn(`Erreur écriture heartbeat ${machineId} pendant migration`, { error: String(writeError) });
-        }
-      }
-
-      // Remove legacy file
-      try {
-        unlinkSync(this.legacyHeartbeatPath);
-        logger.info('Fichier legacy heartbeat.json migré et supprimé');
-      } catch (unlinkError) {
-        logger.warn('Impossible de supprimer heartbeat.json après migration', { error: String(unlinkError) });
-      }
-    } catch (error) {
-      logger.error('Erreur migration legacy heartbeat.json', error);
-    }
-  }
-
-  /**
-   * Reload all per-machine files from disk (useful before checkHeartbeats)
-   */
-  public reloadFromDisk(): void {
-    if (!this.isDiskAvailable()) {
-      // #1918: GDrive offline — keep in-memory state, skip disk reads
-      this.updateMachineStatus();
-      return;
-    }
-    this.state.heartbeats.clear();
-    if (existsSync(this.heartbeatsDir)) {
-      this.loadFromPerMachineFiles();
-    }
-    this.updateMachineStatus();
-  }
-
-  /**
-   * Save a single machine's heartbeat data to its own file
-   */
-  private async saveMachineHeartbeat(machineId: string): Promise<void> {
-    if (!this.isDiskAvailable()) {
-      // #1918: GDrive offline — keep heartbeat in-memory only
-      return;
-    }
-    try {
-      await fs.mkdir(this.heartbeatsDir, { recursive: true });
-
-      const heartbeatData = this.state.heartbeats.get(machineId.toLowerCase());
-      if (!heartbeatData) return;
-
-      const filePath = this.getMachineFilePath(machineId);
-      await atomicWriteFile(filePath, JSON.stringify(heartbeatData, null, 2));
-    } catch (error) {
-      logger.error(`Erreur sauvegarde heartbeat pour ${machineId}`, error);
-    }
-  }
-
-  /**
-   * Delete a machine's heartbeat file
-   */
-  private async removeMachineFile(machineId: string): Promise<void> {
-    if (!this.isDiskAvailable()) return;
-    try {
-      const filePath = this.getMachineFilePath(machineId);
-      if (existsSync(filePath)) {
-        await fs.unlink(filePath);
-      }
-    } catch (error) {
-      logger.error(`Erreur suppression fichier heartbeat pour ${machineId}`, error);
-    }
-  }
-
-  /**
-   * Sauvegarde l'état de TOUTES les machines (used at stop/config update)
-   */
-  private async saveState(): Promise<void> {
-    if (!this.isDiskAvailable()) return;
-    try {
-      await fs.mkdir(this.heartbeatsDir, { recursive: true });
-
-      for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
-        const filePath = this.getMachineFilePath(machineId);
-        await atomicWriteFile(filePath, JSON.stringify(heartbeatData, null, 2));
-      }
-    } catch (error) {
-      logger.error('Erreur sauvegarde état', error);
-    }
-  }
-
-  /**
-   * Enregistre un heartbeat pour une machine
-   * #1953 ADR 008 Phase 1: In-memory only, no GDrive writes.
+   * Register activity for a machine (called by auto-heartbeat hook on every tool call)
    */
   public async registerHeartbeat(
     machineId: string,
-    metadata?: Record<string, any>
+    _metadata?: Record<string, unknown>
   ): Promise<void> {
     machineId = machineId.toLowerCase();
     const now = new Date().toISOString();
 
-    let heartbeatData = this.state.heartbeats.get(machineId);
+    let data = this.state.heartbeats.get(machineId);
+    const previousStatus = data?.status;
 
-    if (!heartbeatData) {
-      heartbeatData = {
+    if (!data) {
+      data = {
         machineId,
         lastHeartbeat: now,
         status: 'online',
-        missedHeartbeats: 0,
-        metadata: {
-          firstSeen: now,
-          lastUpdated: now,
-          version: '3.2.0'
-        }
+        metadata: { firstSeen: now, lastUpdated: now }
       };
-      logger.info(`Nouvelle machine enregistrée: ${machineId}`);
+      logger.info(`New machine registered: ${machineId}`);
     } else {
-      heartbeatData.lastHeartbeat = now;
-      heartbeatData.status = 'online';
-      heartbeatData.missedHeartbeats = 0;
-      heartbeatData.offlineSince = undefined;
-      heartbeatData.metadata.lastUpdated = now;
+      data.lastHeartbeat = now;
+      data.status = 'online';
+      data.metadata.lastUpdated = now;
     }
 
-    this.state.heartbeats.set(machineId, heartbeatData);
+    this.state.heartbeats.set(machineId, data);
     this.updateMachineStatus();
+
+    if (previousStatus && previousStatus !== 'online' && this.onStatusChangeCallback) {
+      this.onStatusChangeCallback(machineId, previousStatus, 'online');
+    }
   }
 
   /**
-   * Vérifie les heartbeats et dérive le statut des machines
-   * #1953 ADR 008 Phase 1: In-memory only, status = ONLINE/IDLE/UNKNOWN (no OFFLINE).
+   * Derive status for all machines based on last activity timestamps
    */
   public async checkHeartbeats(): Promise<HeartbeatCheckResult> {
     const now = Date.now();
     const result: HeartbeatCheckResult = {
       success: true,
-      newlyOfflineMachines: [],
+      newlyUnknownMachines: [],
       newlyOnlineMachines: [],
-      warningMachines: [],
+      newlyIdleMachines: [],
       checkedAt: new Date().toISOString()
     };
 
-    for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
-      const lastHeartbeatTime = new Date(heartbeatData.lastHeartbeat).getTime();
-      const timeSinceLastHeartbeat = now - lastHeartbeatTime;
+    for (const [machineId, data] of this.state.heartbeats.entries()) {
+      const lastActivity = new Date(data.lastHeartbeat).getTime();
+      const elapsed = now - lastActivity;
+      const previousStatus = data.status;
 
-      // #1953 ADR 008: ONLINE (<30min), IDLE (30-120min), UNKNOWN (>120min)
-      // No OFFLINE status — true machine failure detected by external tools
-      const ONLINE_THRESHOLD = 30 * 60 * 1000;  // 30 min
-      const IDLE_THRESHOLD = 120 * 60 * 1000;   // 120 min
-
-      const previousStatus = heartbeatData.status;
-
-      if (timeSinceLastHeartbeat > IDLE_THRESHOLD) {
-        // UNKNOWN — no recent activity, not necessarily down
-        if (previousStatus !== 'unknown') {
-          heartbeatData.status = 'unknown';
-          result.newlyOfflineMachines.push(machineId);
-          logger.info(`Machine status → UNKNOWN: ${machineId}`, { timeSinceLastHeartbeat });
-        }
-      } else if (timeSinceLastHeartbeat > ONLINE_THRESHOLD) {
-        // IDLE — machine active within last 2h but not in last 30min
-        if (previousStatus !== 'idle' && previousStatus !== 'warning') {
-          heartbeatData.status = 'idle';
-          heartbeatData.missedHeartbeats = 1;
-          result.warningMachines.push(machineId);
-          logger.info(`Machine status → IDLE: ${machineId}`, { timeSinceLastHeartbeat });
-        }
+      let newStatus: MachineStatus;
+      if (elapsed > IDLE_THRESHOLD) {
+        newStatus = 'unknown';
+      } else if (elapsed > ONLINE_THRESHOLD) {
+        newStatus = 'idle';
       } else {
-        // ONLINE — active within last 30min
-        if (previousStatus !== 'online') {
-          heartbeatData.status = 'online';
-          heartbeatData.missedHeartbeats = 0;
-          heartbeatData.offlineSince = undefined;
-          result.newlyOnlineMachines.push(machineId);
-          logger.info(`Machine status → ONLINE: ${machineId}`);
+        newStatus = 'online';
+      }
+
+      if (previousStatus !== newStatus) {
+        data.status = newStatus;
+        data.metadata.lastUpdated = new Date().toISOString();
+
+        if (newStatus === 'unknown') result.newlyUnknownMachines.push(machineId);
+        else if (newStatus === 'idle') result.newlyIdleMachines.push(machineId);
+        else result.newlyOnlineMachines.push(machineId);
+
+        logger.info(`Status ${previousStatus} → ${newStatus}: ${machineId}`, { elapsedMs: elapsed });
+
+        if (this.onStatusChangeCallback) {
+          this.onStatusChangeCallback(machineId, previousStatus, newStatus);
         }
       }
 
-      heartbeatData.metadata.lastUpdated = new Date().toISOString();
-      this.state.heartbeats.set(machineId, heartbeatData);
+      this.state.heartbeats.set(machineId, data);
     }
 
     this.updateMachineStatus();
     this.state.statistics.lastHeartbeatCheck = new Date().toISOString();
-
-    if (this.onOfflineDetectedCallback) {
-      for (const machineId of result.newlyOfflineMachines) {
-        this.onOfflineDetectedCallback(machineId);
-      }
-    }
-
-    if (this.onOnlineRestoredCallback) {
-      for (const machineId of result.newlyOnlineMachines) {
-        this.onOnlineRestoredCallback(machineId);
-      }
-    }
-
     return result;
   }
 
   /**
-   * Met à jour les listes de machines par statut
+   * Set callback for status changes
    */
-  private updateMachineStatus(): void {
-    const onlineMachines: string[] = [];
-    const offlineMachines: string[] = [];
-    const warningMachines: string[] = [];
-
-    for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
-      switch (heartbeatData.status) {
-        case 'online':
-          onlineMachines.push(machineId);
-          break;
-        case 'offline':
-        case 'unknown':
-          offlineMachines.push(machineId);
-          break;
-        case 'warning':
-        case 'idle':
-          warningMachines.push(machineId);
-          break;
-      }
-    }
-
-    this.state.onlineMachines = onlineMachines;
-    this.state.offlineMachines = offlineMachines;
-    this.state.warningMachines = warningMachines;
-
-    this.state.statistics.totalMachines = this.state.heartbeats.size;
-    this.state.statistics.onlineCount = onlineMachines.length;
-    this.state.statistics.offlineCount = offlineMachines.length;
-    this.state.statistics.warningCount = warningMachines.length;
+  public onStatusChange(callback: (machineId: string, oldStatus: MachineStatus, newStatus: MachineStatus) => void): void {
+    this.onStatusChangeCallback = callback;
   }
 
-  /**
-   * Démarre le service de heartbeat automatique
-   */
-  public async startHeartbeatService(
-    machineId: string,
-    onOfflineDetected?: (machineId: string) => void,
-    onOnlineRestored?: (machineId: string) => void
-  ): Promise<void> {
-    machineId = machineId.toLowerCase();
-    logger.info(`Démarrage du service heartbeat pour: ${machineId}`);
+  // --- Query methods ---
 
-    // Stocker les callbacks comme propriétés de classe
-    this.onOfflineDetectedCallback = onOfflineDetected;
-    this.onOnlineRestoredCallback = onOnlineRestored;
-
-    // Enregistrer le heartbeat initial
-    await this.registerHeartbeat(machineId);
-
-    // Démarrer l'intervalle de heartbeat
-    this.heartbeatInterval = setInterval(async () => {
-      try {
-        await this.registerHeartbeat(machineId);
-      } catch (error) {
-        logger.error(`Erreur heartbeat pour ${machineId}:`, error);
-      }
-    }, this.config.heartbeatInterval);
-
-    // Démarrer la vérification des heartbeats
-    this.startHeartbeatChecker();
-  }
-
-  /**
-   * Démarre le vérificateur de heartbeat
-   */
-  private startHeartbeatChecker(): void {
-    // Callbacks are already invoked inside checkHeartbeats() — no need to duplicate here
-    this.heartbeatCheckerInterval = setInterval(async () => {
-      try {
-        await this.checkHeartbeats();
-      } catch (error) {
-        logger.error('Erreur vérification heartbeat:', error);
-      }
-    }, this.config.heartbeatInterval);
-  }
-
-  /**
-   * Arrête le service de heartbeat
-   */
-  public async stopHeartbeatService(): Promise<void> {
-    logger.info('Arrêt du service de heartbeat');
-
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-
-    if (this.heartbeatCheckerInterval) {
-      clearInterval(this.heartbeatCheckerInterval);
-      this.heartbeatCheckerInterval = null;
-    }
-
-    await this.saveState();
-  }
-
-  /**
-   * Obtient les données de heartbeat d'une machine
-   */
   public getHeartbeatData(machineId: string): HeartbeatData | undefined {
     return this.state.heartbeats.get(machineId.toLowerCase());
   }
 
-  /**
-   * Obtient toutes les machines online
-   */
   public getOnlineMachines(): string[] {
     return [...this.state.onlineMachines];
   }
 
-  /**
-   * Obtient toutes les machines offline
-   */
+  /** @deprecated Use getUnknownMachines() — ADR 008 Phase 2 */
   public getOfflineMachines(): string[] {
-    return [...this.state.offlineMachines];
+    return this.getUnknownMachines();
   }
 
-  /**
-   * Obtient toutes les machines en avertissement
-   */
+  public getUnknownMachines(): string[] {
+    return [...this.state.unknownMachines];
+  }
+
+  /** @deprecated Use getIdleMachines() — ADR 008 Phase 2 */
   public getWarningMachines(): string[] {
-    return [...this.state.warningMachines];
+    return this.getIdleMachines();
   }
 
-  /**
-   * Obtient l'état complet du service
-   */
+  public getIdleMachines(): string[] {
+    return [...this.state.idleMachines];
+  }
+
   public getState(): HeartbeatServiceState {
     return {
       heartbeats: new Map(this.state.heartbeats),
       onlineMachines: [...this.state.onlineMachines],
-      offlineMachines: [...this.state.offlineMachines],
-      warningMachines: [...this.state.warningMachines],
+      idleMachines: [...this.state.idleMachines],
+      unknownMachines: [...this.state.unknownMachines],
       statistics: { ...this.state.statistics }
     };
   }
 
-  /**
-   * Met à jour la configuration du service
-   */
-  public async updateConfig(config: Partial<HeartbeatConfig>): Promise<void> {
-    this.config = { ...this.config, ...config };
-
-    logger.info('Configuration mise à jour', {
-      heartbeatInterval: this.config.heartbeatInterval,
-      offlineTimeout: this.config.offlineTimeout
-    });
-
-    // Redémarrer les intervalles si nécessaire
-    if (this.heartbeatInterval || this.heartbeatCheckerInterval) {
-      await this.stopHeartbeatService();
-      // Note: Le redémarrage nécessite d'appeler startHeartbeatService
-    }
-
-    await this.saveState();
-  }
-
-  /**
-   * Supprime une machine du service de heartbeat
-   */
   public async removeMachine(machineId: string): Promise<void> {
     this.state.heartbeats.delete(machineId.toLowerCase());
     this.updateMachineStatus();
-    await this.removeMachineFile(machineId);
+    logger.info(`Machine removed: ${machineId}`);
+  }
 
-    logger.info(`Machine supprimée du service heartbeat: ${machineId}`);
+  // --- Backward compat methods (no-ops or redirects for ADR 008 Phase 2) ---
+
+  /**
+   * @deprecated No-op in ADR 008. Background service no longer needed.
+   * Kept for backward compat with callers (background-services.ts, heartbeat-service tool).
+   */
+  public async startHeartbeatService(
+    _machineId: string,
+    onOfflineDetected?: (machineId: string) => void,
+    onOnlineRestored?: (machineId: string) => void
+  ): Promise<void> {
+    logger.info('startHeartbeatService called — no-op (ADR 008 passive model)');
+    // Set up status change callback if callers provide offline/online callbacks
+    if (onOfflineDetected || onOnlineRestored) {
+      this.onStatusChangeCallback = (machineId, oldStatus, newStatus) => {
+        if (newStatus === 'unknown' && onOfflineDetected) onOfflineDetected(machineId);
+        if (newStatus === 'online' && onOnlineRestored) onOnlineRestored(machineId);
+      };
+    }
   }
 
   /**
-   * Nettoie les machines offline depuis longtemps
+   * @deprecated No-op in ADR 008. No background interval to stop.
    */
-  public async cleanupOldOfflineMachines(maxAge: number = 86400000): Promise<number> {
-    // maxAge par défaut: 24 heures
-    // #1409: Don't delete heartbeat files for production machines (myia-*) — just keep as offline.
-    // Deleting production files causes machineCount to drop below the actual cluster size.
-    // Non-production machines (test artifacts, machine-2, workflow-machine) are deleted after maxAge.
-    const now = Date.now();
-    let cleanedCount = 0;
-    const isProduction = (id: string) => id.toLowerCase().startsWith('myia-');
+  public async stopHeartbeatService(): Promise<void> {
+    logger.info('stopHeartbeatService called — no-op (ADR 008 passive model)');
+  }
 
-    for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
-      if (heartbeatData.offlineSince) {
-        const offlineAge = now - new Date(heartbeatData.offlineSince).getTime();
+  /**
+   * @deprecated No-op in ADR 008.
+   */
+  public async updateConfig(_config: Partial<HeartbeatConfig>): Promise<void> {
+    logger.info('updateConfig called — no-op (ADR 008 passive model)');
+  }
 
-        if (offlineAge > maxAge) {
-          if (isProduction(machineId)) {
-            // Production machines: keep in state as offline, don't remove file
-            heartbeatData.status = 'offline';
-            cleanedCount++;
-          } else {
-            // Non-production (test artifacts): delete file and remove from state
-            await this.removeMachineFile(machineId);
-            this.state.heartbeats.delete(machineId);
-            cleanedCount++;
-            logger.info(`Test machine supprimée (offline ${Math.round(offlineAge / 3600000)}h): ${machineId}`);
-            continue;
-          }
+  /**
+   * @deprecated No disk state to reload.
+   */
+  public reloadFromDisk(): void {
+    // No-op: ADR 008 in-memory only
+  }
 
-          logger.info(`Machine offline longue durée (conservée): ${machineId}`, {
-            offlineAge,
-            maxAge
-          });
-        }
+  /**
+   * @deprecated No disk state to clean up.
+   */
+  public async cleanupOldOfflineMachines(_maxAge?: number): Promise<number> {
+    return 0;
+  }
+
+  // --- Internal ---
+
+  private updateMachineStatus(): void {
+    const online: string[] = [];
+    const idle: string[] = [];
+    const unknown: string[] = [];
+
+    for (const [machineId, data] of this.state.heartbeats.entries()) {
+      switch (data.status) {
+        case 'online': online.push(machineId); break;
+        case 'idle': idle.push(machineId); break;
+        case 'unknown': unknown.push(machineId); break;
       }
     }
 
-    if (cleanedCount > 0) {
-      this.updateMachineStatus();
-    }
+    this.state.onlineMachines = online;
+    this.state.idleMachines = idle;
+    this.state.unknownMachines = unknown;
 
-    return cleanedCount;
+    this.state.statistics.totalMachines = this.state.heartbeats.size;
+    this.state.statistics.onlineCount = online.length;
+    this.state.statistics.idleCount = idle.length;
+    this.state.statistics.unknownCount = unknown.length;
   }
 }

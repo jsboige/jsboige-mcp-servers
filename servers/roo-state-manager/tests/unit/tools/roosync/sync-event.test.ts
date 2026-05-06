@@ -48,7 +48,6 @@ describe('roosync_sync_event', () => {
             mockGetHeartbeatData.mockReturnValue({
                 machineId: 'po-2023',
                 status: 'online',
-                offlineSince: '2026-05-03T20:00:00.000Z',
                 lastHeartbeat: '2026-05-04T00:00:00.000Z',
             });
             const result = await roosyncSyncEvent({ action: 'online', machineId: 'po-2023' });
@@ -58,14 +57,14 @@ describe('roosync_sync_event', () => {
             expect(result.message).toContain('online');
         });
 
-        it('calculates offlineDuration from offlineSince', async () => {
+        it('offlineDuration is undefined (offlineSince removed in ADR 008 Phase 2)', async () => {
             mockGetHeartbeatData.mockReturnValue({
                 machineId: 'po-2023',
                 status: 'online',
-                offlineSince: '2026-05-03T20:00:00.000Z',
+                lastHeartbeat: '2026-05-04T00:00:00.000Z',
             });
             const result = await roosyncSyncEvent({ action: 'online', machineId: 'po-2023' });
-            expect(result.changes.offlineDuration).toBeGreaterThan(0);
+            expect(result.changes.offlineDuration).toBeUndefined();
         });
 
         it('throws when machine is not online', async () => {
@@ -83,11 +82,11 @@ describe('roosync_sync_event', () => {
                 .rejects.toThrow('pas online');
         });
 
-        it('omits offlineDuration when offlineSince missing', async () => {
+        it('omits offlineDuration when no duration data available', async () => {
             mockGetHeartbeatData.mockReturnValue({
                 machineId: 'po-2023',
                 status: 'online',
-                offlineSince: undefined,
+                lastHeartbeat: '2026-05-04T00:00:00.000Z',
             });
             const result = await roosyncSyncEvent({ action: 'online', machineId: 'po-2023' });
             expect(result.changes.offlineDuration).toBeUndefined();
@@ -121,7 +120,7 @@ describe('roosync_sync_event', () => {
             mockGetHeartbeatData.mockReturnValue({
                 machineId: 'po-2023',
                 status: 'online',
-                offlineSince: '2026-05-03T20:00:00.000Z',
+                lastHeartbeat: '2026-05-04T00:00:00.000Z',
             });
             const result = await roosyncSyncEvent({
                 action: 'online',

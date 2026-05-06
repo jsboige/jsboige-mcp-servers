@@ -71,8 +71,8 @@ vi.mock('fs', async (importOriginal) => {
 function setupMocks(overrides: Record<string, any> = {}) {
     const heartbeatState = overrides.heartbeatState || {
         onlineMachines: ['myia-ai-01'],
-        offlineMachines: [],
-        warningMachines: [],
+        unknownMachines: [],
+        idleMachines: [],
     };
     const inboxStats = overrides.inboxStats || { unread: 0, urgent: 0, by_priority: {} };
     const config = overrides.config || { machineId: 'myia-ai-01' };
@@ -174,8 +174,8 @@ describe('roosync_get_status', () => {
             setupMocks({
                 heartbeatState: {
                     onlineMachines: ['myia-ai-01'],
-                    offlineMachines: ['myia-web1'],
-                    warningMachines: [],
+                    unknownMachines: ['myia-web1'],
+                    idleMachines: [],
                 },
             });
             const result = await roosyncGetStatus({});
@@ -205,8 +205,8 @@ describe('roosync_get_status', () => {
             setupMocks({
                 heartbeatState: {
                     onlineMachines: ['myia-ai-01'],
-                    offlineMachines: [],
-                    warningMachines: ['myia-po-2023'],
+                    unknownMachines: [],
+                    idleMachines: ['myia-po-2023'],
                 },
             });
             const result = await roosyncGetStatus({});
@@ -220,8 +220,8 @@ describe('roosync_get_status', () => {
             setupMocks({
                 heartbeatState: {
                     onlineMachines: ['myia-ai-01', 'test-machine', 'persistent-machine'],
-                    offlineMachines: [],
-                    warningMachines: [],
+                    unknownMachines: [],
+                    idleMachines: [],
                 },
             });
             const result = await roosyncGetStatus({});

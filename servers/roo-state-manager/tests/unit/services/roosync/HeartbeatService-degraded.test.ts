@@ -1,28 +1,20 @@
 /**
  * Tests for HeartbeatService graceful degradation (#1918)
  *
- * Verifies that HeartbeatService continues operating in-memory
- * when sharedPath (GDrive) is degraded, without attempting disk I/O.
+ * ADR 008 Phase 2: HeartbeatService is purely in-memory.
+ * All operations work regardless of sharedPath/GDrive state.
+ * No disk I/O ever, so degradation has no effect on functionality.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { join } from 'path';
-import { mkdtemp, rm, mkdir, readFile, readdir } from 'fs/promises';
-import { tmpdir } from 'os';
 import { HeartbeatService, HeartbeatConfig } from '../../../../src/services/roosync/HeartbeatService.js';
 import { getServerCapabilities } from '../../../../src/utils/server-capabilities.js';
 
 describe('HeartbeatService - Graceful Degradation (#1918)', () => {
-  let tempDir: string;
-  let sharedPath: string;
   let heartbeatService: HeartbeatService;
   let caps: ReturnType<typeof getServerCapabilities>;
 
-  beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), 'heartbeat-degraded-'));
-    sharedPath = join(tempDir, 'shared');
-    await mkdir(sharedPath, { recursive: true });
-
+  beforeEach(() => {
     caps = getServerCapabilities();
     caps.reset();
 
@@ -35,20 +27,11 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       persistenceInterval: 100,
     };
 
-    heartbeatService = new HeartbeatService(sharedPath, config);
+    heartbeatService = new HeartbeatService('/test/shared', config);
   });
 
-  afterEach(async () => {
-    await heartbeatService.stopHeartbeatService();
+  afterEach(() => {
     caps.reset();
-
-    try {
-      await rm(tempDir, { recursive: true, force: true });
-    } catch (error: any) {
-      if (error.code !== 'ENOTEMPTY' && error.code !== 'EPERM' && error.code !== 'EBUSY') {
-        console.warn('Cleanup failed:', error.message);
-      }
-    }
     vi.restoreAllMocks();
   });
 
@@ -64,95 +47,78 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       expect(data?.machineId).toBe('test-machine');
     });
 
-    it('does not write files to disk when degraded', async () => {
+    it('does not attempt disk I/O (ADR 008: no disk writes ever)', async () => {
       caps.markDegraded('sharedPath', 'GDrive offline');
 
       await heartbeatService.registerHeartbeat('no-disk-machine');
 
-      const heartbeatsDir = join(sharedPath, 'heartbeats');
-      let files: string[] = [];
-      try {
-        files = await readdir(heartbeatsDir);
-      } catch {
-        // Directory may not exist — that's fine
-      }
-      expect(files).toHaveLength(0);
+      // ADR 008: No disk writes, machine is in-memory regardless of degradation
+      expect(heartbeatService.getHeartbeatData('no-disk-machine')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('no-disk-machine')?.status).toBe('online');
     });
 
-    it('resumes disk writes after recovery via stopHeartbeatService #1953 ADR 008', async () => {
+    it('in-memory state preserved after recovery — no disk needed #1953 ADR 008', async () => {
       caps.markDegraded('sharedPath', 'GDrive offline');
 
       await heartbeatService.registerHeartbeat('recovery-machine');
       expect(heartbeatService.getHeartbeatData('recovery-machine')?.status).toBe('online');
 
-      // Recover GDrive
+      // Recover GDrive (irrelevant for ADR 008 but tests the cycle)
       caps.recover('sharedPath');
 
-      // ADR 008 Phase 1: registerHeartbeat is always in-memory, disk writes happen via saveState
+      // stopHeartbeatService is a no-op in ADR 008
       await heartbeatService.stopHeartbeatService();
 
-      const heartbeatsDir = join(sharedPath, 'heartbeats');
-      const files = await readdir(heartbeatsDir);
-      expect(files.length).toBeGreaterThanOrEqual(1);
+      // Machine still in memory — never left
+      expect(heartbeatService.getHeartbeatData('recovery-machine')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('recovery-machine')?.status).toBe('online');
     });
   });
 
   describe('reloadFromDisk in degraded mode', () => {
-    it('preserves in-memory state when degraded instead of clearing', async () => {
-      // First register a machine normally
+    it('preserves in-memory state (reloadFromDisk is no-op in ADR 008)', async () => {
       await heartbeatService.registerHeartbeat('existing-machine');
       expect(heartbeatService.getHeartbeatData('existing-machine')?.status).toBe('online');
 
-      // Degrade
       caps.markDegraded('sharedPath', 'GDrive offline');
 
-      // Register another machine (in-memory only)
       await heartbeatService.registerHeartbeat('degraded-machine');
 
-      // reloadFromDisk should NOT clear in-memory state when degraded
+      // reloadFromDisk is a no-op in ADR 008 — state preserved
       heartbeatService.reloadFromDisk();
 
-      // existing-machine may be lost (clear happens before the guard)
-      // but degraded-machine should still be there
-      const data = heartbeatService.getHeartbeatData('degraded-machine');
-      expect(data).toBeDefined();
+      const dataExisting = heartbeatService.getHeartbeatData('existing-machine');
+      const dataDegraded = heartbeatService.getHeartbeatData('degraded-machine');
+      expect(dataExisting).toBeDefined();
+      expect(dataDegraded).toBeDefined();
     });
   });
 
   describe('saveState in degraded mode', () => {
-    it('skips saving when sharedPath is degraded', async () => {
+    it('no disk writes regardless of degradation (ADR 008 no-op)', async () => {
       caps.markDegraded('sharedPath', 'GDrive offline');
 
       await heartbeatService.registerHeartbeat('unsaved-machine');
 
-      // Force save via stopHeartbeatService (calls saveState internally)
+      // stopHeartbeatService is a no-op — no disk writes
       await heartbeatService.stopHeartbeatService();
 
-      const heartbeatsDir = join(sharedPath, 'heartbeats');
-      let files: string[] = [];
-      try {
-        files = await readdir(heartbeatsDir);
-      } catch {
-        // OK
-      }
-      expect(files).toHaveLength(0);
+      // Machine still in memory
+      expect(heartbeatService.getHeartbeatData('unsaved-machine')).toBeDefined();
     });
   });
 
   describe('mixed degradation cycle', () => {
     it('handles full degrade → operate → recover cycle', async () => {
-      // Step 1: Normal operation — write to disk
       await heartbeatService.registerHeartbeat('cycle-machine');
       const onlineMachines = heartbeatService.getOnlineMachines();
       expect(onlineMachines).toContain('cycle-machine');
 
-      // Step 2: Degrade — operations continue in-memory
       caps.markDegraded('sharedPath', 'GDrive offline');
 
       await heartbeatService.registerHeartbeat('degraded-only-machine');
       expect(heartbeatService.getHeartbeatData('degraded-only-machine')).toBeDefined();
 
-      // Step 3: Recover — disk writes resume
       caps.recover('sharedPath');
 
       await heartbeatService.registerHeartbeat('recovered-machine');

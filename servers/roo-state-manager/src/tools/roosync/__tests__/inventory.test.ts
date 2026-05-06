@@ -39,13 +39,13 @@ vi.mock('../../../services/RooSyncService.js', () => ({
     getHeartbeatService: vi.fn(() => ({
       getState: vi.fn(() => ({
         onlineMachines: ['machine-1', 'machine-2'],
-        offlineMachines: ['machine-3'],
-        warningMachines: ['machine-4'],
+        unknownMachines: ['machine-3'],
+        idleMachines: ['machine-4'],
         statistics: {
           totalMachines: 4,
           onlineCount: 2,
-          offlineCount: 1,
-          warningCount: 1,
+          unknownCount: 1,
+          idleCount: 1,
           lastHeartbeatCheck: new Date().toISOString()
         },
         heartbeats: new Map([
@@ -53,11 +53,9 @@ vi.mock('../../../services/RooSyncService.js', () => ({
             machineId: 'machine-1',
             lastHeartbeat: new Date().toISOString(),
             status: 'online',
-            missedHeartbeats: 0,
             metadata: {
               firstSeen: new Date().toISOString(),
-              lastUpdated: new Date().toISOString(),
-              version: '1.0.0'
+              lastUpdated: new Date().toISOString()
             }
           }]
         ])
@@ -197,8 +195,8 @@ describe('inventoryTool', () => {
       expect(result.data).toBeDefined();
       expect(result.data.heartbeatState).toBeDefined();
       expect(result.data.heartbeatState.onlineMachines).toEqual(['machine-1', 'machine-2']);
-      expect(result.data.heartbeatState.offlineMachines).toEqual(['machine-3']);
-      expect(result.data.heartbeatState.warningMachines).toEqual(['machine-4']);
+      expect(result.data.heartbeatState.unknownMachines).toEqual(['machine-3']);
+      expect(result.data.heartbeatState.idleMachines).toEqual(['machine-4']);
       expect(result.data.machineInventory).toBeUndefined();
     });
 
@@ -230,8 +228,8 @@ describe('inventoryTool', () => {
       expect(result.data.heartbeatState.statistics).toBeDefined();
       expect(result.data.heartbeatState.statistics.totalMachines).toBe(4);
       expect(result.data.heartbeatState.statistics.onlineCount).toBe(2);
-      expect(result.data.heartbeatState.statistics.offlineCount).toBe(1);
-      expect(result.data.heartbeatState.statistics.warningCount).toBe(1);
+      expect(result.data.heartbeatState.statistics.unknownCount).toBe(1);
+      expect(result.data.heartbeatState.statistics.idleCount).toBe(1);
     });
   });
 
@@ -330,7 +328,7 @@ describe('inventoryTool', () => {
       expect(result.data.summary).toContain('Machine:');
       expect(result.data.summary).toContain('Cluster status:');
       expect(result.data.summary).toContain('Online');
-      expect(result.data.summary).toContain('Offline');
+      expect(result.data.summary).toContain('Unknown');
     });
 
     test('should not return full JSON when summary=true', async () => {
