@@ -1,7 +1,7 @@
 /**
  * Tests for roosync_heartbeat_status tool
  *
- * Covers: filter=all/online/offline/warning, includeHeartbeats,
+ * Covers: filter=all/online/unknown/idle, includeHeartbeats,
  * forceCheck, includeChanges, error handling
  */
 
@@ -37,8 +37,8 @@ vi.mock('../../../../src/services/roosync/HeartbeatService.js', () => ({
 
 const defaultState = {
     onlineMachines: ['ai-01', 'po-2023'],
-    offlineMachines: ['web1'],
-    warningMachines: ['po-2024'],
+    unknownMachines: ['web1'],
+    idleMachines: ['po-2024'],
     statistics: {
         totalMachines: 4,
         onlineCount: 2,
@@ -49,8 +49,8 @@ const defaultState = {
     heartbeats: new Map([
         ['ai-01', { machineId: 'ai-01', status: 'online', lastHeartbeat: '2026-05-04T00:00:00.000Z' }],
         ['po-2023', { machineId: 'po-2023', status: 'online', lastHeartbeat: '2026-05-04T00:00:00.000Z' }],
-        ['web1', { machineId: 'web1', status: 'offline', lastHeartbeat: '2026-05-03T20:00:00.000Z' }],
-        ['po-2024', { machineId: 'po-2024', status: 'warning', lastHeartbeat: '2026-05-04T00:00:00.000Z' }],
+        ['web1', { machineId: 'web1', status: 'unknown', lastHeartbeat: '2026-05-03T20:00:00.000Z' }],
+        ['po-2024', { machineId: 'po-2024', status: 'idle', lastHeartbeat: '2026-05-04T00:00:00.000Z' }],
     ]),
 };
 
@@ -67,30 +67,30 @@ describe('roosync_heartbeat_status', () => {
         const result = await roosyncHeartbeatStatus({});
         expect(result.success).toBe(true);
         expect(result.onlineMachines).toEqual(['ai-01', 'po-2023']);
-        expect(result.offlineMachines).toEqual(['web1']);
-        expect(result.warningMachines).toEqual(['po-2024']);
+        expect(result.unknownMachines).toEqual(['web1']);
+        expect(result.idleMachines).toEqual(['po-2024']);
         expect(result.statistics.totalMachines).toBe(4);
     });
 
     it('returns only online machines with filter=online', async () => {
         const result = await roosyncHeartbeatStatus({ filter: 'online' });
         expect(result.onlineMachines).toEqual(['ai-01', 'po-2023']);
-        expect(result.offlineMachines).toEqual([]);
-        expect(result.warningMachines).toEqual([]);
+        expect(result.unknownMachines).toEqual([]);
+        expect(result.idleMachines).toEqual([]);
     });
 
-    it('returns only offline machines with filter=offline', async () => {
-        const result = await roosyncHeartbeatStatus({ filter: 'offline' });
+    it('returns only unknown machines with filter=unknown', async () => {
+        const result = await roosyncHeartbeatStatus({ filter: 'unknown' });
         expect(result.onlineMachines).toEqual([]);
-        expect(result.offlineMachines).toEqual(['web1']);
-        expect(result.warningMachines).toEqual([]);
+        expect(result.unknownMachines).toEqual(['web1']);
+        expect(result.idleMachines).toEqual([]);
     });
 
-    it('returns only warning machines with filter=warning', async () => {
-        const result = await roosyncHeartbeatStatus({ filter: 'warning' });
+    it('returns only idle machines with filter=idle', async () => {
+        const result = await roosyncHeartbeatStatus({ filter: 'idle' });
         expect(result.onlineMachines).toEqual([]);
-        expect(result.offlineMachines).toEqual([]);
-        expect(result.warningMachines).toEqual(['po-2024']);
+        expect(result.unknownMachines).toEqual([]);
+        expect(result.idleMachines).toEqual(['po-2024']);
     });
 
     describe('includeHeartbeats', () => {
@@ -113,15 +113,15 @@ describe('roosync_heartbeat_status', () => {
             expect(result.heartbeats!['web1']).toBeUndefined();
         });
 
-        it('filters heartbeats with filter=offline', async () => {
-            const result = await roosyncHeartbeatStatus({ filter: 'offline' });
+        it('filters heartbeats with filter=unknown', async () => {
+            const result = await roosyncHeartbeatStatus({ filter: 'unknown' });
             expect(result.heartbeats).toBeDefined();
             expect(Object.keys(result.heartbeats!)).toHaveLength(1);
             expect(result.heartbeats!['web1']).toBeDefined();
         });
 
-        it('filters heartbeats with filter=warning', async () => {
-            const result = await roosyncHeartbeatStatus({ filter: 'warning' });
+        it('filters heartbeats with filter=idle', async () => {
+            const result = await roosyncHeartbeatStatus({ filter: 'idle' });
             expect(result.heartbeats).toBeDefined();
             expect(Object.keys(result.heartbeats!)).toHaveLength(1);
             expect(result.heartbeats!['po-2024']).toBeDefined();
@@ -131,22 +131,22 @@ describe('roosync_heartbeat_status', () => {
     describe('forceCheck and includeChanges', () => {
         it('checks heartbeats with forceCheck=true', async () => {
             mockCheckHeartbeats.mockResolvedValue({
-                newlyOfflineMachines: ['web1'],
+                newlyUnknownMachines: ['web1'],
                 newlyOnlineMachines: ['po-2023'],
-                warningMachines: ['po-2024'],
+                idleMachines: ['po-2024'],
             });
             const result = await roosyncHeartbeatStatus({ forceCheck: true });
             expect(mockCheckHeartbeats).toHaveBeenCalled();
             expect(result.changes).toBeDefined();
-            expect(result.changes!.newlyOfflineMachines).toEqual(['web1']);
+            expect(result.changes!.newlyUnknownMachines).toEqual(['web1']);
             expect(result.changes!.totalChanges).toBe(3);
         });
 
         it('checks heartbeats with includeChanges=true', async () => {
             mockCheckHeartbeats.mockResolvedValue({
-                newlyOfflineMachines: [],
+                newlyUnknownMachines: [],
                 newlyOnlineMachines: [],
-                warningMachines: [],
+                idleMachines: [],
             });
             const result = await roosyncHeartbeatStatus({ includeChanges: true });
             expect(mockCheckHeartbeats).toHaveBeenCalled();

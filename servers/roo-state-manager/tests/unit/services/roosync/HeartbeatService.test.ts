@@ -126,8 +126,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -147,31 +147,31 @@ describe('HeartbeatService - Tests Unitaires', () => {
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.newlyOfflineMachines).toContain('machine-1'); // UNKNOWN maps to offlineMachines
+      expect(result.newlyUnknownMachines).toContain('machine-1');
 
       const heartbeatDataAfter = heartbeatService.getHeartbeatData('machine-1');
-      expect(heartbeatDataAfter?.status).toBe('unknown'); // ADR 008: no more 'offline', use 'unknown'
+      expect(heartbeatDataAfter?.status).toBe('unknown');
     });
 
     it('devrait détecter une machine en avertissement avant offline', async () => {
       // Arrange - Enregistrer un heartbeat
       await heartbeatService.registerHeartbeat('machine-1');
-      
+
       // Simuler le passage du temps pour un avertissement
       const heartbeatPath = join(sharedPath, 'heartbeat.json');
       const state = heartbeatService.getState();
-      
+
       const heartbeatData = state.heartbeats.get('machine-1');
       if (heartbeatData) {
         // #1953 ADR 008: IDLE threshold is 30-120 min
         heartbeatData.lastHeartbeat = new Date(Date.now() - 45 * 60 * 1000).toISOString(); // 45 min → IDLE
         state.heartbeats.set('machine-1', heartbeatData);
-        
+
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -191,10 +191,10 @@ describe('HeartbeatService - Tests Unitaires', () => {
       
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warningMachines).toContain('machine-1');
-      
+      expect(result.idleMachines).toContain('machine-1');
+
       const heartbeatDataAfter = heartbeatService.getHeartbeatData('machine-1');
-      expect(heartbeatDataAfter?.status).toBe('idle'); // ADR 008: 'idle' replaces 'warning'
+      expect(heartbeatDataAfter?.status).toBe('idle');
       expect(heartbeatDataAfter?.missedHeartbeats).toBe(1);
     });
 
@@ -216,8 +216,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -256,8 +256,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
       expect(state).toBeDefined();
       expect(state.statistics.totalMachines).toBe(2);
       expect(state.onlineMachines).toHaveLength(2);
-      expect(state.offlineMachines).toHaveLength(0);
-      expect(state.warningMachines).toHaveLength(0);
+      expect(state.unknownMachines).toHaveLength(0);
+      expect(state.idleMachines).toHaveLength(0);
       expect(state.statistics.onlineCount).toBe(2);
       expect(state.statistics.offlineCount).toBe(0);
       expect(state.statistics.warningCount).toBe(0);
@@ -280,22 +280,22 @@ describe('HeartbeatService - Tests Unitaires', () => {
     it('devrait retourner les machines offline', async () => {
       // Arrange - Créer une machine offline
       await heartbeatService.registerHeartbeat('machine-1');
-      
+
       const heartbeatPath = join(sharedPath, 'heartbeat.json');
       const state = heartbeatService.getState();
-      
+
       const heartbeatData = state.heartbeats.get('machine-1');
       if (heartbeatData) {
         heartbeatData.lastHeartbeat = new Date(Date.now() - 130000).toISOString();
-        heartbeatData.status = 'offline';
+        heartbeatData.status = 'unknown';
         heartbeatData.offlineSince = new Date(Date.now() - 130000).toISOString();
         state.heartbeats.set('machine-1', heartbeatData);
         
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -311,10 +311,10 @@ describe('HeartbeatService - Tests Unitaires', () => {
       });
       
       // Act
-      const offlineMachines = heartbeatService.getOfflineMachines();
-      
+      const unknownMachines = heartbeatService.getUnknownMachines();
+
       // Assert
-      expect(offlineMachines).toContain('machine-1');
+      expect(unknownMachines).toContain('machine-1');
     });
 
     it('devrait retourner les machines en avertissement', async () => {
@@ -327,15 +327,15 @@ describe('HeartbeatService - Tests Unitaires', () => {
       const heartbeatData = state.heartbeats.get('machine-1');
       if (heartbeatData) {
         heartbeatData.lastHeartbeat = new Date(Date.now() - 90000).toISOString();
-        heartbeatData.status = 'warning';
+        heartbeatData.status = 'idle';
         heartbeatData.missedHeartbeats = 3;
         state.heartbeats.set('machine-1', heartbeatData);
         
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -351,10 +351,10 @@ describe('HeartbeatService - Tests Unitaires', () => {
       });
       
       // Act
-      const warningMachines = heartbeatService.getWarningMachines();
-      
+      const idleMachines = heartbeatService.getIdleMachines();
+
       // Assert
-      expect(warningMachines).toContain('machine-1');
+      expect(idleMachines).toContain('machine-1');
     });
   });
 
@@ -389,7 +389,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
       const old1Data = state.heartbeats.get('myia-old-1');
       if (old1Data) {
         old1Data.lastHeartbeat = new Date(now - 90000000).toISOString(); // Plus de 24h
-        old1Data.status = 'offline';
+        old1Data.status = 'unknown';
         old1Data.offlineSince = new Date(now - 90000000).toISOString();
         state.heartbeats.set('myia-old-1', old1Data);
       }
@@ -397,7 +397,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
       const old2Data = state.heartbeats.get('myia-old-2');
       if (old2Data) {
         old2Data.lastHeartbeat = new Date(now - 90000000).toISOString(); // Plus de 24h
-        old2Data.status = 'offline';
+        old2Data.status = 'unknown';
         old2Data.offlineSince = new Date(now - 90000000).toISOString();
         state.heartbeats.set('myia-old-2', old2Data);
       }
@@ -405,7 +405,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
       const recentData = state.heartbeats.get('myia-recent');
       if (recentData) {
         recentData.lastHeartbeat = new Date(now - 3600000).toISOString(); // 1 heure
-        recentData.status = 'offline';
+        recentData.status = 'unknown';
         recentData.offlineSince = new Date(now - 3600000).toISOString();
         state.heartbeats.set('myia-recent', recentData);
       }
@@ -413,8 +413,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
       await fs.writeFile(heartbeatPath, JSON.stringify({
         heartbeats: Object.fromEntries(state.heartbeats),
         onlineMachines: state.onlineMachines,
-        offlineMachines: state.offlineMachines,
-        warningMachines: state.warningMachines,
+        unknownMachines: state.unknownMachines,
+        idleMachines: state.idleMachines,
         statistics: state.statistics
       }, null, 2));
 
@@ -429,15 +429,15 @@ describe('HeartbeatService - Tests Unitaires', () => {
       });
 
       // Act - Nettoyer les machines offline depuis plus de 24h
-      const removedCount = await heartbeatService.cleanupOldOfflineMachines(86400000); // 24h
+      const removedCount = await heartbeatService.cleanupOldUnknownMachines(86400000); // 24h
 
       // Assert
       expect(removedCount).toBe(2);
-      // #1409: Production machines (myia-*) kept in state as offline, not deleted
+      // #1409: Production machines (myia-*) kept in state as unknown, not deleted
       expect(heartbeatService.getHeartbeatData('myia-old-1')).toBeDefined();
-      expect(heartbeatService.getHeartbeatData('myia-old-1')!.status).toBe('offline');
+      expect(heartbeatService.getHeartbeatData('myia-old-1')!.status).toBe('unknown');
       expect(heartbeatService.getHeartbeatData('myia-old-2')).toBeDefined();
-      expect(heartbeatService.getHeartbeatData('myia-old-2')!.status).toBe('offline');
+      expect(heartbeatService.getHeartbeatData('myia-old-2')!.status).toBe('unknown');
       expect(heartbeatService.getHeartbeatData('myia-recent')).toBeDefined(); // Pas supprimée
     });
   });
@@ -478,8 +478,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -501,7 +501,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
       const result = await heartbeatService.checkHeartbeats();
       
       // Assert
-      expect(result.newlyOfflineMachines).toContain('machine-1');
+      expect(result.newlyUnknownMachines).toContain('machine-1');
       expect(offlineCallback).toHaveBeenCalledWith('machine-1');
     });
     it('devrait appeler le callback lors du retour online', async () => {
@@ -525,8 +525,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
         await fs.writeFile(heartbeatPath, JSON.stringify({
           heartbeats: Object.fromEntries(state.heartbeats),
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics
         }, null, 2));
       }
@@ -556,8 +556,8 @@ describe('HeartbeatService - Tests Unitaires', () => {
         await fs.writeFile(heartbeatPath2, JSON.stringify({
           heartbeats: Object.fromEntries(state2.heartbeats),
           onlineMachines: state2.onlineMachines,
-          offlineMachines: state2.offlineMachines,
-          warningMachines: state2.warningMachines,
+          unknownMachines: state2.unknownMachines,
+          idleMachines: state2.idleMachines,
           statistics: state2.statistics
         }, null, 2));
       }

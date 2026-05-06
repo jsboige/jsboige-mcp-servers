@@ -9,11 +9,11 @@
  * - registerHeartbeat : nouvelle machine + writes per-machine file
  * - registerHeartbeat : machine existante (update)
  * - checkHeartbeats : reloads from disk, détecte offline/warning/online
- * - getOnlineMachines / getOfflineMachines / getWarningMachines
+ * - getOnlineMachines / getUnknownMachines / getIdleMachines
  * - getHeartbeatData : défini après register, undefined avant
  * - getState : retourne copie défensive
  * - removeMachine : suppression + file deletion
- * - cleanupOldOfflineMachines : supprime anciennes, garde récentes
+ * - cleanupOldUnknownMachines : supprime anciennes, garde récentes
  * - stopHeartbeatService : saves all per-machine files
  * - updateConfig : accepte config partielle
  *
@@ -171,8 +171,8 @@ describe('HeartbeatService', () => {
       const service = new HeartbeatService(TEST_PATH);
 
       expect(service.getOnlineMachines()).toEqual([]);
-      expect(service.getOfflineMachines()).toEqual([]);
-      expect(service.getWarningMachines()).toEqual([]);
+      expect(service.getUnknownMachines()).toEqual([]);
+      expect(service.getIdleMachines()).toEqual([]);
     });
 
     test('charge les machines depuis le répertoire per-machine', () => {
@@ -198,14 +198,14 @@ describe('HeartbeatService', () => {
     test('charge les machines offline depuis les fichiers per-machine', () => {
       const offlineMachine = {
         ...makeOnlineMachine('offline-machine'),
-        status: 'offline',
+        status: 'unknown',
         offlineSince: new Date(Date.now() - 5000).toISOString(),
       };
       setupPerMachineFiles({ 'offline-machine': offlineMachine });
 
       const service = new HeartbeatService(TEST_PATH);
 
-      expect(service.getOfflineMachines()).toContain('offline-machine');
+      expect(service.getUnknownMachines()).toContain('offline-machine');
     });
 
     test('charge plusieurs machines depuis les fichiers per-machine', () => {
@@ -399,7 +399,7 @@ describe('HeartbeatService', () => {
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).toEqual([]);
+      expect(result.newlyUnknownMachines).toEqual([]);
       expect(result.newlyOnlineMachines).toEqual([]);
     });
 
@@ -413,8 +413,8 @@ describe('HeartbeatService', () => {
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).toContain('slow-machine'); // UNKNOWN maps to offlineMachines
-      expect(service.getOfflineMachines()).toContain('slow-machine');
+      expect(result.newlyUnknownMachines).toContain('slow-machine'); // UNKNOWN maps to unknownMachines
+      expect(service.getUnknownMachines()).toContain('slow-machine');
       expect(service.getHeartbeatData('slow-machine')!.status).toBe('unknown');
     });
 
@@ -428,8 +428,8 @@ describe('HeartbeatService', () => {
 
       const result = await service.checkHeartbeats();
 
-      expect(result.warningMachines).toContain('idle-machine'); // IDLE maps to warningMachines
-      expect(service.getWarningMachines()).toContain('idle-machine');
+      expect(result.idleMachines).toContain('idle-machine'); // IDLE maps to idleMachines
+      expect(service.getIdleMachines()).toContain('idle-machine');
       expect(service.getHeartbeatData('idle-machine')!.status).toBe('idle');
     });
 
@@ -443,12 +443,12 @@ describe('HeartbeatService', () => {
 
       // First check → detected UNKNOWN
       await service.checkHeartbeats();
-      expect(service.getOfflineMachines()).toContain('recovering-machine');
+      expect(service.getUnknownMachines()).toContain('recovering-machine');
 
       // Re-register → revient online (in-memory update)
       await service.registerHeartbeat('recovering-machine');
       expect(service.getOnlineMachines()).toContain('recovering-machine');
-      expect(service.getOfflineMachines()).not.toContain('recovering-machine');
+      expect(service.getUnknownMachines()).not.toContain('recovering-machine');
     });
 
     test('machine online stable reste online #1953 ADR 008', async () => {
@@ -459,7 +459,7 @@ describe('HeartbeatService', () => {
 
       const result = await service.checkHeartbeats();
 
-      expect(result.newlyOfflineMachines).not.toContain('stable-machine');
+      expect(result.newlyUnknownMachines).not.toContain('stable-machine');
       expect(service.getOnlineMachines()).toContain('stable-machine');
     });
 
@@ -552,8 +552,8 @@ describe('HeartbeatService', () => {
       const state = service.getState();
       expect(state.heartbeats).toBeDefined();
       expect(state.onlineMachines).toBeDefined();
-      expect(state.offlineMachines).toBeDefined();
-      expect(state.warningMachines).toBeDefined();
+      expect(state.unknownMachines).toBeDefined();
+      expect(state.idleMachines).toBeDefined();
       expect(state.statistics).toBeDefined();
     });
 
@@ -618,34 +618,34 @@ describe('HeartbeatService', () => {
   });
 
   // ============================================================
-  // cleanupOldOfflineMachines
+  // cleanupOldUnknownMachines
   // ============================================================
 
-  describe('cleanupOldOfflineMachines', () => {
+  describe('cleanupOldUnknownMachines', () => {
     test('retourne 0 si aucune machine offline', async () => {
       const service = new HeartbeatService(TEST_PATH);
 
       await service.registerHeartbeat('active-machine');
 
-      const removed = await service.cleanupOldOfflineMachines();
+      const removed = await service.cleanupOldUnknownMachines();
 
       expect(removed).toBe(0);
     });
 
-    test('garde les machines offline anciennes en statut offline (#1409)', async () => {
+    test('garde les machines offline anciennes en statut unknown (#1409)', async () => {
       const service = new HeartbeatService(TEST_PATH, { offlineTimeout: 10 });
 
       await service.registerHeartbeat('myia-old-offline');
       const hb = service.getHeartbeatData('myia-old-offline')!;
-      hb.status = 'offline';
+      hb.status = 'unknown';
       hb.offlineSince = new Date(Date.now() - 100_000).toISOString(); // offline depuis 100s
 
-      const removed = await service.cleanupOldOfflineMachines(50_000); // maxAge = 50s
+      const removed = await service.cleanupOldUnknownMachines(50_000); // maxAge = 50s
 
       expect(removed).toBe(1);
-      // #1409: Production machines (myia-*) kept in state as offline, not deleted
+      // #1409: Production machines (myia-*) kept in state as unknown, not deleted
       expect(service.getHeartbeatData('myia-old-offline')).toBeDefined();
-      expect(service.getHeartbeatData('myia-old-offline')!.status).toBe('offline');
+      expect(service.getHeartbeatData('myia-old-offline')!.status).toBe('unknown');
     });
 
     test('garde les machines offline récentes', async () => {
@@ -653,10 +653,10 @@ describe('HeartbeatService', () => {
 
       await service.registerHeartbeat('recent-offline');
       const hb = service.getHeartbeatData('recent-offline')!;
-      hb.status = 'offline';
+      hb.status = 'unknown';
       hb.offlineSince = new Date().toISOString(); // offline depuis maintenant
 
-      const removed = await service.cleanupOldOfflineMachines(86_400_000); // maxAge = 24h
+      const removed = await service.cleanupOldUnknownMachines(86_400_000); // maxAge = 24h
 
       expect(removed).toBe(0);
       expect(service.getHeartbeatData('recent-offline')).toBeDefined();
@@ -667,7 +667,7 @@ describe('HeartbeatService', () => {
 
       await service.registerHeartbeat('online-machine');
 
-      const removed = await service.cleanupOldOfflineMachines(0); // maxAge = 0
+      const removed = await service.cleanupOldUnknownMachines(0); // maxAge = 0
 
       expect(removed).toBe(0);
     });
@@ -677,12 +677,12 @@ describe('HeartbeatService', () => {
 
       await service.registerHeartbeat('test-artifact-machine');
       const hb = service.getHeartbeatData('test-artifact-machine')!;
-      hb.status = 'offline';
+      hb.status = 'unknown';
       hb.offlineSince = new Date(Date.now() - 100_000).toISOString();
 
       mockExistsSync.mockReturnValue(true);
 
-      await service.cleanupOldOfflineMachines(50_000);
+      await service.cleanupOldUnknownMachines(50_000);
 
       // #1409: Non-production machines (not myia-*) ARE deleted
       expect(service.getHeartbeatData('test-artifact-machine')).toBeUndefined();
@@ -693,14 +693,14 @@ describe('HeartbeatService', () => {
 
       await service.registerHeartbeat('myia-cleanup-target');
       const hb = service.getHeartbeatData('myia-cleanup-target')!;
-      hb.status = 'offline';
+      hb.status = 'unknown';
       hb.offlineSince = new Date(Date.now() - 100_000).toISOString();
 
       mockExistsSync.mockReturnValue(true);
 
-      await service.cleanupOldOfflineMachines(50_000);
+      await service.cleanupOldUnknownMachines(50_000);
 
-      // #1409: Production machines (myia-*) kept as offline, files NOT deleted
+      // #1409: Production machines (myia-*) kept as unknown, files NOT deleted
       expect(mockUnlink).not.toHaveBeenCalled();
       expect(service.getHeartbeatData('myia-cleanup-target')).toBeDefined();
     });

@@ -50,8 +50,8 @@ import { roosyncHeartbeatStatus } from '../heartbeat-status.js';
 function makeState(overrides: Record<string, any> = {}) {
   return {
     onlineMachines: ['myia-ai-01', 'myia-po-2025'],
-    offlineMachines: ['myia-web1'],
-    warningMachines: ['myia-po-2023'],
+    unknownMachines: ['myia-web1'],
+    idleMachines: ['myia-po-2023'],
     heartbeats: new Map([
       ['myia-ai-01', {
         machineId: 'myia-ai-01', lastHeartbeat: '2026-02-22T10:00:00.000Z',
@@ -65,12 +65,12 @@ function makeState(overrides: Record<string, any> = {}) {
       }],
       ['myia-web1', {
         machineId: 'myia-web1', lastHeartbeat: '2026-02-21T10:00:00.000Z',
-        status: 'offline', missedHeartbeats: 5,
+        status: 'unknown', missedHeartbeats: 5,
         metadata: { firstSeen: '2026-01-01T00:00:00.000Z', lastUpdated: '2026-02-21T10:00:00.000Z', version: '1.0' }
       }],
       ['myia-po-2023', {
         machineId: 'myia-po-2023', lastHeartbeat: '2026-02-22T09:30:00.000Z',
-        status: 'warning', missedHeartbeats: 2,
+        status: 'idle', missedHeartbeats: 2,
         metadata: { firstSeen: '2026-01-01T00:00:00.000Z', lastUpdated: '2026-02-22T09:30:00.000Z', version: '1.0' }
       }]
     ]),
@@ -87,9 +87,9 @@ function makeState(overrides: Record<string, any> = {}) {
 
 function makeCheckResult(overrides: Record<string, any> = {}) {
   return {
-    newlyOfflineMachines: [],
+    newlyUnknownMachines: [],
     newlyOnlineMachines: [],
-    warningMachines: [],
+    idleMachines: [],
     ...overrides
   };
 }
@@ -110,8 +110,8 @@ describe('roosyncHeartbeatStatus', () => {
 
     expect(result.success).toBe(true);
     expect(result.onlineMachines).toEqual(['myia-ai-01', 'myia-po-2025']);
-    expect(result.offlineMachines).toEqual(['myia-web1']);
-    expect(result.warningMachines).toEqual(['myia-po-2023']);
+    expect(result.unknownMachines).toEqual(['myia-web1']);
+    expect(result.idleMachines).toEqual(['myia-po-2023']);
     expect(result.statistics.totalMachines).toBe(4);
     expect(result.retrievedAt).toBeDefined();
     expect(result.changes).toBeUndefined();
@@ -135,28 +135,28 @@ describe('roosyncHeartbeatStatus', () => {
 
   // ── filtres ──
 
-  test('filter=online : vide offlineMachines et warningMachines', async () => {
+  test('filter=online : vide unknownMachines et idleMachines', async () => {
     const result = await roosyncHeartbeatStatus({ filter: 'online' });
 
     expect(result.onlineMachines).toEqual(['myia-ai-01', 'myia-po-2025']);
-    expect(result.offlineMachines).toEqual([]);
-    expect(result.warningMachines).toEqual([]);
+    expect(result.unknownMachines).toEqual([]);
+    expect(result.idleMachines).toEqual([]);
   });
 
-  test('filter=offline : vide onlineMachines et warningMachines', async () => {
-    const result = await roosyncHeartbeatStatus({ filter: 'offline' });
+  test('filter=unknown : vide onlineMachines et idleMachines', async () => {
+    const result = await roosyncHeartbeatStatus({ filter: 'unknown' });
 
     expect(result.onlineMachines).toEqual([]);
-    expect(result.offlineMachines).toEqual(['myia-web1']);
-    expect(result.warningMachines).toEqual([]);
+    expect(result.unknownMachines).toEqual(['myia-web1']);
+    expect(result.idleMachines).toEqual([]);
   });
 
-  test('filter=warning : vide onlineMachines et offlineMachines', async () => {
-    const result = await roosyncHeartbeatStatus({ filter: 'warning' });
+  test('filter=idle : vide onlineMachines et unknownMachines', async () => {
+    const result = await roosyncHeartbeatStatus({ filter: 'idle' });
 
     expect(result.onlineMachines).toEqual([]);
-    expect(result.offlineMachines).toEqual([]);
-    expect(result.warningMachines).toEqual(['myia-po-2023']);
+    expect(result.unknownMachines).toEqual([]);
+    expect(result.idleMachines).toEqual(['myia-po-2023']);
   });
 
   test('filter=online avec includeHeartbeats : ne garde que les heartbeats online', async () => {
@@ -168,15 +168,15 @@ describe('roosyncHeartbeatStatus', () => {
     expect(Object.keys(result.heartbeats!)).not.toContain('myia-po-2023');
   });
 
-  test('filter=offline avec includeHeartbeats : ne garde que les heartbeats offline', async () => {
-    const result = await roosyncHeartbeatStatus({ filter: 'offline', includeHeartbeats: true });
+  test('filter=unknown avec includeHeartbeats : ne garde que les heartbeats unknown', async () => {
+    const result = await roosyncHeartbeatStatus({ filter: 'unknown', includeHeartbeats: true });
 
     expect(result.heartbeats).toBeDefined();
     expect(Object.keys(result.heartbeats!)).toEqual(['myia-web1']);
   });
 
-  test('filter=warning avec includeHeartbeats : ne garde que les heartbeats warning', async () => {
-    const result = await roosyncHeartbeatStatus({ filter: 'warning', includeHeartbeats: true });
+  test('filter=idle avec includeHeartbeats : ne garde que les heartbeats idle', async () => {
+    const result = await roosyncHeartbeatStatus({ filter: 'idle', includeHeartbeats: true });
 
     expect(result.heartbeats).toBeDefined();
     expect(Object.keys(result.heartbeats!)).toEqual(['myia-po-2023']);
@@ -186,16 +186,16 @@ describe('roosyncHeartbeatStatus', () => {
 
   test('forceCheck=true appelle checkHeartbeats et retourne les changes', async () => {
     mockCheckHeartbeats.mockResolvedValue(makeCheckResult({
-      newlyOfflineMachines: ['myia-po-2024'],
+      newlyUnknownMachines: ['myia-po-2024'],
       newlyOnlineMachines: [],
-      warningMachines: []
+      idleMachines: []
     }));
 
     const result = await roosyncHeartbeatStatus({ forceCheck: true });
 
     expect(mockCheckHeartbeats).toHaveBeenCalledTimes(1);
     expect(result.changes).toBeDefined();
-    expect(result.changes!.newlyOfflineMachines).toEqual(['myia-po-2024']);
+    expect(result.changes!.newlyUnknownMachines).toEqual(['myia-po-2024']);
     expect(result.changes!.totalChanges).toBe(1);
   });
 
@@ -209,9 +209,9 @@ describe('roosyncHeartbeatStatus', () => {
 
   test('forceCheck=true avec changements multiples calcule totalChanges correctement', async () => {
     mockCheckHeartbeats.mockResolvedValue(makeCheckResult({
-      newlyOfflineMachines: ['myia-po-2024'],
+      newlyUnknownMachines: ['myia-po-2024'],
       newlyOnlineMachines: ['myia-po-2026'],
-      warningMachines: ['myia-ai-01']
+      idleMachines: ['myia-ai-01']
     }));
 
     const result = await roosyncHeartbeatStatus({ forceCheck: true });

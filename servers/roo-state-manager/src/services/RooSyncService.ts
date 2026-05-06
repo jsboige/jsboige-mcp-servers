@@ -941,15 +941,15 @@ export class RooSyncService {
   /**
    * Obtient les machines actuellement offline
    */
-  public getOfflineMachines(): string[] {
-    return this.heartbeatService.getOfflineMachines();
+  public getUnknownMachines(): string[] {
+    return this.heartbeatService.getUnknownMachines();
   }
 
   /**
    * Obtient les machines en avertissement
    */
-  public getWarningMachines(): string[] {
-    return this.heartbeatService.getWarningMachines();
+  public getIdleMachines(): string[] {
+    return this.heartbeatService.getIdleMachines();
   }
 
   /**

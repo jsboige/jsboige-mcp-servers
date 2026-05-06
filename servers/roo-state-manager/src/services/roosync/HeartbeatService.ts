@@ -75,7 +75,7 @@ export interface HeartbeatData {
   lastHeartbeat: string;
 
   /** Statut de la machine */
-  status: 'online' | 'offline' | 'warning' | 'idle' | 'unknown';
+  status: 'online' | 'unknown' | 'idle';
 
   /** Nombre de heartbeats manqués consécutifs */
   missedHeartbeats: number;
@@ -102,10 +102,10 @@ export interface HeartbeatServiceState {
   onlineMachines: string[];
 
   /** Machines actuellement offline */
-  offlineMachines: string[];
+  unknownMachines: string[];
 
   /** Machines en avertissement */
-  warningMachines: string[];
+  idleMachines: string[];
 
   /** Statistiques */
   statistics: {
@@ -125,13 +125,13 @@ export interface HeartbeatCheckResult {
   success: boolean;
 
   /** Machines détectées offline */
-  newlyOfflineMachines: string[];
+  newlyUnknownMachines: string[];
 
   /** Machines redevenues online */
   newlyOnlineMachines: string[];
 
   /** Machines en avertissement */
-  warningMachines: string[];
+  idleMachines: string[];
 
   /** Timestamp de la vérification */
   checkedAt: string;
@@ -184,8 +184,8 @@ export class HeartbeatService {
     this.state = {
       heartbeats: new Map(),
       onlineMachines: [],
-      offlineMachines: [],
-      warningMachines: [],
+      unknownMachines: [],
+      idleMachines: [],
       statistics: {
         totalMachines: 0,
         onlineCount: 0,
@@ -261,8 +261,8 @@ export class HeartbeatService {
       logger.info('État du service chargé', {
         totalMachines: this.state.heartbeats.size,
         online: this.state.onlineMachines.length,
-        offline: this.state.offlineMachines.length,
-        warning: this.state.warningMachines.length
+        offline: this.state.unknownMachines.length,
+        warning: this.state.idleMachines.length
       });
     } catch (error) {
       logger.error('Erreur chargement état', error);
@@ -507,9 +507,9 @@ export class HeartbeatService {
     const now = Date.now();
     const result: HeartbeatCheckResult = {
       success: true,
-      newlyOfflineMachines: [],
+      newlyUnknownMachines: [],
       newlyOnlineMachines: [],
-      warningMachines: [],
+      idleMachines: [],
       checkedAt: new Date().toISOString()
     };
 
@@ -528,15 +528,15 @@ export class HeartbeatService {
         // UNKNOWN — no recent activity, not necessarily down
         if (previousStatus !== 'unknown') {
           heartbeatData.status = 'unknown';
-          result.newlyOfflineMachines.push(machineId);
+          result.newlyUnknownMachines.push(machineId);
           logger.info(`Machine status → UNKNOWN: ${machineId}`, { timeSinceLastHeartbeat });
         }
       } else if (timeSinceLastHeartbeat > ONLINE_THRESHOLD) {
         // IDLE — machine active within last 2h but not in last 30min
-        if (previousStatus !== 'idle' && previousStatus !== 'warning') {
+        if (previousStatus !== 'idle') {
           heartbeatData.status = 'idle';
           heartbeatData.missedHeartbeats = 1;
-          result.warningMachines.push(machineId);
+          result.idleMachines.push(machineId);
           logger.info(`Machine status → IDLE: ${machineId}`, { timeSinceLastHeartbeat });
         }
       } else {
@@ -558,7 +558,7 @@ export class HeartbeatService {
     this.state.statistics.lastHeartbeatCheck = new Date().toISOString();
 
     if (this.onOfflineDetectedCallback) {
-      for (const machineId of result.newlyOfflineMachines) {
+      for (const machineId of result.newlyUnknownMachines) {
         this.onOfflineDetectedCallback(machineId);
       }
     }
@@ -577,33 +577,31 @@ export class HeartbeatService {
    */
   private updateMachineStatus(): void {
     const onlineMachines: string[] = [];
-    const offlineMachines: string[] = [];
-    const warningMachines: string[] = [];
+    const unknownMachines: string[] = [];
+    const idleMachines: string[] = [];
 
     for (const [machineId, heartbeatData] of this.state.heartbeats.entries()) {
       switch (heartbeatData.status) {
         case 'online':
           onlineMachines.push(machineId);
           break;
-        case 'offline':
         case 'unknown':
-          offlineMachines.push(machineId);
+          unknownMachines.push(machineId);
           break;
-        case 'warning':
         case 'idle':
-          warningMachines.push(machineId);
+          idleMachines.push(machineId);
           break;
       }
     }
 
     this.state.onlineMachines = onlineMachines;
-    this.state.offlineMachines = offlineMachines;
-    this.state.warningMachines = warningMachines;
+    this.state.unknownMachines = unknownMachines;
+    this.state.idleMachines = idleMachines;
 
     this.state.statistics.totalMachines = this.state.heartbeats.size;
     this.state.statistics.onlineCount = onlineMachines.length;
-    this.state.statistics.offlineCount = offlineMachines.length;
-    this.state.statistics.warningCount = warningMachines.length;
+    this.state.statistics.offlineCount = unknownMachines.length;
+    this.state.statistics.warningCount = idleMachines.length;
   }
 
   /**
@@ -687,15 +685,15 @@ export class HeartbeatService {
   /**
    * Obtient toutes les machines offline
    */
-  public getOfflineMachines(): string[] {
-    return [...this.state.offlineMachines];
+  public getUnknownMachines(): string[] {
+    return [...this.state.unknownMachines];
   }
 
   /**
    * Obtient toutes les machines en avertissement
    */
-  public getWarningMachines(): string[] {
-    return [...this.state.warningMachines];
+  public getIdleMachines(): string[] {
+    return [...this.state.idleMachines];
   }
 
   /**
@@ -705,8 +703,8 @@ export class HeartbeatService {
     return {
       heartbeats: new Map(this.state.heartbeats),
       onlineMachines: [...this.state.onlineMachines],
-      offlineMachines: [...this.state.offlineMachines],
-      warningMachines: [...this.state.warningMachines],
+      unknownMachines: [...this.state.unknownMachines],
+      idleMachines: [...this.state.idleMachines],
       statistics: { ...this.state.statistics }
     };
   }
@@ -745,7 +743,7 @@ export class HeartbeatService {
   /**
    * Nettoie les machines offline depuis longtemps
    */
-  public async cleanupOldOfflineMachines(maxAge: number = 86400000): Promise<number> {
+  public async cleanupOldUnknownMachines(maxAge: number = 86400000): Promise<number> {
     // maxAge par défaut: 24 heures
     // #1409: Don't delete heartbeat files for production machines (myia-*) — just keep as offline.
     // Deleting production files causes machineCount to drop below the actual cluster size.
@@ -760,8 +758,8 @@ export class HeartbeatService {
 
         if (offlineAge > maxAge) {
           if (isProduction(machineId)) {
-            // Production machines: keep in state as offline, don't remove file
-            heartbeatData.status = 'offline';
+            // Production machines: keep in state as unknown, don't remove file
+            heartbeatData.status = 'unknown';
             cleanedCount++;
           } else {
             // Non-production (test artifacts): delete file and remove from state

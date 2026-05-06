@@ -24,8 +24,8 @@ export const InventoryArgsSchema = z.object({
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les données de heartbeat de chaque machine (défaut: true)'),
   // Pour type="machines" (fused from roosync_machines)
-  status: z.enum(['offline', 'warning', 'all']).optional()
-    .describe('Filtrer par statut machines (type="machines": offline, warning, all)'),
+  status: z.enum(['unknown', 'idle', 'all']).optional()
+    .describe('Filtrer par statut machines (type="machines": unknown, idle, all)'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets des machines (type="machines") ou stats outil (type="status")'),
   summary: z.boolean().optional()
@@ -47,7 +47,7 @@ export const HeartbeatDataSchema = z.object({
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
-  status: z.enum(['online', 'offline', 'warning'])
+  status: z.enum(['online', 'unknown', 'idle'])
     .describe('Statut de la machine'),
   missedHeartbeats: z.number()
     .describe('Nombre de heartbeats manqués consécutifs'),
@@ -94,9 +94,9 @@ export const InventoryResultSchema = z.object({
   heartbeatState: z.object({
     onlineMachines: z.array(z.string())
       .describe('Liste des IDs des machines online'),
-    offlineMachines: z.array(z.string())
+    unknownMachines: z.array(z.string())
       .describe('Liste des IDs des machines offline'),
-    warningMachines: z.array(z.string())
+    idleMachines: z.array(z.string())
       .describe('Liste des IDs des machines en avertissement'),
     statistics: HeartbeatStatisticsSchema
       .describe('Statistiques du service'),
@@ -181,8 +181,8 @@ export const inventoryTool: UnifiedToolContract = {
 
         heartbeatState = {
           onlineMachines: state.onlineMachines,
-          offlineMachines: state.offlineMachines,
-          warningMachines: state.warningMachines,
+          unknownMachines: state.unknownMachines,
+          idleMachines: state.idleMachines,
           statistics: state.statistics,
           heartbeats: includeHeartbeats ? Object.fromEntries(state.heartbeats) : undefined,
           retrievedAt
@@ -199,41 +199,41 @@ export const inventoryTool: UnifiedToolContract = {
         const machinesStatus = input.status || 'all';
         const wantDetails = input.includeDetails || false;
 
-        machinesData = { offlineMachines: [], offlineCount: 0, warningMachines: [], warningCount: 0 };
+        machinesData = { unknownMachines: [], offlineCount: 0, idleMachines: [], warningCount: 0 };
 
-        if (machinesStatus === 'offline' || machinesStatus === 'all') {
-          const offlineMachines = heartbeatService.getOfflineMachines();
+        if (machinesStatus === 'unknown' || machinesStatus === 'all') {
+          const unknownMachines = heartbeatService.getUnknownMachines();
           if (wantDetails) {
             const detailed: any[] = [];
-            for (const mid of offlineMachines) {
+            for (const mid of unknownMachines) {
               const data = heartbeatService.getHeartbeatData(mid);
               if (data && data.offlineSince) {
                 detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, offlineSince: data.offlineSince, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
               }
             }
-            machinesData.offlineMachines = detailed;
+            machinesData.unknownMachines = detailed;
             machinesData.offlineCount = detailed.length;
           } else {
-            machinesData.offlineMachines = offlineMachines;
-            machinesData.offlineCount = offlineMachines.length;
+            machinesData.unknownMachines = unknownMachines;
+            machinesData.offlineCount = unknownMachines.length;
           }
         }
 
-        if (machinesStatus === 'warning' || machinesStatus === 'all') {
-          const warningMachines = heartbeatService.getWarningMachines();
+        if (machinesStatus === 'idle' || machinesStatus === 'all') {
+          const idleMachines = heartbeatService.getIdleMachines();
           if (wantDetails) {
             const detailed: any[] = [];
-            for (const mid of warningMachines) {
+            for (const mid of idleMachines) {
               const data = heartbeatService.getHeartbeatData(mid);
               if (data) {
                 detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, missedHeartbeats: data.missedHeartbeats, metadata: data.metadata });
               }
             }
-            machinesData.warningMachines = detailed;
+            machinesData.idleMachines = detailed;
             machinesData.warningCount = detailed.length;
           } else {
-            machinesData.warningMachines = warningMachines;
-            machinesData.warningCount = warningMachines.length;
+            machinesData.idleMachines = idleMachines;
+            machinesData.warningCount = idleMachines.length;
           }
         }
         if (!summary) {
@@ -260,13 +260,13 @@ export const inventoryTool: UnifiedToolContract = {
           const hs = heartbeatState;
           lines.push(`**Cluster status:** ${hs.statistics.totalMachines} machines`);
           lines.push(`- Online (${hs.onlineMachines.length}): ${hs.onlineMachines.join(', ') || 'none'}`);
-          lines.push(`- Offline (${hs.offlineMachines.length}): ${hs.offlineMachines.join(', ') || 'none'}`);
-          lines.push(`- Warning (${hs.warningMachines.length}): ${hs.warningMachines.join(', ') || 'none'}`);
+          lines.push(`- Unknown (${hs.unknownMachines.length}): ${hs.unknownMachines.join(', ') || 'none'}`);
+          lines.push(`- Idle (${hs.idleMachines.length}): ${hs.idleMachines.join(', ') || 'none'}`);
           lines.push('');
         }
 
         if (machinesData) {
-          lines.push(`**Filtered machines:** offline=${machinesData.offlineCount}, warning=${machinesData.warningCount}`);
+          lines.push(`**Filtered machines:** unknown=${machinesData.offlineCount}, idle=${machinesData.warningCount}`);
           lines.push('');
         }
 
@@ -316,7 +316,7 @@ export const inventoryToolMetadata = {
       type: {
         type: 'string',
         enum: ['machine', 'heartbeat', 'all', 'machines', 'status'],
-        description: 'Type d\'inventaire. "machines" = offline/warning. "status" = snapshot système avec flags.'
+        description: 'Type d\'inventaire. "machines" = unknown/idle. "status" = snapshot système avec flags.'
       },
       machineId: {
         type: 'string',
@@ -328,8 +328,8 @@ export const inventoryToolMetadata = {
       },
       status: {
         type: 'string',
-        enum: ['offline', 'warning', 'all'],
-        description: 'Filtrer par statut machines (type="machines": offline, warning, all)'
+        enum: ['unknown', 'idle', 'all'],
+        description: 'Filtrer par statut machines (type="machines": unknown, idle, all)'
       },
       includeDetails: {
         type: 'boolean',

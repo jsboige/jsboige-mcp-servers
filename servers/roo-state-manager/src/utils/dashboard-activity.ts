@@ -2,7 +2,7 @@
  * Dashboard-derived machine status utility (#1953)
  *
  * Parses dashboard message timestamps to determine last-seen time per machine.
- * Used as a cross-check against heartbeat files to prevent false OFFLINE detection
+ * Used as a cross-check against heartbeat files to prevent false UNKNOWN detection
  * caused by GDrive propagation latency.
  *
  * Dashboard messages embed timestamps INSIDE the content (written by the posting machine),
@@ -67,56 +67,56 @@ export function isRecentlyActive(lastSeen: string, thresholdMs: number = 60 * 60
 /**
  * Cross-check heartbeat-derived status against dashboard activity.
  *
- * For machines marked "offline" or "warning" by heartbeat files,
+ * For machines marked "unknown" or "idle" by heartbeat files,
  * if dashboard shows recent activity, override the status to "online".
  *
  * @param heartbeatState - State from HeartbeatService.checkHeartbeats()
  * @param dashboardContent - Raw dashboard markdown content
  * @param thresholdMs - Dashboard activity threshold (default: 60 min)
- * @returns Updated lists of online/offline/warning machines
+ * @returns Updated lists of online/unknown/idle machines
  */
 export function crossCheckWithDashboard(
 	heartbeatState: {
 		onlineMachines: string[];
-		offlineMachines: string[];
-		warningMachines: string[];
+		unknownMachines: string[];
+		idleMachines: string[];
 	},
 	dashboardContent: string,
 	thresholdMs: number = 60 * 60 * 1000
 ): {
 	onlineMachines: string[];
-	offlineMachines: string[];
-	warningMachines: string[];
+	unknownMachines: string[];
+	idleMachines: string[];
 	overrides: string[];
 } {
 	const activity = extractMachineActivity(dashboardContent);
 	const overrides: string[] = [];
 
-	const offlineMachines = [...heartbeatState.offlineMachines];
-	const warningMachines = [...heartbeatState.warningMachines];
+	const unknownMachines = [...heartbeatState.unknownMachines];
+	const idleMachines = [...heartbeatState.idleMachines];
 	const onlineMachines = [...heartbeatState.onlineMachines];
 
-	for (let i = offlineMachines.length - 1; i >= 0; i--) {
-		const machineId = offlineMachines[i];
+	for (let i = unknownMachines.length - 1; i >= 0; i--) {
+		const machineId = unknownMachines[i];
 		const lastSeen = activity.get(machineId);
 		if (lastSeen && isRecentlyActive(lastSeen, thresholdMs)) {
-			offlineMachines.splice(i, 1);
+			unknownMachines.splice(i, 1);
 			onlineMachines.push(machineId);
 			overrides.push(machineId);
-			logger.info(`Dashboard override: ${machineId} OFFLINE→ONLINE (last seen ${lastSeen})`);
+			logger.info(`Dashboard override: ${machineId} UNKNOWN→ONLINE (last seen ${lastSeen})`);
 		}
 	}
 
-	for (let i = warningMachines.length - 1; i >= 0; i--) {
-		const machineId = warningMachines[i];
+	for (let i = idleMachines.length - 1; i >= 0; i--) {
+		const machineId = idleMachines[i];
 		const lastSeen = activity.get(machineId);
 		if (lastSeen && isRecentlyActive(lastSeen, thresholdMs)) {
-			warningMachines.splice(i, 1);
+			idleMachines.splice(i, 1);
 			onlineMachines.push(machineId);
 			overrides.push(machineId);
-			logger.info(`Dashboard override: ${machineId} WARNING→ONLINE (last seen ${lastSeen})`);
+			logger.info(`Dashboard override: ${machineId} IDLE→ONLINE (last seen ${lastSeen})`);
 		}
 	}
 
-	return { onlineMachines, offlineMachines, warningMachines, overrides };
+	return { onlineMachines, unknownMachines, idleMachines, overrides };
 }

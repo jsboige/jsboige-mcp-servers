@@ -35,8 +35,8 @@ describe('roosyncHeartbeat', () => {
       const mockStatusResult = {
         success: true,
         onlineMachines: ['myia-ai-01', 'myia-po-2024'],
-        offlineMachines: [],
-        warningMachines: [],
+        unknownMachines: [],
+        idleMachines: [],
         statistics: {
           totalMachines: 2,
           onlineCount: 2,
@@ -71,8 +71,8 @@ describe('roosyncHeartbeat', () => {
       const mockStatusResult = {
         success: true,
         onlineMachines: ['myia-ai-01', 'myia-po-2024'],
-        offlineMachines: [],
-        warningMachines: [],
+        unknownMachines: [],
+        idleMachines: [],
         statistics: {
           totalMachines: 2,
           onlineCount: 2,
@@ -106,8 +106,8 @@ describe('roosyncHeartbeat', () => {
       const mockStatusResult = {
         success: true,
         onlineMachines: ['myia-ai-01'],
-        offlineMachines: ['myia-po-2024'],
-        warningMachines: [],
+        unknownMachines: ['myia-po-2024'],
+        idleMachines: [],
         statistics: {
           totalMachines: 2,
           onlineCount: 1,
@@ -116,7 +116,7 @@ describe('roosyncHeartbeat', () => {
           lastHeartbeatCheck: '2026-02-11T08:00:00Z'
         },
         changes: {
-          newlyOfflineMachines: ['myia-po-2024'],
+          newlyUnknownMachines: ['myia-po-2024'],
           newlyOnlineMachines: [],
           newWarnings: [],
           totalChanges: 1
@@ -440,8 +440,8 @@ describe('roosyncHeartbeat', () => {
       const mockStatusResult = {
         success: true,
         onlineMachines: [],
-        offlineMachines: [],
-        warningMachines: [],
+        unknownMachines: [],
+        idleMachines: [],
         statistics: {
           totalMachines: 0,
           onlineCount: 0,
@@ -496,8 +496,8 @@ describe('roosyncHeartbeat', () => {
       const mockResult = {
         success: true,
         onlineMachines: [],
-        offlineMachines: [],
-        warningMachines: [],
+        unknownMachines: [],
+        idleMachines: [],
         statistics: {
           totalMachines: 0,
           onlineCount: 0,

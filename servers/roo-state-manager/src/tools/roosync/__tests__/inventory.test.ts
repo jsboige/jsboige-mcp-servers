@@ -39,8 +39,8 @@ vi.mock('../../../services/RooSyncService.js', () => ({
     getHeartbeatService: vi.fn(() => ({
       getState: vi.fn(() => ({
         onlineMachines: ['machine-1', 'machine-2'],
-        offlineMachines: ['machine-3'],
-        warningMachines: ['machine-4'],
+        unknownMachines: ['machine-3'],
+        idleMachines: ['machine-4'],
         statistics: {
           totalMachines: 4,
           onlineCount: 2,
@@ -197,8 +197,8 @@ describe('inventoryTool', () => {
       expect(result.data).toBeDefined();
       expect(result.data.heartbeatState).toBeDefined();
       expect(result.data.heartbeatState.onlineMachines).toEqual(['machine-1', 'machine-2']);
-      expect(result.data.heartbeatState.offlineMachines).toEqual(['machine-3']);
-      expect(result.data.heartbeatState.warningMachines).toEqual(['machine-4']);
+      expect(result.data.heartbeatState.unknownMachines).toEqual(['machine-3']);
+      expect(result.data.heartbeatState.idleMachines).toEqual(['machine-4']);
       expect(result.data.machineInventory).toBeUndefined();
     });
 
@@ -330,7 +330,7 @@ describe('inventoryTool', () => {
       expect(result.data.summary).toContain('Machine:');
       expect(result.data.summary).toContain('Cluster status:');
       expect(result.data.summary).toContain('Online');
-      expect(result.data.summary).toContain('Offline');
+      expect(result.data.summary).toContain('Unknown');
     });
 
     test('should not return full JSON when summary=true', async () => {

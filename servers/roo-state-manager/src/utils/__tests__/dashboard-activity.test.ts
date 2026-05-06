@@ -89,49 +89,49 @@ describe('dashboard-activity', () => {
 		it('should override OFFLINE to ONLINE when dashboard shows recent activity', () => {
 			const heartbeatState = {
 				onlineMachines: ['myia-po-2023'],
-				offlineMachines: ['myia-po-2024'],
-				warningMachines: [],
+				unknownMachines: ['myia-po-2024'],
+				idleMachines: [],
 			};
 			const dashboardContent = '### [2026-05-03T19:30:00Z] myia-po-2024|roo-extensions\nRecent message';
 
 			const result = crossCheckWithDashboard(heartbeatState, dashboardContent);
 			expect(result.onlineMachines).toContain('myia-po-2024');
-			expect(result.offlineMachines).not.toContain('myia-po-2024');
+			expect(result.unknownMachines).not.toContain('myia-po-2024');
 			expect(result.overrides).toContain('myia-po-2024');
 		});
 
 		it('should override WARNING to ONLINE when dashboard shows recent activity', () => {
 			const heartbeatState = {
 				onlineMachines: [],
-				offlineMachines: [],
-				warningMachines: ['myia-web1'],
+				unknownMachines: [],
+				idleMachines: ['myia-web1'],
 			};
 			const dashboardContent = '### [2026-05-03T19:45:00Z] myia-web1|roo-extensions\nRecent message';
 
 			const result = crossCheckWithDashboard(heartbeatState, dashboardContent);
 			expect(result.onlineMachines).toContain('myia-web1');
-			expect(result.warningMachines).not.toContain('myia-web1');
+			expect(result.idleMachines).not.toContain('myia-web1');
 			expect(result.overrides).toContain('myia-web1');
 		});
 
 		it('should NOT override when dashboard activity is too old', () => {
 			const heartbeatState = {
 				onlineMachines: [],
-				offlineMachines: ['myia-po-2025'],
-				warningMachines: [],
+				unknownMachines: ['myia-po-2025'],
+				idleMachines: [],
 			};
 			const dashboardContent = '### [2026-05-03T10:00:00Z] myia-po-2025|roo-extensions\nOld message';
 
 			const result = crossCheckWithDashboard(heartbeatState, dashboardContent);
-			expect(result.offlineMachines).toContain('myia-po-2025');
+			expect(result.unknownMachines).toContain('myia-po-2025');
 			expect(result.overrides).toHaveLength(0);
 		});
 
 		it('should handle multiple overrides', () => {
 			const heartbeatState = {
 				onlineMachines: [],
-				offlineMachines: ['myia-po-2024', 'myia-po-2025'],
-				warningMachines: ['myia-web1'],
+				unknownMachines: ['myia-po-2024', 'myia-po-2025'],
+				idleMachines: ['myia-web1'],
 			};
 			const dashboardContent = [
 				'### [2026-05-03T19:50:00Z] myia-po-2024|roo-extensions',
@@ -150,8 +150,8 @@ describe('dashboard-activity', () => {
 		it('should not modify already online machines', () => {
 			const heartbeatState = {
 				onlineMachines: ['myia-ai-01'],
-				offlineMachines: [],
-				warningMachines: [],
+				unknownMachines: [],
+				idleMachines: [],
 			};
 			const dashboardContent = '### [2026-05-03T19:50:00Z] myia-ai-01|roo-extensions\nMessage';
 

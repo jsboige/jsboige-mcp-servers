@@ -110,14 +110,14 @@ describe('#1863 Fusion A2: machines → inventory(type: "machines")', () => {
       }
     });
 
-    it('should validate type="machines" with status="offline"', () => {
+    it('should validate type="machines" with status="unknown"', () => {
       const result = InventoryArgsSchema.safeParse({
         type: 'machines',
-        status: 'offline'
+        status: 'unknown'
       });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.status).toBe('offline');
+        expect(result.data.status).toBe('unknown');
       }
     });
 

@@ -155,8 +155,7 @@ export interface RooSyncState {
   heartbeat?: {
     registered: boolean;
     lastHeartbeat?: string;
-    status?: 'online' | 'offline' | 'warning';
-    missedHeartbeats?: number;
+    status?: 'online' | 'unknown' | 'idle';
   };
 
   /** Messaging stats */

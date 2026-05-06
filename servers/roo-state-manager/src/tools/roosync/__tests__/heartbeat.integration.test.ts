@@ -132,20 +132,20 @@ describe('roosyncHeartbeat (integration)', () => {
       expect(result.action).toBe('status');
     });
 
-    test('should filter by status: offline', async () => {
+    test('should filter by status: unknown', async () => {
       const result = await roosyncHeartbeat({
         action: 'status',
-        filter: 'offline'
+        filter: 'unknown'
       });
 
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
     });
 
-    test('should filter by status: warning', async () => {
+    test('should filter by status: idle', async () => {
       const result = await roosyncHeartbeat({
         action: 'status',
-        filter: 'warning'
+        filter: 'idle'
       });
 
       expect(result).toBeDefined();
@@ -566,10 +566,10 @@ describe('roosyncHeartbeat (integration)', () => {
       expect(result.success).toBe(true);
     });
 
-    test('should correctly identify offline machines', async () => {
+    test('should correctly identify unknown machines', async () => {
       const result = await roosyncHeartbeat({
         action: 'status',
-        filter: 'offline',
+        filter: 'unknown',
         includeHeartbeats: true
       });
 

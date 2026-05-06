@@ -29,7 +29,7 @@ export const HeartbeatArgsSchema = z.object({
     .describe('Type d\'opération: status (état), register (enregistrer), start (démarrer), stop (arrêter)'),
 
   // Paramètres pour action: 'status'
-  filter: z.enum(['all', 'online', 'offline', 'warning']).optional()
+  filter: z.enum(['all', 'online', 'unknown', 'idle']).optional()
     .describe('Filtrer par statut de machine (action: status)'),
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les données de heartbeat (action: status)'),
@@ -189,7 +189,7 @@ export const heartbeatToolMetadata = {
       },
       filter: {
         type: 'string',
-        enum: ['all', 'online', 'offline', 'warning'],
+        enum: ['all', 'online', 'unknown', 'idle'],
         description: 'Filtrer par statut de machine (action: status)'
       },
       includeHeartbeats: {

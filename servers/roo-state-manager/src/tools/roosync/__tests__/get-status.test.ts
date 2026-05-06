@@ -66,8 +66,8 @@ describe('get-status (Option B)', () => {
       checkHeartbeats: vi.fn(),
       getState: vi.fn(() => ({
         onlineMachines: ['myia-ai-01', 'myia-po-2023'],
-        offlineMachines: [],
-        warningMachines: []
+        unknownMachines: [],
+        idleMachines: []
       }))
     });
     mockGetInboxStats.mockResolvedValue({ unread: 0, urgent: 0, by_priority: {} });
@@ -101,7 +101,7 @@ describe('get-status (Option B)', () => {
     test('validates HEALTHY result', () => {
       const result = GetStatusResultSchema.parse({
         status: 'HEALTHY',
-        machines: { online: 6, offline: 0, total: 6 },
+        machines: { online: 6, unknown: 0, total: 6 },
         inbox: { unread: 0, urgent: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
@@ -114,7 +114,7 @@ describe('get-status (Option B)', () => {
     test('validates CRITICAL result with flags', () => {
       const result = GetStatusResultSchema.parse({
         status: 'CRITICAL',
-        machines: { online: 4, offline: 2, total: 6 },
+        machines: { online: 4, unknown: 2, total: 6 },
         inbox: { unread: 15, urgent: 2 },
         decisions: { pending: 3 },
         dashboards: { active: 1 },
@@ -128,7 +128,7 @@ describe('get-status (Option B)', () => {
     test('rejects old status values', () => {
       expect(() => GetStatusResultSchema.parse({
         status: 'synced',
-        machines: { online: 6, offline: 0, total: 6 },
+        machines: { online: 6, unknown: 0, total: 6 },
         inbox: { unread: 0, urgent: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
@@ -160,15 +160,15 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: ['myia-po-2025'],
-          warningMachines: []
+          unknownMachines: ['myia-po-2025'],
+          idleMachines: []
         }))
       });
 
       const result = await roosyncGetStatus({});
 
       expect(result.status).toBe('CRITICAL');
-      expect(result.machines.offline).toBe(1);
+      expect(result.machines.unknown).toBe(1);
       expect(result.flags).toContain('OFFLINE:myia-po-2025');
     });
 
@@ -211,8 +211,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: [],
-          warningMachines: ['myia-po-2023']
+          unknownMachines: [],
+          idleMachines: ['myia-po-2023']
         }))
       });
 
@@ -270,8 +270,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01', 'myia-po-2023', 'myia-po-2024'],
-          offlineMachines: ['test-machine', 'persistent-machine', 'machine-2'],
-          warningMachines: []
+          unknownMachines: ['test-machine', 'persistent-machine', 'machine-2'],
+          idleMachines: []
         }))
       });
 
@@ -279,7 +279,7 @@ describe('get-status (Option B)', () => {
 
       // Orphan test machines should NOT trigger CRITICAL
       expect(result.status).toBe('HEALTHY');
-      expect(result.machines.offline).toBe(0);
+      expect(result.machines.unknown).toBe(0);
       expect(result.flags).not.toContain('OFFLINE:test-machine');
       expect(result.flags).not.toContain('OFFLINE:persistent-machine');
     });
@@ -291,7 +291,7 @@ describe('get-status (Option B)', () => {
         machines: {
           'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
           'myia-po-2023': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
-          'test-machine': { status: 'offline', lastSync: '2025-01-01', pendingDecisions: 0, diffsCount: 0 }
+          'test-machine': { status: 'unknown', lastSync: '2025-01-01', pendingDecisions: 0, diffsCount: 0 }
         }
       });
 
@@ -306,8 +306,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: [],
-          warningMachines: ['test-machine']  // Orphan, should be filtered
+          unknownMachines: [],
+          idleMachines: ['test-machine']  // Orphan, should be filtered
         }))
       });
 
@@ -323,8 +323,8 @@ describe('get-status (Option B)', () => {
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
           onlineMachines: ['myia-ai-01'],
-          offlineMachines: ['myia-po-2025', 'test-machine'],  // 1 real + 1 orphan
-          warningMachines: []
+          unknownMachines: ['myia-po-2025', 'test-machine'],  // 1 real + 1 orphan
+          idleMachines: []
         }))
       });
 
@@ -332,7 +332,7 @@ describe('get-status (Option B)', () => {
 
       // Should be CRITICAL from real offline machine only
       expect(result.status).toBe('CRITICAL');
-      expect(result.machines.offline).toBe(1);  // Only myia-po-2025
+      expect(result.machines.unknown).toBe(1);  // Only myia-po-2025
       expect(result.flags).toContain('OFFLINE:myia-po-2025');
       expect(result.flags).not.toContain('OFFLINE:test-machine');
     });
