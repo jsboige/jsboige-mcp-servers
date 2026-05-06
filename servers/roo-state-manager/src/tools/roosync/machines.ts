@@ -16,8 +16,8 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  * Schema de validation pour roosync_machines
  */
 export const MachinesArgsSchema = z.object({
-  status: z.enum(['offline', 'warning', 'all'])
-    .describe('Statut des machines à récupérer'),
+  status: z.enum(['unknown', 'idle', 'all', 'offline', 'warning'])
+    .describe('Statut des machines à récupérer. "offline" and "warning" map to "unknown" and "idle" respectively (backward compat)'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets de chaque machine (défaut: false)')
 });
@@ -25,9 +25,9 @@ export const MachinesArgsSchema = z.object({
 export type MachinesArgs = z.infer<typeof MachinesArgsSchema>;
 
 /**
- * Détails d'une machine offline
+ * Détails d'une machine unknown (heartbeat stale)
  */
-export const OfflineMachineDetailsSchema = z.object({
+export const UnknownMachineDetailsSchema = z.object({
   machineId: z.string()
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
@@ -42,12 +42,15 @@ export const OfflineMachineDetailsSchema = z.object({
   })
 });
 
-export type OfflineMachineDetails = z.infer<typeof OfflineMachineDetailsSchema>;
+export type UnknownMachineDetails = z.infer<typeof UnknownMachineDetailsSchema>;
+
+/** @deprecated Use UnknownMachineDetails */
+export type OfflineMachineDetails = UnknownMachineDetails;
 
 /**
- * Détails d'une machine en avertissement
+ * Détails d'une machine idle
  */
-export const WarningMachineDetailsSchema = z.object({
+export const IdleMachineDetailsSchema = z.object({
   machineId: z.string()
     .describe('Identifiant de la machine'),
   lastHeartbeat: z.string()
@@ -62,7 +65,10 @@ export const WarningMachineDetailsSchema = z.object({
   })
 });
 
-export type WarningMachineDetails = z.infer<typeof WarningMachineDetailsSchema>;
+export type IdleMachineDetails = z.infer<typeof IdleMachineDetailsSchema>;
+
+/** @deprecated Use IdleMachineDetails */
+export type WarningMachineDetails = IdleMachineDetails;
 
 /**
  * Schema de retour pour roosync_machines
@@ -72,12 +78,12 @@ export const MachinesResultSchema = z.object({
     .describe('Indique si la récupération a réussi'),
   unknownMachines: z.union([
     z.array(z.string()).describe('Liste des IDs des machines unknown'),
-    z.array(OfflineMachineDetailsSchema).describe('Liste détaillée des machines unknown')
+    z.array(UnknownMachineDetailsSchema).describe('Liste détaillée des machines unknown')
   ]).optional()
     .describe('Liste des machines unknown (IDs ou détails selon includeDetails)'),
   idleMachines: z.union([
     z.array(z.string()).describe('Liste des IDs des machines idle'),
-    z.array(WarningMachineDetailsSchema).describe('Liste détaillée des machines idle')
+    z.array(IdleMachineDetailsSchema).describe('Liste détaillée des machines idle')
   ]).optional()
     .describe('Liste des machines idle (IDs ou détails selon includeDetails)'),
   unknownCount: z.number().optional()
@@ -97,10 +103,10 @@ export type MachinesResult = z.infer<typeof MachinesResultSchema>;
  */
 export const machinesTool: UnifiedToolContract = {
   name: 'roosync_machines',
-  description: 'Récupération des machines offline et/ou en avertissement.',
+  description: 'Récupération des machines unknown et/ou idle.',
   category: ToolCategory.UTILITY,
   processingLevel: ProcessingLevel.IMMEDIATE,
-  version: '3.0.0',
+  version: '3.1.0',
   inputSchema: MachinesArgsSchema,
   execute: async (input: z.infer<typeof MachinesArgsSchema>, context: any): Promise<ToolResult<any>> => {
     const startTime = Date.now();
@@ -115,12 +121,13 @@ export const machinesTool: UnifiedToolContract = {
         checkedAt
       };
 
-      // Récupérer les machines offline si demandé
-      if (status === 'offline' || status === 'all') {
+      // Récupérer les machines unknown si demandé
+      const effectiveStatus = status === 'offline' ? 'unknown' : status === 'warning' ? 'idle' : status;
+      if (effectiveStatus === 'unknown' || effectiveStatus === 'all') {
         const unknownMachines = heartbeatService.getUnknownMachines();
 
         if (includeDetails) {
-          const detailedMachines: OfflineMachineDetails[] = [];
+          const detailedMachines: UnknownMachineDetails[] = [];
 
           for (const machineId of unknownMachines) {
             const heartbeatData = heartbeatService.getHeartbeatData(machineId);
@@ -143,12 +150,12 @@ export const machinesTool: UnifiedToolContract = {
         }
       }
 
-      // Récupérer les machines en avertissement si demandé
-      if (status === 'warning' || status === 'all') {
+      // Récupérer les machines idle si demandé
+      if (effectiveStatus === 'idle' || effectiveStatus === 'all') {
         const idleMachines = heartbeatService.getIdleMachines();
 
         if (includeDetails) {
-          const detailedMachines: WarningMachineDetails[] = [];
+          const detailedMachines: IdleMachineDetails[] = [];
 
           for (const machineId of idleMachines) {
             const heartbeatData = heartbeatService.getHeartbeatData(machineId);
@@ -207,14 +214,14 @@ export async function roosyncMachines(args: MachinesArgs, context?: any): Promis
  */
 export const machinesToolMetadata = {
   name: 'roosync_machines',
-  description: 'Récupération des machines offline et/ou en avertissement.',
+  description: 'Récupération des machines unknown et/ou idle.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       status: {
         type: 'string',
-        enum: ['offline', 'warning', 'all'],
-        description: 'Statut des machines à récupérer'
+        enum: ['unknown', 'idle', 'all', 'offline', 'warning'],
+        description: 'Statut des machines à récupérer. "offline"/"warning" map to "unknown"/"idle"'
       },
       includeDetails: {
         type: 'boolean',

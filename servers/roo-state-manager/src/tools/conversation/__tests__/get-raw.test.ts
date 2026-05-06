@@ -234,4 +234,74 @@ describe('get-raw.tool', () => {
       expect(data).not.toHaveProperty('location');
     });
   });
+
+  // #335 follow-up: Pagination validation tests
+  describe('handler - pagination validation', () => {
+    it('should reject negative endMessage', async () => {
+      await expect(
+        getRawConversationTool.handler({ taskId: TASK_UUID, endMessage: -5 })
+      ).rejects.toThrow('endMessage must be a positive integer');
+    });
+
+    it('should reject negative startMessage', async () => {
+      await expect(
+        getRawConversationTool.handler({ taskId: TASK_UUID, startMessage: -1 })
+      ).rejects.toThrow('startMessage must be a positive integer');
+    });
+
+    it('should reject startMessage > endMessage', async () => {
+      await expect(
+        getRawConversationTool.handler({ taskId: TASK_UUID, startMessage: 10, endMessage: 5 })
+      ).rejects.toThrow('startMessage (10) must be <= endMessage (5)');
+    });
+
+    it('should accept valid startMessage and endMessage', async () => {
+      mockAccess.mockResolvedValue(undefined);
+      mockReadFile.mockResolvedValue(JSON.stringify([
+        { role: 'user', content: 'msg1' },
+        { role: 'assistant', content: 'msg2' },
+      ]));
+      mockStat.mockResolvedValue({
+        birthtime: '2024-01-01T00:00:00Z',
+        mtime: '2024-01-02T00:00:00Z',
+        size: 1024
+      });
+
+      const result = await getRawConversationTool.handler({
+        taskId: TASK_UUID,
+        startMessage: 1,
+        endMessage: 2,
+        includeToolResults: true
+      });
+
+      const data = JSON.parse((result.content[0] as any).text as string);
+      expect(data.pagination.requestedRange.start).toBe(1);
+      expect(data.pagination.requestedRange.end).toBe(2);
+      expect(data.pagination).toHaveProperty('filteredMessages');
+      expect(data.pagination).toHaveProperty('note');
+    });
+
+    it('should accept startMessage == endMessage (single message)', async () => {
+      mockAccess.mockResolvedValue(undefined);
+      mockReadFile.mockResolvedValue(JSON.stringify([
+        { role: 'user', content: 'msg1' },
+        { role: 'assistant', content: 'msg2' },
+      ]));
+      mockStat.mockResolvedValue({
+        birthtime: '2024-01-01T00:00:00Z',
+        mtime: '2024-01-02T00:00:00Z',
+        size: 1024
+      });
+
+      const result = await getRawConversationTool.handler({
+        taskId: TASK_UUID,
+        startMessage: 1,
+        endMessage: 1,
+        includeToolResults: true
+      });
+
+      const data = JSON.parse((result.content[0] as any).text as string);
+      expect(data.api_conversation_history).toHaveLength(1);
+    });
+  });
 });

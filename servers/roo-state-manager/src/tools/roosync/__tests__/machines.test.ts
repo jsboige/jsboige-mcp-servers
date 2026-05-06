@@ -217,7 +217,7 @@ describe('machinesTool', () => {
       expect(machinesToolMetadata.name).toBe('roosync_machines');
       expect(machinesToolMetadata.description).toContain('machines');
       expect(machinesToolMetadata.inputSchema.properties.status).toBeDefined();
-      expect(machinesToolMetadata.inputSchema.properties.status.enum).toEqual(['offline', 'warning', 'all']);
+      expect(machinesToolMetadata.inputSchema.properties.status.enum).toEqual(['unknown', 'idle', 'all', 'offline', 'warning']);
     });
 
     test('should require status parameter', () => {
