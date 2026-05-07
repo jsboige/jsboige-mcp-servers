@@ -768,97 +768,111 @@ class SKAgentManager:
         include_steps: bool = False,
         # Backward compat params
         model_id: str | None = None,
+        timeout: int | None = 120,
     ) -> dict[str, Any]:
         """Unified agent invocation with optional attachment routing.
 
         Supports multiple attachments for images - pass a list of paths.
+        timeout: max seconds to wait (default 120). None = no limit.
         """
         if not self.config.agents:
             return {"error": "No agents configured"}
 
-        options = options or {}
+        async def _execute() -> dict[str, Any]:
+            nonlocal options
+            options = options or {}
 
-        # Normalize attachment to list for multi-image support
-        attachments_list: list[str] | None = None
-        if attachment:
-            if isinstance(attachment, str):
-                attachments_list = [attachment]
-            else:
-                attachments_list = attachment
+            # Normalize attachment to list for multi-image support
+            attachments_list: list[str] | None = None
+            if attachment:
+                if isinstance(attachment, str):
+                    attachments_list = [attachment]
+                else:
+                    attachments_list = attachment
 
-        # Classify based on first attachment
-        first_attachment = attachments_list[0] if attachments_list else None
-        attachment_type = classify_attachment(first_attachment) if first_attachment else None
-        needs_vision = attachment_type in ("image", "video", "document")
+            # Classify based on first attachment
+            first_attachment = attachments_list[0] if attachments_list else None
+            attachment_type = classify_attachment(first_attachment) if first_attachment else None
+            needs_vision = attachment_type in ("image", "video", "document")
 
-        # If mode=text for document, we don't necessarily need vision
-        if attachment_type == "document" and options.get("mode") == "text":
-            needs_vision = False
+            # If mode=text for document, we don't necessarily need vision
+            if attachment_type == "document" and options.get("mode") == "text":
+                needs_vision = False
 
-        # Resolve agent
-        resolved_id, agent = await self._resolve_agent(
-            agent_id=agent_id,
-            needs_vision=needs_vision,
-            model_id=model_id,
-        )
+            # Resolve agent
+            resolved_id, agent = await self._resolve_agent(
+                agent_id=agent_id,
+                needs_vision=needs_vision,
+                model_id=model_id,
+            )
 
-        if not resolved_id or not agent:
-            return {"error": "No suitable agent available"}
+            if not resolved_id or not agent:
+                return {"error": "No suitable agent available"}
 
-        # Route based on attachment type
-        if attachment_type == "image":
-            region = options.get("region")
-            if region:
-                # Region only supported for single image
-                return await self._handle_image_region(
+            # Route based on attachment type
+            if attachment_type == "image":
+                region = options.get("region")
+                if region:
+                    # Region only supported for single image
+                    return await self._handle_image_region(
+                        resolved_id,
+                        agent,
+                        first_attachment,
+                        region,
+                        prompt,
+                        conversation_id,
+                        include_steps,
+                        options.get("zoom_context"),
+                    )
+                else:
+                    # Pass single image or list of images
+                    image_source = attachments_list[0] if len(attachments_list) == 1 else attachments_list
+                    return await self._handle_image(
+                        resolved_id,
+                        agent,
+                        image_source,
+                        prompt,
+                        conversation_id,
+                        include_steps,
+                    )
+            elif attachment_type == "video":
+                return await self._handle_video(
                     resolved_id,
                     agent,
                     first_attachment,
-                    region,
                     prompt,
                     conversation_id,
                     include_steps,
-                    options.get("zoom_context"),
+                    options.get("num_frames", 8),
                 )
-            else:
-                # Pass single image or list of images
-                image_source = attachments_list[0] if len(attachments_list) == 1 else attachments_list
-                return await self._handle_image(
+            elif attachment_type == "document":
+                return await self._handle_document(
                     resolved_id,
                     agent,
-                    image_source,
+                    first_attachment,
+                    prompt,
+                    conversation_id,
+                    include_steps,
+                    options,
+                )
+            else:
+                return await self._handle_text(
+                    resolved_id,
+                    agent,
                     prompt,
                     conversation_id,
                     include_steps,
                 )
-        elif attachment_type == "video":
-            return await self._handle_video(
-                resolved_id,
-                agent,
-                first_attachment,
-                prompt,
-                conversation_id,
-                include_steps,
-                options.get("num_frames", 8),
-            )
-        elif attachment_type == "document":
-            return await self._handle_document(
-                resolved_id,
-                agent,
-                first_attachment,
-                prompt,
-                conversation_id,
-                include_steps,
-                options,
-            )
-        else:
-            return await self._handle_text(
-                resolved_id,
-                agent,
-                prompt,
-                conversation_id,
-                include_steps,
-            )
+
+        try:
+            if timeout is not None and timeout > 0:
+                return await asyncio.wait_for(_execute(), timeout=timeout)
+            return await _execute()
+        except asyncio.TimeoutError:
+            return {
+                "error": f"call_agent timed out after {timeout}s",
+                "timeout": timeout,
+            }
 
     # -----------------------------------------------------------------------
     # Handler Methods
@@ -1437,6 +1451,7 @@ async def call_agent(
     options: str = "",
     conversation_id: str = "",
     include_steps: bool = False,
+    timeout: int = 120,
 ) -> str:
     """Send a prompt to an AI agent.
 
@@ -1451,6 +1466,7 @@ async def call_agent(
         options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames).
         conversation_id: Continue previous conversation.
         include_steps: Show intermediate tool/reasoning steps.
+        timeout: Max seconds to wait for response (default 120, 0 = no limit).
 
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
@@ -1492,6 +1508,7 @@ async def call_agent(
         options=opts,
         conversation_id=conversation_id if conversation_id else None,
         include_steps=include_steps,
+        timeout=timeout if timeout > 0 else None,
     )
     return json.dumps(result, ensure_ascii=False)
 
