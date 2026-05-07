@@ -420,7 +420,7 @@ describe('export_data - CONS-10', () => {
 
         test('should have correct format enum values', () => {
             const props = exportDataTool.inputSchema.properties as any;
-            expect(props.format.enum).toEqual(['xml', 'json', 'csv']);
+            expect(props.format.enum).toEqual(['xml', 'json', 'csv', 'markdown', 'debug']);
         });
 
         test('should include all expected parameters', () => {
@@ -431,6 +431,12 @@ describe('export_data - CONS-10', () => {
             expect(props.filePath).toBeDefined();
             expect(props.jsonVariant).toBeDefined();
             expect(props.csvVariant).toBeDefined();
+            // CONS-14 Cluster H: new params for markdown/debug formats
+            expect(props.outputFormat).toBeDefined();
+            expect(props.includeSiblings).toBeDefined();
+            expect(props.currentTaskId).toBeDefined();
+            expect(props.truncateInstruction).toBeDefined();
+            expect(props.showMetadata).toBeDefined();
         });
     });
 });

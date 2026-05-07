@@ -270,10 +270,6 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
         },
         // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
         // CallTool handler preserved for backward compat
-        'task_export': {
-            field: 'action',
-            actions: ['markdown', 'debug'],
-        },
         'roosync_search': {
             field: 'action',
             actions: ['semantic', 'text', 'diagnose'],
@@ -425,8 +421,7 @@ describe('Category 4: Essential Tools for Agent Workflows', () => {
         'roosync_indexing',      // index management
 
         // Export
-        'export_data',           // export conversations/tasks
-        'task_export',           // export task trees
+        'export_data',           // export conversations/tasks (CONS-14: absorbed task_export)
     ];
 
     it('all essential tools must be present in ListTools', async () => {
@@ -485,7 +480,6 @@ describe('Category 5: Description Discoverability', () => {
         'roosync_indexing': ['index'],                   // "index sémantique"
         'export_data': ['export'],                       // "exporter des données"
         // [REMOVED #291] export_config removed from allToolDefinitions
-        'task_export': ['export', 'tâche'],              // "exporter/diagnostiquer les tâches"
         // B4: maintenance removed from ListTools — covered by roosync_storage_management(action: 'maintenance')
         // B4: storage_info removed from ListTools — covered by roosync_storage_management(action: 'storage')
         'codebase_search': ['recherche', 'code'],        // "Recherche sémantique dans le code"
@@ -555,8 +549,8 @@ describe('Category 6: Backward Compatibility Routes', () => {
         'diagnose_conversation_bom': 'roosync_storage_management',
         'repair_conversation_bom': 'roosync_storage_management',
         // [REMOVED #625] build_skeleton_cache — handler removed
-        // CLEANUP-3: debug → task_export
-        'debug_analyze_conversation': 'task_export',
+        // CLEANUP-3: debug → export_data (via task_export redirect, Cluster H)
+        'debug_analyze_conversation': 'export_data',
         // [REMOVED #625] 6 legacy messaging handlers removed
         // [REMOVED Phase B #1863] Legacy decision/baseline/config/inventory backward-compat handlers removed
         // roosync_get_decision_details, approve/reject/apply/rollback_decision,
