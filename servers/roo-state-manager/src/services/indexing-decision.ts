@@ -4,22 +4,25 @@
  */
 
 import { SkeletonHeader } from '../types/conversation.js';
-import { 
-    IndexingDecision, 
-    IndexingState, 
-    INDEX_VERSION_CURRENT, 
+import {
+    IndexingDecision,
+    IndexingState,
+    INDEX_VERSION_CURRENT,
     DEFAULT_REINDEX_TTL_HOURS,
     MAX_RETRY_ATTEMPTS,
     RETRY_BACKOFF_BASE_MS
 } from '../types/indexing.js';
+import { NoiseFilter } from './noise-filter.js';
 
 export class IndexingDecisionService {
     private readonly forceReindex: boolean;
     private readonly indexVersion: string;
+    readonly noiseFilter: NoiseFilter;
 
     constructor() {
         this.forceReindex = process.env.ROO_INDEX_FORCE === '1' || process.env.ROO_INDEX_FORCE === 'true';
         this.indexVersion = process.env.ROO_INDEX_VERSION || INDEX_VERSION_CURRENT;
+        this.noiseFilter = new NoiseFilter();
     }
 
     /**
@@ -40,6 +43,16 @@ export class IndexingDecisionService {
                 shouldIndex: true,
                 reason: `FORCE_REINDEX mode activé (ROO_INDEX_FORCE=${process.env.ROO_INDEX_FORCE})`,
                 action: 'index'
+            };
+        }
+
+        // #1987 Phase 3a: Noise filtering — skip low-value semantic tasks
+        const noiseResult = this.noiseFilter.isNoiseTask(skeleton);
+        if (noiseResult.isNoise) {
+            return {
+                shouldIndex: false,
+                reason: `Noise filter: ${noiseResult.reason}`,
+                action: 'skip',
             };
         }
 
