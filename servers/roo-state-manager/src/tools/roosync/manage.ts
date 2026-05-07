@@ -43,10 +43,12 @@ interface RooSyncManageArgs {
   subject_contains?: string;
   /** Filter by tag */
   tag?: string;
+  /** Output format for stats action: "json" returns structured data, "markdown" returns formatted table */
+  format?: 'json' | 'markdown';
 }
 
 /**
- * Marque un message comme lu
+ * Mark a message as read
  *
  * @param args Arguments de l'outil
  * @param messageManager Instance de MessageManager
@@ -421,11 +423,24 @@ ${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([
  * Stats action: show inbox statistics
  */
 async function showStats(
-  messageManager: MessageManager
+  messageManager: MessageManager,
+  format?: 'json' | 'markdown'
 ): Promise<string> {
-  logger.info('📊 Getting inbox stats');
+  logger.info('📊 Getting inbox stats', { format });
   const machineId = getLocalMachineId();
   const stats = await messageManager.getInboxStats(machineId);
+
+  if (format === 'json') {
+    return JSON.stringify({
+      machine_id: machineId,
+      total: stats.total,
+      unread: stats.unread,
+      read: stats.read,
+      oldest_unread: stats.oldest_unread || null,
+      by_priority: stats.by_priority,
+      by_sender: stats.by_sender
+    }, null, 2);
+  }
 
   return `📊 **Statistiques inbox - ${machineId}**
 
@@ -498,6 +513,11 @@ export const manageToolMetadata = {
       tag: {
         type: 'string',
         description: 'Filtre par tag (pour bulk)'
+      },
+      format: {
+        type: 'string',
+        enum: ['json', 'markdown'],
+        description: 'Format de sortie pour stats: "json" pour données structurées, "markdown" pour tableau formaté (défaut)'
       }
     },
     required: ['action']
@@ -561,7 +581,7 @@ export async function roosyncManage(
         break;
 
       case 'stats':
-        result = await showStats(messageManager);
+        result = await showStats(messageManager, args.format);
         break;
 
       default:

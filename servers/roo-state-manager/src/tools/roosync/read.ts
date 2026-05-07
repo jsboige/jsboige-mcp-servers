@@ -66,6 +66,9 @@ interface RooSyncReadArgs {
 
   /** Override machine filter (défaut: machine locale). Usage avancé : lire inbox d'une autre machine. Normalement tu veux garder ta propre machine. */
   to_machine?: string;
+
+  /** Output format for inbox mode: "json" returns structured data, "markdown" returns formatted table (défaut) */
+  format?: 'json' | 'markdown';
 }
 
 /**
@@ -128,6 +131,16 @@ async function readInboxMode(
 
   // Cas : aucun message
   if (messages.length === 0 && counts.total === 0) {
+    if (args.format === 'json') {
+      return JSON.stringify({
+        machine_id: effectiveMachineId,
+        workspace_id: effectiveWorkspaceId,
+        total: 0,
+        unread: 0,
+        read: 0,
+        messages: []
+      }, null, 2);
+    }
     return `📭 **Aucun message dans votre boîte de réception (${status})**
 
 Votre inbox est vide pour le moment.
@@ -135,6 +148,30 @@ Votre inbox est vide pour le moment.
 **Machine :** ${effectiveMachineId}
 **Workspace :** ${effectiveWorkspaceId}
 **Filtre :** ${status}`;
+  }
+
+  // JSON format: return structured data without markdown formatting
+  if (args.format === 'json') {
+    return JSON.stringify({
+      machine_id: effectiveMachineId,
+      workspace_id: effectiveWorkspaceId,
+      total: counts.total,
+      unread: counts.unread,
+      read: counts.read,
+      page: page ?? null,
+      per_page: perPage ?? null,
+      messages: messages.map(msg => ({
+        id: msg.id,
+        from: msg.from,
+        subject: msg.subject,
+        priority: msg.priority,
+        status: msg.status,
+        timestamp: msg.timestamp,
+        preview: msg.preview,
+        destroyed_at: (msg as any).destroyed_at || null,
+        auto_destruct: (msg as any).auto_destruct || null
+      }))
+    }, null, 2);
   }
 
   // Formater la liste
@@ -418,6 +455,11 @@ export const readToolMetadata = {
       to_machine: {
         type: 'string',
         description: '(mode inbox, #1498, avancé) Override machine filter. Défaut: machine locale. Normalement tu veux ta propre machine.'
+      },
+      format: {
+        type: 'string',
+        enum: ['json', 'markdown'],
+        description: '(mode inbox) Format de sortie: "json" pour données structurées, "markdown" pour tableau formaté (défaut)'
       }
     },
     required: ['mode']

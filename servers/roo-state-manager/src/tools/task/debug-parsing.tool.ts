@@ -12,6 +12,8 @@ import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 export interface DebugTaskParsingArgs {
     task_id: string;
+    /** Output format: "json" returns structured data, "markdown" returns formatted text (default) */
+    format?: 'json' | 'markdown';
 }
 
 /**
@@ -23,9 +25,14 @@ export const debugTaskParsingTool = {
     inputSchema: {
         type: 'object',
         properties: {
-            task_id: { 
-                type: 'string', 
-                description: 'ID de la tâche à analyser en détail.' 
+            task_id: {
+                type: 'string',
+                description: 'ID de la tâche à analyser en détail.'
+            },
+            format: {
+                type: 'string',
+                enum: ['json', 'markdown'],
+                description: 'Format de sortie: "json" pour données structurées, "markdown" pour texte formaté (défaut)'
             }
         },
         required: ['task_id']
@@ -39,7 +46,7 @@ export const debugTaskParsingTool = {
 export async function handleDebugTaskParsing(
     args: DebugTaskParsingArgs
 ): Promise<CallToolResult> {
-    const { task_id } = args;
+    const { task_id, format } = args;
 
     // Security: Reject path traversal attempts (check before format to prevent bypass)
     if (task_id.includes('..') || task_id.includes('/') || task_id.includes('\\')) {
@@ -58,14 +65,12 @@ export async function handleDebugTaskParsing(
         );
     }
 
-    console.log(`🔍 DEBUG: Starting detailed analysis of task ${task_id}`);
-    const debugInfo: string[] = [];
-    
+    console.log(`DEBUG: Starting detailed analysis of task ${task_id}`);
+
     try {
-        // Trouver le chemin de la tâche
         const locations = await RooStorageDetector.detectStorageLocations();
         let taskPath = null;
-        
+
         for (const baseDir of locations) {
             const tasksDir = path.join(baseDir, 'tasks');
             const potentialPath = path.join(tasksDir, task_id);
@@ -74,37 +79,40 @@ export async function handleDebugTaskParsing(
                 break;
             }
         }
-        
+
         if (!taskPath) {
-            return { content: [{ type: 'text', text: `Task ${task_id} not found in any storage location` }] };
+            const notFound = format === 'json'
+                ? JSON.stringify({ error: 'not_found', task_id }, null, 2)
+                : `Task ${task_id} not found in any storage location`;
+            return { content: [{ type: 'text', text: notFound }] };
         }
-        
-        debugInfo.push(`📁 Task path: ${taskPath}`);
-        
-        // Analyser les fichiers
+
+        // Collect structured data
+        const result: Record<string, any> = { task_id, task_path: taskPath };
+
         const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
         const apiHistoryPath = path.join(taskPath, 'api_conversation_history.json');
-        
-        debugInfo.push(`📄 UI Messages: ${existsSync(uiMessagesPath) ? '✅ EXISTS' : '❌ MISSING'}`);
-        debugInfo.push(`📄 API History: ${existsSync(apiHistoryPath) ? '✅ EXISTS' : '❌ MISSING'}`);
-        
-        // Analyser le contenu pour les balises <task>
+
+        result.ui_messages_exists = existsSync(uiMessagesPath);
+        result.api_history_exists = existsSync(apiHistoryPath);
+
         if (existsSync(uiMessagesPath)) {
             let content = await fs.readFile(uiMessagesPath, 'utf-8');
             if (content.charCodeAt(0) === 0xFEFF) {
                 content = content.slice(1);
             }
-            
+
             const messages = JSON.parse(content);
-            debugInfo.push(`📊 UI Messages count: ${messages.length}`);
-            
+            result.ui_messages_count = messages.length;
+
             let taskTagCount = 0;
             let newTaskTagCount = 0;
-            
+            const tagDetails: Record<number, { role: string; task_tags: number; new_task_tags: number; preview?: string }> = {};
+
             for (let i = 0; i < messages.length; i++) {
                 const message = messages[i];
                 let contentText = '';
-                
+
                 if (typeof message.content === 'string') {
                     contentText = message.content;
                 } else if (Array.isArray(message.content)) {
@@ -114,56 +122,100 @@ export async function handleDebugTaskParsing(
                         }
                     }
                 }
-                
+
                 const taskMatches = contentText.match(/<task>/g);
                 const newTaskMatches = contentText.match(/<new_task>/g);
-                
+
                 if (taskMatches) {
                     taskTagCount += taskMatches.length;
-                    debugInfo.push(`🎯 Message ${i} (${message.role}): Found ${taskMatches.length} <task> tags`);
-                    
-                    // Extraire le contenu de la première balise <task>
+                    const detail: any = { role: message.role, task_tags: taskMatches.length };
+
                     const taskPattern = /<task>([\s\S]*?)<\/task>/gi;
                     const match = taskPattern.exec(contentText);
                     if (match) {
-                        debugInfo.push(`   Content preview: "${match[1].trim().substring(0, 100)}..."`);
+                        detail.preview = match[1].trim().substring(0, 100);
                     }
+                    tagDetails[i] = detail;
                 }
-                
+
                 if (newTaskMatches) {
                     newTaskTagCount += newTaskMatches.length;
-                    debugInfo.push(`🎯 Message ${i} (${message.role}): Found ${newTaskMatches.length} <new_task> tags`);
+                    if (!tagDetails[i]) {
+                        tagDetails[i] = { role: message.role, task_tags: 0, new_task_tags: newTaskMatches.length };
+                    } else {
+                        tagDetails[i].new_task_tags = newTaskMatches.length;
+                    }
                 }
             }
-            
-            debugInfo.push(`📈 Total <task> tags found: ${taskTagCount}`);
-            debugInfo.push(`📈 Total <new_task> tags found: ${newTaskTagCount}`);
+
+            result.task_tag_count = taskTagCount;
+            result.new_task_tag_count = newTaskTagCount;
+            result.tag_details = tagDetails;
         }
-        
-        // Test du parsing avec RooStorageDetector
-        debugInfo.push(`\n🧪 TESTING RooStorageDetector.analyzeConversation...`);
+
+        // Test parsing with RooStorageDetector
         const skeleton = await RooStorageDetector.analyzeConversation(task_id, taskPath);
-        
+
         if (skeleton) {
-            debugInfo.push(`✅ Analysis complete:`);
-            debugInfo.push(`   - TaskId: ${skeleton.taskId}`);
-            debugInfo.push(`   - ParentTaskId: ${skeleton.parentTaskId || 'NONE'}`);
-            debugInfo.push(`   - TruncatedInstruction: ${skeleton.truncatedInstruction ? `"${skeleton.truncatedInstruction.substring(0, 100)}..."` : 'NONE'}`);
-            debugInfo.push(`   - ChildTaskInstructionPrefixes: ${skeleton.childTaskInstructionPrefixes?.length || 0} prefixes`);
-            
-            if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
-                debugInfo.push(`   - Prefixes preview:`);
-                skeleton.childTaskInstructionPrefixes.slice(0, 3).forEach((prefix, i) => {
-                    debugInfo.push(`     ${i+1}. "${prefix.substring(0, 80)}..."`);
-                });
+            result.skeleton = {
+                task_id: skeleton.taskId,
+                parent_task_id: skeleton.parentTaskId || null,
+                truncated_instruction: skeleton.truncatedInstruction
+                    ? skeleton.truncatedInstruction.substring(0, 100)
+                    : null,
+                child_task_instruction_prefixes_count: skeleton.childTaskInstructionPrefixes?.length || 0,
+                child_task_instruction_prefixes_preview: skeleton.childTaskInstructionPrefixes?.slice(0, 3).map(p => p.substring(0, 80)) || []
+            };
+        } else {
+            result.skeleton = null;
+        }
+
+        if (format === 'json') {
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // Markdown format (default, backward-compatible)
+        const lines: string[] = [];
+        lines.push(`Task path: ${result.task_path}`);
+        lines.push(`UI Messages: ${result.ui_messages_exists ? 'EXISTS' : 'MISSING'}`);
+        lines.push(`API History: ${result.api_history_exists ? 'EXISTS' : 'MISSING'}`);
+
+        if (result.ui_messages_count !== undefined) {
+            lines.push(`UI Messages count: ${result.ui_messages_count}`);
+            lines.push(`Total <task> tags: ${result.task_tag_count}`);
+            lines.push(`Total <new_task> tags: ${result.new_task_tag_count}`);
+
+            for (const [idx, detail] of Object.entries(result.tag_details || {})) {
+                const d = detail as any;
+                if (d.task_tags > 0) {
+                    lines.push(`  Message ${idx} (${d.role}): ${d.task_tags} <task> tags`);
+                    if (d.preview) lines.push(`    Preview: "${d.preview}..."`);
+                }
+                if (d.new_task_tags > 0) {
+                    lines.push(`  Message ${idx} (${d.role}): ${d.new_task_tags} <new_task> tags`);
+                }
+            }
+        }
+
+        if (result.skeleton) {
+            lines.push(`Skeleton analysis:`);
+            lines.push(`  TaskId: ${result.skeleton.task_id}`);
+            lines.push(`  ParentTaskId: ${result.skeleton.parent_task_id || 'NONE'}`);
+            lines.push(`  Instruction: ${result.skeleton.truncated_instruction ? `"${result.skeleton.truncated_instruction}..."` : 'NONE'}`);
+            lines.push(`  Child prefixes: ${result.skeleton.child_task_instruction_prefixes_count}`);
+            for (const p of result.skeleton.child_task_instruction_prefixes_preview) {
+                lines.push(`    "${p}..."`);
             }
         } else {
-            debugInfo.push(`❌ Analysis returned null`);
+            lines.push(`Skeleton analysis: FAILED (null)`);
         }
-        
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+
     } catch (error: any) {
-        debugInfo.push(`❌ ERROR: ${error?.message || 'Unknown error'}`);
+        if (format === 'json') {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: error?.message || 'Unknown error', task_id }, null, 2) }] };
+        }
+        return { content: [{ type: 'text', text: `ERROR: ${error?.message || 'Unknown error'}` }] };
     }
-    
-    return { content: [{ type: 'text', text: debugInfo.join('\n') }] };
 }
