@@ -71,7 +71,10 @@ export const MessagesArgsSchema = z.object({
 
   // --- Attachments params ---
   uuid: z.string().optional().describe('UUID piece jointe (requis pour attachments_get/delete)'),
-  targetPath: z.string().optional().describe('Chemin local destination (requis pour attachments_get)')
+  targetPath: z.string().optional().describe('Chemin local destination (requis pour attachments_get)'),
+
+  // --- Output format ---
+  format: z.enum(['json', 'markdown']).optional().describe('Format de sortie pour inbox/stats')
 });
 
 export type MessagesArgs = z.infer<typeof MessagesArgsSchema>;
@@ -127,7 +130,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         page: args.page,
         per_page: args.per_page,
         workspace: args.workspace,
-        to_machine: args.to_machine
+        to_machine: args.to_machine,
+        format: args.format
       });
 
     case 'message':
@@ -168,7 +172,7 @@ export async function roosyncMessages(args: MessagesArgs) {
       return roosyncManage({ action: 'cleanup' });
 
     case 'stats':
-      return roosyncManage({ action: 'stats' });
+      return roosyncManage({ action: 'stats', format: args.format });
 
     // --- Attachments family ---
     case 'attachments_list':
@@ -261,7 +265,8 @@ Remplace : roosync_send + roosync_read + roosync_manage + roosync_attachments (4
       subject_contains: { type: 'string', description: 'Filtre sujet (bulk)' },
       tag: { type: 'string', description: 'Filtre tag (bulk)' },
       uuid: { type: 'string', description: 'UUID pièce jointe (attachments_get/delete)' },
-      targetPath: { type: 'string', description: 'Chemin local destination (attachments_get)' }
+      targetPath: { type: 'string', description: 'Chemin local destination (attachments_get)' },
+      format: { type: 'string', enum: ['json', 'markdown'], description: 'Format de sortie pour inbox/stats: "json" pour données structurées, "markdown" pour formaté (défaut)' }
     },
     required: ['action'],
     additionalProperties: false

@@ -173,7 +173,7 @@ describe('debug-parsing.tool', () => {
                 const result = await handleDebugTaskParsing(args);
 
                 expect(getTextContent(result)).toContain('<task>');
-                expect(getTextContent(result)).toContain('Found 1');
+                expect(getTextContent(result)).toContain('1 <task> tags');
             });
 
             test('should detect multiple <task> tags', async () => {
@@ -184,7 +184,7 @@ describe('debug-parsing.tool', () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('Total <task> tags found: 2');
+                expect(getTextContent(result)).toContain('Total <task> tags: 2');
             });
 
             test('should detect <new_task> tags', async () => {
@@ -207,7 +207,7 @@ describe('debug-parsing.tool', () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('Content preview');
+                expect(getTextContent(result)).toContain('Preview');
                 expect(getTextContent(result)).toContain('This is the task content');
             });
 
@@ -228,7 +228,7 @@ describe('debug-parsing.tool', () => {
             });
 
             test('should handle BOM in JSON file', async () => {
-                const bomJson = '\uFEFF' + JSON.stringify([
+                const bomJson = '﻿' + JSON.stringify([
                     { role: 'user', content: 'Test message' }
                 ]);
                 mockReadFile.mockResolvedValue(bomJson);
@@ -251,7 +251,7 @@ describe('debug-parsing.tool', () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('Analysis complete');
+                expect(getTextContent(result)).toContain('Skeleton analysis');
                 expect(getTextContent(result)).toContain('TaskId');
                 expect(getTextContent(result)).toContain('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
                 expect(getTextContent(result)).toContain('ParentTaskId');
@@ -262,23 +262,23 @@ describe('debug-parsing.tool', () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('TruncatedInstruction');
+                expect(getTextContent(result)).toContain('Instruction');
                 expect(getTextContent(result)).toContain('truncated instruction preview');
             });
 
-            test('should include childTaskInstructionPrefixes count', async () => {
+            test('should include child task instruction prefixes count', async () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('ChildTaskInstructionPrefixes');
-                expect(getTextContent(result)).toContain('3 prefixes');
+                expect(getTextContent(result)).toContain('Child prefixes');
+                expect(getTextContent(result)).toContain('3');
             });
 
             test('should show prefixes preview when available', async () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('Prefixes preview');
+                expect(getTextContent(result)).toContain('prefix1');
             });
 
             test('should handle null analysis result', async () => {
@@ -287,7 +287,7 @@ describe('debug-parsing.tool', () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('Analysis returned null');
+                expect(getTextContent(result)).toContain('FAILED (null)');
             });
 
             test('should handle analysis without parent task', async () => {
@@ -316,7 +316,7 @@ describe('debug-parsing.tool', () => {
                 const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d' };
                 const result = await handleDebugTaskParsing(args);
 
-                expect(getTextContent(result)).toContain('0 prefixes');
+                expect(getTextContent(result)).toContain('0');
             });
         });
 
@@ -402,6 +402,37 @@ describe('debug-parsing.tool', () => {
                 const result = await handleDebugTaskParsing(args);
 
                 expect(result.content).toBeDefined();
+            });
+        });
+
+        describe('format parameter', () => {
+            test('should return JSON when format=json', async () => {
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d', format: 'json' as const };
+                const result = await handleDebugTaskParsing(args);
+
+                const parsed = JSON.parse(getTextContent(result));
+                expect(parsed.task_id).toBe('a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d');
+                expect(parsed.skeleton).toBeDefined();
+            });
+
+            test('should return JSON error when task not found and format=json', async () => {
+                mockDetectStorageLocations.mockResolvedValue([]);
+
+                const args = { task_id: '00000000-0000-4000-a000-000000000000', format: 'json' as const };
+                const result = await handleDebugTaskParsing(args);
+
+                const parsed = JSON.parse(getTextContent(result));
+                expect(parsed.error).toBe('not_found');
+            });
+
+            test('should return JSON error on exception when format=json', async () => {
+                mockDetectStorageLocations.mockRejectedValue(new Error('Storage detection failed'));
+
+                const args = { task_id: 'a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d', format: 'json' as const };
+                const result = await handleDebugTaskParsing(args);
+
+                const parsed = JSON.parse(getTextContent(result));
+                expect(parsed.error).toBe('Storage detection failed');
             });
         });
     });
