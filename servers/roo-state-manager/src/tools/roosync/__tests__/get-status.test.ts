@@ -118,7 +118,7 @@ describe('get-status (Option B)', () => {
         inbox: { unread: 15, urgent: 2 },
         decisions: { pending: 3 },
         dashboards: { active: 1 },
-        flags: ['OFFLINE:myia-po-2025', 'INBOX_URGENT:2', 'DECISIONS_PENDING:3'],
+        flags: ['UNKNOWN:myia-po-2025', 'INBOX_URGENT:2', 'DECISIONS_PENDING:3'],
         lastUpdated: '2026-04-08T00:00:00Z'
       });
       expect(result.status).toBe('CRITICAL');
@@ -169,7 +169,7 @@ describe('get-status (Option B)', () => {
 
       expect(result.status).toBe('CRITICAL');
       expect(result.machines.unknown).toBe(1);
-      expect(result.flags).toContain('OFFLINE:myia-po-2025');
+      expect(result.flags).toContain('UNKNOWN:myia-po-2025');
     });
 
     test('returns CRITICAL when urgent messages', async () => {
@@ -280,8 +280,8 @@ describe('get-status (Option B)', () => {
       // Orphan test machines should NOT trigger CRITICAL
       expect(result.status).toBe('HEALTHY');
       expect(result.machines.unknown).toBe(0);
-      expect(result.flags).not.toContain('OFFLINE:test-machine');
-      expect(result.flags).not.toContain('OFFLINE:persistent-machine');
+      expect(result.flags).not.toContain('UNKNOWN:test-machine');
+      expect(result.flags).not.toContain('UNKNOWN:persistent-machine');
     });
 
     test('excludes orphan test machines from dashboard total', async () => {
@@ -333,8 +333,8 @@ describe('get-status (Option B)', () => {
       // Should be CRITICAL from real offline machine only
       expect(result.status).toBe('CRITICAL');
       expect(result.machines.unknown).toBe(1);  // Only myia-po-2025
-      expect(result.flags).toContain('OFFLINE:myia-po-2025');
-      expect(result.flags).not.toContain('OFFLINE:test-machine');
+      expect(result.flags).toContain('UNKNOWN:myia-po-2025');
+      expect(result.flags).not.toContain('UNKNOWN:test-machine');
     });
   });
 });

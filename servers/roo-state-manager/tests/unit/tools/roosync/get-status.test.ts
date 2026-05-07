@@ -180,7 +180,7 @@ describe('roosync_get_status', () => {
             });
             const result = await roosyncGetStatus({});
             expect(result.status).toBe('CRITICAL');
-            expect(result.flags).toContain('OFFLINE:myia-web1');
+            expect(result.flags).toContain('UNKNOWN:myia-web1');
         });
 
         it('returns CRITICAL when urgent messages', async () => {

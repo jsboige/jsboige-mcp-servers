@@ -251,14 +251,14 @@ export class HeartbeatService {
    */
   public async startHeartbeatService(
     _machineId: string,
-    onOfflineDetected?: (machineId: string) => void,
+    onUnknownDetected?: (machineId: string) => void,
     onOnlineRestored?: (machineId: string) => void
   ): Promise<void> {
     logger.info('startHeartbeatService called — no-op (ADR 008 passive model)');
-    // Set up status change callback if callers provide offline/online callbacks
-    if (onOfflineDetected || onOnlineRestored) {
+    // Set up status change callback if callers provide unknown/online callbacks
+    if (onUnknownDetected || onOnlineRestored) {
       this.onStatusChangeCallback = (machineId, oldStatus, newStatus) => {
-        if (newStatus === 'unknown' && onOfflineDetected) onOfflineDetected(machineId);
+        if (newStatus === 'unknown' && onUnknownDetected) onUnknownDetected(machineId);
         if (newStatus === 'online' && onOnlineRestored) onOnlineRestored(machineId);
       };
     }
