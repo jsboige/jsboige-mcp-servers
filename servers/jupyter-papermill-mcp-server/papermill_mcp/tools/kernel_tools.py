@@ -4,6 +4,7 @@ MCP tools for kernel operations.
 Defines all kernel-related MCP tools using FastMCP.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional, Literal
 
@@ -323,14 +324,33 @@ def register_kernel_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Executing on kernel {kernel_id} in mode: {mode}")
             service = get_kernel_service()
-            result = await service.execute_on_kernel_consolidated(
-                kernel_id=kernel_id,
-                mode=mode,
-                code=code,
-                path=path,
-                cell_index=cell_index,
-                timeout=timeout,
-            )
+            # Hard timeout at MCP level: kernel-level timeout may not fire
+            # if the ZMQ socket thread blocks (#2051). Add 10s margin.
+            hard_timeout = timeout + 10
+            try:
+                result = await asyncio.wait_for(
+                    service.execute_on_kernel_consolidated(
+                        kernel_id=kernel_id,
+                        mode=mode,
+                        code=code,
+                        path=path,
+                        cell_index=cell_index,
+                        timeout=timeout,
+                    ),
+                    timeout=hard_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "execute_on_kernel timed out after %ds (hard limit, kernel=%s, mode=%s)",
+                    hard_timeout, kernel_id, mode,
+                )
+                return {
+                    "error": f"Execution timed out after {hard_timeout}s (kernel timeout={timeout}s)",
+                    "kernel_id": kernel_id,
+                    "mode": mode,
+                    "status": "timeout",
+                    "success": False,
+                }
             logger.info(f"Successfully executed on kernel {kernel_id} in mode: {mode}")
             return result
         except Exception as e:
