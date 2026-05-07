@@ -4,6 +4,7 @@ MCP tools for kernel operations.
 Defines all kernel-related MCP tools using FastMCP.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional, Literal
 
@@ -323,16 +324,39 @@ def register_kernel_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Executing on kernel {kernel_id} in mode: {mode}")
             service = get_kernel_service()
-            result = await service.execute_on_kernel_consolidated(
-                kernel_id=kernel_id,
-                mode=mode,
-                code=code,
-                path=path,
-                cell_index=cell_index,
-                timeout=timeout,
-            )
+
+            # Hard timeout at MCP level as safety net (#2051)
+            hard_timeout = timeout + 30 if timeout > 0 else None
+
+            async def _execute():
+                return await service.execute_on_kernel_consolidated(
+                    kernel_id=kernel_id,
+                    mode=mode,
+                    code=code,
+                    path=path,
+                    cell_index=cell_index,
+                    timeout=timeout,
+                )
+
+            if hard_timeout is not None:
+                result = await asyncio.wait_for(_execute(), timeout=hard_timeout)
+            else:
+                result = await _execute()
+
             logger.info(f"Successfully executed on kernel {kernel_id} in mode: {mode}")
             return result
+        except asyncio.TimeoutError:
+            logger.error(
+                f"execute_on_kernel timed out (hard limit {hard_timeout}s) "
+                f"on kernel {kernel_id} in mode: {mode}"
+            )
+            return {
+                "error": f"Execution timed out (hard limit {hard_timeout}s, kernel timeout {timeout}s)",
+                "kernel_id": kernel_id,
+                "mode": mode,
+                "status": "timeout",
+                "success": False,
+            }
         except Exception as e:
             logger.error(f"Error executing on kernel {kernel_id} in mode {mode}: {e}")
             return {
