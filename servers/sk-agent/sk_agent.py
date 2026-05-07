@@ -1437,6 +1437,7 @@ async def call_agent(
     options: str = "",
     conversation_id: str = "",
     include_steps: bool = False,
+    timeout: int = 120,
 ) -> str:
     """Send a prompt to an AI agent.
 
@@ -1451,6 +1452,7 @@ async def call_agent(
         options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames).
         conversation_id: Continue previous conversation.
         include_steps: Show intermediate tool/reasoning steps.
+        timeout: Maximum execution time in seconds (default: 120). 0 = no timeout.
 
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
@@ -1485,7 +1487,7 @@ async def call_agent(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
 
-    result = await manager.call_agent(
+    coro = manager.call_agent(
         prompt=prompt,
         agent_id=agent if agent else None,
         attachment=attachments_list if attachments_list else None,
@@ -1493,6 +1495,20 @@ async def call_agent(
         conversation_id=conversation_id if conversation_id else None,
         include_steps=include_steps,
     )
+
+    effective_timeout = opts.get("timeout", timeout) if opts else timeout
+    if effective_timeout and effective_timeout > 0:
+        try:
+            result = await asyncio.wait_for(coro, timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            result = {
+                "error": f"call_agent timed out after {effective_timeout}s",
+                "timeout": effective_timeout,
+                "agent_used": agent or "auto",
+            }
+    else:
+        result = await coro
+
     return json.dumps(result, ensure_ascii=False)
 
 
