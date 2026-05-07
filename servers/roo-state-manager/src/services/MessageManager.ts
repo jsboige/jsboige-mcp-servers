@@ -254,7 +254,8 @@ export class MessageManager {
           return message;
         })
       );
-      for (const result of results) {
+      for (let r = 0; r < results.length; r++) {
+        const result = results[r];
         if (result.status === 'fulfilled') {
           const message = result.value;
           full.set(message.id, message);
@@ -268,6 +269,9 @@ export class MessageManager {
             status: message.status,
             preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
           });
+        } else {
+          const failedFile = chunk[r] ? join(this.inboxPath, chunk[r]) : 'unknown';
+          logger.error(`Error reading message file during parallel cache build: ${failedFile}`, result.reason);
         }
       }
     }
