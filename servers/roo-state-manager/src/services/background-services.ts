@@ -603,11 +603,47 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 }
 
 /**
+ * #1987 Phase 3a: Load noise filter blacklist from shared state.
+ * File: $ROOSYNC_SHARED_STATE_PATH/qdrant-blacklist.json
+ * Format: { "version": 1, "blacklistedTaskIds": ["id1", "id2", ...] }
+ * Non-blocking: if file missing or malformed, proceeds with empty blacklist.
+ */
+async function loadNoiseFilterBlacklist(state: ServerState): Promise<void> {
+    try {
+        const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+        if (!sharedPath) {
+            console.log('[NoiseFilter] No ROOSYNC_SHARED_PATH, blacklist disabled');
+            return;
+        }
+
+        const blacklistPath = path.join(sharedPath, '.shared-state', 'qdrant-blacklist.json');
+        const content = await fs.readFile(blacklistPath, 'utf8');
+
+        const cleaned = content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content;
+        const data = JSON.parse(cleaned);
+
+        if (data.blacklistedTaskIds && Array.isArray(data.blacklistedTaskIds)) {
+            state.indexingDecisionService.noiseFilter.loadBlacklist(data.blacklistedTaskIds);
+            console.log(`[NoiseFilter] Loaded ${data.blacklistedTaskIds.length} blacklisted task IDs`);
+        }
+    } catch (error: any) {
+        if (error?.code === 'ENOENT') {
+            console.log('[NoiseFilter] No blacklist file found, proceeding without blacklist');
+        } else {
+            console.warn(`[NoiseFilter] Failed to load blacklist: ${error?.message || error}`);
+        }
+    }
+}
+
+/**
  * Initialise le service d'indexation Qdrant asynchrone
  */
 async function initializeQdrantIndexingService(state: ServerState): Promise<void> {
     try {
         console.log('🔍 Initialisation du service d\'indexation Qdrant...');
+
+        // #1987 Phase 3a: Load blacklist from shared state
+        await loadNoiseFilterBlacklist(state);
 
         // FIX #1199: Split verification and scanning into separate phases with defensive error handling
         // Phase 1: Verify consistency (non-critical, safe to skip if Qdrant is down)
