@@ -25,7 +25,7 @@ const logger = createLogger('GetStatus');
  * Production machines match the pattern: myia-*
  * Test artifacts (test-machine, persistent-machine, machine-2, etc.) are excluded.
  *
- * #1365: Orphan test entries in heartbeat files pollute offline counts.
+ * #1365: Orphan test entries in heartbeat files pollute unknown counts.
  */
 function isKnownMachine(machineId: string): boolean {
 	return machineId.toLowerCase().startsWith('myia-');
@@ -58,7 +58,7 @@ export const GetStatusResultSchema = z.object({
     online: z.number(),
     unknown: z.number(),
     total: z.number()
-  }).describe('Compteurs machines par état (unknown = machines sans heartbeat récent, ADR 008: was "offline")'),
+  }).describe('Compteurs machines par état'),
 
   inbox: z.object({
     unread: z.number(),
@@ -137,12 +137,12 @@ function buildFlags(
 ): string[] {
   const flags: string[] = [];
 
-  // Unknown machines (ADR 008: was "offline")
+  // Unknown machines (ADR 008 terminology)
   for (const machineId of heartbeatState.unknownMachines) {
-    flags.push(`OFFLINE:${machineId}`);
+    flags.push(`UNKNOWN:${machineId}`);
   }
 
-  // Idle machines (ADR 008: was "warning"/heartbeat stale)
+  // Idle machines (ADR 008 terminology)
   for (const machineId of heartbeatState.idleMachines) {
     flags.push(`HEARTBEAT_STALE:${machineId}`);
   }
@@ -373,7 +373,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     if (filteredUnknownMachines.length > 0 || inboxStats.urgent > 0) {
       status = 'CRITICAL';
     } else if (inboxStats.unread > 5 || filteredIdleMachines.length > 0) {
-      // WARNING if: high unread count OR heartbeat warning machines (but no offline)
+      // WARNING if: high unread count OR heartbeat idle machines (but no unknown)
       status = 'WARNING';
     }
 

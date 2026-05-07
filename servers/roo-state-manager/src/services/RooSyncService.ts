@@ -1001,7 +1001,7 @@ export class RooSyncService {
   }
 
   /**
-   * Obtient les machines avec statut UNKNOWN (offline)
+   * Obtient les machines avec statut UNKNOWN
    */
   public getUnknownMachines(): string[] {
     return this.heartbeatService.getUnknownMachines();
@@ -1015,7 +1015,7 @@ export class RooSyncService {
   }
 
   /**
-   * Obtient les machines avec statut IDLE (warning)
+   * Obtient les machines avec statut IDLE
    */
   public getIdleMachines(): string[] {
     return this.heartbeatService.getIdleMachines();
@@ -1032,20 +1032,20 @@ export class RooSyncService {
    * Démarre le service de heartbeat automatique
    */
   public async startHeartbeatService(
-    onOfflineDetected?: (machineId: string) => void,
+    onUnknownDetected?: (machineId: string) => void,
     onOnlineRestored?: (machineId: string) => void
   ): Promise<void> {
     console.log(`[RooSyncService] Démarrage du service heartbeat pour: ${this.config.machineId}`);
-    
+
     // Configurer les callbacks pour la synchronisation automatique
-    const offlineCallback = async (machineId: string) => {
-      console.log(`[RooSyncService] Machine offline détectée: ${machineId}`);
-      
+    const unknownCallback = async (machineId: string) => {
+      console.log(`[RooSyncService] Machine unknown détectée: ${machineId}`);
+
       // Appeler le callback utilisateur si fourni
-      if (onOfflineDetected) {
-        onOfflineDetected(machineId);
+      if (onUnknownDetected) {
+        onUnknownDetected(machineId);
       }
-      
+
       // Synchroniser automatiquement les baselines
       await this.syncOnMachineOffline(machineId);
     };
@@ -1064,7 +1064,7 @@ export class RooSyncService {
     
     await this.heartbeatService.startHeartbeatService(
       this.config.machineId,
-      offlineCallback,
+      unknownCallback,
       onlineCallback
     );
   }

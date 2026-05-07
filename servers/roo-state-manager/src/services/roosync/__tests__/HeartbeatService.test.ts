@@ -8,11 +8,11 @@
  * - Initialisation → état vide (no disk load)
  * - registerHeartbeat : nouvelle machine + machine existante (update)
  * - checkHeartbeats : détection IDLE/UNKNOWN/ONLINE (computed from lastHeartbeat age)
- * - getOnlineMachines / getOfflineMachines (deprecated alias) / getWarningMachines (deprecated alias)
+ * - getOnlineMachines / getUnknownMachines / getIdleMachines (deprecated aliases: getOfflineMachines / getWarningMachines)
  * - getHeartbeatData : défini après register, undefined avant
  * - getState : retourne copie défensive avec nouvelles clés (idleMachines, unknownMachines)
  * - removeMachine : suppression in-memory
- * - cleanupOldOfflineMachines : no-op (returns 0)
+ * - cleanupOldUnknownMachines : no-op (returns 0)
  * - stopHeartbeatService : no-op
  * - updateConfig : no-op
  * - reloadFromDisk : no-op
