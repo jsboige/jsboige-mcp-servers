@@ -1,7 +1,7 @@
 /**
  * Outil MCP : roosync_machines
  *
- * Récupération des machines offline et/ou en avertissement.
+ * Récupération des machines unknown (heartbeat stale) et/ou idle.
  *
  * @module tools/roosync/machines
  * @version 3.0.0
@@ -99,7 +99,7 @@ export type MachinesResult = z.infer<typeof MachinesResultSchema>;
 /**
  * Outil roosync_machines (UnifiedToolContract)
  *
- * Récupération des machines offline et/ou en avertissement.
+ * Récupération des machines unknown (heartbeat stale) et/ou idle.
  */
 export const machinesTool: UnifiedToolContract = {
   name: 'roosync_machines',
