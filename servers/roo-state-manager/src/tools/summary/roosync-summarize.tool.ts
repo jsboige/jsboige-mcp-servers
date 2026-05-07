@@ -235,6 +235,23 @@ export const roosyncSummarizeTool: Tool = {
 };
 
 /**
+ * Extrait le projectName d'un taskId Claude Code.
+ * Format taskId: claude-{projectName}--{sessionUuid}
+ * Ex: "claude-d--dev-roo-extensions--1026d78b-2c6c-441d-be96-33f11a258bae"
+ * → projectName: "d--dev-roo-extensions"
+ */
+function extractClaudeProjectName(taskId: string): string {
+    const withoutPrefix = taskId.startsWith('claude-') ? taskId.slice(7) : taskId;
+    // lastIndexOf pour trouver le séparateur projectName--sessionUuid
+    // (projectName peut contenir des '--', ex: "d--dev-roo-extensions")
+    const doubleDashIndex = withoutPrefix.lastIndexOf('--');
+    if (doubleDashIndex > 0) {
+        return withoutPrefix.slice(0, doubleDashIndex);
+    }
+    return withoutPrefix;
+}
+
+/**
  * Crée le bon getter de conversation selon la source
  * @param source 'roo' ou 'claude'
  * @param options Options de parsing (maxContentLength pour contrôler la troncature)
@@ -245,10 +262,12 @@ function createConversationGetter(
 ): (taskId: string) => Promise<ConversationSkeleton | null> {
     return async (taskId: string) => {
         if (source === 'claude') {
-            // Pour Claude, on cherche dans les projets Claude
-            const locations = await ClaudeStorageDetector.detectStorageLocations();
+            const allLocations = await ClaudeStorageDetector.detectStorageLocations();
+            const projectName = extractClaudeProjectName(taskId);
+            const locations = allLocations.filter(loc => loc.projectName === projectName);
+            const searchLocations = locations.length > 0 ? locations : allLocations;
 
-            for (const location of locations) {
+            for (const location of searchLocations) {
                 const skeleton = await ClaudeStorageDetector.analyzeConversation(
                     taskId,
                     location.projectPath,
