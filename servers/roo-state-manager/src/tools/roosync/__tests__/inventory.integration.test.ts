@@ -122,8 +122,8 @@ describe('roosync_inventory (integration)', () => {
       const shape = HeartbeatStatisticsSchema.shape;
       expect(shape.totalMachines).toBeDefined();
       expect(shape.onlineCount).toBeDefined();
-      expect(shape.offlineCount).toBeDefined();
-      expect(shape.warningCount).toBeDefined();
+      expect(shape.unknownCount).toBeDefined();
+      expect(shape.idleCount).toBeDefined();
       expect(shape.lastHeartbeatCheck).toBeDefined();
     });
   });

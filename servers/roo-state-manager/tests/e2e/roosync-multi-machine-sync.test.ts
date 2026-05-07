@@ -514,7 +514,7 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
         console.log('✅ État des heartbeats obtenu');
         console.log(`   Machines enregistrées: ${result.statistics.totalMachines}`);
         console.log(`   Machines online: ${result.statistics.onlineCount}`);
-        console.log(`   Machines offline: ${result.statistics.offlineCount}`);
+        console.log(`   Machines unknown: ${result.statistics.unknownCount}`);
       } catch (error: any) {
         console.error('❌ Erreur lors de l\'obtention de l\'état:', error);
         throw error;
