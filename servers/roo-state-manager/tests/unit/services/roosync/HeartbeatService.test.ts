@@ -203,19 +203,24 @@ describe('HeartbeatService - Tests Unitaires', () => {
       expect(state.statistics.totalMachines).toBe(0);
     });
 
-    it('cleanupOldOfflineMachines est un no-op (retourne 0)', async () => {
+    it('cleanupOldUnknownMachines est un no-op (retourne 0)', async () => {
       await heartbeatService.registerHeartbeat('myia-old-1');
       await heartbeatService.registerHeartbeat('myia-old-2');
       await heartbeatService.registerHeartbeat('myia-recent');
 
-      const removedCount = await heartbeatService.cleanupOldOfflineMachines(86400000);
+      const removedCount = await heartbeatService.cleanupOldUnknownMachines(86400000);
 
-      // ADR 008: cleanupOldOfflineMachines is a no-op, always returns 0
+      // ADR 008: cleanupOldUnknownMachines is a no-op, always returns 0
       expect(removedCount).toBe(0);
       // All machines remain
       expect(heartbeatService.getHeartbeatData('myia-old-1')).toBeDefined();
       expect(heartbeatService.getHeartbeatData('myia-old-2')).toBeDefined();
       expect(heartbeatService.getHeartbeatData('myia-recent')).toBeDefined();
+    });
+
+    it('cleanupOldOfflineMachines (deprecated) still works via backward compat', async () => {
+      const removedCount = await heartbeatService.cleanupOldOfflineMachines(86400000);
+      expect(removedCount).toBe(0);
     });
   });
 
