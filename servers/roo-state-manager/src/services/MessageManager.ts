@@ -150,8 +150,10 @@ export class MessageManager {
   private inboxFullCache: Map<string, Message> = new Map();
   /** Timestamp of last cache build */
   private cacheBuiltAt: number = 0;
-  /** Cache TTL in ms (30 seconds - shared filesystem can change) */
-  private static readonly CACHE_TTL_MS = 30_000;
+  /** Cache TTL in ms (5 minutes — file count check detects external changes) */
+  private static readonly CACHE_TTL_MS = 300_000;
+  /** Max concurrent file reads during cache rebuild (GDrive-safe) */
+  private static readonly READ_CONCURRENCY = 50;
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
 
@@ -217,39 +219,56 @@ export class MessageManager {
       return { items: [], full: new Map() };
     }
 
+    // Fast path: return cached data if still within TTL (skip readdir entirely)
     const now = Date.now();
-    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
-
-    // Cache is valid if: within TTL AND file count hasn't changed
     if (
       this.inboxCache !== null &&
-      (now - this.cacheBuiltAt) < MessageManager.CACHE_TTL_MS &&
-      files.length === this.lastInboxFileCount
+      (now - this.cacheBuiltAt) < MessageManager.CACHE_TTL_MS
     ) {
       return { items: this.inboxCache, full: this.inboxFullCache };
     }
 
-    logger.info(`Building inbox cache (${files.length} files)`);
+    // TTL expired — check file count for external changes
+    const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
+
+    // If count unchanged and cache exists, refresh TTL without re-reading files
+    if (
+      this.inboxCache !== null &&
+      files.length === this.lastInboxFileCount
+    ) {
+      this.cacheBuiltAt = now;
+      return { items: this.inboxCache, full: this.inboxFullCache };
+    }
+
+    logger.info(`Building inbox cache (${files.length} files, concurrency=${MessageManager.READ_CONCURRENCY})`);
     const items: MessageListItem[] = [];
     const full = new Map<string, Message>();
 
-    for (const file of files) {
-      try {
-        const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
-        const message: Message = JSON.parse(content);
-        full.set(message.id, message);
-        items.push({
-          id: message.id,
-          from: message.from,
-          to: message.to,
-          subject: message.subject,
-          priority: message.priority,
-          timestamp: message.timestamp,
-          status: message.status,
-          preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
-        });
-      } catch (error) {
-        logger.error(`Error reading message ${file}`, error);
+    // Parallel chunked reads — 50 concurrent instead of serial (84s → ~2s on GDrive)
+    for (let i = 0; i < files.length; i += MessageManager.READ_CONCURRENCY) {
+      const chunk = files.slice(i, i + MessageManager.READ_CONCURRENCY);
+      const results = await Promise.allSettled(
+        chunk.map(async file => {
+          const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
+          const message: Message = JSON.parse(content);
+          return message;
+        })
+      );
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          const message = result.value;
+          full.set(message.id, message);
+          items.push({
+            id: message.id,
+            from: message.from,
+            to: message.to,
+            subject: message.subject,
+            priority: message.priority,
+            timestamp: message.timestamp,
+            status: message.status,
+            preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
+          });
+        }
       }
     }
 
