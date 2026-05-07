@@ -101,7 +101,7 @@ describe('get-status (Option B)', () => {
     test('validates HEALTHY result', () => {
       const result = GetStatusResultSchema.parse({
         status: 'HEALTHY',
-        machines: { online: 6, offline: 0, total: 6 },
+        machines: { online: 6, unknown: 0, total: 6 },
         inbox: { unread: 0, urgent: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
@@ -114,7 +114,7 @@ describe('get-status (Option B)', () => {
     test('validates CRITICAL result with flags', () => {
       const result = GetStatusResultSchema.parse({
         status: 'CRITICAL',
-        machines: { online: 4, offline: 2, total: 6 },
+        machines: { online: 4, unknown: 2, total: 6 },
         inbox: { unread: 15, urgent: 2 },
         decisions: { pending: 3 },
         dashboards: { active: 1 },
@@ -128,7 +128,7 @@ describe('get-status (Option B)', () => {
     test('rejects old status values', () => {
       expect(() => GetStatusResultSchema.parse({
         status: 'synced',
-        machines: { online: 6, offline: 0, total: 6 },
+        machines: { online: 6, unknown: 0, total: 6 },
         inbox: { unread: 0, urgent: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
@@ -168,7 +168,7 @@ describe('get-status (Option B)', () => {
       const result = await roosyncGetStatus({});
 
       expect(result.status).toBe('CRITICAL');
-      expect(result.machines.offline).toBe(1);
+      expect(result.machines.unknown).toBe(1);
       expect(result.flags).toContain('OFFLINE:myia-po-2025');
     });
 
@@ -279,7 +279,7 @@ describe('get-status (Option B)', () => {
 
       // Orphan test machines should NOT trigger CRITICAL
       expect(result.status).toBe('HEALTHY');
-      expect(result.machines.offline).toBe(0);
+      expect(result.machines.unknown).toBe(0);
       expect(result.flags).not.toContain('OFFLINE:test-machine');
       expect(result.flags).not.toContain('OFFLINE:persistent-machine');
     });
@@ -332,7 +332,7 @@ describe('get-status (Option B)', () => {
 
       // Should be CRITICAL from real offline machine only
       expect(result.status).toBe('CRITICAL');
-      expect(result.machines.offline).toBe(1);  // Only myia-po-2025
+      expect(result.machines.unknown).toBe(1);  // Only myia-po-2025
       expect(result.flags).toContain('OFFLINE:myia-po-2025');
       expect(result.flags).not.toContain('OFFLINE:test-machine');
     });

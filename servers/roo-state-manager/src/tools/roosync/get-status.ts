@@ -56,9 +56,9 @@ export const GetStatusResultSchema = z.object({
 
   machines: z.object({
     online: z.number(),
-    offline: z.number(),
+    unknown: z.number(),
     total: z.number()
-  }).describe('Compteurs machines par état'),
+  }).describe('Compteurs machines par état (unknown = machines sans heartbeat récent, ADR 008: was "offline")'),
 
   inbox: z.object({
     unread: z.number(),
@@ -395,7 +395,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       status,
       machines: {
         online: filteredOnlineMachines.length,
-        offline: filteredUnknownMachines.length,
+        unknown: filteredUnknownMachines.length,
         total: totalMachines,
         ...(dashboardOverrides.length > 0 ? { dashboardOverrides } : {})
       },

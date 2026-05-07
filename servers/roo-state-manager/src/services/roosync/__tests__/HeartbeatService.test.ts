@@ -377,16 +377,16 @@ describe('HeartbeatService', () => {
   });
 
   // ============================================================
-  // cleanupOldOfflineMachines (no-op in ADR 008)
+  // cleanupOldUnknownMachines (no-op in ADR 008)
   // ============================================================
 
-  describe('cleanupOldOfflineMachines', () => {
+  describe('cleanupOldUnknownMachines', () => {
     test('retourne toujours 0 (no-op ADR 008)', async () => {
       const service = new HeartbeatService();
 
       await service.registerHeartbeat('active-machine');
 
-      const removed = await service.cleanupOldOfflineMachines();
+      const removed = await service.cleanupOldUnknownMachines();
 
       expect(removed).toBe(0);
     });
@@ -396,10 +396,18 @@ describe('HeartbeatService', () => {
 
       await service.registerHeartbeat('test-artifact-machine');
 
-      const removed = await service.cleanupOldOfflineMachines(0);
+      const removed = await service.cleanupOldUnknownMachines(0);
 
       expect(removed).toBe(0);
       expect(service.getHeartbeatData('test-artifact-machine')).toBeDefined();
+    });
+
+    test('deprecated cleanupOldOfflineMachines still works (backward compat)', async () => {
+      const service = new HeartbeatService();
+
+      const removed = await service.cleanupOldOfflineMachines();
+
+      expect(removed).toBe(0);
     });
   });
 

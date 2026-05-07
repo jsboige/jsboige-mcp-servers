@@ -286,10 +286,15 @@ export class HeartbeatService {
   }
 
   /**
-   * @deprecated No disk state to clean up.
+   * @deprecated No disk state to clean up. ADR 008: in-memory only.
    */
-  public async cleanupOldOfflineMachines(_maxAge?: number): Promise<number> {
+  public async cleanupOldUnknownMachines(_maxAge?: number): Promise<number> {
     return 0;
+  }
+
+  /** @deprecated Use cleanupOldUnknownMachines — ADR 008 terminology */
+  public async cleanupOldOfflineMachines(maxAge?: number): Promise<number> {
+    return this.cleanupOldUnknownMachines(maxAge);
   }
 
   // --- Internal ---
