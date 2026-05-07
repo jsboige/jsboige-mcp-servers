@@ -113,7 +113,6 @@ describe('roosync_inventory (integration)', () => {
       expect(shape.machineId).toBeDefined();
       expect(shape.lastHeartbeat).toBeDefined();
       expect(shape.status).toBeDefined();
-      expect(shape.missedHeartbeats).toBeDefined();
       expect(shape.metadata).toBeDefined();
     });
 

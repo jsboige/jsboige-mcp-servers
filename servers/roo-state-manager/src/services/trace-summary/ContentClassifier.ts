@@ -32,16 +32,27 @@ export class ContentClassifier {
 
         // Appliquer le filtrage par plage si spécifié
         if (options && (options.startIndex !== undefined || options.endIndex !== undefined)) {
-            const startIdx = options.startIndex ? Math.max(1, options.startIndex) - 1 : 0; // Convert to 0-based
-            const endIdx = options.endIndex ? Math.min(messages.length, options.endIndex) : messages.length; // Convert to 0-based + 1
+            const rawStart = options.startIndex ?? 1;
+            const rawEnd = options.endIndex ?? (conversation.sequence ?? []).length;
 
-            // Valider les indices
-            if (startIdx < messages.length && endIdx > startIdx) {
-                messages = messages.slice(startIdx, endIdx);
-                // Log pour debugging
-                console.log(`[Range Filter] Processing messages ${startIdx + 1} to ${endIdx} (${messages.length} messages)`);
+            if (rawEnd < 0) {
+                throw new Error(`Invalid endIndex: ${rawEnd}. endIndex must be >= 0.`);
+            }
+            if (rawStart < 0) {
+                throw new Error(`Invalid startIndex: ${rawStart}. startIndex must be >= 0.`);
+            }
+            if (rawStart >= rawEnd) {
+                throw new Error(`Invalid range: startIndex (${rawStart}) >= endIndex (${rawEnd}).`);
+            }
+
+            const startIdx = Math.max(0, rawStart - 1); // Convert to 0-based
+            const endIdx = Math.min(messages.length, rawEnd);
+
+            // Graceful: out-of-range returns empty instead of throwing
+            if (startIdx >= messages.length) {
+                messages = [];
             } else {
-                console.warn(`[Range Filter] Invalid range: start=${options.startIndex}, end=${options.endIndex}, total=${(conversation.sequence ?? []).length}`);
+                messages = messages.slice(startIdx, endIdx);
             }
         }
 

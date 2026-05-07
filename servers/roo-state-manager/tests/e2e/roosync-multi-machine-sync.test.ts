@@ -508,7 +508,7 @@ describe('RooSync E2E - Synchronisation Multi-Machines', () => {
         expect(result).toBeDefined();
         expect(result.success).toBe(true);
         expect(result.onlineMachines).toBeDefined();
-        expect(result.offlineMachines).toBeDefined();
+        expect(result.unknownMachines).toBeDefined();
         expect(result.statistics).toBeDefined();
 
         console.log('✅ État des heartbeats obtenu');
