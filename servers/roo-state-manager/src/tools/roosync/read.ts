@@ -98,11 +98,11 @@ async function readInboxMode(
     effectiveMachineId, status, limit, effectiveWorkspaceId, page, perPage
   );
 
-  // Fire-and-forget heartbeat update. Always use the REAL local machine, not
-  // the overridden filter — heartbeat is proof-of-life for the local process,
-  // not for the machine whose inbox is being read.
-  (await getRooSyncService()).getHeartbeatService()
-    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_read_inbox', messageCount: messages.length })
+  // Fire-and-forget heartbeat update. Truly non-blocking — don't await the
+  // lazy service load. Uses .then() to chain without blocking the inbox response.
+  getRooSyncService()
+    .then(svc => svc.getHeartbeatService()
+      .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_read_inbox', messageCount: messages.length }))
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
   // Throttled fire-and-forget cleanup tasks (run at most once every 5 min)
