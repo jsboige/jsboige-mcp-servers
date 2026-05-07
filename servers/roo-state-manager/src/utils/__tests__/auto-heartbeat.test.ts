@@ -1,5 +1,7 @@
 /**
  * Tests pour auto-heartbeat utility (#1609)
+ * Updated for #2030: initAutoHeartbeat() now sets lastHeartbeatAt = 0
+ * so first tool call after server restart always triggers heartbeat.
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
@@ -23,53 +25,72 @@ describe('auto-heartbeat', () => {
     });
 
     describe('initAutoHeartbeat', () => {
-        it('devrait initialiser le module avec timestamp actuel', () => {
-            const beforeInit = Date.now();
+        it('devrait initialiser le module avec lastHeartbeatAt = 0 (#2030)', () => {
             initAutoHeartbeat();
-            const afterInit = Date.now();
 
             const state = getAutoHeartbeatState();
 
             expect(state.isInitialized).toBe(true);
-            expect(state.lastHeartbeatAt).toBeGreaterThanOrEqual(beforeInit);
-            expect(state.lastHeartbeatAt).toBeLessThanOrEqual(afterInit);
+            // #2030: Initialize to 0 so first call always triggers heartbeat
+            expect(state.lastHeartbeatAt).toBe(0);
         });
 
-        it('devrait réinitialiser le timestamp si appelé plusieurs fois', () => {
+        it('devrait réinitialiser à 0 si appelé plusieurs fois (#2030)', () => {
             initAutoHeartbeat();
             const firstTimestamp = getAutoHeartbeatState().lastHeartbeatAt;
 
-            // Avancer le temps et réinitialiser
-            vi.setSystemTime(new Date('2026-04-25T12:00:01Z'));
             initAutoHeartbeat();
-
             const secondTimestamp = getAutoHeartbeatState().lastHeartbeatAt;
 
-            expect(secondTimestamp).toBeGreaterThan(firstTimestamp);
+            // Both should be 0 — always ensures first call triggers
+            expect(firstTimestamp).toBe(0);
+            expect(secondTimestamp).toBe(0);
         });
     });
 
     describe('autoHeartbeat', () => {
         it('devrait initialiser automatiquement si pas initialisé', async () => {
-            // Note: ce test vérifie que autoHeartbeat initialise si nécessaire,
-            // mais comme les tests partagent le même module, l'état peut persister
             const { getRooSyncService } = await import('../../services/lazy-roosync.js');
             vi.mocked(getRooSyncService).mockResolvedValue({
                 registerHeartbeat: vi.fn().mockResolvedValue(undefined),
             } as any);
 
-            // Si le module est déjà initialisé par un test précédent, on vérifie juste que ça ne plante pas
             await autoHeartbeat('test-tool');
 
             const stateAfter = getAutoHeartbeatState();
             expect(stateAfter.isInitialized).toBe(true);
         });
 
-        it('devrait retourner false si dans intervalle (15min)', async () => {
+        it('devrait toujours trigger sur premier appel après init (#2030)', async () => {
+            const { getRooSyncService } = await import('../../services/lazy-roosync.js');
+            const mockRegisterHeartbeat = vi.fn().mockResolvedValue(undefined);
+            vi.mocked(getRooSyncService).mockResolvedValue({
+                registerHeartbeat: mockRegisterHeartbeat,
+            } as any);
+
             initAutoHeartbeat();
 
+            // First call should trigger (lastHeartbeatAt = 0, so interval elapsed)
             const result = await autoHeartbeat('test-tool');
 
+            expect(result).toBe(true);
+            expect(mockRegisterHeartbeat).toHaveBeenCalledWith({
+                triggeredBy: 'test-tool',
+            });
+        });
+
+        it('devrait retourner false si dans intervalle après premier trigger', async () => {
+            const { getRooSyncService } = await import('../../services/lazy-roosync.js');
+            vi.mocked(getRooSyncService).mockResolvedValue({
+                registerHeartbeat: vi.fn().mockResolvedValue(undefined),
+            } as any);
+
+            initAutoHeartbeat();
+            // First call triggers
+            await autoHeartbeat('first-call');
+
+            // Second call within interval — skip
+            const result = await autoHeartbeat('test-tool');
             expect(result).toBe(false);
         });
 
@@ -80,8 +101,12 @@ describe('auto-heartbeat', () => {
                 registerHeartbeat: mockRegisterHeartbeat,
             } as any);
 
-            // Initialiser puis avancer le temps de 16 minutes
             initAutoHeartbeat();
+            // First call triggers (init with 0)
+            await autoHeartbeat('first-call');
+            mockRegisterHeartbeat.mockClear();
+
+            // Advance past 15min
             vi.setSystemTime(new Date('2026-04-25T12:16:01Z'));
 
             const result = await autoHeartbeat('test-tool');
@@ -101,9 +126,7 @@ describe('auto-heartbeat', () => {
             initAutoHeartbeat();
             const oldTimestamp = getAutoHeartbeatState().lastHeartbeatAt;
 
-            // Avancer le temps de 16 minutes
-            vi.setSystemTime(new Date('2026-04-25T12:16:01Z'));
-
+            // First call triggers (init with 0) at 12:00:00
             await autoHeartbeat('test-tool');
 
             const newTimestamp = getAutoHeartbeatState().lastHeartbeatAt;
@@ -117,7 +140,7 @@ describe('auto-heartbeat', () => {
             const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
             initAutoHeartbeat();
-            vi.setSystemTime(new Date('2026-04-25T12:16:01Z'));
+            // First call triggers (init with 0) but service rejects
 
             const result = await autoHeartbeat('test-tool');
 
@@ -135,8 +158,7 @@ describe('auto-heartbeat', () => {
             } as any);
 
             initAutoHeartbeat();
-            vi.setSystemTime(new Date('2026-04-25T12:16:01Z'));
-
+            // First call triggers (init with 0)
             await autoHeartbeat('my-custom-tool');
 
             expect(mockRegisterHeartbeat).toHaveBeenCalledWith({
@@ -152,8 +174,7 @@ describe('auto-heartbeat', () => {
             } as any);
 
             initAutoHeartbeat();
-            vi.setSystemTime(new Date('2026-04-25T12:16:01Z'));
-
+            // First call triggers (init with 0)
             const result = await autoHeartbeat('');
 
             expect(result).toBe(true);
@@ -164,30 +185,36 @@ describe('auto-heartbeat', () => {
     });
 
     describe('getAutoHeartbeatState', () => {
-        it('devrait retourner létat après initialisation', () => {
+        it('devrait retourner lastHeartbeatAt = 0 après initialisation (#2030)', () => {
             initAutoHeartbeat();
             const state = getAutoHeartbeatState();
 
             expect(state.isInitialized).toBe(true);
-            expect(state.lastHeartbeatAt).toBeGreaterThan(0);
+            expect(state.lastHeartbeatAt).toBe(0);
         });
 
-        it('devrait retourner lastHeartbeatAt qui évolue avec initAutoHeartbeat', () => {
+        it('devrait retourner lastHeartbeatAt mis à jour après trigger', async () => {
+            const { getRooSyncService } = await import('../../services/lazy-roosync.js');
+            vi.mocked(getRooSyncService).mockResolvedValue({
+                registerHeartbeat: vi.fn().mockResolvedValue(undefined),
+            } as any);
+
             initAutoHeartbeat();
-            const firstTimestamp = getAutoHeartbeatState().lastHeartbeatAt;
+            await autoHeartbeat('test-tool');
 
-            // Avancer le temps
-            vi.setSystemTime(new Date('2026-04-25T13:00:00Z'));
-            initAutoHeartbeat();
-
-            const secondTimestamp = getAutoHeartbeatState().lastHeartbeatAt;
-
-            expect(secondTimestamp).toBeGreaterThan(firstTimestamp);
+            const state = getAutoHeartbeatState();
+            // After first trigger, lastHeartbeatAt should be Date.now() (12:00:00 = mocked time)
+            expect(state.lastHeartbeatAt).toBe(Date.now());
         });
     });
 
     describe('edge cases', () => {
-        it('devrait gérer plusieurs appels rapprochés sans erreur', async () => {
+        it('devrait gérer plusieurs appels rapprochés: premier trigger, autres skip (#2030)', async () => {
+            const { getRooSyncService } = await import('../../services/lazy-roosync.js');
+            vi.mocked(getRooSyncService).mockResolvedValue({
+                registerHeartbeat: vi.fn().mockResolvedValue(undefined),
+            } as any);
+
             initAutoHeartbeat();
 
             const results = await Promise.all([
@@ -196,11 +223,15 @@ describe('auto-heartbeat', () => {
                 autoHeartbeat('tool3'),
             ]);
 
-            // Tous devraient retourner false car dans intervalle
-            expect(results).toEqual([false, false, false]);
+            // First call triggers (init with 0), others within interval → skip
+            // Note: race condition in parallel — at least one should trigger
+            const triggerCount = results.filter(r => r === true).length;
+            expect(triggerCount).toBeGreaterThanOrEqual(1);
+            const skipCount = results.filter(r => r === false).length;
+            expect(skipCount).toBeGreaterThanOrEqual(1);
         });
 
-        it('devrait respecter la limite exacte de 15 minutes', async () => {
+        it('devrait respecter la limite exacte de 15 minutes après premier trigger', async () => {
             const { getRooSyncService } = await import('../../services/lazy-roosync.js');
             const mockRegisterHeartbeat = vi.fn().mockResolvedValue(undefined);
             vi.mocked(getRooSyncService).mockResolvedValue({
@@ -208,17 +239,19 @@ describe('auto-heartbeat', () => {
             } as any);
 
             initAutoHeartbeat();
+            // First call triggers immediately (init with 0)
+            const result0 = await autoHeartbeat('first');
+            expect(result0).toBe(true);
+            mockRegisterHeartbeat.mockClear();
 
-            // Exactement 14 minutes 59 secondes - devrait skip
+            // 14min 59s after trigger — should skip
             vi.setSystemTime(new Date('2026-04-25T12:14:59Z'));
-
             const result1 = await autoHeartbeat('test');
             expect(result1).toBe(false);
             expect(mockRegisterHeartbeat).not.toHaveBeenCalled();
 
-            // Exactement 15 minutes et 1 seconde - devrait trigger
+            // 15min 1s after trigger — should trigger
             vi.setSystemTime(new Date('2026-04-25T12:15:01Z'));
-
             const result2 = await autoHeartbeat('test');
             expect(result2).toBe(true);
             expect(mockRegisterHeartbeat).toHaveBeenCalledTimes(1);
@@ -233,18 +266,19 @@ describe('auto-heartbeat', () => {
 
             initAutoHeartbeat();
 
-            // Premier appel à 12:00 - skip
+            // Premier appel à 12:00 — trigger (init with 0)
             vi.setSystemTime(new Date('2026-04-25T12:00:00Z'));
             const result1 = await autoHeartbeat('tool1');
-            expect(result1).toBe(false);
+            expect(result1).toBe(true);
+            expect(mockRegisterHeartbeat).toHaveBeenCalledTimes(1);
 
-            // Deuxième appel à 12:16 - trigger
+            // Deuxième appel à 12:16 — trigger (15+ min depuis dernier)
             vi.setSystemTime(new Date('2026-04-25T12:16:01Z'));
             const result2 = await autoHeartbeat('tool2');
             expect(result2).toBe(true);
-            expect(mockRegisterHeartbeat).toHaveBeenCalledTimes(1);
+            expect(mockRegisterHeartbeat).toHaveBeenCalledTimes(2);
 
-            // Troisième appel à 12:17 - skip (déjà fait heartbeat)
+            // Troisième appel à 12:17 — skip (déjà fait heartbeat)
             vi.setSystemTime(new Date('2026-04-25T12:17:00Z'));
             const result3 = await autoHeartbeat('tool3');
             expect(result3).toBe(false);

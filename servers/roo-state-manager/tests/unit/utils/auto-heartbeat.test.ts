@@ -30,13 +30,26 @@ describe('auto-heartbeat', () => {
         mockRegisterHeartbeat.mockClear();
     });
 
-    it('initializes with current timestamp', () => {
+    it('initializes with 0 so first call always triggers heartbeat (#2030)', () => {
         const state = getAutoHeartbeatState();
         expect(state.isInitialized).toBe(true);
-        expect(state.lastHeartbeatAt).toBe(Date.now());
+        expect(state.lastHeartbeatAt).toBe(0);
+    });
+
+    it('first call after init always triggers heartbeat (#2030)', async () => {
+        const result = await autoHeartbeat('roosync_read');
+        expect(result).toBe(true);
+        expect(mockRegisterHeartbeat).toHaveBeenCalledWith({
+            triggeredBy: 'roosync_read',
+        });
     });
 
     it('skips heartbeat within 15-minute interval', async () => {
+        // Simulate first call (always triggers due to init with 0)
+        await autoHeartbeat('first_call');
+        mockRegisterHeartbeat.mockClear();
+
+        // Second call should be skipped (within interval)
         const result = await autoHeartbeat('roosync_read');
         expect(result).toBe(false);
         expect(mockRegisterHeartbeat).not.toHaveBeenCalled();
@@ -81,10 +94,11 @@ describe('auto-heartbeat', () => {
     });
 
     it('does not trigger again immediately after a trigger', async () => {
-        vi.advanceTimersByTime(16 * 60 * 1000);
+        // First call triggers (init with 0)
         const first = await autoHeartbeat('tool_a');
         expect(first).toBe(true);
 
+        // Second call immediately after should be skipped
         const second = await autoHeartbeat('tool_b');
         expect(second).toBe(false);
     });
