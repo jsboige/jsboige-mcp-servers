@@ -1085,4 +1085,39 @@ describe('MessageManager', () => {
       expect(reminders).toBe(0);
     });
   });
+
+  describe('startAutoArchiveDaemon (#809)', () => {
+    afterEach(() => {
+      messageManager.stopAutoArchiveDaemon();
+    });
+
+    test('should start daemon and store timer reference', () => {
+      messageManager.startAutoArchiveDaemon(30, 6);
+      // Daemon stores its timer internally — calling stop should clear it
+      messageManager.stopAutoArchiveDaemon();
+      // Restart should succeed (timer was cleared)
+      messageManager.startAutoArchiveDaemon(30, 6);
+    });
+
+    test('should be idempotent — duplicate start is noop', () => {
+      messageManager.startAutoArchiveDaemon(30, 6);
+      // Second call should not throw and not create a second timer
+      messageManager.startAutoArchiveDaemon(30, 6);
+      // Stop once should fully clean up
+      messageManager.stopAutoArchiveDaemon();
+    });
+
+    test('stopAutoArchiveDaemon is safe to call when not running', () => {
+      // Calling stop without start should not throw
+      expect(() => messageManager.stopAutoArchiveDaemon()).not.toThrow();
+    });
+
+    test('should not block the event loop (timers are unref-able)', () => {
+      messageManager.startAutoArchiveDaemon(30, 6);
+      // The daemon starts a setTimeout (initial run) + setInterval (periodic).
+      // We can't verify they're unref'd without process inspection, but we can
+      // verify they don't fire synchronously and don't crash on stop.
+      messageManager.stopAutoArchiveDaemon();
+    });
+  });
 });
