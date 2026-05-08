@@ -478,6 +478,26 @@ export const roosyncDiagnoseDefinition = {
     }
 };
 
+// #1836 Phase 1: Pre-claim enforcement tool
+export const roosyncClaimDefinition = {
+    name: 'roosync_claim',
+    description: 'Pre-claim enforcement — prevents concurrent agent collisions on the same issue. Actions: claim (reserve issue), release (free claim), extend (prolong), list (active claims), check (verify issue status). Claims auto-expire after eta_minutes * 1.5. Always check before starting work on an issue.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            action: { type: 'string', enum: ['claim', 'release', 'extend', 'list', 'check'], description: 'Action: "claim" (reserve issue), "release" (free claim), "extend" (prolong), "list" (active claims), "check" (verify issue status)' },
+            issue_number: { type: 'string', description: 'Issue number (e.g., "1836"). Required for claim/check/release/extend.' },
+            agent: { type: 'string', description: 'Agent identifier (machine ID). Defaults to local machine.' },
+            eta_minutes: { type: 'number', description: 'Estimated time in minutes. Required for claim, optional for extend.' },
+            branch: { type: 'string', description: 'Git branch name for the claim (optional).' },
+            claim_id: { type: 'string', description: 'Claim ID. Required for release/extend.' },
+            additional_minutes: { type: 'number', description: 'Additional minutes for extend action.' }
+        },
+        required: ['action'],
+        additionalProperties: false
+    }
+};
+
 // [#1935 Cluster B] DEPRECATED: roosync_refresh_dashboard + roosync_update_dashboard
 // Removed from tools/list. Callers should use roosync_dashboard(action: "refresh"|"update").
 // Backward-compat CallTool handlers remain in registry.ts (redirect to roosyncDashboard).
@@ -665,6 +685,8 @@ export const allToolDefinitions = [
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
+    // #1836: Pre-claim enforcement
+    roosyncClaimDefinition,
     // [REMOVED #1935 Cluster B] roosyncRefreshDashboardDefinition — fused into roosync_dashboard(action: "refresh"), redirect in registry.ts
     // [REMOVED #1935 Cluster B] roosyncUpdateDashboardDefinition — fused into roosync_dashboard(action: "update"), redirect in registry.ts
     // [REMOVED #1841 Cluster G] roosyncSendDefinition — fused into roosync_messages(action: "send"/"reply"/"amend"), redirect in registry.ts
