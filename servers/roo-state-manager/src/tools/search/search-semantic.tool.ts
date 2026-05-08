@@ -18,6 +18,64 @@ let lastEmbeddingFailureTime = 0;
 const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
 
 /**
+ * #2063: Failure mode classification for semantic search errors.
+ * Identifies which layer (embedding, Qdrant, proxy, auth) caused the failure.
+ */
+export type FailureMode =
+    | 'embedding_unreachable'    // TCP/DNS failure connecting to embedding API
+    | 'embedding_timeout'        // Embedding request exceeded timeout
+    | 'embedding_auth_failed'    // 401/403 from embedding API
+    | 'embedding_server_error'   // 5xx from embedding API
+    | 'qdrant_unreachable'       // TCP/DNS/TLS failure connecting to Qdrant
+    | 'qdrant_proxy_drop'        // TLS OK but POST timeout (proxy drops search requests)
+    | 'qdrant_backend_slow'      // Qdrant 5xx or timeout on search (backend overloaded)
+    | 'qdrant_collection_missing'// 404 on collection
+    | 'qdrant_auth_failed'       // 401/403 from Qdrant
+    | 'unknown';
+
+/**
+ * #2063: Classify a semantic search error into a failure mode.
+ * Uses error code, message, and status to determine the root cause layer.
+ */
+export function classifySearchError(error: unknown, phase: 'embedding' | 'qdrant'): FailureMode {
+    if (!(error instanceof Error)) return 'unknown';
+
+    const msg = error.message.toLowerCase();
+    const err: any = error;
+
+    // Phase-specific classification
+    if (phase === 'embedding') {
+        if (msg.includes('abort') || msg.includes('timeout') || msg.includes('etimedout')) return 'embedding_timeout';
+        if (msg.includes('econnrefused') || msg.includes('enotfound') || msg.includes('econnreset') || msg.includes('fetch failed')) return 'embedding_unreachable';
+        if (/\b40[13]\b/.test(msg) || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('auth')) return 'embedding_auth_failed';
+        if (/\b5[0-9]{2}\b/.test(msg) || msg.includes('bad gateway') || msg.includes('service unavailable') || msg.includes('gateway timeout')) return 'embedding_server_error';
+        return 'unknown';
+    }
+
+    // Qdrant phase
+    if (msg.includes('abort') || msg.includes('timeout') || msg.includes('etimedout')) return 'qdrant_backend_slow';
+    if (msg.includes('econnrefused') || msg.includes('enotfound') || msg.includes('econnreset') || msg.includes('fetch failed') || msg.includes('tls')) return 'qdrant_unreachable';
+    if (/\b404\b/.test(msg) || msg.includes('not found') || msg.includes("doesn't exist")) return 'qdrant_collection_missing';
+    if (/\b40[13]\b/.test(msg) || msg.includes('unauthorized') || msg.includes('forbidden')) return 'qdrant_auth_failed';
+    if (/\b5[0-9]{2}\b/.test(msg) || msg.includes('bad gateway') || msg.includes('service unavailable') || msg.includes('gateway timeout')) return 'qdrant_backend_slow';
+
+    return 'unknown';
+}
+
+const FAILURE_MODE_HINTS: Record<FailureMode, string> = {
+    embedding_unreachable: 'Embedding API is unreachable. Check: network, DNS, API endpoint URL.',
+    embedding_timeout: 'Embedding API timed out. Check: API responsiveness, increase EMBEDDING_TIMEOUT_MS.',
+    embedding_auth_failed: 'Embedding API auth failed. Check: API key, token validity.',
+    embedding_server_error: 'Embedding API returned 5xx. Check: API service health.',
+    qdrant_unreachable: 'Qdrant is unreachable. Check: network, DNS, TLS cert, Qdrant process.',
+    qdrant_proxy_drop: 'TLS OK but search requests time out. Likely: reverse proxy (IIS/nginx) drops POST requests or has short timeout. Check proxy config.',
+    qdrant_backend_slow: 'Qdrant search timed out. Check: Qdrant health, optimizer status, collection size.',
+    qdrant_collection_missing: 'Qdrant collection not found. Check: collection name, run roosync_indexing(action: "rebuild").',
+    qdrant_auth_failed: 'Qdrant auth failed. Check: QDRANT_API_KEY, API key validity.',
+    unknown: 'Unclassified error. Run roosync_search(action: "diagnose") for detailed diagnostic.',
+};
+
+/**
  * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
  * Only activates on real server errors, not generic exceptions.
  */
@@ -660,25 +718,33 @@ export const searchTasksByContentTool = {
 
             const semanticErrorMsg = semanticError instanceof Error ? semanticError.message : String(semanticError);
 
+            // #2063: Classify the error to identify which layer failed
+            // Heuristic: if error message mentions "embed" or we haven't reached Qdrant yet,
+            // classify as embedding phase. Otherwise Qdrant phase.
+            const isLikelyEmbeddingError = /embed|openai|api[_\s]key|model/i.test(semanticErrorMsg);
+            const failureMode = classifySearchError(semanticError, isLikelyEmbeddingError ? 'embedding' : 'qdrant');
+            const failureHint = FAILURE_MODE_HINTS[failureMode];
+
             // #1496: Strict mode — propagate the semantic error instead of silently
             // falling back to text. Callers that explicitly requested semantic
             // (like `roosync_search(action: "semantic")`) need to know when the
             // embedding backend is down, otherwise they treat text results as
             // semantic and real regressions go unnoticed for days (cf #1407, #1451).
             if (args.strict_mode) {
-                console.warn(`[WARN] Semantic search failed in strict_mode (no fallback): ${semanticErrorMsg}`);
+                console.warn(`[WARN] Semantic search failed in strict_mode (no fallback): ${semanticErrorMsg} [${failureMode}]`);
                 return {
                     isError: true,
                     content: [{
                         type: 'text',
-                        text: `Semantic search failed: ${semanticErrorMsg}\n\n` +
+                        text: `Semantic search failed (${failureMode}): ${semanticErrorMsg}\n\n` +
+                              `Hint: ${failureHint}\n` +
                               `Diagnostic: run roosync_search(action: "diagnose") to check backend state.\n` +
-                              `Hint: if you want text fallback, use roosync_search(action: "text") explicitly.`
+                              `Fallback: use roosync_search(action: "text") for text-only search.`
                     }]
                 };
             }
 
-            console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticErrorMsg}`);
+            console.warn(`[WARN] Semantic search failed (${failureMode}), falling back to text search: ${semanticErrorMsg}`);
 
             // Fallback vers la recherche textuelle simple (legacy — default path)
             try {
