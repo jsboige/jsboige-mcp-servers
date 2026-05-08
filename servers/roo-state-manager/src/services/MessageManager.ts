@@ -198,14 +198,79 @@ export class MessageManager {
   }
 
   /**
-   * Invalidate the in-memory inbox cache.
-   * Called after mutations (send, markAsRead, archive, amend).
+   * Invalidate the in-memory inbox cache (nuclear option).
+   * Prefer targeted updates (addToCache/updateInCache/removeFromCache) for single-message mutations.
    */
   invalidateCache(): void {
     this.inboxCache = null;
     this.inboxFullCache.clear();
     this.cacheBuiltAt = 0;
     this.lastInboxFileCount = -1;
+  }
+
+  /**
+   * Add a message to the in-memory cache without full rebuild (#809 perf).
+   * Called after sendMessage writes to inbox.
+   */
+  private addToCache(message: Message): void {
+    this.inboxFullCache.set(message.id, message);
+    if (this.inboxCache) {
+      const listItem: MessageListItem = {
+        id: message.id,
+        from: message.from,
+        to: message.to,
+        subject: message.subject,
+        priority: message.priority,
+        timestamp: message.timestamp,
+        status: message.status,
+        preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
+      };
+      // Insert in sorted position (most recent first)
+      const insertIdx = this.inboxCache.findIndex(
+        item => new Date(message.timestamp).getTime() >= new Date(item.timestamp).getTime()
+      );
+      if (insertIdx === -1) {
+        this.inboxCache.push(listItem);
+      } else {
+        this.inboxCache.splice(insertIdx, 0, listItem);
+      }
+    }
+    if (this.lastInboxFileCount >= 0) this.lastInboxFileCount++;
+  }
+
+  /**
+   * Update a message in the in-memory cache without full rebuild (#809 perf).
+   * Called after markAsRead, amend, destroy, updateAttachments.
+   */
+  private updateInCache(messageId: string, message: Message): void {
+    this.inboxFullCache.set(messageId, message);
+    if (this.inboxCache) {
+      const idx = this.inboxCache.findIndex(item => item.id === messageId);
+      if (idx !== -1) {
+        this.inboxCache[idx] = {
+          id: message.id,
+          from: message.from,
+          to: message.to,
+          subject: message.subject,
+          priority: message.priority,
+          timestamp: message.timestamp,
+          status: message.status,
+          preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
+        };
+      }
+    }
+  }
+
+  /**
+   * Remove a message from the in-memory cache without full rebuild (#809 perf).
+   * Called after archiveMessage removes the file from inbox.
+   */
+  private removeFromCache(messageId: string): void {
+    this.inboxFullCache.delete(messageId);
+    if (this.inboxCache) {
+      this.inboxCache = this.inboxCache.filter(item => item.id !== messageId);
+    }
+    if (this.lastInboxFileCount > 0) this.lastInboxFileCount--;
   }
 
   /**
@@ -412,7 +477,7 @@ export class MessageManager {
       await fs.writeFile(sentFile, JSON.stringify(message, null, 2), 'utf-8');
       logger.info(`Message saved to sent: ${sentFile}`);
 
-      this.invalidateCache();
+      this.addToCache(message);
       logger.info(`Message sent successfully: ${message.id}`);
       return message;
     } catch (error) {
@@ -449,7 +514,16 @@ export class MessageManager {
         logger.warn(`Failed to update attachments in ${filePath}`, err as Record<string, any>);
       }
     }
-    this.invalidateCache();
+    // Targeted update: refresh cached message from the file we just wrote
+    for (const filePath of locations) {
+      if (existsSync(filePath) && filePath.startsWith(this.inboxPath)) {
+        try {
+          const raw = await fs.readFile(filePath, 'utf-8');
+          const msg: Message = JSON.parse(raw);
+          this.updateInCache(messageId, msg);
+        } catch { /* non-critical */ }
+      }
+    }
   }
 
   /**
@@ -666,7 +740,7 @@ export class MessageManager {
         logger.info('Message also updated in sent/');
       }
 
-      this.invalidateCache();
+      this.updateInCache(messageId, message);
 
       // Check auto-destruct conditions after read (#629)
       if (message.auto_destruct) {
@@ -760,7 +834,7 @@ export class MessageManager {
         await fs.writeFile(archivePath, JSON.stringify(message, null, 2), 'utf-8');
       }
 
-      this.invalidateCache();
+      this.updateInCache(messageId, message);
       logger.info(`Message ${messageId} destroyed (${reason})`);
       return true;
     } catch (error) {
@@ -914,7 +988,7 @@ export class MessageManager {
         logger.info('Message also archived in sent/');
       }
 
-      this.invalidateCache();
+      this.removeFromCache(messageId);
       logger.info('Message archived');
       return true;
     } catch (error) {
@@ -1015,7 +1089,7 @@ export class MessageManager {
         logger.info('Message updated in inbox as well');
       }
 
-      this.invalidateCache();
+      this.updateInCache(messageId, message);
       logger.info('Message amended successfully');
 
       return {
