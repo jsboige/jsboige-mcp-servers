@@ -16,6 +16,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Force unbuffered stdout/stderr for MCP stdio compatibility
+# When stdout is piped (not TTY), Python uses block-buffering which delays
+# MCP JSON-RPC messages and causes timeouts in Claude Code / VS Code hosts.
+if not sys.stdout.isatty():
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
 # Import nest_asyncio at the top to handle nested event loops
 try:
     import nest_asyncio
