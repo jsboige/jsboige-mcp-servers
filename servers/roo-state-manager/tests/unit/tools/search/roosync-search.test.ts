@@ -221,7 +221,10 @@ describe('roosync_search - CONS-11', () => {
             const errorText = (result.content[0] as any).text;
             expect(errorText).toContain('Semantic search failed');
             expect(errorText).toContain('OpenAI Error');
-            expect(errorText).toContain('roosync_search(action: "diagnose")');
+            // #2063: New error classifier provides detailed diagnostic info
+            expect(errorText).toContain('Description:');
+            expect(errorText).toContain('Likely cause:');
+            expect(errorText).toContain('Remediation:');
             expect(errorText).toContain('roosync_search(action: "text")');
         });
     });

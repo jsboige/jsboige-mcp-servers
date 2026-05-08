@@ -10,8 +10,9 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'crypto';
 import OpenAI from 'openai';
-import { getQdrantClient } from '../../services/qdrant.js';
+import { getQdrantClient, resetQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
+import { classifySearchError, formatClassifiedError } from './error-classifier.js';
 
 /**
  * Génère le nom de collection Qdrant pour un workspace (même convention que Roo)
@@ -239,6 +240,10 @@ function extractSnippet(codeChunk: string, query: string, maxChars: number = 500
  * Handler principal de l'outil codebase_search
  */
 export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<CallToolResult> {
+	// #RESET: Force reset QdrantClient singleton to re-read env vars (QDRANT_URL, QDRANT_API_KEY)
+	// This ensures config changes take effect without requiring MCP process restart
+	resetQdrantClient();
+
 	const {
 		query,
 		workspace: explicitWorkspace,
@@ -423,46 +428,17 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 
-		// Détecter les erreurs spécifiques
-		if (errorMessage.includes('fetch failed') || errorMessage.includes('ECONNREFUSED')) {
-			return {
-				isError: true,
-				content: [{
-					type: 'text',
-					text: JSON.stringify({
-						status: 'qdrant_connection_error',
-						message: 'Impossible de se connecter à Qdrant.',
-						hint: 'Vérifiez que Qdrant est accessible et que les variables QDRANT_URL et QDRANT_API_KEY sont configurées.',
-						error: errorMessage
-					}, null, 2)
-				}]
-			};
-		}
+		// #2063: Use error classifier for better diagnostic information
+		// For codebase search, we may not have a collection name yet if we're in the discovery phase
+		const collectionName = (workspace as any) ? getWorkspaceCollectionName(workspace as string) : undefined;
+		const classified = await classifySearchError(error, collectionName);
 
-		if (errorMessage.includes('API key') || errorMessage.includes('Unauthorized')) {
-			return {
-				isError: true,
-				content: [{
-					type: 'text',
-					text: JSON.stringify({
-						status: 'auth_error',
-						message: 'Erreur d\'authentification avec l\'API d\'embedding ou Qdrant.',
-						hint: 'Vérifiez vos clés API (OPENAI_API_KEY, QDRANT_API_KEY).',
-						error: errorMessage
-					}, null, 2)
-				}]
-			};
-		}
-
+		// Format the classified error
 		return {
 			isError: true,
 			content: [{
 				type: 'text',
-				text: JSON.stringify({
-					status: 'error',
-					message: 'Erreur lors de la recherche dans le code.',
-					error: errorMessage
-				}, null, 2)
+				text: formatClassifiedError(classified)
 			}]
 		};
 	}

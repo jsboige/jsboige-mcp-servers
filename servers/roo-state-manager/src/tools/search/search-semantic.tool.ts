@@ -10,6 +10,7 @@ import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
+import { classifySearchError, formatClassifiedError } from './error-classifier.js';
 
 // #1232: Circuit breaker for embedding API failures
 // When the embedding API returns 502/503, skip semantic search and go directly to text fallback
@@ -667,12 +668,17 @@ export const searchTasksByContentTool = {
             // semantic and real regressions go unnoticed for days (cf #1407, #1451).
             if (args.strict_mode) {
                 console.warn(`[WARN] Semantic search failed in strict_mode (no fallback): ${semanticErrorMsg}`);
+
+                // #2063: Classify the error to provide better diagnostic information
+                const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+                const classified = await classifySearchError(semanticError, collectionName);
+                const formattedError = formatClassifiedError(classified);
+
                 return {
                     isError: true,
                     content: [{
                         type: 'text',
-                        text: `Semantic search failed: ${semanticErrorMsg}\n\n` +
-                              `Diagnostic: run roosync_search(action: "diagnose") to check backend state.\n` +
+                        text: formattedError + `\n\n` +
                               `Hint: if you want text fallback, use roosync_search(action: "text") explicitly.`
                     }]
                 };

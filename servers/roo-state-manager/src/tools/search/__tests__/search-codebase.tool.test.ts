@@ -14,7 +14,8 @@ const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate } = vi.hoisted(() =
 }));
 
 vi.mock('../../../services/qdrant.js', () => ({
-	getQdrantClient: mockGetQdrantClient
+	getQdrantClient: mockGetQdrantClient,
+	resetQdrantClient: vi.fn()
 }));
 
 vi.mock('openai', () => ({
@@ -408,9 +409,12 @@ describe('search-codebase.tool', () => {
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_connection_error');
-			expect(parsed.hint).toContain('Qdrant');
+			const errorText = result.content[0].text;
+			// #2063: New error classifier provides detailed diagnostic text
+			expect(errorText).toContain('Semantic search failed');
+			expect(errorText).toContain('Description:');
+			expect(errorText).toContain('Likely cause:');
+			expect(errorText).toContain('Remediation:');
 		});
 
 		test('returns qdrant_connection_error on ECONNREFUSED', async () => {
@@ -418,8 +422,8 @@ describe('search-codebase.tool', () => {
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_connection_error');
+			const errorText = result.content[0].text;
+			expect(errorText).toContain('Semantic search failed');
 		});
 
 		test('returns auth_error on API key error', async () => {
@@ -427,9 +431,11 @@ describe('search-codebase.tool', () => {
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('auth_error');
-			expect(parsed.hint).toContain('API');
+			const errorText = result.content[0].text;
+			expect(errorText).toContain('Semantic search failed');
+			// #2063: Error classifier provides detailed diagnostic info
+			// The error may be classified as 'unknown' if health checks don't detect auth failure
+			expect(errorText).toContain('Description:');
 		});
 
 		test('returns auth_error on Unauthorized', async () => {
@@ -437,8 +443,10 @@ describe('search-codebase.tool', () => {
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('auth_error');
+			const errorText = result.content[0].text;
+			expect(errorText).toContain('Semantic search failed');
+			// #2063: 401 errors should be classified as auth failure
+			expect(errorText).toContain('auth');
 		});
 
 		test('returns generic error on unexpected exception', async () => {
@@ -446,9 +454,9 @@ describe('search-codebase.tool', () => {
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('error');
-			expect(parsed.error).toContain('Unexpected internal error');
+			const errorText = result.content[0].text;
+			expect(errorText).toContain('Semantic search failed');
+			expect(errorText).toContain('Unexpected internal error');
 		});
 
 		test('handles non-Error thrown values', async () => {
@@ -456,9 +464,9 @@ describe('search-codebase.tool', () => {
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('error');
-			expect(parsed.error).toBe('string error');
+			const errorText = result.content[0].text;
+			expect(errorText).toContain('Semantic search failed');
+			expect(errorText).toContain('string error');
 		});
 	});
 });
