@@ -26,6 +26,14 @@ except ImportError:
     # Silent failure - stdout reserved for MCP protocol
     pass
 
+# CRITICAL FIX: Force line buffering when stdout is piped (not a TTY).
+# MCP servers are launched via piped stdin/stdout — Python buffers stdout
+# in block mode, causing indefinite blocking.
+if not sys.stdout.isatty():
+    sys.stdout.reconfigure(line_buffering=True)
+if not sys.stderr.isatty():
+    sys.stderr.reconfigure(line_buffering=True)
+
 from mcp.server.fastmcp import FastMCP
 
 from .config import get_config, MCPConfig
