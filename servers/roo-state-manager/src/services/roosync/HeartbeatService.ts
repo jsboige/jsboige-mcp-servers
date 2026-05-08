@@ -22,18 +22,8 @@ const IDLE_THRESHOLD = 120 * 60 * 1000;   // 120 min
 export type MachineStatus = 'online' | 'idle' | 'unknown';
 
 export interface HeartbeatConfig {
-  /** @deprecated No longer used — kept for backward compat in tool schemas */
-  heartbeatInterval?: number;
-  /** @deprecated No longer used — kept for backward compat in tool schemas */
-  offlineTimeout?: number;
-  /** @deprecated No longer used */
-  missedHeartbeatThreshold?: number;
-  /** @deprecated No longer used — no disk writes */
-  autoSyncEnabled?: boolean;
-  /** @deprecated No longer used — no disk writes */
-  autoSyncInterval?: number;
-  /** @deprecated No longer used — no disk writes */
-  persistenceInterval?: number;
+  // ADR 008 Phase 2: All config properties removed (no disk I/O, no background intervals).
+  // Interface kept empty for forward compat with callers that pass config objects.
 }
 
 export interface HeartbeatData {
@@ -209,18 +199,8 @@ export class HeartbeatService {
     return [...this.state.onlineMachines];
   }
 
-  /** @deprecated Use getUnknownMachines() — ADR 008 Phase 2 */
-  public getOfflineMachines(): string[] {
-    return this.getUnknownMachines();
-  }
-
   public getUnknownMachines(): string[] {
     return [...this.state.unknownMachines];
-  }
-
-  /** @deprecated Use getIdleMachines() — ADR 008 Phase 2 */
-  public getWarningMachines(): string[] {
-    return this.getIdleMachines();
   }
 
   public getIdleMachines(): string[] {
@@ -243,19 +223,14 @@ export class HeartbeatService {
     logger.info(`Machine removed: ${machineId}`);
   }
 
-  // --- Backward compat methods (no-ops or redirects for ADR 008 Phase 2) ---
+  // --- No-op backward compat methods (callers still reference these) ---
 
-  /**
-   * @deprecated No-op in ADR 008. Background service no longer needed.
-   * Kept for backward compat with callers (background-services.ts, heartbeat-service tool).
-   */
+  /** No-op in ADR 008. Sets up status change callback if provided. */
   public async startHeartbeatService(
     _machineId: string,
     onUnknownDetected?: (machineId: string) => void,
     onOnlineRestored?: (machineId: string) => void
   ): Promise<void> {
-    logger.info('startHeartbeatService called — no-op (ADR 008 passive model)');
-    // Set up status change callback if callers provide unknown/online callbacks
     if (onUnknownDetected || onOnlineRestored) {
       this.onStatusChangeCallback = (machineId, oldStatus, newStatus) => {
         if (newStatus === 'unknown' && onUnknownDetected) onUnknownDetected(machineId);
@@ -264,37 +239,18 @@ export class HeartbeatService {
     }
   }
 
-  /**
-   * @deprecated No-op in ADR 008. No background interval to stop.
-   */
-  public async stopHeartbeatService(): Promise<void> {
-    logger.info('stopHeartbeatService called — no-op (ADR 008 passive model)');
-  }
+  /** No-op in ADR 008. */
+  public async stopHeartbeatService(): Promise<void> {}
 
-  /**
-   * @deprecated No-op in ADR 008.
-   */
-  public async updateConfig(_config: Partial<HeartbeatConfig>): Promise<void> {
-    logger.info('updateConfig called — no-op (ADR 008 passive model)');
-  }
+  /** No-op in ADR 008. */
+  public async updateConfig(_config: Partial<HeartbeatConfig>): Promise<void> {}
 
-  /**
-   * @deprecated No disk state to reload.
-   */
-  public reloadFromDisk(): void {
-    // No-op: ADR 008 in-memory only
-  }
+  /** No-op in ADR 008. */
+  public reloadFromDisk(): void {}
 
-  /**
-   * @deprecated No disk state to clean up. ADR 008: in-memory only.
-   */
+  /** No-op in ADR 008. In-memory only, no cleanup needed. */
   public async cleanupOldUnknownMachines(_maxAge?: number): Promise<number> {
     return 0;
-  }
-
-  /** @deprecated Use cleanupOldUnknownMachines — ADR 008 terminology */
-  public async cleanupOldOfflineMachines(maxAge?: number): Promise<number> {
-    return this.cleanupOldUnknownMachines(maxAge);
   }
 
   // --- Internal ---

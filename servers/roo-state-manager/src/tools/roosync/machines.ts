@@ -16,8 +16,8 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  * Schema de validation pour roosync_machines
  */
 export const MachinesArgsSchema = z.object({
-  status: z.enum(['unknown', 'idle', 'all', 'offline', 'warning'])
-    .describe('Statut des machines à récupérer. "offline" and "warning" map to "unknown" and "idle" respectively (backward compat)'),
+  status: z.enum(['unknown', 'idle', 'all'])
+    .describe('Statut des machines à récupérer'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets de chaque machine (défaut: false)')
 });
@@ -44,8 +44,7 @@ export const UnknownMachineDetailsSchema = z.object({
 
 export type UnknownMachineDetails = z.infer<typeof UnknownMachineDetailsSchema>;
 
-/** @deprecated Use UnknownMachineDetails */
-export type OfflineMachineDetails = UnknownMachineDetails;
+/** Removed in ADR 008 Phase 2: OfflineMachineDetails → use UnknownMachineDetails */
 
 /**
  * Détails d'une machine idle
@@ -67,8 +66,7 @@ export const IdleMachineDetailsSchema = z.object({
 
 export type IdleMachineDetails = z.infer<typeof IdleMachineDetailsSchema>;
 
-/** @deprecated Use IdleMachineDetails */
-export type WarningMachineDetails = IdleMachineDetails;
+/** Removed in ADR 008 Phase 2: WarningMachineDetails → use IdleMachineDetails */
 
 /**
  * Schema de retour pour roosync_machines
@@ -122,8 +120,7 @@ export const machinesTool: UnifiedToolContract = {
       };
 
       // Récupérer les machines unknown si demandé
-      const effectiveStatus = status === 'offline' ? 'unknown' : status === 'warning' ? 'idle' : status;
-      if (effectiveStatus === 'unknown' || effectiveStatus === 'all') {
+      if (status === 'unknown' || status === 'all') {
         const unknownMachines = heartbeatService.getUnknownMachines();
 
         if (includeDetails) {
@@ -151,7 +148,7 @@ export const machinesTool: UnifiedToolContract = {
       }
 
       // Récupérer les machines idle si demandé
-      if (effectiveStatus === 'idle' || effectiveStatus === 'all') {
+      if (status === 'idle' || status === 'all') {
         const idleMachines = heartbeatService.getIdleMachines();
 
         if (includeDetails) {
@@ -220,8 +217,8 @@ export const machinesToolMetadata = {
     properties: {
       status: {
         type: 'string',
-        enum: ['unknown', 'idle', 'all', 'offline', 'warning'],
-        description: 'Statut des machines à récupérer. "offline"/"warning" map to "unknown"/"idle"'
+        enum: ['unknown', 'idle', 'all'],
+        description: 'Statut des machines à récupérer'
       },
       includeDetails: {
         type: 'boolean',

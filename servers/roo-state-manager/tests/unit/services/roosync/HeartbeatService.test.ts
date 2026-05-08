@@ -159,7 +159,7 @@ describe('HeartbeatService - Tests Unitaires', () => {
       expect(onlineMachines).toContain('machine-2');
     });
 
-    it('devrait retourner les machines UNKNOWN via getOfflineMachines (deprecated alias)', async () => {
+    it('devrait retourner les machines UNKNOWN via getUnknownMachines', async () => {
       await heartbeatService.registerHeartbeat('machine-1');
 
       // Make stale → UNKNOWN
@@ -167,14 +167,10 @@ describe('HeartbeatService - Tests Unitaires', () => {
       hb.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString();
       await heartbeatService.checkHeartbeats();
 
-      const offlineMachines = heartbeatService.getOfflineMachines();
-      expect(offlineMachines).toContain('machine-1');
-
-      // Also available via getUnknownMachines
       expect(heartbeatService.getUnknownMachines()).toContain('machine-1');
     });
 
-    it('devrait retourner les machines IDLE via getWarningMachines (deprecated alias)', async () => {
+    it('devrait retourner les machines IDLE via getIdleMachines', async () => {
       await heartbeatService.registerHeartbeat('machine-1');
 
       // Make idle → IDLE
@@ -182,10 +178,6 @@ describe('HeartbeatService - Tests Unitaires', () => {
       hb.lastHeartbeat = new Date(Date.now() - 45 * 60 * 1000).toISOString();
       await heartbeatService.checkHeartbeats();
 
-      const warningMachines = heartbeatService.getWarningMachines();
-      expect(warningMachines).toContain('machine-1');
-
-      // Also available via getIdleMachines
       expect(heartbeatService.getIdleMachines()).toContain('machine-1');
     });
   });
@@ -218,19 +210,15 @@ describe('HeartbeatService - Tests Unitaires', () => {
       expect(heartbeatService.getHeartbeatData('myia-recent')).toBeDefined();
     });
 
-    it('cleanupOldOfflineMachines (deprecated) still works via backward compat', async () => {
-      const removedCount = await heartbeatService.cleanupOldOfflineMachines(86400000);
+    it('cleanupOldUnknownMachines returns 0 (no-op ADR 008)', async () => {
+      const removedCount = await heartbeatService.cleanupOldUnknownMachines(86400000);
       expect(removedCount).toBe(0);
     });
   });
 
   describe('Configuration', () => {
     it('updateConfig est un no-op (ne throw pas)', async () => {
-      await heartbeatService.updateConfig({
-        heartbeatInterval: 60000,
-        offlineTimeout: 180000,
-        missedHeartbeatThreshold: 6
-      });
+      await heartbeatService.updateConfig({});
 
       // No-op — just verify no throw
       expect(true).toBe(true);
