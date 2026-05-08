@@ -8,7 +8,7 @@
  * - Initialisation → état vide (no disk load)
  * - registerHeartbeat : nouvelle machine + machine existante (update)
  * - checkHeartbeats : détection IDLE/UNKNOWN/ONLINE (computed from lastHeartbeat age)
- * - getOnlineMachines / getUnknownMachines / getIdleMachines (deprecated aliases: getOfflineMachines / getWarningMachines)
+ * - getOnlineMachines / getUnknownMachines / getIdleMachines
  * - getHeartbeatData : défini après register, undefined avant
  * - getState : retourne copie défensive avec nouvelles clés (idleMachines, unknownMachines)
  * - removeMachine : suppression in-memory
@@ -48,8 +48,6 @@ describe('HeartbeatService', () => {
       const service = new HeartbeatService();
 
       expect(service.getOnlineMachines()).toEqual([]);
-      expect(service.getOfflineMachines()).toEqual([]);
-      expect(service.getWarningMachines()).toEqual([]);
       expect(service.getUnknownMachines()).toEqual([]);
       expect(service.getIdleMachines()).toEqual([]);
     });
@@ -60,15 +58,8 @@ describe('HeartbeatService', () => {
       expect(service.getOnlineMachines()).toEqual([]);
     });
 
-    test('accepte une config complète', () => {
-      const service = new HeartbeatService('/path', {
-        heartbeatInterval: 30000,
-        offlineTimeout: 120000,
-        missedHeartbeatThreshold: 4,
-        autoSyncEnabled: false,
-        autoSyncInterval: 60000,
-        persistenceInterval: 100,
-      });
+    test('accepte une config complète (empty in ADR 008 Phase 2)', () => {
+      const service = new HeartbeatService('/path', {});
 
       expect(service).toBeDefined();
       expect(service.getOnlineMachines()).toEqual([]);
@@ -185,7 +176,6 @@ describe('HeartbeatService', () => {
       const result = await service.checkHeartbeats();
 
       expect(result.newlyUnknownMachines).toContain('slow-machine');
-      expect(service.getOfflineMachines()).toContain('slow-machine'); // deprecated alias
       expect(service.getUnknownMachines()).toContain('slow-machine');
       expect(service.getHeartbeatData('slow-machine')!.status).toBe('unknown');
     });
@@ -201,7 +191,6 @@ describe('HeartbeatService', () => {
       const result = await service.checkHeartbeats();
 
       expect(result.newlyIdleMachines).toContain('idle-machine');
-      expect(service.getWarningMachines()).toContain('idle-machine'); // deprecated alias
       expect(service.getIdleMachines()).toContain('idle-machine');
       expect(service.getHeartbeatData('idle-machine')!.status).toBe('idle');
     });
@@ -216,12 +205,12 @@ describe('HeartbeatService', () => {
 
       // First check → detected UNKNOWN
       await service.checkHeartbeats();
-      expect(service.getOfflineMachines()).toContain('recovering-machine');
+      expect(service.getUnknownMachines()).toContain('recovering-machine');
 
       // Re-register → revient online (in-memory update)
       await service.registerHeartbeat('recovering-machine');
       expect(service.getOnlineMachines()).toContain('recovering-machine');
-      expect(service.getOfflineMachines()).not.toContain('recovering-machine');
+      expect(service.getUnknownMachines()).not.toContain('recovering-machine');
     });
 
     test('machine online stable reste online #1953 ADR 008', async () => {
@@ -402,10 +391,12 @@ describe('HeartbeatService', () => {
       expect(service.getHeartbeatData('test-artifact-machine')).toBeDefined();
     });
 
-    test('deprecated cleanupOldOfflineMachines still works (backward compat)', async () => {
+    test('deprecated cleanupOldOfflineMachines removed in Phase 2', async () => {
       const service = new HeartbeatService();
 
-      const removed = await service.cleanupOldOfflineMachines();
+      // cleanupOldOfflineMachines was removed in ADR 008 Phase 2
+      // Use cleanupOldUnknownMachines instead
+      const removed = await service.cleanupOldUnknownMachines();
 
       expect(removed).toBe(0);
     });
@@ -445,11 +436,8 @@ describe('HeartbeatService', () => {
       expect(service).toBeDefined();
     });
 
-    test('accepte une config partielle', () => {
-      const service = new HeartbeatService('/path', {
-        heartbeatInterval: 5_000,
-        offlineTimeout: 30_000,
-      });
+    test('accepte une config partielle (empty in ADR 008 Phase 2)', () => {
+      const service = new HeartbeatService('/path', {});
 
       expect(service).toBeDefined();
     });
@@ -457,7 +445,7 @@ describe('HeartbeatService', () => {
     test('updateConfig est un no-op (ne throw pas)', async () => {
       const service = new HeartbeatService();
 
-      await expect(service.updateConfig({ heartbeatInterval: 10_000 })).resolves.not.toThrow();
+      await expect(service.updateConfig({})).resolves.not.toThrow();
     });
   });
 

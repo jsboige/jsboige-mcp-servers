@@ -24,8 +24,8 @@ export const InventoryArgsSchema = z.object({
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les données de heartbeat de chaque machine (défaut: true)'),
   // Pour type="machines" (fused from roosync_machines)
-  status: z.enum(['unknown', 'idle', 'all', 'offline', 'warning']).optional()
-    .describe('Filtrer par statut machines (type="machines"). "offline"/"warning" map to "unknown"/"idle" (backward compat)'),
+  status: z.enum(['unknown', 'idle', 'all']).optional()
+    .describe('Filtrer par statut machines (type="machines")'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets des machines (type="machines") ou stats outil (type="status")'),
   summary: z.boolean().optional()
@@ -195,7 +195,7 @@ export const inventoryTool: UnifiedToolContract = {
 
         machinesData = { unknownMachines: [], unknownCount: 0, idleMachines: [], idleCount: 0 };
 
-        if (machinesStatus === 'offline' || machinesStatus === 'unknown' || machinesStatus === 'all') {
+        if (machinesStatus === 'unknown' || machinesStatus === 'all') {
           const unknownMachines = heartbeatService.getUnknownMachines();
           if (wantDetails) {
             const detailed: any[] = [];
@@ -213,7 +213,7 @@ export const inventoryTool: UnifiedToolContract = {
           }
         }
 
-        if (machinesStatus === 'warning' || machinesStatus === 'idle' || machinesStatus === 'all') {
+        if (machinesStatus === 'idle' || machinesStatus === 'all') {
           const idleMachines = heartbeatService.getIdleMachines();
           if (wantDetails) {
             const detailed: any[] = [];
@@ -322,8 +322,8 @@ export const inventoryToolMetadata = {
       },
       status: {
         type: 'string',
-        enum: ['unknown', 'idle', 'all', 'offline', 'warning'],
-        description: 'Filtrer par statut machines. "offline"/"warning" map to "unknown"/"idle" (backward compat)'
+        enum: ['unknown', 'idle', 'all'],
+        description: 'Filtrer par statut machines (type="machines")'
       },
       includeDetails: {
         type: 'boolean',

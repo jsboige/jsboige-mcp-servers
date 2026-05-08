@@ -994,24 +994,10 @@ export class RooSyncService {
   }
 
   /**
-   * @deprecated Use getUnknownMachines() — terminology rename
-   */
-  public getOfflineMachines(): string[] {
-    return this.heartbeatService.getUnknownMachines();
-  }
-
-  /**
    * Obtient les machines avec statut UNKNOWN
    */
   public getUnknownMachines(): string[] {
     return this.heartbeatService.getUnknownMachines();
-  }
-
-  /**
-   * @deprecated Use getIdleMachines() — terminology rename
-   */
-  public getWarningMachines(): string[] {
-    return this.heartbeatService.getIdleMachines();
   }
 
   /**
