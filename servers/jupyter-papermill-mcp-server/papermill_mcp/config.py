@@ -74,6 +74,10 @@ class MCPConfig(BaseModel):
     skip_connection_check: bool = Field(
         default=False, description="Skip Jupyter server connection check"
     )
+    continue_on_error: bool = Field(
+        default=False,
+        description="Continue notebook execution when a cell errors (instead of stopping)",
+    )
 
     class Config:
         validate_assignment = True
