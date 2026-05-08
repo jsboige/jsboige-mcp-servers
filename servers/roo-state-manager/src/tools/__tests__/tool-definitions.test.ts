@@ -35,6 +35,8 @@ import {
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
+    // #1836: roosync_claim added — pre-claim enforcement tool
+    roosyncClaimDefinition,
     // #1935 Cluster B: roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition removed from tools/list
     // #1841 Cluster G: roosyncSend/Read/Manage/Attachments removed — fused into roosync_messages
     roosyncSendDefinition,
@@ -45,7 +47,7 @@ import {
     roosyncMessagesDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 18;
+const EXPECTED_TOOL_COUNT = 19; // #1836: 18 → 19 (roosync_claim added)
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // #1863: 3 deprecated definitions removed from allToolDefinitions
@@ -75,6 +77,8 @@ const allDefinitions = [
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
+    // #1836: roosync_claim added — pre-claim enforcement tool
+    roosyncClaimDefinition,
     // [REMOVED #291] roosyncRefreshDashboardDefinition — removed from allToolDefinitions
     // [REMOVED #291] roosyncUpdateDashboardDefinition — removed from allToolDefinitions
     // [REMOVED #1841 Cluster G] roosyncSendDefinition — fused into roosync_messages
@@ -88,7 +92,7 @@ const allDefinitions = [
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 18 tool definitions', () => {
+        it('should have exactly 19 tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 
