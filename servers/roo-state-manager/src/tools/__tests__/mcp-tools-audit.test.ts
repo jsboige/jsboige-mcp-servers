@@ -34,7 +34,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   // Conversation tools
   'conversation_browser': 'conversation/conversation-browser.ts',
   'task_browse': 'conversation/conversation-browser.ts', // deprecated
-  'task_export': 'conversation/conversation-browser.ts',
+  'task_export': 'export/export-data.ts', // #1841 Cluster H: fused into export_data, redirect in registry.ts
   'view_conversation_tree': 'conversation/view-details.tool.ts',
   'view_task_details': 'conversation/view-details.tool.ts',
   // 'list_conversations': removed - file no longer exists

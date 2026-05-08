@@ -307,8 +307,9 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose(action: "analyze"): 24 → 23
     // Cluster E (#1935) fused get_status → inventory(type: "status"): 23 → 22
     // Cluster G (#1841) fused send+read+manage+attachments → roosync_messages: 22 → 19
+    // Cluster H (#1841) fused task_export → export_data: 19 → 18
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(19);
+    expect(allToolDefinitions.length).toBe(18);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {

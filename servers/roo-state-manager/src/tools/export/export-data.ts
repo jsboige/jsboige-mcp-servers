@@ -23,12 +23,16 @@ import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import fs from 'fs/promises';
 import path from 'path';
+// #1841 Cluster H: task_export fusion — import task tree handlers
+import { handleExportTaskTreeMarkdown, type ExportTaskTreeMarkdownArgs } from '../task/export-tree-md.tool.js';
+import { handleDebugTaskParsing, type DebugTaskParsingArgs } from '../task/debug-parsing.tool.js';
+import { handleGetTaskTree } from '../task/get-tree.tool.js';
 
 /**
  * Types d'export supportés
  */
-export type ExportTarget = 'task' | 'conversation' | 'project';
-export type ExportFormat = 'xml' | 'json' | 'csv';
+export type ExportTarget = 'task' | 'conversation' | 'project' | 'task_tree';
+export type ExportFormat = 'xml' | 'json' | 'csv' | 'markdown' | 'debug';
 
 /**
  * Arguments consolidés du tool export_data
@@ -74,6 +78,18 @@ export interface ExportDataArgs {
     startIndex?: number;
     /** Index de fin (1-based) pour plage de messages */
     endIndex?: number;
+
+    // #1841 Cluster H: task_tree export options (target=task_tree, format=markdown)
+    /** Inclure les tâches sœurs dans l'arbre (target=task_tree) */
+    includeSiblings?: boolean;
+    /** ID de la tâche en cours pour marquage (target=task_tree) */
+    currentTaskId?: string;
+    /** Format de sortie arbre: ascii-tree, markdown, hierarchical, json (target=task_tree) */
+    outputFormat?: 'ascii-tree' | 'markdown' | 'hierarchical' | 'json';
+    /** Longueur max de l'instruction affichée (target=task_tree) */
+    truncateInstruction?: number;
+    /** Afficher les métadonnées détaillées (target=task_tree) */
+    showMetadata?: boolean;
 }
 
 /**
@@ -81,19 +97,19 @@ export interface ExportDataArgs {
  */
 export const exportDataTool: Tool = {
     name: 'export_data',
-    description: 'Export data as XML, JSON or CSV. Targets: task (XML), conversation (all formats), project (XML). JSON variants: light/full. CSV variants: conversations/messages/tools.',
+    description: `Outil consolidé pour exporter des données au format XML, JSON, CSV ou Markdown.\n\nCibles supportées:\n- task: Export d'une tâche individuelle (XML, debug)\n- task_tree: Export d'un arbre de tâches (Markdown/ascii-tree/hierarchical/json)\n- conversation: Export d'une conversation complète (XML, JSON, CSV)\n- project: Export d'un projet entier (XML)\n\nCONS-10+H: Remplace export_tasks_xml, export_conversation_xml, export_project_xml, export_conversation_json, export_conversation_csv, task_export`,
     inputSchema: {
         type: 'object',
         properties: {
             target: {
                 type: 'string',
-                enum: ['task', 'conversation', 'project'],
-                description: 'Export target: task, conversation, or project'
+                enum: ['task', 'conversation', 'project', 'task_tree'],
+                description: "Cible de l'export: task, conversation, project, ou task_tree"
             },
             format: {
                 type: 'string',
-                enum: ['xml', 'json', 'csv'],
-                description: 'Output format: xml, json, or csv'
+                enum: ['xml', 'json', 'csv', 'markdown', 'debug'],
+                description: 'Format de sortie: xml, json, csv, markdown, ou debug'
             },
             taskId: {
                 type: 'string',
@@ -156,6 +172,28 @@ export const exportDataTool: Tool = {
             endIndex: {
                 type: 'number',
                 description: 'End index (1-based) for message range'
+            },
+            // #1841 Cluster H: task_tree export options
+            includeSiblings: {
+                type: 'boolean',
+                description: 'Include sibling tasks in tree (target=task_tree, default: true)'
+            },
+            currentTaskId: {
+                type: 'string',
+                description: 'Current task ID for explicit marking (target=task_tree)'
+            },
+            outputFormat: {
+                type: 'string',
+                enum: ['ascii-tree', 'markdown', 'hierarchical', 'json'],
+                description: 'Tree output format (target=task_tree, default: ascii-tree)'
+            },
+            truncateInstruction: {
+                type: 'number',
+                description: 'Max instruction length displayed (target=task_tree, default: 80)'
+            },
+            showMetadata: {
+                type: 'boolean',
+                description: 'Show detailed metadata (target=task_tree, default: false)'
             }
         },
         required: ['target', 'format']
@@ -167,7 +205,8 @@ export const exportDataTool: Tool = {
  */
 function validateTargetFormat(target: ExportTarget, format: ExportFormat): void {
     const validCombinations: Record<ExportTarget, ExportFormat[]> = {
-        task: ['xml'],
+        task: ['xml', 'debug'],
+        task_tree: ['markdown'],
         conversation: ['xml', 'json', 'csv'],
         project: ['xml']
     };
@@ -223,6 +262,25 @@ function validateRequiredParams(args: ExportDataArgs): void {
             'MISSING_REQUIRED_PARAM',
             'ExportDataTool',
             { target, missingParam: 'projectPath' }
+        );
+    }
+
+    // #1841 Cluster H: task_tree validation
+    if (target === 'task_tree' && !conversationId) {
+        throw new StateManagerError(
+            'conversationId est requis pour target=task_tree',
+            'MISSING_REQUIRED_PARAM',
+            'ExportDataTool',
+            { target, missingParam: 'conversationId' }
+        );
+    }
+
+    if (target === 'task' && format === 'debug' && !taskId) {
+        throw new StateManagerError(
+            'taskId est requis pour target=task format=debug',
+            'MISSING_REQUIRED_PARAM',
+            'ExportDataTool',
+            { target, format, missingParam: 'taskId' }
         );
     }
 }
@@ -555,7 +613,7 @@ export async function handleExportData(
                 isError: true,
                 content: [{
                     type: 'text',
-                    text: 'Paramètre "target" requis. Valeurs: task, conversation, project'
+                    text: 'Paramètre "target" requis. Valeurs: task, task_tree, conversation, project'
                 }]
             };
         }
@@ -565,7 +623,7 @@ export async function handleExportData(
                 isError: true,
                 content: [{
                     type: 'text',
-                    text: 'Paramètre "format" requis. Valeurs: xml, json, csv'
+                    text: 'Paramètre "format" requis. Valeurs: xml, json, csv, markdown, debug'
                 }]
             };
         }
@@ -579,8 +637,39 @@ export async function handleExportData(
         // Router vers le handler approprié
         const { target, format } = args;
 
+        // #1841 Cluster H: task debug diagnostic (was task_export action='debug')
+        if (target === 'task' && format === 'debug') {
+            const debugArgs: DebugTaskParsingArgs = { task_id: args.taskId! };
+            return await handleDebugTaskParsing(debugArgs);
+        }
+
         if (target === 'task' && format === 'xml') {
             return await handleTaskXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+        }
+
+        // #1841 Cluster H: task tree markdown export (was task_export action='markdown')
+        if (target === 'task_tree' && format === 'markdown') {
+            const exportArgs: ExportTaskTreeMarkdownArgs = {
+                conversation_id: args.conversationId!,
+                filePath: args.filePath,
+                max_depth: args.maxDepth,
+                include_siblings: args.includeSiblings,
+                current_task_id: args.currentTaskId,
+                output_format: args.outputFormat,
+                truncate_instruction: args.truncateInstruction,
+                show_metadata: args.showMetadata
+            };
+
+            const wrappedHandleGetTaskTree = async (treeArgs: any) => {
+                return await handleGetTaskTree(treeArgs, conversationCache, ensureSkeletonCacheIsFresh);
+            };
+
+            return await handleExportTaskTreeMarkdown(
+                exportArgs,
+                wrappedHandleGetTaskTree,
+                ensureSkeletonCacheIsFresh,
+                conversationCache
+            );
         }
 
         if (target === 'conversation') {

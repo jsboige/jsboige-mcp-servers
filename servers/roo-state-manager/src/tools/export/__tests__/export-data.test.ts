@@ -415,12 +415,12 @@ describe('export_data - CONS-10', () => {
 
         test('should have correct target enum values', () => {
             const props = exportDataTool.inputSchema.properties as any;
-            expect(props.target.enum).toEqual(['task', 'conversation', 'project']);
+            expect(props.target.enum).toEqual(['task', 'conversation', 'project', 'task_tree']);
         });
 
         test('should have correct format enum values', () => {
             const props = exportDataTool.inputSchema.properties as any;
-            expect(props.format.enum).toEqual(['xml', 'json', 'csv']);
+            expect(props.format.enum).toEqual(['xml', 'json', 'csv', 'markdown', 'debug']);
         });
 
         test('should include all expected parameters', () => {

@@ -844,7 +844,7 @@ describe('registry.ts - Tool Registration', () => {
             roosync_storage_management: ['sharedPath'],
             conversation_browser: ['sharedPath'],
             export_data: ['sharedPath'],
-            task_export: ['sharedPath'],
+            // [REMOVED #1841 Cluster H] task_export — fused into export_data
             maintenance: ['sharedPath'],
             storage_info: ['sharedPath'],
 
@@ -881,12 +881,12 @@ describe('registry.ts - Tool Registration', () => {
                 'roosync_storage_management',
                 'conversation_browser',
                 'export_data',
-                'task_export',
+                // [REMOVED #1841 Cluster H] task_export — fused into export_data
                 'maintenance',
                 'storage_info'
             ];
 
-            expect(Object.keys(TOOL_CAPABILITIES)).toHaveLength(29);
+            expect(Object.keys(TOOL_CAPABILITIES)).toHaveLength(28);
             sharedPathTools.forEach(toolName => {
                 expect(TOOL_CAPABILITIES[toolName]).toContain('sharedPath');
             });

@@ -77,7 +77,7 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_storage_management: ['sharedPath'],
 	conversation_browser: ['sharedPath'],
 	export_data: ['sharedPath'],
-	task_export: ['sharedPath'],
+	// [REMOVED #1841 Cluster H] task_export — fused into export_data, redirect below
 	maintenance: ['sharedPath'],
 	storage_info: ['sharedPath'],
 	// Qdrant-dependent tools
@@ -252,12 +252,41 @@ export function registerCallToolHandler(
                 );
                 break;
             }
+            // #1841 Cluster H: task_export fused into export_data — backward compat redirect
             case 'task_export': {
-                const m = await import('./task/export.js');
-                result = await m.handleTaskExport(
-                    args as any,
+                const m = await import('./export/export-data.js');
+                const taskExportArgs = args as any;
+                // Map task_export action → export_data target/format
+                let mappedArgs: any;
+                if (taskExportArgs.action === 'markdown') {
+                    mappedArgs = {
+                        target: 'task_tree',
+                        format: 'markdown',
+                        conversationId: taskExportArgs.conversation_id,
+                        filePath: taskExportArgs.filePath,
+                        maxDepth: taskExportArgs.max_depth,
+                        includeSiblings: taskExportArgs.include_siblings,
+                        currentTaskId: taskExportArgs.current_task_id,
+                        outputFormat: taskExportArgs.output_format,
+                        truncateInstruction: taskExportArgs.truncate_instruction,
+                        showMetadata: taskExportArgs.show_metadata
+                    };
+                } else if (taskExportArgs.action === 'debug') {
+                    mappedArgs = {
+                        target: 'task',
+                        format: 'debug',
+                        taskId: taskExportArgs.task_id
+                    };
+                } else {
+                    result = { content: [{ type: 'text', text: `task_export action "${taskExportArgs.action}" non supportée. Utilisez export_data.` }], isError: true };
+                    break;
+                }
+                result = await m.handleExportData(
+                    mappedArgs,
                     cache,
-                    async () => { await ensureSkeletonCacheIsFresh(); }
+                    state.xmlExporterService,
+                    async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); },
+                    async (id: string) => cache.get(id) || null
                 );
                 break;
             }

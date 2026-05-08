@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
     allToolDefinitions,
     conversationBrowserDefinition,
-    taskExportDefinition,
+    // [REMOVED #1841 Cluster H] taskExportDefinition — fused into export_data
     roosyncSearchDefinition,
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
@@ -46,7 +46,7 @@ import {
     roosyncMessagesDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 19;
+const EXPECTED_TOOL_COUNT = 18;
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // #1863: 3 deprecated definitions removed from allToolDefinitions
@@ -54,7 +54,7 @@ const EXPECTED_TOOL_COUNT = 19;
 // #1935 Cluster E: get_status removed — fused into roosync_inventory(type: "status")
 const allDefinitions = [
     conversationBrowserDefinition,
-    taskExportDefinition,
+    // [REMOVED #1841 Cluster H] taskExportDefinition — fused into export_data
     roosyncSearchDefinition,
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
@@ -332,8 +332,10 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(exportConfigDefinition.inputSchema.required).toContain('action');
         });
 
-        it('task_export should require action', () => {
-            expect(taskExportDefinition.inputSchema.required).toContain('action');
+        // [REMOVED #1841 Cluster H] task_export test — fused into export_data
+        it('export_data should require target and format', () => {
+            expect(exportDataDefinition.inputSchema.required).toContain('target');
+            expect(exportDataDefinition.inputSchema.required).toContain('format');
         });
 
         it('roosync_list_diffs should have filterType enum', () => {
