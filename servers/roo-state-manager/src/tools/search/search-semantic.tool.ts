@@ -10,6 +10,7 @@ import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
+import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
 
 // #1232: Circuit breaker for embedding API failures
 // When the embedding API returns 502/503, skip semantic search and go directly to text fallback
@@ -25,6 +26,18 @@ function isHttpServerError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
     const msg = error.message;
     return /\b5[0-9]{2}\b/.test(msg) || msg.includes('Bad Gateway') || msg.includes('Service Unavailable') || msg.includes('Gateway Timeout');
+}
+
+/**
+ * #2063: Check if an error is an AbortError/timeout (not HTTP 5xx but still
+ * eligible for circuit breaker — prevents repeated 30s timeouts).
+ */
+function isAbortOrTimeout(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message;
+    const code = (error as any)?.code || '';
+    return msg.includes('abort') || msg.includes('timeout') || msg.includes('ETIMEDOUT') ||
+        msg.includes('This operation was aborted') || code === 'UND_ERR_CONNECT_TIMEOUT';
 }
 
 /**
@@ -652,44 +665,43 @@ export const searchTasksByContentTool = {
             };
 
         } catch (semanticError) {
-            // #1232: Activate circuit breaker ONLY on HTTP 5xx server errors
-            if (isHttpServerError(semanticError)) {
+            // #1232: Activate circuit breaker on HTTP 5xx OR AbortError/timeout
+            if (isHttpServerError(semanticError) || isAbortOrTimeout(semanticError)) {
                 lastEmbeddingFailureTime = Date.now();
-                console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s (HTTP 5xx detected)`);
+                console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s`);
             }
 
             const semanticErrorMsg = semanticError instanceof Error ? semanticError.message : String(semanticError);
 
-            // #1496: Strict mode — propagate the semantic error instead of silently
+            // #2063 P1: Classify the error for actionable diagnostics
+            const classified = await classifySearchError(semanticError, 'search');
+
+            // #1496: Strict mode — propagate the classified error instead of silently
             // falling back to text. Callers that explicitly requested semantic
             // (like `roosync_search(action: "semantic")`) need to know when the
             // embedding backend is down, otherwise they treat text results as
             // semantic and real regressions go unnoticed for days (cf #1407, #1451).
             if (args.strict_mode) {
-                console.warn(`[WARN] Semantic search failed in strict_mode (no fallback): ${semanticErrorMsg}`);
+                console.warn(`[WARN] Semantic search failed in strict_mode (${classified.mode}): ${semanticErrorMsg}`);
                 return {
                     isError: true,
                     content: [{
                         type: 'text',
-                        text: `Semantic search failed: ${semanticErrorMsg}\n\n` +
-                              `Diagnostic: run roosync_search(action: "diagnose") to check backend state.\n` +
-                              `Hint: if you want text fallback, use roosync_search(action: "text") explicitly.`
+                        text: formatClassifiedError(classified) +
+                              `\n\n  Fallback: use roosync_search(action: "text") for text-based search.`
                     }]
                 };
             }
 
-            console.warn(`[WARN] Semantic search failed, falling back to text search: ${semanticErrorMsg}`);
+            console.warn(`[WARN] Semantic search failed (${classified.mode}), falling back to text: ${semanticErrorMsg}`);
 
             // Fallback vers la recherche textuelle simple (legacy — default path)
             try {
-                // Fix: mapper search_query → query pour le fallback
                 const fallbackResult = await fallbackHandler(
                     { query: args.search_query, workspace: args.workspace },
                     conversationCache
                 );
 
-                // Le fallback handler retourne déjà le bon format : content: [objets avec taskId, score, match, etc.]
-                // Pas besoin de transformation, retourner directement le résultat
                 return fallbackResult;
             } catch (fallbackError) {
                 console.log(`[ERROR] Fallback handler a échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
@@ -697,7 +709,8 @@ export const searchTasksByContentTool = {
                     isError: false,
                     content: [{
                         type: 'text',
-                        text: `Erreur lors du fallback: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                        text: `Semantic search failed (${classified.mode}), fallback also failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}\n\n` +
+                              `Diagnostics: ${classified.message}\nHint: ${classified.hint}`
                     }] as any
                 };
             }

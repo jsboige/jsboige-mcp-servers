@@ -1,11 +1,12 @@
 /**
  * Tests de couverture des chemins d'erreur pour search-codebase.tool.ts
  * Issue #733 — Couverture module search > 70%
+ * Issue #2063 P1 — Updated to match classified error modes
  *
- * Couvre le catch block (lignes 333-377) :
- * - fetch failed / ECONNREFUSED → qdrant_connection_error
- * - API key / Unauthorized → auth_error
- * - Erreur générique → error
+ * Couvre le catch block avec FailureMode classification:
+ * - fetch failed / ECONNREFUSED → qdrant_unreachable
+ * - API key / Unauthorized → auth_failed
+ * - Erreur inattendue → unknown
  *
  * @module search/codebase-search-errors.test
  */
@@ -80,60 +81,57 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 		process.env = { ...originalEnv };
 	});
 
-	it('retourne qdrant_connection_error quand fetch failed', async () => {
+	it('retourne qdrant_unreachable quand fetch failed', async () => {
 		mockQuery.mockRejectedValue(new Error('fetch failed ECONNREFUSED 127.0.0.1:6333'));
 
 		const result = await hcs({ query: 'test connection error', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('qdrant_connection_error');
-		expect(response.message).toContain('Qdrant');
+		expect(response.status).toBe('qdrant_unreachable');
 		expect(response.hint).toBeDefined();
 		expect(response.error).toContain('fetch failed');
 	});
 
-	it('retourne qdrant_connection_error quand ECONNREFUSED', async () => {
+	it('retourne qdrant_unreachable quand ECONNREFUSED', async () => {
 		mockQuery.mockRejectedValue(new Error('connect ECONNREFUSED ::1:6333'));
 
 		const result = await hcs({ query: 'test econnrefused', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('qdrant_connection_error');
+		expect(response.status).toBe('qdrant_unreachable');
 	});
 
-	it('retourne auth_error quand API key invalide', async () => {
+	it('retourne auth_failed quand API key invalide', async () => {
 		mockEmbeddingsCreate.mockRejectedValue(new Error('Invalid API key provided'));
 
 		const result = await hcs({ query: 'test auth error', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('auth_error');
-		expect(response.message).toContain('authentification');
+		expect(response.status).toBe('auth_failed');
 		expect(response.hint).toBeDefined();
 	});
 
-	it('retourne auth_error quand Unauthorized', async () => {
+	it('retourne auth_failed quand Unauthorized', async () => {
 		mockEmbeddingsCreate.mockRejectedValue(new Error('Unauthorized: token expired'));
 
 		const result = await hcs({ query: 'test unauthorized', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('auth_error');
+		expect(response.status).toBe('auth_failed');
 	});
 
-	it('retourne error générique pour toute autre erreur', async () => {
-		mockQuery.mockRejectedValue(new Error('Unexpected server error: timeout'));
+	it('retourne unknown pour toute autre erreur', async () => {
+		mockQuery.mockRejectedValue(new Error('Something completely unexpected'));
 
 		const result = await hcs({ query: 'test generic error', workspace: '/test' });
 
 		expect(result.isError).toBe(true);
 		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('error');
-		expect(response.message).toContain('recherche');
-		expect(response.error).toContain('Unexpected server error');
+		expect(response.status).toBe('unknown');
+		expect(response.error).toContain('Something completely unexpected');
 	});
 });

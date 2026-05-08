@@ -403,42 +403,42 @@ describe('search-codebase.tool', () => {
 			delete process.env.EMBEDDING_API_KEY;
 		});
 
-		test('returns qdrant_connection_error on fetch failed', async () => {
+		test('returns qdrant_unreachable on fetch failed', async () => {
 			mockEmbeddingCreate.mockRejectedValue(new Error('fetch failed: connection refused'));
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_connection_error');
-			expect(parsed.hint).toContain('Qdrant');
+			expect(parsed.status).toBe('qdrant_unreachable');
+			expect(parsed.hint).toBeDefined();
 		});
 
-		test('returns qdrant_connection_error on ECONNREFUSED', async () => {
+		test('returns qdrant_unreachable on ECONNREFUSED', async () => {
 			mockEmbeddingCreate.mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:6333'));
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_connection_error');
+			expect(parsed.status).toBe('qdrant_unreachable');
 		});
 
-		test('returns auth_error on API key error', async () => {
+		test('returns auth_failed on API key error', async () => {
 			mockEmbeddingCreate.mockRejectedValue(new Error('API key not valid'));
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('auth_error');
-			expect(parsed.hint).toContain('API');
+			expect(parsed.status).toBe('auth_failed');
+			expect(parsed.hint).toBeDefined();
 		});
 
-		test('returns auth_error on Unauthorized', async () => {
+		test('returns auth_failed on Unauthorized', async () => {
 			mockEmbeddingCreate.mockRejectedValue(new Error('Unauthorized: 401'));
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('auth_error');
+			expect(parsed.status).toBe('auth_failed');
 		});
 
 		test('returns generic error on unexpected exception', async () => {
@@ -447,7 +447,7 @@ describe('search-codebase.tool', () => {
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('error');
+			expect(parsed.status).toBe('unknown');
 			expect(parsed.error).toContain('Unexpected internal error');
 		});
 
@@ -457,7 +457,7 @@ describe('search-codebase.tool', () => {
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('error');
+			expect(parsed.status).toBe('unknown');
 			expect(parsed.error).toBe('string error');
 		});
 	});
