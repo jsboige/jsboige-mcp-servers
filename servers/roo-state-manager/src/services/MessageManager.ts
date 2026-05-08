@@ -157,6 +157,9 @@ export class MessageManager {
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
 
+  /** Auto-archive daemon timer (#809 — prevents inbox unbounded growth) */
+  private autoArchiveTimer: NodeJS.Timeout | null = null;
+
   /**
    * Constructeur du MessageManager
    *
@@ -1295,6 +1298,58 @@ export class MessageManager {
 
     logger.info(`Auto-archived ${archived}/${toArchive.length} messages`);
     return archived;
+  }
+
+  /**
+   * Start a background daemon that periodically archives old read messages.
+   *
+   * #809: prevents inbox/ from growing unbounded. Volume grew x100 between
+   * Jan 2026 (~30 msgs/month) and May 2026 (~140 msgs/day), causing
+   * `roosync_messages` cold reads to take 2m+ on 4000-file inboxes.
+   *
+   * Strategy:
+   * - Initial run 30s after boot (let server complete handshake first)
+   * - Periodic re-run every `intervalHours` (default 6h)
+   * - Fire-and-forget: errors log but don't crash the server
+   * - Idempotent: noop if daemon already running
+   *
+   * @param maxAgeDays Archive read messages older than N days (default 30)
+   * @param intervalHours Re-run interval in hours (default 6)
+   */
+  startAutoArchiveDaemon(maxAgeDays: number = 30, intervalHours: number = 6): void {
+    if (this.autoArchiveTimer !== null) {
+      logger.warn('AutoArchive daemon already running, ignoring duplicate start');
+      return;
+    }
+
+    const runOnce = async () => {
+      try {
+        const archived = await this.autoArchiveOld(maxAgeDays, true);
+        if (archived > 0) {
+          logger.info(`[AutoArchive] Archived ${archived} messages older than ${maxAgeDays}d`);
+        }
+      } catch (err) {
+        logger.error('[AutoArchive] Run failed', err as Record<string, any>);
+      }
+    };
+
+    // Initial run after 30s — let server boot handshake complete first
+    setTimeout(() => { void runOnce(); }, 30_000);
+
+    // Then every intervalHours
+    this.autoArchiveTimer = setInterval(() => { void runOnce(); }, intervalHours * 3600 * 1000);
+    logger.info(`[AutoArchive] Daemon started (maxAge=${maxAgeDays}d, interval=${intervalHours}h)`);
+  }
+
+  /**
+   * Stop the auto-archive daemon. Used in tests and graceful shutdown.
+   */
+  stopAutoArchiveDaemon(): void {
+    if (this.autoArchiveTimer !== null) {
+      clearInterval(this.autoArchiveTimer);
+      this.autoArchiveTimer = null;
+      logger.info('[AutoArchive] Daemon stopped');
+    }
   }
 
   async getInboxStats(

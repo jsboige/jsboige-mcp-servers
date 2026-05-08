@@ -276,6 +276,18 @@ class RooStateManagerServer {
 
             const notificationService = new NotificationService();
             const messageManager = getMessageManager();
+
+            // #809: Start auto-archive daemon to prevent inbox unbounded growth.
+            // Volume grew x100 between Jan and May 2026 (~30/month → ~140/day),
+            // causing 2m+ cold scans on 4000-file inboxes. Daemon archives read
+            // messages older than maxAgeDays every intervalHours.
+            const autoArchiveEnabled = process.env.MESSAGE_AUTO_ARCHIVE_ENABLED !== 'false';
+            if (autoArchiveEnabled) {
+                const maxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_MAX_AGE_DAYS || '30', 10);
+                const intervalHours = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_INTERVAL_HOURS || '6', 10);
+                messageManager.startAutoArchiveDaemon(maxAgeDays, intervalHours);
+            }
+
             const minPriority = process.env.NOTIFICATIONS_MIN_PRIORITY || 'MEDIUM';
             notificationService.loadFilterRules([
                 {
