@@ -185,10 +185,10 @@ export async function handleRooSyncSearch(
                 effectiveWorkspace = undefined;
             }
 
-            // Déléguer au handler sémantique existant.
-            // #1496: strict_mode=true so semantic errors are propagated to the caller
-            // instead of silently falling back to text search (which masked the
-            // #1407 and #1451 embedding backend regressions for days).
+            // #249: Try semantic with retry (handled inside search-semantic.tool.ts),
+            // then auto-fallback to text search if semantic fails, WITH a warning flag.
+            // This replaces #1496 strict_mode=true which blocked fallback entirely.
+            // Agents now get results even when semantic is down, but are warned.
             const semanticArgs: SearchTasksByContentArgs = {
                 search_query: args.search_query,
                 conversation_id: args.conversation_id,
@@ -209,13 +209,41 @@ export async function handleRooSyncSearch(
                 // #636 Phase 3: Convenience filter
                 exclude_tool_results: args.exclude_tool_results,
             };
-            return await searchTasksByContentTool.handler(
+            const semanticResult = await searchTasksByContentTool.handler(
                 semanticArgs,
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler,
                 diagnoseHandler
             );
+
+            // #249: If semantic succeeded, return as-is
+            if (!semanticResult.isError) {
+                return semanticResult;
+            }
+
+            // #249: Semantic failed after retry — auto-fallback to text search with warning
+            console.warn(`[WARN] #249: Semantic search failed, auto-falling back to text search`);
+            await ensureCacheFreshCallback({ workspace: effectiveWorkspace });
+            const fallbackArgs: SearchFallbackArgs = {
+                query: args.search_query,
+                workspace: effectiveWorkspace,
+                source: args.source
+            };
+            const textResult = await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
+
+            // Inject semantic degraded warning into text results
+            try {
+                const parsed = JSON.parse((textResult.content?.[0] as any)?.text || '{}');
+                parsed.semantic_degraded = true;
+                parsed.semantic_error = 'Semantic search failed after retry — results are from text search only. Run roosync_search(action: "diagnose") to check backend state.';
+                return {
+                    content: [{ type: 'text', text: JSON.stringify(parsed, null, 2) }]
+                };
+            } catch {
+                // If JSON parse fails, just prepend warning
+                return textResult;
+            }
         }
 
         case 'text': {

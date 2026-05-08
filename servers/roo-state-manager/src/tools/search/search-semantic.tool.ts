@@ -18,6 +18,27 @@ import { classifySearchError, formatClassifiedError } from './search-error-class
 let lastEmbeddingFailureTime = 0;
 const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
 
+// #249: Retry configuration for transient failures
+const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '1');
+const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
+
+/**
+ * #249: Retry wrapper for transient network/timeout errors.
+ * Retries on 5xx, abort, timeout. Does NOT retry on 4xx or validation errors.
+ */
+async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS): Promise<T> {
+    try {
+        return await fn();
+    } catch (error) {
+        if (retries <= 0) throw error;
+        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error);
+        if (!isRetryable) throw error;
+        console.warn(`[WARN] #249: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        return withRetry(fn, retries - 1, backoffMs);
+    }
+}
+
 /**
  * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
  * Only activates on real server errors, not generic exceptions.
@@ -414,11 +435,11 @@ export const searchTasksByContentTool = {
             const qdrant = getQdrantClient();
             const openai = getOpenAIClient();
 
-            // Créer l'embedding de la requête
-            const embedding = await openai.embeddings.create({
+            // #249: Wrap embedding call with retry for transient failures
+            const embedding = await withRetry(() => openai.embeddings.create({
                 model: getEmbeddingModel(),
                 input: search_query
-            });
+            }));
 
             const queryVector = embedding.data[0].embedding;
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
@@ -538,7 +559,8 @@ export const searchTasksByContentTool = {
             // #883: Global search is now allowed (workspace auto-defaults in roosync_search)
 
             // #851: Optimized search params for 10M+ vector collection
-            const searchResults = await qdrant.search(collectionName, {
+            // #249: Wrap Qdrant search with retry for transient failures
+            const searchResults = await withRetry(() => qdrant.search(collectionName, {
                 vector: queryVector,
                 limit: max_results || 10,
                 filter: filter,
@@ -551,7 +573,7 @@ export const searchTasksByContentTool = {
                     include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error']
                 },
                 timeout: searchTimeoutSec,
-            });
+            }));
 
 
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
