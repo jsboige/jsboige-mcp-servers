@@ -191,7 +191,7 @@ describe('export_data (integration)', () => {
       // Vérifier que la propriété format est définie
       expect(exportDataTool.inputSchema.properties).toHaveProperty('format');
       expect(exportDataTool.inputSchema.properties.format.type).toBe('string');
-      expect(exportDataTool.inputSchema.properties.format.enum).toEqual(['xml', 'json', 'csv']);
+      expect(exportDataTool.inputSchema.properties.format.enum).toEqual(['xml', 'json', 'csv', 'markdown', 'debug']);
     });
 
     test('should include taskId property in schema', async () => {

@@ -195,26 +195,31 @@ export const readVscodeLogsDefinition = {
 // ============================================================
 export const exportDataDefinition = {
     name: 'export_data',
-    description: `Outil consolidé pour exporter des données au format XML, JSON ou CSV.\n\nCibles supportées:\n- task: Export d'une tâche individuelle (XML uniquement)\n- conversation: Export d'une conversation complète (tous formats)\n- project: Export d'un projet entier (XML uniquement)\n\nFormats supportés:\n- xml: Format XML structuré\n- json: Format JSON avec variantes light/full\n- csv: Format CSV avec variantes conversations/messages/tools\n\nCONS-10: Remplace export_tasks_xml, export_conversation_xml, export_project_xml, export_conversation_json, export_conversation_csv`,
+    description: `Outil consolidé pour exporter des données au format XML, JSON, CSV, Markdown, ou diagnostiquer le parsing.\n\nCibles supportées:\n- task: Export d'une tâche individuelle (XML, debug parsing)\n- conversation: Export d'une conversation complète (tous formats, incluant markdown tree)\n- project: Export d'un projet entier (XML uniquement)\n\nFormats supportés:\n- xml: Format XML structuré\n- json: Format JSON avec variantes light/full\n- csv: Format CSV avec variantes conversations/messages/tools\n- markdown: Export arbre de tâches (ascii-tree/markdown/hierarchical/json)\n- debug: Diagnostic parsing d'une tâche\n\nCONS-10: Remplace export_tasks_xml, export_conversation_xml, export_project_xml, export_conversation_json, export_conversation_csv\nCONS-14 (#1841 Cluster H): Absorbe task_export (markdown + debug)`,
     inputSchema: {
         type: 'object',
         properties: {
             target: { type: 'string', enum: ['task', 'conversation', 'project'], description: "Cible de l'export: task, conversation, ou project" },
-            format: { type: 'string', enum: ['xml', 'json', 'csv'], description: 'Format de sortie: xml, json, ou csv' },
-            taskId: { type: 'string', description: 'ID de la tâche (requis pour target=task, ou conversation avec json/csv)' },
-            conversationId: { type: 'string', description: 'ID de la conversation racine (requis pour target=conversation avec xml)' },
+            format: { type: 'string', enum: ['xml', 'json', 'csv', 'markdown', 'debug'], description: 'Format de sortie: xml, json, csv, markdown (arbre tâches), ou debug (diagnostic parsing)' },
+            taskId: { type: 'string', description: 'ID de la tâche (requis pour target=task, ou conversation avec json/csv/debug)' },
+            conversationId: { type: 'string', description: 'ID de la conversation racine (requis pour target=conversation avec xml/markdown)' },
             projectPath: { type: 'string', description: 'Chemin du projet (requis pour target=project)' },
             filePath: { type: 'string', description: 'Chemin de sortie pour le fichier. Si non fourni, retourne le contenu.' },
             includeContent: { type: 'boolean', description: 'Inclure le contenu complet des messages (XML, défaut: false)' },
             prettyPrint: { type: 'boolean', description: 'Indenter pour lisibilité (XML, défaut: true)' },
-            maxDepth: { type: 'integer', description: "Profondeur max de l'arbre de tâches (XML conversation)" },
+            maxDepth: { type: 'integer', description: "Profondeur max de l'arbre de tâches (XML/markdown)" },
             startDate: { type: 'string', description: 'Date de début ISO 8601 pour filtrer (XML project)' },
             endDate: { type: 'string', description: 'Date de fin ISO 8601 pour filtrer (XML project)' },
             jsonVariant: { type: 'string', enum: ['light', 'full'], description: 'Variante JSON: light (squelette) ou full (détail complet)' },
             csvVariant: { type: 'string', enum: ['conversations', 'messages', 'tools'], description: 'Variante CSV: conversations, messages, ou tools' },
             truncationChars: { type: 'number', description: 'Max caractères avant troncature (0 = pas de troncature)' },
             startIndex: { type: 'number', description: 'Index de début (1-based) pour plage de messages' },
-            endIndex: { type: 'number', description: 'Index de fin (1-based) pour plage de messages' }
+            endIndex: { type: 'number', description: 'Index de fin (1-based) pour plage de messages' },
+            outputFormat: { type: 'string', enum: ['ascii-tree', 'markdown', 'hierarchical', 'json'], description: '[markdown] Sous-format: ascii-tree (défaut), markdown, hierarchical, ou json' },
+            includeSiblings: { type: 'boolean', description: '[markdown] Inclure les tâches sœurs (défaut: true)' },
+            currentTaskId: { type: 'string', description: '[markdown] Marquer cette tâche comme active dans l\'arbre' },
+            truncateInstruction: { type: 'number', description: '[markdown] Longueur max instruction affichée (défaut: 80)' },
+            showMetadata: { type: 'boolean', description: '[markdown] Afficher métadonnées détaillées (défaut: false)' }
         },
         required: ['target', 'format']
     }
@@ -632,7 +637,7 @@ export const roosyncDashboardDefinition = dashboardToolMetadata;
 export const allToolDefinitions = [
     // CONS-X (#457): conversation_browser
     conversationBrowserDefinition,
-    taskExportDefinition,
+    // [REMOVED #1841 Cluster H] taskExportDefinition — fused into export_data(format: "markdown"/"debug"), redirect in registry.ts
     // CONS-11: Search/Indexing
     roosyncSearchDefinition,
     roosyncIndexingDefinition,

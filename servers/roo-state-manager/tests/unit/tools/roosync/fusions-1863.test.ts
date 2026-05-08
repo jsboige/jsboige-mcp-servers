@@ -299,16 +299,15 @@ describe('#1935 Fusion E: get_status → inventory(type: "status")', () => {
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 22 tools (3 deprecated #1863 + 6 low-usage #1841 + 1 Cluster D fusion + 1 Cluster E fusion removed)', () => {
+  it('allToolDefinitions should contain 18 tools (Cluster H fusion removed task_export)', () => {
     // Before: 32 tools → #1922 Pass 4 removed 3 deprecated → 29
-    // #1841 removed 6 low-usage (get_mcp_best_practices, export_config, view_task_details,
-    //   get_raw_conversation, refresh_dashboard, update_dashboard) → 23 (wait: 29-6=23)
-    // Actually #297 consolidated to 24 active in ListTools (less low-usage). allToolDefinitions baseline = 24.
-    // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose(action: "analyze"): 24 → 23
-    // Cluster E (#1935) fused get_status → inventory(type: "status"): 23 → 22
+    // #1841 removed 6 low-usage → 23. allToolDefinitions baseline = 24.
+    // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose: 24 → 23
+    // Cluster E (#1935) fused get_status → inventory: 23 → 22
     // Cluster G (#1841) fused send+read+manage+attachments → roosync_messages: 22 → 19
+    // Cluster H (#1841) fused task_export → export_data: 19 → 18
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(19);
+    expect(allToolDefinitions.length).toBe(18);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {

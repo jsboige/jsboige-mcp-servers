@@ -77,7 +77,6 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_storage_management: ['sharedPath'],
 	conversation_browser: ['sharedPath'],
 	export_data: ['sharedPath'],
-	task_export: ['sharedPath'],
 	maintenance: ['sharedPath'],
 	storage_info: ['sharedPath'],
 	// Qdrant-dependent tools
@@ -252,12 +251,41 @@ export function registerCallToolHandler(
                 );
                 break;
             }
+            // #1841 Cluster H: task_export deprecated — redirects to export_data(format: "markdown"/"debug")
             case 'task_export': {
-                const m = await import('./task/export.js');
-                result = await m.handleTaskExport(
-                    args as any,
+                const taskArgs = args as any;
+                // Map task_export action → export_data target/format
+                const mappedArgs: any = {
+                    ...taskArgs,
+                    target: taskArgs.action === 'debug' ? 'task' : 'conversation',
+                    format: taskArgs.action || 'markdown',
+                    // Map snake_case params to camelCase
+                    conversationId: taskArgs.conversation_id,
+                    maxDepth: taskArgs.max_depth,
+                    includeSiblings: taskArgs.include_siblings,
+                    currentTaskId: taskArgs.current_task_id,
+                    truncateInstruction: taskArgs.truncate_instruction,
+                    showMetadata: taskArgs.show_metadata,
+                    outputFormat: taskArgs.output_format,
+                    taskId: taskArgs.task_id,
+                };
+                delete mappedArgs.action;
+                delete mappedArgs.conversation_id;
+                delete mappedArgs.max_depth;
+                delete mappedArgs.include_siblings;
+                delete mappedArgs.current_task_id;
+                delete mappedArgs.truncate_instruction;
+                delete mappedArgs.show_metadata;
+                delete mappedArgs.output_format;
+                delete mappedArgs.task_id;
+
+                const m = await import('./export/export-data.js');
+                result = await m.handleExportData(
+                    mappedArgs,
                     cache,
-                    async () => { await ensureSkeletonCacheIsFresh(); }
+                    state.xmlExporterService,
+                    async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); },
+                    async (id: string) => cache.get(id) || null
                 );
                 break;
             }
