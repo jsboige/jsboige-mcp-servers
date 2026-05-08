@@ -8,6 +8,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
 import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
@@ -421,47 +422,18 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		};
 
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-
-		// Détecter les erreurs spécifiques
-		if (errorMessage.includes('fetch failed') || errorMessage.includes('ECONNREFUSED')) {
-			return {
-				isError: true,
-				content: [{
-					type: 'text',
-					text: JSON.stringify({
-						status: 'qdrant_connection_error',
-						message: 'Impossible de se connecter à Qdrant.',
-						hint: 'Vérifiez que Qdrant est accessible et que les variables QDRANT_URL et QDRANT_API_KEY sont configurées.',
-						error: errorMessage
-					}, null, 2)
-				}]
-			};
-		}
-
-		if (errorMessage.includes('API key') || errorMessage.includes('Unauthorized')) {
-			return {
-				isError: true,
-				content: [{
-					type: 'text',
-					text: JSON.stringify({
-						status: 'auth_error',
-						message: 'Erreur d\'authentification avec l\'API d\'embedding ou Qdrant.',
-						hint: 'Vérifiez vos clés API (OPENAI_API_KEY, QDRANT_API_KEY).',
-						error: errorMessage
-					}, null, 2)
-				}]
-			};
-		}
+		// #2063 P1: Classified error reporting for actionable diagnostics
+		const classified = await classifySearchError(error, 'codebase_search');
 
 		return {
 			isError: true,
 			content: [{
 				type: 'text',
 				text: JSON.stringify({
-					status: 'error',
-					message: 'Erreur lors de la recherche dans le code.',
-					error: errorMessage
+					status: classified.mode,
+					message: classified.message,
+					hint: classified.hint,
+					error: classified.originalError
 				}, null, 2)
 			}]
 		};
