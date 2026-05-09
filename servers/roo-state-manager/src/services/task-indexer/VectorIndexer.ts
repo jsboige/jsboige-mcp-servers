@@ -28,7 +28,10 @@ let lastFailureTime = 0;
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
 const EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 jours cache pour embeddings (FIX: augmenté de 24h)
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const MAX_OPERATIONS_PER_WINDOW = 200; // Max 200 operations/minute (FIX #1123: augmenté de 100 pour éviter storm rate-limiting)
+// Embedding ops per minute per instance. Default 30 sized for fleet (12 MCP instances × 30 = 360/min ≈ 6 emb/s),
+// matching the qwen3-4b-awq embedder capacity on po-2026 (~5-10 req/s). Override via env to accelerate
+// once the cache is warm (steady-state sees high cache hits and the embedder is barely touched).
+const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '30', 10);
 let operationTimestamps: number[] = [];
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
