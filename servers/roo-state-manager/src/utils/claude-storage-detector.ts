@@ -276,6 +276,21 @@ export class ClaudeStorageDetector {
                         timestamp,
                         isTruncated,
                     });
+
+                    // #253: Extract tool_use blocks from assistant message content
+                    if (entry.type === 'assistant' && Array.isArray(entry.message.content)) {
+                        for (const block of entry.message.content) {
+                            if (block.type === 'tool_use' && block.toolUse) {
+                                sequence.push({
+                                    type: 'tool',
+                                    name: block.toolUse.name,
+                                    status: 'success',
+                                    parameters: block.toolUse.input,
+                                    timestamp,
+                                });
+                            }
+                        }
+                    }
                 }
             }
             // Résultats de commande
