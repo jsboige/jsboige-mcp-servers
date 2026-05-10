@@ -155,7 +155,7 @@ describe('get-status (Option B)', () => {
       expect(result.flags).toHaveLength(0);
     });
 
-    test('returns CRITICAL when machines offline', async () => {
+    test('returns CRITICAL when machines unknown', async () => {
       mockGetHeartbeatService.mockReturnValue({
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
@@ -264,8 +264,8 @@ describe('get-status (Option B)', () => {
   });
 
   describe('#1365 orphan test entry filtering', () => {
-    test('excludes orphan test machines from offline count', async () => {
-      // Simulates real scenario: 6 real machines online + 3 test artifacts offline
+    test('excludes orphan test machines from unknown count', async () => {
+      // Simulates real scenario: real machines online + 3 test artifacts unknown
       mockGetHeartbeatService.mockReturnValue({
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
@@ -291,7 +291,7 @@ describe('get-status (Option B)', () => {
         machines: {
           'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
           'myia-po-2023': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
-          'test-machine': { status: 'offline', lastSync: '2025-01-01', pendingDecisions: 0, diffsCount: 0 }
+          'test-machine': { status: 'unknown', lastSync: '2025-01-01', pendingDecisions: 0, diffsCount: 0 }
         }
       });
 
@@ -318,7 +318,7 @@ describe('get-status (Option B)', () => {
       expect(result.flags).not.toContain('HEARTBEAT_STALE:test-machine');
     });
 
-    test('still detects real offline machines correctly', async () => {
+    test('still detects real unknown machines correctly', async () => {
       mockGetHeartbeatService.mockReturnValue({
         checkHeartbeats: vi.fn(),
         getState: vi.fn(() => ({
@@ -330,7 +330,7 @@ describe('get-status (Option B)', () => {
 
       const result = await roosyncGetStatus({});
 
-      // Should be CRITICAL from real offline machine only
+      // Should be CRITICAL from real unknown machine only
       expect(result.status).toBe('CRITICAL');
       expect(result.machines.unknown).toBe(1);  // Only myia-po-2025
       expect(result.flags).toContain('UNKNOWN:myia-po-2025');

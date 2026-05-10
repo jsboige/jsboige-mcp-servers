@@ -122,7 +122,7 @@ describe('roosync_inventory (integration)', () => {
       const shape = HeartbeatStatisticsSchema.shape;
       expect(shape.totalMachines).toBeDefined();
       expect(shape.onlineCount).toBeDefined();
-      expect(shape.offlineCount).toBeDefined();
+      expect(shape.offlineCount).toBeDefined(); // Kept for backward compat — ADR 008 maps to unknownCount
       expect(shape.warningCount).toBeDefined();
       expect(shape.lastHeartbeatCheck).toBeDefined();
     });
