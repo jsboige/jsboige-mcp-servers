@@ -214,6 +214,8 @@ export const messagesToolMetadata = {
 - cleanup : nettoyage automatique, stats : statistiques inbox
 - attachments_list, attachments_get, attachments_delete : gestion des pièces jointes
 
+IMPORTANT: For agent-parseable output, use format="json" on inbox/stats actions. Default is human-readable markdown with emojis.
+
 Remplace : roosync_send + roosync_read + roosync_manage + roosync_attachments (4→1, #1841 Cluster G)`,
   inputSchema: {
     type: 'object' as const,
