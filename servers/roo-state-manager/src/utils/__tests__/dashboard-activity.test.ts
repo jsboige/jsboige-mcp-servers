@@ -202,5 +202,62 @@ describe('dashboard-activity', () => {
 			expect(result.overrides).toHaveLength(0);
 			expect(result.onlineMachines).toEqual(['myia-ai-01']);
 		});
+
+		it('should ADD machines from dashboard that are not in any heartbeat list (#1953 Phase 4)', () => {
+			// ADR 008 in-memory model: each MCP server only sees its own tool calls.
+			// Other machines are discovered via shared dashboard messages.
+			const heartbeatState = {
+				onlineMachines: ['myia-po-2026'],
+				unknownMachines: [],
+				idleMachines: [],
+			};
+			const dashboardContent = [
+				'### [2026-05-03T19:50:00Z] myia-po-2023|roo-extensions',
+				'Active machine not in heartbeat map',
+				'### [2026-05-03T19:55:00Z] myia-web1|roo-extensions',
+				'Another active machine',
+			].join('\n');
+
+			const result = crossCheckWithDashboard(heartbeatState, dashboardContent);
+			expect(result.onlineMachines).toContain('myia-po-2026'); // self stays
+			expect(result.onlineMachines).toContain('myia-po-2023'); // discovered
+			expect(result.onlineMachines).toContain('myia-web1'); // discovered
+			expect(result.overrides).toContain('myia-po-2023');
+			expect(result.overrides).toContain('myia-web1');
+		});
+
+		it('should NOT add dashboard machines with stale activity', () => {
+			const heartbeatState = {
+				onlineMachines: ['myia-po-2026'],
+				unknownMachines: [],
+				idleMachines: [],
+			};
+			const dashboardContent = '### [2026-05-03T08:00:00Z] myia-po-2023|roo-extensions\nOld message';
+
+			const result = crossCheckWithDashboard(heartbeatState, dashboardContent);
+			expect(result.onlineMachines).toEqual(['myia-po-2026']);
+			expect(result.overrides).toHaveLength(0);
+		});
+
+		it('should handle mixed scenario: override existing + discover new', () => {
+			const heartbeatState = {
+				onlineMachines: ['myia-po-2026'],
+				unknownMachines: ['myia-po-2024'],
+				idleMachines: [],
+			};
+			const dashboardContent = [
+				'### [2026-05-03T19:50:00Z] myia-po-2023|roo-extensions',
+				'Discovered machine',
+				'### [2026-05-03T19:55:00Z] myia-po-2024|roo-extensions',
+				'Override UNKNOWN',
+			].join('\n');
+
+			const result = crossCheckWithDashboard(heartbeatState, dashboardContent);
+			expect(result.onlineMachines).toContain('myia-po-2026'); // original
+			expect(result.onlineMachines).toContain('myia-po-2023'); // discovered
+			expect(result.onlineMachines).toContain('myia-po-2024'); // overridden
+			expect(result.unknownMachines).toHaveLength(0);
+			expect(result.overrides).toHaveLength(2);
+		});
 	});
 });
