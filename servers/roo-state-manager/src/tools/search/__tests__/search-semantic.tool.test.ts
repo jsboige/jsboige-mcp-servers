@@ -1227,6 +1227,8 @@ describe('helper functions (indirect via handler)', () => {
 				response: { status: 502, statusText: 'Bad Gateway', data: {} }
 			});
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+			// #249: Mock enough failures to exhaust withRetry (1 initial + 1 retry)
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
 			const result = await searchTasksByContentTool.handler({
 				search_query: 'test circuit breaker 502',
@@ -1247,6 +1249,8 @@ describe('helper functions (indirect via handler)', () => {
 				response: { status: 503, statusText: 'Service Unavailable', data: {} }
 			});
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+			// #249: Mock enough failures to exhaust withRetry (1 initial + 1 retry)
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
 			const result = await searchTasksByContentTool.handler({
 				search_query: 'test circuit breaker 503',
@@ -1266,6 +1270,8 @@ describe('helper functions (indirect via handler)', () => {
 			const mockError = Object.assign(new Error('Gateway Timeout'), {
 				response: { status: 504, statusText: 'Gateway Timeout', data: {} }
 			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+			// #249: Mock enough failures to exhaust withRetry (1 initial + 1 retry)
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
 			const result = await searchTasksByContentTool.handler({
@@ -1322,6 +1328,8 @@ describe('helper functions (indirect via handler)', () => {
 				response: { status: 503, statusText: 'Service Unavailable', data: {} }
 			});
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+			// #249: Mock enough failures to exhaust withRetry (1 initial + 1 retry)
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
 			// First call - triggers circuit breaker
 			await searchTasksByContentTool.handler({
@@ -1336,7 +1344,7 @@ describe('helper functions (indirect via handler)', () => {
 			}, makeCache(), mockEnsureCache, defaultFallback);
 
 			expect(result.isError).toBe(false);
-			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(1);
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(2);
 		});
 
 		test('resets after TTL expires', async () => {
@@ -1348,29 +1356,37 @@ describe('helper functions (indirect via handler)', () => {
 			const mockError = Object.assign(new Error('Service Unavailable'), {
 				response: { status: 503, statusText: 'Service Unavailable', data: {} }
 			});
+			// #249: Mock enough failures to exhaust withRetry (1 initial + 1 retry)
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
-			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
-				data: [{ embedding: new Array(1536).fill(0.1) }]
-			});
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
-			// Trigger circuit breaker
-			await searchTasksByContentTool.handler({
+			// Trigger circuit breaker - withRetry setTimeout backoff needs fake timer advance
+			const handlerPromise = searchTasksByContentTool.handler({
 				search_query: 'trigger',
-				workspace: 'd:	est'
+				workspace: 'd:	test'
 			}, makeCache(), mockEnsureCache, defaultFallback);
+			// Advance past withRetry backoff (2000ms) so retry completes
+			await vi.advanceTimersByTimeAsync(3000);
+			await handlerPromise;
 
 			// Advance past TTL (default 300000ms)
 			vi.advanceTimersByTime(310000);
 
+			// Mock success for post-TTL call
+			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+			mockQdrantClient.search.mockResolvedValueOnce([]);
+
 			// Should attempt API call again
 			const result = await searchTasksByContentTool.handler({
 				search_query: 'retry after TTL',
-				workspace: 'd:	est'
+				workspace: 'd:	test'
 			}, makeCache(), mockEnsureCache, defaultFallback);
 
-			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(2);
+			// 2 failures (exhausted retry) + 1 success (post-TTL)
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledTimes(3);
 		});
-
 		test('logs warning when circuit breaker active', async () => {
 			vi.useRealTimers();
 			vi.resetModules();
@@ -1383,6 +1399,8 @@ describe('helper functions (indirect via handler)', () => {
 			});
 			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 
+			// #249: Mock enough failures to exhaust withRetry (1 initial + 1 retry)
+			mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
 			// Trigger circuit breaker
 			await searchTasksByContentTool.handler({
 				search_query: 'trigger',

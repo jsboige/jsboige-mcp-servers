@@ -202,11 +202,12 @@ describe('roosync_search - CONS-11', () => {
             expect(result.isError).toBeFalsy();
         });
 
-        it('#1496: propagates semantic error instead of silent fallback (strict_mode)', async () => {
+        it('#249: auto-fallback to text search when semantic fails, with degraded warning', async () => {
             // Before #1496: semantic errors caused a silent fallback to text search,
             // which masked embedding backend regressions for days (cf #1407, #1451).
-            // After #1496: `roosync_search(action: "semantic")` must return isError:true
-            // with a diagnostic hint so the caller knows the semantic path failed.
+            // #1496 added strict_mode=true which blocked fallback entirely.
+            // #249: Now retries once, then auto-falls back to text WITH a warning flag
+            // so agents still get results but know semantic is degraded.
             mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('OpenAI Error'));
 
             const result = await handleRooSyncSearch(
@@ -216,13 +217,13 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(fallbackHandler).not.toHaveBeenCalled();
-            expect(result.isError).toBe(true);
-            const errorText = (result.content[0] as any).text;
-            expect(errorText).toContain('Semantic search failed');
-            expect(errorText).toContain('OpenAI Error');
-            expect(errorText).toContain('roosync_search(action: "diagnose")');
-            expect(errorText).toContain('roosync_search(action: "text")');
+            // Should NOT error — auto-fallback provides text results
+            expect(result.isError).toBeFalsy();
+            const resultText = (result.content[0] as any).text;
+            const parsed = JSON.parse(resultText);
+            // Must include semantic_degraded flag so agents know results are from text fallback
+            expect(parsed.semantic_degraded).toBe(true);
+            expect(parsed.semantic_error).toContain('Semantic search failed');
         });
     });
 
