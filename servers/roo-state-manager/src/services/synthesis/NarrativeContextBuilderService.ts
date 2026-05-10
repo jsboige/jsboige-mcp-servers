@@ -1505,23 +1505,21 @@ export class NarrativeContextBuilderService {
                 return null;
             }
 
-            // Vérifier si skeleton a les métadonnées de synthèse (extension selon synthesis_models.md)
-            const metadata = (skeleton as any).synthesisMetadata;
-            if (!metadata) {
-                return await this.generateOnDemandSummary(skeleton);
+            // Synthesis metadata lives on skeleton.metadata.synthesis (SynthesisMetadata type)
+            const synthesis = skeleton.metadata.synthesis;
+            if (synthesis?.status === 'completed') {
+                // 1. Priorité au lot condensé
+                if (synthesis.condensedBatchPath) {
+                    return await this.readCondensedBatchSummary(synthesis.condensedBatchPath);
+                }
+
+                // 2. Synthèse atomique
+                if (synthesis.analysisFilePath) {
+                    return await this.readAtomicSynthesis(synthesis.analysisFilePath);
+                }
             }
 
-            // 1. Priorité au lot condensé
-            if (metadata.condensedBatchPath) {
-                return await this.readCondensedBatchSummary(metadata.condensedBatchPath);
-            }
-
-            // 2. Synthèse atomique
-            if (metadata.analysisFilePath) {
-                return await this.readAtomicSynthesis(metadata.analysisFilePath);
-            }
-
-            // 3. Génération à la volée
+            // Fallback: generate on-demand summary
             return await this.generateOnDemandSummary(skeleton);
 
         } catch (error) {
