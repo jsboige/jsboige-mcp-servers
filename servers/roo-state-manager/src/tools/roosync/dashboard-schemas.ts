@@ -213,6 +213,6 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, condense, list, delete, read_archive, read_overview, refresh, update. Team stages supported.',
+  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, condense, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown.',
   inputSchema: zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' })
 };
