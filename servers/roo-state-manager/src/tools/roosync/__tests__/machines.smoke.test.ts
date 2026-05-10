@@ -1,18 +1,17 @@
 /**
  * Smoke test for roosync_machines
  *
- * ADR 008 Phase 2: offline/warning removed, only unknown/idle/all.
+ * ADR 008 Phase 2: HeartbeatService is in-memory only (no disk I/O).
+ * Machines are registered via registerHeartbeat(), status is derived from
+ * elapsed time: ONLINE (<30min), IDLE (30-120min), UNKNOWN (>120min).
  *
  * @module roosync/machines.smoke.test
- * @version 2.0.0 (ADR 008 Phase 2)
+ * @version 3.0.0 (ADR 008 Phase 2 — in-memory model)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { roosyncMachines } from '../machines.js';
-import { RooSyncService } from '../../../services/RooSyncService.js';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { getRooSyncService } from '../../../services/lazy-roosync.js';
 
 vi.unmock('fs');
 vi.unmock('fs/promises');
@@ -21,68 +20,56 @@ vi.unmock('../../../services/RooSyncService.js');
 vi.unmock('../../../services/ConfigService.js');
 
 describe('SMOKE: roosync_machines', () => {
-  const testSharedStatePath = path.join(os.tmpdir(), '.shared-state-test-machines');
-  const testHeartbeatsDir = path.join(testSharedStatePath, 'heartbeats');
   let originalEnv: NodeJS.ProcessEnv;
-
-  function makeHeartbeatData(
-    machineId: string,
-    status: 'online' | 'unknown' | 'idle',
-    minutesAgo: number = 0
-  ): Record<string, any> {
-    const now = Date.now();
-    const lastHeartbeat = new Date(now - minutesAgo * 60 * 1000).toISOString();
-    return {
-      machineId,
-      lastHeartbeat,
-      status,
-      metadata: { firstSeen: lastHeartbeat, lastUpdated: new Date(now).toISOString(), version: '4.0.0' },
-    };
-  }
-
-  function writeHeartbeatFiles(machines: Record<string, any>): void {
-    if (!fs.existsSync(testHeartbeatsDir)) {
-      fs.mkdirSync(testHeartbeatsDir, { recursive: true });
-    }
-    for (const [machineId, data] of Object.entries(machines)) {
-      fs.writeFileSync(path.join(testHeartbeatsDir, `${machineId}.json`), JSON.stringify(data, null, 2));
-    }
-  }
 
   beforeEach(() => {
     originalEnv = { ...process.env };
     process.env.NODE_ENV = 'test';
-    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    process.env.ROOSYNC_SHARED_PATH = '/tmp/.shared-state-test-machines';
     process.env.ROOSYNC_MACHINE_ID = 'smoke-test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'smoke-test-ws';
-    RooSyncService.resetInstance();
-    if (!fs.existsSync(testSharedStatePath)) fs.mkdirSync(testSharedStatePath, { recursive: true });
   });
 
   afterEach(async () => {
+    const { RooSyncService } = await import('../../../services/RooSyncService.js');
     RooSyncService.resetInstance();
     await new Promise(resolve => setTimeout(resolve, 50));
-    if (fs.existsSync(testSharedStatePath)) fs.rmSync(testSharedStatePath, { recursive: true, force: true });
     process.env = originalEnv;
   });
 
-  it('should detect unknown machines after heartbeat timeout (status: unknown)', async () => {
-    const initialMachines = {
-      'test-machine-1': makeHeartbeatData('test-machine-1', 'online'),
-      'test-machine-2': makeHeartbeatData('test-machine-2', 'online'),
-    };
-    writeHeartbeatFiles(initialMachines);
+  /**
+   * Register machines and manipulate their lastHeartbeat to simulate elapsed time.
+   * Status is derived by checkHeartbeats() based on thresholds:
+   *   ONLINE: <30min, IDLE: 30-120min, UNKNOWN: >120min
+   */
+  async function registerMachineWithAge(machineId: string, minutesAgo: number): Promise<void> {
+    const rooSyncService = await getRooSyncService();
+    const heartbeatService = rooSyncService.getHeartbeatService();
+
+    await heartbeatService.registerHeartbeat(machineId);
+    const data = heartbeatService.getHeartbeatData(machineId.toLowerCase());
+    if (data) {
+      data.lastHeartbeat = new Date(Date.now() - minutesAgo * 60 * 1000).toISOString();
+    }
+    await heartbeatService.checkHeartbeats();
+  }
+
+  async function resetService(): Promise<void> {
+    const { RooSyncService } = await import('../../../services/RooSyncService.js');
+    RooSyncService.resetInstance();
+  }
+
+  it('should detect unknown machines after heartbeat timeout (status: unknown)', { timeout: 30000 }, async () => {
+    await registerMachineWithAge('test-machine-1', 5);
+    await registerMachineWithAge('test-machine-2', 5);
 
     const result1 = await roosyncMachines({ status: 'unknown', includeDetails: true });
     expect(result1.success).toBe(true);
     expect(result1.data.unknownMachines).toHaveLength(0);
 
-    const modifiedMachines = {
-      ...initialMachines,
-      'test-machine-1': makeHeartbeatData('test-machine-1', 'unknown', 20),
-    };
-    writeHeartbeatFiles(modifiedMachines);
-    RooSyncService.resetInstance();
+    await resetService();
+    await registerMachineWithAge('test-machine-1', 150);
+    await registerMachineWithAge('test-machine-2', 5);
 
     const result2 = await roosyncMachines({ status: 'unknown', includeDetails: true });
     expect(result2.success).toBe(true);
@@ -91,20 +78,14 @@ describe('SMOKE: roosync_machines', () => {
   });
 
   it('should detect idle machines after threshold change (status: idle)', async () => {
-    const initialMachines = {
-      'test-machine-3': makeHeartbeatData('test-machine-3', 'online'),
-    };
-    writeHeartbeatFiles(initialMachines);
+    await registerMachineWithAge('test-machine-3', 5);
 
     const result1 = await roosyncMachines({ status: 'idle', includeDetails: true });
     expect(result1.success).toBe(true);
     expect(result1.data.idleMachines).toHaveLength(0);
 
-    const modifiedMachines = {
-      'test-machine-3': makeHeartbeatData('test-machine-3', 'idle', 8),
-    };
-    writeHeartbeatFiles(modifiedMachines);
-    RooSyncService.resetInstance();
+    await resetService();
+    await registerMachineWithAge('test-machine-3', 45);
 
     const result2 = await roosyncMachines({ status: 'idle', includeDetails: true });
     expect(result2.success).toBe(true);
@@ -113,23 +94,17 @@ describe('SMOKE: roosync_machines', () => {
   });
 
   it('should return all machines with fresh status (status: all)', async () => {
-    const initialMachines = {
-      'test-machine-4': makeHeartbeatData('test-machine-4', 'online'),
-    };
-    writeHeartbeatFiles(initialMachines);
+    await registerMachineWithAge('test-machine-4', 5);
 
     const result1 = await roosyncMachines({ status: 'all', includeDetails: true });
     expect(result1.success).toBe(true);
     expect(result1.data.unknownMachines).toHaveLength(0);
     expect(result1.data.idleMachines).toHaveLength(0);
 
-    const modifiedMachines = {
-      ...initialMachines,
-      'test-machine-5': makeHeartbeatData('test-machine-5', 'unknown', 12),
-      'test-machine-6': makeHeartbeatData('test-machine-6', 'idle', 7),
-    };
-    writeHeartbeatFiles(modifiedMachines);
-    RooSyncService.resetInstance();
+    await resetService();
+    await registerMachineWithAge('test-machine-4', 5);
+    await registerMachineWithAge('test-machine-5', 150);
+    await registerMachineWithAge('test-machine-6', 45);
 
     const result2 = await roosyncMachines({ status: 'all', includeDetails: true });
     expect(result2.success).toBe(true);
