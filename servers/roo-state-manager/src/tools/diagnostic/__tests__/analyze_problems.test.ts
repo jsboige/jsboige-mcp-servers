@@ -231,4 +231,81 @@ describe('analyze_problems', () => {
 			expect(data.totalDecisions).toBe(0);
 		});
 	});
+
+		// ============================================================
+		// Stale decision cleanup
+		// ============================================================
+
+		describe('stale decision cleanup', () => {
+			const staleContent = [
+				'<!-- DECISION_BLOCK_START -->',
+				'**ID:** `DEC-STALE-1`',
+				'**Statut:** pending',
+				'**Créé:** 2025-12-01',
+				'<!-- DECISION_BLOCK_END -->',
+				'',
+				'<!-- DECISION_BLOCK_START -->',
+				'**ID:** `DEC-FRESH`',
+				'**Statut:** pending',
+				'**Créé:** 2026-05-01',
+				'<!-- DECISION_BLOCK_END -->',
+				'',
+				'<!-- DECISION_BLOCK_START -->',
+				'**ID:** `DEC-STALE-2`',
+				'**Statut:** pending',
+				'**Créé:** 2025-11-15',
+				'<!-- DECISION_BLOCK_END -->',
+			].join('\n');
+
+			test('detects stale pending decisions', async () => {
+				mockStat.mockResolvedValueOnce({ size: 500 });
+				mockReadFile.mockResolvedValueOnce(staleContent);
+				const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md' });
+				const data = JSON.parse(result.content[0].text);
+				expect(data.staleDecisions).toBe(2);
+				expect(data.staleDecisionDetails.map((d) => d.decisionId)).toContain('DEC-STALE-1');
+				expect(data.staleDecisionDetails.map((d) => d.decisionId)).toContain('DEC-STALE-2');
+			});
+
+			test('cleanupStale removes stale decisions from roadmap', async () => {
+				mockStat.mockResolvedValueOnce({ size: 500 });
+				mockReadFile.mockResolvedValueOnce(staleContent);
+				const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md', cleanupStale: true });
+				const data = JSON.parse(result.content[0].text);
+				expect(data.success).toBe(true);
+				expect(data.cleanupResult.cleanedUp).toBe(2);
+				expect(data.cleanupResult.cleanedDecisions).toContain('DEC-STALE-1');
+				expect(data.cleanupResult.cleanedDecisions).toContain('DEC-STALE-2');
+				expect(mockWriteFile).toHaveBeenCalledTimes(1);
+				const writtenContent = mockWriteFile.mock.calls[0][1];
+				expect(writtenContent).toContain('DEC-FRESH');
+				expect(writtenContent).not.toContain('DEC-STALE-1');
+				expect(writtenContent).not.toContain('DEC-STALE-2');
+			});
+
+			test('cleanupStale with no stale decisions does not write file', async () => {
+				const freshContent = [
+					'<!-- DECISION_BLOCK_START -->',
+					'**ID:** `DEC-FRESH`',
+					'**Statut:** pending',
+					'**Créé:** 2026-05-01',
+					'<!-- DECISION_BLOCK_END -->',
+				].join('\n');
+				mockStat.mockResolvedValueOnce({ size: 200 });
+				mockReadFile.mockResolvedValueOnce(freshContent);
+				const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md', cleanupStale: true });
+				const data = JSON.parse(result.content[0].text);
+				expect(data.cleanupResult.cleanedUp).toBe(0);
+				expect(mockWriteFile).not.toHaveBeenCalled();
+			});
+
+			test('cleanupResult is undefined when cleanupStale is not set', async () => {
+				mockStat.mockResolvedValueOnce({ size: 500 });
+				mockReadFile.mockResolvedValueOnce(staleContent);
+				const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md' });
+				const data = JSON.parse(result.content[0].text);
+				expect(data.cleanupResult).toBeUndefined();
+			});
+		});
+
 });
