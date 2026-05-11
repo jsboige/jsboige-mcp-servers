@@ -7,6 +7,7 @@ import { formatErrorForResponse } from '../../utils/error-format.js';
 interface AnalyzeOptions {
     roadmapPath?: string;
     generateReport?: boolean;
+    cleanupStale?: boolean;
 }
 
 interface AnalysisIssue {
@@ -53,6 +54,10 @@ export const analyze_roosync_problems: Tool = {
             generateReport: {
                 type: 'boolean',
                 description: 'Générer un rapport Markdown dans roo-config/reports (défaut: false)'
+            },
+            cleanupStale: {
+                type: 'boolean',
+                description: 'Supprimer les décisions pending stale (>30j) du sync-roadmap.md (défaut: false)'
             }
         }
     },
@@ -242,6 +247,38 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             });
         }
 
+        // Cleanup stale pending decisions if requested
+        let cleanedUp = 0;
+        const cleanedDecisions: string[] = [];
+        if (options.cleanupStale && analysis.staleDecisionDetails.length > 0) {
+            const staleIds = new Set(analysis.staleDecisionDetails.map(d => d.decisionId));
+            let updatedContent = content;
+            // Match individual decision blocks (non-greedy within each block)
+            const singleBlockRegex = /<!--[\s]*DECISION_BLOCK_START[\s]*-->([\s\S]*?)<!--[\s]*DECISION_BLOCK_END[\s]*-->\n?/g;
+            let blockMatch;
+            const blocksToRemove: string[] = [];
+            while ((blockMatch = singleBlockRegex.exec(content)) !== null) {
+                const fullBlock = blockMatch[0];
+                const blockBody = blockMatch[1];
+                const idInBlock = blockBody.match(/\*\*ID:\*\* `([^`]+)`/);
+                if (idInBlock && staleIds.has(idInBlock[1])) {
+                    blocksToRemove.push(fullBlock);
+                }
+            }
+            for (const block of blocksToRemove) {
+                const idx = updatedContent.indexOf(block);
+                if (idx !== -1) {
+                    updatedContent = updatedContent.substring(0, idx) + updatedContent.substring(idx + block.length);
+                    cleanedUp++;
+                    const idMatch = block.match(/\*\*ID:\*\* `([^`]+)`/);
+                    if (idMatch) cleanedDecisions.push(idMatch[1]);
+                }
+            }
+            if (cleanedUp > 0) {
+                await fs.writeFile(roadmapPath!, updatedContent, 'utf8');
+            }
+        }
+
         let reportPath = null;
         if (options.generateReport) {
             // Logique de génération de rapport MD similaire au PS1
@@ -273,7 +310,12 @@ ${JSON.stringify(analysis.issues, null, 2)}
                 type: 'text',
                 text: JSON.stringify({
                     ...analysis,
-                    reportGenerated: reportPath
+                    reportGenerated: reportPath,
+                    cleanupResult: options.cleanupStale ? {
+                        cleanedUp,
+                        cleanedDecisions,
+                        message: cleanedUp > 0 ? `${cleanedUp} stale pending decisions removed from sync-roadmap.md` : 'No stale decisions to clean up'
+                    } : undefined
                 }, null, 2)
             }]
         };
