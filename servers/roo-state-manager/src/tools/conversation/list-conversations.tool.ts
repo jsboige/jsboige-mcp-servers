@@ -387,32 +387,31 @@ interface SynthesisInfo {
  */
 async function detectSynthesis(skeleton: ConversationSkeleton): Promise<SynthesisInfo> {
     try {
-        // Check if skeleton has synthesis metadata
-        const synthesisMetadata = (skeleton as any).synthesisMetadata;
-        if (!synthesisMetadata) {
+        const synthesis = skeleton.metadata?.synthesis;
+        if (!synthesis || synthesis.status !== 'completed') {
             return { available: false };
         }
 
         // Priority 1: Condensed batch (higher priority)
-        if (synthesisMetadata.condensedBatchPath) {
-            const summary = await readSynthesisFile(synthesisMetadata.condensedBatchPath);
+        if (synthesis.condensedBatchPath) {
+            const summary = await readSynthesisFile(synthesis.condensedBatchPath);
             if (summary) {
                 return {
                     available: true,
                     summary: truncateSummary(summary, 200),
-                    generatedAt: synthesisMetadata.lastUpdated
+                    generatedAt: synthesis.lastUpdated
                 };
             }
         }
 
         // Priority 2: Atomic synthesis
-        if (synthesisMetadata.analysisFilePath) {
-            const summary = await readSynthesisFile(synthesisMetadata.analysisFilePath);
+        if (synthesis.analysisFilePath) {
+            const summary = await readSynthesisFile(synthesis.analysisFilePath);
             if (summary) {
                 return {
                     available: true,
                     summary: truncateSummary(summary, 200),
-                    generatedAt: synthesisMetadata.lastUpdated
+                    generatedAt: synthesis.lastUpdated
                 };
             }
         }
