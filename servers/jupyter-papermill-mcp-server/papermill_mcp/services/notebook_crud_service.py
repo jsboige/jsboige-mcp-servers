@@ -457,8 +457,11 @@ class NotebookCRUDService:
                 if start_index is None:
                     raise ValueError("mode='range' requires 'start_index' parameter")
 
-            # Read notebook
-            notebook = FileUtils.read_notebook(resolved_path)
+            # Read notebook — use lightweight parse for list mode (#2108)
+            if mode == "list":
+                notebook = FileUtils.read_notebook_light(resolved_path)
+            else:
+                notebook = FileUtils.read_notebook(resolved_path)
             total_cells = len(notebook.cells)
 
             # Mode SINGLE: Retourner une seule cellule
