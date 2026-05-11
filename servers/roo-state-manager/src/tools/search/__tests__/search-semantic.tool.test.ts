@@ -1420,6 +1420,88 @@ describe('helper functions (indirect via handler)', () => {
 
 			consoleSpy.mockRestore();
 		});
+
+		describe('#1496: Fallback observability metadata', () => {
+			test('circuit breaker fallback includes fallback_used + fallback_reason', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+
+				const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
+
+				// Trigger circuit breaker with 503
+				const mockError = Object.assign(new Error('Service Unavailable'), {
+					response: { status: 503, statusText: 'Service Unavailable', data: {} }
+				});
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+				// First call: triggers circuit breaker -> fallback with embedding_api_error
+				const result = await searchTasksByContentTool.handler({
+					search_query: 'trigger breaker for metadata',
+					workspace: 'd:	est',
+				}, makeCache(), mockEnsureCache, defaultFallback);
+
+				const parsed = JSON.parse(getTextContent(result));
+				expect(parsed.fallback_used).toBe(true);
+				expect(parsed.fallback_reason).toBe('embedding_api_error');
+				expect(parsed.original_search_mode).toBe('semantic');
+				expect(parsed.actual_search_mode).toBe('text');
+
+				// Second call: circuit breaker active -> embedding_circuit_breaker_active
+				const result2 = await searchTasksByContentTool.handler({
+					search_query: 'breaker active fallback',
+					workspace: 'd:	est',
+				}, makeCache(), mockEnsureCache, defaultFallback);
+
+				const parsed2 = JSON.parse(getTextContent(result2));
+				expect(parsed2.fallback_used).toBe(true);
+				expect(parsed2.fallback_reason).toBe('embedding_circuit_breaker_active');
+				expect(parsed2.original_search_mode).toBe('semantic');
+				expect(parsed2.actual_search_mode).toBe('text');
+			});
+
+			test('timeout error sets fallback_reason to embedding_timeout', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+
+				const { searchTasksByContentTool } = await import('../search-semantic.tool.js');
+
+				const timeoutError = Object.assign(new Error('This operation was aborted'), {
+					code: 'UND_ERR_CONNECT_TIMEOUT'
+				});
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(timeoutError);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(timeoutError);
+
+				const result = await searchTasksByContentTool.handler({
+					search_query: 'timeout test',
+					workspace: 'd:	est',
+				}, makeCache(), mockEnsureCache, defaultFallback);
+
+				const parsed = JSON.parse(getTextContent(result));
+				expect(parsed.fallback_used).toBe(true);
+				expect(parsed.fallback_reason).toBe('embedding_timeout');
+				expect(parsed.actual_search_mode).toBe('text');
+			});
+
+			test('successful semantic search has fallback_used=false', async () => {
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.search.mockResolvedValueOnce([]);
+
+				const result = await searchTasksByContentTool.handler({
+					search_query: 'semantic success test',
+					workspace: 'd:	est',
+				}, makeCache(), mockEnsureCache, defaultFallback);
+
+				expect(result.isError).toBe(false);
+				const parsed = JSON.parse(getTextContent(result));
+				expect(parsed.fallback_used).toBe(false);
+				expect(parsed.original_search_mode).toBe('semantic');
+				expect(parsed.actual_search_mode).toBe('semantic');
+				expect(parsed).not.toHaveProperty('fallback_reason');
+			});
+		});
 	});
 });
 });

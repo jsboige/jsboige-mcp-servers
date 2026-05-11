@@ -232,11 +232,16 @@ export async function handleRooSyncSearch(
             };
             const textResult = await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
 
-            // Inject semantic degraded warning into text results
+            // Inject semantic degraded warning + #1496 fallback metadata into text results
             try {
                 const parsed = JSON.parse((textResult.content?.[0] as any)?.text || '{}');
                 parsed.semantic_degraded = true;
                 parsed.semantic_error = 'Semantic search failed after retry — results are from text search only. Run roosync_search(action: "diagnose") to check backend state.';
+                // #1496: Structured fallback metadata for programmatic consumers
+                parsed.fallback_used = true;
+                parsed.fallback_reason = 'embedding_api_error';
+                parsed.original_search_mode = 'semantic';
+                parsed.actual_search_mode = 'text';
                 return {
                     content: [{ type: 'text', text: JSON.stringify(parsed, null, 2) }]
                 };
