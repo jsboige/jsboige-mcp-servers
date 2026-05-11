@@ -58,6 +58,22 @@ class FileUtils:
             raise ValueError(f"Invalid notebook format in {path}: {e}")
 
     @staticmethod
+    def read_notebook_light(path: Union[str, Path]) -> NotebookNode:
+        """Read a notebook with outputs stripped from code cells."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Notebook file not found: {path}")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            for cell in raw.get("cells", []):
+                if cell.get("cell_type") == "code":
+                    cell["outputs"] = []
+            return nbformat.reads(json.dumps(raw), as_version=4)
+        except (json.JSONDecodeError, nbformat.ValidationError) as e:
+            raise ValueError(f"Invalid notebook format in {path}: {e}")
+
+    @staticmethod
     def write_notebook(notebook: NotebookNode, path: Union[str, Path]) -> Path:
         """
         Write a Jupyter notebook to file.
