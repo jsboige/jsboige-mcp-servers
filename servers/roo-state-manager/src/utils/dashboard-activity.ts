@@ -11,7 +11,7 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
- * @version 2.0.0
+ * @version 3.0.0 (#1953 Phase 4: dashboard discovery of absent machines)
  */
 
 import { createLogger } from './logger.js';
@@ -83,6 +83,11 @@ export function isRecentlyActive(lastSeen: string, thresholdMs: number = DEFAULT
  * For machines marked UNKNOWN (heartbeat stale) or IDLE by HeartbeatService,
  * if any dashboard shows recent activity, override the status to ONLINE.
  *
+ * Additionally, machines discovered from dashboard activity that are NOT in any
+ * heartbeat list (never called this MCP server instance) are added as ONLINE.
+ * This handles the ADR 008 in-memory model where each MCP server only tracks
+ * its own tool calls — other machines are discovered via shared dashboards.
+ *
  * @param heartbeatState - State from HeartbeatService.checkHeartbeats()
  * @param dashboardContent - One or more dashboard contents (string or string[]).
  *                          When passing string[], activity is merged across all.
@@ -110,6 +115,13 @@ export function crossCheckWithDashboard(
 	const idleMachines = [...heartbeatState.idleMachines];
 	const onlineMachines = [...heartbeatState.onlineMachines];
 
+	const knownSet = new Set([
+		...onlineMachines.map(m => m.toLowerCase()),
+		...unknownMachines.map(m => m.toLowerCase()),
+		...idleMachines.map(m => m.toLowerCase()),
+	]);
+
+	// Override existing UNKNOWN → ONLINE
 	for (let i = unknownMachines.length - 1; i >= 0; i--) {
 		const machineId = unknownMachines[i];
 		const lastSeen = activity.get(machineId);
@@ -121,6 +133,7 @@ export function crossCheckWithDashboard(
 		}
 	}
 
+	// Override existing IDLE → ONLINE
 	for (let i = idleMachines.length - 1; i >= 0; i--) {
 		const machineId = idleMachines[i];
 		const lastSeen = activity.get(machineId);
@@ -129,6 +142,18 @@ export function crossCheckWithDashboard(
 			onlineMachines.push(machineId);
 			overrides.push(machineId);
 			logger.info(`Dashboard override: ${machineId} IDLE->ONLINE (last seen ${lastSeen})`);
+		}
+	}
+
+	// #1953 Phase 4: Add machines discovered from dashboard that aren't in any heartbeat list.
+	// Each MCP server instance only tracks its own tool calls (ADR 008 in-memory model).
+	// Other machines are discovered via shared dashboard messages on GDrive.
+	for (const [machineId, lastSeen] of activity.entries()) {
+		if (!knownSet.has(machineId.toLowerCase()) && isRecentlyActive(lastSeen, thresholdMs)) {
+			onlineMachines.push(machineId);
+			overrides.push(machineId);
+			knownSet.add(machineId.toLowerCase());
+			logger.info(`Dashboard discovery: ${machineId} added as ONLINE (last seen ${lastSeen})`);
 		}
 	}
 
