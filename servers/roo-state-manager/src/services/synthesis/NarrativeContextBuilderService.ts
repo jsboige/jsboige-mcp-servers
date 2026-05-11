@@ -1005,8 +1005,62 @@ export class NarrativeContextBuilderService {
             return this.analysisCache.get(taskId)!;
         }
 
-        // TODO Phase 2: Charger depuis le fichier de synthèse et mettre en cache
-        return null; // Placeholder Phase 1
+        // Récupérer le squelette depuis le cache global
+        const skeleton = this.conversationCache.get(taskId);
+        if (!skeleton) {
+            return null;
+        }
+
+        // Essayer de charger depuis le fichier de synthèse sur disque
+        let analysis: ConversationAnalysis | null = null;
+        try {
+            const path = await import('path');
+            const fs = await import('fs/promises');
+            const analysisPath = path.join(this.options.synthesisBaseDir, `${taskId}.json`);
+            const content = await fs.readFile(analysisPath, 'utf-8');
+            analysis = JSON.parse(content) as ConversationAnalysis;
+        } catch {
+            // Pas de fichier disque — générer une analyse basique depuis le squelette
+            analysis = this.buildAnalysisFromSkeleton(skeleton);
+        }
+
+        if (analysis) {
+            this.analysisCache.set(taskId, analysis);
+        }
+        return analysis;
+    }
+
+    /**
+     * Construit une ConversationAnalysis basique à partir des métadonnées du squelette.
+     * Utilisé quand aucune synthèse LLM n'existe sur disque.
+     */
+    private buildAnalysisFromSkeleton(skeleton: ConversationSkeleton): ConversationAnalysis {
+        return {
+            taskId: skeleton.taskId,
+            analysisEngineVersion: '1.0.0-skeleton-derived',
+            analysisTimestamp: new Date().toISOString(),
+            llmModelId: 'none',
+            contextTrace: {
+                rootTaskId: skeleton.taskId,
+                parentTaskId: skeleton.parentTaskId,
+                previousSiblingTaskIds: [],
+                parentContexts: [],
+                synthesisType: 'generated_on_demand',
+            },
+            objectives: {},
+            strategy: {},
+            quality: {},
+            metrics: {
+                messageCount: skeleton.metadata.messageCount,
+                actionCount: skeleton.metadata.actionCount,
+            },
+            synthesis: {
+                initialContextSummary: '',
+                finalTaskSummary: `[Auto-derived] ${skeleton.metadata.messageCount} messages, ${skeleton.metadata.actionCount} actions` +
+                    (skeleton.metadata.mode ? `, mode ${skeleton.metadata.mode}` : '') +
+                    (skeleton.metadata.workspace ? `, ${skeleton.metadata.workspace}` : ''),
+            },
+        };
     }
 
     // =========================================================================
