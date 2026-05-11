@@ -18,6 +18,39 @@ import { classifySearchError, formatClassifiedError } from './search-error-class
 let lastEmbeddingFailureTime = 0;
 const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
 
+// #1496: Fallback observability — reason codes when semantic degrades to text
+type FallbackReason =
+    | 'embedding_circuit_breaker_active'
+    | 'embedding_api_error'
+    | 'embedding_timeout';
+
+/**
+ * #1496: Inject fallback metadata into a CallToolResult's JSON payload.
+ * When semantic search falls back to text, agents need to know so they don't
+ * treat text results as semantic (cf #1407, #1451 — regressions masked for days).
+ */
+function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): CallToolResult {
+    try {
+        const text = result.content?.[0] && 'text' in result.content[0]
+            ? (result.content[0] as { text: string }).text
+            : '';
+        const parsed = JSON.parse(text);
+        const enriched = {
+            ...parsed,
+            fallback_used: true,
+            fallback_reason: reason,
+            original_search_mode: 'semantic',
+            actual_search_mode: 'text',
+        };
+        return {
+            ...result,
+            content: [{ type: 'text' as const, text: JSON.stringify(enriched, null, 2) }]
+        };
+    } catch {
+        return result;
+    }
+}
+
 // #249: Retry configuration for transient failures
 const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '1');
 const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
@@ -418,7 +451,8 @@ export const searchTasksByContentTool = {
                     { query: args.search_query, workspace: args.workspace },
                     conversationCache
                 );
-                return fallbackResult;
+                // #1496: Tag fallback results so callers know semantic was skipped
+                return injectFallbackMeta(fallbackResult, 'embedding_circuit_breaker_active');
             } catch (fallbackError) {
                 return {
                     isError: false,
@@ -653,6 +687,10 @@ export const searchTasksByContentTool = {
 
             // Build enriched report
             const searchReport = {
+                // #1496: Observability — semantic succeeded, no fallback
+                fallback_used: false,
+                original_search_mode: 'semantic',
+                actual_search_mode: 'semantic',
                 current_machine: {
                     host_id: currentHostId,
                     search_timestamp: new Date().toISOString(),
@@ -717,6 +755,11 @@ export const searchTasksByContentTool = {
 
             console.warn(`[WARN] Semantic search failed (${classified.mode}), falling back to text: ${semanticErrorMsg}`);
 
+            // #1496: Determine fallback reason from classified error
+            const fallbackReason: FallbackReason = isAbortOrTimeout(semanticError)
+                ? 'embedding_timeout'
+                : 'embedding_api_error';
+
             // Fallback vers la recherche textuelle simple (legacy — default path)
             try {
                 const fallbackResult = await fallbackHandler(
@@ -724,7 +767,8 @@ export const searchTasksByContentTool = {
                     conversationCache
                 );
 
-                return fallbackResult;
+                // #1496: Tag fallback results so callers know semantic failed
+                return injectFallbackMeta(fallbackResult, fallbackReason);
             } catch (fallbackError) {
                 console.log(`[ERROR] Fallback handler a échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
                 return {
