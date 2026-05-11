@@ -31,6 +31,12 @@ export async function searchFallbackTool(
       };
     }
 
+    // #1410 item 7: Tokenize multi-word queries — match ANY token (OR logic)
+    // Single-word queries behave identically to before (single-element array).
+    // Multi-word queries like "dashboard cleanup" now match tasks containing either word.
+    const tokens = query.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
+    const fullQuery = query.toLowerCase();
+
     // Recherche textuelle simple dans le cache
     const results: Array<{
       taskId: string;
@@ -39,6 +45,7 @@ export async function searchFallbackTool(
       workspace: string;
       lastActivity: string;
       metadata: any;
+      _score: number;
     }> = [];
 
     for (const [taskId, skeleton] of conversationCache.entries()) {
@@ -57,21 +64,39 @@ export async function searchFallbackTool(
         }
       }
 
-      // Recherche textuelle simple dans le titre, l'instruction et les messages
-      const searchText = query.toLowerCase();
-      const titleMatch = skeleton.metadata?.title?.toLowerCase().includes(searchText);
-      const instructionMatch = skeleton.truncatedInstruction?.toLowerCase().includes(searchText);
+      const title = skeleton.metadata?.title?.toLowerCase() || '';
+      const instruction = skeleton.truncatedInstruction?.toLowerCase() || '';
 
-      // Chercher aussi dans les messages de la séquence
-      let messageMatch = false;
+      // Build searchable message text
+      let messageText = '';
       if (skeleton.sequence && Array.isArray(skeleton.sequence)) {
-        messageMatch = (skeleton.sequence ?? []).some((msg: any) =>
-          (msg.content || msg.text) && (msg.content || msg.text).toLowerCase().includes(searchText)
-
-        );
+        messageText = (skeleton.sequence as any[])
+          .map((msg: any) => msg.content || msg.text || '')
+          .join(' ')
+          .toLowerCase();
       }
 
-      if (titleMatch || instructionMatch || messageMatch) {
+      // Score: full phrase match > individual token matches
+      let score = 0;
+      const fullTitleMatch = title.includes(fullQuery);
+      const fullInstrMatch = instruction.includes(fullQuery);
+      const fullMsgMatch = messageText.includes(fullQuery);
+
+      // Full phrase match gets a high bonus (preferred over individual tokens)
+      if (fullTitleMatch) score += 10;
+      if (fullInstrMatch) score += 5;
+      if (fullMsgMatch) score += 2;
+
+      // Also count individual token matches (additive, even with full match)
+      if (tokens.length > 0) {
+        for (const token of tokens) {
+          if (title.includes(token)) score += 2;
+          if (instruction.includes(token)) score += 1;
+          if (messageText.includes(token)) score += 1;
+        }
+      }
+
+      if (score > 0) {
         results.push({
           taskId,
           title: skeleton.metadata?.title || 'Untitled',
@@ -85,41 +110,35 @@ export async function searchFallbackTool(
             hasChildren: skeleton.childTaskInstructionPrefixes ? skeleton.childTaskInstructionPrefixes.length > 0 : false,
 
             parentTaskId: skeleton.parentTaskId || null
-          }
+          },
+          _score: score
         });
       }
     }
 
-    // Trier par pertinence (titre d'abord, puis instruction)
+    // Trier par score décroissant, puis par dernière activité
     results.sort((a, b) => {
-      const queryLower = query.toLowerCase();
-      const aTitleScore = a.title.toLowerCase().includes(queryLower) ? 2 : 0;
-      const bTitleScore = b.title.toLowerCase().includes(queryLower) ? 2 : 0;
-      const aInstrScore = a.instruction.toLowerCase().includes(queryLower) ? 1 : 0;
-      const bInstrScore = b.instruction.toLowerCase().includes(queryLower) ? 1 : 0;
-
-      const aScore = aTitleScore + aInstrScore;
-      const bScore = bTitleScore + bInstrScore;
-
-      if (aScore !== bScore) {
-        return bScore - aScore; // Score décroissant
+      if (a._score !== b._score) {
+        return b._score - a._score;
       }
-
-      // Même score : trier par dernière activité
       return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
     });
+
+    // Strip internal _score before returning
+    const cleanResults = results.map(({ _score, ...rest }) => rest);
 
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           success: true,
-          results,
+          results: cleanResults,
           query,
           searchType: 'text',
-          totalFound: results.length,
+          totalFound: cleanResults.length,
           metadata: {
             searchMethod: 'text',
+            tokenCount: tokens.length,
             cacheSize: conversationCache.size,
             workspace: workspace || 'all'
           }

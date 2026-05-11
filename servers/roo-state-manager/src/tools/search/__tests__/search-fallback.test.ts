@@ -335,4 +335,106 @@ describe('search-fallback (text search)', () => {
 			expect(parsed.totalFound).toBe(0);
 		});
 	});
+
+		// ============================================================
+		// #1410 item 7: Tokenized multi-word search (OR logic)
+		// ============================================================
+
+		describe('tokenized multi-word search (#1410)', () => {
+			test('multi-word query matches tasks containing any word', async () => {
+				// "heartbeat deploy" should match task-heartbeat (has "heartbeat") AND task-deploy (has "deploy")
+				cache.set('task-deploy', createSkeleton({
+					taskId: 'task-deploy',
+					truncatedInstruction: 'Deploy new version to production',
+					metadata: {
+						title: 'Deploy Task',
+						lastActivity: '2026-02-22T13:00:00Z',
+						createdAt: '2026-02-22T12:00:00Z',
+						messageCount: 5,
+						actionCount: 2,
+						totalSize: 512,
+						workspace: '/test/workspace'
+					}
+				}));
+
+				const result = await searchFallbackTool({ query: 'heartbeat deploy' }, cache);
+				const parsed = parseResult(result);
+				expect(parsed.success).toBe(true);
+				expect(parsed.results.some((r: any) => r.taskId === 'task-heartbeat')).toBe(true);
+				expect(parsed.results.some((r: any) => r.taskId === 'task-deploy')).toBe(true);
+			});
+
+			test('full phrase match scores higher than individual token matches', async () => {
+				// Use a fresh cache to avoid interference from shared fixtures
+				const freshCache = new Map<string, ConversationSkeleton>();
+				freshCache.set('task-exact', createSkeleton({
+					taskId: 'task-exact',
+					truncatedInstruction: 'Fix heartbeat hostname issue in production',
+					metadata: {
+						title: 'Heartbeat Hostname Fix',
+						lastActivity: '2026-02-22T14:00:00Z',
+						createdAt: '2026-02-22T13:00:00Z',
+						messageCount: 5,
+						actionCount: 2,
+						totalSize: 512,
+						workspace: '/test/workspace'
+					}
+				}));
+				freshCache.set('task-partial', createSkeleton({
+					taskId: 'task-partial',
+					truncatedInstruction: 'Hostname resolution fix',
+					metadata: {
+						title: 'DNS Resolution',
+						lastActivity: '2026-02-22T14:00:00Z',
+						createdAt: '2026-02-22T13:00:00Z',
+						messageCount: 5,
+						actionCount: 2,
+						totalSize: 512,
+						workspace: '/test/workspace'
+					}
+				}));
+
+				const result = await searchFallbackTool({ query: 'hostname fix' }, freshCache);
+				const parsed = parseResult(result);
+				// task-exact has both "hostname" and "fix" in title+instruction -> higher score
+				const exactIdx = parsed.results.findIndex((r: any) => r.taskId === 'task-exact');
+				const partialIdx = parsed.results.findIndex((r: any) => r.taskId === 'task-partial');
+				expect(exactIdx).toBeLessThan(partialIdx);
+			});
+
+						test('single-word query behaves identically to before', async () => {
+				const result = await searchFallbackTool({ query: 'heartbeat' }, cache);
+				const parsed = parseResult(result);
+				expect(parsed.results.some((r: any) => r.taskId === 'task-heartbeat')).toBe(true);
+			});
+
+			test('reports tokenCount in metadata', async () => {
+				const result = await searchFallbackTool({ query: 'multi word query' }, cache);
+				const parsed = parseResult(result);
+				expect(parsed.metadata.tokenCount).toBe(3);
+			});
+
+			test('single-character tokens are ignored (< 2 chars)', async () => {
+				cache.set('task-a-test', createSkeleton({
+					taskId: 'task-a-test',
+					truncatedInstruction: 'A task with single letter a',
+					metadata: {
+						title: 'Task A',
+						lastActivity: '2026-02-22T14:00:00Z',
+						createdAt: '2026-02-22T13:00:00Z',
+						messageCount: 1,
+						actionCount: 1,
+						totalSize: 100,
+						workspace: '/test/workspace'
+					}
+				}));
+
+				// "a xyznonexistent" - "a" is ignored (<2 chars), "xyznonexistent" matches nothing
+				const result = await searchFallbackTool({ query: 'a xyznonexistent' }, cache);
+				const parsed = parseResult(result);
+				expect(parsed.metadata.tokenCount).toBe(1); // only "xyznonexistent"
+				expect(parsed.totalFound).toBe(0);
+			});
+		});
+
 });
