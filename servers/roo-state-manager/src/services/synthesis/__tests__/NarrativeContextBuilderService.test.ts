@@ -296,14 +296,16 @@ describe('NarrativeContextBuilderService', () => {
 			expect(children).toEqual([]);
 		});
 
-		test('returns empty when children have no analyses', async () => {
+		test('returns skeleton-derived analyses for children without disk files', async () => {
 			cache.set('parent', createSkeleton('parent'));
 			cache.set('child-1', createSkeleton('child-1', { parentTaskId: 'parent' }));
 			const service = new NarrativeContextBuilderService(defaultOptions, cache);
 
-			// No analysis files exist, so returns empty
+			// Phase 2: getConversationAnalysis generates from skeleton when no disk file
 			const children = await service.collectChildrenSyntheses('parent');
-			expect(children).toEqual([]);
+			expect(children).toHaveLength(1);
+			expect(children[0].taskId).toBe('child-1');
+			expect(children[0].synthesis.finalTaskSummary).toContain('10 messages');
 		});
 	});
 
