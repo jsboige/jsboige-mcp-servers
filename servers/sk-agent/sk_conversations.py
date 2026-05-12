@@ -281,6 +281,20 @@ class ConversationRunner:
         2. Lazy creation via agent_factory (triggers on-demand initialization)
         3. Inline agent definitions (conversation-scoped fallback)
         """
+        # Bootstrap: if no agents exist yet and inline agents are needed,
+        # create the default agent to seed a kernel for inline agent creation (#2130).
+        # Inline agents borrow a kernel from self.sk_agents, which is empty on
+        # a fresh MCP session where no call_agent has been triggered yet.
+        if not self.sk_agents and conv_config.inline_agents and self._agent_factory:
+            default_cfg = self.config.get_default_agent()
+            if default_cfg:
+                log.info(
+                    "Bootstrapping default agent '%s' for inline conversation '%s'",
+                    default_cfg.id,
+                    conv_config.id,
+                )
+                await self._agent_factory(default_cfg.id)
+
         agents = []
         inline_map = {a.id: a for a in conv_config.inline_agents}
 
