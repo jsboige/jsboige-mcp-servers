@@ -79,6 +79,9 @@ describe('roosync_diagnose', () => {
       expect(result.data).toBeDefined();
       expect(result.data.system).toBeDefined();
       expect(result.data.system.platform).toBeDefined();
+      expect(result.data.container).toBeDefined();
+      expect(result.data.container).toHaveProperty('dockerHost');
+      expect(result.data.container).toHaveProperty('isWSL');
       expect(result.data.directories).toBeDefined();
       expect(result.data.status).toBe('OK');
     });
