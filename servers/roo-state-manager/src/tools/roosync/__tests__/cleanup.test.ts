@@ -238,6 +238,26 @@ describe('cleanup', () => {
 		expect(text).toContain('❌ msg-5');
 	});
 
+	test('reports failed_reasons alongside failed_ids (#1410 item 3)', async () => {
+		mockBulkOperation.mockResolvedValue({
+			operation: 'archive',
+			matched: 3,
+			processed: 1,
+			errors: 2,
+			message_ids: ['msg-1', 'msg-2', 'msg-3'],
+			failed_ids: ['msg-2', 'msg-3'],
+			failed_reasons: { 'msg-2': 'archive returned false', 'msg-3': 'file locked' }
+		});
+
+		const result = await cleanupMessages({
+			operation: 'archive'
+		});
+
+		const text = result.content[0].text;
+		expect(text).toContain('❌ msg-2 — archive returned false');
+		expect(text).toContain('❌ msg-3 — file locked');
+	});
+
 	test('hides failed_ids section when no failures', async () => {
 		mockBulkOperation.mockResolvedValue({
 			operation: 'mark_read',
