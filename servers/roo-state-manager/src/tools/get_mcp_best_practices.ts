@@ -197,7 +197,7 @@ export const getMcpBestPractices = {
             combinedContent += `## 🚨 CHECKLIST DE DÉBOGAGE URGENT\n\n`;
             combinedContent += `**Quand un MCP ne répond plus:**\n\n`;
             combinedContent += `- [ ] **Force reload:** \`roosync_mcp_management touch\`\n`;
-            combinedContent += `- [ ] **Test connectivité:** outil simple (system_info)\n`;
+            combinedContent += `- [ ] **Test connectivité:** \`roosync_diagnose action=env\` ou \`roosync_inventory type=status\`\n`;
             combinedContent += `- [ ] **Logs diagnostic:** \`read_vscode_logs\`\n`;
             combinedContent += `- [ ] **Progressive isolation** si timeout persiste\n\n`;
             
