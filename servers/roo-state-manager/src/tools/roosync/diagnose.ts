@@ -158,6 +158,12 @@ async function handleEnvAction(
       totalMemory: os.totalmem(),
       freeMemory: os.freemem()
     },
+    container: {
+      dockerHost: process.env.DOCKER_HOST || null,
+      isWSL: !!process.env.WSL_DISTRO_NAME,
+      isCI: !!(process.env.CI || process.env.GITHUB_ACTIONS),
+      containerEnv: process.env.container || null
+    },
     directories: {},
     envVars: {
       hasPath: !!process.env.PATH,
