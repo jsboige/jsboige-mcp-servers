@@ -61,7 +61,7 @@ vi.mock('../search-fallback.tool.js', () => ({
 	handleSearchTasksSemanticFallback: mockFallbackHandler
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
@@ -84,6 +84,8 @@ const defaultFallback = vi.fn(async () => ({
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.useRealTimers();
+	_resetEmbeddingCircuitBreaker();
 	mockGetEmbeddingModel.mockReturnValue('test-model');
 	mockGetHostIdentifier.mockReturnValue('test-host-01');
 	delete process.env.QDRANT_COLLECTION_NAME;
@@ -1219,10 +1221,7 @@ describe('helper functions (indirect via handler)', () => {
 	describe('Circuit Breaker Functionality', () => {
 		test('activates on HTTP 502 Bad Gateway', async () => {
 			vi.useRealTimers();
-			vi.resetModules();
-
-			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
-
+			_resetEmbeddingCircuitBreaker();
 			const mockError = Object.assign(new Error('Bad Gateway'), {
 				response: { status: 502, statusText: 'Bad Gateway', data: {} }
 			});
@@ -1241,10 +1240,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('activates on HTTP 503 Service Unavailable', async () => {
 			vi.useRealTimers();
-			vi.resetModules();
-
-			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
-
+			_resetEmbeddingCircuitBreaker();
 			const mockError = Object.assign(new Error('Service Unavailable'), {
 				response: { status: 503, statusText: 'Service Unavailable', data: {} }
 			});
@@ -1263,10 +1259,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('activates on HTTP 504 Gateway Timeout', async () => {
 			vi.useRealTimers();
-			vi.resetModules();
-
-			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
-
+			_resetEmbeddingCircuitBreaker();
 			const mockError = Object.assign(new Error('Gateway Timeout'), {
 				response: { status: 504, statusText: 'Gateway Timeout', data: {} }
 			});
@@ -1285,7 +1278,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('does NOT activate on HTTP 400 Bad Request', async () => {
 			vi.useRealTimers();
-			vi.resetModules();
+			_resetEmbeddingCircuitBreaker();
 
 			const { searchTasksByContentTool } = await import('../search-semantic.tool.js');
 
@@ -1320,10 +1313,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('prevents repeated calls when circuit breaker active', async () => {
 			vi.useRealTimers();
-			vi.resetModules();
-
-			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
-
+			_resetEmbeddingCircuitBreaker();
 			const mockError = Object.assign(new Error('Service Unavailable'), {
 				response: { status: 503, statusText: 'Service Unavailable', data: {} }
 			});
@@ -1349,10 +1339,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('resets after TTL expires', async () => {
 			vi.useFakeTimers();
-			vi.resetModules();
-
-			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
-
+			_resetEmbeddingCircuitBreaker();
 			const mockError = Object.assign(new Error('Service Unavailable'), {
 				response: { status: 503, statusText: 'Service Unavailable', data: {} }
 			});
@@ -1365,8 +1352,8 @@ describe('helper functions (indirect via handler)', () => {
 				search_query: 'trigger',
 				workspace: 'd:	test'
 			}, makeCache(), mockEnsureCache, defaultFallback);
-			// Advance past withRetry backoff (2000ms) so retry completes
-			await vi.advanceTimersByTimeAsync(3000);
+			// Run all pending timers (withRetry backoff + nested async)
+			await vi.runAllTimersAsync();
 			await handlerPromise;
 
 			// Advance past TTL (default 300000ms)
@@ -1389,9 +1376,8 @@ describe('helper functions (indirect via handler)', () => {
 		});
 		test('logs warning when circuit breaker active', async () => {
 			vi.useRealTimers();
-			vi.resetModules();
+			_resetEmbeddingCircuitBreaker();
 
-			const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
 			const consoleSpy = vi.spyOn(console, 'warn');
 
 			const mockError = Object.assign(new Error('Service Unavailable'), {
@@ -1424,10 +1410,7 @@ describe('helper functions (indirect via handler)', () => {
 		describe('#1496: Fallback observability metadata', () => {
 			test('circuit breaker fallback includes fallback_used + fallback_reason', async () => {
 				vi.useRealTimers();
-				vi.resetModules();
-
-				const { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } = await import('../search-semantic.tool.js');
-
+				_resetEmbeddingCircuitBreaker();
 				// Trigger circuit breaker with 503
 				const mockError = Object.assign(new Error('Service Unavailable'), {
 					response: { status: 503, statusText: 'Service Unavailable', data: {} }
@@ -1462,7 +1445,7 @@ describe('helper functions (indirect via handler)', () => {
 
 			test('timeout error sets fallback_reason to embedding_timeout', async () => {
 				vi.useRealTimers();
-				vi.resetModules();
+				_resetEmbeddingCircuitBreaker();
 
 				const { searchTasksByContentTool } = await import('../search-semantic.tool.js');
 
