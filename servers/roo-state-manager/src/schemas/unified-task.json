@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://roo-extensions.myia.io/schemas/unified-task.json",
+  "title": "UnifiedTask",
+  "description": "Unified schema for Roo Code and Claude Code tasks — #1391",
+  "$ref": "#/definitions/UnifiedTask",
+  "definitions": {
+    "UnifiedTask": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique task identifier (taskId from source system)"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "roo",
+            "claude-code"
+          ],
+          "description": "Origin system: Roo Code or Claude Code"
+        },
+        "parentId": {
+          "type": "string",
+          "description": "Parent task ID for sub-task relationships"
+        },
+        "rootId": {
+          "type": "string",
+          "description": "Root task ID in the task hierarchy"
+        },
+        "title": {
+          "type": "string",
+          "description": "Human-readable task title"
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Original task prompt/instruction"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 creation timestamp"
+        },
+        "lastActivity": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 last activity timestamp"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 completion timestamp"
+        },
+        "messageCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total message count"
+        },
+        "actionCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total tool/action count"
+        },
+        "totalSizeBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total conversation size in bytes"
+        },
+        "workspace": {
+          "type": "string",
+          "description": "Workspace path or identifier"
+        },
+        "machineId": {
+          "type": "string",
+          "description": "Machine where the task ran"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Roo mode or Claude agent type used"
+        },
+        "model": {
+          "type": "string",
+          "description": "LLM model identifier"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "completed",
+            "abandoned",
+            "stuck",
+            "unknown"
+          ],
+          "description": "Current task lifecycle status"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "success",
+            "failure",
+            "partial",
+            "cancelled"
+          ],
+          "description": "Task outcome (set when status=completed|abandoned)"
+        },
+        "storageTier": {
+          "type": "string",
+          "enum": [
+            "hot",
+            "warm",
+            "cold"
+          ],
+          "description": "Storage tier for retention policy"
+        },
+        "indexedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last Qdrant indexing timestamp"
+        },
+        "sourceMetadata": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Opaque source-specific metadata"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "createdAt",
+        "lastActivity",
+        "messageCount",
+        "actionCount",
+        "totalSizeBytes",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
