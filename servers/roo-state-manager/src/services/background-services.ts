@@ -13,9 +13,10 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
+import { getCircuitBreakerState, isCircuitBreakerBlocking } from './task-indexer/VectorIndexer.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
-import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
+import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
 // Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
 // import { RooSyncService } from './RooSyncService.js';
@@ -874,11 +875,34 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             return;
         }
 
+        // #2165: Global back-off. If the Qdrant circuit breaker is OPEN, every
+        // indexTask() call would extract chunks and (before this fix) compute
+        // embeddings only to have the upsert rejected — hammering the embedding
+        // server. With the breaker open, skip the ENTIRE cycle: leave the queue
+        // intact so tasks are retried once Qdrant recovers, and burn zero GPU.
+        if (isCircuitBreakerBlocking()) {
+            const snap = getCircuitBreakerState();
+            console.warn(
+                `🚫 [Qdrant-Worker] Circuit breaker OPEN — skipping indexing cycle ` +
+                `(${state.qdrantIndexQueue.size} tasks queued, retry in ~${Math.round(snap.msUntilHalfOpen / 1000)}s). ` +
+                `No embeddings computed this cycle.`
+            );
+            return;
+        }
+
         // Traiter un batch de tâches par intervalle (au lieu d'une seule)
         const taskIds = Array.from(state.qdrantIndexQueue.values()).slice(0, QDRANT_INDEX_BATCH_SIZE);
         for (const taskId of taskIds) {
             state.qdrantIndexQueue.delete(taskId);
             await indexTaskInQdrant(taskId, state);
+
+            // #2165: If a task tripped the breaker, stop the rest of this batch
+            // immediately — the remaining tasks would all hit the open breaker
+            // and (re-)extract chunks for nothing. They stay queued for next cycle.
+            if (isCircuitBreakerBlocking()) {
+                console.warn(`🚫 [Qdrant-Worker] Circuit breaker opened mid-batch — aborting remaining ${taskIds.length - taskIds.indexOf(taskId) - 1} task(s) this cycle.`);
+                break;
+            }
         }
     }, ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
 
@@ -947,6 +971,17 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
     } catch (error: any) {
         if (error.message && error.message.includes('not found in any storage location')) {
             console.warn(`[WARN] Task ${taskId} is in cache but not on disk. Skipping indexing.`);
+        } else if (error?.code === GenericErrorCode.CIRCUIT_BREAKER_OPEN) {
+            // #2165: The circuit breaker was OPEN (or Qdrant was unreachable during
+            // pre-flight dedup) — indexTask() bailed out BEFORE computing any
+            // embeddings. This is a transient infra condition, NOT a task-level
+            // failure. Do NOT call markIndexingFailure(): that would burn the task's
+            // retry budget and could mark it permanently 'failed' after 3 cycles of
+            // Qdrant being slow, even though the task content is perfectly fine.
+            // Just re-queue it for the next cycle (which itself back-offs while the
+            // breaker is open) — no skeleton write, no retry-counter mutation.
+            state.qdrantIndexQueue.add(taskId);
+            console.warn(`[DEFERRED] Task ${taskId}: ${error.message} — re-queued, retry counter untouched.`);
         } else {
             const skeleton = state.conversationCache.get(taskId);
             if (skeleton) {

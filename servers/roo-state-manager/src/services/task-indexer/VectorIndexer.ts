@@ -20,9 +20,64 @@ const INDEXING_BATCH_SIZE = Math.max(1, parseInt(process.env.INDEXING_BATCH_SIZE
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000; // 2 seconds
 const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
-let circuitBreakerState = 'CLOSED'; // CLOSED | OPEN | HALF_OPEN
+type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+let circuitBreakerState: CircuitBreakerState = 'CLOSED';
 let failureCount = 0;
 let lastFailureTime = 0;
+
+/**
+ * #2165: Observable circuit-breaker state.
+ *
+ * The Qdrant circuit breaker used to be a silent module-level variable: when it
+ * opened, `safeQdrantUpsert` returned `false` and `indexTask` threw — but nothing
+ * upstream could see *why* writes were failing, nor avoid the expensive embedding
+ * computation that precedes the (doomed) upsert. Under sustained Qdrant latency
+ * this produced the embedding-server hammering described in #2165: chunks were
+ * re-embedded every background cycle even though every upsert was being rejected.
+ *
+ * Exposing the state lets `indexTask` short-circuit BEFORE embedding, and lets
+ * diagnostics surface the breaker instead of guessing.
+ */
+export interface CircuitBreakerSnapshot {
+    state: CircuitBreakerState;
+    failureCount: number;
+    lastFailureTime: number;
+    /** ms remaining before an OPEN breaker is allowed to probe (HALF_OPEN). 0 when not OPEN. */
+    msUntilHalfOpen: number;
+}
+
+export function getCircuitBreakerState(): CircuitBreakerSnapshot {
+    let msUntilHalfOpen = 0;
+    if (circuitBreakerState === 'OPEN') {
+        msUntilHalfOpen = Math.max(0, CIRCUIT_BREAKER_TIMEOUT_MS - (Date.now() - lastFailureTime));
+    }
+    return {
+        state: circuitBreakerState,
+        failureCount,
+        lastFailureTime,
+        msUntilHalfOpen,
+    };
+}
+
+/**
+ * #2165: Returns true when the circuit breaker would reject an upsert right now.
+ * Unlike `canMakeRequest()` (which has the side effect of transitioning OPEN→HALF_OPEN),
+ * this is a pure read used by `indexTask` to decide whether embedding is even worth it.
+ */
+export function isCircuitBreakerBlocking(): boolean {
+    if (circuitBreakerState === 'CLOSED' || circuitBreakerState === 'HALF_OPEN') {
+        return false;
+    }
+    // OPEN — blocking unless the cooldown has elapsed (next call would probe via HALF_OPEN)
+    return (Date.now() - lastFailureTime) <= CIRCUIT_BREAKER_TIMEOUT_MS;
+}
+
+/** #2165: Test-only — reset breaker between unit tests without reimporting the module. */
+export function resetCircuitBreakerForTest(): void {
+    circuitBreakerState = 'CLOSED';
+    failureCount = 0;
+    lastFailureTime = 0;
+}
 
 // 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
@@ -454,15 +509,28 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
  * concurrent MCPs that write the same chunk_id produce identical points (idempotent upsert).
  * The pre-flight check skips embedding computation entirely for already-indexed chunks.
  */
+interface PreflightDedupResult {
+    /** Sub-chunks that still need embedding + upsert. */
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>;
+    /**
+     * #2165: True only if EVERY batch retrieve succeeded. When false, the dedup
+     * check is unreliable (Qdrant unreachable / slow) and the caller must NOT
+     * blindly embed everything — that is exactly the condition that produced the
+     * embedding-server hammering loop. Callers should back off instead.
+     */
+    qdrantReachable: boolean;
+}
+
 async function preflightDedupByChunkId(
     subChunks: Array<{ chunk: Chunk; contentHash: string }>
-): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
-    if (subChunks.length === 0) return subChunks;
+): Promise<PreflightDedupResult> {
+    if (subChunks.length === 0) return { subChunks, qdrantReachable: true };
 
     try {
         const qdrant = getQdrantClient();
         const chunkIds = subChunks.map(sc => sc.chunk.chunk_id);
         const existingContentHashes = new Map<string, string>(); // chunk_id -> contentHash
+        let allBatchesSucceeded = true;
 
         // Batch retrieve — check which chunk_ids already exist (O(1) per ID)
         const BATCH_SIZE = 100;
@@ -480,16 +548,18 @@ async function preflightDedupByChunkId(
                     if (hash) existingContentHashes.set(point.id as string, hash);
                 }
             } catch (retrieveError: any) {
+                // #2165: A failed retrieve does NOT mean "no existing points" — it means
+                // we don't know. Track it so the caller can back off instead of
+                // re-embedding chunks that are very likely already in Qdrant.
+                allBatchesSucceeded = false;
                 console.warn(`[#2018] Preflight retrieve failed for batch ${i}: ${retrieveError?.message || retrieveError}`);
             }
         }
 
-        if (existingContentHashes.size === 0) return subChunks;
-
         // Filter: skip chunks that exist with same contentHash (unchanged content)
         const newSubChunks = subChunks.filter(sc => {
             const existingHash = existingContentHashes.get(sc.chunk.chunk_id);
-            if (!existingHash) return true; // Doesn't exist — needs indexing
+            if (!existingHash) return true; // Doesn't exist (or unknown) — needs indexing
             return existingHash !== sc.contentHash; // Keep if content changed
         });
 
@@ -498,11 +568,11 @@ async function preflightDedupByChunkId(
             console.log(`[#2018] Preflight dedup: ${skipped}/${subChunks.length} chunks already indexed, computing embeddings for ${newSubChunks.length}`);
         }
 
-        return newSubChunks;
+        return { subChunks: newSubChunks, qdrantReachable: allBatchesSucceeded };
     } catch (error: any) {
-        // Non-fatal: if pre-flight fails, proceed with all chunks (fall through to post-dedup)
-        console.warn(`[#2018] Preflight dedup failed (non-blocking): ${error?.message || error}`);
-        return subChunks;
+        // #2165: Total failure — Qdrant unreachable. Signal it so the caller backs off.
+        console.warn(`[#2018] Preflight dedup failed (Qdrant unreachable): ${error?.message || error}`);
+        return { subChunks, qdrantReachable: false };
     }
 }
 
@@ -516,6 +586,26 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     try {
+        // #2165: ROOT-CAUSE FIX for embedding-server hammering.
+        // Previously, indexTask() extracted chunks, computed ALL embeddings, THEN
+        // discovered the Qdrant circuit breaker was OPEN and threw. Under sustained
+        // Qdrant latency the breaker stays OPEN, yet every background cycle still
+        // burned GPU embedding chunks whose upsert was guaranteed to be rejected.
+        // Short-circuit here, BEFORE any embedding work, when the breaker is open.
+        if (isCircuitBreakerBlocking()) {
+            const snap = getCircuitBreakerState();
+            console.warn(
+                `🚫 [indexTask] Circuit breaker OPEN — skipping task ${taskId} BEFORE embedding ` +
+                `(failures=${snap.failureCount}, retry in ~${Math.round(snap.msUntilHalfOpen / 1000)}s). ` +
+                `No embeddings computed, no GPU burned.`
+            );
+            throw new GenericError(
+                `Qdrant circuit breaker OPEN — indexing for task ${taskId} deferred (no embeddings computed)`,
+                GenericErrorCode.CIRCUIT_BREAKER_OPEN,
+                { taskId, circuitBreaker: snap, service: 'VectorIndexer.indexTask' }
+            );
+        }
+
         await ensureCollectionExists();
 
         // Dispatch to appropriate chunk extractor based on source
@@ -549,7 +639,28 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         }
 
         // Phase B: #2018 Phase 2 — Pre-flight dedup (skip already-indexed chunks BEFORE embeddings)
-        const subChunksToEmbed = await preflightDedupByChunkId(allSubChunks);
+        const preflight = await preflightDedupByChunkId(allSubChunks);
+        const subChunksToEmbed = preflight.subChunks;
+
+        // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
+        // set is unreliable — it most likely contains chunks already indexed. Embedding
+        // them would (a) hammer the embedding server and (b) fail at upsert anyway since
+        // Qdrant is unreachable. Back off instead. This is the second half of the
+        // root-cause fix: the dedup query failing silently was letting 100% of chunks
+        // through to embedding under exactly the load conditions that caused #2165.
+        if (!preflight.qdrantReachable && subChunksToEmbed.length > 0) {
+            console.warn(
+                `🚫 [indexTask] Pre-flight dedup could not reach Qdrant for task ${taskId} — ` +
+                `deferring ${subChunksToEmbed.length} chunk embeddings to avoid re-embedding ` +
+                `already-indexed content. No GPU burned.`
+            );
+            recordFailure();
+            throw new GenericError(
+                `Qdrant unreachable during pre-flight dedup for task ${taskId} — indexing deferred (no embeddings computed)`,
+                GenericErrorCode.CIRCUIT_BREAKER_OPEN,
+                { taskId, chunksDeferred: subChunksToEmbed.length, service: 'VectorIndexer.indexTask' }
+            );
+        }
 
         // Phase C: Compute embeddings only for new/changed chunks
         let pointsToIndex: PointStruct[] = [];
@@ -595,9 +706,15 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     continue;
                 }
 
+                // #2165: A wrong-dimension vector used to be only warned about, then
+                // pushed into pointsToIndex anyway — where validateVectorGlobal() throws
+                // *inside* safeQdrantUpsert's sanitize map, aborting the whole batch and
+                // tripping recordFailure(). One bad chunk poisoned every other chunk in
+                // the task and helped keep the circuit breaker open. Skip it, and do NOT
+                // cache it (caching a bad vector would make it permanently un-indexable).
                 if (vector.length !== expectedDims) {
-                    console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id}`);
-                    console.warn(`⚠️ [indexTask] Modèle utilisé: ${embeddingModel}`);
+                    console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id} — chunk ignoré (modèle: ${embeddingModel})`);
+                    continue;
                 }
 
                 embeddingCache.set(contentHash, { vector, timestamp: now });
