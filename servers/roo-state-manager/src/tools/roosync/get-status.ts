@@ -348,7 +348,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     }
 
     // #1409: Use machine registry as authoritative source for total count
-    const registryMachineIds = service.getKnownMachineIds();
+    // Filter out orphan test entries (test-machine, ci-test-machine, etc.)
+    const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
     const heartbeatTotal = filteredOnlineMachines.length + filteredUnknownMachines.length;
     const totalMachines = Math.max(
       registryMachineIds.length,
