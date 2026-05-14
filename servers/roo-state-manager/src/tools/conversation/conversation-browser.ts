@@ -462,11 +462,13 @@ export const conversationBrowserTool: Tool = {
                 description: '[rebuild] Force Qdrant reindex for all built/loaded skeletons.',
                 default: false
             },
-            // #1752 Bug #3: Expose GDrive archive support in inputSchema
+            // #1752 Bug #3 + #2033: Cross-machine archives now default ON.
+            // SkeletonCacheService Tier 3 loads archives at startup, so the perf
+            // concern from the original GDrive-per-call scan no longer applies.
             includeArchives: {
                 type: 'boolean',
-                description: '[list] Include cross-machine GDrive archives (Tier 3). Requires ROOSYNC_SHARED_PATH.',
-                default: false
+                description: '[list] Include cross-machine GDrive archives (Tier 3). Default: true.',
+                default: true
             }
         },
         required: ['action']
