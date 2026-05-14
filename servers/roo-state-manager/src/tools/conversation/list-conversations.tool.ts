@@ -945,7 +945,7 @@ export const listConversationsTool = {
         //   When only `limit` is provided (no `per_page`), it acts as both page size and total cap.
         //   The floor of 10 does NOT apply to `limit` — the caller explicitly asked for fewer.
         const hasExplicitPerPage = args.per_page !== undefined && args.per_page !== null;
-        const hasLimit = !hasExplicitPerPage && args.limit !== undefined && args.limit !== null;
+        const hasLimit = args.limit !== undefined && args.limit !== null;
         const rawPerPage = (hasExplicitPerPage ? args.per_page : (args.limit || 10)) as number;
         const perPage = hasExplicitPerPage
             ? Math.min(Math.max(rawPerPage, 10), 100)
