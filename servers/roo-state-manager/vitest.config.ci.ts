@@ -40,23 +40,15 @@ export default mergeConfig(unitConfig, defineConfig({
       'tests/unit/services/roosync/FileLockManager.diagnostic.test.ts',
       'tests/unit/services/roosync/PresenceManager.integration.test.ts',
 
-      // ===== CI-excluded: SERVICE_MOCK (outdated mocks after refactoring) =====
-      // These tests reference service methods that no longer exist or have changed signatures.
-      // Root cause: jest.setup.js broad mocks removed in 2e6b49a, tests not updated.
-      'src/services/__tests__/BaselineService.test.ts',
-      'src/services/__tests__/ConfigService.test.ts',
-      'src/services/__tests__/RooSyncService.test.ts',
-      'src/services/__tests__/task-indexer.test.ts',
-      'src/tools/__tests__/mcp-tools-audit.test.ts',
-      'src/tools/roosync/__tests__/compare-config.test.ts',
-      'src/tools/roosync/__tests__/heartbeat.integration.test.ts',
-      'tests/integration/new-modules-integration.test.ts',
-      'tests/integration/phase3-comprehensive.test.ts',
-      'tests/performance/concurrency.test.ts',
-      'tests/unit/services/BaselineService.test.ts',
-      'tests/unit/services/RooSyncService.test.ts',
-      'tests/unit/services/task-indexer-vector-validation.test.ts',
-      'tests/unit/services/task-indexer.test.ts',
+      // ===== SERVICE_MOCK: Exclusions removed 2026-05-14 (#1143 audit) =====
+      // Root cause (jest.setup.js broad mocks removed in 2e6b49a) is no longer valid.
+      // All surviving tests have self-contained vi.mock() and pass in CI.
+      // Archived (low-value/thin): new-modules-integration, phase3-comprehensive,
+      //   concurrency, BaselineService unit (superseded by src/services/__tests__ version).
+      // Ghost entry removed: heartbeat.integration.test.ts (file deleted).
+      'tests/integration/_archives/**',
+      'tests/performance/_archives/**',
+      'tests/unit/services/_archives/BaselineService.ci-excluded.test.ts',
       // #1244 Couche 2.5/2.6/2.7 — Re-enabled in CI after repair: legacy test was
       // fixed to accommodate the new hard-cap and smart_truncation default, and the
       // file now contains regression guards for the pipeline repair (#1244).
