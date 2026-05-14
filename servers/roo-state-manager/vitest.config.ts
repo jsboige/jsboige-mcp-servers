@@ -32,6 +32,8 @@ export default defineConfig({
       '**/node_modules/**',
       '**/build/**',
       '**/dist/**',
+      // Archived code — tests reference removed/renamed services
+      '**/_archives/**',
       // Backups vitest-migration - anciennes sauvegardes à ne pas exécuter
       // Chemin: vitest-migration/backups/tests-DATE/heures/tests/
       // IMPORTANT: Exclure avant que include ne les matche
