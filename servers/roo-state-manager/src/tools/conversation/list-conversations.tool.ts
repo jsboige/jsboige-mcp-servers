@@ -15,9 +15,6 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 // Profiling instrumentation removed (#832) — was generating ~1131 lines of noise in test output
-// #1752 Bug #3: Add GDrive archive support
-import { TaskArchiver } from '../../services/task-archiver/index.js';
-import { archiveToSkeleton } from '../../services/archive-skeleton-builder.js';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
@@ -622,42 +619,28 @@ export const listConversationsTool = {
             }
         }
 
-        // #1752 Bug #3: Include GDrive cross-machine archives (Tier 3)
+        // #1752 Bug #3 + #2033: Include GDrive cross-machine archives (Tier 3).
+        // Uses SkeletonCacheService's already-loaded Tier 3 cache instead of
+        // re-scanning GDrive on every call — much faster and always warm.
         if (args.includeArchives) {
-            // PERF: Timeout wrapper (5s) prevents archive scan from blocking list responses
-            // GDrive I/O can be slow — scan must not block foreground tools
             try {
-                const archivePromise = (async () => {
-                    const archivedTaskIds = await TaskArchiver.listArchivedTasks();
-                    const archiveSkeletons: ConversationSkeleton[] = [];
+                const scsInstance = SkeletonCacheService.getInstance();
+                const scsCache = await scsInstance.getCache();
+                const archiveSkeletons: ConversationSkeleton[] = [];
 
-                    for (const archivedId of archivedTaskIds) {
-                        // Skip if already in cache (Tier 1/2 collision)
-                        if (conversationCache.has(archivedId)) {
-                            continue;
-                        }
-                        try {
-                            const archive = await TaskArchiver.readArchivedTask(archivedId);
-                            if (archive) {
-                                const skeleton = archiveToSkeleton(archive);
-                                archiveSkeletons.push(skeleton);
-                            }
-                        } catch (archiveErr) {
-                            console.warn(`[list_conversations] Failed to read archive ${archivedId}:`, archiveErr);
-                        }
+                for (const [taskId, skeleton] of scsCache.entries()) {
+                    const dataSource = (skeleton as any).metadata?.dataSource;
+                    if (dataSource === 'gdrive-archive' && !conversationCache.has(taskId)) {
+                        archiveSkeletons.push(skeleton);
                     }
+                }
 
-                    console.log(`[list_conversations] Loaded ${archiveSkeletons.length} archived tasks from GDrive`);
-                    return archiveSkeletons;
-                })();
-
-                const archiveTimeout = new Promise<ConversationSkeleton[]>((_, reject) =>
-                    setTimeout(() => reject(new Error('Archive scan timeout (5s)')), 5000)
-                );
-                const archiveSkeletons = await Promise.race([archivePromise, archiveTimeout]);
+                if (archiveSkeletons.length > 0) {
+                    console.log(`[list_conversations] Loaded ${archiveSkeletons.length} archived tasks from SkeletonCacheService Tier 3`);
+                }
                 allSkeletons = allSkeletons.concat(archiveSkeletons);
             } catch (archiveError) {
-                console.warn('⚠️ list_conversations: Archive scan failed or timed out (continuing without archives):', archiveError instanceof Error ? archiveError.message : archiveError);
+                console.warn('⚠️ list_conversations: Archive tier read failed (continuing without archives):', archiveError instanceof Error ? archiveError.message : archiveError);
             }
         }
 
