@@ -207,7 +207,11 @@ export enum GenericErrorCode {
   NETWORK_ERROR = 'NETWORK_ERROR',
   PERMISSION_DENIED = 'PERMISSION_DENIED',
   TIMEOUT = 'TIMEOUT',
-  INVALID_ARGUMENT = 'INVALID_ARGUMENT'
+  INVALID_ARGUMENT = 'INVALID_ARGUMENT',
+  // #2165: Qdrant circuit breaker is OPEN — indexing was skipped *before* any
+  // embedding was computed. This is a transient back-off signal, NOT a task-level
+  // failure: the caller must retry later with backoff, not mark the task failed.
+  CIRCUIT_BREAKER_OPEN = 'CIRCUIT_BREAKER_OPEN'
 }
 
 /**

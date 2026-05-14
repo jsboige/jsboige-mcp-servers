@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { indexTask, safeQdrantUpsert, QdrantRateLimiter, qdrantRateLimiter, cleanupOldVectors } from '../../../../src/services/task-indexer/VectorIndexer.js';
+import { indexTask, safeQdrantUpsert, QdrantRateLimiter, qdrantRateLimiter, cleanupOldVectors, resetCircuitBreakerForTest } from '../../../../src/services/task-indexer/VectorIndexer.js';
 import { getQdrantClient } from '../../../../src/services/qdrant.js';
 import getOpenAIClient from '../../../../src/services/openai.js';
 import { extractChunksFromTask, splitChunk } from '../../../../src/services/task-indexer/ChunkExtractor.js';
@@ -33,13 +33,23 @@ describe('VectorIndexer', () => {
   let mockOpenAIClient: any;
 
   beforeEach(() => {
+    // #2165: The circuit breaker is module-level state shared across this file's
+    // tests. `safeQdrantUpsert` failure tests trip it OPEN; without an explicit
+    // reset it leaks into the indexTask tests (which then short-circuit before
+    // doing anything). Reset it before every test.
+    resetCircuitBreakerForTest();
+
     mockQdrantClient = {
       getCollections: vi.fn(),
       createCollection: vi.fn(),
       upsert: vi.fn(),
       count: vi.fn(),
       scroll: vi.fn(),
-      delete: vi.fn()
+      delete: vi.fn(),
+      // #2165: preflightDedupByChunkId() calls qdrant.retrieve(). Without it the
+      // mock throws "retrieve is not a function", which the new code correctly
+      // treats as "Qdrant unreachable" and defers. Default: nothing pre-indexed.
+      retrieve: vi.fn().mockResolvedValue([])
     };
     vi.mocked(getQdrantClient).mockReturnValue(mockQdrantClient);
 
@@ -129,7 +139,10 @@ describe('VectorIndexer', () => {
       vi.mocked(extractChunksFromTask).mockResolvedValue(chunks as any);
       vi.mocked(splitChunk).mockReturnValue(subChunks as any);
       mockQdrantClient.getCollections.mockResolvedValue({ collections: [{ name: 'roo_tasks_semantic_index' }] });
-      mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+      // #2165: must be a full-dimension (1536) vector — indexTask now skips
+      // wrong-dimension embeddings instead of pushing a poison vector that aborts
+      // the whole batch inside safeQdrantUpsert's validation.
+      mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: new Array(1536).fill(0.1) }] });
       mockQdrantClient.upsert.mockResolvedValue({});
 
       const result = await indexTask(taskId, taskPath);
