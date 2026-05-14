@@ -374,6 +374,39 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Skel
     }
 }
 
+/**
+ * #1953: Clean up stale .tmp and .lock orphan files in shared-state directories.
+ * ADR 008 made HeartbeatService entirely in-memory — the heartbeats/ directory
+ * still contains .tmp files from the pre-ADR 008 disk-based system.
+ * Also cleans stale .lock files from interrupted FileLockManager operations.
+ */
+async function cleanupStaleTempFiles(): Promise<void> {
+    const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+    if (!sharedPath) return;
+
+    const dirsToClean = ['heartbeats', 'presence', 'dashboards'];
+    let totalRemoved = 0;
+
+    for (const dir of dirsToClean) {
+        const dirPath = path.join(sharedPath, dir);
+        try {
+            const entries = await fs.readdir(dirPath);
+            for (const entry of entries) {
+                if (entry.endsWith('.tmp') || entry.endsWith('.lock') || /^\.tmp-/.test(entry)) {
+                    try {
+                        await fs.unlink(path.join(dirPath, entry));
+                        totalRemoved++;
+                    } catch { /* already gone — ignore */ }
+                }
+            }
+        } catch { /* directory missing or inaccessible — skip */ }
+    }
+
+    if (totalRemoved > 0) {
+        console.log(`[#1953] Cleaned ${totalRemoved} stale .tmp/.lock files from shared state`);
+    }
+}
+
 /** #883: Interval for skeleton refresh worker (2 minutes) */
 export const SKELETON_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 
@@ -594,6 +627,9 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 
         // Heartbeat: ADR 008 passive model — no auto-start needed.
         // Every MCP tool call IS the heartbeat. Status derived from timestamps.
+
+        // #1953: Clean up stale .tmp/.lock orphan files from pre-ADR 008 heartbeat system
+        cleanupStaleTempFiles().catch(() => { /* non-blocking */ });
 
         console.log('✅ Services background lancés');
     } catch (error: any) {
