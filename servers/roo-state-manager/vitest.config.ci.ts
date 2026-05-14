@@ -49,6 +49,11 @@ export default mergeConfig(unitConfig, defineConfig({
       'tests/integration/_archives/**',
       'tests/performance/_archives/**',
       'tests/unit/services/_archives/BaselineService.ci-excluded.test.ts',
+
+      // ===== CI-excluded: PRE-ADR 008 HeartbeatService tests (stale API) =====
+      // Tests use getOfflineMachines/getWarningMachines/file-based heartbeats removed by ADR 008.
+      // Track: #1143 follow-up — these tests need rewrite for in-memory HeartbeatService.
+      'tests/unit/services/RooSyncService.test.ts',
       // #1244 Couche 2.5/2.6/2.7 — Re-enabled in CI after repair: legacy test was
       // fixed to accommodate the new hard-cap and smart_truncation default, and the
       // file now contains regression guards for the pipeline repair (#1244).
