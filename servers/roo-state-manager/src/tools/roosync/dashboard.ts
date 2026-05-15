@@ -911,10 +911,13 @@ async function generateStatusUpdate(
 
   const systemPrompt = `Tu es un expert en synthèse de dashboards de coordination multi-agents.
 
-CONTEXTE : Le dashboard contient un STATUT (mémoire de travail du projet) et des MESSAGES INTERCOM.
-Les messages les plus anciens vont être archivés. Ta mission : mettre à jour le statut en y intégrant les infos importantes des messages qui vont disparaître.
+CONTEXTE : Le dashboard contient un STATUT et des MESSAGES INTERCOM, qui jouent des rôles distincts :
+- Les **MESSAGES** sont l'activité courte du moment (rapports de cycle, claims, livrables individuels) — ils sont périodiquement archivés.
+- Le **STATUT est la MÉMOIRE LONG-TERME du projet** sur plusieurs semaines/mois. Il porte les décisions actées, les blocages structurels qui durent, les configurations en vigueur, les seuils de référence, les patterns/anti-patterns appris, les jalons d'architecture. Ce n'est PAS un résumé des messages récents.
 
-La taille est gérée par une passe de condensation automatique (déclenchée au-delà du seuil) — ici, reste qualitatif sans raisonner en octets.
+Les messages les plus anciens vont être archivés. Ta mission : faire ÉVOLUER le statut en HÉRITANT de l'ancien et en y intégrant ce qui a valeur durable dans les messages [SERA ARCHIVÉ]. Tu ne réécris PAS depuis zéro.
+
+La taille du statut est gérée ailleurs — préfère un statut un peu plus volumineux à la perte d'informations historiques importantes. Le fine détail des cycles reste dans les messages (eux-mêmes condensés en cascade).
 
 RÈGLE ABSOLUE — LAST-KNOWN-STATE WINS (#1502) :
 Pour CHAQUE sujet (machine, service, tâche), SEUL le dernier état connu doit apparaître.
@@ -922,15 +925,19 @@ Pour CHAQUE sujet (machine, service, tâche), SEUL le dernier état connu doit a
 - Si un message récent dit "[DONE] tâche X" → la tâche X est TERMINÉE, pas "en cours".
 - SUPPRIMER explicitement tout fait contredit par une source plus récente. Ne PAS garder les deux versions.
 
+PRINCIPE INVERSE — SILENCE ≠ OBSOLESCENCE :
+Si un fait de l'ancien statut N'EST PAS contredit par les messages récents (juste pas mentionné), il RESTE DANS LE STATUT. Une décision architecturale, un seuil de configuration, un pattern appris, une métrique de référence ne disparaissent pas parce qu'aucun cycle récent n'en parle. Seule une contradiction explicite ou une expiration documentée (ex: "X retiré au profit de Y") justifie une suppression.
+
 EXIGENCES :
-1. ZÉRO perte d'information stratégique (décisions, blocages, livrables, métriques)
-2. DATES à jour : timestamps messages récents > dates ancien statut
+1. HÉRITAGE : partir de l'ancien statut, l'enrichir, NE PAS réécrire depuis zéro
+2. ZÉRO perte d'information stratégique multi-cycles (décisions architecturales, blocages structurels, métriques de référence, patterns appris, configurations en vigueur)
 3. CONTRADICTIONS : messages récents ont TOUJOURS RAISON — SUPPRIMER les faits obsolètes de l'ancien statut
 4. [DONE] dans messages récents → TERMINÉ dans statut (JAMAIS "en cours")
 5. Métriques chiffrées EXACTES préservées
-6. INTÉGRER infos des messages [SERA ARCHIVÉ] sinon perdues
-7. Pas d'emojis. Pas de prose. Factuel et structuré.
-8. INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas EXPLICITEMENT dans les sources
+6. INTÉGRER les infos durables des messages [SERA ARCHIVÉ] sinon perdues (le détail tactique disparaît, le savoir stratégique reste)
+7. DATES : timestamps messages récents > dates ancien statut pour les faits mis à jour ; dates d'origine préservées pour les décisions historiques
+8. Pas d'emojis. Factuel et structuré.
+9. INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas EXPLICITEMENT dans les sources (ancien statut + messages)
 
 STRUCTURE :
 ## [Workspace] — État au ${lastDate}
@@ -942,22 +949,29 @@ STRUCTURE :
 [FACTUEL uniquement : par entité (machine/service), dernier état connu avec date source]
 Format : "- **entité** : état (source: [date])"
 
+### Décisions actées
+[Choix d'architecture/process qui restent valides — préserver à travers les cycles tant que non contredits ; inclure la date d'origine et le contexte]
+
+### Blocages structurels
+[Problèmes qui durent au-delà d'un cycle — distinguer des frictions ponctuelles]
+
 ### Livrables récents
 [Réalisations avec dates — synthétiser par thème, pas par PR/commit individuel]
 
 ### En cours
 [Tâches actives avec responsable — uniquement celles sans [DONE] récent]
 
-### Blocages / Attention
-[Problèmes non résolus — retirer ceux résolus par des messages récents]
+### Métriques de référence
+[Seuils, chiffres clés, configurations en vigueur — préservés à travers les cycles tant que non révisés]
 
-### Décisions et métriques
-[Choix actés + chiffres clés]
+### Patterns appris
+[Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
 
 INTERDIT :
-- Copier-coller l'ancien statut (SYNTHÉTISER et METTRE À JOUR)
+- Réécrire le statut comme si l'ancien n'existait pas (HÉRITER ET ENRICHIR)
 - Garder un fait contredit par un message plus récent (ex: "X DOWN" si un message dit "X UP")
-- Garder des tâches terminées depuis longtemps sans valeur de référence
+- Retirer une décision architecturale, un seuil de configuration, une métrique de référence ou un pattern appris parce qu'aucun message récent n'en parle (silence ≠ obsolescence)
+- Garder des tâches achevées sans valeur de référence (l'achevé non-instructif disparaît, l'architecture décidée reste)
 - Lister chaque commit/PR individuellement
 - Inventer des informations absentes des sources
 - Inférer un état à partir d'informations partielles (extrapolation)`;
