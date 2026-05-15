@@ -356,7 +356,7 @@ describe('FileLockManager', () => {
 			expect(mockCopyFile).toHaveBeenCalledWith('/test/f.json', '/test/f.json.bak-1');
 		});
 
-		test('rotates .bak-1 -> .bak-2 on second write', async () => {
+		test('replaces .bak-1 on subsequent write', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
 			mockUnlink.mockResolvedValue(undefined);
 			mockCopyFile.mockResolvedValue(undefined);
@@ -366,22 +366,12 @@ describe('FileLockManager', () => {
 			const manager = FileLockManager.getInstance();
 			await manager.updateJsonWithLock('/test/f.json', (d) => ({ v: (d?.v ?? 0) + 1 }));
 
-			expect(mockRename).toHaveBeenCalledWith('/test/f.json.bak-1', '/test/f.json.bak-2');
+			// With MAX_BACKUPS=1, old .bak-1 is deleted then recreated
+			expect(mockUnlink).toHaveBeenCalledWith('/test/f.json.bak-1');
+			expect(mockCopyFile).toHaveBeenCalledWith('/test/f.json', '/test/f.json.bak-1');
 		});
 
-		test('deletes oldest .bak-3 when max backups reached', async () => {
-			mockWriteFile.mockResolvedValue(undefined);
-			mockUnlink.mockResolvedValue(undefined);
-			mockCopyFile.mockResolvedValue(undefined);
-			mockRename.mockResolvedValue(undefined);
-			mockReadFile.mockResolvedValue(JSON.stringify({ v: 3 }));
-
-			const manager = FileLockManager.getInstance();
-			await manager.updateJsonWithLock('/test/f.json', (d) => ({ v: (d?.v ?? 0) + 1 }));
-
-			expect(mockUnlink).toHaveBeenCalledWith('/test/f.json.bak-3');
-			expect(mockRename).toHaveBeenCalledWith('/test/f.json.bak-2', '/test/f.json.bak-3');
-		});
+		
 
 		test('falls back to .bak-1 when main file is corrupt', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
@@ -402,15 +392,13 @@ describe('FileLockManager', () => {
 			expect(result.data).toEqual({ recovered: true });
 		});
 
-		test('cascades fallback through .bak-1 -> .bak-2 -> .bak-3', async () => {
+		test('falls back to .bak-1 when main file is corrupt', async () => {
 			mockWriteFile.mockResolvedValue(undefined);
 			mockUnlink.mockResolvedValue(undefined);
 			mockCopyFile.mockResolvedValue(undefined);
 			mockRename.mockResolvedValue(undefined);
 			mockReadFile
 				.mockResolvedValueOnce('bad')
-				.mockResolvedValueOnce('also-bad')
-				.mockResolvedValueOnce('still-bad')
 				.mockResolvedValueOnce(JSON.stringify({ last: true }));
 
 			const manager = FileLockManager.getInstance();

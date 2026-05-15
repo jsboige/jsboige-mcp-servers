@@ -12,8 +12,8 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { StateManagerError } from '../../types/errors.js';
 
-/** Maximum number of backup files to keep (.bak-1, .bak-2, .bak-3) */
-const MAX_BACKUPS = 3;
+/** Maximum number of backup files to keep (.bak-1) */
+const MAX_BACKUPS = 1;
 
 /**
  * Options de verrouillage
@@ -253,7 +253,7 @@ export class FileLockManager {
   }
 
   /**
-   * Rotate backup files before a write (.bak-3 <- .bak-2 <- .bak-1 <- current)
+   * Rotate backup files before a write (.bak-1 <- current)
    *
    * @param filePath - Chemin du fichier original
    */
@@ -268,7 +268,7 @@ export class FileLockManager {
       }
     }
 
-    // Shift backups: .bak-(N-1) -> .bak-N, ..., .bak-1 -> .bak-2
+    // Shift backups: only when MAX_BACKUPS > 1
     for (let i = MAX_BACKUPS - 1; i >= 1; i--) {
       const src = `${filePath}.bak-${i}`;
       const dest = `${filePath}.bak-${i + 1}`;
@@ -310,7 +310,7 @@ export class FileLockManager {
       console.warn(`[FileLockManager] Corrupt JSON in ${filePath}: ${error.message}, trying backups`);
     }
 
-    // Try backups in order: .bak-1, .bak-2, .bak-3
+    // Try backups in order: .bak-1
     for (let i = 1; i <= MAX_BACKUPS; i++) {
       const backupPath = `${filePath}.bak-${i}`;
       try {
