@@ -126,6 +126,11 @@ const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 // matching the qwen3-4b-awq embedder capacity on po-2026 (~5-10 req/s). Override via env to accelerate
 // once the cache is warm (steady-state sees high cache hits and the embedder is barely touched).
 const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '30', 10);
+// #2194: Batch size for embedding API calls. 1 = legacy single-input (backward compat).
+// Batch 16-32 yields ~3-5x throughput by amortizing HTTP round-trips.
+const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || '16', 10);
+// Approximate max tokens per batch request. Split batch if sum of content lengths exceeds this.
+const EMBEDDING_BATCH_MAX_TOKENS = parseInt(process.env.EMBEDDING_BATCH_MAX_TOKENS || '7000', 10);
 let operationTimestamps: number[] = [];
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
@@ -621,6 +626,133 @@ async function preflightDedupByChunkId(
     }
 }
 
+// #2194: Split sub-chunks into batches respecting size and token limits
+function buildBatches(
+    entries: Array<{ chunk: Chunk; contentHash: string }>,
+    batchSize: number,
+    maxTokens: number
+): Array<Array<{ chunk: Chunk; contentHash: string }>> {
+    const batches: Array<Array<{ chunk: Chunk; contentHash: string }>> = [];
+    let currentBatch: Array<{ chunk: Chunk; contentHash: string }> = [];
+    let currentTokens = 0;
+
+    for (const entry of entries) {
+        const estimatedTokens = Math.ceil(entry.chunk.content.length / 4);
+        if (
+            currentBatch.length >= batchSize ||
+            (currentBatch.length > 0 && currentTokens + estimatedTokens > maxTokens)
+        ) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentTokens = 0;
+        }
+        currentBatch.push(entry);
+        currentTokens += estimatedTokens;
+    }
+    if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+    }
+    return batches;
+}
+
+// #2194: Embed a single chunk (legacy path for EMBEDDING_BATCH_SIZE=1)
+async function embedSingle(
+    subChunk: Chunk,
+    contentHash: string,
+    model: string,
+    expectedDims: number,
+    now: number
+): Promise<number[] | null> {
+    const embeddingResponse = await getOpenAIClient().embeddings.create({
+        model,
+        input: subChunk.content,
+    });
+    _metrics.embeddings_called_total++;
+    const vector = embeddingResponse.data[0].embedding;
+
+    if (!vector || !Array.isArray(vector)) {
+        console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
+        return null;
+    }
+    if (vector.length !== expectedDims) {
+        _metrics.embeddings_wrong_dim_total++;
+        console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${subChunk.chunk_id}`);
+        return null;
+    }
+
+    embeddingCache.set(contentHash, { vector, timestamp: now });
+    operationTimestamps.push(now);
+    return vector;
+}
+
+// #2194: Embed a batch of chunks in one API call.
+// On failure, splits into two halves and retries each independently (no data loss).
+async function embedBatch(
+    batch: Array<{ chunk: Chunk; contentHash: string }>,
+    model: string,
+    expectedDims: number,
+    now: number
+): Promise<Array<number[] | null>> {
+    if (batch.length === 1) {
+        // Single item — try once, return null on failure
+        try {
+            const resp = await getOpenAIClient().embeddings.create({ model, input: batch[0].chunk.content });
+            _metrics.embeddings_called_total++;
+            operationTimestamps.push(now);
+            const vector = resp.data[0]?.embedding;
+            if (vector && Array.isArray(vector) && vector.length === expectedDims) {
+                embeddingCache.set(batch[0].contentHash, { vector, timestamp: now });
+                return [vector];
+            }
+            if (vector && vector.length !== expectedDims) {
+                _metrics.embeddings_wrong_dim_total++;
+                console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[0].chunk.chunk_id}`);
+            }
+            return [null];
+        } catch (error: any) {
+            console.error(`❌ [batch] Single embedding failed for chunk ${batch[0].chunk.chunk_id}: ${error.message}`);
+            return [null];
+        }
+    }
+
+    // Multi-item batch — try full batch, split on failure
+    try {
+        const inputs = batch.map(e => e.chunk.content);
+        const resp = await getOpenAIClient().embeddings.create({ model, input: inputs });
+        _metrics.embeddings_called_total += batch.length;
+        // #2194 fix: rate limit counts per embedding, not per batch
+        for (let i = 0; i < batch.length; i++) {
+            operationTimestamps.push(now);
+        }
+
+        const results: Array<number[] | null> = new Array(batch.length).fill(null);
+        for (let i = 0; i < batch.length; i++) {
+            const vector = resp.data[i]?.embedding;
+            if (!vector || !Array.isArray(vector)) {
+                console.error(`❌ [batch] Embedding invalide pour chunk ${batch[i].chunk.chunk_id}`);
+                continue;
+            }
+            if (vector.length !== expectedDims) {
+                _metrics.embeddings_wrong_dim_total++;
+                console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[i].chunk.chunk_id}`);
+                continue;
+            }
+            results[i] = vector;
+            embeddingCache.set(batch[i].contentHash, { vector, timestamp: now });
+        }
+        return results;
+    } catch (error: any) {
+        // Full batch failed — split into two halves and retry each independently
+        const mid = Math.ceil(batch.length / 2);
+        console.warn(`[batch] Batch of ${batch.length} failed (${error.message}), splitting into ${mid}+${batch.length - mid}`);
+        const [left, right] = await Promise.all([
+            embedBatch(batch.slice(0, mid), model, expectedDims, now),
+            embedBatch(batch.slice(mid), model, expectedDims, now),
+        ]);
+        return [...left, ...right];
+    }
+}
+
 /**
  * Indexe une seule tâche en créant des chunks granulaires, en générant des embeddings
  * sélectivement et en les stockant dans Qdrant.
@@ -711,11 +843,29 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // Phase C: Compute embeddings only for new/changed chunks
         let pointsToIndex: PointStruct[] = [];
 
-        for (const { chunk: subChunk, contentHash } of subChunksToEmbed) {
-            console.log(`📝 Processing subchunk: ${subChunk.content.length} chars (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
+        // #2194: Two-stage pipeline — cache lookup first, then batch embedding for misses
+        const embeddingModel = getEmbeddingModel();
+        const expectedDims = getEmbeddingDimensions();
+        const now = Date.now();
 
-            // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
-            const now = Date.now();
+        // Stage 1: Separate cached from uncached
+        type SubChunkEntry = { chunk: Chunk; contentHash: string };
+        const cachedResults: Map<string, number[]> = new Map(); // contentHash → vector
+        const uncached: SubChunkEntry[] = [];
+
+        for (const entry of subChunksToEmbed) {
+            const cached = embeddingCache.get(entry.contentHash);
+            if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
+                _metrics.embeddings_cached_hit_total++;
+                cachedResults.set(entry.contentHash, cached.vector);
+            } else {
+                uncached.push(entry);
+            }
+        }
+
+        // Stage 2: Batch embed uncached chunks
+        if (uncached.length > 0) {
+            // Rate-limit check before batch processing
             operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
             if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
                 _metrics.embeddings_rate_limit_waited_total++;
@@ -724,53 +874,32 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                 operationTimestamps = [];
             }
 
-            let vector: number[];
-
-            const cached = embeddingCache.get(contentHash);
-
-            if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
-                _metrics.embeddings_cached_hit_total++;
-                console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
-                vector = cached.vector;
+            if (EMBEDDING_BATCH_SIZE <= 1) {
+                // Legacy single-input path (backward compat)
+                for (const { chunk: subChunk, contentHash } of uncached) {
+                    const vector = await embedSingle(subChunk, contentHash, embeddingModel, expectedDims, now);
+                    if (vector) {
+                        cachedResults.set(contentHash, vector);
+                    }
+                }
             } else {
-                const embeddingModel = getEmbeddingModel();
-                const expectedDims = getEmbeddingDimensions();
-
-                const embeddingResponse = await getOpenAIClient().embeddings.create({
-                    model: embeddingModel,
-                    input: subChunk.content,
-                });
-                _metrics.embeddings_called_total++;
-                vector = embeddingResponse.data[0].embedding;
-
-                console.log(`[DEBUG] Embedding response reçu:`, {
-                    model: embeddingResponse.model,
-                    usage: embeddingResponse.usage,
-                    vectorLength: vector?.length || 'undefined',
-                    chunkId: subChunk.chunk_id
-                });
-
-                if (!vector || !Array.isArray(vector)) {
-                    console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
-                    continue;
+                // Batch path: split uncached into batches respecting token limits
+                const batches = buildBatches(uncached, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_MAX_TOKENS);
+                for (const batch of batches) {
+                    const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now);
+                    for (let i = 0; i < batch.length; i++) {
+                        if (batchVectors[i]) {
+                            cachedResults.set(batch[i].contentHash, batchVectors[i]!);
+                        }
+                    }
                 }
-
-                // #2165: A wrong-dimension vector used to be only warned about, then
-                // pushed into pointsToIndex anyway — where validateVectorGlobal() throws
-                // *inside* safeQdrantUpsert's sanitize map, aborting the whole batch and
-                // tripping recordFailure(). One bad chunk poisoned every other chunk in
-                // the task and helped keep the circuit breaker open. Skip it, and do NOT
-                // cache it (caching a bad vector would make it permanently un-indexable).
-                if (vector.length !== expectedDims) {
-                    _metrics.embeddings_wrong_dim_total++;
-                    console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id} — chunk ignoré (modèle: ${embeddingModel})`);
-                    continue;
-                }
-
-                embeddingCache.set(contentHash, { vector, timestamp: now });
-                operationTimestamps.push(now);
-                console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id} (dimension: ${vector.length})`);
             }
+        }
+
+        // Stage 3: Build points from all resolved vectors
+        for (const { chunk: subChunk, contentHash } of subChunksToEmbed) {
+            const vector = cachedResults.get(contentHash);
+            if (!vector) continue;
 
             const point: PointStruct = {
                 id: subChunk.chunk_id,
