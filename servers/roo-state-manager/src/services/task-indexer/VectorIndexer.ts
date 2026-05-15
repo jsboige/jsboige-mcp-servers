@@ -685,53 +685,72 @@ async function embedSingle(
     return vector;
 }
 
-// #2194: Embed a batch of chunks in one API call with binary backoff on failure
+// #2194: Embed a batch of chunks in one API call.
+// On failure, splits into two halves and retries each independently (no data loss).
 async function embedBatch(
     batch: Array<{ chunk: Chunk; contentHash: string }>,
     model: string,
     expectedDims: number,
     now: number
 ): Promise<Array<number[] | null>> {
-    const inputs = batch.map(e => e.chunk.content);
-    let batchSize = batch.length;
-
-    while (batchSize > 0) {
+    if (batch.length === 1) {
+        // Single item — try once, return null on failure
         try {
-            const currentInputs = inputs.slice(0, batchSize);
-            const embeddingResponse = await getOpenAIClient().embeddings.create({
-                model,
-                input: currentInputs,
-            });
-            _metrics.embeddings_called_total += batchSize;
-
-            const results: Array<number[] | null> = new Array(batch.length).fill(null);
-            for (let i = 0; i < batchSize; i++) {
-                const vector = embeddingResponse.data[i]?.embedding;
-                if (!vector || !Array.isArray(vector)) {
-                    console.error(`❌ [batch] Embedding invalide pour chunk ${batch[i].chunk.chunk_id}`);
-                    continue;
-                }
-                if (vector.length !== expectedDims) {
-                    _metrics.embeddings_wrong_dim_total++;
-                    console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[i].chunk.chunk_id}`);
-                    continue;
-                }
-                results[i] = vector;
-                embeddingCache.set(batch[i].contentHash, { vector, timestamp: now });
-            }
+            const resp = await getOpenAIClient().embeddings.create({ model, input: batch[0].chunk.content });
+            _metrics.embeddings_called_total++;
             operationTimestamps.push(now);
-            return results;
-        } catch (error: any) {
-            if (batchSize > 1) {
-                console.warn(`[batch] Embedding batch of ${batchSize} failed, retrying with ${Math.ceil(batchSize / 2)}: ${error.message}`);
-                batchSize = Math.ceil(batchSize / 2);
-            } else {
-                console.error(`❌ [batch] Single embedding failed for chunk ${batch[0].chunk.chunk_id}: ${error.message}`);
-                return new Array(batch.length).fill(null);
+            const vector = resp.data[0]?.embedding;
+            if (vector && Array.isArray(vector) && vector.length === expectedDims) {
+                embeddingCache.set(batch[0].contentHash, { vector, timestamp: now });
+                return [vector];
             }
+            if (vector && vector.length !== expectedDims) {
+                _metrics.embeddings_wrong_dim_total++;
+                console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[0].chunk.chunk_id}`);
+            }
+            return [null];
+        } catch (error: any) {
+            console.error(`❌ [batch] Single embedding failed for chunk ${batch[0].chunk.chunk_id}: ${error.message}`);
+            return [null];
         }
     }
-    return new Array(batch.length).fill(null);
+
+    // Multi-item batch — try full batch, split on failure
+    try {
+        const inputs = batch.map(e => e.chunk.content);
+        const resp = await getOpenAIClient().embeddings.create({ model, input: inputs });
+        _metrics.embeddings_called_total += batch.length;
+        // #2194 fix: rate limit counts per embedding, not per batch
+        for (let i = 0; i < batch.length; i++) {
+            operationTimestamps.push(now);
+        }
+
+        const results: Array<number[] | null> = new Array(batch.length).fill(null);
+        for (let i = 0; i < batch.length; i++) {
+            const vector = resp.data[i]?.embedding;
+            if (!vector || !Array.isArray(vector)) {
+                console.error(`❌ [batch] Embedding invalide pour chunk ${batch[i].chunk.chunk_id}`);
+                continue;
+            }
+            if (vector.length !== expectedDims) {
+                _metrics.embeddings_wrong_dim_total++;
+                console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[i].chunk.chunk_id}`);
+                continue;
+            }
+            results[i] = vector;
+            embeddingCache.set(batch[i].contentHash, { vector, timestamp: now });
+        }
+        return results;
+    } catch (error: any) {
+        // Full batch failed — split into two halves and retry each independently
+        const mid = Math.ceil(batch.length / 2);
+        console.warn(`[batch] Batch of ${batch.length} failed (${error.message}), splitting into ${mid}+${batch.length - mid}`);
+        const [left, right] = await Promise.all([
+            embedBatch(batch.slice(0, mid), model, expectedDims, now),
+            embedBatch(batch.slice(mid), model, expectedDims, now),
+        ]);
+        return [...left, ...right];
+    }
 }
 
 /**
