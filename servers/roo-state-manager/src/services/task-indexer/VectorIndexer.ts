@@ -404,7 +404,9 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
                 // 🚨 FIX CRITIQUE: Ne JAMAIS retry les erreurs HTTP 400 (Bad Request)
                 const httpStatus = error?.response?.status || error?.status;
                 if (httpStatus === 400) {
-                    recordFailure();
+                    // #2209: HTTP 400 is a permanent error (bad payload), NOT a transient failure.
+                    // Don't trip the circuit breaker — it would block all subsequent indexing.
+                    console.warn(`[#2209] HTTP 400 in safeQdrantUpsert — permanent error, NOT tripping breaker`);
                     const totalDuration = Date.now() - startTime;
 
                     console.error(`🔴 [safeQdrantUpsert] ERREUR HTTP 400 - NE PAS RETRY - Abandon immédiat`);
@@ -573,6 +575,17 @@ async function preflightDedupByChunkId(
 
     try {
         const qdrant = getQdrantClient();
+
+        // #2209: Skip preflight entirely for huge collections — retrieve() is too slow
+        // on millions of points. Rely on post-index content-hash dedup instead.
+        try {
+            const collectionInfo = await qdrant.count(COLLECTION_NAME, { exact: false });
+            if (collectionInfo.count > 5_000_000) {
+                console.log(`[#2209] Collection has ~${collectionInfo.count} points — skipping preflight dedup, relying on post-index content-hash dedup`);
+                return { subChunks, qdrantReachable: true };
+            }
+        } catch { /* ignore count failure, proceed with preflight */ }
+
         const chunkIds = subChunks.map(sc => sc.chunk.chunk_id);
         const existingContentHashes = new Map<string, string>(); // chunk_id -> contentHash
         let allBatchesSucceeded = true;
@@ -583,11 +596,18 @@ async function preflightDedupByChunkId(
             const batch = chunkIds.slice(i, i + BATCH_SIZE);
             _metrics.preflight_batches_total++;
             try {
-                const points = await qdrant.retrieve(COLLECTION_NAME, {
-                    ids: batch,
-                    with_payload: true,
-                    with_vector: false,
-                });
+                // #2209: Race with 5s timeout — slow retrieves on large collections
+                // should not block indexing indefinitely or trip the circuit breaker.
+                const points = await Promise.race([
+                    qdrant.retrieve(COLLECTION_NAME, {
+                        ids: batch,
+                        with_payload: true,
+                        with_vector: false,
+                    }),
+                    new Promise<never>((_, reject) =>
+                        setTimeout(() => reject(new Error('Preflight retrieve timeout after 5000ms')), 5000)
+                    ),
+                ]);
 
                 for (const point of points) {
                     const hash = (point.payload as any)?.contentHash as string | undefined;
@@ -595,11 +615,18 @@ async function preflightDedupByChunkId(
                 }
             } catch (retrieveError: any) {
                 _metrics.preflight_batches_qdrant_unreachable_total++;
-                // #2165: A failed retrieve does NOT mean "no existing points" — it means
-                // we don't know. Track it so the caller can back off instead of
-                // re-embedding chunks that are very likely already in Qdrant.
-                allBatchesSucceeded = false;
-                console.warn(`[#2018] Preflight retrieve failed for batch ${i}: ${retrieveError?.message || retrieveError}`);
+                const isTimeout = retrieveError?.message?.includes('timeout');
+                if (isTimeout) {
+                    // #2209: Timeouts don't mean Qdrant is down — just slow on large collections.
+                    // Don't mark as unreachable to avoid tripping circuit breaker.
+                    console.warn(`[#2209] Preflight retrieve timed out for batch at offset ${i} — treating as non-fatal`);
+                } else {
+                    // #2165: A non-timeout failure does NOT mean "no existing points" — it means
+                    // we don't know. Track it so the caller can back off instead of
+                    // re-embedding chunks that are very likely already in Qdrant.
+                    allBatchesSucceeded = false;
+                    console.warn(`[#2018] Preflight retrieve failed for batch ${i}: ${retrieveError?.message || retrieveError}`);
+                }
             }
         }
 
