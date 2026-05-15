@@ -190,7 +190,105 @@ NOTIFICATIONS_MIN_PRIORITY=HIGH
 # Chemin vers le fichier de configuration des règles de filtrage
 # Chemin relatif depuis le répertoire du MCP
 NOTIFICATIONS_FILTER_CONFIG=./config/notification-filters.json
+
+# Footer push notification dans tool response (#2192)
+# Valeurs: true | false (default: true)
+NOTIFICATIONS_FOOTER_ENABLED=true
+
+# Cap d'affichage des messages non lus dans le footer
+# Valeurs: nombre entier positif (default: 5, affiche "5+" au-delà)
+NOTIFICATIONS_MAX_COUNT=5
 ```
+
+### Footer Push Notification (#2192) {#footer-push-notification-2192}
+
+**But** : Notifier l'agent qu'il a des messages non lus en inbox **sans appel séparé `roosync_messages`** — chaque tool response MCP est annexée d'un footer compact.
+
+#### Comportement
+
+À chaque `tools/call` intercepté par `ToolUsageInterceptor`, si l'inbox a des messages non lus **adressés à la machine locale ET au workspace courant**, la response de l'outil est annexée du footer suivant :
+
+```text
+[NOTIF] 3 message(s) non lu(s) en inbox (1 URGENT). myia-po-2025:roo-extensions. Use roosync_messages action:"inbox".
+```
+
+**Format détaillé** :
+
+- `[NOTIF]` — préfixe distinct, parsable
+- `N message(s) non lu(s)` — count global (capé via `NOTIFICATIONS_MAX_COUNT`)
+- `(X URGENT)` ou `(X HIGH)` — priorité maximale présente (optionnel)
+- `machineId:workspace` — identification stricte de la machine et du workspace destinataires
+- `Use roosync_messages action:"inbox".` — pointeur vers l'outil de lecture
+
+#### Filtre Machine+Workspace Strict
+
+Le filtre est **non négociable** — implémenté via :
+
+```typescript
+this.messageManager.readInbox(
+  this.config.machineId,   // strict: messages adressés à cette machine
+  'unread',
+  undefined,
+  getLocalWorkspaceId()    // strict: messages adressés à ce workspace
+)
+```
+
+⚠️ **Aucune fuite cross-machine ou cross-workspace** : un agent sur `myia-po-2025:roo-extensions` ne verra jamais de footer pour un message adressé à `myia-po-2025:autre-workspace` ni à `myia-ai-01:roo-extensions`. Cette discipline évite les incidents de cycle 22 où des agents traitaient des messages qui ne leur étaient pas adressés.
+
+#### Background Check + Hot Path Zero-I/O
+
+Le footer est **pré-construit** par un interval background (60s, voir `BACKGROUND_CHECK_INTERVAL_MS`) qui :
+
+1. Lit l'inbox via `readInbox(machineId, 'unread', undefined, getLocalWorkspaceId())`
+2. Compte les messages non lus, calcule la priorité max
+3. Stocke le string dans `pendingFooter` (mémoire process)
+
+Quand un `tools/call` est intercepté, `interceptToolCall` :
+
+1. Exécute l'outil (`await execute()`)
+2. Si `pendingFooter` non null → annexe via `appendFooter(result, footer)` puis clear
+3. Sinon → retourne le result intact
+
+**Conséquence performance** : zéro I/O inbox sur le hot path. La latence d'un `tools/call` n'augmente pas. C'est l'évolution post-#1356 (qui avait déjà sorti l'inbox check du hot path) — le footer profite gratuitement de ce travail background.
+
+#### Support des Formats de Result
+
+`appendFooter` gère 3 types de result :
+
+| Type | Stratégie |
+|------|-----------|
+| `string` | Concaténation simple `result + footer` |
+| `Array<{type:"text", text:string}>` | Annexe au `.text` du dernier élément (format MCP text content) |
+| `Array<*>` générique | Push d'un nouvel élément `{type:"text", text:footer}` |
+| `{content: string}` | Concaténation à `obj.content` |
+| `{content: Array}` | Annexe au dernier text ou push élément |
+| autre | Fallback : retourne result intact (footer skip) |
+
+#### Désactivation
+
+Pour désactiver complètement le footer (ex: agent qui parse strict du JSON pur) :
+
+```bash
+NOTIFICATIONS_FOOTER_ENABLED=false
+```
+
+Le background check inbox continue de fonctionner (events `NotificationEvent` émis via `notificationService.notify`) — seule l'annexation au response est suspendue.
+
+#### Tests
+
+`src/notifications/__tests__/ToolUsageInterceptor.test.ts` contient 9 tests dédiés au #2192 :
+
+- ✅ Annexe footer à result `string` quand inbox non vide
+- ✅ Pas de footer quand inbox vide
+- ✅ Footer consommé après 1er call (pas répété en absence de nouveaux messages)
+- ✅ Count URGENT/HIGH affiché correctement
+- ✅ `NOTIFICATIONS_FOOTER_ENABLED=false` désactive
+- ✅ Annexe footer à MCP text content array
+- ✅ Pas de footer sans background check (état initial)
+- ✅ Filtre machine+workspace strict (via signature readInbox)
+- ✅ Cap `NOTIFICATIONS_MAX_COUNT` respecté
+
+35 tests au total (`describe('ToolUsageInterceptor')`).
 
 ### Fichier de Règles de Filtrage
 

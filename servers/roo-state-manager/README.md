@@ -102,9 +102,30 @@ Le Roo State Manager intègre un système de notifications push générique qui 
 NOTIFICATIONS_ENABLED=true
 NOTIFICATIONS_CHECK_INBOX=true
 NOTIFICATIONS_MIN_PRIORITY=HIGH
+
+# Footer push notification dans tool response (#2192)
+NOTIFICATIONS_FOOTER_ENABLED=true        # default true
+NOTIFICATIONS_MAX_COUNT=5                # cap display "5+" beyond this
 ```
 
 **Configuration avancée :** Voir [`config/notification-filters.json`](./config/notification-filters.json) pour personnaliser les règles de filtrage.
+
+### Footer Push Notification (#2192)
+
+Quand des messages non lus existent dans l'inbox **adressés à la machine locale ET au workspace courant**, chaque tool response MCP est annexée d'un footer compact :
+
+```
+[NOTIF] 3 message(s) non lu(s) en inbox (1 URGENT). myia-po-2025:roo-extensions. Use roosync_messages action:"inbox".
+```
+
+- ✅ Filtre strict `(machineId, workspaceId)` — pas de fuite cross-machine ni cross-workspace
+- ✅ Background interval 60s pré-construit le footer (zéro I/O sur le hot path)
+- ✅ Cap configurable via `NOTIFICATIONS_MAX_COUNT` (default 5)
+- ✅ Désactivable via `NOTIFICATIONS_FOOTER_ENABLED=false`
+- ✅ Display priorité URGENT/HIGH si présents
+- ✅ Compatible string, MCP text array, et object results
+
+**Détail implémentation :** [`docs/notifications/PUSH-NOTIFICATION-SYSTEM.md`](./docs/notifications/PUSH-NOTIFICATION-SYSTEM.md#footer-push-notification-2192)
 
 ---
 
