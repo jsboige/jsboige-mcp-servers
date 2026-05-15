@@ -469,6 +469,66 @@ ${intercomSection}
 }
 
 /**
+ * Append messages to the dashboard file without rewriting existing content.
+ * Only updates frontmatter (in-place regex) and appends new messages at the end.
+ * Used by handleAppend when no condensation occurred (the common case).
+ * #2121: Reduces GDrive sync traffic by avoiding full content re-serialization.
+ */
+async function appendDashboardIncremental(
+  key: string,
+  dashboard: Dashboard,
+  newMessageCount: number
+): Promise<void> {
+  const dir = getDashboardsDir();
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = getDashboardPath(key);
+  const tmpPath = `${filePath}.tmp`;
+
+  let existing: string;
+  try {
+    existing = await fs.readFile(filePath, 'utf8');
+  } catch {
+    return writeDashboardFile(key, dashboard);
+  }
+
+  const frontmatter: DashboardFrontmatter = {
+    type: dashboard.type,
+    lastModified: dashboard.lastModified,
+    lastModifiedBy: dashboard.lastModifiedBy,
+    totalMessages: dashboard.intercom.totalMessages,
+    lastCondensedAt: dashboard.intercom.lastCondensedAt
+  };
+  const newFm = `---\n${yaml.dump(frontmatter).trim()}\n---`;
+
+  const fmReplaced = existing.replace(/^---\n[\s\S]+?\n---/, newFm);
+
+  const escapeContent = (text: string): string =>
+    text.replace(/^### \[/gm, '\\#\\#\\# [');
+
+  const newMessages = dashboard.intercom.messages.slice(-newMessageCount);
+  const newBlock = newMessages.map(msg => {
+    let metaLines = `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]`;
+    if (msg.reply_to) metaLines += `\n[reply-to: ${msg.reply_to}]`;
+    if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
+      const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
+      metaLines += `\n[ack: ${ackStr}]`;
+    }
+    return `${metaLines}\n\n${escapeContent(msg.content)}`;
+  }).join('\n\n---\n\n');
+
+  let result: string;
+  if (fmReplaced.includes('*Aucun message.*')) {
+    result = fmReplaced.replace('*Aucun message.*', newBlock);
+  } else {
+    result = fmReplaced.trimEnd() + '\n\n---\n\n' + newBlock + '\n';
+  }
+
+  await fs.writeFile(tmpPath, result, 'utf8');
+  await fs.rename(tmpPath, filePath);
+  logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
+}
+
+/**
  * Crée un dashboard vide avec les valeurs par défaut
  */
 function createEmptyDashboard(
@@ -2140,7 +2200,12 @@ async function handleAppend(
   }
 
   const tWrite = Date.now();
-  await writeDashboardFile(key, finalDashboard);
+  // #2121: Use incremental append when no condensation (avoids re-serializing all messages)
+  if (!condensed && finalDashboard === updatedDashboard) {
+    await appendDashboardIncremental(key, finalDashboard, newMessages.length);
+  } else {
+    await writeDashboardFile(key, finalDashboard);
+  }
   writeMs = Date.now() - tWrite;
 
   // Fire-and-forget: Send mention notifications if mentions were detected
