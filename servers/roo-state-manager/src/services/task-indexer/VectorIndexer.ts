@@ -79,6 +79,45 @@ export function resetCircuitBreakerForTest(): void {
     lastFailureTime = 0;
 }
 
+// #2195: Per-cycle embedding metrics — in-process counters since MCP boot
+export interface EmbeddingMetrics {
+    embeddings_called_total: number;
+    embeddings_cached_hit_total: number;
+    embeddings_preflight_skipped_total: number;
+    embeddings_post_dedup_skipped_total: number;
+    embeddings_circuit_breaker_blocked_total: number;
+    embeddings_wrong_dim_total: number;
+    embeddings_rate_limit_waited_total: number;
+    preflight_batches_total: number;
+    preflight_batches_qdrant_unreachable_total: number;
+    preflight_chunks_returned_existing_total: number;
+    preflight_chunks_returned_missing_total: number;
+}
+
+const _metrics: EmbeddingMetrics = {
+    embeddings_called_total: 0,
+    embeddings_cached_hit_total: 0,
+    embeddings_preflight_skipped_total: 0,
+    embeddings_post_dedup_skipped_total: 0,
+    embeddings_circuit_breaker_blocked_total: 0,
+    embeddings_wrong_dim_total: 0,
+    embeddings_rate_limit_waited_total: 0,
+    preflight_batches_total: 0,
+    preflight_batches_qdrant_unreachable_total: 0,
+    preflight_chunks_returned_existing_total: 0,
+    preflight_chunks_returned_missing_total: 0,
+};
+
+export function getEmbeddingMetrics(): Readonly<EmbeddingMetrics> {
+    return { ..._metrics };
+}
+
+export function resetEmbeddingMetricsForTest(): void {
+    for (const key of Object.keys(_metrics) as (keyof EmbeddingMetrics)[]) {
+        _metrics[key] = 0;
+    }
+}
+
 // 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
 const EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 jours cache pour embeddings (FIX: augmenté de 24h)
@@ -493,6 +532,7 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
             return !hash || !existingHashes.has(hash);
         });
         console.log(`[#1985] Content-hash dedup: ${before - filtered.length}/${before} points already in Qdrant`);
+        _metrics.embeddings_post_dedup_skipped_total += (before - filtered.length);
         return filtered;
     } catch (error: any) {
         console.warn(`[#1985] Dedup check failed (non-blocking): ${error?.message || error}`);
@@ -536,6 +576,7 @@ async function preflightDedupByChunkId(
         const BATCH_SIZE = 100;
         for (let i = 0; i < chunkIds.length; i += BATCH_SIZE) {
             const batch = chunkIds.slice(i, i + BATCH_SIZE);
+            _metrics.preflight_batches_total++;
             try {
                 const points = await qdrant.retrieve(COLLECTION_NAME, {
                     ids: batch,
@@ -548,6 +589,7 @@ async function preflightDedupByChunkId(
                     if (hash) existingContentHashes.set(point.id as string, hash);
                 }
             } catch (retrieveError: any) {
+                _metrics.preflight_batches_qdrant_unreachable_total++;
                 // #2165: A failed retrieve does NOT mean "no existing points" — it means
                 // we don't know. Track it so the caller can back off instead of
                 // re-embedding chunks that are very likely already in Qdrant.
@@ -564,6 +606,9 @@ async function preflightDedupByChunkId(
         });
 
         const skipped = subChunks.length - newSubChunks.length;
+        _metrics.preflight_chunks_returned_existing_total += existingContentHashes.size;
+        _metrics.preflight_chunks_returned_missing_total += (subChunks.length - existingContentHashes.size);
+        _metrics.embeddings_preflight_skipped_total += skipped;
         if (skipped > 0) {
             console.log(`[#2018] Preflight dedup: ${skipped}/${subChunks.length} chunks already indexed, computing embeddings for ${newSubChunks.length}`);
         }
@@ -593,6 +638,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // burned GPU embedding chunks whose upsert was guaranteed to be rejected.
         // Short-circuit here, BEFORE any embedding work, when the breaker is open.
         if (isCircuitBreakerBlocking()) {
+            _metrics.embeddings_circuit_breaker_blocked_total++;
             const snap = getCircuitBreakerState();
             console.warn(
                 `🚫 [indexTask] Circuit breaker OPEN — skipping task ${taskId} BEFORE embedding ` +
@@ -672,6 +718,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             const now = Date.now();
             operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
             if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
+                _metrics.embeddings_rate_limit_waited_total++;
                 console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
                 await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
                 operationTimestamps = [];
@@ -682,6 +729,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             const cached = embeddingCache.get(contentHash);
 
             if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
+                _metrics.embeddings_cached_hit_total++;
                 console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
                 vector = cached.vector;
             } else {
@@ -692,6 +740,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     model: embeddingModel,
                     input: subChunk.content,
                 });
+                _metrics.embeddings_called_total++;
                 vector = embeddingResponse.data[0].embedding;
 
                 console.log(`[DEBUG] Embedding response reçu:`, {
@@ -713,6 +762,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                 // the task and helped keep the circuit breaker open. Skip it, and do NOT
                 // cache it (caching a bad vector would make it permanently un-indexable).
                 if (vector.length !== expectedDims) {
+                    _metrics.embeddings_wrong_dim_total++;
                     console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id} — chunk ignoré (modèle: ${embeddingModel})`);
                     continue;
                 }
