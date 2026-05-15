@@ -12,7 +12,7 @@
  * Previous fire-and-forget still saturated GDrive FUSE I/O on the event loop.
  *
  * @module ToolUsageInterceptor
- * @version 2.0.0
+ * @version 3.0.0 — #2192 push notification footer on tool response
  */
 
 import { NotificationService, NotificationEvent } from './NotificationService.js';
@@ -25,6 +25,8 @@ import { getLocalWorkspaceId } from '../utils/message-helpers.js';
 const BACKGROUND_CHECK_INTERVAL_MS = 60_000;
 /** Initial delay before first background check (ms) */
 const BACKGROUND_CHECK_INITIAL_DELAY_MS = 5_000;
+/** Max unread count displayed in footer before capping */
+const DEFAULT_MAX_COUNT = 5;
 
 /**
  * Configuration de l'intercepteur
@@ -61,6 +63,10 @@ export class ToolUsageInterceptor {
   private backgroundCheckInterval: ReturnType<typeof setInterval> | null = null;
   private inboxCheckInFlight = false;
   private notifiedMessageIds: Set<string> = new Set();
+  /** Pre-built footer string from background check, annexed to next tool response */
+  private pendingFooter: string | null = null;
+  /** Total unread count from last background check */
+  private lastUnreadCount = 0;
 
   constructor(
     notificationService: NotificationService,
@@ -108,7 +114,16 @@ export class ToolUsageInterceptor {
 
     // 3. Execute the tool
     console.error(`▶️ [ToolUsageInterceptor] Executing tool: ${toolName}`);
-    return await execute();
+    const result = await execute();
+
+    // 4. Annex notification footer if pending (#2192)
+    if (this.pendingFooter) {
+      const footer = this.pendingFooter;
+      this.pendingFooter = null;
+      return this.appendFooter(result, footer);
+    }
+
+    return result;
   }
   
   /**
@@ -183,11 +198,90 @@ export class ToolUsageInterceptor {
         console.error(`📬 [ToolUsageInterceptor] Background check: ${newToNotify.length} new unread messages`);
         await this.notifyNewMessages(newToNotify, 'background-check');
       }
+
+      // Build footer for all unread messages (not just new ones) — #2192
+      this.updatePendingFooter(messages);
     } catch (error) {
       console.error('⚠️ [ToolUsageInterceptor] Background inbox check failed:', error);
     } finally {
       this.inboxCheckInFlight = false;
     }
+  }
+
+  /**
+   * Build the notification footer string from unread messages.
+   * Called from background check — never on hot path.
+   * @private
+   */
+  private updatePendingFooter(messages: Message[]): void {
+    const footerEnabled = process.env.NOTIFICATIONS_FOOTER_ENABLED !== 'false';
+    if (!footerEnabled || messages.length === 0) {
+      this.pendingFooter = null;
+      this.lastUnreadCount = 0;
+      return;
+    }
+
+    const maxCount = parseInt(process.env.NOTIFICATIONS_MAX_COUNT || String(DEFAULT_MAX_COUNT), 10);
+    const workspace = getLocalWorkspaceId();
+    const machineId = this.config.machineId;
+    const count = messages.length;
+    this.lastUnreadCount = count;
+
+    const urgentCount = messages.filter(m => m.priority === 'URGENT').length;
+    const highCount = messages.filter(m => m.priority === 'HIGH').length;
+    const displayCount = count > maxCount ? `${maxCount}+` : String(count);
+
+    let footer = `\n[NOTIF] ${displayCount} message(s) non lu(s) en inbox`;
+    if (urgentCount > 0) {
+      footer += ` (${urgentCount} URGENT)`;
+    } else if (highCount > 0) {
+      footer += ` (${highCount} HIGH)`;
+    }
+    footer += `. ${machineId}:${workspace}. Use roosync_messages action:"inbox".`;
+
+    this.pendingFooter = footer;
+  }
+
+  /**
+   * Append footer string to tool result.
+   * Handles string, array (text content), and object results.
+   * @private
+   */
+  private appendFooter<T>(result: T, footer: string): T {
+    if (typeof result === 'string') {
+      return (result + footer) as T;
+    }
+
+    if (Array.isArray(result)) {
+      // MCP text content array: [{type: "text", text: "..."}]
+      if (result.length > 0 && typeof result[0] === 'object' && result[0].type === 'text' && typeof result[0].text === 'string') {
+        const copy = [...result] as any[];
+        copy[copy.length - 1] = { ...copy[copy.length - 1], text: copy[copy.length - 1].text + footer };
+        return copy as T;
+      }
+      // Generic array — append footer element
+      return [...result, { type: 'text' as const, text: footer }] as T;
+    }
+
+    if (typeof result === 'object' && result !== null) {
+      // Object result — append footer to content field if it exists
+      const obj = result as Record<string, any>;
+      if (typeof obj.content === 'string') {
+        return { ...obj, content: obj.content + footer } as T;
+      }
+      if (Array.isArray(obj.content)) {
+        const contentCopy = [...obj.content];
+        if (contentCopy.length > 0 && typeof contentCopy[contentCopy.length - 1]?.text === 'string') {
+          contentCopy[contentCopy.length - 1] = { ...contentCopy[contentCopy.length - 1], text: contentCopy[contentCopy.length - 1].text + footer };
+        } else {
+          contentCopy.push({ type: 'text', text: footer });
+        }
+        return { ...obj, content: contentCopy } as T;
+      }
+    }
+
+    // Fallback: can't append, skip footer
+    return result;
   }
 
   /**
@@ -199,6 +293,7 @@ export class ToolUsageInterceptor {
       this.backgroundCheckInterval = null;
     }
     this.notifiedMessageIds.clear();
+    this.pendingFooter = null;
   }
   
   /**
