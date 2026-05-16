@@ -525,7 +525,7 @@ describe('VectorIndexer', () => {
 			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
 
 			// Qdrant retrieve throws — pre-flight dedup cannot determine what is already indexed.
-			mockRetrieve.mockRejectedValue(new Error('Network timeout'));
+			mockRetrieve.mockRejectedValue(new Error('Network unreachable'));
 
 			// #2165: Previously this fell through and re-embedded everything (the hammering bug).
 			// Now it must throw a CIRCUIT_BREAKER_OPEN error and burn ZERO embeddings.
