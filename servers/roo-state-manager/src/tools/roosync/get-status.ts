@@ -95,6 +95,17 @@ export const GetStatusResultSchema = z.object({
     }))
   }).describe('Per-tool usage stats for current session').optional(),
 
+  // #1442: Scheduler execution metrics per machine
+  schedulerMetrics: z.record(z.object({
+    totalRuns: z.number(),
+    successCount: z.number(),
+    failureCount: z.number(),
+    lastRunAt: z.string().optional(),
+    lastRunDurationMs: z.number().optional(),
+    lastRunStatus: z.enum(['success', 'failure']).optional(),
+    lastError: z.string().optional()
+  })).describe('Per-machine scheduler execution metrics (#1442)').optional(),
+
   flags: z.array(z.string())
     .describe('Flags actionnables (ex: HEARTBEAT_STALE:myia-po-2025)'),
 
@@ -392,6 +403,20 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       }
     }
 
+    // #1442: Collect scheduler metrics from heartbeat service
+    const schedulerMetrics: Record<string, any> = {};
+    try {
+      const heartbeatService = service.getHeartbeatService();
+      const allMetrics = heartbeatService.getAllSchedulerMetrics();
+      for (const [mid, metrics] of allMetrics.entries()) {
+        if (isKnownMachine(mid)) {
+          schedulerMetrics[mid] = metrics;
+        }
+      }
+    } catch (err) {
+      logger.debug('Scheduler metrics collection skipped', { error: String(err) });
+    }
+
     const result: any = {
       status,
       machines: {
@@ -403,6 +428,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       inbox: inboxStats,
       decisions: { pending: pendingDecisions },
       dashboards: { active: activeDashboards },
+      ...(Object.keys(schedulerMetrics).length > 0 ? { schedulerMetrics } : {}),
       flags,
       lastUpdated: now,
       // #1855 HUD: extended data when detail="full"

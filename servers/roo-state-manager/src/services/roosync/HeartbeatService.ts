@@ -26,6 +26,16 @@ export interface HeartbeatConfig {
   // Interface kept empty for forward compat with callers that pass config objects.
 }
 
+export interface SchedulerMetrics {
+  totalRuns: number;
+  successCount: number;
+  failureCount: number;
+  lastRunAt?: string;
+  lastRunDurationMs?: number;
+  lastRunStatus?: 'success' | 'failure';
+  lastError?: string;
+}
+
 export interface HeartbeatData {
   machineId: string;
   lastHeartbeat: string;
@@ -33,6 +43,7 @@ export interface HeartbeatData {
   metadata: {
     firstSeen: string;
     lastUpdated: string;
+    scheduler?: SchedulerMetrics;
   };
 }
 
@@ -179,6 +190,75 @@ export class HeartbeatService {
 
     this.updateMachineStatus();
     this.state.statistics.lastHeartbeatCheck = new Date().toISOString();
+    return result;
+  }
+
+  /**
+   * Record a scheduler run outcome for a machine (#1442)
+   *
+   * In-memory only. Called by tools that observe scheduler activity
+   * (e.g. dashboard intercom parsing, inventory collection).
+   */
+  public recordSchedulerRun(
+    machineId: string,
+    outcome: { success: boolean; durationMs?: number; error?: string }
+  ): void {
+    machineId = machineId.toLowerCase();
+    const now = new Date().toISOString();
+
+    let data = this.state.heartbeats.get(machineId);
+    if (!data) {
+      // Auto-register machine if not yet known
+      data = {
+        machineId,
+        lastHeartbeat: now,
+        status: 'online',
+        metadata: { firstSeen: now, lastUpdated: now }
+      };
+      this.state.heartbeats.set(machineId, data);
+      this.updateMachineStatus();
+    }
+
+    const sched: SchedulerMetrics = data.metadata.scheduler ?? {
+      totalRuns: 0,
+      successCount: 0,
+      failureCount: 0
+    };
+
+    sched.totalRuns++;
+    if (outcome.success) {
+      sched.successCount++;
+    } else {
+      sched.failureCount++;
+    }
+    sched.lastRunAt = now;
+    sched.lastRunDurationMs = outcome.durationMs;
+    sched.lastRunStatus = outcome.success ? 'success' : 'failure';
+    sched.lastError = outcome.success ? undefined : outcome.error;
+
+    data.metadata.scheduler = sched;
+    data.metadata.lastUpdated = now;
+    logger.debug(`Scheduler run recorded: ${machineId} → ${outcome.success ? 'ok' : 'fail'}`);
+  }
+
+  /**
+   * Get scheduler metrics for a specific machine (#1442)
+   */
+  public getSchedulerMetrics(machineId: string): SchedulerMetrics | undefined {
+    const data = this.state.heartbeats.get(machineId.toLowerCase());
+    return data?.metadata.scheduler;
+  }
+
+  /**
+   * Get scheduler metrics for all machines (#1442)
+   */
+  public getAllSchedulerMetrics(): Map<string, SchedulerMetrics> {
+    const result = new Map<string, SchedulerMetrics>();
+    for (const [machineId, data] of this.state.heartbeats.entries()) {
+      if (data.metadata.scheduler) {
+        result.set(machineId, data.metadata.scheduler);
+      }
+    }
     return result;
   }
 

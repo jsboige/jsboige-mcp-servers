@@ -520,4 +520,106 @@ describe('HeartbeatService', () => {
       expect(offlineCb).toHaveBeenCalledWith('remote-machine');
     });
   });
+
+  // ============================================================
+  // Scheduler Metrics (#1442)
+  // ============================================================
+
+  describe('scheduler metrics (#1442)', () => {
+    test('recordSchedulerRun: premier run sur machine inconnue → auto-register', () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('myia-po-2023', { success: true, durationMs: 5000 });
+
+      const metrics = service.getSchedulerMetrics('myia-po-2023');
+      expect(metrics).toBeDefined();
+      expect(metrics!.totalRuns).toBe(1);
+      expect(metrics!.successCount).toBe(1);
+      expect(metrics!.failureCount).toBe(0);
+      expect(metrics!.lastRunStatus).toBe('success');
+      expect(metrics!.lastRunDurationMs).toBe(5000);
+      expect(metrics!.lastError).toBeUndefined();
+    });
+
+    test('recordSchedulerRun: incrémente compteurs sur runs successifs', () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('myia-po-2023', { success: true });
+      service.recordSchedulerRun('myia-po-2023', { success: false, error: 'build failed' });
+      service.recordSchedulerRun('myia-po-2023', { success: true, durationMs: 3000 });
+
+      const metrics = service.getSchedulerMetrics('myia-po-2023')!;
+      expect(metrics.totalRuns).toBe(3);
+      expect(metrics.successCount).toBe(2);
+      expect(metrics.failureCount).toBe(1);
+      expect(metrics.lastRunStatus).toBe('success');
+      expect(metrics.lastRunDurationMs).toBe(3000);
+    });
+
+    test('recordSchedulerRun: enregistre dernière erreur en cas d\'échec', () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('myia-po-2023', { success: false, error: 'timeout' });
+
+      const metrics = service.getSchedulerMetrics('myia-po-2023')!;
+      expect(metrics.lastRunStatus).toBe('failure');
+      expect(metrics.lastError).toBe('timeout');
+    });
+
+    test('recordSchedulerRun: efface lastError après succès', () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('myia-po-2023', { success: false, error: 'crash' });
+      service.recordSchedulerRun('myia-po-2023', { success: true });
+
+      const metrics = service.getSchedulerMetrics('myia-po-2023')!;
+      expect(metrics.lastError).toBeUndefined();
+    });
+
+    test('getSchedulerMetrics: retourne undefined pour machine sans runs', async () => {
+      const service = new HeartbeatService();
+      await service.registerHeartbeat('myia-po-2023');
+
+      expect(service.getSchedulerMetrics('myia-po-2023')).toBeUndefined();
+    });
+
+    test('getAllSchedulerMetrics: retourne map des machines avec metrics', async () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('myia-po-2023', { success: true });
+      service.recordSchedulerRun('myia-po-2024', { success: false, error: 'OOM' });
+      await service.registerHeartbeat('myia-po-2025'); // no scheduler runs
+
+      const allMetrics = service.getAllSchedulerMetrics();
+      expect(allMetrics.size).toBe(2);
+      expect(allMetrics.has('myia-po-2023')).toBe(true);
+      expect(allMetrics.has('myia-po-2024')).toBe(true);
+      expect(allMetrics.has('myia-po-2025')).toBe(false);
+    });
+
+    test('recordSchedulerRun: case insensitive machineId', () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('MYIA-PO-2023', { success: true });
+
+      expect(service.getSchedulerMetrics('myia-po-2023')!.totalRuns).toBe(1);
+    });
+
+    test('metrics préservées après checkHeartbeats', async () => {
+      const service = new HeartbeatService();
+
+      service.recordSchedulerRun('myia-po-2023', { success: true, durationMs: 1000 });
+
+      // Make heartbeat stale
+      const data = service.getHeartbeatData('myia-po-2023')!;
+      data.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString();
+
+      await service.checkHeartbeats();
+
+      // Metrics should survive status change
+      const metrics = service.getSchedulerMetrics('myia-po-2023')!;
+      expect(metrics.totalRuns).toBe(1);
+      expect(metrics.lastRunDurationMs).toBe(1000);
+    });
+  });
 });
