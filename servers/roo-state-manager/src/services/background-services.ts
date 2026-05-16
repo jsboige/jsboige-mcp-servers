@@ -465,8 +465,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     }
                                     state.conversationCache.set(entry.name, newHeader);
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
-                                    const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
-                                    if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                    // #2227: Use newHeader (has indexingState preserved from existingSkeleton)
+                                    const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
+                                    if (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
                                     if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -520,8 +521,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                             newHeader.metadata.indexingState = existingSkeleton.metadata.indexingState;
                                         }
                                         state.conversationCache.set(taskId, newHeader);
-                                        const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
-                                        if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                        // #2227: Use newHeader (has indexingState preserved from existingSkeleton)
+                                        const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
+                                        if (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                             state.qdrantIndexQueue.add(taskId);
                                         }
                                         if (existingSkeleton) { updatedCount++; } else { newCount++; }
