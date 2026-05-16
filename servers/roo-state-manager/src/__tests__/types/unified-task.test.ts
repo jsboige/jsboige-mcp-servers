@@ -285,14 +285,15 @@ describe('computeStorageTier', () => {
     expect(computeStorageTier(task)).toBe('cold');
   });
 
-  test('boundary: exactly 7 days = hot', () => {
-    const date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  test('boundary: just under 7 days = hot', () => {
+    // Use -1ms to avoid microsecond drift between Date.now() calls
+    const date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000 + 1).toISOString();
     const task = { ...validClaudeTask, lastActivity: date };
     expect(computeStorageTier(task)).toBe('hot');
   });
 
-  test('boundary: exactly 90 days = warm', () => {
-    const date = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  test('boundary: just under 90 days = warm', () => {
+    const date = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000 + 1).toISOString();
     const task = { ...validClaudeTask, lastActivity: date };
     expect(computeStorageTier(task)).toBe('warm');
   });
