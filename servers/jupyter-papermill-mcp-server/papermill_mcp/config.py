@@ -39,6 +39,14 @@ class PapermillConfig(BaseModel):
         default=60, description="Kernel detection timeout in seconds"
     )
     kernel_name: Optional[str] = Field(default=None, description="Default kernel name")
+    transport_default_timeout: int = Field(
+        default=30,
+        description="Hard transport timeout in seconds for MCP tool calls (env: MCP_JUPYTER_DEFAULT_TIMEOUT)",
+    )
+    transport_max_timeout: int = Field(
+        default=3600,
+        description="Maximum allowed transport timeout in seconds (env: MCP_JUPYTER_MAX_TIMEOUT)",
+    )
 
     class Config:
         validate_assignment = True
@@ -197,6 +205,31 @@ class ConfigManager:
             except ValueError:
                 print(
                     f"Valeur invalide pour JUPYTER_MCP_TIMEOUT: {os.getenv('JUPYTER_MCP_TIMEOUT')}"
+                )
+
+        # Transport timeout configuration (#2206)
+        if os.getenv("MCP_JUPYTER_DEFAULT_TIMEOUT"):
+            if "papermill" not in config_dict:
+                config_dict["papermill"] = {}
+            try:
+                config_dict["papermill"]["transport_default_timeout"] = int(
+                    os.getenv("MCP_JUPYTER_DEFAULT_TIMEOUT")
+                )
+            except ValueError:
+                print(
+                    f"Invalid MCP_JUPYTER_DEFAULT_TIMEOUT: {os.getenv('MCP_JUPYTER_DEFAULT_TIMEOUT')}"
+                )
+
+        if os.getenv("MCP_JUPYTER_MAX_TIMEOUT"):
+            if "papermill" not in config_dict:
+                config_dict["papermill"] = {}
+            try:
+                config_dict["papermill"]["transport_max_timeout"] = int(
+                    os.getenv("MCP_JUPYTER_MAX_TIMEOUT")
+                )
+            except ValueError:
+                print(
+                    f"Invalid MCP_JUPYTER_MAX_TIMEOUT: {os.getenv('MCP_JUPYTER_MAX_TIMEOUT')}"
                 )
 
     def _apply_command_line_options(
