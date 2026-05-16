@@ -13,7 +13,7 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
-import { getCircuitBreakerState, isCircuitBreakerBlocking } from './task-indexer/VectorIndexer.js';
+import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
@@ -871,6 +871,19 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
     }
 
     state.qdrantIndexInterval = setInterval(async () => {
+        // #2195: Emit per-cycle embedding metrics snapshot at every interval (including
+        // empty/blocked cycles) so observability stays live even when no indexing happens.
+        // Counts are cumulative since MCP boot; rates are derived by subtracting two snapshots.
+        const m = getEmbeddingMetrics();
+        console.log(
+            `[EMB-METRICS] called=${m.embeddings_called_total} ` +
+            `cached=${m.embeddings_cached_hit_total} ` +
+            `preflight_skipped=${m.embeddings_preflight_skipped_total} ` +
+            `post_skipped=${m.embeddings_post_dedup_skipped_total} ` +
+            `breaker_blocked=${m.embeddings_circuit_breaker_blocked_total} ` +
+            `preflight_fail=${m.preflight_batches_qdrant_unreachable_total}`
+        );
+
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
             return;
         }
