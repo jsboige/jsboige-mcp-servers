@@ -878,11 +878,26 @@ class SKAgentManager:
     # Handler Methods
     # -----------------------------------------------------------------------
 
-    def _get_invoke_kwargs(self) -> dict[str, Any]:
-        """Build extra kwargs for agent.invoke() with sampling settings."""
+    def _get_invoke_kwargs(self, agent_id: str = "") -> dict[str, Any]:
+        """Build extra kwargs for agent.invoke() with sampling + thinking settings."""
         if not self._execution_settings:
             return {}
-        return {"arguments": KernelArguments(settings=self._execution_settings)}
+        settings = self._execution_settings
+        if agent_id:
+            agent_cfg = next((a for a in self.config.agents if a.id == agent_id), None)
+            if agent_cfg:
+                model_cfg = self.config.get_model(agent_cfg.model)
+                if model_cfg and not model_cfg.thinking:
+                    extra = dict(settings.extra_body or {})
+                    extra["chat_template_kwargs"] = {"enable_thinking": False}
+                    settings = OpenAIChatPromptExecutionSettings(
+                        temperature=settings.temperature,
+                        top_p=settings.top_p,
+                        presence_penalty=settings.presence_penalty,
+                        max_tokens=settings.max_tokens,
+                        extra_body=extra,
+                    )
+        return {"arguments": KernelArguments(settings=settings)}
 
     async def _handle_text(
         self,
@@ -899,7 +914,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs()
+        invoke_kwargs = self._get_invoke_kwargs(agent_id)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -952,7 +967,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs()
+            invoke_kwargs = self._get_invoke_kwargs(agent_id)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1028,7 +1043,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs()
+            invoke_kwargs = self._get_invoke_kwargs(agent_id)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1101,7 +1116,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs()
+        invoke_kwargs = self._get_invoke_kwargs(agent_id)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1215,7 +1230,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs()
+        invoke_kwargs = self._get_invoke_kwargs(agent_id)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
