@@ -37,10 +37,10 @@ Un serveur MCP est un service qui implémente le protocole MCP et expose des out
 
 #### Types de serveurs MCP
 
-Dans ce dépôt, les serveurs MCP sont placés directement dans le répertoire `servers/`. Voici quelques exemples des serveurs disponibles:
+Dans ce dépôt, les serveurs MCP sont placés directement dans le répertoire `servers/`:
 
-- **QuickFiles Server**: Serveur pour lire rapidement le contenu de répertoires et fichiers multiples
-- **Jupyter MCP Server**: Serveur pour interagir avec des notebooks Jupyter
+- **roo-state-manager**: 34 outils MCP pour la coordination multi-agent (RooSync)
+- **sk-agent**: LLM proxy multi-agent avec mémoire vectorielle
 
 ### 2. Outils (Tools)
 

@@ -1,4 +1,4 @@
-import { searchTasksByContentTool } from '../../../../src/tools/search/search-semantic.tool.js';
+import { searchTasksByContentTool, _resetEmbeddingCircuitBreaker } from '../../../../src/tools/search/search-semantic.tool.js';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -55,6 +55,9 @@ describe('🔍 search_tasks_by_content', () => {
 
     // Reset mocks
     vi.clearAllMocks();
+
+    // #2167: Reset circuit breaker + query embedding cache between tests
+    _resetEmbeddingCircuitBreaker();
     
     // Setup default mock responses
     mockOpenAIClient.embeddings.create.mockResolvedValue({

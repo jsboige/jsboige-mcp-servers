@@ -18,12 +18,14 @@ logger = logging.getLogger(__name__)
 
 # Global service instance
 _kernel_service: Optional[KernelService] = None
+_config: Optional[MCPConfig] = None
 
 
 def initialize_kernel_tools(config: MCPConfig) -> KernelService:
     """Initialize the kernel service for tools."""
-    global _kernel_service
+    global _kernel_service, _config
     _kernel_service = KernelService(config)
+    _config = config
     return _kernel_service
 
 
@@ -235,10 +237,10 @@ def register_kernel_tools(app: FastMCP) -> None:
         code: Optional[str] = None,
         path: Optional[str] = None,
         cell_index: Optional[int] = None,
-        timeout: int = 60,
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        🆕 OUTIL CONSOLIDÉ - Exécution de code sur un kernel.
+        OUTIL CONSOLIDÉ - Exécution de code sur un kernel avec transport timeout (#2206).
 
         Remplace: execute_cell, execute_notebook, execute_notebook_cell
 
@@ -251,70 +253,10 @@ def register_kernel_tools(app: FastMCP) -> None:
             code: Code Python à exécuter (pour mode="code")
             path: Chemin du notebook (pour mode="notebook" | "notebook_cell")
             cell_index: Index de la cellule (pour mode="notebook_cell", 0-based)
-            timeout: Timeout en secondes (défaut: 60)
+            timeout: Timeout en secondes (défaut: MCP_JUPYTER_DEFAULT_TIMEOUT=30, max: MCP_JUPYTER_MAX_TIMEOUT=3600)
 
         Returns:
-            Mode "code":
-            {
-                "kernel_id": str,
-                "mode": "code",
-                "execution_count": int,
-                "outputs": [
-                    {
-                        "output_type": str,
-                        "text": Optional[str],
-                        "data": Optional[dict],
-                        "metadata": Optional[dict]
-                    },
-                    ...
-                ],
-                "status": str,  # "ok" | "error" | "abort"
-                "error": Optional[{
-                    "ename": str,
-                    "evalue": str,
-                    "traceback": [str]
-                }],
-                "execution_time": float,
-                "success": bool
-            }
-
-            Mode "notebook":
-            {
-                "kernel_id": str,
-                "mode": "notebook",
-                "path": str,
-                "cells_executed": int,
-                "cells_succeeded": int,
-                "cells_failed": int,
-                "execution_time": float,
-                "results": [
-                    {
-                        "cell_index": int,
-                        "cell_type": str,
-                        "execution_count": Optional[int],
-                        "status": str,
-                        "error": Optional[dict],
-                        "outputs": [...]
-                    },
-                    ...
-                ],
-                "success": bool
-            }
-
-            Mode "notebook_cell":
-            {
-                "kernel_id": str,
-                "mode": "notebook_cell",
-                "path": str,
-                "cell_index": int,
-                "cell_type": str,
-                "execution_count": int,
-                "outputs": [...],
-                "status": str,
-                "error": Optional[dict],
-                "execution_time": float,
-                "success": bool
-            }
+            Execution result dict with status, outputs, and timing info.
 
         Validation:
             - mode="code" → code requis
@@ -325,8 +267,19 @@ def register_kernel_tools(app: FastMCP) -> None:
             logger.info(f"Executing on kernel {kernel_id} in mode: {mode}")
             service = get_kernel_service()
 
-            # Hard timeout at MCP level as safety net (#2051)
-            hard_timeout = timeout + 30 if timeout > 0 else None
+            # Resolve timeout from config defaults (#2206)
+            default_timeout = _config.papermill.transport_default_timeout if _config else 30
+            max_timeout = _config.papermill.transport_max_timeout if _config else 3600
+
+            effective_timeout = timeout if timeout is not None else default_timeout
+            if effective_timeout > max_timeout:
+                logger.warning(
+                    f"Requested timeout {effective_timeout}s exceeds max {max_timeout}s, clamping"
+                )
+                effective_timeout = max_timeout
+
+            # Hard timeout at MCP transport level — always enforced (#2206)
+            hard_timeout = effective_timeout + 30
 
             async def _execute():
                 return await service.execute_on_kernel_consolidated(
@@ -335,13 +288,10 @@ def register_kernel_tools(app: FastMCP) -> None:
                     code=code,
                     path=path,
                     cell_index=cell_index,
-                    timeout=timeout,
+                    timeout=effective_timeout,
                 )
 
-            if hard_timeout is not None:
-                result = await asyncio.wait_for(_execute(), timeout=hard_timeout)
-            else:
-                result = await _execute()
+            result = await asyncio.wait_for(_execute(), timeout=hard_timeout)
 
             logger.info(f"Successfully executed on kernel {kernel_id} in mode: {mode}")
             return result
@@ -351,7 +301,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                 f"on kernel {kernel_id} in mode: {mode}"
             )
             return {
-                "error": f"Execution timed out (hard limit {hard_timeout}s, kernel timeout {timeout}s)",
+                "error": f"Execution timed out (hard limit {hard_timeout}s, kernel timeout {effective_timeout}s)",
                 "kernel_id": kernel_id,
                 "mode": mode,
                 "status": "timeout",
@@ -441,14 +391,33 @@ def register_kernel_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Managing kernel with action: {action}")
             service = get_kernel_service()
-            result = await service.manage_kernel_consolidated(
-                action=action,
-                kernel_name=kernel_name,
-                kernel_id=kernel_id,
-                working_dir=working_dir,
-            )
+
+            # Transport timeout for kernel management ops (#2206)
+            # Start can take longer (kernel init), others should be fast
+            mgmt_timeout = 120 if action == "start" else 30
+
+            async def _manage():
+                return await service.manage_kernel_consolidated(
+                    action=action,
+                    kernel_name=kernel_name,
+                    kernel_id=kernel_id,
+                    working_dir=working_dir,
+                )
+
+            result = await asyncio.wait_for(_manage(), timeout=mgmt_timeout)
             logger.info(f"Successfully managed kernel with action: {action}")
             return result
+        except asyncio.TimeoutError:
+            logger.error(
+                f"manage_kernel timed out ({mgmt_timeout}s) for action: {action}"
+            )
+            return {
+                "error": f"Kernel management timed out ({mgmt_timeout}s)",
+                "action": action,
+                "kernel_id": kernel_id,
+                "status": "timeout",
+                "success": False,
+            }
         except Exception as e:
             logger.error(f"Error managing kernel with action {action}: {e}")
             return {"error": str(e), "action": action, "success": False}

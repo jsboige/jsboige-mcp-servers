@@ -505,13 +505,14 @@ describe('VectorIndexer', () => {
 			expect(mockUpsert).toHaveBeenCalled();
 		});
 
-		test('falls through gracefully on retrieve failure', async () => {
+		test('#2165: backs off WITHOUT embedding when pre-flight dedup cannot reach Qdrant', async () => {
 			vi.useRealTimers();
-			const { indexTask } = await import('../VectorIndexer.js');
+			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
 			const { splitChunk } = await import('../ChunkExtractor.js');
 			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
+			resetCircuitBreakerForTest();
 			setupEmbeddingMock();
 
 			(extractChunksFromTask as any).mockResolvedValue([{
@@ -523,13 +524,105 @@ describe('VectorIndexer', () => {
 
 			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
 
-			// Qdrant retrieve throws
-			mockRetrieve.mockRejectedValue(new Error('Network timeout'));
+			// Qdrant retrieve throws — pre-flight dedup cannot determine what is already indexed.
+			mockRetrieve.mockRejectedValue(new Error('Network unreachable'));
 
-			const result = await indexTask('task-fail-1', '/fake/path');
+			// #2165: Previously this fell through and re-embedded everything (the hammering bug).
+			// Now it must throw a CIRCUIT_BREAKER_OPEN error and burn ZERO embeddings.
+			await expect(indexTask('task-fail-1', '/fake/path')).rejects.toMatchObject({
+				code: 'CIRCUIT_BREAKER_OPEN'
+			});
 
-			// Should proceed with embedding + upsert (fallback path)
-			expect(mockUpsert).toHaveBeenCalled();
+			// The whole point of the fix: no embedding API call, no upsert.
+			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+			expect(mockUpsert).not.toHaveBeenCalled();
 		});
+	});
+
+	// ============================================================
+	// #2165 — Circuit breaker observability + pre-embedding short-circuit
+	// ============================================================
+
+	describe('#2165: circuit breaker observability', () => {
+		test('getCircuitBreakerState exposes a readable snapshot', async () => {
+			const { getCircuitBreakerState, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+
+			const snap = getCircuitBreakerState();
+			expect(snap.state).toBe('CLOSED');
+			expect(snap.failureCount).toBe(0);
+			expect(snap.msUntilHalfOpen).toBe(0);
+		});
+
+		test('isCircuitBreakerBlocking is false when CLOSED', async () => {
+			const { isCircuitBreakerBlocking, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			expect(isCircuitBreakerBlocking()).toBe(false);
+		});
+
+		test('breaker opens after repeated upsert failures and then blocks', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+			const { safeQdrantUpsert, isCircuitBreakerBlocking, getCircuitBreakerState, resetCircuitBreakerForTest } =
+				await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+
+			const networkError = Object.assign(new Error('ECONNREFUSED'), {
+				response: { status: 503, statusText: 'Service Unavailable', data: {} }
+			});
+			mockUpsert.mockRejectedValue(networkError);
+
+			const points = [{ id: 'cb-test-1', vector: new Array(1536).fill(0.1), payload: { task_id: 't1' } }];
+
+			// 3 failed attempts trip the breaker (MAX_RETRY_ATTEMPTS)
+			await safeQdrantUpsert(points);
+			await safeQdrantUpsert(points);
+			await safeQdrantUpsert(points);
+
+			const snap = getCircuitBreakerState();
+			expect(snap.state).toBe('OPEN');
+			expect(isCircuitBreakerBlocking()).toBe(true);
+			expect(snap.msUntilHalfOpen).toBeGreaterThan(0);
+		}, 30000);
+
+		test('#2165: indexTask short-circuits BEFORE embedding when breaker is OPEN', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+			const { indexTask, safeQdrantUpsert, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask, splitChunk } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			resetCircuitBreakerForTest();
+			setupEmbeddingMock();
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+
+			// Trip the breaker via 3 failed upserts.
+			const netErr = Object.assign(new Error('ECONNREFUSED'), {
+				response: { status: 503, statusText: 'Service Unavailable', data: {} }
+			});
+			mockUpsert.mockRejectedValue(netErr);
+			const pts = [{ id: 'cb-x', vector: new Array(1536).fill(0.1), payload: { task_id: 'tx' } }];
+			await safeQdrantUpsert(pts);
+			await safeQdrantUpsert(pts);
+			await safeQdrantUpsert(pts);
+
+			// Now the breaker is OPEN. indexTask must NOT extract/embed anything.
+			mockEmbeddingsCreate.mockClear();
+			(extractChunksFromTask as any).mockResolvedValue([{
+				chunk_id: 'c1', content: 'should never be embedded', indexed: true,
+				sequence_order: 0, chunk_type: 'message_exchange', role: 'user',
+				total_chunks: 1, chunk_index: 0
+			}]);
+			(splitChunk as any).mockImplementation((c: any) => [c]);
+
+			await expect(indexTask('task-breaker-open', '/fake/path')).rejects.toMatchObject({
+				code: 'CIRCUIT_BREAKER_OPEN'
+			});
+
+			// Zero GPU burned — this is the core #2165 fix.
+			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+			// And it bailed before even touching the chunk extractor.
+			expect(extractChunksFromTask).not.toHaveBeenCalled();
+		}, 30000);
 	});
 });

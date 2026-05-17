@@ -200,4 +200,67 @@ describe('resetQdrantCollectionTool', () => {
 		expect(parsed.message).toContain('Confirmation requise');
 		expect(mockResetCollection).not.toHaveBeenCalled();
 	});
+
+	// #2209: indexingState must also be reset (not just legacy qdrantIndexedAt)
+	test('handler resets modern indexingState (#2209)', async () => {
+		mockResetCollection.mockResolvedValue(undefined);
+
+		const skeleton = {
+			metadata: {
+				indexingState: {
+					indexStatus: 'success',
+					lastIndexedAt: '2026-05-04T17:33:10Z',
+					nextReindexAfter: '2026-05-11T17:33:10Z',
+					indexVersion: '1.0',
+					indexRetryCount: 0,
+				},
+			},
+		};
+		const cache = new Map<string, any>();
+		cache.set('task-modern', skeleton);
+
+		const saveCallback = vi.fn().mockResolvedValue(undefined);
+		const indexQueue = new Set<string>();
+
+		await resetQdrantCollectionTool.handler(
+			{ confirm: true },
+			cache,
+			saveCallback,
+			indexQueue,
+			vi.fn()
+		);
+
+		expect(saveCallback).toHaveBeenCalledWith(skeleton);
+		expect(skeleton.metadata.indexingState).toEqual({ indexVersion: '1.0' });
+		expect(indexQueue.has('task-modern')).toBe(true);
+	});
+
+	test('handler resets both legacy and modern indexing state', async () => {
+		mockResetCollection.mockResolvedValue(undefined);
+
+		const skeleton = {
+			metadata: {
+				qdrantIndexedAt: '2026-05-01T00:00:00Z',
+				indexingState: {
+					indexStatus: 'success',
+					lastIndexedAt: '2026-05-04T17:33:10Z',
+					indexVersion: '1.0',
+				},
+			},
+		};
+		const cache = new Map<string, any>();
+		cache.set('task-both', skeleton);
+
+		const saveCallback = vi.fn().mockResolvedValue(undefined);
+		await resetQdrantCollectionTool.handler(
+			{ confirm: true },
+			cache,
+			saveCallback,
+			new Set(),
+			vi.fn()
+		);
+
+		expect(skeleton.metadata.qdrantIndexedAt).toBeUndefined();
+		expect(skeleton.metadata.indexingState).toEqual({ indexVersion: '1.0' });
+	});
 });

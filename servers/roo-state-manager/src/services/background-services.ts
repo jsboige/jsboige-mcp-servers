@@ -13,9 +13,10 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
+import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
-import { RooStorageDetectorError, RooStorageDetectorErrorCode } from '../types/errors.js';
+import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
 // Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
 // import { RooSyncService } from './RooSyncService.js';
@@ -374,6 +375,39 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Skel
     }
 }
 
+/**
+ * #1953: Clean up stale .tmp and .lock orphan files in shared-state directories.
+ * ADR 008 made HeartbeatService entirely in-memory — the heartbeats/ directory
+ * still contains .tmp files from the pre-ADR 008 disk-based system.
+ * Also cleans stale .lock files from interrupted FileLockManager operations.
+ */
+async function cleanupStaleTempFiles(): Promise<void> {
+    const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+    if (!sharedPath) return;
+
+    const dirsToClean = ['heartbeats', 'presence', 'dashboards'];
+    let totalRemoved = 0;
+
+    for (const dir of dirsToClean) {
+        const dirPath = path.join(sharedPath, dir);
+        try {
+            const entries = await fs.readdir(dirPath);
+            for (const entry of entries) {
+                if (entry.endsWith('.tmp') || entry.endsWith('.lock') || /^\.tmp-/.test(entry)) {
+                    try {
+                        await fs.unlink(path.join(dirPath, entry));
+                        totalRemoved++;
+                    } catch { /* already gone — ignore */ }
+                }
+            }
+        } catch { /* directory missing or inaccessible — skip */ }
+    }
+
+    if (totalRemoved > 0) {
+        console.log(`[#1953] Cleaned ${totalRemoved} stale .tmp/.lock files from shared state`);
+    }
+}
+
 /** #883: Interval for skeleton refresh worker (2 minutes) */
 export const SKELETON_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 
@@ -431,8 +465,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     }
                                     state.conversationCache.set(entry.name, newHeader);
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
-                                    const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
-                                    if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                    // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
+                                    const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
+                                    if (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
                                     if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -486,8 +521,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                             newHeader.metadata.indexingState = existingSkeleton.metadata.indexingState;
                                         }
                                         state.conversationCache.set(taskId, newHeader);
-                                        const lastIndexed = skeleton.metadata?.indexingState?.lastIndexedAt;
-                                        if (!lastIndexed || new Date(skeleton.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                        // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
+                                        const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
+                                        if (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
                                             state.qdrantIndexQueue.add(taskId);
                                         }
                                         if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -594,6 +630,9 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 
         // Heartbeat: ADR 008 passive model — no auto-start needed.
         // Every MCP tool call IS the heartbeat. Status derived from timestamps.
+
+        // #1953: Clean up stale .tmp/.lock orphan files from pre-ADR 008 heartbeat system
+        cleanupStaleTempFiles().catch(() => { /* non-blocking */ });
 
         console.log('✅ Services background lancés');
     } catch (error: any) {
@@ -834,7 +873,35 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
     }
 
     state.qdrantIndexInterval = setInterval(async () => {
+        // #2195: Emit per-cycle embedding metrics snapshot at every interval (including
+        // empty/blocked cycles) so observability stays live even when no indexing happens.
+        // Counts are cumulative since MCP boot; rates are derived by subtracting two snapshots.
+        const m = getEmbeddingMetrics();
+        console.log(
+            `[EMB-METRICS] called=${m.embeddings_called_total} ` +
+            `cached=${m.embeddings_cached_hit_total} ` +
+            `preflight_skipped=${m.embeddings_preflight_skipped_total} ` +
+            `post_skipped=${m.embeddings_post_dedup_skipped_total} ` +
+            `breaker_blocked=${m.embeddings_circuit_breaker_blocked_total} ` +
+            `preflight_fail=${m.preflight_batches_qdrant_unreachable_total}`
+        );
+
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
+            return;
+        }
+
+        // #2165: Global back-off. If the Qdrant circuit breaker is OPEN, every
+        // indexTask() call would extract chunks and (before this fix) compute
+        // embeddings only to have the upsert rejected — hammering the embedding
+        // server. With the breaker open, skip the ENTIRE cycle: leave the queue
+        // intact so tasks are retried once Qdrant recovers, and burn zero GPU.
+        if (isCircuitBreakerBlocking()) {
+            const snap = getCircuitBreakerState();
+            console.warn(
+                `🚫 [Qdrant-Worker] Circuit breaker OPEN — skipping indexing cycle ` +
+                `(${state.qdrantIndexQueue.size} tasks queued, retry in ~${Math.round(snap.msUntilHalfOpen / 1000)}s). ` +
+                `No embeddings computed this cycle.`
+            );
             return;
         }
 
@@ -843,6 +910,14 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         for (const taskId of taskIds) {
             state.qdrantIndexQueue.delete(taskId);
             await indexTaskInQdrant(taskId, state);
+
+            // #2165: If a task tripped the breaker, stop the rest of this batch
+            // immediately — the remaining tasks would all hit the open breaker
+            // and (re-)extract chunks for nothing. They stay queued for next cycle.
+            if (isCircuitBreakerBlocking()) {
+                console.warn(`🚫 [Qdrant-Worker] Circuit breaker opened mid-batch — aborting remaining ${taskIds.length - taskIds.indexOf(taskId) - 1} task(s) this cycle.`);
+                break;
+            }
         }
     }, ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
 
@@ -911,6 +986,17 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
     } catch (error: any) {
         if (error.message && error.message.includes('not found in any storage location')) {
             console.warn(`[WARN] Task ${taskId} is in cache but not on disk. Skipping indexing.`);
+        } else if (error?.code === GenericErrorCode.CIRCUIT_BREAKER_OPEN) {
+            // #2165: The circuit breaker was OPEN (or Qdrant was unreachable during
+            // pre-flight dedup) — indexTask() bailed out BEFORE computing any
+            // embeddings. This is a transient infra condition, NOT a task-level
+            // failure. Do NOT call markIndexingFailure(): that would burn the task's
+            // retry budget and could mark it permanently 'failed' after 3 cycles of
+            // Qdrant being slow, even though the task content is perfectly fine.
+            // Just re-queue it for the next cycle (which itself back-offs while the
+            // breaker is open) — no skeleton write, no retry-counter mutation.
+            state.qdrantIndexQueue.add(taskId);
+            console.warn(`[DEFERRED] Task ${taskId}: ${error.message} — re-queued, retry counter untouched.`);
         } else {
             const skeleton = state.conversationCache.get(taskId);
             if (skeleton) {

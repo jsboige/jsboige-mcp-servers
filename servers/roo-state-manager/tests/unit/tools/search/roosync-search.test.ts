@@ -8,6 +8,7 @@
  */
 
 import { roosyncSearchTool, handleRooSyncSearch } from '../../../../src/tools/search/roosync-search.tool.js';
+import { _resetEmbeddingCircuitBreaker } from '../../../../src/tools/search/search-semantic.tool.js';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -57,6 +58,9 @@ describe('roosync_search - CONS-11', () => {
         });
 
         vi.clearAllMocks();
+
+        // #2167: Reset circuit breaker + query embedding cache between tests
+        _resetEmbeddingCircuitBreaker();
 
         mockOpenAIClient.embeddings.create.mockResolvedValue({
             data: [{ embedding: Array(1536).fill(0.1) }]

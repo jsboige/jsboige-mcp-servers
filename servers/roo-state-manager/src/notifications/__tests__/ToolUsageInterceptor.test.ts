@@ -649,4 +649,204 @@ describe('ToolUsageInterceptor', () => {
       interceptor.dispose();
     });
   });
+
+  // ============================================================
+  // #2192 Push notification footer
+  // ============================================================
+
+  describe('#2192 push notification footer', () => {
+    test('appends footer to string result when unread messages exist', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      // Trigger background check to populate pendingFooter
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'result-text');
+      expect(result).toContain('[NOTIF]');
+      expect(result).toContain('1 message(s) non lu(s)');
+      expect(result).toContain('test-machine:test-workspace');
+      expect(result).toContain('roosync_messages');
+
+      interceptor.dispose();
+    });
+
+    test('no footer when no unread messages', async () => {
+      const msgManager = makeMockMessageManager([]);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'clean-result');
+      expect(result).toBe('clean-result');
+
+      interceptor.dispose();
+    });
+
+    test('footer consumed — not repeated on second call without new messages', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      // First call consumes footer
+      const result1 = await interceptor.interceptToolCall('tool', {}, async () => 'r1');
+      expect(result1).toContain('[NOTIF]');
+
+      // Second call — same messages, already notified, but footer rebuilt from all unread
+      // After the background check runs again, footer will be rebuilt if messages still unread
+      const result2 = await interceptor.interceptToolCall('tool', {}, async () => 'r2');
+      expect(result2).toBe('r2'); // No new background check, footer was consumed
+
+      interceptor.dispose();
+    });
+
+    test('URGENT count displayed in footer', async () => {
+      const msgs = [
+        makeMessage({ id: 'm1', priority: 'URGENT' }),
+        makeMessage({ id: 'm2', priority: 'MEDIUM' }),
+      ];
+      const msgManager = makeMockMessageManager(
+        [{ id: 'm1' }, { id: 'm2' }],
+        { m1: msgs[0], m2: msgs[1] }
+      );
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'r');
+      expect(result).toContain('1 URGENT');
+
+      interceptor.dispose();
+    });
+
+    test('HIGH count displayed when no URGENT', async () => {
+      const msgs = [
+        makeMessage({ id: 'm1', priority: 'HIGH' }),
+        makeMessage({ id: 'm2', priority: 'MEDIUM' }),
+      ];
+      const msgManager = makeMockMessageManager(
+        [{ id: 'm1' }, { id: 'm2' }],
+        { m1: msgs[0], m2: msgs[1] }
+      );
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'r');
+      expect(result).toContain('1 HIGH');
+      expect(result).not.toContain('URGENT');
+
+      interceptor.dispose();
+    });
+
+    test('count capped at max (NOTIFICATIONS_MAX_COUNT)', async () => {
+      const items = Array.from({ length: 8 }, (_, i) => ({ id: `m${i}` }));
+      const messageMap: Record<string, any> = {};
+      for (let i = 0; i < 8; i++) {
+        messageMap[`m${i}`] = makeMessage({ id: `m${i}`, priority: 'MEDIUM' });
+      }
+      const msgManager = makeMockMessageManager(items, messageMap);
+
+      const original = process.env.NOTIFICATIONS_MAX_COUNT;
+      process.env.NOTIFICATIONS_MAX_COUNT = '3';
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'r');
+      expect(result).toContain('3+ message(s)');
+
+      process.env.NOTIFICATIONS_MAX_COUNT = original;
+      interceptor.dispose();
+    });
+
+    test('NOTIFICATIONS_FOOTER_ENABLED=false disables footer', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+
+      const original = process.env.NOTIFICATIONS_FOOTER_ENABLED;
+      process.env.NOTIFICATIONS_FOOTER_ENABLED = 'false';
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'clean');
+      expect(result).toBe('clean');
+
+      process.env.NOTIFICATIONS_FOOTER_ENABLED = original;
+      interceptor.dispose();
+    });
+
+    test('appends footer to MCP text content array', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const toolResult = [{ type: 'text' as const, text: 'original content' }];
+      const result = await interceptor.interceptToolCall('tool', {}, async () => toolResult);
+
+      expect(Array.isArray(result)).toBe(true);
+      expect((result as any[])[0].text).toContain('[NOTIF]');
+
+      interceptor.dispose();
+    });
+
+    test('no footer without background check (no unread)', async () => {
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, makeMockMessageManager() as any, conversationCache,
+        makeConfig({ checkInbox: false })
+      );
+
+      // No background check started, no unread messages
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'plain');
+      expect(result).toBe('plain');
+
+      interceptor.dispose();
+    });
+  });
 });

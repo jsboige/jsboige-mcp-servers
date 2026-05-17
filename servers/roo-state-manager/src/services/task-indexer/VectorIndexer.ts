@@ -20,9 +20,103 @@ const INDEXING_BATCH_SIZE = Math.max(1, parseInt(process.env.INDEXING_BATCH_SIZE
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000; // 2 seconds
 const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
-let circuitBreakerState = 'CLOSED'; // CLOSED | OPEN | HALF_OPEN
+type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+let circuitBreakerState: CircuitBreakerState = 'CLOSED';
 let failureCount = 0;
 let lastFailureTime = 0;
+
+/**
+ * #2165: Observable circuit-breaker state.
+ *
+ * The Qdrant circuit breaker used to be a silent module-level variable: when it
+ * opened, `safeQdrantUpsert` returned `false` and `indexTask` threw — but nothing
+ * upstream could see *why* writes were failing, nor avoid the expensive embedding
+ * computation that precedes the (doomed) upsert. Under sustained Qdrant latency
+ * this produced the embedding-server hammering described in #2165: chunks were
+ * re-embedded every background cycle even though every upsert was being rejected.
+ *
+ * Exposing the state lets `indexTask` short-circuit BEFORE embedding, and lets
+ * diagnostics surface the breaker instead of guessing.
+ */
+export interface CircuitBreakerSnapshot {
+    state: CircuitBreakerState;
+    failureCount: number;
+    lastFailureTime: number;
+    /** ms remaining before an OPEN breaker is allowed to probe (HALF_OPEN). 0 when not OPEN. */
+    msUntilHalfOpen: number;
+}
+
+export function getCircuitBreakerState(): CircuitBreakerSnapshot {
+    let msUntilHalfOpen = 0;
+    if (circuitBreakerState === 'OPEN') {
+        msUntilHalfOpen = Math.max(0, CIRCUIT_BREAKER_TIMEOUT_MS - (Date.now() - lastFailureTime));
+    }
+    return {
+        state: circuitBreakerState,
+        failureCount,
+        lastFailureTime,
+        msUntilHalfOpen,
+    };
+}
+
+/**
+ * #2165: Returns true when the circuit breaker would reject an upsert right now.
+ * Unlike `canMakeRequest()` (which has the side effect of transitioning OPEN→HALF_OPEN),
+ * this is a pure read used by `indexTask` to decide whether embedding is even worth it.
+ */
+export function isCircuitBreakerBlocking(): boolean {
+    if (circuitBreakerState === 'CLOSED' || circuitBreakerState === 'HALF_OPEN') {
+        return false;
+    }
+    // OPEN — blocking unless the cooldown has elapsed (next call would probe via HALF_OPEN)
+    return (Date.now() - lastFailureTime) <= CIRCUIT_BREAKER_TIMEOUT_MS;
+}
+
+/** #2165: Test-only — reset breaker between unit tests without reimporting the module. */
+export function resetCircuitBreakerForTest(): void {
+    circuitBreakerState = 'CLOSED';
+    failureCount = 0;
+    lastFailureTime = 0;
+}
+
+// #2195: Per-cycle embedding metrics — in-process counters since MCP boot
+export interface EmbeddingMetrics {
+    embeddings_called_total: number;
+    embeddings_cached_hit_total: number;
+    embeddings_preflight_skipped_total: number;
+    embeddings_post_dedup_skipped_total: number;
+    embeddings_circuit_breaker_blocked_total: number;
+    embeddings_wrong_dim_total: number;
+    embeddings_rate_limit_waited_total: number;
+    preflight_batches_total: number;
+    preflight_batches_qdrant_unreachable_total: number;
+    preflight_chunks_returned_existing_total: number;
+    preflight_chunks_returned_missing_total: number;
+}
+
+const _metrics: EmbeddingMetrics = {
+    embeddings_called_total: 0,
+    embeddings_cached_hit_total: 0,
+    embeddings_preflight_skipped_total: 0,
+    embeddings_post_dedup_skipped_total: 0,
+    embeddings_circuit_breaker_blocked_total: 0,
+    embeddings_wrong_dim_total: 0,
+    embeddings_rate_limit_waited_total: 0,
+    preflight_batches_total: 0,
+    preflight_batches_qdrant_unreachable_total: 0,
+    preflight_chunks_returned_existing_total: 0,
+    preflight_chunks_returned_missing_total: 0,
+};
+
+export function getEmbeddingMetrics(): Readonly<EmbeddingMetrics> {
+    return { ..._metrics };
+}
+
+export function resetEmbeddingMetricsForTest(): void {
+    for (const key of Object.keys(_metrics) as (keyof EmbeddingMetrics)[]) {
+        _metrics[key] = 0;
+    }
+}
 
 // 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
@@ -32,6 +126,11 @@ const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 // matching the qwen3-4b-awq embedder capacity on po-2026 (~5-10 req/s). Override via env to accelerate
 // once the cache is warm (steady-state sees high cache hits and the embedder is barely touched).
 const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '30', 10);
+// #2194: Batch size for embedding API calls. 1 = legacy single-input (backward compat).
+// Batch 16-32 yields ~3-5x throughput by amortizing HTTP round-trips.
+const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || '16', 10);
+// Approximate max tokens per batch request. Split batch if sum of content lengths exceeds this.
+const EMBEDDING_BATCH_MAX_TOKENS = parseInt(process.env.EMBEDDING_BATCH_MAX_TOKENS || '7000', 10);
 let operationTimestamps: number[] = [];
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
@@ -305,7 +404,9 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
                 // 🚨 FIX CRITIQUE: Ne JAMAIS retry les erreurs HTTP 400 (Bad Request)
                 const httpStatus = error?.response?.status || error?.status;
                 if (httpStatus === 400) {
-                    recordFailure();
+                    // #2209: HTTP 400 is a permanent error (bad payload), NOT a transient failure.
+                    // Don't trip the circuit breaker — it would block all subsequent indexing.
+                    console.warn(`[#2209] HTTP 400 in safeQdrantUpsert — permanent error, NOT tripping breaker`);
                     const totalDuration = Date.now() - startTime;
 
                     console.error(`🔴 [safeQdrantUpsert] ERREUR HTTP 400 - NE PAS RETRY - Abandon immédiat`);
@@ -438,6 +539,7 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
             return !hash || !existingHashes.has(hash);
         });
         console.log(`[#1985] Content-hash dedup: ${before - filtered.length}/${before} points already in Qdrant`);
+        _metrics.embeddings_post_dedup_skipped_total += (before - filtered.length);
         return filtered;
     } catch (error: any) {
         console.warn(`[#1985] Dedup check failed (non-blocking): ${error?.message || error}`);
@@ -454,55 +556,227 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
  * concurrent MCPs that write the same chunk_id produce identical points (idempotent upsert).
  * The pre-flight check skips embedding computation entirely for already-indexed chunks.
  */
+interface PreflightDedupResult {
+    /** Sub-chunks that still need embedding + upsert. */
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>;
+    /**
+     * #2165: True only if EVERY batch retrieve succeeded. When false, the dedup
+     * check is unreliable (Qdrant unreachable / slow) and the caller must NOT
+     * blindly embed everything — that is exactly the condition that produced the
+     * embedding-server hammering loop. Callers should back off instead.
+     */
+    qdrantReachable: boolean;
+}
+
 async function preflightDedupByChunkId(
     subChunks: Array<{ chunk: Chunk; contentHash: string }>
-): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
-    if (subChunks.length === 0) return subChunks;
+): Promise<PreflightDedupResult> {
+    if (subChunks.length === 0) return { subChunks, qdrantReachable: true };
 
     try {
         const qdrant = getQdrantClient();
+
+        // #2209: Skip preflight entirely for huge collections — retrieve() is too slow
+        // on millions of points. Rely on post-index content-hash dedup instead.
+        try {
+            const collectionInfo = await qdrant.count(COLLECTION_NAME, { exact: false });
+            if (collectionInfo.count > 5_000_000) {
+                console.log(`[#2209] Collection has ~${collectionInfo.count} points — skipping preflight dedup, relying on post-index content-hash dedup`);
+                return { subChunks, qdrantReachable: true };
+            }
+        } catch { /* ignore count failure, proceed with preflight */ }
+
         const chunkIds = subChunks.map(sc => sc.chunk.chunk_id);
         const existingContentHashes = new Map<string, string>(); // chunk_id -> contentHash
+        let allBatchesSucceeded = true;
 
         // Batch retrieve — check which chunk_ids already exist (O(1) per ID)
         const BATCH_SIZE = 100;
         for (let i = 0; i < chunkIds.length; i += BATCH_SIZE) {
             const batch = chunkIds.slice(i, i + BATCH_SIZE);
+            _metrics.preflight_batches_total++;
             try {
-                const points = await qdrant.retrieve(COLLECTION_NAME, {
-                    ids: batch,
-                    with_payload: true,
-                    with_vector: false,
-                });
+                // #2209: Race with 5s timeout — slow retrieves on large collections
+                // should not block indexing indefinitely or trip the circuit breaker.
+                const points = await Promise.race([
+                    qdrant.retrieve(COLLECTION_NAME, {
+                        ids: batch,
+                        with_payload: true,
+                        with_vector: false,
+                    }),
+                    new Promise<never>((_, reject) =>
+                        setTimeout(() => reject(new Error('Preflight retrieve timeout after 5000ms')), 5000)
+                    ),
+                ]);
 
                 for (const point of points) {
                     const hash = (point.payload as any)?.contentHash as string | undefined;
                     if (hash) existingContentHashes.set(point.id as string, hash);
                 }
             } catch (retrieveError: any) {
-                console.warn(`[#2018] Preflight retrieve failed for batch ${i}: ${retrieveError?.message || retrieveError}`);
+                _metrics.preflight_batches_qdrant_unreachable_total++;
+                const isTimeout = retrieveError?.message?.includes('timeout');
+                if (isTimeout) {
+                    // #2209: Timeouts don't mean Qdrant is down — just slow on large collections.
+                    // Don't mark as unreachable to avoid tripping circuit breaker.
+                    console.warn(`[#2209] Preflight retrieve timed out for batch at offset ${i} — treating as non-fatal`);
+                } else {
+                    // #2165: A non-timeout failure does NOT mean "no existing points" — it means
+                    // we don't know. Track it so the caller can back off instead of
+                    // re-embedding chunks that are very likely already in Qdrant.
+                    allBatchesSucceeded = false;
+                    console.warn(`[#2018] Preflight retrieve failed for batch ${i}: ${retrieveError?.message || retrieveError}`);
+                }
             }
         }
-
-        if (existingContentHashes.size === 0) return subChunks;
 
         // Filter: skip chunks that exist with same contentHash (unchanged content)
         const newSubChunks = subChunks.filter(sc => {
             const existingHash = existingContentHashes.get(sc.chunk.chunk_id);
-            if (!existingHash) return true; // Doesn't exist — needs indexing
+            if (!existingHash) return true; // Doesn't exist (or unknown) — needs indexing
             return existingHash !== sc.contentHash; // Keep if content changed
         });
 
         const skipped = subChunks.length - newSubChunks.length;
+        _metrics.preflight_chunks_returned_existing_total += existingContentHashes.size;
+        _metrics.preflight_chunks_returned_missing_total += (subChunks.length - existingContentHashes.size);
+        _metrics.embeddings_preflight_skipped_total += skipped;
         if (skipped > 0) {
             console.log(`[#2018] Preflight dedup: ${skipped}/${subChunks.length} chunks already indexed, computing embeddings for ${newSubChunks.length}`);
         }
 
-        return newSubChunks;
+        return { subChunks: newSubChunks, qdrantReachable: allBatchesSucceeded };
     } catch (error: any) {
-        // Non-fatal: if pre-flight fails, proceed with all chunks (fall through to post-dedup)
-        console.warn(`[#2018] Preflight dedup failed (non-blocking): ${error?.message || error}`);
-        return subChunks;
+        // #2165: Total failure — Qdrant unreachable. Signal it so the caller backs off.
+        console.warn(`[#2018] Preflight dedup failed (Qdrant unreachable): ${error?.message || error}`);
+        return { subChunks, qdrantReachable: false };
+    }
+}
+
+// #2194: Split sub-chunks into batches respecting size and token limits
+function buildBatches(
+    entries: Array<{ chunk: Chunk; contentHash: string }>,
+    batchSize: number,
+    maxTokens: number
+): Array<Array<{ chunk: Chunk; contentHash: string }>> {
+    const batches: Array<Array<{ chunk: Chunk; contentHash: string }>> = [];
+    let currentBatch: Array<{ chunk: Chunk; contentHash: string }> = [];
+    let currentTokens = 0;
+
+    for (const entry of entries) {
+        const estimatedTokens = Math.ceil(entry.chunk.content.length / 4);
+        if (
+            currentBatch.length >= batchSize ||
+            (currentBatch.length > 0 && currentTokens + estimatedTokens > maxTokens)
+        ) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentTokens = 0;
+        }
+        currentBatch.push(entry);
+        currentTokens += estimatedTokens;
+    }
+    if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+    }
+    return batches;
+}
+
+// #2194: Embed a single chunk (legacy path for EMBEDDING_BATCH_SIZE=1)
+async function embedSingle(
+    subChunk: Chunk,
+    contentHash: string,
+    model: string,
+    expectedDims: number,
+    now: number
+): Promise<number[] | null> {
+    const embeddingResponse = await getOpenAIClient().embeddings.create({
+        model,
+        input: subChunk.content,
+    });
+    _metrics.embeddings_called_total++;
+    const vector = embeddingResponse.data[0].embedding;
+
+    if (!vector || !Array.isArray(vector)) {
+        console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
+        return null;
+    }
+    if (vector.length !== expectedDims) {
+        _metrics.embeddings_wrong_dim_total++;
+        console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${subChunk.chunk_id}`);
+        return null;
+    }
+
+    embeddingCache.set(contentHash, { vector, timestamp: now });
+    operationTimestamps.push(now);
+    return vector;
+}
+
+// #2194: Embed a batch of chunks in one API call.
+// On failure, splits into two halves and retries each independently (no data loss).
+async function embedBatch(
+    batch: Array<{ chunk: Chunk; contentHash: string }>,
+    model: string,
+    expectedDims: number,
+    now: number
+): Promise<Array<number[] | null>> {
+    if (batch.length === 1) {
+        // Single item — try once, return null on failure
+        try {
+            const resp = await getOpenAIClient().embeddings.create({ model, input: batch[0].chunk.content });
+            _metrics.embeddings_called_total++;
+            operationTimestamps.push(now);
+            const vector = resp.data[0]?.embedding;
+            if (vector && Array.isArray(vector) && vector.length === expectedDims) {
+                embeddingCache.set(batch[0].contentHash, { vector, timestamp: now });
+                return [vector];
+            }
+            if (vector && vector.length !== expectedDims) {
+                _metrics.embeddings_wrong_dim_total++;
+                console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[0].chunk.chunk_id}`);
+            }
+            return [null];
+        } catch (error: any) {
+            console.error(`❌ [batch] Single embedding failed for chunk ${batch[0].chunk.chunk_id}: ${error.message}`);
+            return [null];
+        }
+    }
+
+    // Multi-item batch — try full batch, split on failure
+    try {
+        const inputs = batch.map(e => e.chunk.content);
+        const resp = await getOpenAIClient().embeddings.create({ model, input: inputs });
+        _metrics.embeddings_called_total += batch.length;
+        // #2194 fix: rate limit counts per embedding, not per batch
+        for (let i = 0; i < batch.length; i++) {
+            operationTimestamps.push(now);
+        }
+
+        const results: Array<number[] | null> = new Array(batch.length).fill(null);
+        for (let i = 0; i < batch.length; i++) {
+            const vector = resp.data[i]?.embedding;
+            if (!vector || !Array.isArray(vector)) {
+                console.error(`❌ [batch] Embedding invalide pour chunk ${batch[i].chunk.chunk_id}`);
+                continue;
+            }
+            if (vector.length !== expectedDims) {
+                _metrics.embeddings_wrong_dim_total++;
+                console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[i].chunk.chunk_id}`);
+                continue;
+            }
+            results[i] = vector;
+            embeddingCache.set(batch[i].contentHash, { vector, timestamp: now });
+        }
+        return results;
+    } catch (error: any) {
+        // Full batch failed — split into two halves and retry each independently
+        const mid = Math.ceil(batch.length / 2);
+        console.warn(`[batch] Batch of ${batch.length} failed (${error.message}), splitting into ${mid}+${batch.length - mid}`);
+        const [left, right] = await Promise.all([
+            embedBatch(batch.slice(0, mid), model, expectedDims, now),
+            embedBatch(batch.slice(mid), model, expectedDims, now),
+        ]);
+        return [...left, ...right];
     }
 }
 
@@ -516,6 +790,27 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     try {
+        // #2165: ROOT-CAUSE FIX for embedding-server hammering.
+        // Previously, indexTask() extracted chunks, computed ALL embeddings, THEN
+        // discovered the Qdrant circuit breaker was OPEN and threw. Under sustained
+        // Qdrant latency the breaker stays OPEN, yet every background cycle still
+        // burned GPU embedding chunks whose upsert was guaranteed to be rejected.
+        // Short-circuit here, BEFORE any embedding work, when the breaker is open.
+        if (isCircuitBreakerBlocking()) {
+            _metrics.embeddings_circuit_breaker_blocked_total++;
+            const snap = getCircuitBreakerState();
+            console.warn(
+                `🚫 [indexTask] Circuit breaker OPEN — skipping task ${taskId} BEFORE embedding ` +
+                `(failures=${snap.failureCount}, retry in ~${Math.round(snap.msUntilHalfOpen / 1000)}s). ` +
+                `No embeddings computed, no GPU burned.`
+            );
+            throw new GenericError(
+                `Qdrant circuit breaker OPEN — indexing for task ${taskId} deferred (no embeddings computed)`,
+                GenericErrorCode.CIRCUIT_BREAKER_OPEN,
+                { taskId, circuitBreaker: snap, service: 'VectorIndexer.indexTask' }
+            );
+        }
+
         await ensureCollectionExists();
 
         // Dispatch to appropriate chunk extractor based on source
@@ -549,61 +844,89 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         }
 
         // Phase B: #2018 Phase 2 — Pre-flight dedup (skip already-indexed chunks BEFORE embeddings)
-        const subChunksToEmbed = await preflightDedupByChunkId(allSubChunks);
+        const preflight = await preflightDedupByChunkId(allSubChunks);
+        const subChunksToEmbed = preflight.subChunks;
+
+        // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
+        // set is unreliable — it most likely contains chunks already indexed. Embedding
+        // them would (a) hammer the embedding server and (b) fail at upsert anyway since
+        // Qdrant is unreachable. Back off instead. This is the second half of the
+        // root-cause fix: the dedup query failing silently was letting 100% of chunks
+        // through to embedding under exactly the load conditions that caused #2165.
+        if (!preflight.qdrantReachable && subChunksToEmbed.length > 0) {
+            console.warn(
+                `🚫 [indexTask] Pre-flight dedup could not reach Qdrant for task ${taskId} — ` +
+                `deferring ${subChunksToEmbed.length} chunk embeddings to avoid re-embedding ` +
+                `already-indexed content. No GPU burned.`
+            );
+            recordFailure();
+            throw new GenericError(
+                `Qdrant unreachable during pre-flight dedup for task ${taskId} — indexing deferred (no embeddings computed)`,
+                GenericErrorCode.CIRCUIT_BREAKER_OPEN,
+                { taskId, chunksDeferred: subChunksToEmbed.length, service: 'VectorIndexer.indexTask' }
+            );
+        }
 
         // Phase C: Compute embeddings only for new/changed chunks
         let pointsToIndex: PointStruct[] = [];
 
-        for (const { chunk: subChunk, contentHash } of subChunksToEmbed) {
-            console.log(`📝 Processing subchunk: ${subChunk.content.length} chars (estimated ~${Math.ceil(subChunk.content.length / 4)} tokens)`);
+        // #2194: Two-stage pipeline — cache lookup first, then batch embedding for misses
+        const embeddingModel = getEmbeddingModel();
+        const expectedDims = getEmbeddingDimensions();
+        const now = Date.now();
 
-            // 🛡️ PROTECTION ANTI-FUITE: Rate limiting
-            const now = Date.now();
+        // Stage 1: Separate cached from uncached
+        type SubChunkEntry = { chunk: Chunk; contentHash: string };
+        const cachedResults: Map<string, number[]> = new Map(); // contentHash → vector
+        const uncached: SubChunkEntry[] = [];
+
+        for (const entry of subChunksToEmbed) {
+            const cached = embeddingCache.get(entry.contentHash);
+            if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
+                _metrics.embeddings_cached_hit_total++;
+                cachedResults.set(entry.contentHash, cached.vector);
+            } else {
+                uncached.push(entry);
+            }
+        }
+
+        // Stage 2: Batch embed uncached chunks
+        if (uncached.length > 0) {
+            // Rate-limit check before batch processing
             operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
             if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
+                _metrics.embeddings_rate_limit_waited_total++;
                 console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
                 await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
                 operationTimestamps = [];
             }
 
-            let vector: number[];
-
-            const cached = embeddingCache.get(contentHash);
-
-            if (cached && (now - cached.timestamp < EMBEDDING_CACHE_TTL)) {
-                console.log(`[CACHE] Embedding trouvé en cache pour subchunk ${subChunk.chunk_id}`);
-                vector = cached.vector;
+            if (EMBEDDING_BATCH_SIZE <= 1) {
+                // Legacy single-input path (backward compat)
+                for (const { chunk: subChunk, contentHash } of uncached) {
+                    const vector = await embedSingle(subChunk, contentHash, embeddingModel, expectedDims, now);
+                    if (vector) {
+                        cachedResults.set(contentHash, vector);
+                    }
+                }
             } else {
-                const embeddingModel = getEmbeddingModel();
-                const expectedDims = getEmbeddingDimensions();
-
-                const embeddingResponse = await getOpenAIClient().embeddings.create({
-                    model: embeddingModel,
-                    input: subChunk.content,
-                });
-                vector = embeddingResponse.data[0].embedding;
-
-                console.log(`[DEBUG] Embedding response reçu:`, {
-                    model: embeddingResponse.model,
-                    usage: embeddingResponse.usage,
-                    vectorLength: vector?.length || 'undefined',
-                    chunkId: subChunk.chunk_id
-                });
-
-                if (!vector || !Array.isArray(vector)) {
-                    console.error(`❌ [indexTask] Embedding invalide: pas un tableau pour chunk ${subChunk.chunk_id}`);
-                    continue;
+                // Batch path: split uncached into batches respecting token limits
+                const batches = buildBatches(uncached, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_MAX_TOKENS);
+                for (const batch of batches) {
+                    const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now);
+                    for (let i = 0; i < batch.length; i++) {
+                        if (batchVectors[i]) {
+                            cachedResults.set(batch[i].contentHash, batchVectors[i]!);
+                        }
+                    }
                 }
-
-                if (vector.length !== expectedDims) {
-                    console.warn(`⚠️ [indexTask] Dimension inattendue: ${vector.length} (attendu: ${expectedDims}) pour chunk ${subChunk.chunk_id}`);
-                    console.warn(`⚠️ [indexTask] Modèle utilisé: ${embeddingModel}`);
-                }
-
-                embeddingCache.set(contentHash, { vector, timestamp: now });
-                operationTimestamps.push(now);
-                console.log(`[CACHE] Embedding mis en cache pour subchunk ${subChunk.chunk_id} (dimension: ${vector.length})`);
             }
+        }
+
+        // Stage 3: Build points from all resolved vectors
+        for (const { chunk: subChunk, contentHash } of subChunksToEmbed) {
+            const vector = cachedResults.get(contentHash);
+            if (!vector) continue;
 
             const point: PointStruct = {
                 id: subChunk.chunk_id,

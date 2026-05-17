@@ -11,6 +11,7 @@ import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { getEmbeddingMetrics } from '../../services/task-indexer/VectorIndexer.js';
 
 // Lazy imports — only loaded when needed by debug/reset actions.
 // Static import was causing hangs on action="test" when RooSyncService init blocked (#1910).
@@ -205,6 +206,9 @@ async function handleEnvAction(
       report.missingFiles.push(file);
     }
   }
+
+  // #2195: Surface embedding pipeline metrics
+  report.embeddings = getEmbeddingMetrics();
 
   return {
     success: report.status === 'OK',

@@ -61,10 +61,29 @@ export const resetQdrantCollectionTool = {
             await taskIndexer.resetCollection();
             
             // Marquer tous les squelettes comme non-indexés
+            // Fix #2209: Reset BOTH legacy qdrantIndexedAt AND modern indexingState.
+            // Before this fix, only qdrantIndexedAt was cleared — skeletons with
+            // indexingState.indexStatus='success' and nextReindexAfter in the future
+            // were skipped by shouldIndex(), preventing re-indexation after a reset.
             let skeletonsReset = 0;
             for (const [taskId, skeleton] of conversationCache.entries()) {
+                let modified = false;
+
+                // Reset legacy field
                 if (skeleton.metadata.qdrantIndexedAt) {
                     delete skeleton.metadata.qdrantIndexedAt;
+                    modified = true;
+                }
+
+                // Reset modern indexingState (keeps indexVersion only)
+                if (skeleton.metadata.indexingState) {
+                    skeleton.metadata.indexingState = {
+                        indexVersion: skeleton.metadata.indexingState.indexVersion,
+                    };
+                    modified = true;
+                }
+
+                if (modified) {
                     await saveSkeletonCallback(skeleton);
                     skeletonsReset++;
                 }

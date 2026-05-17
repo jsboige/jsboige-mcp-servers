@@ -51,12 +51,38 @@ function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): Cal
     }
 }
 
-// #249: Retry configuration for transient failures
-const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '1');
+// #249/#2167: Retry configuration for transient failures
+// #2167: Bumped default retry count from 1→2 (3 total attempts) for embedding reliability
+const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '2');
 const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
 
 /**
- * #249: Retry wrapper for transient network/timeout errors.
+ * #2167: Query embedding cache — avoids re-embedding identical queries within TTL.
+ * LRU with TTL 1h. Capped at 100 entries to bound memory.
+ */
+const queryEmbeddingCache = new Map<string, { embedding: number[]; expiresAt: number }>();
+const QUERY_EMBEDDING_CACHE_TTL_MS = parseInt(process.env.QUERY_EMBEDDING_CACHE_TTL_MS || '3600000'); // 1h
+const QUERY_EMBEDDING_CACHE_MAX = 100;
+
+function getCachedQueryEmbedding(query: string): number[] | null {
+    const cached = queryEmbeddingCache.get(query);
+    if (cached && Date.now() < cached.expiresAt) {
+        return cached.embedding;
+    }
+    if (cached) queryEmbeddingCache.delete(query);
+    return null;
+}
+
+function setCachedQueryEmbedding(query: string, embedding: number[]): void {
+    if (queryEmbeddingCache.size >= QUERY_EMBEDDING_CACHE_MAX) {
+        const oldest = queryEmbeddingCache.keys().next().value;
+        if (oldest) queryEmbeddingCache.delete(oldest);
+    }
+    queryEmbeddingCache.set(query, { embedding, expiresAt: Date.now() + QUERY_EMBEDDING_CACHE_TTL_MS });
+}
+
+/**
+ * #249/#2167: Retry wrapper with exponential backoff for transient network/timeout errors.
  * Retries on 5xx, abort, timeout. Does NOT retry on 4xx or validation errors.
  */
 async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS): Promise<T> {
@@ -68,7 +94,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RET
         if (!isRetryable) throw error;
         console.warn(`[WARN] #249: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
-        return withRetry(fn, retries - 1, backoffMs);
+        return withRetry(fn, retries - 1, backoffMs * 2);
     }
 }
 
@@ -95,11 +121,12 @@ function isAbortOrTimeout(error: unknown): boolean {
 }
 
 /**
- * Reset the circuit breaker state (for testing).
+ * Reset the circuit breaker state and query embedding cache (for testing).
  * @internal
  */
 export function _resetEmbeddingCircuitBreaker(): void {
     lastEmbeddingFailureTime = 0;
+    queryEmbeddingCache.clear();
 }
 
 export interface SearchTasksByContentArgs {
@@ -469,13 +496,19 @@ export const searchTasksByContentTool = {
             const qdrant = getQdrantClient();
             const openai = getOpenAIClient();
 
-            // #249: Wrap embedding call with retry for transient failures
-            const embedding = await withRetry(() => openai.embeddings.create({
-                model: getEmbeddingModel(),
-                input: search_query
-            }));
-
-            const queryVector = embedding.data[0].embedding;
+            // #2167: Check query embedding cache before calling the API
+            let queryVector = getCachedQueryEmbedding(search_query);
+            if (!queryVector) {
+                // #249: Wrap embedding call with retry for transient failures
+                const embedding = await withRetry(() => openai.embeddings.create({
+                    model: getEmbeddingModel(),
+                    input: search_query
+                }));
+                queryVector = embedding.data[0].embedding;
+                setCachedQueryEmbedding(search_query, queryVector);
+            } else {
+                console.log(`[INFO] #2167: Query embedding cache hit for "${search_query.substring(0, 50)}..."`);
+            }
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
             // Configuration de la recherche selon conversation_id et workspace

@@ -692,6 +692,39 @@ describe('background-services', () => {
       // Queue should be empty
       expect(state.qdrantIndexQueue.size).toBe(0);
     });
+
+    // #2195: Acceptance criterion #2 — per-cycle [EMB-METRICS] log emission
+    it('should log [EMB-METRICS] snapshot at every interval (including empty/disabled cycles)', async () => {
+      const state = createMockState();
+      // Disabled + empty queue: log must STILL fire (observability stays live when nothing happens)
+      state.isQdrantIndexingEnabled = false;
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      startQdrantIndexingBackgroundProcess(state);
+
+      // Advance one cycle
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+      await vi.runOnlyPendingTimersAsync();
+
+      const metricsLogs = logSpy.mock.calls
+        .map(call => String(call[0] ?? ''))
+        .filter(s => s.startsWith('[EMB-METRICS]'));
+
+      expect(metricsLogs.length).toBeGreaterThanOrEqual(1);
+
+      // Format spec from issue #2195: called=N cached=N preflight_skipped=N post_skipped=N
+      // breaker_blocked=N preflight_fail=N
+      const line = metricsLogs[0];
+      expect(line).toMatch(/called=\d+/);
+      expect(line).toMatch(/cached=\d+/);
+      expect(line).toMatch(/preflight_skipped=\d+/);
+      expect(line).toMatch(/post_skipped=\d+/);
+      expect(line).toMatch(/breaker_blocked=\d+/);
+      expect(line).toMatch(/preflight_fail=\d+/);
+
+      logSpy.mockRestore();
+    });
   });
 
   describe('indexTaskInQdrant', () => {
