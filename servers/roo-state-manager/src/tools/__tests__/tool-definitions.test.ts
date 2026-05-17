@@ -47,44 +47,28 @@ import {
     roosyncMessagesDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 19; // #1836: 18 → 19 (roosync_claim added)
+const EXPECTED_TOOL_COUNT = 15; // CONS-8 #603: 19 → 15 (removed init, claim, decision, list_diffs)
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
-// #1863: 3 deprecated definitions removed from allToolDefinitions
-// #1935 Cluster D: analyze_roosync_problems removed — fused into roosync_diagnose(action: "analyze")
-// #1935 Cluster E: get_status removed — fused into roosync_inventory(type: "status")
+// CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
 const allDefinitions = [
     conversationBrowserDefinition,
     roosyncSearchDefinition,
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
-    // [REMOVED #291] getMcpBestPracticesDefinition — removed from allToolDefinitions
     exportDataDefinition,
-    // [REMOVED #291] exportConfigDefinition — removed from allToolDefinitions
-    // [REMOVED #291] viewTaskDetailsDefinition — removed from allToolDefinitions
-    // [REMOVED #291] getRawConversationDefinition — removed from allToolDefinitions
-    // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose
-    roosyncInitDefinition,
-    // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
+    // [REMOVED CONS-8 #603] roosyncInitDefinition — dead code
     roosyncCompareConfigDefinition,
-    roosyncListDiffsDefinition,
-    roosyncDecisionDefinition,
+    // [REMOVED CONS-8 #603] roosyncListDiffsDefinition — thin wrapper
+    // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
-    // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
-    // #1836: roosync_claim added — pre-claim enforcement tool
-    roosyncClaimDefinition,
-    // [REMOVED #291] roosyncRefreshDashboardDefinition — removed from allToolDefinitions
-    // [REMOVED #291] roosyncUpdateDashboardDefinition — removed from allToolDefinitions
-    // [REMOVED #1841 Cluster G] roosyncSendDefinition — fused into roosync_messages
-    // [REMOVED #1841 Cluster G] roosyncReadDefinition — fused into roosync_messages
-    // [REMOVED #1841 Cluster G] roosyncManageDefinition — fused into roosync_messages
-    // [REMOVED #1841 Cluster G] roosyncAttachmentsDefinition — fused into roosync_messages
+    // [REMOVED CONS-8 #603] roosyncClaimDefinition — never adopted
     roosyncMessagesDefinition,
     roosyncDashboardDefinition
 ];
@@ -317,10 +301,7 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(actions).toContain('export');
         });
 
-        it('roosync_decision should require action and decisionId', () => {
-            expect(roosyncDecisionDefinition.inputSchema.required).toContain('action');
-            expect(roosyncDecisionDefinition.inputSchema.required).toContain('decisionId');
-        });
+        // [REMOVED CONS-8 #603] roosync_decision schema test — dead tool removed from tools/list
 
         it('roosync_attachments should require action', () => {
             expect(roosyncAttachmentsDefinition.inputSchema.required).toContain('action');
@@ -334,14 +315,7 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(exportConfigDefinition.inputSchema.required).toContain('action');
         });
 
-
-        it('roosync_list_diffs should have filterType enum', () => {
-            const filterTypes = (roosyncListDiffsDefinition.inputSchema.properties.filterType as Record<string, unknown>).enum as string[];
-            expect(filterTypes).toContain('all');
-            expect(filterTypes).toContain('config');
-            expect(filterTypes).toContain('files');
-            expect(filterTypes).toContain('settings');
-        });
+        // [REMOVED CONS-8 #603] roosync_list_diffs schema test — dead tool removed from tools/list
 
         // #1935 Cluster B: roosync_update_dashboard definition removed — merged into roosync_dashboard
         it('roosync_dashboard should support refresh and update actions', () => {
@@ -367,10 +341,11 @@ describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('additionalProperties: false where declared', () => {
         const strictTools = [
-            roosyncInitDefinition,
+            // [REMOVED CONS-8 #603] roosyncInitDefinition — dead tool
             // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory
             roosyncCompareConfigDefinition,
-            roosyncListDiffsDefinition, roosyncBaselineDefinition, roosyncConfigDefinition,
+            // [REMOVED CONS-8 #603] roosyncListDiffsDefinition — dead tool
+            roosyncBaselineDefinition, roosyncConfigDefinition,
             roosyncInventoryDefinition,
             // #1609: roosyncHeartbeatDefinition removed
             // #1863: roosyncMachinesDefinition removed
