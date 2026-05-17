@@ -246,18 +246,18 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (Qwen3.6 35B MoE, thinking+vision, MME 1294.7)",
+      "description": "Image and document analysis specialist with web context. Cloud: GLM-4.6V. Can browse web pages and search for related context alongside image analysis",
       "model": "glm-4.6v",
-      "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough.",
-      "mcps": ["searxng"],
+      "system_prompt": "You are a vision analysis specialist with web search and browsing capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Be precise and thorough.",
+      "mcps": ["searxng", "playwright"],
       "memory": { "enabled": false }
     },
     {
       "id": "vision-local",
-      "description": "Fast local vision+thinking (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis with thinking mode",
+      "description": "Fast local vision+thinking with web context (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis",
       "model": "qwen3.6-35b-a3b",
-      "system_prompt": "You are a vision analysis assistant. Analyze images carefully and describe what you see. Be concise but thorough.",
-      "mcps": [],
+      "system_prompt": "You are a vision analysis assistant with web search and browsing capabilities. Analyze images carefully, describe what you see, and search for context when needed. Be concise but thorough.",
+      "mcps": ["searxng", "playwright"],
       "memory": { "enabled": false }
     },
     {
