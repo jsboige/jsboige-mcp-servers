@@ -19,6 +19,18 @@
       "context_window": 200000
     },
     {
+      "id": "glm-5.1-fast",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5.1",
+      "vision": false,
+      "thinking": false,
+      "description": "GLM-5.1 non-thinking via z.ai — faster responses, lower token usage, same model quality for non-reasoning tasks",
+      "context_window": 200000
+    },
+    {
       "id": "glm-5",
       "enabled": true,
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -28,6 +40,18 @@
       "vision": false,
       "thinking": true,
       "description": "GLM-5 reasoning via z.ai cloud (200K context, strong coding and analysis)",
+      "context_window": 200000
+    },
+    {
+      "id": "glm-5-fast",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5",
+      "vision": false,
+      "thinking": false,
+      "description": "GLM-5 non-thinking via z.ai — faster responses for straightforward tasks",
       "context_window": 200000
     },
     {
@@ -302,6 +326,22 @@
         "enabled": true,
         "collection": "analyst-glm5-memory"
       }
+    },
+    {
+      "id": "analyst-fast",
+      "description": "Fast analyst using GLM-5.1 non-thinking mode — lower latency for straightforward analysis and classification tasks",
+      "model": "glm-5.1-fast",
+      "system_prompt": "You are a fast analyst. Provide concise, direct answers without extended reasoning chains. Optimize for speed and clarity. Always respond in the same language as the user.",
+      "mcps": ["searxng"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "fast-responder",
+      "description": "Fast responder using GLM-5 non-thinking mode — quick answers for simple queries and triage",
+      "model": "glm-5-fast",
+      "system_prompt": "You are a fast responder. Answer queries directly and concisely. No extended thinking needed — focus on speed and accuracy. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "coder-local",
