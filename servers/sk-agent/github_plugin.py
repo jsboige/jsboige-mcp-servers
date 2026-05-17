@@ -245,9 +245,10 @@ class GitHubPlugin:
             path: Optional path prefix to limit search
         """
         repo = repo or self._default_repo
-        args = ["search", "code", pattern, "--repo", repo, "--json", "path,textMatches"]
+        query = pattern
         if path:
-            args.extend(["--", path])
+            query = f"{pattern} path:{path}"
+        args = ["search", "code", query, "--repo", repo, "--json", "path,textMatches"]
         output = self._run_gh(args, timeout=30)
         if output.startswith('{"error"'):
             return output

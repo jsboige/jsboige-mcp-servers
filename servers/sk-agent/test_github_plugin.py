@@ -154,6 +154,57 @@ class TestPostReviewComment:
         assert "error" in data
 
 
+class TestReadFile:
+    @patch("github_plugin.subprocess.run")
+    def test_returns_decoded_content(self, mock_run, plugin):
+        import base64
+        content = "hello world"
+        encoded = base64.b64encode(content.encode()).decode()
+        mock_run.return_value = MagicMock(returncode=0, stdout=encoded + "\n")
+        result = plugin.read_file("src/main.ts", repo="owner/repo")
+        assert result == content
+
+    @patch("github_plugin.subprocess.run")
+    def test_truncates_at_50kb(self, mock_run, plugin):
+        import base64
+        big = "x" * 60000
+        encoded = base64.b64encode(big.encode()).decode()
+        mock_run.return_value = MagicMock(returncode=0, stdout=encoded + "\n")
+        result = plugin.read_file("big.txt", repo="owner/repo")
+        assert result.endswith("[truncated at 50KB]")
+        assert len(result) < 60000
+
+    def test_requires_repo(self, plugin):
+        plugin._default_repo = ""
+        result = plugin.read_file("file.txt")
+        data = json.loads(result)
+        assert "error" in data
+
+    @patch("github_plugin.subprocess.run")
+    def test_handles_gh_error(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=1, stderr="not found")
+        result = plugin.read_file("missing.txt", repo="owner/repo")
+        data = json.loads(result)
+        assert "error" in data
+
+    @patch("github_plugin.subprocess.run")
+    def test_handles_decode_error(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="not-valid-base64!!!\n")
+        result = plugin.read_file("binary.bin", repo="owner/repo")
+        data = json.loads(result)
+        assert "error" in data
+
+    @patch("github_plugin.subprocess.run")
+    def test_api_url_format(self, mock_run, plugin):
+        import base64
+        encoded = base64.b64encode(b"ok").decode()
+        mock_run.return_value = MagicMock(returncode=0, stdout=encoded + "\n")
+        plugin.read_file("src/file.ts", ref="abc123", repo="owner/repo")
+        args = mock_run.call_args[0][0]
+        assert "api" in args
+        assert "repos/owner/repo/contents/src/file.ts?ref=abc123" in args
+
+
 class TestGrepCode:
     @patch("github_plugin.subprocess.run")
     def test_returns_matches(self, mock_run, plugin):
@@ -167,6 +218,13 @@ class TestGrepCode:
         data = json.loads(result)
         assert len(data) == 1
         assert data[0]["path"] == "src/main.ts"
+
+    @patch("github_plugin.subprocess.run")
+    def test_path_filter_in_query(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+        plugin.grep_code("TODO", repo="owner/repo", path="src/")
+        args = mock_run.call_args[0][0]
+        assert any("path:src/" in a for a in args)
 
 
 class TestRunGhEdgeCases:
