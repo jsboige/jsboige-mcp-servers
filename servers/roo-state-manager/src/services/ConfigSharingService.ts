@@ -189,6 +189,23 @@ export class ConfigSharingService implements IConfigSharingService {
 
     this.logger.info('Publication terminée', { machineId, version: options.version, path: versionDir });
 
+    // #2121: Cap versioned snapshots to 3 most recent per machine
+    try {
+      const entries = await fs.readdir(machineConfigDir);
+      const versionDirs = entries
+        .filter(e => e.startsWith('v') && !e.includes('.'))
+        .sort()
+        .reverse(); // newest first
+      if (versionDirs.length > 3) {
+        for (const old of versionDirs.slice(3)) {
+          await fs.rm(join(machineConfigDir, old), { recursive: true, force: true });
+        }
+        this.logger.info(`#2121: Pruned ${versionDirs.length - 3} old config snapshots for ${machineId}`);
+      }
+    } catch (err) {
+      this.logger.debug('#2121: Config snapshot cap failed', { error: String(err) });
+    }
+
     return {
       success: true,
       version: options.version,

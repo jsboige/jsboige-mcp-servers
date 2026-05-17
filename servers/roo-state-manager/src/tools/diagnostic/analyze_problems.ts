@@ -303,6 +303,29 @@ Fichier: ${analysis.filePath}
 ${JSON.stringify(analysis.issues, null, 2)}
 `;
             await fs.writeFile(reportPath, reportContent);
+
+            // #2121: 7-day retention cap — purge old reports after each write
+            const retentionMs = 7 * 24 * 60 * 60 * 1000;
+            const cutoff = Date.now() - retentionMs;
+            try {
+                const existing = await fs.readdir(reportDir);
+                let purged = 0;
+                for (const f of existing) {
+                    if (!f.startsWith('PHASE3A-ANALYSE-') || !f.endsWith('.md')) continue;
+                    const match = f.match(/PHASE3A-ANALYSE-(\d{4})-(\d{2})-(\d{2})T/);
+                    if (!match) continue;
+                    const fileDate = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00Z`).getTime();
+                    if (fileDate < cutoff) {
+                        await fs.unlink(path.join(reportDir, f));
+                        purged++;
+                    }
+                }
+                if (purged > 0) {
+                    console.log(`#2121: Purged ${purged} reports older than 7 days`);
+                }
+            } catch (err) {
+                // Non-critical — report cap failure doesn't affect analysis
+            }
         }
 
         return {
