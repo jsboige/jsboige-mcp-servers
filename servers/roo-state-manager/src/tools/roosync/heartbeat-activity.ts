@@ -73,3 +73,33 @@ export function recordRooSyncActivityAsync(
 		logger.debug(`Activité heartbeat en arrière-plan échouée: ${err.message}`);
 	});
 }
+
+/**
+ * Enregistre le résultat d'une exécution scheduler dans les metrics HeartbeatService (#1442)
+ *
+ * Fire-and-forget. Appelé par les outils qui observent l'activité scheduler
+ * (dashboard parsing, inventory collection, etc.).
+ *
+ * @param machineId Machine qui a exécuté le scheduler
+ * @param success Succès ou échec du run
+ * @param options Options: durationMs, error message
+ */
+export function recordSchedulerRunAsync(
+	machineId: string,
+	success: boolean,
+	options?: { durationMs?: number; error?: string }
+): void {
+	(async () => {
+		try {
+			const service = await getRooSyncService();
+			const heartbeatService = service.getHeartbeatService();
+			heartbeatService.recordSchedulerRun(machineId, {
+				success,
+				durationMs: options?.durationMs,
+				error: options?.error
+			});
+		} catch (err) {
+			logger.debug(`Échec enregistrement scheduler run: ${(err as Error).message}`);
+		}
+	})();
+}

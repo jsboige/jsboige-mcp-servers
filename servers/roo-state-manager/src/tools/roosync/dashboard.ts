@@ -2237,6 +2237,25 @@ async function handleAppend(
     });
   }
 
+  // #1442: Record scheduler cycle outcome when a worker posts [DONE]/[IDLE]/[BLOCKED]
+  if (args.tags && args.tags.length > 0) {
+    const tagStr = args.tags.join(' ').toUpperCase();
+    const isSchedulerCycle = tagStr.includes('DONE') || tagStr.includes('IDLE') || tagStr.includes('BLOCKED');
+    if (isSchedulerCycle) {
+      const success = tagStr.includes('DONE');
+      const idle = tagStr.includes('IDLE');
+      import('./heartbeat-activity.js').then(({ recordSchedulerRunAsync }) => {
+        recordSchedulerRunAsync(
+          author.machineId,
+          success,
+          {
+            error: idle ? 'idle-cycle' : undefined,
+          }
+        );
+      }).catch(() => { /* non-critical */ });
+    }
+  }
+
   // v3 (#1363) — Structured mentions: resolve each to UserId and notify via RooSync.
   // Fire-and-forget, same robustness pattern as v1.
   const crossPostResults: Array<{ key: string; ok: boolean; error?: string }> = [];
