@@ -454,6 +454,43 @@
       "system_prompt": "[OWUI enriched model: vision-expert] Delegate to the OWUI custom model's built-in methodology for expert image and document analysis.",
       "mcps": [],
       "memory": { "enabled": false }
+    },
+
+    {
+      "_comment": "=== PR Review agents (Issue #1587 — multi-tier automated reviews) ===",
+      "id": "fast-reviewer",
+      "description": "Tier 1 fast diff-only reviewer. GLM-4.7-Flash for speed, GitHub tools for PR access.",
+      "model": "glm-4.7-flash",
+      "system_prompt": "You are a fast code reviewer. Given a PR diff: (1) identify obvious bugs, security issues, and style problems, (2) produce a JSON verdict. Focus on correctness and security. Keep reviews concise — under 20 lines for trivial PRs. Always output valid JSON with keys: verdict, confidence, summary, blocking_issues, suggestions.",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true
+      }
+    },
+    {
+      "id": "integration-reviewer",
+      "description": "Tier 2 context-aware reviewer with GitHub tools for PR analysis. GLM-5.1 for deep reasoning.",
+      "model": "glm-5.1",
+      "system_prompt": "You are a thorough code reviewer with access to GitHub tools. When reviewing a PR:\n1. Fetch the PR diff and metadata using get_pr_diff and get_pr_metadata\n2. For each changed file, read the surrounding context using read_file if the diff is unclear\n3. Trace integration points: entry points, callers, consumers, side effects\n4. Check for: bugs, security issues (OWASP Top 10), performance problems, missing error handling, test coverage\n5. Look for edge cases: empty inputs, null handling, concurrent access\n6. Output a JSON review with verdict, confidence, summary, blocking_issues, and suggestions\n\nBe thorough but fair. Acknowledge good practices. Prioritize findings by severity (critical > major > minor).",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/roo-extensions"
+      }
+    },
+    {
+      "id": "context-explorer",
+      "description": "Explores code context around PR changes — reads files, searches callers, checks history. GLM-5.1.",
+      "model": "glm-5.1",
+      "system_prompt": "You are a code context explorer. Given a PR diff, you investigate the surrounding codebase:\n1. For each changed file, read the full file using read_file to understand the context\n2. Search for callers and consumers using grep_code\n3. Check if similar patterns exist elsewhere in the codebase\n4. Report: what the code does, who calls it, what depends on it, and any risks in the change.\nFocus on integration risks and side effects that a diff-only review would miss.",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/roo-extensions"
+      }
     }
   ],
 
@@ -598,6 +635,39 @@
       "type": "sequential",
       "agents": ["researcher", "pragmatist", "critic", "synthesizer"],
       "max_rounds": 5
+    },
+
+    {
+      "_comment": "PR Review Tier 1 — Fast diff-only review (Issue #1587). Single agent, sequential.",
+      "id": "pr-review-tier1",
+      "description": "Fast diff-only code review for trivial PRs (pointer bumps, typos, small fixes)",
+      "type": "sequential",
+      "agents": ["fast-reviewer", "review-synthesizer"],
+      "max_rounds": 2,
+      "inline_agents": [
+        {
+          "id": "review-synthesizer",
+          "description": "Formats review findings into structured JSON",
+          "model": "glm-4.7-flash",
+          "system_prompt": "Given code review findings, format them into a clean JSON with: verdict (APPROVE/COMMENT/REQUEST_CHANGES), confidence, summary, blocking_issues, suggestions. Keep it concise."
+        }
+      ]
+    },
+    {
+      "_comment": "PR Review Tier 2 — Context-aware review (Issue #1587). Multi-agent group chat.",
+      "id": "pr-review-tier2",
+      "description": "Multi-perspective PR review with context exploration, integration tracing, and synthesis",
+      "type": "group_chat",
+      "agents": ["integration-reviewer", "context-explorer", "review-synthesizer-t2"],
+      "max_rounds": 6,
+      "inline_agents": [
+        {
+          "id": "review-synthesizer-t2",
+          "description": "Aggregates Tier 2 review findings into final structured verdict",
+          "model": "glm-5.1",
+          "system_prompt": "You are a review synthesizer. Given findings from integration-reviewer and context-explorer:\n1. Merge overlapping findings, deduplicating by file+line\n2. Prioritize by severity (critical > major > minor)\n3. Resolve conflicting assessments (prefer the more cautious verdict)\n4. Produce final JSON with: verdict, confidence, summary, blocking_issues, suggestions\n5. If no critical or major issues found, verdict should be APPROVE or COMMENT (not REQUEST_CHANGES)\n\nBe fair and precise. A clean PR should get APPROVE, not be nitpicked."
+        }
+      ]
     }
   ],
 
