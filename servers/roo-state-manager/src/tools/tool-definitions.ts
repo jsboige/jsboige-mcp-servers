@@ -664,12 +664,11 @@ export const allToolDefinitions = [
     // [REMOVED #1841] getRawConversationDefinition — export_data(format: "json", target: "task") provides equivalent, redirect in registry.ts
     // WP4: Diagnostic
     // [REMOVED #1935 Cluster D] analyzeRooSyncProblemsDefinition — fused into roosync_diagnose(action: "analyze")
-    // RooSync tools (23) — same order as roosyncTools array in roosync/index.ts
-    roosyncInitDefinition,
+    // [REMOVED CONS-8 #603] roosyncInitDefinition — dead code (all machines initialized), redirect in registry.ts
     // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
     roosyncCompareConfigDefinition,
-    roosyncListDiffsDefinition,
-    roosyncDecisionDefinition,
+    // [REMOVED CONS-8 #603] roosyncListDiffsDefinition — thin wrapper, use roosync_compare_config instead, redirect in registry.ts
+    // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort (never operationalized), redirect in registry.ts
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
@@ -677,8 +676,7 @@ export const allToolDefinitions = [
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
-    // #1836: Pre-claim enforcement
-    roosyncClaimDefinition,
+    // [REMOVED CONS-8 #603] roosyncClaimDefinition — never adopted (#1836), redirect in registry.ts
     // [REMOVED #1935 Cluster B] roosyncRefreshDashboardDefinition — fused into roosync_dashboard(action: "refresh"), redirect in registry.ts
     // [REMOVED #1935 Cluster B] roosyncUpdateDashboardDefinition — fused into roosync_dashboard(action: "update"), redirect in registry.ts
     // [REMOVED #1841 Cluster G] roosyncSendDefinition — fused into roosync_messages(action: "send"/"reply"/"amend"), redirect in registry.ts

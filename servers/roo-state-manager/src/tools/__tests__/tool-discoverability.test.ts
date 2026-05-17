@@ -283,10 +283,7 @@ describe('Category 3: Consolidated Tool Action Completeness', () => {
             actions: ['task', 'conversation', 'project'],
         },
         // [REMOVED #291] export_config removed from allToolDefinitions — backward compat via registry.ts redirect
-        'roosync_decision': {
-            field: 'action',
-            actions: ['approve', 'reject', 'apply', 'rollback', 'info'],
-        },
+        // [REMOVED CONS-8 #603] roosync_decision — dead tool, no longer exposed
         'roosync_baseline': {
             field: 'action',
             actions: ['update', 'version', 'restore', 'export'],
@@ -475,7 +472,7 @@ describe('Category 5: Description Discoverability', () => {
         // #1609: roosync_heartbeat removed — auto-heartbeat on any tool call
         'roosync_diagnose': ['diagnos'],                 // "diagnostic et debug"
         'roosync_mcp_management': ['MCP'],               // "Gestion complète des serveurs MCP"
-        'roosync_decision': ['décision'],                // "workflow de décision RooSync"
+        // [REMOVED CONS-8 #603] roosync_decision — dead tool, no longer exposed
         'roosync_baseline': ['baseline'],                // "baselines RooSync"
         'roosync_indexing': ['index'],                   // "index sémantique"
         'export_data': ['export'],                       // "exporter des données"

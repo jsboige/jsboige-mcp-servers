@@ -133,7 +133,7 @@ describe('registry.ts - Tool Registration', () => {
         // [REMOVED #291] export_config test removed — tool removed from allToolDefinitions (ListTools)
         // Backward compat redirect preserved in registry.ts for CallTool
 
-        it('should have tools count greater than 15', async () => {
+        it('should have tools count greater than 10', async () => {
             const mockServer = {
                 setRequestHandler: vi.fn()
             } as any;
@@ -142,7 +142,7 @@ describe('registry.ts - Tool Registration', () => {
 
             const handler = mockServer.setRequestHandler.mock.calls[0][1];
             const result = await handler();
-            expect(result.tools.length).toBeGreaterThan(15);
+            expect(result.tools.length).toBeGreaterThan(10);
         });
     });
 

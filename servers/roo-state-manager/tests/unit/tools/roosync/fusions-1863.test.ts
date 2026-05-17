@@ -299,7 +299,7 @@ describe('#1935 Fusion E: get_status → inventory(type: "status")', () => {
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 19 tools (18 + #1836 roosync_claim)', () => {
+  it('allToolDefinitions should contain 15 tools (CONS-8 removed init, claim, decision, list_diffs)', () => {
     // Before: 32 tools → #1922 Pass 4 removed 3 deprecated → 29
     // #1841 removed 6 low-usage → 23. allToolDefinitions baseline = 24.
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose: 24 → 23
@@ -307,8 +307,9 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     // Cluster G (#1841) fused send+read+manage+attachments → roosync_messages: 22 → 19
     // Cluster H (#1841) fused task_export → export_data: 19 → 18
     // #1836 added roosync_claim: 18 → 19
+    // CONS-8 #603 removed 4 dead tools (init, claim, decision, list_diffs): 19 → 15
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(19);
+    expect(allToolDefinitions.length).toBe(15);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {
@@ -316,10 +317,14 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     expect(names).not.toContain('roosync_decision_info');
     expect(names).not.toContain('roosync_machines');
     expect(names).not.toContain('roosync_cleanup_messages');
+    // CONS-8 #603: additionally removed dead tools
+    expect(names).not.toContain('roosync_init');
+    expect(names).not.toContain('roosync_claim');
+    expect(names).not.toContain('roosync_decision');
+    expect(names).not.toContain('roosync_list_diffs');
   });
 
   it('canonical tools should not be deprecated', () => {
-    expect(roosyncDecisionDefinition.description).not.toContain('DEPRECATED');
     expect(roosyncInventoryDefinition.description).not.toContain('DEPRECATED');
   });
 

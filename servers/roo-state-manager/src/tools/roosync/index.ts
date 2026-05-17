@@ -288,21 +288,20 @@ export type {
 
 /**
  * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.18 : 19 outils (#1863: 3 deprecated definitions removed from tools/list — decision_info, machines, cleanup_messages)
- * Version 3.17 : 22 outils (CONS-7: 3 outils attachments → 1 roosync_attachments)
+ * Version 3.19 : 15 outils (CONS-8 #603: 4 dead tools removed — init, claim, decision, list_diffs)
+ * Version 3.18 : 19 outils (#1863: 3 deprecated definitions removed from tools/list)
  *
- * - Configuration: init, compare-config, roosync_config (CONS-3), baseline (CONS-4)
- * - Services: inventory (CONS-6), machines (CONS-6)
- * - Presentation: get-status, list-diffs, refresh-dashboard
- * - Decision (CONS-5): roosync_decision, roosync_decision_info
- * - Heartbeat: ADR 008 passive model (heartbeat.ts/heartbeat-service.ts/heartbeat-status.ts removed Phase 2)
- * - [DEPRECATED] Synchronisation automatique (CONS-#443 Groupe 2): roosync_sync_event retiré (#533)
- * - Messagerie (CONS-1): roosync_send, roosync_read, roosync_manage, roosync_cleanup_messages
- * - Attachments (CONS-7): roosync_attachments (remplace roosync_list/get/delete_attachment)
+ * - Configuration: compare-config, roosync_config (CONS-3), baseline (CONS-4)
+ * - Services: inventory (CONS-6)
+ * - Decision: REMOVED CONS-8 (pipeline mort)
+ * - Init: REMOVED CONS-8 (dead code)
+ * - Claim: REMOVED CONS-8 (never adopted)
+ * - List-diffs: REMOVED CONS-8 (thin wrapper, use compare_config)
+ * - Messagerie (CONS-8): roosync_messages (fused send+read+manage+attachments)
  * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
  * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
  * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
- * - Dashboards: roosync_refresh_dashboard, roosync_update_dashboard (#546), roosync_dashboard (#675)
+ * - Dashboards: roosync_dashboard (#675)
  */
 
 // #1470: roosyncTools array removed — orphan, never consumed by registry.ts
