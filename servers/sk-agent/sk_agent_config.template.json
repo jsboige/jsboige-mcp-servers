@@ -168,8 +168,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "expert-analyste",
       "vision": false,
-      "thinking": false,
-      "description": "OWUI Expert Analyste (wrapper qwen3.6-35b-a3b).",
+      "thinking": true,
+      "description": "OWUI Expert Analyste (wrapper qwen3.6-35b-a3b, thinking enabled).",
       "context_window": 131072
     },
     {
@@ -179,8 +179,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "redacteur-technique",
       "vision": false,
-      "thinking": false,
-      "description": "OWUI Rédacteur Technique (wrapper qwen3.6-35b-a3b).",
+      "thinking": true,
+      "description": "OWUI Rédacteur Technique (wrapper qwen3.6-35b-a3b, thinking enabled).",
       "context_window": 131072
     },
     {
@@ -190,8 +190,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "vision-expert",
       "vision": true,
-      "thinking": false,
-      "description": "OWUI Expert Vision (wrapper qwen3.6-35b-a3b).",
+      "thinking": true,
+      "description": "OWUI Expert Vision (wrapper qwen3.6-35b-a3b, vision+thinking).",
       "context_window": 131072
     }
   ],
