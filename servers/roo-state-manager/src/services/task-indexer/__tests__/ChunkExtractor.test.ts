@@ -274,10 +274,10 @@ describe('ChunkExtractor', () => {
       expect(idA).not.toBe(idB);
     });
 
-    it('different chunk_type produces different UUIDs', () => {
+    it('different chunk_type no longer affects UUIDs (#2247 decoupled)', () => {
       const idMsg = computeChunkId('task-1', 'message_exchange', 0, 'shared');
       const idTool = computeChunkId('task-1', 'tool_interaction', 0, 'shared');
-      expect(idMsg).not.toBe(idTool);
+      expect(idMsg).toBe(idTool); // seed excludes chunk_type since #2247
     });
 
     it('different task_id produces different UUIDs', () => {
