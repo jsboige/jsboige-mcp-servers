@@ -20,12 +20,13 @@ const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
  */
 export function computeChunkId(
     taskId: string,
-    chunkType: string,
+    _chunkType: string,
     sequenceOrder: number,
     content: string
 ): string {
+    // #2247: chunk_type removed from seed — future taxonomy fixes won't break UUIDs
     const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
-    const seed = `${taskId}|${chunkType}|seq:${sequenceOrder}|${contentHash}`;
+    const seed = `${taskId}|seq:${sequenceOrder}|${contentHash}`;
     return uuidv5(seed, UUID_NAMESPACE);
 }
 
@@ -280,7 +281,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         chunk_type: 'tool_interaction',
                         sequence_order: seq,
                         timestamp: msg.timestamp || new Date().toISOString(),
-                        indexed: false,
+                        indexed: true, // #2247: tool interactions are valuable search targets
                         content: toolContent,
                         tool_details: {
                             tool_name: toolCall.function.name,
