@@ -109,6 +109,14 @@ from sk_agent_config import (
 )
 from sk_conversations import ConversationRunner, build_run_conversation_description
 
+# GitHub PR review plugin
+try:
+    from github_plugin import GitHubPlugin
+
+    HAS_GITHUB_PLUGIN = True
+except ImportError:
+    HAS_GITHUB_PLUGIN = False
+
 # Optional: vector memory support
 try:
     from semantic_kernel.memory import SemanticTextMemory, VolatileMemoryStore
@@ -565,6 +573,13 @@ class SKAgentManager:
             if memory_plugin:
                 agent_plugins.append(memory_plugin)
 
+        # Set up GitHub PR tools if enabled via parameters.github_tools
+        if HAS_GITHUB_PLUGIN and agent_cfg.parameters.get("github_tools", False):
+            gh_repo = agent_cfg.parameters.get("github_default_repo", "")
+            gh_plugin = GitHubPlugin(default_repo=gh_repo)
+            agent_plugins.append(gh_plugin)
+            log.info("GitHub plugin enabled for agent '%s' (repo=%s)", agent_id, gh_repo or "dynamic")
+
         # Create SK agent
         safe_name = agent_id.replace(".", "-").replace(" ", "-")
         system_prompt = agent_cfg.system_prompt or self.config.system_prompt
@@ -878,11 +893,26 @@ class SKAgentManager:
     # Handler Methods
     # -----------------------------------------------------------------------
 
-    def _get_invoke_kwargs(self) -> dict[str, Any]:
-        """Build extra kwargs for agent.invoke() with sampling settings."""
+    def _get_invoke_kwargs(self, agent_id: str = "") -> dict[str, Any]:
+        """Build extra kwargs for agent.invoke() with sampling + thinking settings."""
         if not self._execution_settings:
             return {}
-        return {"arguments": KernelArguments(settings=self._execution_settings)}
+        settings = self._execution_settings
+        if agent_id:
+            agent_cfg = next((a for a in self.config.agents if a.id == agent_id), None)
+            if agent_cfg:
+                model_cfg = self.config.get_model(agent_cfg.model)
+                if model_cfg and not model_cfg.thinking:
+                    extra = dict(settings.extra_body or {})
+                    extra["chat_template_kwargs"] = {"enable_thinking": False}
+                    settings = OpenAIChatPromptExecutionSettings(
+                        temperature=settings.temperature,
+                        top_p=settings.top_p,
+                        presence_penalty=settings.presence_penalty,
+                        max_tokens=settings.max_tokens,
+                        extra_body=extra,
+                    )
+        return {"arguments": KernelArguments(settings=settings)}
 
     async def _handle_text(
         self,
@@ -899,7 +929,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs()
+        invoke_kwargs = self._get_invoke_kwargs(agent_id)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -952,7 +982,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs()
+            invoke_kwargs = self._get_invoke_kwargs(agent_id)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1028,7 +1058,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs()
+            invoke_kwargs = self._get_invoke_kwargs(agent_id)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1101,7 +1131,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs()
+        invoke_kwargs = self._get_invoke_kwargs(agent_id)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1215,7 +1245,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs()
+        invoke_kwargs = self._get_invoke_kwargs(agent_id)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1579,6 +1609,96 @@ async def end_conversation(conversation_id: str) -> str:
     if success:
         return f"Conversation '{conversation_id}' ended."
     return f"Conversation '{conversation_id}' not found."
+
+
+@mcp_server.tool()
+async def review_pr(
+    repo: str,
+    pr_number: int,
+    tier: int = 2,
+    agent: str = "",
+    conversation: str = "",
+    options: str = "",
+    timeout: int = 120,
+) -> str:
+    """Review a GitHub pull request using multi-tier automated code review.
+
+    Tier 1: Diff-only fast review (glm-4.7-flash, <30s). For PRs <=50 LOC.
+    Tier 2: Diff + context exploration (glm-5.1, 2-5min). Default.
+    Tier 3: Diff + context + execution (deep review, 5-15min). Future.
+
+    Args:
+        repo: Repository in owner/repo format (e.g. "jsboige/roo-extensions").
+        pr_number: PR number to review.
+        tier: Review tier (1=fast, 2=context, 3=deep). Default: 2.
+        agent: Override agent ID. Uses tier default if empty.
+        conversation: Override conversation ID. Uses tier default if empty.
+        options: JSON string with overrides (model, max_rounds).
+        timeout: Max seconds to wait. Default: 120.
+
+    Returns:
+        JSON string with: response, agent_used, model_used, tier, duration_seconds.
+    """
+    import time
+
+    start = time.time()
+    manager = await _get_manager()
+
+    tier = max(1, min(3, tier))
+
+    tier_agents = {1: "fast-reviewer", 2: "integration-reviewer", 3: "integration-reviewer"}
+    tier_conversations = {
+        1: "pr-review-tier1",
+        2: "pr-review-tier2",
+        3: "pr-review-tier2",
+    }
+
+    agent_id = agent or tier_agents.get(tier, "integration-reviewer")
+    conv_id = conversation or tier_conversations.get(tier, "pr-review-tier2")
+
+    opts = {}
+    if options:
+        try:
+            opts = json.loads(options)
+        except json.JSONDecodeError:
+            opts = {}
+
+    prompt_parts = [
+        f"Review PR #{pr_number} in repository {repo}.",
+        f"Use the GitHub tools to fetch the PR diff, files, and metadata.",
+        f"Provide your review in the following JSON format:",
+        "```json",
+        "{",
+        '  "verdict": "APPROVE | COMMENT | REQUEST_CHANGES",',
+        '  "confidence": "HIGH | MEDIUM | LOW",',
+        '  "summary": "1-3 sentence summary",',
+        '  "blocking_issues": [{"severity":"critical|major|minor", "category":"security|performance|maintainability|integration|regression", "file":"path", "line":0, "message":"description", "suggestion":"fix"}],',
+        '  "suggestions": [{"severity":"minor", "category":"style", "file":"path", "line":0, "message":"description", "suggestion":"fix"}]',
+        "}",
+        "```",
+        "",
+        "Be thorough. Check for bugs, security issues, performance problems, and maintainability.",
+        "If the PR is a pointer bump or trivial change, keep the review short.",
+    ]
+
+    prompt = "\n".join(prompt_parts)
+
+    result = await manager.call_agent(
+        prompt=prompt,
+        agent_id=agent_id,
+        conversation_id=conv_id if tier >= 2 else "",
+        timeout=timeout,
+    )
+
+    elapsed = round(time.time() - start, 1)
+
+    return json.dumps({
+        "response": result.get("response", "") if isinstance(result, dict) else str(result),
+        "agent_used": agent_id,
+        "model_used": result.get("model_used", "") if isinstance(result, dict) else "",
+        "tier": tier,
+        "duration_seconds": elapsed,
+    }, indent=2, ensure_ascii=False)
 
 
 @mcp_server.tool()

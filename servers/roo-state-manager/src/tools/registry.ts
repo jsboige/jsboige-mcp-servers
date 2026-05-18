@@ -67,9 +67,7 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_inventory: ['sharedPath'],
 	roosync_config: ['sharedPath'],
 	roosync_compare_config: ['sharedPath'],
-	roosync_list_diffs: ['sharedPath'],
-	roosync_decision: ['sharedPath'],
-	roosync_init: ['sharedPath'],
+	// [REMOVED CONS-8 #603] roosync_list_diffs, roosync_decision, roosync_init — dead tools
 	roosync_diagnose: ['sharedPath'],
 	roosync_baseline: ['sharedPath'],
 	roosync_indexing: ['sharedPath'],
@@ -478,24 +476,28 @@ export function registerCallToolHandler(
               }
               break;
           }
+          // [REMOVED CONS-8 #603] roosync_list_diffs — thin wrapper, use compare_config
           case 'roosync_list_diffs': {
-              try {
-                  const m = await import('./roosync/list-diffs.js');
-                  const roosyncResult = await m.roosyncListDiffs(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
+              result = {
+                  content: [{ type: 'text', text: JSON.stringify({
+                      status: 'deprecated',
+                      message: 'roosync_list_diffs removed (CONS-8 #603). Thin wrapper with no unique logic.',
+                      alternative: 'Use roosync_compare_config to compare configs between machines.'
+                  }) }],
+                  isError: false
+              };
               break;
           }
+          // [REMOVED CONS-8 #603] roosync_init — dead code (all machines initialized)
           case 'roosync_init': {
-              try {
-                  const m = await import('./roosync/roosync_init.js');
-                  const roosyncResult = await m.roosyncInit(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
+              result = {
+                  content: [{ type: 'text', text: JSON.stringify({
+                      status: 'deprecated',
+                      message: 'roosync_init removed (CONS-8 #603). All machines already initialized. No action needed.',
+                      alternative: 'Use roosync_diagnose(action: "env") for environment checks.'
+                  }) }],
+                  isError: false
+              };
               break;
           }
           case 'roosync_diagnose': {
@@ -508,15 +510,16 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // CONS-5: Consolidated decision tools (5→2)
+          // [REMOVED CONS-8 #603] roosync_decision — pipeline mort, never operationalized in prod
           case 'roosync_decision': {
-              try {
-                  const m = await import('./roosync/decision.js');
-                  const roosyncResult = await m.roosyncDecision(args as any);
-                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
+              result = {
+                  content: [{ type: 'text', text: JSON.stringify({
+                      status: 'deprecated',
+                      message: 'roosync_decision removed (CONS-8 #603). Decision pipeline never operationalized in production.',
+                      alternative: 'Use roosync_dashboard for coordination. For config arbitration, use roosync_compare_config + dashboard discussion.'
+                  }) }],
+                  isError: false
+              };
               break;
           }
           // #1863 FUSION A1: roosync_decision_info removed — redirects to roosync_decision(action: "info")
@@ -688,14 +691,16 @@ export function registerCallToolHandler(
                }
                break;
            }
-          // #1836: Pre-claim enforcement — prevents concurrent agent collisions
+          // [REMOVED CONS-8 #603] roosync_claim — never adopted (#1836), no harness integration
           case 'roosync_claim': {
-              try {
-                  const m = await import('./claims/claim.tool.js');
-                  result = await m.handleClaimTool(args as any);
-              } catch (error) {
-                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-              }
+              result = {
+                  content: [{ type: 'text', text: JSON.stringify({
+                      status: 'deprecated',
+                      message: 'roosync_claim removed (CONS-8 #603). Pre-claim enforcement was never adopted by the harness.',
+                      alternative: 'Use dashboard [CLAIMED] tags for manual coordination (per .claude/rules/agent-claim-discipline.md).'
+                  }) }],
+                  isError: false
+              };
               break;
           }
            default:

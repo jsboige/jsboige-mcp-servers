@@ -19,6 +19,18 @@
       "context_window": 200000
     },
     {
+      "id": "glm-5.1-fast",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5.1",
+      "vision": false,
+      "thinking": false,
+      "description": "GLM-5.1 non-thinking via z.ai — faster responses, lower token usage, same model quality for non-reasoning tasks",
+      "context_window": 200000
+    },
+    {
       "id": "glm-5",
       "enabled": true,
       "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -28,6 +40,18 @@
       "vision": false,
       "thinking": true,
       "description": "GLM-5 reasoning via z.ai cloud (200K context, strong coding and analysis)",
+      "context_window": 200000
+    },
+    {
+      "id": "glm-5-fast",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5",
+      "vision": false,
+      "thinking": false,
+      "description": "GLM-5 non-thinking via z.ai — faster responses for straightforward tasks",
       "context_window": 200000
     },
     {
@@ -246,26 +270,26 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist. Cloud: GLM-4.6V. Local alternative: vision-local (Qwen3.6 35B MoE, thinking+vision, MME 1294.7)",
+      "description": "Image and document analysis specialist with web context. Cloud: GLM-4.6V. Can browse web pages and search for related context alongside image analysis",
       "model": "glm-4.6v",
-      "system_prompt": "You are a vision analysis specialist. Describe images in detail, focusing on relevant visual elements. Be precise and thorough.",
-      "mcps": ["searxng"],
+      "system_prompt": "You are a vision analysis specialist with web search and browsing capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Be precise and thorough.",
+      "mcps": ["searxng", "playwright"],
       "memory": { "enabled": false }
     },
     {
       "id": "vision-local",
-      "description": "Fast local vision+thinking (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis with thinking mode",
+      "description": "Fast local vision+thinking with web context (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis",
       "model": "qwen3.6-35b-a3b",
-      "system_prompt": "You are a vision analysis assistant. Analyze images carefully and describe what you see. Be concise but thorough.",
-      "mcps": [],
+      "system_prompt": "You are a vision analysis assistant with web search and browsing capabilities. Analyze images carefully, describe what you see, and search for context when needed. Be concise but thorough.",
+      "mcps": ["searxng", "playwright"],
       "memory": { "enabled": false }
     },
     {
       "id": "coder",
-      "description": "Agentic coding assistant (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, no-thinking mode for faster inference). Best for local coding tasks with tool use",
+      "description": "Agentic coding assistant with terminal access and web search (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, no-thinking mode). Can execute commands and search documentation",
       "model": "qwen3.6-35b-no-thinking",
-      "system_prompt": "You are an agentic coding assistant. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use tools when available. Think carefully about edge cases and error handling. Always respond in the same language as the user.",
-      "mcps": [],
+      "system_prompt": "You are an agentic coding assistant with terminal access and web search. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use terminal to run commands and search the web for documentation when needed. Always respond in the same language as the user.",
+      "mcps": ["open_terminal", "searxng"],
       "memory": { "enabled": false }
     },
     {
@@ -304,6 +328,22 @@
       }
     },
     {
+      "id": "analyst-fast",
+      "description": "Fast analyst using GLM-5.1 non-thinking mode — lower latency for straightforward analysis and classification tasks",
+      "model": "glm-5.1-fast",
+      "system_prompt": "You are a fast analyst. Provide concise, direct answers without extended reasoning chains. Optimize for speed and clarity. Always respond in the same language as the user.",
+      "mcps": ["searxng"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "fast-responder",
+      "description": "Fast responder using GLM-5 non-thinking mode — quick answers for simple queries and triage",
+      "model": "glm-5-fast",
+      "system_prompt": "You are a fast responder. Answer queries directly and concisely. No extended thinking needed — focus on speed and accuracy. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
       "id": "coder-local",
       "description": "Local coding via OWUI Qwen3.6 35B MoE proxy — vision+thinking+tool calling through OWUI",
       "model": "owui-qwen3.6-35b",
@@ -331,10 +371,10 @@
     {
       "_comment": "=== Deep Search conversation agents (also usable standalone) ===",
       "id": "researcher",
-      "description": "Investigative researcher with web search and memory. Local: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
+      "description": "Investigative researcher with web search, terminal access, and memory. Local: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
       "model": "glm-5.1",
-      "system_prompt": "You are a meticulous investigative researcher. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
-      "mcps": ["searxng", "playwright"],
+      "system_prompt": "You are a meticulous investigative researcher with terminal access. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. Use terminal commands to inspect files, run scripts, or verify facts when needed. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
+      "mcps": ["searxng", "playwright", "open_terminal"],
       "memory": {
         "enabled": true,
         "collection": "research-memory"
@@ -454,6 +494,43 @@
       "system_prompt": "[OWUI enriched model: vision-expert] Delegate to the OWUI custom model's built-in methodology for expert image and document analysis.",
       "mcps": [],
       "memory": { "enabled": false }
+    },
+
+    {
+      "_comment": "=== PR Review agents (Issue #1587 — multi-tier automated reviews) ===",
+      "id": "fast-reviewer",
+      "description": "Tier 1 fast diff-only reviewer. GLM-4.7-Flash for speed, GitHub tools for PR access.",
+      "model": "glm-4.7-flash",
+      "system_prompt": "You are a fast code reviewer. Given a PR diff: (1) identify obvious bugs, security issues, and style problems, (2) produce a JSON verdict. Focus on correctness and security. Keep reviews concise — under 20 lines for trivial PRs. Always output valid JSON with keys: verdict, confidence, summary, blocking_issues, suggestions.",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true
+      }
+    },
+    {
+      "id": "integration-reviewer",
+      "description": "Tier 2 context-aware reviewer with GitHub tools for PR analysis. GLM-5.1 for deep reasoning.",
+      "model": "glm-5.1",
+      "system_prompt": "You are a thorough code reviewer with access to GitHub tools. When reviewing a PR:\n1. Fetch the PR diff and metadata using get_pr_diff and get_pr_metadata\n2. For each changed file, read the surrounding context using read_file if the diff is unclear\n3. Trace integration points: entry points, callers, consumers, side effects\n4. Check for: bugs, security issues (OWASP Top 10), performance problems, missing error handling, test coverage\n5. Look for edge cases: empty inputs, null handling, concurrent access\n6. Output a JSON review with verdict, confidence, summary, blocking_issues, and suggestions\n\nBe thorough but fair. Acknowledge good practices. Prioritize findings by severity (critical > major > minor).",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/roo-extensions"
+      }
+    },
+    {
+      "id": "context-explorer",
+      "description": "Explores code context around PR changes — reads files, searches callers, checks history. GLM-5.1.",
+      "model": "glm-5.1",
+      "system_prompt": "You are a code context explorer. Given a PR diff, you investigate the surrounding codebase:\n1. For each changed file, read the full file using read_file to understand the context\n2. Search for callers and consumers using grep_code\n3. Check if similar patterns exist elsewhere in the codebase\n4. Report: what the code does, who calls it, what depends on it, and any risks in the change.\nFocus on integration risks and side effects that a diff-only review would miss.",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/roo-extensions"
+      }
     }
   ],
 
@@ -598,6 +675,39 @@
       "type": "sequential",
       "agents": ["researcher", "pragmatist", "critic", "synthesizer"],
       "max_rounds": 5
+    },
+
+    {
+      "_comment": "PR Review Tier 1 — Fast diff-only review (Issue #1587). Single agent, sequential.",
+      "id": "pr-review-tier1",
+      "description": "Fast diff-only code review for trivial PRs (pointer bumps, typos, small fixes)",
+      "type": "sequential",
+      "agents": ["fast-reviewer", "review-synthesizer"],
+      "max_rounds": 2,
+      "inline_agents": [
+        {
+          "id": "review-synthesizer",
+          "description": "Formats review findings into structured JSON",
+          "model": "glm-4.7-flash",
+          "system_prompt": "Given code review findings, format them into a clean JSON with: verdict (APPROVE/COMMENT/REQUEST_CHANGES), confidence, summary, blocking_issues, suggestions. Keep it concise."
+        }
+      ]
+    },
+    {
+      "_comment": "PR Review Tier 2 — Context-aware review (Issue #1587). Multi-agent group chat.",
+      "id": "pr-review-tier2",
+      "description": "Multi-perspective PR review with context exploration, integration tracing, and synthesis",
+      "type": "group_chat",
+      "agents": ["integration-reviewer", "context-explorer", "review-synthesizer-t2"],
+      "max_rounds": 6,
+      "inline_agents": [
+        {
+          "id": "review-synthesizer-t2",
+          "description": "Aggregates Tier 2 review findings into final structured verdict",
+          "model": "glm-5.1",
+          "system_prompt": "You are a review synthesizer. Given findings from integration-reviewer and context-explorer:\n1. Merge overlapping findings, deduplicating by file+line\n2. Prioritize by severity (critical > major > minor)\n3. Resolve conflicting assessments (prefer the more cautious verdict)\n4. Produce final JSON with: verdict, confidence, summary, blocking_issues, suggestions\n5. If no critical or major issues found, verdict should be APPROVE or COMMENT (not REQUEST_CHANGES)\n\nBe fair and precise. A clean PR should get APPROVE, not be nitpicked."
+        }
+      ]
     }
   ],
 
