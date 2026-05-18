@@ -168,8 +168,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "expert-analyste",
       "vision": false,
-      "thinking": false,
-      "description": "OWUI Expert Analyste (wrapper qwen3.6-35b-a3b).",
+      "thinking": true,
+      "description": "OWUI Expert Analyste (wrapper qwen3.6-35b-a3b, thinking enabled).",
       "context_window": 131072
     },
     {
@@ -179,8 +179,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "redacteur-technique",
       "vision": false,
-      "thinking": false,
-      "description": "OWUI Rédacteur Technique (wrapper qwen3.6-35b-a3b).",
+      "thinking": true,
+      "description": "OWUI Rédacteur Technique (wrapper qwen3.6-35b-a3b, thinking enabled).",
       "context_window": 131072
     },
     {
@@ -190,8 +190,8 @@
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "model_id": "vision-expert",
       "vision": true,
-      "thinking": false,
-      "description": "OWUI Expert Vision (wrapper qwen3.6-35b-a3b).",
+      "thinking": true,
+      "description": "OWUI Expert Vision (wrapper qwen3.6-35b-a3b, vision+thinking).",
       "context_window": 131072
     }
   ],
@@ -252,6 +252,12 @@
         "OPEN_TERMINAL_URL": "http://open-terminal-myia:8000",
         "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
       }
+    },
+    {
+      "id": "markitdown",
+      "description": "Document conversion (PDF/DOCX/XLSX/PPTX/HTML/images) to Markdown via Microsoft markitdown",
+      "command": "markitdown-mcp",
+      "args": []
     }
   ],
 
@@ -270,10 +276,10 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist with web context. Cloud: GLM-4.6V. Can browse web pages and search for related context alongside image analysis",
+      "description": "Image and document analysis specialist with web context and document conversion. Cloud: GLM-4.6V. Can browse web, search context, and convert PDF/DOCX/XLSX to markdown",
       "model": "glm-4.6v",
-      "system_prompt": "You are a vision analysis specialist with web search and browsing capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Be precise and thorough.",
-      "mcps": ["searxng", "playwright"],
+      "system_prompt": "You are a vision analysis specialist with web search, browsing, and document conversion capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. Be precise and thorough.",
+      "mcps": ["searxng", "playwright", "markitdown"],
       "memory": { "enabled": false }
     },
     {
@@ -318,10 +324,10 @@
     },
     {
       "id": "analyst-glm5",
-      "description": "General analyst using GLM-5 (z.ai cloud, 200K ctx, thinking mode). Alternative to analyst (GLM-5.1)",
+      "description": "General analyst using GLM-5 with web search, document conversion, and memory. Cloud: GLM-5 (200K ctx, thinking mode). Alternative to analyst (GLM-5.1)",
       "model": "glm-5",
-      "system_prompt": "You are a helpful analyst powered by GLM-5 with web search and memory capabilities. Leverage your reasoning strengths for complex analysis. Always respond in the same language as the user.",
-      "mcps": ["searxng", "playwright"],
+      "system_prompt": "You are a helpful analyst powered by GLM-5 with web search, browsing, and document conversion capabilities. Leverage your reasoning strengths for complex analysis. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
+      "mcps": ["searxng", "playwright", "markitdown"],
       "memory": {
         "enabled": true,
         "collection": "analyst-glm5-memory"
@@ -371,10 +377,10 @@
     {
       "_comment": "=== Deep Search conversation agents (also usable standalone) ===",
       "id": "researcher",
-      "description": "Investigative researcher with web search, terminal access, and memory. Local: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
+      "description": "Investigative researcher with web search, terminal access, document conversion, and memory. Local: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
       "model": "glm-5.1",
-      "system_prompt": "You are a meticulous investigative researcher with terminal access. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. Use terminal commands to inspect files, run scripts, or verify facts when needed. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
-      "mcps": ["searxng", "playwright", "open_terminal"],
+      "system_prompt": "You are a meticulous investigative researcher with terminal access and document conversion capabilities. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. Use terminal commands to inspect files, run scripts, or verify facts when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
+      "mcps": ["searxng", "playwright", "open_terminal", "markitdown"],
       "memory": {
         "enabled": true,
         "collection": "research-memory"
