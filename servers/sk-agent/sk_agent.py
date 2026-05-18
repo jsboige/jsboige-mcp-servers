@@ -784,11 +784,20 @@ class SKAgentManager:
         # Backward compat params
         model_id: str | None = None,
         timeout: int | None = 120,
+        # Per-call overrides (#1748-E)
+        model_override: str | None = None,
+        system_prompt: str | None = None,
     ) -> dict[str, Any]:
         """Unified agent invocation with optional attachment routing.
 
         Supports multiple attachments for images - pass a list of paths.
         timeout: max seconds to wait (default 120). None = no limit.
+
+        Per-call overrides:
+        - model_override: Use a different model than the agent's default.
+          Creates a temporary agent with the override model + same plugins.
+        - system_prompt: Inject a custom system instruction for this call.
+          Prepended to the user prompt as <system-override>...</system-override>.
         """
         if not self.config.agents:
             return {"error": "No agents configured"}
@@ -824,17 +833,75 @@ class SKAgentManager:
             if not resolved_id or not agent:
                 return {"error": "No suitable agent available"}
 
+            # Per-call system_prompt override: inject as prompt prefix
+            effective_prompt = prompt
+            if system_prompt:
+                effective_prompt = (
+                    f"<system-override>\n{system_prompt}\n</system-override>\n\n{prompt}"
+                )
+
+            # Per-call model_override: create temporary agent with different model
+            effective_agent = agent
+            effective_id = resolved_id
+            model_used_override = None
+            if model_override:
+                override_model_cfg = self.config.get_model(model_override)
+                if not override_model_cfg or not override_model_cfg.enabled:
+                    return {"error": f"Model override '{model_override}' not found or disabled"}
+                override_service = self._services.get(override_model_cfg.id)
+                if not override_service:
+                    return {"error": f"Model override '{model_override}' service not available"}
+
+                # Build temporary agent: new kernel + override model + same plugins
+                temp_kernel = Kernel()
+                temp_kernel.add_service(override_service)
+
+                # Reuse the resolved agent's plugins
+                temp_plugins = []
+                agent_cfg = next((a for a in self.config.agents if a.id == resolved_id), None)
+                if agent_cfg:
+                    for mcp_id in agent_cfg.mcps:
+                        if mcp_id in self._mcp_plugins:
+                            temp_plugins.append(self._mcp_plugins[mcp_id])
+                    if agent_cfg.memory.enabled and HAS_MEMORY:
+                        mem_plugin = self._memory_stores.get(resolved_id)
+                        if mem_plugin:
+                            temp_plugins.append(mem_plugin)
+
+                temp_name = f"sk-agent-override-{resolved_id}-{model_override}"
+                temp_instructions = (
+                    system_prompt
+                    or (agent_cfg.system_prompt if agent_cfg else None)
+                    or self.config.system_prompt
+                )
+                effective_agent = ChatCompletionAgent(
+                    kernel=temp_kernel,
+                    name=temp_name,
+                    instructions=temp_instructions,
+                    plugins=temp_plugins,
+                )
+                effective_id = f"{resolved_id}[{model_override}]"
+                model_used_override = override_model_cfg.id
+                log.info(
+                    "Model override: agent %s using %s instead of default",
+                    resolved_id,
+                    model_override,
+                )
+                # system_prompt already baked into temp_instructions, don't double-inject
+                if system_prompt:
+                    effective_prompt = prompt
+
             # Route based on attachment type
             if attachment_type == "image":
                 region = options.get("region")
                 if region:
                     # Region only supported for single image
                     return await self._handle_image_region(
-                        resolved_id,
-                        agent,
+                        effective_id,
+                        effective_agent,
                         first_attachment,
                         region,
-                        prompt,
+                        effective_prompt,
                         conversation_id,
                         include_steps,
                         options.get("zoom_context"),
@@ -843,46 +910,53 @@ class SKAgentManager:
                     # Pass single image or list of images
                     image_source = attachments_list[0] if len(attachments_list) == 1 else attachments_list
                     return await self._handle_image(
-                        resolved_id,
-                        agent,
+                        effective_id,
+                        effective_agent,
                         image_source,
-                        prompt,
+                        effective_prompt,
                         conversation_id,
                         include_steps,
                     )
             elif attachment_type == "video":
                 return await self._handle_video(
-                    resolved_id,
-                    agent,
+                    effective_id,
+                    effective_agent,
                     first_attachment,
-                    prompt,
+                    effective_prompt,
                     conversation_id,
                     include_steps,
                     options.get("num_frames", 8),
                 )
             elif attachment_type == "document":
                 return await self._handle_document(
-                    resolved_id,
-                    agent,
+                    effective_id,
+                    effective_agent,
                     first_attachment,
-                    prompt,
+                    effective_prompt,
                     conversation_id,
                     include_steps,
                     options,
                 )
             else:
                 return await self._handle_text(
-                    resolved_id,
-                    agent,
-                    prompt,
+                    effective_id,
+                    effective_agent,
+                    effective_prompt,
                     conversation_id,
                     include_steps,
                 )
 
         try:
             if timeout is not None and timeout > 0:
-                return await asyncio.wait_for(_execute(), timeout=timeout)
-            return await _execute()
+                result = await asyncio.wait_for(_execute(), timeout=timeout)
+            else:
+                result = await _execute()
+
+            # Post-process: inject override info into result
+            if model_override and "error" not in result:
+                result["model_override"] = model_override
+                result["model_used"] = model_override
+            return result
         except asyncio.TimeoutError:
             return {
                 "error": f"call_agent timed out after {timeout}s",
@@ -893,25 +967,40 @@ class SKAgentManager:
     # Handler Methods
     # -----------------------------------------------------------------------
 
-    def _get_invoke_kwargs(self, agent_id: str = "") -> dict[str, Any]:
-        """Build extra kwargs for agent.invoke() with sampling + thinking settings."""
+    def _get_invoke_kwargs(
+        self, agent_id: str = "", model_override: str | None = None
+    ) -> dict[str, Any]:
+        """Build extra kwargs for agent.invoke() with sampling + thinking settings.
+
+        Args:
+            agent_id: Agent ID (may contain [model_override] suffix from override).
+            model_override: If set, use this model's thinking config instead of agent default.
+        """
         if not self._execution_settings:
             return {}
         settings = self._execution_settings
-        if agent_id:
-            agent_cfg = next((a for a in self.config.agents if a.id == agent_id), None)
-            if agent_cfg:
-                model_cfg = self.config.get_model(agent_cfg.model)
-                if model_cfg and not model_cfg.thinking:
-                    extra = dict(settings.extra_body or {})
-                    extra["chat_template_kwargs"] = {"enable_thinking": False}
-                    settings = OpenAIChatPromptExecutionSettings(
-                        temperature=settings.temperature,
-                        top_p=settings.top_p,
-                        presence_penalty=settings.presence_penalty,
-                        max_tokens=settings.max_tokens,
-                        extra_body=extra,
-                    )
+
+        # Determine which model's thinking config to use
+        if model_override:
+            model_cfg = self.config.get_model(model_override)
+        elif agent_id:
+            # Strip override suffix for lookup
+            base_id = agent_id.split("[")[0] if "[" in agent_id else agent_id
+            agent_cfg = next((a for a in self.config.agents if a.id == base_id), None)
+            model_cfg = self.config.get_model(agent_cfg.model) if agent_cfg else None
+        else:
+            model_cfg = None
+
+        if model_cfg and not model_cfg.thinking:
+            extra = dict(settings.extra_body or {})
+            extra["chat_template_kwargs"] = {"enable_thinking": False}
+            settings = OpenAIChatPromptExecutionSettings(
+                temperature=settings.temperature,
+                top_p=settings.top_p,
+                presence_penalty=settings.presence_penalty,
+                max_tokens=settings.max_tokens,
+                extra_body=extra,
+            )
         return {"arguments": KernelArguments(settings=settings)}
 
     async def _handle_text(
@@ -1482,6 +1571,8 @@ async def call_agent(
     conversation_id: str = "",
     include_steps: bool = False,
     timeout: int = 120,
+    model_override: str = "",
+    system_prompt: str = "",
 ) -> str:
     """Send a prompt to an AI agent.
 
@@ -1497,6 +1588,8 @@ async def call_agent(
         conversation_id: Continue previous conversation.
         include_steps: Show intermediate tool/reasoning steps.
         timeout: Max seconds to wait for response (default 120, 0 = no limit).
+        model_override: Use a different model for this call (model ID from config).
+        system_prompt: Inject custom system instructions for this call.
 
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
@@ -1539,6 +1632,8 @@ async def call_agent(
         conversation_id=conversation_id if conversation_id else None,
         include_steps=include_steps,
         timeout=timeout if timeout > 0 else None,
+        model_override=model_override if model_override else None,
+        system_prompt=system_prompt if system_prompt else None,
     )
     return json.dumps(result, ensure_ascii=False)
 
