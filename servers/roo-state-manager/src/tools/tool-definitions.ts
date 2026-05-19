@@ -134,7 +134,7 @@ export const roosyncIndexingDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status'], description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques)" },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps'], description: "Action: 'index' (indexer une tâche dans Qdrant), 'reset' (réinitialiser la collection Qdrant), 'rebuild' (reconstruire l'index SQLite VS Code), 'diagnose' (diagnostic complet de l'index), 'archive' (archiver une tâche Roo ou les sessions Claude Code sur GDrive), 'status' (état du background indexer et métriques), 'repair_gaps' (détecter et réparer les entrées manquantes/périmées)" },
             task_id: { type: 'string', description: 'ID de la tâche à indexer (requis pour action=index)' },
             confirm: { type: 'boolean', description: 'Confirmation obligatoire pour action=reset', default: false },
             workspace_filter: { type: 'string', description: 'Filtre optionnel par workspace (pour action=rebuild)' },
