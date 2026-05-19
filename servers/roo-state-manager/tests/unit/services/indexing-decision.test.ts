@@ -171,7 +171,7 @@ describe('IndexingDecisionService', () => {
             
             expect(decision.shouldIndex).toBe(true);
             expect(decision.reason).toContain('Migration d\'index requise');
-            expect(decision.action).toBe('index');
+            expect(decision.action).toBe('rebuild');
         });
 
         it('devrait migrer le format legacy qdrantIndexedAt sans faux succès (#2165)', () => {
