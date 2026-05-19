@@ -58,6 +58,7 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
 vi.mock('../../../../src/utils/message-helpers.js', () => ({
     getLocalMachineId: mockGetLocalMachineId,
     getLocalWorkspaceId: mockGetLocalWorkspaceId,
+    getLocalFullId: vi.fn(() => 'myia-po-2025:roo-extensions'),
     formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
     formatDateFull: vi.fn((d: string) => d || ''),
     getPriorityIcon: vi.fn((p: string) => ''),
@@ -240,7 +241,7 @@ describe('roosync_read', () => {
                 status: 'unread', timestamp: '2026-05-04T00:00:00.000Z', body: 'Content',
             });
             const result = await roosyncRead({ mode: 'message', message_id: 'msg-2', mark_as_read: true });
-            expect(mockMarkAsRead).toHaveBeenCalledWith('msg-2', 'myia-po-2025');
+            expect(mockMarkAsRead).toHaveBeenCalledWith('msg-2', 'myia-po-2025:roo-extensions');
             expect(result.content[0].text).toContain('READ');
         });
 

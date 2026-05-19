@@ -12,7 +12,7 @@ import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId } from '../utils/message-helpers.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -708,6 +708,23 @@ export class MessageManager {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const message: Message = JSON.parse(content);
+
+      // #2287: Workspace guard — reject if reader's workspace doesn't match message target
+      if (readerId) {
+        const readerParsed = parseMachineWorkspace(readerId);
+        const isBroadcast = message.to === 'all' || message.to === 'All';
+        if (!isBroadcast && readerParsed.workspaceId) {
+          const msgTo = message.to;
+          // Only check workspace when message targets a specific workspace
+          const targetParsed = parseMachineWorkspace(msgTo);
+          if (targetParsed.workspaceId) {
+            if (normalizeWorkspaceId(readerParsed.workspaceId) !== normalizeWorkspaceId(targetParsed.workspaceId)) {
+              logger.warn(`Workspace mismatch: reader ${readerId} tried to mark message for ${msgTo} — rejected`);
+              return false;
+            }
+          }
+        }
+      }
 
       // Track per-machine read status (#629)
       if (readerId) {
