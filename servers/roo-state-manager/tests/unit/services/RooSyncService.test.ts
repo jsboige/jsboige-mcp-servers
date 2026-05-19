@@ -303,40 +303,41 @@ describe('RooSyncService', () => {
         expect(heartbeatService).toBeDefined();
         expect(heartbeatService).toHaveProperty('registerHeartbeat');
         expect(heartbeatService).toHaveProperty('checkHeartbeats');
-        expect(heartbeatService).toHaveProperty('getOfflineMachines');
-        expect(heartbeatService).toHaveProperty('getWarningMachines');
+        expect(heartbeatService).toHaveProperty('getUnknownMachines'); // ADR 008: replaces getOfflineMachines
+        expect(heartbeatService).toHaveProperty('getIdleMachines'); // ADR 008: replaces getWarningMachines
         expect(heartbeatService).toHaveProperty('getState');
       });
     });
 
     describe('registerHeartbeat', () => {
       it('devrait enregistrer un heartbeat pour la machine courante', async () => {
-        // Arrange
+        // Arrange — use HeartbeatService directly (ADR 008: os.hostname() may differ from config.machineId)
         const service = getRooSyncService();
         const heartbeatService = service.getHeartbeatService();
+        const testMachineId = 'direct-test-machine';
 
         // Act
-        await service.registerHeartbeat({ test: 'metadata' });
+        await heartbeatService.registerHeartbeat(testMachineId);
 
         // Assert
         const state = heartbeatService.getState();
-        expect(state.onlineMachines).toContain(service.getConfig().machineId);
+        expect(state.onlineMachines).toContain(testMachineId);
       });
 
       it('devrait mettre à jour le timestamp du heartbeat', async () => {
-        // Arrange
+        // Arrange — use HeartbeatService directly with a known machineId (ADR 008: in-memory)
         const service = getRooSyncService();
         const heartbeatService = service.getHeartbeatService();
-        const machineId = service.getConfig().machineId;
+        const machineId = 'test-timestamp-machine';
 
         // Act
-        await service.registerHeartbeat();
+        await heartbeatService.registerHeartbeat(machineId);
         const firstTimestamp = heartbeatService.getHeartbeatData(machineId)?.lastHeartbeat;
 
         // Attendre un peu
         await new Promise(resolve => setTimeout(resolve, 100));
 
-        await service.registerHeartbeat();
+        await heartbeatService.registerHeartbeat(machineId);
         const secondTimestamp = heartbeatService.getHeartbeatData(machineId)?.lastHeartbeat;
 
         // Assert
@@ -348,37 +349,18 @@ describe('RooSyncService', () => {
 
     describe('getUnknownMachines', () => {
       it('devrait retourner la liste des machines unknown', async () => {
-        // Arrange
+        // Arrange — ADR 008: manipulate in-memory state directly
         const service = getRooSyncService();
         const heartbeatService = service.getHeartbeatService();
 
-        // Enregistrer un heartbeat pour une machine
+        // Register a heartbeat, then backdate it beyond IDLE_THRESHOLD (120 min)
         await heartbeatService.registerHeartbeat('test-machine-1');
-
-        // Simuler une machine offline en écrivant directement le fichier per-machine
-        const heartbeatsDir = join(testDir, 'heartbeats');
-        mkdirSync(heartbeatsDir, { recursive: true });
-        const machineFile = join(heartbeatsDir, 'test-machine-1.json');
-        const machineData = {
-          machineId: 'test-machine-1',
-          lastHeartbeat: new Date(Date.now() - 300000).toISOString(), // 5 minutes avant
-          status: 'unknown',
-          metadata: {
-            firstSeen: new Date().toISOString(),
-            lastUpdated: new Date().toISOString(),
-            version: '3.1.0'
-          }
-        };
-        writeFileSync(machineFile, JSON.stringify(machineData, null, 2), 'utf-8');
-
-        // Recharger l'état du service de heartbeat
-        // Le HeartbeatService recharge l'état lors de l'initialisation
-        // Nous devons créer une nouvelle instance pour forcer le rechargement
-        RooSyncService.resetInstance();
-        const newService = getRooSyncService();
+        const data = heartbeatService.getHeartbeatData('test-machine-1')!;
+        data.lastHeartbeat = new Date(Date.now() - 150 * 60 * 1000).toISOString(); // 150 min ago
+        await heartbeatService.checkHeartbeats();
 
         // Act
-        const unknownMachines = newService.getUnknownMachines();
+        const unknownMachines = service.getUnknownMachines();
 
         // Assert
         expect(unknownMachines).toContain('test-machine-1');
@@ -387,35 +369,18 @@ describe('RooSyncService', () => {
 
     describe('getIdleMachines', () => {
       it('devrait retourner la liste des machines idle', async () => {
-        // Arrange
+        // Arrange — ADR 008: manipulate in-memory state directly
         const service = getRooSyncService();
         const heartbeatService = service.getHeartbeatService();
 
-        // Enregistrer un heartbeat pour une machine
+        // Register a heartbeat, then backdate it beyond ONLINE_THRESHOLD (30 min) but within IDLE_THRESHOLD (120 min)
         await heartbeatService.registerHeartbeat('test-machine-2');
-
-        // Simuler une machine en avertissement en écrivant directement le fichier per-machine
-        const heartbeatsDir = join(testDir, 'heartbeats');
-        mkdirSync(heartbeatsDir, { recursive: true });
-        const machineFile = join(heartbeatsDir, 'test-machine-2.json');
-        const machineData = {
-          machineId: 'test-machine-2',
-          lastHeartbeat: new Date(Date.now() - 90000).toISOString(), // 90 secondes avant
-          status: 'idle',
-          metadata: {
-            firstSeen: new Date().toISOString(),
-            lastUpdated: new Date().toISOString(),
-            version: '3.1.0'
-          }
-        };
-        writeFileSync(machineFile, JSON.stringify(machineData, null, 2), 'utf-8');
-
-        // Recharger l'état du service de heartbeat
-        RooSyncService.resetInstance();
-        const newService = getRooSyncService();
+        const data = heartbeatService.getHeartbeatData('test-machine-2')!;
+        data.lastHeartbeat = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 60 min ago
+        await heartbeatService.checkHeartbeats();
 
         // Act
-        const idleMachines = newService.getIdleMachines();
+        const idleMachines = service.getIdleMachines();
 
         // Assert
         expect(idleMachines).toContain('test-machine-2');
