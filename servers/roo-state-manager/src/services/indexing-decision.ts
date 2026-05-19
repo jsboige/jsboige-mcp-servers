@@ -139,20 +139,20 @@ export class IndexingDecisionService {
 
         // SUPPORT RÉTROCOMPATIBILITÉ : Migration depuis qdrantIndexedAt
         if (!indexingState.indexStatus && skeleton.metadata.qdrantIndexedAt) {
-            const legacyIndexed = new Date(skeleton.metadata.qdrantIndexedAt).getTime();
-            
-            // 🆕 FIX CRITIQUE : Toujours migrer AVANT de décider du skip
+            const legacyDate = skeleton.metadata.qdrantIndexedAt;
+            const legacyIndexed = new Date(legacyDate).getTime();
+
             const migrated = this.migrateLegacyIndexingState(skeleton);
             if (migrated) {
-                console.log(`[MIGRATION] Task ${taskId}: Migration legacy effectuée depuis ${skeleton.metadata.qdrantIndexedAt}`);
+                console.log(`[MIGRATION] Task ${taskId}: Migration legacy effectuée depuis ${legacyDate}`);
             }
-            
+
             if (lastActivity <= legacyIndexed) {
                 return {
                     shouldIndex: false,
-                    reason: `Migration legacy : contenu inchangé depuis ${skeleton.metadata.qdrantIndexedAt}`,
+                    reason: `Migration legacy : contenu inchangé depuis ${legacyDate}`,
                     action: 'skip',
-                    requiresSave: migrated // 🆕 Signal pour sauvegarder si migration effectuée
+                    requiresSave: migrated
                 };
             }
         }
@@ -258,26 +258,23 @@ export class IndexingDecisionService {
 
     /**
      * Migre l'ancien format qdrantIndexedAt vers le nouveau format
+     *
+     * #2165: Only sets indexVersion — no fake success status or TTL.
+     * Setting indexStatus='success' + nextReindexAfter (7d TTL) blocked
+     * reindexing after collection resets, causing the index freeze.
      */
     public migrateLegacyIndexingState(skeleton: SkeletonHeader): boolean {
         if (!skeleton.metadata) {
-            return false; // No metadata at all, nothing to migrate
+            return false;
         }
         if (!skeleton.metadata.indexingState && skeleton.metadata.qdrantIndexedAt) {
-            const now = new Date().toISOString();
-            const nextReindex = new Date(Date.now() + (DEFAULT_REINDEX_TTL_HOURS * 60 * 60 * 1000)).toISOString();
-
             skeleton.metadata.indexingState = {
-                lastIndexedAt: skeleton.metadata.qdrantIndexedAt,
-                indexStatus: 'success',
-                indexVersion: this.indexVersion,
-                nextReindexAfter: nextReindex,
-                lastIndexAttempt: skeleton.metadata.qdrantIndexedAt
+                indexVersion: this.indexVersion
             };
 
             delete skeleton.metadata.qdrantIndexedAt;
-            return true; // Migration effectuée
+            return true;
         }
-        return false; // Pas de migration nécessaire
+        return false;
     }
 }

@@ -174,7 +174,7 @@ describe('IndexingDecisionService', () => {
             expect(decision.action).toBe('index');
         });
 
-        it('devrait migrer le format legacy qdrantIndexedAt', () => {
+        it('devrait migrer le format legacy qdrantIndexedAt sans faux succès (#2165)', () => {
             const skeleton: ConversationSkeleton = {
                 ...mockSkeleton,
                 metadata: {
@@ -183,12 +183,15 @@ describe('IndexingDecisionService', () => {
                     indexingState: undefined
                 }
             };
-            
+
             const migrated = service.migrateLegacyIndexingState(skeleton);
-            
+
             expect(migrated).toBe(true);
             expect(skeleton.metadata.indexingState).toBeDefined();
-            expect(skeleton.metadata.indexingState!.indexStatus).toBe('success');
+            // #2165: migration no longer sets indexStatus or nextReindexAfter
+            expect(skeleton.metadata.indexingState!.indexStatus).toBeUndefined();
+            expect(skeleton.metadata.indexingState!.nextReindexAfter).toBeUndefined();
+            expect(skeleton.metadata.indexingState!.indexVersion).toBeDefined();
             expect(skeleton.metadata.qdrantIndexedAt).toBeUndefined();
         });
     });
