@@ -18,6 +18,28 @@ import { roosyncSend } from './send.js';
 import { roosyncRead } from './read.js';
 import { roosyncManage } from './manage.js';
 import { roosyncAttachments } from './roosync-attachments.tool.js';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('RooSyncMessagesTool');
+
+// ====================================================================
+// SHORTHAND RESOLUTION (#2241)
+// ====================================================================
+
+const SHORTHAND_MAP: Record<string, string> = {
+  hermes: 'myia-po-2026:hermes-agent',
+  nanoclaw: 'myia-ai-01:nanoclaw',
+};
+
+function resolveAddressShorthand(to: string | undefined): string | undefined {
+  if (!to) return to;
+  const resolved = SHORTHAND_MAP[to.toLowerCase()];
+  if (resolved) {
+    logger.info(`[#2241] Shorthand resolved: "${to}" → "${resolved}"`);
+    return resolved;
+  }
+  return to;
+}
 
 // ====================================================================
 // SCHEMA
@@ -91,7 +113,7 @@ export async function roosyncMessages(args: MessagesArgs) {
     case 'send':
       return roosyncSend({
         action: 'send',
-        to: args.to,
+        to: resolveAddressShorthand(args.to),
         subject: args.subject,
         body: args.body,
         priority: args.priority,
