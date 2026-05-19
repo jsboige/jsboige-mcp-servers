@@ -48,6 +48,28 @@ async function getBackgroundServices() {
 
 const registryLogger = createLogger('ToolRegistry');
 
+// #2267: Per-tool timeout configuration (milliseconds).
+// Prevents MCP tool calls from hanging indefinitely (22h observed).
+// Default: 120s. Heavy tools get longer timeouts.
+const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+const TOOL_TIMEOUTS: Record<string, number> = {
+    // Indexing/rebuild operations can be slow
+    roosync_indexing: 300_000,      // 5 min
+    roosync_storage_management: 180_000, // 3 min
+    codebase_search: 180_000,       // 3 min (embedding + Qdrant)
+    roosync_search: 180_000,        // 3 min
+    conversation_browser: 180_000,  // 3 min (can scan large dirs)
+    export_data: 180_000,           // 3 min (large exports)
+    // Dashboard operations with GDrive can be slow
+    roosync_dashboard: 60_000,      // 1 min
+    roosync_compare_config: 60_000, // 1 min
+    roosync_inventory: 60_000,      // 1 min
+};
+
+function getToolTimeoutMs(toolName: string): number {
+    return TOOL_TIMEOUTS[toolName] ?? DEFAULT_TOOL_TIMEOUT_MS;
+}
+
 // #1665: Export registry logger globally for tests
 (global as any).registryLogger = registryLogger;
 
@@ -143,8 +165,15 @@ export function registerCallToolHandler(
             }
         }
 
+        const toolTimeoutMs = getToolTimeoutMs(name);
+
         try {
-        switch (name) {
+        // #2267: Wrap tool execution in Promise.race with per-tool timeout.
+        // Prevents indefinite hangs (22h observed) from stuck GDrive reads,
+        // dead transport bridges, or unresponsive Qdrant.
+        result = await Promise.race([
+            (async () => {
+                switch (name) {
            // CONS-13: Outil Storage consolidé
            case 'storage_info': {
                const m = await import('./storage/index.js');
@@ -705,7 +734,18 @@ export function registerCallToolHandler(
           }
            default:
                throw new GenericError(`Tool not found: ${name}`, GenericErrorCode.INVALID_ARGUMENT);
-       }
+           }
+           // result was set by the switch cases via closure
+           return result!;
+            })(),
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(
+                    `Tool "${name}" timed out after ${toolTimeoutMs / 1000}s — ` +
+                    `possible cause: stuck GDrive read, dead transport bridge, or unresponsive Qdrant. ` +
+                    `See #2267.`
+                )), toolTimeoutMs)
+            ),
+        ]);
 
         } catch (error) {
             const elapsed = Date.now() - toolCallStart;
