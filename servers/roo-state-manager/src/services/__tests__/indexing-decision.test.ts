@@ -74,7 +74,7 @@ describe('IndexingDecisionService', () => {
       expect(decision.reason).toContain('FORCE_REINDEX');
     });
 
-    it('should reindex on version migration', () => {
+    it('should reindex on version migration with rebuild action (jittered)', () => {
       const skeleton = createSkeleton({
         metadata: {
           ...createSkeleton().metadata,
@@ -85,6 +85,7 @@ describe('IndexingDecisionService', () => {
       const decision = service.shouldIndex(skeleton);
 
       expect(decision.shouldIndex).toBe(true);
+      expect(decision.action).toBe('rebuild');
       expect(decision.reason).toContain('Migration');
     });
 

@@ -14,6 +14,7 @@ import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
+import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT } from '../types/indexing.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
@@ -945,6 +946,19 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         if (!decision.shouldIndex) {
             console.log(`[SKIP] Task ${taskId}: ${decision.reason} - Protection anti-fuite`);
             return;
+        }
+
+        // Rebuild backoff — when a task is reindexed because of an index-version
+        // migration, sleep a random jitter to spread fleet-wide load on the shared
+        // embedding API. Live/new tasks (action='index'|'retry') process immediately.
+        if (decision.action === 'rebuild') {
+            const minMs = Number.parseInt(process.env.ROO_INDEX_REBUILD_BACKOFF_MIN_MS ?? '', 10) || REBUILD_BACKOFF_MIN_MS_DEFAULT;
+            const maxMs = Number.parseInt(process.env.ROO_INDEX_REBUILD_BACKOFF_MAX_MS ?? '', 10) || REBUILD_BACKOFF_MAX_MS_DEFAULT;
+            const lo = Math.min(minMs, maxMs);
+            const hi = Math.max(minMs, maxMs);
+            const jitter = lo + Math.floor(Math.random() * (hi - lo + 1));
+            console.log(`[REBUILD] Task ${taskId}: backoff ${jitter}ms before reindex (${decision.reason})`);
+            await new Promise(resolve => setTimeout(resolve, jitter));
         }
 
         console.log(`[INDEX] Task ${taskId}: ${decision.reason}`);
