@@ -140,7 +140,7 @@ export const DashboardArgsSchema = z.object({
     .describe('Action to perform'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
-    .describe('Dashboard type (required except list/read_overview/refresh/update)'),
+    .describe('REQUIRED for read/write/append/condense/delete/read_archive. Only list/read_overview/refresh/update may omit it.'),
 
   machineId: z.string().optional()
     .describe('Machine ID (default: local)'),
@@ -214,5 +214,15 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
   description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, condense, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown.',
-  inputSchema: zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' })
+  inputSchema: (() => {
+    const schema = zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' }) as any;
+    // Force 'type' into required array so LLMs always pass it (#1862 schema mismatch fix)
+    // Handler gracefully handles omission for list/read_overview/refresh/update
+    if (schema.required && Array.isArray(schema.required) && !schema.required.includes('type')) {
+      schema.required.push('type');
+    } else if (!schema.required) {
+      schema.required = ['action', 'type'];
+    }
+    return schema;
+  })()
 };
