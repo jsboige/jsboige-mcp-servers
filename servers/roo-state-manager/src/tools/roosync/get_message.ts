@@ -102,7 +102,7 @@ export async function getMessage(
 
     // Récupérer le message
     logger.debug('🔍 Fetching message', { messageId: args.message_id });
-    const message = await messageManager.getMessage(args.message_id);
+    const message = await messageManager.getMessage(args.message_id, getLocalFullId());
 
     // Cas : message introuvable
     if (!message) {

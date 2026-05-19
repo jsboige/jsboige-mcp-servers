@@ -24,7 +24,8 @@ vi.mock('../../../utils/message-helpers.js', async () => {
   return {
     ...actual,
     getLocalMachineId: vi.fn(() => 'test-machine'),
-    getLocalWorkspaceId: vi.fn(() => undefined)
+    getLocalWorkspaceId: vi.fn(() => undefined),
+    getLocalFullId: vi.fn(() => 'test-machine')
   };
 });
 

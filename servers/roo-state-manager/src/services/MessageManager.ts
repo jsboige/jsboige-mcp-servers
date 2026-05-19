@@ -652,13 +652,15 @@ export class MessageManager {
 
   /**
    * Obtient un message spécifique par son ID
-   * 
+   *
    * Cherche dans inbox, sent, puis archive.
-   * 
+   * Vérifie que le message est destiné au caller (machine + workspace) (#2287).
+   *
    * @param messageId ID du message à récupérer
-   * @returns Le message complet ou null si introuvable
+   * @param callerId ID complet du caller (machine:workspace) pour vérification d'accès
+   * @returns Le message complet ou null si introuvable ou accès refusé
    */
-  async getMessage(messageId: string): Promise<Message | null> {
+  async getMessage(messageId: string, callerId?: string): Promise<Message | null> {
     logger.info(`Getting message: ${messageId}`);
 
     const searchPaths = [
@@ -673,6 +675,20 @@ export class MessageManager {
           const content = await fs.readFile(filePath, 'utf-8');
           const message: Message = JSON.parse(content);
           logger.info(`Message found in: ${filePath}`);
+
+          // #2287: Verify workspace access — allow if caller is recipient OR sender
+          if (callerId) {
+            const caller = parseMachineWorkspace(callerId);
+            const isRecipient = matchesRecipient(message.to, caller.machineId, caller.workspaceId);
+            const isSender = parseMachineWorkspace(message.from).machineId === caller.machineId;
+            if (!isRecipient && !isSender) {
+              logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
+              return null;
+            }
+          } else {
+            // Backward compat: no callerId → skip workspace check (matches old behavior)
+          }
+
           return message;
         } catch (error) {
           logger.error(`Error reading message from ${filePath}`, error);
@@ -727,8 +743,21 @@ export class MessageManager {
       }
 
       // Track per-machine read status (#629)
+      // #2287: Use full readerId for workspace-aware access check
       if (readerId) {
-        const readerMachineId = parseMachineWorkspace(readerId).machineId;
+        const reader = parseMachineWorkspace(readerId);
+        const readerMachineId = reader.machineId;
+        const readerWorkspaceId = reader.workspaceId;
+
+        // #2287: Verify the caller has access to this message before marking read.
+        // Allow if: matches recipient OR is in destruct_after_read_by (auto-destruct authorized reader)
+        const isRecipient = matchesRecipient(message.to, readerMachineId, readerWorkspaceId);
+        const isAuthorizedReader = message.destruct_after_read_by?.includes(readerMachineId) ?? false;
+        if (!isRecipient && !isAuthorizedReader) {
+          logger.warn(`markAsRead denied: message ${messageId} targets ${message.to}, reader is ${readerId}`);
+          return false;
+        }
+
         if (!message.read_by) {
           message.read_by = [];
         }

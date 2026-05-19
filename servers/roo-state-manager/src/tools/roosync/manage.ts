@@ -72,7 +72,7 @@ async function markMessageAsRead(
 
   // Vérifier existence du message
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id);
+  const message = await messageManager.getMessage(args.message_id, getLocalFullId());
 
   // Cas : message introuvable
   if (!message) {
@@ -168,7 +168,7 @@ async function archiveMessageFunc(
 
   // Vérifier existence du message
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id);
+  const message = await messageManager.getMessage(args.message_id, getLocalFullId());
 
   // Cas : message introuvable
   if (!message) {

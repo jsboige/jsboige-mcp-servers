@@ -248,7 +248,7 @@ async function readMessage(
   logger.info('🔍 Reading message', { messageId, markAsRead });
 
   // Récupérer le message
-  const message = await messageManager.getMessage(messageId);
+  const message = await messageManager.getMessage(messageId, getLocalFullId());
 
   // Cas : message introuvable
   if (!message) {
