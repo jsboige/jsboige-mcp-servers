@@ -709,9 +709,22 @@ export class MessageManager {
       const content = await fs.readFile(filePath, 'utf-8');
       const message: Message = JSON.parse(content);
 
-      // Track per-machine read status (#629)
+      // #2287: Check workspace match before allowing mark-as-read
       if (readerId) {
-        const readerMachineId = parseMachineWorkspace(readerId).machineId;
+        const readerParsed = parseMachineWorkspace(readerId);
+        const readerMachineId = readerParsed.machineId;
+        const readerWorkspaceId = readerParsed.workspaceId;
+
+        // Check if reader is a legitimate recipient or an authorized destruct-after-read machine
+        const isRecipient = matchesRecipient(message.to, readerMachineId, readerWorkspaceId);
+        const isDestructReader = message.destruct_after_read_by?.includes(readerMachineId);
+
+        if (!isRecipient && !isDestructReader) {
+          logger.warn(`Reader ${readerId} cannot mark message ${messageId} — not addressed to this machine/workspace (to: ${message.to})`);
+          return false;
+        }
+
+        // Track per-machine read status (#629)
         if (!message.read_by) {
           message.read_by = [];
         }

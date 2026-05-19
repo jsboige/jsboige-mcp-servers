@@ -10,7 +10,7 @@
 import { getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
-import { getLocalMachineId } from '../../utils/message-helpers.js';
+import { getLocalMachineId, getLocalFullId } from '../../utils/message-helpers.js';
 
 // Logger instance for mark_message_read tool
 const logger: Logger = createLogger('MarkMessageReadTool');
@@ -111,9 +111,9 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`
       };
     }
 
-    // Marquer comme lu (avec tracking per-machine #629)
+    // Marquer comme lu (avec tracking per-machine #629, workspace-aware #2287)
     logger.info('✉️ Marking message as read');
-    await messageManager.markAsRead(args.message_id, getLocalMachineId());
+    await messageManager.markAsRead(args.message_id, getLocalFullId());
     
     // Récupérer le message mis à jour
     const updatedMessage = await messageManager.getMessage(args.message_id);
