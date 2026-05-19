@@ -24,7 +24,7 @@ import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -85,6 +85,9 @@ export interface RooSyncIndexingArgs {
 
     /** #1821: Confirmation pour suppression orphelins (requis pour action=cleanup_orphans avec dry_run=false). Défaut: false */
     confirm_orphan_cleanup?: boolean;
+
+    /** #2246: Max tasks to repair per call (pour action=repair_gaps). Défaut: 50 */
+    max_repair_tasks?: number;
 }
 
 /**
@@ -92,14 +95,14 @@ export interface RooSyncIndexingArgs {
  */
 export const roosyncIndexingTool: Tool = {
     name: 'roosync_indexing',
-    description: 'Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans)',
+    description: 'Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps)',
     inputSchema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries)'
             },
             task_id: {
                 type: 'string',
@@ -196,6 +199,11 @@ export const roosyncIndexingTool: Tool = {
                 type: 'boolean',
                 description: 'For cleanup_orphans with dry_run=false. Required confirmation. Default: false.',
                 default: false
+            },
+            max_repair_tasks: {
+                type: 'number',
+                description: 'For repair_gaps. Max tasks to scan per call. Default: 50.',
+                default: 50
             }
         },
         required: ['action']
@@ -238,10 +246,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps` }]
         };
     }
 
@@ -563,10 +571,124 @@ export async function handleRooSyncIndexing(
             }
         }
 
+        case 'repair_gaps': {
+            // #2246: One-shot gap-repair — detect tasks missing from Qdrant or stale
+            const isDryRun = args.dry_run !== false;
+            const maxTasks = args.max_repair_tasks || 50;
+            const { getQdrantClient } = await import('../../services/qdrant.js');
+            const { IndexingDecisionService } = await import('../../services/indexing-decision.js');
+            const { indexTask } = await import('../../services/task-indexer.js');
+            const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
+            const decisionService = new IndexingDecisionService();
+            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+            try {
+                const qdrant = getQdrantClient();
+                const gaps: Array<{ task_id: string; reason: string; points_in_qdrant: number }> = [];
+                const repaired: string[] = [];
+                const errors: string[] = [];
+
+                for (const [taskId, skeleton] of conversationCache) {
+                    if (gaps.length >= maxTasks) break;
+
+                    const metadata = skeleton.metadata;
+                    if (!metadata) continue;
+
+                    let pointsCount = 0;
+                    try {
+                        const countResult = await qdrant.count(collectionName, {
+                            filter: { must: [{ key: 'task_id', match: { value: taskId } }] },
+                            exact: false
+                        });
+                        pointsCount = (countResult as any).count ?? 0;
+                    } catch {
+                        errors.push(`${taskId}: Qdrant count query failed`);
+                        continue;
+                    }
+
+                    const indexingState = metadata.indexingState;
+                    const lastActivity = metadata.lastActivity;
+                    const lastIndexedAt = indexingState?.lastIndexedAt;
+
+                    if (pointsCount === 0 && indexingState?.indexStatus === 'success') {
+                        gaps.push({ task_id: taskId, reason: 'indexed_success_but_zero_points', points_in_qdrant: 0 });
+                        continue;
+                    }
+
+                    if (lastActivity && lastIndexedAt) {
+                        const activityTime = new Date(lastActivity).getTime();
+                        const indexedTime = new Date(lastIndexedAt).getTime();
+                        if (activityTime > indexedTime + 60_000) {
+                            gaps.push({ task_id: taskId, reason: `lastActivity > lastIndexedAt (${lastActivity} > ${lastIndexedAt})`, points_in_qdrant: pointsCount });
+                            continue;
+                        }
+                    }
+
+                    if (!indexingState?.indexStatus && !metadata.qdrantIndexedAt) {
+                        gaps.push({ task_id: taskId, reason: 'never_indexed', points_in_qdrant: pointsCount });
+                    }
+                }
+
+                if (!isDryRun && gaps.length > 0) {
+                    for (const gap of gaps.slice(0, maxTasks)) {
+                        try {
+                            const taskSkeleton = conversationCache.get(gap.task_id);
+                            if (!taskSkeleton) { errors.push(`${gap.task_id}: not in cache`); continue; }
+
+                            decisionService.resetIndexingState(taskSkeleton);
+
+                            const conversation = await RooStorageDetector.findConversationById(gap.task_id);
+                            const taskPath = conversation?.path;
+                            if (!taskPath) { errors.push(`${gap.task_id}: path not found`); continue; }
+
+                            await indexTask(gap.task_id, taskPath, 'roo');
+                            decisionService.markIndexingSuccess(taskSkeleton);
+                            repaired.push(gap.task_id);
+                        } catch (err: any) {
+                            errors.push(`${gap.task_id}: repair failed — ${err.message}`);
+                        }
+                    }
+                }
+
+                const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
+                const summary = isDryRun
+                    ? `${mode} ${gaps.length} gaps detected (scan only, no repair)`
+                    : `${mode} ${repaired.length}/${gaps.length} tasks repaired, ${errors.length} errors`;
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'repair_gaps',
+                            mode: isDryRun ? 'dry_run' : 'executed',
+                            total_cached_tasks: conversationCache.size,
+                            scanned_up_to: Math.min(maxTasks, conversationCache.size),
+                            gaps_detected: gaps.length,
+                            repaired: repaired.length,
+                            errors: errors.length > 0 ? errors : undefined,
+                            gap_details: gaps.slice(0, 20).map(g => ({
+                                task_id: g.task_id,
+                                reason: g.reason,
+                                points_in_qdrant: g.points_in_qdrant
+                            })),
+                            summary
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Error during repair_gaps: ${error.message}` }]
+                };
+            }
+        }
+
         default:
             return {
                 isError: true,
                 content: [{ type: 'text', text: `Action non supportée: ${(args as any).action}` }]
+
             };
     }
 }
