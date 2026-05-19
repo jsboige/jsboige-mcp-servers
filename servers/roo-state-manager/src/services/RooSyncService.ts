@@ -168,10 +168,12 @@ export class RooSyncService {
       this.syncDecisionManager = new SyncDecisionManager(this.config, this.powershellExecutor);
       this.configComparator = new ConfigComparator(this.config, this.baselineService);
       this.baselineManager = new BaselineManager(this.config, this.baselineService, this.configComparator);
-      this.presenceManager = new PresenceManager(this.config);
-      this.identityManager = new IdentityManager(this.config, this.presenceManager);
-      this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
+      // #2121 Phase 2.1: HeartbeatService created BEFORE PresenceManager/IdentityManager
+      // (they now depend on it for in-memory state instead of GDrive writes)
       this.heartbeatService = new HeartbeatService(this.config.sharedPath);
+      this.presenceManager = new PresenceManager(this.config, this.heartbeatService);
+      this.identityManager = new IdentityManager(this.config, this.presenceManager, this.heartbeatService);
+      this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
 
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
@@ -226,24 +228,15 @@ export class RooSyncService {
         }
       }
       
-      // Validation supplémentaire des fichiers de présence avec PresenceManager
-      await this.validatePresenceFiles();
-      
-      // Mettre à jour la présence de la machine courante
-      const presenceUpdate = await this.presenceManager.updateCurrentPresence('online', 'code');
-      if (!presenceUpdate.success) {
-        console.warn(`[RooSyncService] Échec mise à jour présence: ${presenceUpdate.warningMessage}`);
-        if (presenceUpdate.conflictDetected) {
-          console.error(`[RooSyncService] Conflit de présence détecté: ${presenceUpdate.warningMessage}`);
-        }
-      }
+      // #2121 Phase 2.1: Presence now uses HeartbeatService (in-memory, no GDrive writes)
+      // Register heartbeat for this machine on startup
+      await this.presenceManager.updateCurrentPresence('online', 'code');
 
-      // Synchroniser le registre d'identité central
-      try {
-        await this.identityManager.syncIdentityRegistry();
-      } catch (error) {
-        console.warn('[RooSyncService] Erreur synchronisation registre d\'identité (non bloquant):', error);
-      }
+      // #2121 Phase 2.1: syncIdentityRegistry is now a no-op (dashboard-derived)
+      await this.identityManager.syncIdentityRegistry();
+
+      // Lightweight identity conflict check (HeartbeatService-based, no disk I/O)
+      await this.identityManager.checkIdentityConflict();
       
     } catch (error) {
       console.error('[RooSyncService] Erreur lors validation démarrage:', error);
@@ -252,41 +245,9 @@ export class RooSyncService {
   }
 
   /**
-   * Validation des fichiers de présence pour détecter les conflits avec PresenceManager
+   * Validation des fichiers de présence — removed (#2121 Phase 2.1)
+   * PresenceManager now uses HeartbeatService (in-memory). No disk scans needed.
    */
-  private async validatePresenceFiles(): Promise<void> {
-    try {
-      console.log(`[RooSyncService] Validation des fichiers de présence avec PresenceManager`);
-      
-      // Valider l'unicité des fichiers de présence
-      const uniquenessValidation = await this.presenceManager.validatePresenceUniqueness();
-      
-      if (!uniquenessValidation.isValid) {
-        console.error(`[RooSyncService] ⚠️ CONFLITS DE PRÉSENCE DÉTECTÉS:`);
-        for (const conflict of uniquenessValidation.conflicts) {
-          console.error(`[RooSyncService] ${conflict.warningMessage}`);
-        }
-        console.warn(`[RooSyncService] Des conflits de présence ont été détectés. Veuillez résoudre ces conflits manuellement.`);
-      } else {
-        console.log(`[RooSyncService] ✅ Aucun conflit de présence détecté`);
-      }
-      
-      // Vérifier le fichier de présence de la machine courante
-      const currentPresence = await this.presenceManager.readPresence(this.config.machineId);
-      if (currentPresence) {
-        if (currentPresence.id !== this.config.machineId) {
-          console.warn(`[RooSyncService] ⚠️ INCOHÉRENCE DÉTECTÉE: Le fichier de présence contient l'ID ${currentPresence.id} mais le service utilise ${this.config.machineId}`);
-        } else {
-          console.log(`[RooSyncService] ✅ Fichier de présence cohérent pour ${this.config.machineId}`);
-        }
-      } else {
-        console.log(`[RooSyncService] Aucun fichier de présence trouvé pour ${this.config.machineId}, création prévue`);
-      }
-      
-    } catch (error) {
-      console.warn('[RooSyncService] Erreur validation fichiers de présence:', error);
-    }
-  }
 
   /**
    * Obtenir le gestionnaire de présence
