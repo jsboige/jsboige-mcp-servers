@@ -373,7 +373,7 @@ describe('IndexingDecisionService', () => {
   // === migrateLegacyIndexingState ===
 
   describe('migrateLegacyIndexingState', () => {
-    it('should migrate from qdrantIndexedAt to new format', () => {
+    it('should migrate from qdrantIndexedAt to new format without fake success (#2165)', () => {
       const legacyDate = '2026-01-15T10:00:00Z';
       const skeleton = createSkeleton({
         metadata: {
@@ -386,8 +386,11 @@ describe('IndexingDecisionService', () => {
 
       expect(migrated).toBe(true);
       expect(skeleton.metadata.indexingState).toBeDefined();
-      expect(skeleton.metadata.indexingState!.lastIndexedAt).toBe(legacyDate);
-      expect(skeleton.metadata.indexingState!.indexStatus).toBe('success');
+      // #2165: migration no longer sets indexStatus or nextReindexAfter
+      expect(skeleton.metadata.indexingState!.indexStatus).toBeUndefined();
+      expect(skeleton.metadata.indexingState!.nextReindexAfter).toBeUndefined();
+      expect(skeleton.metadata.indexingState!.lastIndexedAt).toBeUndefined();
+      expect(skeleton.metadata.indexingState!.indexVersion).toBeDefined();
       expect(skeleton.metadata.qdrantIndexedAt).toBeUndefined();
     });
 
