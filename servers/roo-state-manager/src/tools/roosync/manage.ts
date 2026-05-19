@@ -15,6 +15,7 @@ import {
   formatDate,
   formatDateFull,
   getLocalMachineId,
+  getLocalFullId,
   parseMachineWorkspace
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
@@ -112,7 +113,7 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
 
   // Marquer comme lu (avec tracking per-machine #629)
   logger.info('✉️ Marking message as read');
-  await messageManager.markAsRead(args.message_id, localMachine);
+  await messageManager.markAsRead(args.message_id, getLocalFullId());
 
   // Fire-and-forget heartbeat update: marking a message read proves the machine is active
   (await getRooSyncService()).getHeartbeatService()

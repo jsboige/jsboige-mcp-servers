@@ -18,7 +18,8 @@ import {
   getPriorityIcon,
   getStatusIcon,
   getLocalMachineId,
-  getLocalWorkspaceId
+  getLocalWorkspaceId,
+  getLocalFullId
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
@@ -268,7 +269,7 @@ Le message n'a pas été trouvé dans :
 
   // Marquer comme lu si demandé (avec tracking per-machine #629)
   if (markAsRead && message.status === 'unread') {
-    await messageManager.markAsRead(messageId, getLocalMachineId());
+    await messageManager.markAsRead(messageId, getLocalFullId());
     message.status = 'read';
   }
 

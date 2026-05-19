@@ -12,7 +12,7 @@ import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId } from '../utils/message-helpers.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -708,6 +708,18 @@ export class MessageManager {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const message: Message = JSON.parse(content);
+
+      // Workspace guard (#2287): reject markAsRead if reader's workspace ≠ message target workspace
+      if (readerId && message.to && message.to !== 'all' && message.to !== 'All') {
+        const readerParsed = parseMachineWorkspace(readerId);
+        const targetParsed = parseMachineWorkspace(message.to);
+        if (targetParsed.workspaceId && readerParsed.workspaceId) {
+          if (normalizeWorkspaceId(readerParsed.workspaceId) !== normalizeWorkspaceId(targetParsed.workspaceId)) {
+            logger.info(`[#2287] Workspace mismatch: reader "${readerParsed.workspaceId}" ≠ target "${targetParsed.workspaceId}", skipping markAsRead`);
+            return false;
+          }
+        }
+      }
 
       // Track per-machine read status (#629)
       if (readerId) {
