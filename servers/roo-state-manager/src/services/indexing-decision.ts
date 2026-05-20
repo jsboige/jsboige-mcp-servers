@@ -57,11 +57,14 @@ export class IndexingDecisionService {
         }
 
         // Migration d'index : version différente = réindexation nécessaire
+        // action 'rebuild' (vs 'index') signals to the worker that this task is a
+        // historical reindex and should be jittered with a random backoff to spread
+        // fleet-wide load on the embedding API. See REBUILD_BACKOFF_*_MS_DEFAULT.
         if (indexingState.indexVersion && indexingState.indexVersion !== this.indexVersion) {
             return {
                 shouldIndex: true,
                 reason: `Migration d'index requise (v${indexingState.indexVersion} → v${this.indexVersion})`,
-                action: 'index'
+                action: 'rebuild'
             };
         }
 
