@@ -1120,4 +1120,112 @@ describe('MessageManager', () => {
       messageManager.stopAutoArchiveDaemon();
     });
   });
+
+  describe('workspace filtering (#2287)', () => {
+    test('getMessage: allows reading messages targeted to caller machine', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Test', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.getMessage(msg.id, 'machine-a');
+      expect(result).not.toBeNull();
+      expect(result!.body).toBe('Body');
+    });
+
+    test('getMessage: allows reading messages targeted to caller machine:workspace', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a:ws-1', 'Test', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.getMessage(msg.id, 'machine-a:ws-1');
+      expect(result).not.toBeNull();
+    });
+
+    test('getMessage: blocks reading messages targeted to different workspace', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a:ws-1', 'Secret', 'Private body', 'HIGH'
+      );
+      // Same machine, different workspace
+      const result = await messageManager.getMessage(msg.id, 'machine-a:ws-2');
+      expect(result).toBeNull();
+    });
+
+    test('getMessage: allows reading messages targeted to same machine (no workspace)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Test', 'Body', 'MEDIUM'
+      );
+      // Caller with workspace, message targets whole machine → allowed
+      const result = await messageManager.getMessage(msg.id, 'machine-a:ws-1');
+      expect(result).not.toBeNull();
+    });
+
+    test('getMessage: allows reading own sent messages', async () => {
+      const msg = await messageManager.sendMessage(
+        'machine-a', 'other-machine', 'Sent msg', 'Content', 'MEDIUM'
+      );
+      // Sender reads their own sent message — should be allowed
+      const result = await messageManager.getMessage(msg.id, 'machine-a');
+      expect(result).not.toBeNull();
+      expect(result!.body).toBe('Content');
+    });
+
+    test('getMessage: blocks reading messages from different machine', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Test', 'Private', 'HIGH'
+      );
+      const result = await messageManager.getMessage(msg.id, 'machine-b');
+      expect(result).toBeNull();
+    });
+
+    test('getMessage: without callerId skips workspace check (backward compat)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a:ws-1', 'Test', 'Body', 'MEDIUM'
+      );
+      // No callerId → backward compat, no workspace check
+      const result = await messageManager.getMessage(msg.id);
+      expect(result).not.toBeNull();
+    });
+
+    test('markAsRead: blocks marking read for different workspace', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a:ws-1', 'Test', 'Body', 'MEDIUM'
+      );
+      // Different workspace on same machine
+      const result = await messageManager.markAsRead(msg.id, 'machine-a:ws-2');
+      expect(result).toBe(false);
+    });
+
+    test('markAsRead: allows marking read for correct workspace', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a:ws-1', 'Test', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.markAsRead(msg.id, 'machine-a:ws-1');
+      expect(result).toBe(true);
+    });
+
+    test('markAsRead: allows marking read for machine-wide messages', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Test', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.markAsRead(msg.id, 'machine-a:ws-1');
+      expect(result).toBe(true);
+    });
+
+    test('markAsRead: allows authorized reader from destruct_after_read_by', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Multi', 'Secret', 'HIGH',
+        undefined, undefined, undefined,
+        { auto_destruct: true, destruct_after_read_by: ['machine-a', 'machine-b'] }
+      );
+      // machine-b is in destruct_after_read_by but not the primary recipient
+      const result = await messageManager.markAsRead(msg.id, 'machine-b');
+      expect(result).toBe(true);
+    });
+
+    test('markAsRead: blocks unauthorized reader from different machine', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Test', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.markAsRead(msg.id, 'machine-c');
+      expect(result).toBe(false);
+    });
+  });
 });

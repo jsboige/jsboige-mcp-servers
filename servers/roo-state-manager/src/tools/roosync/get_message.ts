@@ -10,7 +10,7 @@
 import { getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
-import { getLocalMachineId } from '../../utils/message-helpers.js';
+import { getLocalMachineId, getLocalFullId } from '../../utils/message-helpers.js';
 
 // Logger instance for get_message tool
 const logger: Logger = createLogger('GetMessageTool');
@@ -102,7 +102,7 @@ export async function getMessage(
 
     // Récupérer le message
     logger.debug('🔍 Fetching message', { messageId: args.message_id });
-    const message = await messageManager.getMessage(args.message_id);
+    const message = await messageManager.getMessage(args.message_id, getLocalFullId());
 
     // Cas : message introuvable
     if (!message) {
@@ -129,7 +129,7 @@ Le message n'a pas été trouvé dans :
     // Marquer comme lu si demandé (avec tracking per-machine #629)
     if (args.mark_as_read && message.status === 'unread') {
       logger.debug('✉️ Marking message as read');
-      await messageManager.markAsRead(args.message_id, getLocalMachineId());
+      await messageManager.markAsRead(args.message_id, getLocalFullId());
       message.status = 'read';
     }
 

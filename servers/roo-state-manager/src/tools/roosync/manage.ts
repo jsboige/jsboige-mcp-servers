@@ -15,6 +15,7 @@ import {
   formatDate,
   formatDateFull,
   getLocalMachineId,
+  getLocalFullId,
   parseMachineWorkspace
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
@@ -71,7 +72,7 @@ async function markMessageAsRead(
 
   // Vérifier existence du message
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id);
+  const message = await messageManager.getMessage(args.message_id, getLocalFullId());
 
   // Cas : message introuvable
   if (!message) {
@@ -110,9 +111,9 @@ Le message n'a pas été trouvé dans :
 Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
   }
 
-  // Marquer comme lu (avec tracking per-machine #629)
+  // Marquer comme lu (avec tracking per-machine #629, workspace-aware #2287)
   logger.info('✉️ Marking message as read');
-  await messageManager.markAsRead(args.message_id, localMachine);
+  await messageManager.markAsRead(args.message_id, getLocalFullId());
 
   // Fire-and-forget heartbeat update: marking a message read proves the machine is active
   (await getRooSyncService()).getHeartbeatService()
@@ -167,7 +168,7 @@ async function archiveMessageFunc(
 
   // Vérifier existence du message
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id);
+  const message = await messageManager.getMessage(args.message_id, getLocalFullId());
 
   // Cas : message introuvable
   if (!message) {

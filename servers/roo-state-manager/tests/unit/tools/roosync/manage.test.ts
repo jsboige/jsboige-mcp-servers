@@ -40,6 +40,7 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
 
 vi.mock('../../../../src/utils/message-helpers.js', () => ({
     getLocalMachineId: mockGetLocalMachineId,
+    getLocalFullId: vi.fn(() => 'myia-po-2025:roo-extensions'),
     parseMachineWorkspace: mockParseMachineWorkspace,
     formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
     formatDateFull: vi.fn((d: string) => d || ''),
@@ -100,7 +101,7 @@ describe('roosync_manage', () => {
             });
             const result = await roosyncManage({ action: 'mark_read', message_id: 'msg-1' });
             expect(result.content[0].text).toContain('marqué comme lu');
-            expect(mockMarkAsRead).toHaveBeenCalledWith('msg-1', 'myia-po-2025');
+            expect(mockMarkAsRead).toHaveBeenCalledWith('msg-1', 'myia-po-2025:roo-extensions');
         });
 
         it('returns not found for missing message', async () => {
