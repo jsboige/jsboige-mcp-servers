@@ -1,11 +1,19 @@
 # Code owners for jsboige/jsboige-mcp-servers
 #
 # These users must approve every PR before it can be merged.
-# This is a guard rail to ensure that high-capability models (Opus)
-# always vet PRs before merge, even when other identities (e.g.
-# clusterManager-Myia / GLM) have already reviewed.
+# Any ONE of the listed owners (other than the PR author) satisfies the gate.
 #
-# See: cycle 17 audit, 2026-04-26 — clusterManager-Myia merged
-# submod #212+#213 autonomously without Opus review.
+# Quality tiering (issue #1767 Phase 4 — mirrored from parent roo-extensions, 2026-05-20):
+#   - Opus-class (ai-01, jsboige): full review authority, any PR
+#   - GLM-class (po-2023, web1): pre-merge CI + audit only
+#     -> approve restricted to trivial PRs (pointer-bumps, doc-only, test-only, <50 LOC)
+#     -> non-trivial PRs require Opus-class final approval
+#
+# History: cycle 17 audit (2026-04-26) — clusterManager-Myia merged
+# submod #212+#213 autonomously without Opus review. The Opus-gate exists
+# to prevent exactly that. Do NOT add bot identities (clusterManager-Myia)
+# here — a bot codeowner would defeat the guard rail it is meant to enforce.
+#
+# User approval: jsboige, 2026-05-20 ("OK pour le tiering").
 
-* @jsboige @myia-ai-01
+* @jsboige @myia-ai-01 @myia-po-2023 @MyIA-Web1
