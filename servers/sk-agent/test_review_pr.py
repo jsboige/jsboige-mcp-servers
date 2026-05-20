@@ -8,11 +8,11 @@ import pytest
 
 # --- Pure logic extracted from review_pr for testability ---
 
-TIER_AGENTS = {1: "fast-reviewer", 2: "integration-reviewer", 3: "integration-reviewer"}
+TIER_AGENTS = {1: "fast-reviewer", 2: "integration-reviewer", 3: "deep-reviewer"}
 TIER_CONVERSATIONS = {
     1: "pr-review-tier1",
     2: "pr-review-tier2",
-    3: "pr-review-tier2",
+    3: "pr-review-tier3",
 }
 
 
@@ -38,7 +38,7 @@ def parse_options(options_str: str) -> dict:
         return {}
 
 
-def build_review_prompt(repo: str, pr_number: int) -> str:
+def build_review_prompt(repo: str, pr_number: int, tier: int = 2) -> str:
     prompt_parts = [
         f"Review PR #{pr_number} in repository {repo}.",
         f"Use the GitHub tools to fetch the PR diff, files, and metadata.",
@@ -56,6 +56,17 @@ def build_review_prompt(repo: str, pr_number: int) -> str:
         "Be thorough. Check for bugs, security issues, performance problems, and maintainability.",
         "If the PR is a pointer bump or trivial change, keep the review short.",
     ]
+
+    if tier == 3:
+        prompt_parts.extend([
+            "",
+            "TIER 3 INSTRUCTIONS: You have terminal access. When possible:",
+            "1. Clone or checkout the PR branch to inspect the code locally",
+            "2. Run the build and tests to verify correctness",
+            "3. Run linter/type checks if available",
+            "4. Include test_results in your review output",
+        ])
+
     return "\n".join(prompt_parts)
 
 
@@ -92,8 +103,8 @@ class TestResolveAgent:
     def test_tier2_maps_to_integration_reviewer(self):
         assert resolve_agent(2) == "integration-reviewer"
 
-    def test_tier3_aliases_tier2(self):
-        assert resolve_agent(3) == "integration-reviewer"
+    def test_tier3_maps_to_deep_reviewer(self):
+        assert resolve_agent(3) == "deep-reviewer"
 
     def test_override_takes_precedence(self):
         assert resolve_agent(2, override="custom-agent") == "custom-agent"
@@ -109,9 +120,8 @@ class TestResolveConversation:
     def test_tier2_group_chat(self):
         assert resolve_conversation(2) == "pr-review-tier2"
 
-    def test_tier3_aliases_tier2(self):
-        """Tier 3 currently falls back to tier 2 conversation — documented gap."""
-        assert resolve_conversation(3) == "pr-review-tier2"
+    def test_tier3_has_own_conversation(self):
+        assert resolve_conversation(3) == "pr-review-tier3"
 
     def test_override_takes_precedence(self):
         assert resolve_conversation(2, override="my-conv") == "my-conv"
@@ -154,15 +164,29 @@ class TestBuildReviewPrompt:
         prompt = build_review_prompt("owner/repo", 1)
         assert "pointer bump" in prompt
 
+    def test_tier3_contains_execution_instructions(self):
+        prompt = build_review_prompt("owner/repo", 1, tier=3)
+        assert "TIER 3 INSTRUCTIONS" in prompt
+        assert "terminal access" in prompt
+        assert "Run the build and tests" in prompt
+        assert "test_results" in prompt
 
-class TestTier3Gap:
-    """Document that Tier 3 currently aliases Tier 2 — not a separate tier."""
+    def test_tier2_no_execution_instructions(self):
+        prompt = build_review_prompt("owner/repo", 1, tier=2)
+        assert "TIER 3 INSTRUCTIONS" not in prompt
 
-    def test_tier3_agent_same_as_tier2(self):
-        assert resolve_agent(3) == resolve_agent(2)
 
-    def test_tier3_conversation_same_as_tier2(self):
-        assert resolve_conversation(3) == resolve_conversation(2)
+class TestTier3Distinct:
+    """Verify Tier 3 is now distinct from Tier 2."""
 
-    def test_tier3_not_fast_reviewer(self):
-        assert resolve_agent(3) != "fast-reviewer"
+    def test_tier3_agent_differs_from_tier2(self):
+        assert resolve_agent(3) != resolve_agent(2)
+
+    def test_tier3_conversation_differs_from_tier2(self):
+        assert resolve_conversation(3) != resolve_conversation(2)
+
+    def test_tier3_agent_is_deep_reviewer(self):
+        assert resolve_agent(3) == "deep-reviewer"
+
+    def test_tier3_conversation_is_pr_review_tier3(self):
+        assert resolve_conversation(3) == "pr-review-tier3"

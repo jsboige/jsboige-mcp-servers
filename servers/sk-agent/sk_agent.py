@@ -1741,11 +1741,11 @@ async def review_pr(
 
     tier = max(1, min(3, tier))
 
-    tier_agents = {1: "fast-reviewer", 2: "integration-reviewer", 3: "integration-reviewer"}
+    tier_agents = {1: "fast-reviewer", 2: "integration-reviewer", 3: "deep-reviewer"}
     tier_conversations = {
         1: "pr-review-tier1",
         2: "pr-review-tier2",
-        3: "pr-review-tier2",
+        3: "pr-review-tier3",
     }
 
     agent_id = agent or tier_agents.get(tier, "integration-reviewer")
@@ -1775,6 +1775,16 @@ async def review_pr(
         "Be thorough. Check for bugs, security issues, performance problems, and maintainability.",
         "If the PR is a pointer bump or trivial change, keep the review short.",
     ]
+
+    if tier == 3:
+        prompt_parts.extend([
+            "",
+            "TIER 3 INSTRUCTIONS: You have terminal access. When possible:",
+            "1. Clone or checkout the PR branch to inspect the code locally",
+            "2. Run the build and tests to verify correctness",
+            "3. Run linter/type checks if available",
+            "4. Include test_results in your review output",
+        ])
 
     prompt = "\n".join(prompt_parts)
 
