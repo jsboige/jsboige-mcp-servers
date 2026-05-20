@@ -9,8 +9,6 @@ import logging
 from typing import Any, Dict, Optional, Literal
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
-
 from ..services.kernel_service import KernelService
 from ..config import MCPConfig
 
@@ -35,56 +33,6 @@ def get_kernel_service() -> KernelService:
         raise RuntimeError("Kernel service not initialized")
     return _kernel_service
 
-
-# Input models for tools
-class StartKernelInput(BaseModel):
-    """Input model for start_kernel tool."""
-
-    kernel_name: str = Field(
-        default="python3", description="Nom du kernel a demarrer (ex: python3)"
-    )
-
-
-class StopKernelInput(BaseModel):
-    """Input model for stop_kernel tool."""
-
-    kernel_id: str = Field(description="ID du kernel a arreter")
-
-
-class InterruptKernelInput(BaseModel):
-    """Input model for interrupt_kernel tool."""
-
-    kernel_id: str = Field(description="ID du kernel a interrompre")
-
-
-class RestartKernelInput(BaseModel):
-    """Input model for restart_kernel tool."""
-
-    kernel_id: str = Field(description="ID du kernel a redemarrer")
-
-
-class ExecuteCellInput(BaseModel):
-    """Input model for execute_cell tool."""
-
-    kernel_id: str = Field(description="ID du kernel sur lequel executer le code")
-    code: str = Field(description="Code a executer")
-
-
-class ExecuteNotebookInput(BaseModel):
-    """Input model for execute_notebook tool."""
-
-    path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    kernel_id: str = Field(description="ID du kernel sur lequel executer le notebook")
-
-
-class ExecuteNotebookCellInput(BaseModel):
-    """Input model for execute_notebook_cell tool."""
-
-    path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    cell_index: int = Field(description="Index de la cellule a executer")
-    kernel_id: str = Field(description="ID du kernel sur lequel executer la cellule")
-
-
 def register_kernel_tools(app: FastMCP) -> None:
     """Register all kernel tools with the FastMCP app."""
 
@@ -105,130 +53,6 @@ def register_kernel_tools(app: FastMCP) -> None:
         except Exception as e:
             logger.error(f"Error listing kernels: {e}")
             return {"error": str(e), "success": False}
-
-    # ============================================================================
-    # DEPRECATED WRAPPERS - Commentés Phase 6c (2025-10-10)
-    # Ces wrappers ont été remplacés par les outils consolidés (Phase 5 + Phase 2).
-    # Code conservé pour référence historique et possibilité de rollback.
-    # NE PAS DÉCOMMENTER sans validation architecture.
-    # ============================================================================
-
-    # @app.tool()
-    # async def start_kernel(kernel_name: str = "python3", working_dir: Optional[str] = None) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use manage_kernel(action="start", kernel_name=...) instead.
-    #
-    #     Demarre un nouveau kernel
-    #
-    #     Args:
-    #         kernel_name: Nom du kernel a demarrer (ex: python3)
-    #         working_dir: Répertoire de travail (optionnel)
-    #
-    #     Returns:
-    #         Information sur le kernel demarre
-    #     """
-    #     logger.warning("start_kernel is deprecated, use manage_kernel(action='start') instead")
-    #     return await manage_kernel(action="start", kernel_name=kernel_name, working_dir=working_dir)
-
-    # @app.tool()
-    # async def stop_kernel(kernel_id: str) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use manage_kernel(action="stop", kernel_id=...) instead.
-    #
-    #     Arrete un kernel actif
-    #
-    #     Args:
-    #         kernel_id: ID du kernel a arreter
-    #
-    #     Returns:
-    #         Resultat de l'arret du kernel
-    #     """
-    #     logger.warning("stop_kernel is deprecated, use manage_kernel(action='stop') instead")
-    #     return await manage_kernel(action="stop", kernel_id=kernel_id)
-
-    # @app.tool()
-    # async def interrupt_kernel(kernel_id: str) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use manage_kernel(action="interrupt", kernel_id=...) instead.
-    #
-    #     Interrompt l'execution d'un kernel
-    #
-    #     Args:
-    #         kernel_id: ID du kernel a interrompre
-    #
-    #     Returns:
-    #         Resultat de l'interruption
-    #     """
-    #     logger.warning("interrupt_kernel is deprecated, use manage_kernel(action='interrupt') instead")
-    #     return await manage_kernel(action="interrupt", kernel_id=kernel_id)
-
-    # @app.tool()
-    # async def restart_kernel(kernel_id: str) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use manage_kernel(action="restart", kernel_id=...) instead.
-    #
-    #     Redemarre un kernel
-    #
-    #     Args:
-    #         kernel_id: ID du kernel a redemarrer
-    #
-    #     Returns:
-    #         Information sur le kernel redemarre
-    #     """
-    #     logger.warning("restart_kernel is deprecated, use manage_kernel(action='restart') instead")
-    #     return await manage_kernel(action="restart", kernel_id=kernel_id)
-
-    # @app.tool()
-    # async def execute_cell(kernel_id: str, code: str) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="code", code=...) instead.
-    #
-    #     Execute du code dans un kernel specifique
-    #
-    #     Args:
-    #         kernel_id: ID du kernel sur lequel executer le code
-    #         code: Code a executer
-    #
-    #     Returns:
-    #         Resultat de l'execution du code
-    #     """
-    #     logger.warning("execute_cell is deprecated, use execute_on_kernel(mode='code') instead")
-    #     return await execute_on_kernel(kernel_id=kernel_id, mode="code", code=code)
-
-    # @app.tool()
-    # async def execute_notebook(path: str, kernel_id: str) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook", path=...) instead.
-    #
-    #     Execute toutes les cellules de code d'un notebook
-    #
-    #     Args:
-    #         path: Chemin du fichier notebook (.ipynb)
-    #         kernel_id: ID du kernel sur lequel executer le notebook
-    #
-    #     Returns:
-    #         Resultat de l'execution du notebook
-    #     """
-    #     logger.warning("execute_notebook is deprecated, use execute_on_kernel(mode='notebook') instead")
-    #     return await execute_on_kernel(kernel_id=kernel_id, mode="notebook", path=path)
-
-    # @app.tool()
-    # async def execute_notebook_cell(path: str, cell_index: int, kernel_id: str) -> Dict[str, Any]:
-    #     """
-    #     ⚠️ DEPRECATED: Use execute_on_kernel(kernel_id, mode="notebook_cell", path=..., cell_index=...) instead.
-    #
-    #     Execute une cellule specifique d'un notebook
-    #
-    #     Args:
-    #         path: Chemin du fichier notebook (.ipynb)
-    #         cell_index: Index de la cellule a executer
-    #         kernel_id: ID du kernel sur lequel executer la cellule
-    #
-    #     Returns:
-    #         Resultat de l'execution de la cellule
-    #     """
-    #     logger.warning("execute_notebook_cell is deprecated, use execute_on_kernel(mode='notebook_cell') instead")
-    #     return await execute_on_kernel(kernel_id=kernel_id, mode="notebook_cell", path=path, cell_index=cell_index)
 
     @app.tool()
     async def execute_on_kernel(
@@ -421,5 +245,79 @@ def register_kernel_tools(app: FastMCP) -> None:
         except Exception as e:
             logger.error(f"Error managing kernel with action {action}: {e}")
             return {"error": str(e), "action": action, "success": False}
+
+    @app.tool()
+    async def stream_execute(
+        kernel_id: str,
+        code: str,
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Start streaming code execution. Returns immediately with execution_id.
+
+        Unlike execute_on_kernel which blocks until completion, this starts
+        execution in the background and returns an execution_id for polling
+        incremental outputs via stream_outputs.
+
+        Args:
+            kernel_id: ID of the kernel to use
+            code: Python code to execute
+            timeout: Maximum execution time in seconds (défaut: 60, max: 3600)
+
+        Returns:
+            {"execution_id": str, "kernel_id": str, "status": "running"}
+        """
+        try:
+            service = get_kernel_service()
+            effective_timeout = timeout or 60
+            max_timeout = _config.papermill.transport_max_timeout if _config else 3600
+            effective_timeout = min(effective_timeout, max_timeout)
+
+            return await service.start_streaming_execution(
+                kernel_id=kernel_id,
+                code=code,
+                timeout=effective_timeout,
+            )
+        except Exception as e:
+            logger.error(f"Error starting streaming execution: {e}")
+            return {"error": str(e), "kernel_id": kernel_id, "success": False}
+
+    @app.tool()
+    async def stream_outputs(
+        execution_id: str,
+        cleanup: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Poll incremental outputs from a streaming execution.
+
+        Call repeatedly to get accumulated outputs as the execution progresses.
+        When status != "running", the execution is complete.
+
+        Args:
+            execution_id: ID from stream_execute
+            cleanup: If true, remove tracking data after fetching (for completed executions)
+
+        Returns:
+            {
+                "execution_id": str,
+                "status": "running" | "ok" | "error" | "timeout",
+                "outputs": [...],  # incremental output items
+                "text_output": str,  # accumulated text
+                "started_at": str,
+                "completed_at": str | null,
+                "execution_time": float | null
+            }
+        """
+        try:
+            service = get_kernel_service()
+            result = service.get_streaming_output(execution_id)
+
+            if cleanup and result.get("status") not in ("running", None):
+                service.cleanup_streaming_execution(execution_id)
+
+            return result
+        except Exception as e:
+            logger.error(f"Error polling streaming output: {e}")
+            return {"error": str(e), "execution_id": execution_id, "success": False}
 
     logger.info("Registered kernel tools")

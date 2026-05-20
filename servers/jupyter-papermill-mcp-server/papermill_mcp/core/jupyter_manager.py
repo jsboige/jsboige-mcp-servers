@@ -34,13 +34,30 @@ class ExecutionOutput:
 class ExecutionResult:
     """Result from interactive code execution."""
 
-    status: str  # 'ok', 'error', 'timeout'
+    status: str  # 'ok', 'error', 'timeout', 'running'
     execution_count: int
     outputs: List[ExecutionOutput] = field(default_factory=list)
     text_output: str = ""
     error_name: Optional[str] = None
     error_value: Optional[str] = None
     traceback: Optional[List[str]] = None
+
+
+@dataclass
+class StreamExecution:
+    """Tracks a streaming execution with incremental output collection."""
+
+    execution_id: str
+    kernel_id: str
+    code: str
+    started_at: datetime
+    status: str = "running"  # running, ok, error, timeout
+    outputs: List[ExecutionOutput] = field(default_factory=list)
+    text_output: str = ""
+    execution_count: int = 0
+    error_name: Optional[str] = None
+    error_value: Optional[str] = None
+    completed_at: Optional[datetime] = None
 
 
 @dataclass
@@ -89,6 +106,9 @@ class JupyterManager:
         # Active kernels tracking
         self._active_kernels: Dict[str, KernelManager] = {}
         self._kernel_info: Dict[str, KernelInfo] = {}
+
+        # Streaming executions: execution_id -> StreamExecution
+        self._stream_executions: Dict[str, StreamExecution] = {}
 
         # Kernel spec manager for listing available kernels
         self._kernel_spec_manager = KernelSpecManager()
@@ -477,7 +497,202 @@ class JupyterManager:
                 error_value=str(e),
             )
 
-    def list_active_kernels(self) -> List[Dict[str, Any]]:
+    async def execute_code_streaming(
+        self, kernel_id: str, code: str, timeout: float = 60.0
+    ) -> str:
+        """
+        Start a streaming code execution. Returns execution_id for polling.
+
+        The execution runs in the background, collecting IOPub outputs incrementally.
+        Use get_stream_output() to poll for accumulated outputs.
+
+        Args:
+            kernel_id: ID of the kernel to use
+            code: Code to execute
+            timeout: Maximum execution time in seconds
+
+        Returns:
+            execution_id for polling via get_stream_output()
+        """
+        if kernel_id not in self._active_kernels:
+            raise RuntimeError(f"Kernel {kernel_id} not found")
+
+        execution_id = str(uuid.uuid4())[:8]
+        stream_exec = StreamExecution(
+            execution_id=execution_id,
+            kernel_id=kernel_id,
+            code=code,
+            started_at=datetime.now(),
+        )
+        self._stream_executions[execution_id] = stream_exec
+
+        # Launch execution as background task
+        asyncio.get_event_loop().create_task(
+            self._run_streaming_execution(execution_id, kernel_id, code, timeout)
+        )
+
+        return execution_id
+
+    async def _run_streaming_execution(
+        self, execution_id: str, kernel_id: str, code: str, timeout: float
+    ) -> None:
+        """Background task that runs streaming execution and collects IOPub outputs."""
+        stream_exec = self._stream_executions.get(execution_id)
+        if not stream_exec:
+            return
+
+        km = self._active_kernels.get(kernel_id)
+        if not km:
+            stream_exec.status = "error"
+            stream_exec.error_value = f"Kernel {kernel_id} not found"
+            stream_exec.completed_at = datetime.now()
+            return
+
+        kernel_info = self._kernel_info[kernel_id]
+
+        try:
+            kernel_info.status = "busy"
+            kernel_info.last_activity = datetime.now()
+
+            kc = km.client()
+            msg_id = kc.execute(code)
+
+            deadline = asyncio.get_event_loop().time() + timeout
+
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    msg = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: kc.get_iopub_msg(timeout=1.0)
+                    )
+
+                    msg_type = msg["msg_type"]
+                    content = msg["content"]
+
+                    if msg_type == "stream":
+                        text = content.get("text", "")
+                        stream_exec.text_output += text
+                        stream_exec.outputs.append(
+                            ExecutionOutput(
+                                output_type="stream",
+                                content={
+                                    "name": content.get("name", "stdout"),
+                                    "text": text,
+                                },
+                            )
+                        )
+
+                    elif msg_type == "execute_result":
+                        stream_exec.execution_count = content.get("execution_count", 0)
+                        stream_exec.outputs.append(
+                            ExecutionOutput(
+                                output_type="execute_result",
+                                content=content.get("data", {}),
+                                metadata=content.get("metadata", {}),
+                                execution_count=stream_exec.execution_count,
+                            )
+                        )
+
+                    elif msg_type == "display_data":
+                        stream_exec.outputs.append(
+                            ExecutionOutput(
+                                output_type="display_data",
+                                content=content.get("data", {}),
+                                metadata=content.get("metadata", {}),
+                            )
+                        )
+
+                    elif msg_type == "error":
+                        stream_exec.status = "error"
+                        stream_exec.error_name = content.get("ename", "Error")
+                        stream_exec.error_value = content.get("evalue", "")
+                        traceback = content.get("traceback", [])
+                        stream_exec.text_output += f"{stream_exec.error_name}: {stream_exec.error_value}\n"
+                        if traceback:
+                            stream_exec.text_output += "\n".join(traceback)
+                        stream_exec.outputs.append(
+                            ExecutionOutput(
+                                output_type="error",
+                                content={
+                                    "ename": stream_exec.error_name,
+                                    "evalue": stream_exec.error_value,
+                                    "traceback": traceback,
+                                },
+                            )
+                        )
+
+                    elif msg_type == "status":
+                        execution_state = content.get("execution_state")
+                        if execution_state == "idle":
+                            if stream_exec.status == "running":
+                                stream_exec.status = "ok"
+                            break
+
+                except Exception:
+                    continue
+
+            if asyncio.get_event_loop().time() >= deadline:
+                stream_exec.status = "timeout"
+
+        except Exception as e:
+            stream_exec.status = "error"
+            stream_exec.error_name = "ExecutionError"
+            stream_exec.error_value = str(e)
+        finally:
+            kernel_info.status = "idle"
+            kernel_info.last_activity = datetime.now()
+            stream_exec.completed_at = datetime.now()
+
+    def get_stream_output(self, execution_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get current accumulated output for a streaming execution.
+
+        Args:
+            execution_id: ID returned by execute_code_streaming
+
+        Returns:
+            Dict with status, outputs, text_output, or None if not found
+        """
+        stream_exec = self._stream_executions.get(execution_id)
+        if not stream_exec:
+            return None
+
+        outputs_list = []
+        for output in stream_exec.outputs:
+            out_dict = {"output_type": output.output_type, "content": output.content}
+            if output.metadata:
+                out_dict["metadata"] = output.metadata
+            if output.execution_count is not None:
+                out_dict["execution_count"] = output.execution_count
+            outputs_list.append(out_dict)
+
+        result = {
+            "execution_id": execution_id,
+            "kernel_id": stream_exec.kernel_id,
+            "status": stream_exec.status,
+            "outputs": outputs_list,
+            "text_output": stream_exec.text_output,
+            "started_at": stream_exec.started_at.isoformat(),
+        }
+
+        if stream_exec.completed_at:
+            result["completed_at"] = stream_exec.completed_at.isoformat()
+            result["execution_time"] = (
+                stream_exec.completed_at - stream_exec.started_at
+            ).total_seconds()
+
+        if stream_exec.error_name:
+            result["error_name"] = stream_exec.error_name
+        if stream_exec.error_value:
+            result["error"] = stream_exec.error_value
+
+        return result
+
+    def cleanup_stream_execution(self, execution_id: str) -> bool:
+        """Remove a completed streaming execution from tracking."""
+        if execution_id in self._stream_executions:
+            del self._stream_executions[execution_id]
+            return True
+        return False
         """
         List all active kernels.
 
