@@ -596,9 +596,11 @@ export async function handleRooSyncIndexing(
 
                     let pointsCount = 0;
                     try {
+                        // #2246: Use exact:true — approximate count with filters returns
+                        // spurious values (e.g. 161K for a task with 0 points).
                         const countResult = await qdrant.count(collectionName, {
                             filter: { must: [{ key: 'task_id', match: { value: taskId } }] },
-                            exact: false
+                            exact: true
                         });
                         pointsCount = (countResult as any).count ?? 0;
                     } catch {
