@@ -588,3 +588,53 @@ class KernelService:
 
         else:
             raise ValueError(f"Invalid mode: {mode}")
+
+    async def start_streaming_execution(
+        self, kernel_id: str, code: str, timeout: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Start a streaming code execution. Returns immediately with execution_id.
+
+        Use get_streaming_output() to poll for incremental outputs.
+
+        Args:
+            kernel_id: ID of the kernel to use
+            code: Code to execute
+            timeout: Maximum execution time in seconds
+
+        Returns:
+            Dict with execution_id and status
+        """
+        execution_id = await self.jupyter_manager.execute_code_streaming(
+            kernel_id, code, float(timeout)
+        )
+        return {
+            "execution_id": execution_id,
+            "kernel_id": kernel_id,
+            "status": "running",
+            "message": "Execution started. Poll with stream_outputs(execution_id).",
+        }
+
+    def get_streaming_output(self, execution_id: str) -> Dict[str, Any]:
+        """
+        Get accumulated output for a streaming execution.
+
+        Args:
+            execution_id: ID from start_streaming_execution
+
+        Returns:
+            Dict with status, outputs, text_output
+        """
+        result = self.jupyter_manager.get_stream_output(execution_id)
+        if result is None:
+            return {
+                "execution_id": execution_id,
+                "status": "not_found",
+                "error": f"No streaming execution with id '{execution_id}'",
+            }
+        return result
+
+    def cleanup_streaming_execution(self, execution_id: str) -> Dict[str, Any]:
+        """Remove a completed streaming execution from tracking."""
+        removed = self.jupyter_manager.cleanup_stream_execution(execution_id)
+        return {"execution_id": execution_id, "removed": removed}
