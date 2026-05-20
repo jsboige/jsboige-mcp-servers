@@ -58,7 +58,7 @@ export const MessagesArgsSchema = z.object({
   ]).describe('Action a effectuer'),
 
   // --- Send/Reply/Amend params ---
-  to: z.string().optional().describe('Destinataire (requis pour send): machine ou machine:workspace'),
+  to: z.string().optional().describe('Destinataire (requis pour send): machine, machine:workspace, ou shorthand (hermes=po-2026:hermes-agent, nanoclaw=ai-01:nanoclaw) #2241'),
   subject: z.string().optional().describe('Sujet (requis pour send)'),
   body: z.string().optional().describe('Corps du message (requis pour send/reply)'),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional().describe('Priorite (defaut: MEDIUM)'),
