@@ -60,8 +60,14 @@ const TOOL_TIMEOUTS: Record<string, number> = {
     roosync_search: 180_000,        // 3 min
     conversation_browser: 180_000,  // 3 min (can scan large dirs)
     export_data: 180_000,           // 3 min (large exports)
-    // Dashboard operations with GDrive can be slow
-    roosync_dashboard: 60_000,      // 1 min
+    // roosync_dashboard append/write/condense runs the condensation LLM
+    // (qwen3.6-35b reasoning) synchronously over the full dashboard payload.
+    // Observed wall-time up to ~454s on a large workspace dashboard. The prior
+    // 60s cap (#453) cancelled condensation on every append once the dashboard
+    // grew past the 92% threshold, write-blocking the fleet's main coord channel
+    // (regression — dashboards worked before #453). 10 min covers the worst
+    // observed run with margin while still bounding any genuine hang.
+    roosync_dashboard: 600_000,     // 10 min (synchronous LLM condensation)
     roosync_compare_config: 60_000, // 1 min
     roosync_inventory: 60_000,      // 1 min
 };
