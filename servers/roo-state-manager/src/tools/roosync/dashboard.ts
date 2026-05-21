@@ -1614,6 +1614,8 @@ export interface DashboardResult {
     reactiveCondenseMs: number;
     writeMs: number;
   };
+  /** Advisory warning (#2306). Non-blocking hint for agents about suboptimal usage patterns. */
+  warning?: string;
 }
 
 /**
@@ -1972,6 +1974,11 @@ async function handleRead(
     data,
     messageCount: dashboard.intercom.messages.length
   };
+
+  // #2306: Warn when reading only the status section — it may be stale
+  if (readSection === 'status') {
+    jsonResult.warning = 'Status section may be stale — use section: "all" or "intercom" for latest messages.';
+  }
 
   // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
   if (args.format !== 'json') {
@@ -2424,6 +2431,7 @@ async function handleCondense(
 
   const keepCount = args.keepMessages ?? CONDENSE_KEEP;
   const beforeCount = dashboard.intercom.messages.length;
+  const preSizes = buildSizes(dashboard);
 
   if (beforeCount <= keepCount) {
     return {
@@ -2472,6 +2480,11 @@ async function handleCondense(
     }
   }
 
+  // #2306: Advisory warning when utilization is below 80%
+  const lowUtilizationWarning = preSizes.utilizationPct < 80
+    ? `Dashboard utilization at ${preSizes.utilizationPct.toFixed(1)}% — auto-condensation triggers at 92%. Manual condense is usually unnecessary.`
+    : undefined;
+
   return {
     success: true,
     action: 'condense',
@@ -2483,6 +2496,7 @@ async function handleCondense(
     condensed: actuallyCondensed,
     archivedCount,
     condenseDiagnostic: [manualDiag],
+    warning: lowUtilizationWarning,
     message: actuallyCondensed
       ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
       : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)${failureDetail}`
