@@ -976,10 +976,11 @@ describe('roosync_dashboard', () => {
 
     it('archivedCount clamped to 0 on failed append (regression: CoursIA -2)', async () => {
       // #1792: Circuit breaker — now uses fallback truncation, archives messages
-      // When an append triggers preemptive+reactive condense that both fail
-      // with LLM null content, the old accounting computed negative archivedCount.
+      // When an append triggers condensation that fails with LLM null content,
+      // the old accounting computed negative archivedCount.
       // With circuit breaker, messages are archived via fallback, so archivedCount > 0.
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
+      // Append-first: condensation runs AFTER the message is persisted. During fill-up,
+      // one of the intermediate appends will trigger post-append condense with fallback.
       mockGetChatClient.mockImplementation(() => ({
         chat: { completions: { create: mockChatCreate } }
       }));
@@ -987,32 +988,35 @@ describe('roosync_dashboard', () => {
       mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
 
       await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      // Fill past 92% with enough 3KB messages to trigger preemptive
+      // Fill past 92% with enough 3KB messages
       const filler = 'X'.repeat(3000);
+      let condensedResult: any = null;
       for (let i = 0; i < 16; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `${filler} m${i}` });
+        const result = await roosyncDashboard({
+          action: 'append',
+          type: 'global',
+          content: `${filler} m${i}`
+        });
+        if (result.condensed && !condensedResult) {
+          condensedResult = result;
+        }
       }
 
-      // Now append something else — triggers preemptive (at >= 92%) + possibly reactive
-      const result = await roosyncDashboard({
-        action: 'append',
-        type: 'global',
-        content: `${filler} trigger`
-      });
-
-      expect(result.success).toBe(true);
+      // At least one intermediate append must have triggered fallback truncation
+      expect(condensedResult).not.toBeNull();
+      expect(condensedResult.success).toBe(true);
       // #1792: With fallback truncation, archivedCount should be > 0
-      expect(result.archivedCount).toBeGreaterThan(0);
-      expect(result.condensed).toBe(true); // Changed: fallback archives messages
+      expect(condensedResult.archivedCount).toBeGreaterThan(0);
+      expect(condensedResult.condensed).toBe(true);
       // Diagnostic must show the failure mode
-      expect(result.condenseDiagnostic).toBeDefined();
-      expect(result.condenseDiagnostic!.length).toBeGreaterThanOrEqual(1);
-      const failedPasses = result.condenseDiagnostic!.filter(d =>
+      expect(condensedResult.condenseDiagnostic).toBeDefined();
+      expect(condensedResult.condenseDiagnostic!.length).toBeGreaterThanOrEqual(1);
+      const failedPasses = condensedResult.condenseDiagnostic!.filter(d =>
         d.outcome === 'fallback-truncated' || d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected'
       );
       expect(failedPasses.length).toBeGreaterThanOrEqual(1);
       // #1792: With circuit breaker fallback, message reports success (not LLM failure)
-      expect(result.message).toContain('auto-condensation');
+      expect(condensedResult.message).toContain('auto-condensation');
     });
 
     it('dedup within 20min window does NOT re-inject a second error message', async () => {
@@ -1257,24 +1261,24 @@ describe('roosync_dashboard', () => {
       });
 
       await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      // Fill past 92% of 50KB with 16 ≥ CONDENSE_KEEP messages of 3KB each.
+      // Fill past 92% of 50KB with ≥ CONDENSE_KEEP messages of 3KB each.
+      // Append-first: condensation fires on one of the intermediate appends.
       const filler = 'A'.repeat(3000);
-      for (let i = 0; i < 16; i++) {
-        await roosyncDashboard({
+      let condensedResult: any = null;
+      for (let i = 0; i < 20; i++) {
+        const result = await roosyncDashboard({
           action: 'append',
           type: 'global',
           content: `${filler} msg${i}`
         });
+        if (result.condensed && !condensedResult) {
+          condensedResult = result;
+        }
       }
 
-      const result = await roosyncDashboard({
-        action: 'append',
-        type: 'global',
-        content: 'trigger preemptive'
-      });
-
-      expect(result.condensed).toBe(true);
-      expect(result.durationBreakdown!.preemptiveCondenseMs).toBeGreaterThanOrEqual(0);
+      expect(condensedResult).not.toBeNull();
+      expect(condensedResult.condensed).toBe(true);
+      expect(condensedResult.durationBreakdown!.preemptiveCondenseMs).toBeGreaterThanOrEqual(0);
     });
 
     it('unblocks a saturated dashboard pattern (3 large + filler)', async () => {
