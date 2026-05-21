@@ -925,11 +925,14 @@ class SKAgentManager:
                     if mem_plugin:
                         temp_plugins.append(mem_plugin)
 
-                temp_name = f"sk-agent-override-{resolved_id}"
+                # Sanitize name for SK ChatCompletionAgent (alphanumeric + _- only)
+                name_suffix = resolved_id
                 if model_override:
-                    temp_name += f"-{model_override}"
+                    name_suffix += f"-{model_override}"
                 if mcp_overrides:
-                    temp_name += f"-mcp{len(effective_mcps)}"
+                    name_suffix += f"-mcp{len(effective_mcps)}"
+                safe_suffix = name_suffix.replace(".", "-")
+                temp_name = f"sk-agent-override-{safe_suffix}"
                 temp_instructions = (
                     system_prompt
                     or (agent_cfg.system_prompt if agent_cfg else None)
