@@ -90,7 +90,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RET
         return await fn();
     } catch (error) {
         if (retries <= 0) throw error;
-        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error);
+        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error) || isEmfileError(error);
         if (!isRetryable) throw error;
         console.warn(`[WARN] #249: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
@@ -118,6 +118,17 @@ function isAbortOrTimeout(error: unknown): boolean {
     const code = (error as any)?.code || '';
     return msg.includes('abort') || msg.includes('timeout') || msg.includes('ETIMEDOUT') ||
         msg.includes('This operation was aborted') || code === 'UND_ERR_CONNECT_TIMEOUT';
+}
+
+/**
+ * #2300: Check if an error is EMFILE (too many open files).
+ * Transient system error — retryable after backoff allows FDs to be released.
+ */
+function isEmfileError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message;
+    const code = (error as any)?.code || '';
+    return code === 'EMFILE' || msg.includes('EMFILE') || msg.includes('too many open files');
 }
 
 /**

@@ -13,6 +13,7 @@ export type FailureMode =
 	| 'qdrant_backend_slow'      // POST search 5xx or timeout > configured threshold
 	| 'qdrant_collection_missing'// 404 collection
 	| 'auth_failed'              // 401/403
+	| 'system_emfile'            // #2300: too many open files — transient FD exhaustion
 	| 'unknown';
 
 export interface ClassifiedError {
@@ -176,6 +177,16 @@ export async function classifySearchError(
 				hint: 'Backend overloaded or misconfigured. Check Qdrant logs and optimizer status.',
 			};
 		}
+	}
+
+	// #2300: EMFILE — system file descriptor exhaustion (transient)
+	if (errorCode === 'EMFILE' || errorMsg.includes('EMFILE') || errorMsg.includes('too many open files')) {
+		return {
+			mode: 'system_emfile',
+			originalError: errorMsg,
+			message: `System file descriptor exhaustion during ${operation}`,
+			hint: 'Too many open files in the MCP server process. Will auto-retry with backoff. If persistent, check concurrent sessions or increase ulimit.',
+		};
 	}
 
 	// Fallback
