@@ -13,6 +13,7 @@ export type FailureMode =
 	| 'qdrant_backend_slow'      // POST search 5xx or timeout > configured threshold
 	| 'qdrant_collection_missing'// 404 collection
 	| 'auth_failed'              // 401/403
+	| 'resource_exhausted'       // EMFILE, ENOMEM, etc. — too many open files / out of memory
 	| 'unknown';
 
 export interface ClassifiedError {
@@ -27,6 +28,16 @@ const NETWORK_ERROR_PATTERNS = [
 	'ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT',
 	'CERT_HAS_EXPIRED', 'EPIPE', 'EAI_AGAIN',
 ];
+
+/** Resource exhaustion error codes (EMFILE, ENOMEM, etc.) */
+const RESOURCE_EXHAUSTED_PATTERNS = [
+	'EMFILE', 'ENOMEM', 'ENOSPC', 'ENOBUFS',
+	'too many open files', 'out of memory', 'no space left on device',
+];
+
+function isResourceExhausted(errorCode: string, errorMsg: string): boolean {
+	return RESOURCE_EXHAUSTED_PATTERNS.some(p => errorCode === p || errorMsg.toLowerCase().includes(p.toLowerCase()));
+}
 
 function isNetworkError(errorCode: string, errorMsg: string): boolean {
 	return NETWORK_ERROR_PATTERNS.some(p => errorCode === p || errorMsg.includes(p));
@@ -176,6 +187,16 @@ export async function classifySearchError(
 				hint: 'Backend overloaded or misconfigured. Check Qdrant logs and optimizer status.',
 			};
 		}
+	}
+
+	// Resource exhaustion (EMFILE, ENOMEM, etc.) — applies to all operations
+	if (isResourceExhausted(errorCode, errorMsg)) {
+		return {
+			mode: 'resource_exhausted',
+			originalError: errorMsg,
+			message: `Resource exhausted during ${operation}`,
+			hint: 'Too many file handles or memory. Close unused processes, increase ulimit, or restart the MCP server to release file descriptors.',
+		};
 	}
 
 	// Fallback
