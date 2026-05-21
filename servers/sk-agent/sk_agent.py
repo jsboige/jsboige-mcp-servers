@@ -608,6 +608,45 @@ class SKAgentManager:
             agent_cfg.memory.enabled,
         )
 
+    def _resolve_effective_mcp_ids(
+        self, base_mcps: list[str], mcp_overrides: dict | None
+    ) -> list[str]:
+        """Compute effective MCP IDs given base config and per-call overrides.
+
+        Override dict format:
+        - {"replace": ["searxng", "open_terminal"]} → full replacement
+        - {"add": ["searxng"], "remove": ["playwright"]} → delta
+        - None or {} → no change (return base_mcps)
+        """
+        if not mcp_overrides:
+            return base_mcps
+
+        if "replace" in mcp_overrides:
+            return list(mcp_overrides["replace"])
+
+        result = list(base_mcps)
+        for mcp_id in mcp_overrides.get("add", []):
+            if mcp_id not in result:
+                result.append(mcp_id)
+        for mcp_id in mcp_overrides.get("remove", []):
+            if mcp_id in result:
+                result.remove(mcp_id)
+        return result
+
+    async def _collect_mcp_plugins(
+        self, mcp_ids: list[str], agent_id: str
+    ) -> list[Any]:
+        """Lazy-load and collect MCP plugins for the given IDs."""
+        plugins = []
+        for mcp_id in mcp_ids:
+            if await self._ensure_mcp_loaded(mcp_id):
+                plugins.append(self._mcp_plugins[mcp_id])
+            else:
+                log.warning(
+                    "Agent '%s': MCP '%s' failed to load for override", agent_id, mcp_id
+                )
+        return plugins
+
     async def _get_or_create_agent(self, agent_id: str) -> ChatCompletionAgent | None:
         """Get an agent by ID, creating it lazily if needed."""
         # Already created?
@@ -787,6 +826,7 @@ class SKAgentManager:
         # Per-call overrides (#1748-E)
         model_override: str | None = None,
         system_prompt: str | None = None,
+        mcp_overrides: dict | None = None,
     ) -> dict[str, Any]:
         """Unified agent invocation with optional attachment routing.
 
@@ -798,6 +838,9 @@ class SKAgentManager:
           Creates a temporary agent with the override model + same plugins.
         - system_prompt: Inject a custom system instruction for this call.
           Prepended to the user prompt as <system-override>...</system-override>.
+        - mcp_overrides: Replace or modify the agent's MCP tools for this call.
+          Dict with optional keys: "replace" (list of mcp_ids to use instead),
+          "add" (list of mcp_ids to add), "remove" (list of mcp_ids to remove).
         """
         if not self.config.agents:
             return {"error": "No agents configured"}
@@ -841,34 +884,55 @@ class SKAgentManager:
                 )
 
             # Per-call model_override: create temporary agent with different model
+            # Also handles mcp_overrides (with or without model_override)
             effective_agent = agent
             effective_id = resolved_id
             model_used_override = None
-            if model_override:
-                override_model_cfg = self.config.get_model(model_override)
-                if not override_model_cfg or not override_model_cfg.enabled:
-                    return {"error": f"Model override '{model_override}' not found or disabled"}
-                override_service = self._services.get(override_model_cfg.id)
-                if not override_service:
-                    return {"error": f"Model override '{model_override}' service not available"}
 
-                # Build temporary agent: new kernel + override model + same plugins
+            # Determine if we need a temporary agent (model_override or mcp_overrides)
+            agent_cfg = next((a for a in self.config.agents if a.id == resolved_id), None)
+            needs_temp_agent = bool(model_override) or bool(mcp_overrides)
+
+            if needs_temp_agent:
+                # Resolve model
+                if model_override:
+                    override_model_cfg = self.config.get_model(model_override)
+                    if not override_model_cfg or not override_model_cfg.enabled:
+                        return {"error": f"Model override '{model_override}' not found or disabled"}
+                    override_service = self._services.get(override_model_cfg.id)
+                    if not override_service:
+                        return {"error": f"Model override '{model_override}' service not available"}
+                else:
+                    # Use agent's default model service
+                    default_model = self.config.get_model(agent_cfg.model) if agent_cfg else None
+                    override_service = self._services.get(default_model.id) if default_model else None
+                    if not override_service:
+                        return {"error": f"Default model service not available for agent '{resolved_id}'"}
+                    override_model_cfg = default_model
+
+                # Build temporary agent: new kernel + override model
                 temp_kernel = Kernel()
                 temp_kernel.add_service(override_service)
 
-                # Reuse the resolved agent's plugins
-                temp_plugins = []
-                agent_cfg = next((a for a in self.config.agents if a.id == resolved_id), None)
-                if agent_cfg:
-                    for mcp_id in agent_cfg.mcps:
-                        if mcp_id in self._mcp_plugins:
-                            temp_plugins.append(self._mcp_plugins[mcp_id])
-                    if agent_cfg.memory.enabled and HAS_MEMORY:
-                        mem_plugin = self._memory_stores.get(resolved_id)
-                        if mem_plugin:
-                            temp_plugins.append(mem_plugin)
+                # Resolve effective MCPs
+                base_mcps = list(agent_cfg.mcps) if agent_cfg else []
+                effective_mcps = self._resolve_effective_mcp_ids(base_mcps, mcp_overrides)
+                temp_plugins = await self._collect_mcp_plugins(effective_mcps, resolved_id)
 
-                temp_name = f"sk-agent-override-{resolved_id}-{model_override}"
+                # Add memory if enabled
+                if agent_cfg and agent_cfg.memory.enabled and HAS_MEMORY:
+                    mem_plugin = self._memory_stores.get(resolved_id)
+                    if mem_plugin:
+                        temp_plugins.append(mem_plugin)
+
+                # Sanitize name for SK ChatCompletionAgent (alphanumeric + _- only)
+                name_suffix = resolved_id
+                if model_override:
+                    name_suffix += f"-{model_override}"
+                if mcp_overrides:
+                    name_suffix += f"-mcp{len(effective_mcps)}"
+                safe_suffix = name_suffix.replace(".", "-")
+                temp_name = f"sk-agent-override-{safe_suffix}"
                 temp_instructions = (
                     system_prompt
                     or (agent_cfg.system_prompt if agent_cfg else None)
@@ -880,12 +944,13 @@ class SKAgentManager:
                     instructions=temp_instructions,
                     plugins=temp_plugins,
                 )
-                effective_id = f"{resolved_id}[{model_override}]"
+                effective_id = f"{resolved_id}[{model_override}]" if model_override else resolved_id
                 model_used_override = override_model_cfg.id
                 log.info(
-                    "Model override: agent %s using %s instead of default",
+                    "Agent override: %s (model=%s, mcps=%s)",
                     resolved_id,
-                    model_override,
+                    model_override or agent_cfg.model if agent_cfg else "unknown",
+                    effective_mcps,
                 )
                 # system_prompt already baked into temp_instructions, don't double-inject
                 if system_prompt:
@@ -1573,6 +1638,7 @@ async def call_agent(
     timeout: int = 120,
     model_override: str = "",
     system_prompt: str = "",
+    mcp_overrides: str = "",
 ) -> str:
     """Send a prompt to an AI agent.
 
@@ -1590,6 +1656,9 @@ async def call_agent(
         timeout: Max seconds to wait for response (default 120, 0 = no limit).
         model_override: Use a different model for this call (model ID from config).
         system_prompt: Inject custom system instructions for this call.
+        mcp_overrides: JSON string to modify agent's MCP tools for this call.
+            Format: {"add": ["mcp_id"], "remove": ["mcp_id"]} for delta,
+            or {"replace": ["mcp_id1", "mcp_id2"]} for full replacement.
 
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
@@ -1624,6 +1693,18 @@ async def call_agent(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
 
+    # Parse mcp_overrides
+    parsed_mcp_overrides = None
+    if mcp_overrides:
+        try:
+            parsed = json.loads(mcp_overrides)
+            if isinstance(parsed, dict):
+                parsed_mcp_overrides = parsed
+            else:
+                return json.dumps({"error": "mcp_overrides must be a JSON object"}, ensure_ascii=False)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid mcp_overrides JSON"}, ensure_ascii=False)
+
     result = await manager.call_agent(
         prompt=prompt,
         agent_id=agent if agent else None,
@@ -1634,6 +1715,7 @@ async def call_agent(
         timeout=timeout if timeout > 0 else None,
         model_override=model_override if model_override else None,
         system_prompt=system_prompt if system_prompt else None,
+        mcp_overrides=parsed_mcp_overrides,
     )
     return json.dumps(result, ensure_ascii=False)
 
