@@ -60,8 +60,20 @@ const TOOL_TIMEOUTS: Record<string, number> = {
     roosync_search: 180_000,        // 3 min
     conversation_browser: 180_000,  // 3 min (can scan large dirs)
     export_data: 180_000,           // 3 min (large exports)
-    // Dashboard operations with GDrive can be slow
-    roosync_dashboard: 60_000,      // 1 min
+    // roosync_dashboard append/write/condense runs condensation: TWO LLM calls
+    // in parallel (qwen3.6-35b reasoning) — generateLLMSummary over the archived
+    // messages (~2KB out) AND generateStatusUpdate, which re-ingests the previous
+    // status (the project's long-term memory, ~18KB) + ALL messages and evolves
+    // it (~18KB out). The status call is the bottleneck: wall-time of 712s has
+    // been observed (490s for the status leg alone). The prior 60s cap (#453),
+    // then 600s, both cancelled legitimate condensations, write-blocking the
+    // fleet's main coord channel (regression — dashboards worked before #453).
+    // Each LLM call has its own 1800s internal timeout (see dashboard.ts), so we
+    // align the MCP wrapper to 1800s: the wrapper must never be tighter than the
+    // operation's own timeout + circuit-breaker (#1792), which are the real
+    // hang-protection. The status section size is bounded separately by its own
+    // targeted condensation (condenseTextIfTooLarge).
+    roosync_dashboard: 1_800_000,   // 30 min (parallel LLM condensation; matches internal per-call timeout)
     roosync_compare_config: 60_000, // 1 min
     roosync_inventory: 60_000,      // 1 min
 };

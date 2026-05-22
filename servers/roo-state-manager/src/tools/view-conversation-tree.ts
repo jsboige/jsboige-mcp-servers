@@ -117,6 +117,37 @@ function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, wo
      });
 }
 /**
+ * Graceful degradation when task files are not available locally.
+ * Shows skeleton cache metadata with guidance on how to access full content.
+ */
+function formatSkeletonOnlyResponse(taskId: string, skeleton: ConversationSkeleton): CallToolResult {
+    const meta = skeleton.metadata;
+    const lines = [
+        `⚠️ Task '${taskId}' — Skeleton Only (Files Not Available Locally)`,
+        ``,
+        `The task exists in the skeleton cache but its files were not found on this machine.`,
+        `This is expected for cross-machine tasks or tasks whose files have been deleted.`,
+        ``,
+        `Metadata from skeleton cache:`,
+        `  Title:         ${meta.title || '(unknown)'}`,
+        `  Messages:      ${meta.messageCount} (content unavailable locally)`,
+        `  Actions:       ${meta.actionCount}`,
+        `  Total size:    ${meta.totalSize ? `${meta.totalSize} bytes` : '(unknown)'}`,
+        `  Last activity: ${meta.lastActivity || '(unknown)'}`,
+        `  Created:       ${meta.createdAt || '(unknown)'}`,
+        `  Workspace:     ${meta.workspace || '(unknown)'}`,
+        `  Machine:       ${meta.machineId || '(unknown)'}`,
+        `  Source:        ${meta.source || 'roo'}`,
+        ...(meta.parentTaskId ? [`  Parent task:   ${meta.parentTaskId}`] : []),
+        ``,
+        `To view full conversation content:`,
+        `  • Use this tool on the machine where the task was originally created`,
+        `  • Use conversation_browser(action: "list", includeArchives: true) to find GDrive archive copies`,
+    ];
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+}
+
+/**
  * Logique principale pour view_conversation_tree (version asynchrone)
  */
 async function handleViewConversationTreeExecutionAsync(
@@ -313,13 +344,8 @@ async function handleViewConversationTreeExecutionAsync(
             locationsChecked.push(...claudeLocations.map(loc => loc.projectPath));
 
             if (!claudeProjectPath) {
-                throw new GenericError(
-                    `Claude task '${task_id}' has ${mainTask.metadata.messageCount} messages but no matching Claude project directory was found. ` +
-                    `Searched basename '${projectBasename}' in ${locationsChecked.length} location(s). ` +
-                    `The Claude session may have been deleted or moved.`,
-                    GenericErrorCode.INVALID_ARGUMENT,
-                    { taskId: task_id, projectBasename, locationsChecked }
-                );
+                console.warn(`[view] Claude task '${task_id}' project dir not found (${locationsChecked.length} locations checked) — showing skeleton only`);
+                return formatSkeletonOnlyResponse(task_id, mainTask);
             }
 
             const fullSkeleton = await ClaudeStorageDetector.analyzeConversation(task_id, claudeProjectPath);
@@ -378,14 +404,9 @@ async function handleViewConversationTreeExecutionAsync(
                     );
                 }
             } else {
-                // Task path not found in any storage location
-                throw new GenericError(
-                    `Task '${task_id}' has ${mainTask.metadata.messageCount} messages but the task directory was not found in any storage location. ` +
-                    `Checked ${locationsChecked.length} location(s): ${storageLocations.slice(0, 3).join(', ')}${storageLocations.length > 3 ? '...' : ''}. ` +
-                    `The task may have been deleted or the storage locations may be misconfigured.`,
-                    GenericErrorCode.INVALID_ARGUMENT,
-                    { taskId: task_id, messageCount: mainTask.metadata.messageCount, locationsChecked, storageLocations }
-                );
+                // Task path not found — graceful degradation instead of hard error
+                console.warn(`[view] Task '${task_id}' directory not found in ${storageLocations.length} location(s) — showing skeleton only`);
+                return formatSkeletonOnlyResponse(task_id, mainTask);
             }
         }
     }

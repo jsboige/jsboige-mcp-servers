@@ -83,19 +83,31 @@ function setCachedQueryEmbedding(query: string, embedding: number[]): void {
 
 /**
  * #249/#2167: Retry wrapper with exponential backoff for transient network/timeout errors.
- * Retries on 5xx, abort, timeout. Does NOT retry on 4xx or validation errors.
+ * Retries on 5xx, abort, timeout, and resource exhaustion (EMFILE).
+ * Does NOT retry on 4xx or validation errors.
  */
 async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS): Promise<T> {
     try {
         return await fn();
     } catch (error) {
         if (retries <= 0) throw error;
-        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error);
+        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error) || isResourceExhausted(error);
         if (!isRetryable) throw error;
-        console.warn(`[WARN] #249: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
+        console.warn(`[WARN] #249/#2300: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
         return withRetry(fn, retries - 1, backoffMs * 2);
     }
+}
+
+/**
+ * #2300: Check if an error is resource exhaustion (EMFILE, ENOMEM, etc.) — eligible for retry.
+ */
+function isResourceExhausted(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    const code = ((error as any)?.code || '').toUpperCase();
+    return code === 'EMFILE' || code === 'ENOMEM' || code === 'ENOSPC' ||
+        msg.includes('too many open files') || msg.includes('emfile');
 }
 
 /**

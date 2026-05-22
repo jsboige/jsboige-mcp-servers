@@ -394,8 +394,8 @@ async function handleConversationXml(
         return tasks;
     };
 
-    const allTasks = collectTasks(conversationId!);
-    const xmlContent = (xmlExporterService as any).generateConversationXml(allTasks, {
+    const children = collectTasks(conversationId!).slice(1);
+    const xmlContent = xmlExporterService.generateConversationXml(rootSkeleton, children, {
         includeContent,
         prettyPrint
     });

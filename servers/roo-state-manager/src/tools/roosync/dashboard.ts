@@ -691,7 +691,7 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  *                            truncation without LLM (keep last N, template summary)
  */
 export interface CondenseAttemptInfo {
-  phase: 'preemptive' | 'reactive' | 'manual';
+  phase: 'preemptive' | 'reactive' | 'manual' | 'post-append';
   outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated';
   elapsedMs: number;
   archivedMessageCount: number;
@@ -1614,6 +1614,8 @@ export interface DashboardResult {
     reactiveCondenseMs: number;
     writeMs: number;
   };
+  /** Advisory warning (#2306). Non-blocking hint for agents about suboptimal usage patterns. */
+  warning?: string;
 }
 
 /**
@@ -1973,6 +1975,11 @@ async function handleRead(
     messageCount: dashboard.intercom.messages.length
   };
 
+  // #2306: Warn when reading only the status section — it may be stale
+  if (readSection === 'status') {
+    jsonResult.warning = 'Status section may be stale — use section: "all" or "intercom" for latest messages.';
+  }
+
   // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
   if (args.format !== 'json') {
     jsonResult.markdownContent = buildMarkdownOutput(dashboard, readSection, data.intercom?.messages);
@@ -2074,40 +2081,11 @@ async function handleAppend(
     dashboard = createEmptyDashboard(args.type!, key, author);
   }
 
-  // #1497: Preemptive condensation at 92% utilization
-  // Runs BEFORE the new message is appended, so condense operates on the existing
-  // messages (current state) rather than waiting for the post-append size check
-  // to fire at 100%. Prevents client-side timeout when dashboard is near-saturation.
-  //
-  // Concurrency contract: this function is NOT serialized per-key. Concurrent
-  // appends to the same dashboard that both cross the 92% threshold will each
-  // enter condenseIntercom, and the writeDashboardFile at the end uses
-  // last-writer-wins semantics (same as the pre-existing reactive path). The
-  // #1497 change does not introduce a new race beyond what already exists in
-  // the reactive condense at 100%. If strict serialization is needed, wrap this
-  // handler in a per-key mutex (see future issue if observed in production).
-  // NOTE: `dashboard` is reassigned below — subsequent code must use the
-  // post-condense binding.
-  let preemptivelyCondensed = false;
-  let preemptivelyArchivedCount = 0;
+  // Append-first architecture: the message is persisted to disk BEFORE any
+  // condensation attempt. Condensation (LLM calls that can take minutes) is
+  // best-effort after the write. This guarantees no message is lost even if
+  // condensation times out or the LLM is unavailable.
   const condenseDiagnostics: CondenseAttemptInfo[] = [];
-  const preAppendSize = estimateDashboardSize(dashboard);
-  if (preAppendSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES && dashboard.intercom.messages.length > CONDENSE_KEEP) {
-    logger.info('Preemptive condensation triggered (#1497)', {
-      key,
-      preAppendSize: `${Math.round(preAppendSize / 1024)}KB`,
-      preemptiveThreshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB (92% of ${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB)`,
-      messageCount: dashboard.intercom.messages.length
-    });
-    const beforePreemptive = dashboard.intercom.messages.length;
-    const preemptiveDiag = newDiagnostic('preemptive');
-    const tPre = Date.now();
-    dashboard = await condenseIntercom(key, dashboard, CONDENSE_KEEP, preemptiveDiag);
-    preemptiveCondenseMs = Date.now() - tPre;
-    condenseDiagnostics.push(preemptiveDiag);
-    preemptivelyArchivedCount = beforePreemptive - dashboard.intercom.messages.length;
-    preemptivelyCondensed = preemptivelyArchivedCount > 0;
-  }
 
   // Use provided messageId or generate a new one
   // Check in order:
@@ -2186,41 +2164,60 @@ async function handleAppend(
     }
   };
 
-  // Auto-condensation based on file size (50KB threshold)
-  // Estimate the file size by serializing the dashboard content
-  // NOTE (#1497): preemptive condense above should normally keep us below this
-  // threshold. This remains as a safety net for edge cases (very large single
-  // messages, pre-condense skipped because below message count threshold).
-  let condensed = preemptivelyCondensed;
-  let archivedCount = preemptivelyArchivedCount;
+  // === WRITE-FIRST: persist message to disk immediately ===
+  // The message is guaranteed to be on disk before any condensation attempt.
+  // If condensation below fails or times out, the message is NOT lost.
+  let condensed = false;
+  let archivedCount = 0;
   let finalDashboard = updatedDashboard;
-  const estimatedSize = estimateDashboardSize(updatedDashboard);
-  if (estimatedSize > MAX_DASHBOARD_SIZE_BYTES && updatedDashboard.intercom.messages.length > CONDENSE_KEEP) {
-    logger.info('Auto-condensation déclenchée (taille)', {
-      key,
-      estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
-      threshold: `${Math.round(MAX_DASHBOARD_SIZE_BYTES / 1024)}KB`,
-      messageCount: updatedDashboard.intercom.messages.length
-    });
-    const beforeCount = updatedDashboard.intercom.messages.length;
-    const reactiveDiag = newDiagnostic('reactive');
-    const tReact = Date.now();
-    finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, reactiveDiag);
-    reactiveCondenseMs = Date.now() - tReact;
-    condenseDiagnostics.push(reactiveDiag);
-    const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
-    archivedCount += newlyArchived;
-    condensed = condensed || newlyArchived > 0;
-  }
 
   const tWrite = Date.now();
-  // #2121: Use incremental append when no condensation (avoids re-serializing all messages)
-  if (!condensed && finalDashboard === updatedDashboard) {
-    await appendDashboardIncremental(key, finalDashboard, newMessages.length);
-  } else {
-    await writeDashboardFile(key, finalDashboard);
-  }
+  await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
   writeMs = Date.now() - tWrite;
+
+  // === CONDENSE-AFTER: best-effort condensation ===
+  // Now that the message is safely persisted, attempt condensation if the
+  // dashboard exceeds the threshold. If condensation succeeds, it overwrites
+  // the file with the condensed version. If it fails, the incremental append
+  // above is the authoritative state — no message loss.
+  const estimatedSize = estimateDashboardSize(updatedDashboard);
+  const needsCondense = estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES
+    && updatedDashboard.intercom.messages.length > CONDENSE_KEEP;
+
+  if (needsCondense) {
+    logger.info('Post-append condensation triggered (append-first)', {
+      key,
+      estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
+      threshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB`,
+      messageCount: updatedDashboard.intercom.messages.length
+    });
+    try {
+      const beforeCount = updatedDashboard.intercom.messages.length;
+      const condenseDiag = newDiagnostic('post-append');
+      const tCondense = Date.now();
+      finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, condenseDiag);
+      preemptiveCondenseMs = Date.now() - tCondense;
+      condenseDiagnostics.push(condenseDiag);
+      const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
+      archivedCount = newlyArchived;
+      condensed = newlyArchived > 0;
+
+      // If condensation succeeded, overwrite the incremental append with the condensed version
+      if (condensed) {
+        await writeDashboardFile(key, finalDashboard);
+      }
+    } catch (condenseErr) {
+      // Condensation failed — message is already persisted, log and continue
+      logger.warn('Post-append condensation failed (message already persisted, no data loss)', {
+        key,
+        error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
+      });
+      const failedDiag = newDiagnostic('post-append');
+      failedDiag.outcome = 'llm-failed-injected';
+      failedDiag.elapsedMs = 0;
+      condenseDiagnostics.push(failedDiag);
+    }
+  }
 
   // Fire-and-forget: Send mention notifications if mentions were detected
   if (mentions.length > 0) {
@@ -2424,6 +2421,7 @@ async function handleCondense(
 
   const keepCount = args.keepMessages ?? CONDENSE_KEEP;
   const beforeCount = dashboard.intercom.messages.length;
+  const preSizes = buildSizes(dashboard);
 
   if (beforeCount <= keepCount) {
     return {
@@ -2472,6 +2470,11 @@ async function handleCondense(
     }
   }
 
+  // #2306: Advisory warning when utilization is below 80%
+  const lowUtilizationWarning = preSizes.utilizationPct < 80
+    ? `Dashboard utilization at ${preSizes.utilizationPct.toFixed(1)}% — auto-condensation triggers at 92%. Manual condense is usually unnecessary.`
+    : undefined;
+
   return {
     success: true,
     action: 'condense',
@@ -2483,6 +2486,7 @@ async function handleCondense(
     condensed: actuallyCondensed,
     archivedCount,
     condenseDiagnostic: [manualDiag],
+    warning: lowUtilizationWarning,
     message: actuallyCondensed
       ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
       : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)${failureDetail}`
