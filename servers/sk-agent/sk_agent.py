@@ -49,6 +49,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -150,6 +151,13 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 log = logging.getLogger("sk-agent")
+
+# SK ChatCompletionAgent name pattern: ^[0-9A-Za-z_-]+$
+_INVALID_NAME_CHARS = re.compile(r"[^0-9A-Za-z_-]")
+
+
+def _sanitize_agent_name(name: str) -> str:
+    return _INVALID_NAME_CHARS.sub("-", name)
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +589,7 @@ class SKAgentManager:
             log.info("GitHub plugin enabled for agent '%s' (repo=%s)", agent_id, gh_repo or "dynamic")
 
         # Create SK agent
-        safe_name = agent_id.replace(".", "-").replace(" ", "-")
+        safe_name = _sanitize_agent_name(agent_id)
         system_prompt = agent_cfg.system_prompt or self.config.system_prompt
 
         # Augment prompt with memory hint if memory is active
@@ -931,7 +939,7 @@ class SKAgentManager:
                     name_suffix += f"-{model_override}"
                 if mcp_overrides:
                     name_suffix += f"-mcp{len(effective_mcps)}"
-                safe_suffix = name_suffix.replace(".", "-")
+                safe_suffix = _sanitize_agent_name(name_suffix)
                 temp_name = f"sk-agent-override-{safe_suffix}"
                 temp_instructions = (
                     system_prompt

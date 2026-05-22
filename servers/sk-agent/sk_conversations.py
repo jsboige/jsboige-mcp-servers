@@ -30,6 +30,7 @@ from semantic_kernel.agents.strategies import (
 from semantic_kernel.contents import ChatMessageContent, AuthorRole
 
 from sk_agent_config import SKAgentConfig, AgentConfig, ConversationConfig
+from sk_agent import _sanitize_agent_name
 
 log = logging.getLogger("sk-agent.conversations")
 
@@ -346,7 +347,7 @@ class ConversationRunner:
             if existing_cfg and existing_cfg.model == model_id:
                 # Create new agent with same kernel but different instructions
                 kernel = existing_agent.kernel
-                safe_name = agent_cfg.id.replace(".", "-").replace(" ", "-")
+                safe_name = _sanitize_agent_name(agent_cfg.id)
                 return ChatCompletionAgent(
                     kernel=kernel,
                     name=f"sk-conv-{safe_name}",
@@ -357,7 +358,7 @@ class ConversationRunner:
         # Fallback: use the first available agent's kernel
         if self.sk_agents:
             first_agent = next(iter(self.sk_agents.values()))
-            safe_name = agent_cfg.id.replace(".", "-").replace(" ", "-")
+            safe_name = _sanitize_agent_name(agent_cfg.id)
             return ChatCompletionAgent(
                 kernel=first_agent.kernel,
                 name=f"sk-conv-{safe_name}",
