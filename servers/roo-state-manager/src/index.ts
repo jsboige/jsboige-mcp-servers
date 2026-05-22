@@ -10,6 +10,13 @@
  * 3. Create server + register handlers + connect transport ASAP
  * 4. Heavy imports (StateManager, Notifications, Background) load in background
  */
+
+// #2312: graceful-fs monkey-patch MUST be first — before any other import touches fs.
+// Queues open() calls instead of throwing EMFILE under FD pressure (Qdrant reindex burst).
+import gracefulFs from 'graceful-fs';
+import realFs from 'fs';
+gracefulFs.gracefulify(realFs);
+
 // #1668: Redirect console.log → stderr to keep stdout clean for MCP JSON-RPC.
 // 730+ console.log calls across 63 source files pollute stdout, breaking the
 // MCP stdio handshake (client expects only Content-Length framed JSON-RPC).
