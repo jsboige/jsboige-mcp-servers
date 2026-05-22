@@ -56,6 +56,22 @@ vi.mock('../../utils/roo-storage-detector.js', () => ({
 	}
 }));
 
+// Mock SkeletonCacheService (needed for includeArchives / Bug #3 / #1752)
+// Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
+const { mockGetCache, mockGetInstance } = vi.hoisted(() => {
+	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
+	return {
+		mockGetCache: cacheFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn }))
+	};
+});
+
+vi.mock('../../../services/skeleton-cache.service.js', () => ({
+	SkeletonCacheService: {
+		getInstance: mockGetInstance
+	}
+}));
+
 import * as fs from 'fs/promises';
 const mockedFs = vi.mocked(fs);
 
@@ -504,6 +520,125 @@ describe('list-conversations', () => {
       const parsed = _response.conversations ?? _response;
 
       // Should handle gracefully
+      expect(Array.isArray(parsed)).toBe(true);
+    });
+  });
+
+  // #1752 Bug #3 — includeArchives loads GDrive cross-machine archives (Tier 3)
+  describe('handler - includeArchives parameter (#1752 Bug #3)', () => {
+    beforeEach(() => {
+      // Re-wire after vi.restoreAllMocks() in afterEach may have cleared implementations.
+      mockGetCache.mockResolvedValue(new Map());
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache });
+    });
+
+    it('should not load archives when includeArchives is false (default)', async () => {
+      const result = await listConversationsTool.handler({ includeArchives: false }, new Map());
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      expect(parsed).toEqual([]);
+      expect(mockGetInstance).not.toHaveBeenCalled();
+    });
+
+    it('should include gdrive-archive skeletons when includeArchives is true', async () => {
+      const archiveSkeleton = {
+        taskId: 'archive-task-1',
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 5,
+          actionCount: 2,
+          totalSize: 500,
+          dataSource: 'gdrive-archive',
+          workspace: 'remote-machine:my-project'
+        }
+      };
+
+      mockGetCache.mockResolvedValue(new Map([['archive-task-1', archiveSkeleton]]));
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true },
+        new Map() // local cache is empty
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      expect(parsed.length).toBeGreaterThanOrEqual(1);
+      const found = parsed.find((c: any) => c.taskId === 'archive-task-1');
+      expect(found).toBeDefined();
+    });
+
+    it('should exclude gdrive-archive tasks already present in local cache', async () => {
+      const localSkeleton = {
+        taskId: 'shared-task',
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 8,
+          actionCount: 3,
+          totalSize: 800,
+          workspace: 'my-workspace'
+        }
+      };
+      const archiveSkeleton = {
+        taskId: 'shared-task', // same taskId as local
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 5,
+          actionCount: 2,
+          totalSize: 500,
+          dataSource: 'gdrive-archive',
+          workspace: 'remote-machine:my-project'
+        }
+      };
+
+      mockGetCache.mockResolvedValue(new Map([['shared-task', archiveSkeleton]]));
+
+      const localCache = new Map([['shared-task', localSkeleton]]);
+      const result = await listConversationsTool.handler({ includeArchives: true }, localCache);
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      // Should appear only once (from local cache, not duplicated from archive)
+      const matches = parsed.filter((c: any) => c.taskId === 'shared-task');
+      expect(matches).toHaveLength(1);
+    });
+
+    it('should skip non-gdrive-archive entries from SkeletonCacheService', async () => {
+      const localTierSkeleton = {
+        taskId: 'local-tier-task',
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 3,
+          actionCount: 1,
+          totalSize: 300,
+          dataSource: 'roo-local', // NOT gdrive-archive
+          workspace: 'my-workspace'
+        }
+      };
+
+      mockGetCache.mockResolvedValue(new Map([['local-tier-task', localTierSkeleton]]));
+
+      const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      // roo-local tasks should not be surfaced via the archive path
+      const found = parsed.find((c: any) => c.taskId === 'local-tier-task');
+      expect(found).toBeUndefined();
+    });
+
+    it('should continue gracefully when SkeletonCacheService throws', async () => {
+      mockGetCache.mockRejectedValue(new Error('GDrive unavailable'));
+
+      // Should not throw; just returns local results
+      const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
       expect(Array.isArray(parsed)).toBe(true);
     });
   });
