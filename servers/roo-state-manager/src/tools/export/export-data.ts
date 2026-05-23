@@ -314,6 +314,48 @@ function validateExportFilePath(filePath: string): void {
     }
 }
 
+function validateOptionFormatCompat(args: ExportDataArgs): string[] {
+    const warnings: string[] = [];
+    const { target, format, maxDepth, csvVariant, jsonVariant, truncationChars, startDate, endDate, includeContent, outputFormat } = args;
+
+    // maxDepth only applies to XML conversation and markdown
+    if (maxDepth != null && !(target === 'conversation' && (format === 'xml' || format === 'markdown'))) {
+        warnings.push(`maxDepth is only effective for target=conversation format=xml|markdown, not target=${target} format=${format}`);
+    }
+
+    // csvVariant only applies to CSV
+    if (csvVariant && format !== 'csv') {
+        warnings.push(`csvVariant is only effective for format=csv, not format=${format}`);
+    }
+
+    // jsonVariant only applies to JSON
+    if (jsonVariant && format !== 'json') {
+        warnings.push(`jsonVariant is only effective for format=json, not format=${format}`);
+    }
+
+    // truncationChars/startIndex/endIndex only apply to JSON/CSV
+    if ((truncationChars || args.startIndex || args.endIndex) && format !== 'json' && format !== 'csv') {
+        warnings.push(`truncationChars/startIndex/endIndex are only effective for format=json|csv, not format=${format}`);
+    }
+
+    // startDate/endDate only apply to XML project
+    if ((startDate || endDate) && !(target === 'project' && format === 'xml')) {
+        warnings.push(`startDate/endDate are only effective for target=project format=xml`);
+    }
+
+    // includeContent only applies to XML
+    if (includeContent && format !== 'xml') {
+        warnings.push(`includeContent is only effective for format=xml, not format=${format}`);
+    }
+
+    // outputFormat only applies to markdown
+    if (outputFormat && format !== 'markdown') {
+        warnings.push(`outputFormat is only effective for format=markdown, not format=${format}`);
+    }
+
+    return warnings;
+}
+
 /**
  * Handler pour export XML d'une tâche individuelle
  */
@@ -397,7 +439,8 @@ async function handleConversationXml(
     const children = collectTasks(conversationId!).slice(1);
     const xmlContent = xmlExporterService.generateConversationXml(rootSkeleton, children, {
         includeContent,
-        prettyPrint
+        prettyPrint,
+        ...(maxDepth != null ? { maxDepth } : {}),
     });
 
     if (filePath) {
@@ -676,36 +719,46 @@ export async function handleExportData(
         // Valider les paramètres requis
         validateRequiredParams(args);
 
+        // Collecter les avertissements sur les options ignorées
+        const warnings = validateOptionFormatCompat(args);
+
         // Router vers le handler approprié
         const { target, format } = args;
+        let result: CallToolResult;
 
         if (target === 'task') {
             if (format === 'xml') {
-                return await handleTaskXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+                result = await handleTaskXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+            } else if (format === 'debug') {
+                result = await handleTaskDebug(args);
+            } else {
+                result = { isError: true, content: [{ type: 'text', text: `Combinaison target='${target}' / format='${format}' non implémentée` }] };
             }
-            if (format === 'debug') {
-                return await handleTaskDebug(args);
-            }
-        }
-
-        if (target === 'conversation') {
+        } else if (target === 'conversation') {
             if (format === 'xml') {
-                return await handleConversationXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+                result = await handleConversationXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+            } else if (format === 'json') {
+                result = await handleConversationJson(args, getConversationSkeleton);
+            } else if (format === 'csv') {
+                result = await handleConversationCsv(args, getConversationSkeleton);
+            } else if (format === 'markdown') {
+                result = await handleConversationMarkdown(args, conversationCache, ensureSkeletonCacheIsFresh);
+            } else {
+                result = { isError: true, content: [{ type: 'text', text: `Combinaison target='${target}' / format='${format}' non implémentée` }] };
             }
-            if (format === 'json') {
-                return await handleConversationJson(args, getConversationSkeleton);
-            }
-            if (format === 'csv') {
-                return await handleConversationCsv(args, getConversationSkeleton);
-            }
-            if (format === 'markdown') {
-                return await handleConversationMarkdown(args, conversationCache, ensureSkeletonCacheIsFresh);
-            }
+        } else if (target === 'project' && format === 'xml') {
+            result = await handleProjectXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+        } else {
+            result = { isError: true, content: [{ type: 'text', text: `Combinaison target='${target}' / format='${format}' non implémentée` }] };
         }
 
-        if (target === 'project' && format === 'xml') {
-            return await handleProjectXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+        // Append warnings about ignored options
+        if (warnings.length > 0 && !result.isError) {
+            const warningText = '\n\n---\n**Warnings:**\n' + warnings.map(w => `- ${w}`).join('\n');
+            result.content[0] = { type: 'text', text: (result.content[0] as { text: string }).text + warningText };
         }
+
+        return result;
 
         // Cas non géré (ne devrait pas arriver si validation OK)
         return {
