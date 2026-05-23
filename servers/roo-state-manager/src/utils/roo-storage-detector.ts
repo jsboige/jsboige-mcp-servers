@@ -31,6 +31,7 @@ import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsi
 import { WorkspaceDetector } from './workspace-detector.js';
 
 export class RooStorageDetector {
+  private static readonly MAX_CONVERSATION_FILE_SIZE = 10 * 1024 * 1024; // 10MB — prevents OOM on traces >40MB
   private static readonly COMMON_ROO_PATHS = [
     // Chemins VSCode typiques
     path.join(os.homedir(), '.vscode', 'extensions'),
@@ -513,19 +514,30 @@ export class RooStorageDetector {
         // Previously ui_messages.json was read 3 times and api_conversation_history.json 2 times per task
         let preloadedUiContent: string | undefined = undefined;
         let preloadedApiContent: string | undefined = undefined;
+        const oversizedFiles: string[] = [];
         if (uiMessagesStats) {
-            try {
-                let raw = await fs.readFile(uiMessagesPath, 'utf-8');
-                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-                preloadedUiContent = raw;
-            } catch { /* will be handled by individual callers */ }
+            if (uiMessagesStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+                console.warn(`⚠️ [analyzeConversation] ${taskId}: ui_messages.json too large (${(uiMessagesStats.size / 1024 / 1024).toFixed(1)}MB > 10MB), skipping to prevent OOM`);
+                oversizedFiles.push(`ui_messages.json (${(uiMessagesStats.size / 1024 / 1024).toFixed(1)}MB)`);
+            } else {
+                try {
+                    let raw = await fs.readFile(uiMessagesPath, 'utf-8');
+                    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                    preloadedUiContent = raw;
+                } catch { /* will be handled by individual callers */ }
+            }
         }
         if (apiHistoryStats) {
-            try {
-                let raw = await fs.readFile(apiHistoryPath, 'utf-8');
-                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-                preloadedApiContent = raw;
-            } catch { /* will be handled by individual callers */ }
+            if (apiHistoryStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+                console.warn(`⚠️ [analyzeConversation] ${taskId}: api_conversation_history.json too large (${(apiHistoryStats.size / 1024 / 1024).toFixed(1)}MB > 10MB), skipping to prevent OOM`);
+                oversizedFiles.push(`api_conversation_history.json (${(apiHistoryStats.size / 1024 / 1024).toFixed(1)}MB)`);
+            } else {
+                try {
+                    let raw = await fs.readFile(apiHistoryPath, 'utf-8');
+                    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                    preloadedApiContent = raw;
+                } catch { /* will be handled by individual callers */ }
+            }
         }
 
         // 🚀 PRODUCTION : Logique de reconstruction hiérarchique en deux passes
@@ -668,6 +680,7 @@ export class RooStorageDetector {
                 totalSize,
                 workspace: extractedWorkspace || rawMetadata.workspace,
                 dataSource: taskPath, // ✅ CRITIQUE: Chemin pour que HierarchyEngine trouve ui_messages.json
+                ...(oversizedFiles.length > 0 ? { oversizedFiles } : {}),
             },
             childTaskInstructionPrefixes: childTaskInstructionPrefixes.length > 0 ? childTaskInstructionPrefixes : undefined,
             // 🚀 NOUVEAUX CHAMPS : Ajout des fonctionnalités demandées

@@ -26,6 +26,7 @@ import {
  * Détecteur pour les conversations Claude Code
  */
 export class ClaudeStorageDetector {
+    private static readonly MAX_CONVERSATION_FILE_SIZE = 10 * 1024 * 1024; // 10MB — prevents OOM on traces >40MB
     // Nom du répertoire de stockage Claude Code
     private static readonly CLAUDE_PROJECTS_DIR = 'projects';
     private static readonly CLAUDE_CONFIG_DIR = '.claude';
@@ -188,11 +189,18 @@ export class ClaudeStorageDetector {
             // Parser tous les fichiers JSONL
             const allEntries: ClaudeJsonlEntry[] = [];
             let totalSize = 0;
+            const oversizedFiles: string[] = [];
 
             for (const file of jsonlFiles) {
                 const filePath = path.join(projectPath, file);
                 const fileStats = await fs.stat(filePath);
                 totalSize += fileStats.size;
+
+                if (fileStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+                    console.warn(`⚠️ [ClaudeStorageDetector] File too large, skipping: ${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
+                    oversizedFiles.push(`${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
+                    continue;
+                }
 
                 const entries = await this.parseJsonlFile(filePath);
                 allEntries.push(...entries);
@@ -221,6 +229,7 @@ export class ClaudeStorageDetector {
                     ...metadata,
                     workspace,
                     machineId: os.hostname(), // Ajouter l'identifiant de la machine
+                    ...(oversizedFiles.length > 0 ? { oversizedFiles } : {}),
                 },
             };
         } catch (error) {
@@ -236,6 +245,12 @@ export class ClaudeStorageDetector {
         const entries: ClaudeJsonlEntry[] = [];
 
         try {
+            const fileStats = await fs.stat(filePath);
+            if (fileStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+                console.warn(`⚠️ [ClaudeStorageDetector] parseJsonlFile: File too large, skipping: ${filePath} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
+                return entries;
+            }
+
             const content = await fs.readFile(filePath, 'utf-8');
             const lines = content.split('\n');
 

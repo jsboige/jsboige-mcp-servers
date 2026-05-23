@@ -45,6 +45,7 @@ export interface SkeletonMetadata {
     messageCount: number;
     actionCount: number;
     totalSize: number;
+    oversizedFiles?: string[];
     workspace?: string;
     machineId?: string;
     qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
