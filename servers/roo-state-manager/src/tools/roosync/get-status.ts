@@ -4,8 +4,14 @@
  * Retourne un snapshot ultra-compact de l'état RooSync avec flags actionnables.
  * Un seul appel suffit pour décider des prochaines actions.
  *
+ * #2318: Machine presence is now purely dashboard-derived. HeartbeatService
+ * provides ONLY self-activity (local process) and scheduler metrics (#1442).
+ * Cross-machine presence comes exclusively from dashboard message timestamps
+ * via crossCheckWithDashboard() — immune to GDrive propagation latency.
+ *
  * @module tools/roosync/get-status
- * @version 4.0.0 — #1855 HUD statusline: detail="full" adds active claims & pipeline stages
+ * @version 5.0.0 — #2318: dashboard-only presence, no heartbeat blind seed
+ * @see #2318, ADR 008 Phase 4
  */
 
 import { z } from 'zod';
@@ -261,18 +267,10 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     const now = new Date().toISOString();
 
     // Collecte parallèle des données
-    const [dashboard, heartbeatState, inboxStats, pendingDecisions] = await Promise.all([
+    // #2318: HeartbeatService is no longer used for cross-machine presence.
+    // Machine lists are derived purely from dashboard message timestamps.
+    const [dashboard, inboxStats, pendingDecisions] = await Promise.all([
       service.loadDashboard().catch(() => null),
-      (async () => {
-        try {
-          const heartbeatService = service.getHeartbeatService();
-          await heartbeatService.checkHeartbeats();
-          return heartbeatService.getState();
-        } catch (err) {
-          logger.warn('Heartbeat check failed', { error: String(err) });
-          return { onlineMachines: [] as string[], unknownMachines: [] as string[], idleMachines: [] as string[] };
-        }
-      })(),
       (async () => {
         try {
           const config = service.getConfig();
@@ -292,7 +290,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
         .catch(() => 0)
     ]);
 
-    // Dashboard machines data
+    // Dashboard machines data (legacy format, used for total count and flags)
     const machines = dashboard?.machinesArray ||
       (dashboard?.machines
         ? Object.entries(dashboard.machines).map(([id, info]) => ({
@@ -305,6 +303,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     // Dashboard activity (<24h) — count actual intercom dashboard files (#1409 fix)
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
     let activeDashboards = 0;
+    const dashboardContents: string[] = [];
     try {
       const dashboardsDir = join(getSharedStatePath(), 'dashboards');
       const files = readdirSync(dashboardsDir);
@@ -315,57 +314,60 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           if (stat.mtimeMs > oneDayAgo) {
             activeDashboards++;
           }
+          try {
+            dashboardContents.push(readFileSync(filePath, 'utf-8'));
+          } catch (err) {
+            logger.debug(`Dashboard ${file} unreadable`, { error: String(err) });
+          }
         }
       }
     } catch (err) {
       logger.debug('Dashboards dir not accessible', { error: String(err) });
     }
 
-    // #1365: Filter out orphan test entries (test-machine, persistent-machine, etc.)
-    // Only keep machines matching the known pattern: myia-*
-    let filteredOnlineMachines = (heartbeatState?.onlineMachines ?? []).filter(isKnownMachine);
-    let filteredUnknownMachines = (heartbeatState?.unknownMachines ?? []).filter(isKnownMachine);
-    let filteredIdleMachines = (heartbeatState?.idleMachines ?? []).filter(isKnownMachine);
-    const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
-
-    // #1953, #2016: Cross-check heartbeat-derived status against dashboard activity.
-    // Dashboard message timestamps are embedded in file content (immune to GDrive
-    // propagation latency on file mod time), preventing false UNKNOWN detection.
-    // #2016: Aggregate ALL dashboards (workspace-*, machine-*, global) so a machine
-    // active on any dashboard counts as ONLINE — not only roo-extensions workspace.
+    // #2318: Machine presence is now PURELY dashboard-derived.
+    // Extract activity from ALL dashboard contents, then classify machines.
+    // No heartbeat blind seed — dashboard timestamps are the sole source of truth.
+    let filteredOnlineMachines: string[] = [];
+    let filteredUnknownMachines: string[] = [];
+    let filteredIdleMachines: string[] = [];
     let dashboardOverrides: string[] = [];
+
     try {
-      const dashboardsDir = join(getSharedStatePath(), 'dashboards');
-      const dashboardContents: string[] = [];
-      for (const file of readdirSync(dashboardsDir)) {
-        if (!file.endsWith('.md') || file.endsWith('.tmp')) continue;
-        try {
-          dashboardContents.push(readFileSync(join(dashboardsDir, file), 'utf-8'));
-        } catch (err) {
-          logger.debug(`Dashboard ${file} unreadable`, { error: String(err) });
+      const { extractMachineActivity, isRecentlyActive } = await import('../../utils/dashboard-activity.js');
+      const activity = extractMachineActivity(dashboardContents);
+
+      // Classify machines based purely on dashboard activity
+      for (const [machineId, lastSeen] of activity.entries()) {
+        if (!isKnownMachine(machineId)) continue;
+        if (isRecentlyActive(lastSeen)) {
+          filteredOnlineMachines.push(machineId);
+        }
+        // Machines with no activity in threshold are not added to any list
+        // (they simply don't appear — no false "unknown" from heartbeat blind spots)
+      }
+
+      // Known machine IDs from registry that weren't seen on any dashboard
+      const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
+      const seenSet = new Set(filteredOnlineMachines.map(m => m.toLowerCase()));
+      for (const mid of registryMachineIds) {
+        if (!seenSet.has(mid.toLowerCase())) {
+          filteredUnknownMachines.push(mid);
         }
       }
-      const { crossCheckWithDashboard } = await import('../../utils/dashboard-activity.js');
-      const crossChecked = crossCheckWithDashboard(
-        { onlineMachines: filteredOnlineMachines, unknownMachines: filteredUnknownMachines, idleMachines: filteredIdleMachines },
-        dashboardContents
-      );
-      filteredOnlineMachines = crossChecked.onlineMachines;
-      filteredUnknownMachines = crossChecked.unknownMachines;
-      filteredIdleMachines = crossChecked.idleMachines;
-      dashboardOverrides = crossChecked.overrides;
     } catch (err) {
-      logger.debug('Dashboard cross-check skipped', { error: String(err) });
+      logger.debug('Dashboard activity extraction skipped', { error: String(err) });
+      // Fallback: use registry machines as unknown if dashboard parsing fails
+      const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
+      filteredUnknownMachines = registryMachineIds;
     }
 
-    // #1409: Use machine registry as authoritative source for total count
-    // Filter out orphan test entries (test-machine, ci-test-machine, etc.)
-    const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
-    const heartbeatTotal = filteredOnlineMachines.length + filteredUnknownMachines.length;
+    const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
+
+    // #2318: Total machines = known registry count (authoritative source)
     const totalMachines = Math.max(
-      registryMachineIds.length,
-      filteredDashboardMachines.length,
-      heartbeatTotal
+      service.getKnownMachineIds().filter(isKnownMachine).length,
+      filteredDashboardMachines.length
     );
 
     // Build flags

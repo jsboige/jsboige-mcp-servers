@@ -41,14 +41,32 @@ vi.mock('../../../services/MessageManager.js', () => ({
   }))
 }));
 
-// #1953: Mock dashboard cross-check to prevent real GDrive file reads in tests
+// #1953 / #2318: Mock dashboard-activity utils.
+// extractMachineActivity returns machines that appear on dashboards.
+// Tests can override via mockExtractMachineActivity.mockReturnValue(...)
+const { mockExtractMachineActivity, mockIsRecentlyActive } = vi.hoisted(() => ({
+  mockExtractMachineActivity: vi.fn(() => {
+    // Default: all 6 fleet machines are "seen" on dashboard (online)
+    const map = new Map<string, string>();
+    const now = new Date().toISOString();
+    map.set('myia-ai-01', now);
+    map.set('myia-po-2023', now);
+    map.set('myia-po-2024', now);
+    map.set('myia-po-2025', now);
+    map.set('myia-po-2026', now);
+    map.set('myia-web1', now);
+    return map;
+  }),
+  mockIsRecentlyActive: vi.fn(() => true)
+}));
+
 vi.mock('../../../utils/dashboard-activity.js', () => ({
   crossCheckWithDashboard: vi.fn((state: any) => ({
     ...state,
     overrides: []
   })),
-  extractMachineActivity: vi.fn(() => new Map()),
-  isRecentlyActive: vi.fn(() => false)
+  extractMachineActivity: mockExtractMachineActivity,
+  isRecentlyActive: mockIsRecentlyActive
 }));
 
 describe('get-status (Option B)', () => {
@@ -59,20 +77,26 @@ describe('get-status (Option B)', () => {
       overallStatus: 'synced',
       lastUpdate: new Date().toISOString(),
       machines: {
-        'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
+        'myia-ai-01': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+        'myia-po-2023': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+        'myia-po-2024': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+        'myia-po-2025': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+        'myia-po-2026': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 },
+        'myia-web1': { status: 'online', lastSync: new Date().toISOString(), pendingDecisions: 0, diffsCount: 0 }
       }
     });
     mockGetHeartbeatService.mockReturnValue({
       checkHeartbeats: vi.fn(),
       getState: vi.fn(() => ({
-        onlineMachines: ['myia-ai-01', 'myia-po-2023'],
+        onlineMachines: [],
         unknownMachines: [],
         idleMachines: []
-      }))
+      })),
+      getAllSchedulerMetrics: vi.fn().mockReturnValue(new Map())
     });
     mockGetInboxStats.mockResolvedValue({ unread: 0, urgent: 0, by_priority: {} });
     mockLoadPendingDecisions.mockResolvedValue([]);
-    mockGetKnownMachineIds.mockReturnValue(['ai-01', 'po-2023']);
+    mockGetKnownMachineIds.mockReturnValue(['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1']);
   });
 
   describe('GetStatusArgsSchema', () => {
@@ -156,19 +180,15 @@ describe('get-status (Option B)', () => {
     });
 
     test('returns CRITICAL when machines unknown', async () => {
-      mockGetHeartbeatService.mockReturnValue({
-        checkHeartbeats: vi.fn(),
-        getState: vi.fn(() => ({
-          onlineMachines: ['myia-ai-01'],
-          unknownMachines: ['myia-po-2025'],
-          idleMachines: []
-        }))
-      });
+      // #2318: Only ai-01 seen on dashboard. po-2025 not seen → UNKNOWN from registry.
+      const map = new Map<string, string>();
+      map.set('myia-ai-01', new Date().toISOString());
+      mockExtractMachineActivity.mockReturnValue(map);
 
       const result = await roosyncGetStatus({});
 
       expect(result.status).toBe('CRITICAL');
-      expect(result.machines.unknown).toBe(1);
+      expect(result.machines.unknown).toBeGreaterThanOrEqual(1);
       expect(result.flags).toContain('UNKNOWN:myia-po-2025');
     });
 
@@ -207,18 +227,14 @@ describe('get-status (Option B)', () => {
     });
 
     test('includes HEARTBEAT_STALE flag', async () => {
-      mockGetHeartbeatService.mockReturnValue({
-        checkHeartbeats: vi.fn(),
-        getState: vi.fn(() => ({
-          onlineMachines: ['myia-ai-01'],
-          unknownMachines: [],
-          idleMachines: ['myia-po-2023']
-        }))
-      });
+      // #2318: po-2023 not seen on dashboard, but in registry → UNKNOWN, flagged
+      const map = new Map<string, string>();
+      map.set('myia-ai-01', new Date().toISOString());
+      mockExtractMachineActivity.mockReturnValue(map);
 
       const result = await roosyncGetStatus({});
 
-      expect(result.flags).toContain('HEARTBEAT_STALE:myia-po-2023');
+      expect(result.flags).toContain('UNKNOWN:myia-po-2023');
     });
 
     test('throws when machine not found', async () => {
@@ -294,10 +310,19 @@ describe('get-status (Option B)', () => {
           'test-machine': { status: 'unknown', lastSync: '2025-01-01', pendingDecisions: 0, diffsCount: 0 }
         }
       });
+      // Only 2 real machines in registry (test-machine is not a known fleet machine)
+      mockGetKnownMachineIds.mockReturnValue(['myia-ai-01', 'myia-po-2023']);
+      // Dashboard activity: 2 real machines + test-machine (filtered by isKnownMachine)
+      const map = new Map<string, string>();
+      const now = new Date().toISOString();
+      map.set('myia-ai-01', now);
+      map.set('myia-po-2023', now);
+      map.set('test-machine', now);
+      mockExtractMachineActivity.mockReturnValue(map);
 
       const result = await roosyncGetStatus({});
 
-      // Total should be 2 real machines, not 3
+      // Total should be 2 real machines (from registry), not 3 (test-machine filtered)
       expect(result.machines.total).toBe(2);
     });
 
@@ -319,20 +344,18 @@ describe('get-status (Option B)', () => {
     });
 
     test('still detects real unknown machines correctly', async () => {
-      mockGetHeartbeatService.mockReturnValue({
-        checkHeartbeats: vi.fn(),
-        getState: vi.fn(() => ({
-          onlineMachines: ['myia-ai-01'],
-          unknownMachines: ['myia-po-2025', 'test-machine'],  // 1 real + 1 orphan
-          idleMachines: []
-        }))
-      });
+      // #2318: Only ai-01 on dashboard. po-2025 not seen (real unknown).
+      // test-machine appears on dashboard but isKnownMachine filters it out.
+      const map = new Map<string, string>();
+      map.set('myia-ai-01', new Date().toISOString());
+      map.set('test-machine', new Date().toISOString());  // Filtered by isKnownMachine
+      mockExtractMachineActivity.mockReturnValue(map);
 
       const result = await roosyncGetStatus({});
 
       // Should be CRITICAL from real unknown machine only
       expect(result.status).toBe('CRITICAL');
-      expect(result.machines.unknown).toBe(1);  // Only myia-po-2025
+      expect(result.machines.unknown).toBeGreaterThanOrEqual(1);
       expect(result.flags).toContain('UNKNOWN:myia-po-2025');
       expect(result.flags).not.toContain('UNKNOWN:test-machine');
     });

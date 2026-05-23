@@ -69,22 +69,30 @@ vi.mock('fs', async (importOriginal) => {
 });
 
 function setupMocks(overrides: Record<string, any> = {}) {
-    const heartbeatState = overrides.heartbeatState || {
-        onlineMachines: ['myia-ai-01'],
-        unknownMachines: [],
-        idleMachines: [],
-    };
+    // #2318: Machine presence is now dashboard-derived, not heartbeat-derived.
+    // Tests provide dashboard file contents with embedded timestamps.
+    // Default: all 6 fleet machines online on dashboard.
+    const dashboardOnlineMachines = overrides.dashboardOnlineMachines || ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
     const inboxStats = overrides.inboxStats || { unread: 0, urgent: 0, by_priority: {} };
     const config = overrides.config || { machineId: 'myia-ai-01' };
 
+    // Build dashboard content with recent timestamps for online machines
+    const now = new Date();
+    const dashboardContent = buildDashboardContent(dashboardOnlineMachines, now);
+
     const mockService = {
         loadDashboard: vi.fn().mockResolvedValue({
-            machines: { 'myia-ai-01': { status: 'online', lastSync: new Date().toISOString() } },
-            machinesArray: [{ id: 'myia-ai-01', status: 'online', lastSync: new Date().toISOString() }],
+            machines: { 'myia-ai-01': { status: 'online', lastSync: now.toISOString() } },
+            machinesArray: [{ id: 'myia-ai-01', status: 'online', lastSync: now.toISOString() }],
         }),
         getHeartbeatService: vi.fn().mockReturnValue({
             checkHeartbeats: vi.fn().mockResolvedValue({}),
-            getState: vi.fn().mockReturnValue(heartbeatState),
+            getState: vi.fn().mockReturnValue({
+                onlineMachines: [],
+                unknownMachines: [],
+                idleMachines: [],
+            }),
+            getAllSchedulerMetrics: vi.fn().mockReturnValue(new Map()),
         }),
         getConfig: vi.fn().mockReturnValue(config),
         loadPendingDecisions: vi.fn().mockResolvedValue([]),
@@ -99,9 +107,14 @@ function setupMocks(overrides: Record<string, any> = {}) {
     mockGetMessageManager.mockReturnValue(mockMM);
 
     mockGetSharedStatePath.mockReturnValue('/tmp/shared');
-    mockReaddirSync.mockReturnValue([]);
+    // Mock readdirSync to return dashboard files
+    mockReaddirSync.mockReturnValue(['workspace-roo-extensions.md']);
+    // Mock statSync to report files as recently modified
+    mockStatSync.mockReturnValue({ mtimeMs: Date.now() });
+    // Mock readFileSync to return dashboard content with machine timestamps
+    mockReadFileSync.mockReturnValue(dashboardContent);
     mockGetToolUsageSnapshot.mockReturnValue({
-        sessionStartAt: new Date().toISOString(),
+        sessionStartAt: now.toISOString(),
         totalCalls: 10,
         uniqueTools: 5,
         topTools: [],
@@ -110,6 +123,20 @@ function setupMocks(overrides: Record<string, any> = {}) {
     });
 
     return mockService;
+}
+
+/**
+ * Build dashboard markdown with intercom messages for specified machines.
+ * Each machine gets a recent timestamp (< 8h threshold).
+ */
+function buildDashboardContent(machines: string[], timestamp: Date): string {
+    const lines = ['# Dashboard\n', '## Status\nActive\n', '## Intercom\n'];
+    for (const machine of machines) {
+        lines.push(`### [${timestamp.toISOString()}] ${machine}|roo-extensions`);
+        lines.push('[INFO] Test message');
+        lines.push('---');
+    }
+    return lines.join('\n');
 }
 
 describe('roosync_get_status', () => {
@@ -170,13 +197,10 @@ describe('roosync_get_status', () => {
             expect(result.status).toBe('HEALTHY');
         });
 
-        it('returns CRITICAL when machines offline', async () => {
+        it('returns CRITICAL when machines offline (not seen on dashboard)', async () => {
+            // #2318: Only ai-01 is online (on dashboard). web1 is not seen → UNKNOWN.
             setupMocks({
-                heartbeatState: {
-                    onlineMachines: ['myia-ai-01'],
-                    unknownMachines: ['myia-web1'],
-                    idleMachines: [],
-                },
+                dashboardOnlineMachines: ['myia-ai-01'],
             });
             const result = await roosyncGetStatus({});
             expect(result.status).toBe('CRITICAL');
@@ -201,28 +225,23 @@ describe('roosync_get_status', () => {
             expect(result.flags).toContain('INBOX_OVERFLOW:12_unread');
         });
 
-        it('returns WARNING when heartbeat stale machines', async () => {
+        it('returns HEALTHY when all known machines are on dashboard', async () => {
+            // #2318: All 6 fleet machines on dashboard → HEALTHY (no unknown from registry)
             setupMocks({
-                heartbeatState: {
-                    onlineMachines: ['myia-ai-01'],
-                    unknownMachines: [],
-                    idleMachines: ['myia-po-2023'],
-                },
+                dashboardOnlineMachines: ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'],
             });
             const result = await roosyncGetStatus({});
-            expect(result.status).toBe('WARNING');
-            expect(result.flags).toContain('HEARTBEAT_STALE:myia-po-2023');
+            expect(result.status).toBe('HEALTHY');
+            expect(result.machines.online).toBe(6);
+            expect(result.machines.unknown).toBe(0);
         });
     });
 
     describe('machine filtering', () => {
-        it('filters out non-myia machines from heartbeat (#1365)', async () => {
+        it('filters out non-myia machines from dashboard activity (#1365)', async () => {
+            // #2318: Dashboard contains test-machine entries, but isKnownMachine filters them.
             setupMocks({
-                heartbeatState: {
-                    onlineMachines: ['myia-ai-01', 'test-machine', 'persistent-machine'],
-                    unknownMachines: [],
-                    idleMachines: [],
-                },
+                dashboardOnlineMachines: ['myia-ai-01', 'test-machine', 'persistent-machine'],
             });
             const result = await roosyncGetStatus({});
             expect(result.machines.online).toBe(1);
@@ -231,7 +250,10 @@ describe('roosync_get_status', () => {
 
     describe('machineFilter', () => {
         it('accepts valid machine filter', async () => {
-            setupMocks();
+            // All machines online on dashboard → HEALTHY with filter
+            setupMocks({
+                dashboardOnlineMachines: ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'],
+            });
             const result = await roosyncGetStatus({ machineFilter: 'myia-ai-01' });
             expect(result.status).toBe('HEALTHY');
         });
