@@ -109,6 +109,74 @@ describe('roosync_dashboard', () => {
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
   });
 
+  // === Test 4b: Path-style workspace collapses to basename (2026-05-23) ===
+  // Regression: callers that passed a full path (d:\CoursIA, g:\Mon Drive\...\CoursIA)
+  // produced scattered orphan dashboards (workspace-d--CoursIA.md,
+  // workspace-g--Mon-Drive-CoursIA.md). The key must collapse to the directory
+  // basename only, so every path form for a project folds onto one dashboard.
+  it('collapses a Windows path-style workspace to its basename', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: 'd:\\CoursIA',
+      content: '# Path collapse test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-CoursIA');
+  });
+
+  it('collapses a nested Windows path-style workspace to its basename', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: 'g:\\Mon Drive\\dev\\CoursIA',
+      content: '# Nested path collapse test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-CoursIA');
+  });
+
+  it('collapses a POSIX path-style workspace to its basename', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: '/home/user/dev/Argumentum',
+      content: '# POSIX path collapse test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-Argumentum');
+  });
+
+  it('preserves case when collapsing a path-style workspace (no lowercasing)', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: 'd:\\CoursIA',
+      content: '# Case preservation test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-CoursIA');
+    expect(result.key).not.toBe('workspace-coursia');
+  });
+
+  it('leaves a multi-dash bare workspace name unchanged', async () => {
+    // 2025-Epita-Intelligence-Symbolique is a real workspace; basename must not
+    // mangle legitimate dashes in a bare name.
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: '2025-Epita-Intelligence-Symbolique',
+      content: '# Multi-dash bare name test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-2025-Epita-Intelligence-Symbolique');
+  });
+
   // === Test 5: Read dashboard complet ===
   it('reads dashboard with all sections', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test Status' });
@@ -272,39 +340,6 @@ describe('roosync_dashboard', () => {
     expect((msg as any)?.tags).toBeUndefined();
   });
 
-  // === Test 11: Condensation manuelle (annulée sans LLM) ===
-  // #864: Sans LLM configuré, la condensation est annulée
-  // #858: Fixed — mock properly resets via beforeEach
-  // Atomicity fix: Condensation cancelled now persists a visible [ERROR] system
-  // message (deduplicated within 5 min), so LLM outages are visible instead of silent.
-  it('condense is cancelled without LLM configured', async () => {
-    // S'assurer qu'aucun LLM n'est configuré
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_BASE_URL;
-
-    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-
-    for (let i = 0; i < 10; i++) {
-      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-    }
-
-    const condenseResult = await roosyncDashboard({
-      action: 'condense',
-      type: 'global',
-      keepMessages: 3
-    });
-
-    // #864: Condensation annulée car LLM non configuré
-    // #1792: With circuit breaker, now uses truncation fallback (archives messages)
-    expect(condenseResult.success).toBe(true);
-    expect(condenseResult.condensed).toBe(true); // Changed: fallback archives messages
-    expect(condenseResult.archivedCount).toBeGreaterThan(0); // Changed: messages archived
-
-    // Messages: fallback notice + 3 kept messages (not 11 as before)
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    expect(readResult.data?.intercom?.messages?.length).toBeLessThan(10); // Some were archived
-  });
-
   // === Test 12: Read dashboard inexistant ===
   it('returns failure for non-existent dashboard', async () => {
     const result = await roosyncDashboard({ action: 'read', type: 'global' });
@@ -382,22 +417,6 @@ describe('roosync_dashboard', () => {
     expect(result.data?.intercom?.messages?.length).toBe(10);
   });
 
-  // === Test 18: condense no-op quand peu de messages ===
-  it('condense reports no-op when below threshold', async () => {
-    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-    await roosyncDashboard({ action: 'append', type: 'global', content: 'Only message' });
-
-    const result = await roosyncDashboard({
-      action: 'condense',
-      type: 'global',
-      keepMessages: 100
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.condensed).toBe(false);
-    expect(result.archivedCount).toBe(0);
-  });
-
   // === Phase 3: Archive & Utils ===
 
   // === Test 19: list retourne tableau vide si pas de dashboards ===
@@ -459,21 +478,24 @@ describe('roosync_dashboard', () => {
   });
 
   // === Test 24: read_archive sans archiveFile liste les archives ===
+  // Archive created via auto-condensation (triggered by append crossing the
+  // size threshold) instead of the removed manual `condense` action.
   it('read_archive lists archives for a key', async () => {
-    // #858: Set up mock LLM for condensation to succeed
+    // #858: Set up mock LLM for auto-condensation to succeed
     mockGetChatClient.mockReturnValue({
       chat: { completions: { create: mockChatCreate } }
     });
-    mockChatCreate
-      .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\nAll good' } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
+    mockChatCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Summary\n\n- Item 1' } }]
+    });
 
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-    for (let i = 0; i < 10; i++) {
-      await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+    // Fill past the 92% threshold with large messages to trigger auto-condensation,
+    // which writes an archive file.
+    const bigContent = 'X'.repeat(3000);
+    for (let i = 0; i < 20; i++) {
+      await roosyncDashboard({ action: 'append', type: 'global', content: `${bigContent} msg${i}` });
     }
-    // Condenser pour créer une archive
-    await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
 
     const result = await roosyncDashboard({ action: 'read_archive', type: 'global' });
 
@@ -485,20 +507,22 @@ describe('roosync_dashboard', () => {
   });
 
   // === Test 25: read_archive avec archiveFile lit l'archive ===
+  // Archive created via auto-condensation (triggered by append crossing the
+  // size threshold) instead of the removed manual `condense` action.
   it('read_archive reads a specific archive file', async () => {
-    // #858: Set up mock LLM for condensation to succeed
+    // #858: Set up mock LLM for auto-condensation to succeed
     mockGetChatClient.mockReturnValue({
       chat: { completions: { create: mockChatCreate } }
     });
-    mockChatCreate
-      .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\nAll good' } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
+    mockChatCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Summary\n\n- Item 1' } }]
+    });
 
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-    for (let i = 0; i < 10; i++) {
-      await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
+    const bigContent = 'X'.repeat(3000);
+    for (let i = 0; i < 20; i++) {
+      await roosyncDashboard({ action: 'append', type: 'global', content: `${bigContent} msg${i}` });
     }
-    await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
 
     // D'abord lister les archives
     const listResult = await roosyncDashboard({ action: 'read_archive', type: 'global' });
@@ -514,8 +538,10 @@ describe('roosync_dashboard', () => {
 
     expect(readResult.success).toBe(true);
     expect(readResult.archiveData?.key).toBe('global');
-    expect(readResult.archiveData?.messageCount).toBe(7); // 10 - 3 = 7 archivés
-    expect(readResult.archiveData?.messages.length).toBe(7);
+    // Auto-condensation archives a positive number of messages; the count must
+    // match the actual messages stored in the archive.
+    expect(readResult.archiveData?.messageCount).toBeGreaterThan(0);
+    expect(readResult.archiveData?.messages.length).toBe(readResult.archiveData?.messageCount);
   });
 
   // === Test 26: read_archive archive inexistante retourne failure ===
@@ -535,70 +561,6 @@ describe('roosync_dashboard', () => {
   // ============================================================
   // Tests LLM Summary (#858)
   // ============================================================
-
-  // === Test 27: Condensation sans LLM (annulée) ===
-  // #864: Si le LLM est indisponible, la condensation utilise NOW le fallback troncation (#1792)
-  // #858: Fixed — mock properly resets via beforeEach
-  it('condense without LLM service is cancelled (no fallback)', async () => {
-    // Sans configurer OPENAI_API_KEY, le LLM devrait échouer
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_BASE_URL;
-
-    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-    for (let i = 0; i < 10; i++) {
-      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-    }
-
-    const condenseResult = await roosyncDashboard({
-      action: 'condense',
-      type: 'global',
-      keepMessages: 3
-    });
-
-    // #1792: Circuit breaker — condensation utilise fallback troncation (archive messages)
-    expect(condenseResult.success).toBe(true);
-    expect(condenseResult.condensed).toBe(true); // Changed: fallback archives messages
-    expect(condenseResult.archivedCount).toBeGreaterThan(0); // Changed: messages archived
-
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    const messages = readResult.data?.intercom?.messages;
-
-    // Messages: fallback notice + 3 kept (not 11 as before)
-    expect(messages?.length).toBeLessThan(10); // Some were archived
-  });
-
-  // === Test 28: Condensation annulée sans LLM préserve tous les messages ===
-  // #864/#1792: Sans LLM, la condensation utilise NOW le fallback troncation (archive messages)
-  // #858: Fixed — mock properly resets via beforeEach
-  it('condense cancelled without LLM preserves all messages', async () => {
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_BASE_URL;
-
-    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-    for (let i = 0; i < 10; i++) {
-      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-    }
-
-    const condenseResult = await roosyncDashboard({
-      action: 'condense',
-      type: 'global',
-      keepMessages: 3
-    });
-
-    // #1792: Circuit breaker — condensation utilise fallback troncation
-    expect(condenseResult.condensed).toBe(true); // Changed: fallback archives messages
-
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    const msgs = readResult.data?.intercom?.messages;
-
-    // Messages: fallback notice + 3 kept (not 11 as before)
-    expect(msgs?.length).toBeLessThan(10); // Some were archived
-
-    // Le premier message est le système [FALLBACK TRUNCATION]
-    const firstMessage = msgs?.[0];
-    expect(firstMessage?.author?.machineId).toBe('system');
-    expect(firstMessage?.content).toContain('FALLBACK TRUNCATION');
-  });
 
   // === Test 30: Size-based auto-condensation triggers on large dashboards ===
   // #1792: Circuit breaker uses fallback truncation, archives messages
@@ -634,31 +596,6 @@ describe('roosync_dashboard', () => {
 
     // All 100 messages should be preserved — size is under 50KB
     expect(messageCount).toBe(100);
-  });
-
-  // === Test 29: Pas de message système CONDENSATION si condensation annulée ===
-  // #864: Sans LLM, pas de message système CONDENSATION ajouté
-  it('condense cancelled does not add system condensation message', async () => {
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_BASE_URL;
-
-    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-    for (let i = 0; i < 10; i++) {
-      await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-    }
-
-    await roosyncDashboard({
-      action: 'condense',
-      type: 'global',
-      keepMessages: 3
-    });
-
-    const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-    const messages = readResult.data?.intercom?.messages;
-
-    // Aucun message système CONDENSATION ne devrait être présent
-    const hasCondensationMsg = messages?.some(m => m.content.includes('**CONDENSATION**'));
-    expect(hasCondensationMsg).toBe(false);
   });
 
   // === Test 32: Content with ### [ prefix doesn't break parsing (#1123) ===
@@ -731,137 +668,6 @@ describe('roosync_dashboard', () => {
     expect(messages[0].content).toBe(contentWithPipes);
   });
 
-  // ============================================================
-  // Tests LLM Condensation avec mock (#858)
-  // ============================================================
-
-  describe('LLM condensation (#858)', () => {
-    it('condenses with LLM summary and status update', async () => {
-      // Set up mock LLM
-      mockGetChatClient.mockReturnValue({
-        chat: { completions: { create: mockChatCreate } }
-      });
-      mockChatCreate
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Updated Status\n\n### Summary\nAll systems operational' } }] })
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary of 7 archived messages\n\n### Themes\n- Testing\n- Deployment' } }] });
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-      }
-
-      const result = await roosyncDashboard({
-        action: 'condense',
-        type: 'global',
-        keepMessages: 3
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.condensed).toBe(true);
-      // archivedCount = beforeCount(10) - afterCount(5) = 5
-      // (2 system messages + 3 kept = 5 remaining)
-      expect(result.archivedCount).toBe(5);
-
-      // Verify LLM was called (status + summary)
-      expect(mockChatCreate).toHaveBeenCalled();
-
-      // Read dashboard and verify structure
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-      const messages = readResult.data?.intercom?.messages ?? [];
-
-      // Should have: 1 CONDENSATION-SUMMARY + 1 CONDENSATION notice + 3 kept = 5
-      expect(messages.length).toBe(5);
-
-      // First message should be the LLM summary
-      // Note: `tags` field was removed in df56edb1 — assert on content marker only
-      expect(messages[0].content).toContain('CONDENSATION-SUMMARY');
-
-      // Second message should be the condensation notice
-      expect(messages[1].content).toContain('**CONDENSATION**');
-
-      // Last 3 should be the kept messages
-      expect(messages[2].content).toBe('Message 7');
-      expect(messages[3].content).toBe('Message 8');
-      expect(messages[4].content).toBe('Message 9');
-    });
-
-    it('updates status with LLM-generated content', async () => {
-      const newStatus = '## Updated Status\n\n### Summary\nAll systems operational';
-      mockGetChatClient.mockReturnValue({
-        chat: { completions: { create: mockChatCreate } }
-      });
-      mockChatCreate
-        .mockResolvedValueOnce({ choices: [{ message: { content: newStatus } }] })
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary\n\n- Item 1' } }] });
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Old Status' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-      }
-
-      await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
-      expect(readResult.data?.status?.markdown).toBe(newStatus);
-    });
-
-    it('cancels condensation when LLM returns empty', async () => {
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (triggers fallback)
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Message ${i}` });
-      }
-
-      const result = await roosyncDashboard({
-        action: 'condense',
-        type: 'global',
-        keepMessages: 3
-      });
-
-      // #1792: Circuit breaker — LLM failure uses truncation fallback (archives messages)
-      expect(result.success).toBe(true);
-      expect(result.condensed).toBe(true); // Changed: fallback archives messages
-      expect(result.archivedCount).toBeGreaterThan(0); // Changed: messages archived
-    });
-
-    it('creates archive file with raw messages on condensation', async () => {
-      mockGetChatClient.mockReturnValue({
-        chat: { completions: { create: mockChatCreate } }
-      });
-      mockChatCreate
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Status' } }] })
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary' } }] });
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      // Verify archive was created
-      const archiveResult = await roosyncDashboard({ action: 'read_archive', type: 'global' });
-      expect(archiveResult.archives?.length).toBeGreaterThanOrEqual(1);
-
-      // Read the archive and verify content
-      const archiveFile = archiveResult.archives?.[0];
-      const readArchive = await roosyncDashboard({
-        action: 'read_archive',
-        type: 'global',
-        archiveFile
-      });
-
-      expect(readArchive.archiveData?.messageCount).toBe(7);
-      expect(readArchive.archiveData?.messages.length).toBe(7);
-    });
-  });
-
   // === Diagnostic + archivedCount clamp (2026-04-20) ===
   //
   // Regression coverage for the CoursIA condense incident on 2026-04-20:
@@ -871,109 +677,6 @@ describe('roosync_dashboard', () => {
   //     40KB prompts, so both passes injected an error msg
   // These tests lock in: diagnostic exposed, archivedCount ≥ 0, dedup works.
   describe('Condense diagnostic + error semantics (2026-04-20)', () => {
-    it('populates condenseDiagnostic with LLM stats on manual condense success', async () => {
-      mockGetChatClient.mockReturnValue({
-        chat: { completions: { create: mockChatCreate } }
-      });
-      mockChatCreate
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Status' } }] })
-        .mockResolvedValueOnce({ choices: [{ message: { content: '## Summary' } }] });
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      expect(result.condensed).toBe(true);
-      expect(result.condenseDiagnostic).toBeDefined();
-      expect(result.condenseDiagnostic).toHaveLength(1);
-      const diag = result.condenseDiagnostic![0];
-      expect(diag.phase).toBe('manual');
-      expect(diag.outcome).toBe('condensed');
-      expect(diag.archivedMessageCount).toBe(7);
-      expect(diag.elapsedMs).toBeGreaterThanOrEqual(0);
-      expect(diag.llm?.summary.finalOutcome).toBe('ok');
-      expect(diag.llm?.status.finalOutcome).toBe('ok');
-      expect(diag.llm?.summary.attempts).toBe(1);
-      expect(diag.llm?.status.attempts).toBe(1);
-    });
-
-    it('reports llm-failed-injected with nullCount when LLM returns empty content', async () => {
-      // #1792: Circuit breaker — now uses fallback truncation instead of injecting error
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (triggers fallback)
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      // #1792: Circuit breaker — uses fallback truncation
-      expect(result.condensed).toBe(true);
-      expect(result.archivedCount).toBeGreaterThan(0);
-      const diag = result.condenseDiagnostic![0];
-      expect(diag.outcome).toBe('fallback-truncated'); // Changed outcome
-      // LLM stats may not be present if circuit breaker bypassed LLM calls
-      if (diag.llm) {
-        expect(diag.llm?.summary.finalOutcome).toBe('error');
-        expect(diag.llm?.status.finalOutcome).toBe('error');
-      }
-    });
-
-    it('reports error + lastError when LLM throws', async () => {
-      // #1792: Circuit breaker — now uses fallback truncation
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      mockChatCreate.mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:5002'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      // #1792: Circuit breaker — uses fallback truncation
-      expect(result.condensed).toBe(true);
-      const diag = result.condenseDiagnostic![0];
-      expect(diag.outcome).toBe('fallback-truncated'); // Changed outcome
-      // LLM stats may not be present if circuit breaker bypassed LLM calls
-      if (diag.llm) {
-        expect(diag.llm?.summary.finalOutcome).toBe('error');
-        expect(diag.llm?.summary.lastError).toContain('ECONNREFUSED');
-      }
-    });
-
-    it('reports client-init-failed when LLM client throws on init', async () => {
-      // #1792: Circuit breaker — now uses fallback truncation even when client init fails
-      // mockGetChatClient throws (default beforeEach behavior sets this)
-      // Leave mockGetChatClient at its default "No chat API key configured" throw.
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      // #1792: Circuit breaker — uses fallback truncation
-      expect(result.condensed).toBe(true);
-      const diag = result.condenseDiagnostic![0];
-      expect(diag.outcome).toBe('fallback-truncated'); // Changed outcome
-      // LLM stats should show client-init-failed
-      expect(diag.llm?.summary.finalOutcome).toBe('client-init-failed');
-      expect(diag.llm?.summary.lastError).toContain('No chat API key');
-    });
-
     it('archivedCount clamped to 0 on failed append (regression: CoursIA -2)', async () => {
       // #1792: Circuit breaker — now uses fallback truncation, archives messages
       // When an append triggers condensation that fails with LLM null content,
@@ -1017,32 +720,6 @@ describe('roosync_dashboard', () => {
       expect(failedPasses.length).toBeGreaterThanOrEqual(1);
       // #1792: With circuit breaker fallback, message reports success (not LLM failure)
       expect(condensedResult.message).toContain('auto-condensation');
-    });
-
-    it('dedup within 20min window does NOT re-inject a second error message', async () => {
-      // Regression for the 5min window that was too short. A second condense
-      // within 20min after a failure must return outcome=llm-failed-dedup and
-      // leave the dashboard untouched (same message count).
-      // #1792: Updated to expect fallback-truncated instead of llm-failed-injected
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (triggers fallback)
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 10; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      // First condense — uses truncation fallback (#1792 circuit breaker)
-      const r1 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      expect(r1.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
-      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-      const countAfterFirst = afterFirst.data?.intercom?.messages.length ?? 0;
-      // 10 original messages: 6 archived + 3 kept + 1 fallback notice = 4
-      expect(countAfterFirst).toBe(4);
-      expect(r1.archivedCount).toBe(6); // 10 - 4 = 6 archived (fallback notice counts as kept)
     });
   });
 
@@ -1777,129 +1454,6 @@ describe('roosync_dashboard', () => {
 - myia-web1 : active et running maintenant`;
       const contradictions = detectStatusContradictions(status);
       expect(contradictions.length).toBeGreaterThanOrEqual(2);
-    });
-  });
-
-  // ============================================================
-  // Circuit breaker + truncation fallback (#1792)
-  // ============================================================
-  describe('Condensation circuit breaker (#1792)', () => {
-    it('uses truncation fallback when LLM fails (no circuit breaker open yet)', async () => {
-      // LLM throws error — simulates API failure (faster than null + retries)
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (no backoff, triggers fallback on first attempt)
-      mockChatCreate.mockRejectedValueOnce(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 15; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-
-      // #1792: Fallback truncation should archive messages even though LLM failed
-      expect(result.success).toBe(true);
-      const diag = result.condenseDiagnostic![0];
-      expect(diag.outcome).toBe('fallback-truncated');
-      expect(diag.archivedMessageCount).toBe(12); // 15 - 3 = 12
-
-      // Check retained messages count
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-      const msgs = readResult.data?.intercom?.messages;
-      // 1 fallback notice + 3 kept messages = 4
-      expect(msgs?.length).toBe(4);
-      expect(msgs?.[0]?.content).toContain('FALLBACK TRUNCATION');
-    });
-
-    it('circuit breaker opens after 3 consecutive LLM failures', async function() {
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (no backoff, triggers fallback and records failure)
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-
-      // Trigger 3 consecutive failures
-      for (let round = 0; round < 3; round++) {
-        for (let i = 0; i < 15; i++) {
-          await roosyncDashboard({ action: 'append', type: 'global', content: `R${round}M${i}` });
-        }
-        const r = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-        expect(r.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
-      }
-
-      // 4th round — circuit breaker should be OPEN, skipping LLM entirely
-      for (let i = 0; i < 15; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `R3M${i}` });
-      }
-      const r4 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      expect(r4.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
-      // No LLM stats — circuit breaker bypassed LLM calls
-      expect(r4.condenseDiagnostic![0].llm).toBeUndefined();
-    }, 30000);
-
-    it('circuit breaker resets on LLM success', async () => {
-      // Round 1: fail
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (no backoff, triggers fallback)
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 15; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Fail ${i}` });
-      }
-      const rFail = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      expect(rFail.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
-
-      // Round 2: LLM succeeds
-      mockChatCreate.mockResolvedValue({
-        choices: [{ message: { content: '## Summary\n\nArchived messages.' } }]
-      });
-      for (let i = 0; i < 15; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Ok ${i}` });
-      }
-      const rOk = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      expect(rOk.condenseDiagnostic![0].outcome).toBe('condensed');
-      expect(rOk.condenseDiagnostic![0].llm).toBeDefined();
-
-      // Round 3: fail again — circuit breaker should NOT be open (was reset)
-      // Use error instead of null to avoid long retries
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable again'));
-      for (let i = 0; i < 15; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Fail2 ${i}` });
-      }
-      const rFail2 = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      // LLM was attempted (not bypassed) — outcome is fallback-truncated but LLM stats exist
-      expect(rFail2.condenseDiagnostic![0].outcome).toBe('fallback-truncated');
-      expect(rFail2.condenseDiagnostic![0].llm).toBeDefined();
-    }, 30000);
-
-    it('fallback notice contains circuit breaker state', async () => {
-      // NOTE: Must use mockImplementation to override the throwing mockImplementation from beforeEach
-      mockGetChatClient.mockImplementation(() => ({
-        chat: { completions: { create: mockChatCreate } }
-      }));
-      // Throw error immediately (no backoff, triggers fallback)
-      mockChatCreate.mockRejectedValue(new Error('LLM API unavailable'));
-
-      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
-      for (let i = 0; i < 15; i++) {
-        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}` });
-      }
-
-      const result = await roosyncDashboard({ action: 'condense', type: 'global', keepMessages: 3 });
-      const readResult = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
-      const notice = readResult.data?.intercom?.messages?.[0];
-      expect(notice?.content).toContain('FALLBACK TRUNCATION');
-      expect(notice?.content).toContain('Circuit breaker:');
     });
   });
 

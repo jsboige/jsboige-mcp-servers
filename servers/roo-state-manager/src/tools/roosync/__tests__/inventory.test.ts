@@ -326,7 +326,7 @@ describe('inventoryTool', () => {
       expect(result.data.summary).toBeDefined();
       expect(result.data.summary).toContain('Inventory Summary');
       expect(result.data.summary).toContain('Machine:');
-      expect(result.data.summary).toContain('Cluster status:');
+      expect(result.data.summary).toContain('Cluster status');
       expect(result.data.summary).toContain('Online');
       expect(result.data.summary).toContain('Unknown');
     });

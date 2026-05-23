@@ -275,18 +275,37 @@ export class HeartbeatService {
     return this.state.heartbeats.get(machineId.toLowerCase());
   }
 
+  /**
+   * LOCAL-SELF ONLY: Returns machines that have called this MCP process.
+   * Does NOT reflect cross-machine activity. Use dashboard-derived presence
+   * (crossCheckWithDashboard) for reliable cross-machine status. (#2318)
+   */
   public getOnlineMachines(): string[] {
     return [...this.state.onlineMachines];
   }
 
+  /**
+   * @deprecated #2318 — Returns machines not seen in THIS process. Misleading
+   * for cross-machine use (other machines are always "unknown"). Use
+   * dashboard-derived presence via crossCheckWithDashboard() instead.
+   */
   public getUnknownMachines(): string[] {
     return [...this.state.unknownMachines];
   }
 
+  /**
+   * @deprecated #2318 — Returns machines idle in THIS process. Misleading
+   * for cross-machine use. Use dashboard-derived presence instead.
+   */
   public getIdleMachines(): string[] {
     return [...this.state.idleMachines];
   }
 
+  /**
+   * LOCAL-SELF ONLY: Full heartbeat state snapshot.
+   * The onlineMachines/unknownMachines/idleMachines arrays reflect only
+   * the local MCP process activity. Not suitable for cross-machine presence. (#2318)
+   */
   public getState(): HeartbeatServiceState {
     return {
       heartbeats: new Map(this.state.heartbeats),

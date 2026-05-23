@@ -121,6 +121,28 @@ const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 
+// Max tokens for every condensation LLM call (summary, status, text-condense).
+//
+// 2026-05-23: regression fix. Commit 9beb7e93 (2026-04-20) bumped this 10000 →
+// 30000 to "give Qwen3.6 thinking room". That was the bug behind "la condensation
+// n'aboutit plus d'elle-même quand on poste": qwen3.6 has a known thinking-loop
+// repetition failure mode (vLLM+Qwen) where a runaway generation walks all the way
+// to max_tokens. At ~37 tok/s, 30000 tokens = ~810s of generation, which exceeds
+// the ~600s reverse-proxy (IIS → vLLM) gateway timeout → the request dies with
+// HTTP 502 mid-thinking, the SDK retries (each ~600s), and after 3 failures the
+// circuit breaker falls back to truncation. The request never "aboutit".
+//
+// Bounding generation at 12000 tokens caps a runaway at ~325s — comfortably UNDER
+// the gateway — so even a runaway returns cleanly (finish_reason=length, null
+// content) and is retried, succeeding stochastically. Legitimate condensations use
+// 3500-4400 total tokens, so 12000 leaves ~3x headroom for a real thinking phase
+// plus the markdown output. Latency is acceptable (user mandate: "qu'elle prenne
+// longtemps ne devrait pas être un problème, mais elle doit aboutir"); completion
+// under the gateway is the requirement. NOT a blind revert to 10000: 12000 is sized
+// to the gateway constraint, leaving the status call (largest legit output ~4000
+// tokens + thinking) genuine room.
+const CONDENSE_LLM_MAX_TOKENS = 12000;
+
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
 // when LLM is down and every append re-triggers a failed condensation).
 // 2026-04-20: bumped 5min → 20min. A single append triggers up to 2 condense
@@ -249,10 +271,21 @@ function buildDashboardKey(
       // Guard against double-prefix (e.g., machine-machine-foo)
       const cleanMachineId = machineId.startsWith('machine-') ? machineId.slice('machine-'.length) : machineId;
       return `machine-${cleanMachineId}`;
-    case 'workspace':
+    case 'workspace': {
       // Guard against double-prefix (e.g., workspace-workspace-Argumentum → #1409 item 2)
       const cleanWorkspace = workspace.startsWith('workspace-') ? workspace.slice('workspace-'.length) : workspace;
-      return `workspace-${cleanWorkspace}`;
+      // 2026-05-23: collapse to the directory basename only. Callers sometimes pass
+      // a full path-style workspace (d:\CoursIA, g:\Mon Drive\...\CoursIA) which used
+      // to produce scattered orphan dashboards (workspace-d--CoursIA.md,
+      // workspace-g--Mon-Drive-CoursIA.md). User mandate: "on a dit qu'on ne retenait
+      // que le nom de répertoire collapsé". basename() (case-preserved) folds every
+      // path form for the same project onto one key. NOT normalizeWorkspaceId() — that
+      // lowercases, which would mismatch the existing case-preserved files (CoursIA,
+      // Argumentum, 2025-Epita-Intelligence-Symbolique). If the value is already a bare
+      // name (no separators), basename() returns it unchanged.
+      const baseName = path.basename(cleanWorkspace.replace(/\\/g, '/'));
+      return `workspace-${baseName}`;
+    }
     default:
       throw new Error(`Type dashboard inconnu: ${type}`);
   }
@@ -821,11 +854,10 @@ FORMAT :
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        // 2026-04-20: bumped 10000 → 30000. Qwen3.6 thinking mode can easily
-        // spend 10k+ tokens on reasoning for a 40KB prompt, leaving the model
-        // no room for the actual markdown output — `content` comes back null
-        // with finish_reason=length. Room for ~20k thinking + 10k summary.
-        max_tokens: 30000,
+        // See CONDENSE_LLM_MAX_TOKENS: bounded so a runaway thinking loop returns
+        // before the ~600s reverse-proxy gateway timeout (502) — lets condensation
+        // actually complete instead of dying mid-thinking and falling to truncation.
+        max_tokens: CONDENSE_LLM_MAX_TOKENS,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -843,7 +875,7 @@ FORMAT :
         }
         stats.finalOutcome = 'null';
         stats.elapsedMs = Date.now() - callStart;
-        stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=30000)`;
+        stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
         return { content: null, stats };
       }
 
@@ -1017,8 +1049,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        // 2026-04-20: bumped 10000 → 30000 (see generateLLMSummary for rationale).
-        max_tokens: 30000,
+        // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
+        max_tokens: CONDENSE_LLM_MAX_TOKENS,
         temperature: 0.3
       }, {
         timeout: timeoutMs
@@ -1036,7 +1068,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         }
         stats.finalOutcome = 'null';
         stats.elapsedMs = Date.now() - callStart;
-        stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=30000)`;
+        stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
         return { content: null, stats };
       }
 
@@ -1124,8 +1156,8 @@ RÈGLES :
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }
       ],
-      // 2026-04-20: bumped 10000 → 30000 (see generateLLMSummary for rationale).
-      max_tokens: 30000,
+      // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
+      max_tokens: CONDENSE_LLM_MAX_TOKENS,
       temperature: 0.3
     }, {
       timeout: 900000  // #1497: 5 min → 15 min, accommodate thinking-mode latency
@@ -1728,9 +1760,6 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
           handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
         );
 
-    case 'condense':
-      // Serialized: manual condense must not race with auto-condense from append
-      return withKeyLock(key, () => handleCondense(key, args, requestEcho));
     case 'delete':
       return withKeyLock(key, () => handleDelete(key, args, requestEcho));
       case 'read_archive':

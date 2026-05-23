@@ -3,8 +3,13 @@
  *
  * Récupération des machines unknown (heartbeat stale) et/ou idle.
  *
+ * #2318: These data are LOCAL-SELF ONLY — each MCP process tracks only its own
+ * tool calls in-memory. Other machines appear as UNKNOWN regardless of actual
+ * activity. For reliable cross-machine presence, use roosync_inventory(type="status").
+ *
  * @module tools/roosync/machines
- * @version 3.0.0
+ * @version 4.0.0 (#2318: cross-machine sunset annotations)
+ * @see #2318, ADR 008 Phase 4
  */
 
 import { z } from 'zod';
@@ -211,7 +216,7 @@ export async function roosyncMachines(args: MachinesArgs, context?: any): Promis
  */
 export const machinesToolMetadata = {
   name: 'roosync_machines',
-  description: 'Récupération des machines unknown et/ou idle.',
+  description: 'Récupération des machines unknown et/ou idle. WARNING: LOCAL-SELF only data — not cross-machine reliable. Use roosync_inventory(type="status") for reliable cross-machine presence. (#2318)',
   inputSchema: {
     type: 'object' as const,
     properties: {
