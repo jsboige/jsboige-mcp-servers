@@ -109,6 +109,74 @@ describe('roosync_dashboard', () => {
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
   });
 
+  // === Test 4b: Path-style workspace collapses to basename (2026-05-23) ===
+  // Regression: callers that passed a full path (d:\CoursIA, g:\Mon Drive\...\CoursIA)
+  // produced scattered orphan dashboards (workspace-d--CoursIA.md,
+  // workspace-g--Mon-Drive-CoursIA.md). The key must collapse to the directory
+  // basename only, so every path form for a project folds onto one dashboard.
+  it('collapses a Windows path-style workspace to its basename', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: 'd:\\CoursIA',
+      content: '# Path collapse test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-CoursIA');
+  });
+
+  it('collapses a nested Windows path-style workspace to its basename', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: 'g:\\Mon Drive\\dev\\CoursIA',
+      content: '# Nested path collapse test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-CoursIA');
+  });
+
+  it('collapses a POSIX path-style workspace to its basename', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: '/home/user/dev/Argumentum',
+      content: '# POSIX path collapse test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-Argumentum');
+  });
+
+  it('preserves case when collapsing a path-style workspace (no lowercasing)', async () => {
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: 'd:\\CoursIA',
+      content: '# Case preservation test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-CoursIA');
+    expect(result.key).not.toBe('workspace-coursia');
+  });
+
+  it('leaves a multi-dash bare workspace name unchanged', async () => {
+    // 2025-Epita-Intelligence-Symbolique is a real workspace; basename must not
+    // mangle legitimate dashes in a bare name.
+    const result = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      workspace: '2025-Epita-Intelligence-Symbolique',
+      content: '# Multi-dash bare name test'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.key).toBe('workspace-2025-Epita-Intelligence-Symbolique');
+  });
+
   // === Test 5: Read dashboard complet ===
   it('reads dashboard with all sections', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Test Status' });
