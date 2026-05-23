@@ -1728,9 +1728,6 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
           handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
         );
 
-    case 'condense':
-      // Serialized: manual condense must not race with auto-condense from append
-      return withKeyLock(key, () => handleCondense(key, args, requestEcho));
     case 'delete':
       return withKeyLock(key, () => handleDelete(key, args, requestEcho));
       case 'read_archive':

@@ -279,13 +279,13 @@ describe('DashboardArgsSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('accepts condense action with keepMessages', () => {
+  it('rejects removed condense action', () => {
     const result = DashboardArgsSchema.safeParse({
       action: 'condense',
       type: 'workspace',
       keepMessages: 20,
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('accepts read_overview action', () => {
@@ -657,17 +657,19 @@ describe('dashboardToolMetadata', () => {
     expect(schema.properties.type).toBeDefined();
   });
 
-  it('inputSchema action enum includes all 8 actions', () => {
+  it('inputSchema action enum includes 9 actions (condense removed)', () => {
     const schema = dashboardToolMetadata.inputSchema as any;
     const actionEnum = schema.properties.action.enum;
     expect(actionEnum).toContain('read');
     expect(actionEnum).toContain('write');
     expect(actionEnum).toContain('append');
-    expect(actionEnum).toContain('condense');
+    expect(actionEnum).not.toContain('condense');
     expect(actionEnum).toContain('list');
     expect(actionEnum).toContain('delete');
     expect(actionEnum).toContain('read_archive');
     expect(actionEnum).toContain('read_overview');
+    expect(actionEnum).toContain('refresh');
+    expect(actionEnum).toContain('update');
   });
 
   it('inputSchema type enum includes 3 dashboard types', () => {
