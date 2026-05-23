@@ -269,9 +269,9 @@ describe('repair_gaps action (#2246)', () => {
             const result = await callRepairGaps(cache, { max_repair_tasks: 2 });
             const data = JSON.parse((result.content[0] as any).text);
 
-            // Only 2 tasks scanned (map iteration stops when gaps.length >= maxTasks)
+            // Only 2 tasks scanned (pre-filter limits candidates)
             expect(data.gaps_detected).toBeLessThanOrEqual(2);
-            expect(data.scanned_up_to).toBeLessThanOrEqual(2);
+            expect(data.qdrant_queries).toBeLessThanOrEqual(2);
         });
     });
 
