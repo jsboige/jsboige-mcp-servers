@@ -33,6 +33,47 @@ const CRITICAL_ENV_VARS = [
 ];
 
 /**
+ * Machine-specific field patterns that are EXPECTED to differ between machines.
+ * These get auto-downgraded from CRITICAL/IMPORTANT to INFO to reduce noise.
+ * @see #2307 - False-positive filtering for cross-machine config comparison
+ */
+const EXPECTED_MACHINE_FIELDS: RegExp[] = [
+  /(^|\.)hostname$/,           // systemInfo.hostname — always different
+  /(^|\.)uptime$/,             // systemInfo.uptime — monotonic clock, always different
+  /(^|\.)machineId$/,          // machine identifier
+  /(^|\.)(timestamp|collectedAt|lastUpdated|createdAt|firstSeen|lastHeartbeat|retrievedAt)$/, // timestamps
+  /(^|\.)totalMemory$/,        // hardware — can differ
+  /(^|\.)freeMemory$/,         // runtime memory — always different
+  /(^|\.)cwd$/,                // process.cwd() — different install paths
+  /\.envVars\.cwd$/,
+  /\.systemInfo\./,            // all systemInfo subfields are machine-specific
+];
+
+/**
+ * Check if a diff path matches an expected machine-specific field.
+ * If so, downgrade severity to INFO.
+ */
+function applyMachineFieldFilter(diff: {
+  category: string;
+  severity: string;
+  path: string;
+  description: string;
+  action?: string;
+}): { category: string; severity: string; path: string; description: string; action?: string } {
+  for (const pattern of EXPECTED_MACHINE_FIELDS) {
+    if (pattern.test(diff.path)) {
+      return {
+        ...diff,
+        severity: 'INFO',
+        description: `[EXPECTED] ${diff.description}`,
+        action: undefined,
+      };
+    }
+  }
+  return diff;
+}
+
+/**
  * Vérifie les variables d'environnement critiques manquantes
  * @returns Liste des différences pour les variables manquantes
  */
@@ -623,12 +664,15 @@ function formatComparisonReport(report: any, granularity: string = 'full'): Comp
   // then combines. Same diff on both machines produces duplicates.
   // Dedup key = (category, path, description).
   const seen = new Set<string>();
-  const allDifferences = rawDifferences.filter(diff => {
+  const dedupedDiffs = rawDifferences.filter(diff => {
     const dedupKey = `${diff.category}|${diff.path}|${diff.description}`;
     if (seen.has(dedupKey)) return false;
     seen.add(dedupKey);
     return true;
   });
+
+  // #2307: Downgrade machine-specific fields to INFO
+  const allDifferences = dedupedDiffs.map(diff => applyMachineFieldFilter(diff));
 
   // Recalculer le summary avec les env vars
   const summary = {
@@ -668,7 +712,7 @@ function formatGranularReport(
   const modelProfileDiffs = compareModelProfiles(sourceInventory, targetInventory);
 
   const allDifferences = [
-    ...filteredDiffs.map(diff => ({
+    ...filteredDiffs.map(diff => applyMachineFieldFilter({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,
