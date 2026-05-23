@@ -167,7 +167,13 @@ export const inventoryTool: UnifiedToolContract = {
         }
       }
 
-      // Récupérer l'état heartbeat si demandé
+      // #2318: Heartbeat is LOCAL-SELF only (ADR 008 in-memory per-process).
+      // Cross-machine presence is via type="status" (dashboard-derived).
+      // Annotate with crossMachineWarning so agents cannot misinterpret.
+      const CROSS_MACHINE_WARNING = 'Heartbeat data is LOCAL-SELF only (ADR 008). ' +
+        'This machine sees itself as online and all others as unknown. ' +
+        'Use type="status" for reliable cross-machine presence (dashboard-derived).';
+
       if (type === 'heartbeat' || type === 'all') {
         const rooSyncService = await getRooSyncService();
         const heartbeatService = rooSyncService.getHeartbeatService();
@@ -179,6 +185,7 @@ export const inventoryTool: UnifiedToolContract = {
           idleMachines: state.idleMachines,
           statistics: state.statistics,
           heartbeats: includeHeartbeats ? Object.fromEntries(state.heartbeats) : undefined,
+          crossMachineWarning: CROSS_MACHINE_WARNING,
           retrievedAt
         };
         if (!summary) {
@@ -230,6 +237,7 @@ export const inventoryTool: UnifiedToolContract = {
             machinesData.idleCount = idleMachines.length;
           }
         }
+        machinesData.crossMachineWarning = CROSS_MACHINE_WARNING;
         if (!summary) {
           Object.assign(result, machinesData);
         }
@@ -303,7 +311,7 @@ export const inventoryTool: UnifiedToolContract = {
  */
 export const inventoryToolMetadata = {
   name: 'roosync_inventory',
-  description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système. type="status" pour snapshot compact avec flags actionnables (fused from roosync_get_status).',
+  description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système. type="status" pour snapshot compact avec flags actionnables (fused from roosync_get_status). IMPORTANT: type="heartbeat"/"all"/"machines" returns LOCAL-SELF only heartbeat data (ADR 008) — use type="status" for reliable cross-machine presence.',
   inputSchema: {
     type: 'object' as const,
     properties: {

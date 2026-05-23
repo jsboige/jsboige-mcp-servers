@@ -231,6 +231,17 @@ describe('inventoryTool', () => {
       expect(result.data.heartbeatState.statistics.unknownCount).toBe(1);
       expect(result.data.heartbeatState.statistics.idleCount).toBe(1);
     });
+
+    test('should include crossMachineWarning (#2318)', async () => {
+      const result = await inventoryTool.execute(
+        { type: 'heartbeat' },
+        mockExecutionContext
+      );
+
+      expect(result.data.heartbeatState.crossMachineWarning).toBeDefined();
+      expect(result.data.heartbeatState.crossMachineWarning).toContain('LOCAL-SELF only');
+      expect(result.data.heartbeatState.crossMachineWarning).toContain('type="status"');
+    });
   });
 
   // ============================================================
@@ -256,6 +267,16 @@ describe('inventoryTool', () => {
       );
 
       expect(result.data.heartbeatState.heartbeats).toBeDefined();
+    });
+
+    test('should include crossMachineWarning in all mode (#2318)', async () => {
+      const result = await inventoryTool.execute(
+        { type: 'all' },
+        mockExecutionContext
+      );
+
+      expect(result.data.heartbeatState.crossMachineWarning).toBeDefined();
+      expect(result.data.heartbeatState.crossMachineWarning).toContain('LOCAL-SELF only');
     });
 
     test('should exclude heartbeat data in all mode when includeHeartbeats=false', async () => {
