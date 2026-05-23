@@ -174,13 +174,13 @@ describe('dashboard-schemas', () => {
             expect(result.success).toBe(true);
         });
 
-        it('validates condense action', () => {
+        it('rejects removed condense action', () => {
             const result = DashboardArgsSchema.safeParse({
                 action: 'condense',
                 type: 'workspace',
                 keepMessages: 20,
             });
-            expect(result.success).toBe(true);
+            expect(result.success).toBe(false);
         });
 
         it('rejects invalid action', () => {

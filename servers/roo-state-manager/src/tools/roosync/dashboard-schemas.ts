@@ -136,11 +136,11 @@ export interface DashboardFrontmatter {
 // === Dashboard Args Schema (unified for all actions) ===
 
 export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'condense', 'list', 'delete', 'read_archive', 'read_overview', 'refresh', 'update'])
-    .describe('Action to perform'),
+  action: z.enum(['read', 'write', 'append', 'list', 'delete', 'read_archive', 'read_overview', 'refresh', 'update'])
+    .describe('Action to perform. Note: "condense" removed — auto-condensation handles space management at 92% threshold.'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
-    .describe('REQUIRED for read/write/append/condense/delete/read_archive. Only list/read_overview/refresh/update may omit it.'),
+    .describe('REQUIRED for read/write/append/delete/read_archive. Only list/read_overview/refresh/update may omit it.'),
 
   machineId: z.string().optional()
     .describe('Machine ID (default: local)'),
