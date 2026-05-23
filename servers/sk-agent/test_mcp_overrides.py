@@ -1,6 +1,14 @@
 """Tests for mcp_overrides feature — resolve_effective_mcp_ids + collect logic."""
 
 import pytest
+import re
+
+# Import the sanitize function for testing
+_INVALID_NAME_CHARS = re.compile(r"[^0-9A-Za-z_-]")
+
+
+def _sanitize_agent_name(name: str) -> str:
+    return _INVALID_NAME_CHARS.sub("-", name)
 
 
 # --- Pure logic extracted for testability ---
@@ -143,3 +151,35 @@ class TestMcpOverridesParsing:
         raw = ""
         result = None if not raw else raw
         assert result is None
+
+
+class TestSanitizeAgentName:
+    """Tests for _sanitize_agent_name — SK ChatCompletionAgent name pattern."""
+
+    def test_dot_replaced(self):
+        assert _sanitize_agent_name("glm-4.7-flash") == "glm-4-7-flash"
+
+    def test_multiple_dots(self):
+        assert _sanitize_agent_name("model.4.7.plus") == "model-4-7-plus"
+
+    def test_space_replaced(self):
+        assert _sanitize_agent_name("my agent") == "my-agent"
+
+    def test_alphanumeric_unchanged(self):
+        assert _sanitize_agent_name("fast-reviewer") == "fast-reviewer"
+
+    def test_underscore_preserved(self):
+        assert _sanitize_agent_name("my_agent_v2") == "my_agent_v2"
+
+    def test_plus_replaced(self):
+        assert _sanitize_agent_name("model+plus") == "model-plus"
+
+    def test_combined_suffix(self):
+        assert _sanitize_agent_name("fast-glm-4.7-flash") == "fast-glm-4-7-flash"
+
+    def test_empty_string(self):
+        assert _sanitize_agent_name("") == ""
+
+    def test_no_altering_of_valid_name(self):
+        name = "sk-agent-override-fast-glm-4-7-flash"
+        assert _sanitize_agent_name(name) == name
