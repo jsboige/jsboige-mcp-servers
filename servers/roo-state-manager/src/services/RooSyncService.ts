@@ -955,14 +955,16 @@ export class RooSyncService {
   }
 
   /**
-   * Obtient les machines avec statut UNKNOWN
+   * @deprecated #2318 — LOCAL-SELF only, not cross-machine reliable.
+   * Use dashboard-derived presence (crossCheckWithDashboard) instead.
    */
   public getUnknownMachines(): string[] {
     return this.heartbeatService.getUnknownMachines();
   }
 
   /**
-   * Obtient les machines avec statut IDLE
+   * @deprecated #2318 — LOCAL-SELF only, not cross-machine reliable.
+   * Use dashboard-derived presence instead.
    */
   public getIdleMachines(): string[] {
     return this.heartbeatService.getIdleMachines();

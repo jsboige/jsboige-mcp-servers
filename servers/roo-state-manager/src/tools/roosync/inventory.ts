@@ -3,8 +3,14 @@
  *
  * Récupération de l'inventaire machine et/ou de l'état heartbeat.
  *
+ * IMPORTANT: Les types "heartbeat", "all" et "machines" retournent des données
+ * heartbeat IN-MEMORY qui ne reflètent QUE l'activité du processus MCP local.
+ * Ils NE DOIVENT PAS être interprétés comme une vérité cross-machine.
+ * Pour un snapshot cross-machine fiable, utiliser type="status".
+ *
  * @module tools/roosync/inventory
- * @version 3.0.0
+ * @version 4.0.0 (#2318: cross-machine sunset annotations)
+ * @see #2318, ADR 008 Phase 4
  */
 
 import { z } from 'zod';
@@ -168,6 +174,9 @@ export const inventoryTool: UnifiedToolContract = {
       }
 
       // Récupérer l'état heartbeat si demandé
+      // #2318: These data are LOCAL-SELF ONLY. Each MCP process tracks only its own
+      // tool calls. Other machines appear as UNKNOWN regardless of their actual activity.
+      // Use type="status" for reliable cross-machine presence.
       if (type === 'heartbeat' || type === 'all') {
         const rooSyncService = await getRooSyncService();
         const heartbeatService = rooSyncService.getHeartbeatService();
@@ -179,6 +188,7 @@ export const inventoryTool: UnifiedToolContract = {
           idleMachines: state.idleMachines,
           statistics: state.statistics,
           heartbeats: includeHeartbeats ? Object.fromEntries(state.heartbeats) : undefined,
+          crossMachineWarning: 'Heartbeat data reflects LOCAL process activity only. Other machines appear as UNKNOWN regardless of their actual state. Use type="status" for reliable cross-machine presence. (#2318)',
           retrievedAt
         };
         if (!summary) {
@@ -187,6 +197,7 @@ export const inventoryTool: UnifiedToolContract = {
       }
 
       // [FUSION A2 #1863] type="machines" — fused from roosync_machines
+      // #2318: Same caveat as "heartbeat" — LOCAL-SELF ONLY data.
       if (type === 'machines') {
         const rooSyncService = await getRooSyncService();
         const heartbeatService = rooSyncService.getHeartbeatService();
@@ -232,10 +243,9 @@ export const inventoryTool: UnifiedToolContract = {
         }
         if (!summary) {
           Object.assign(result, machinesData);
+          result.crossMachineWarning = 'Machine status reflects LOCAL process activity only. Use type="status" for reliable cross-machine presence. (#2318)';
         }
       }
-
-      // Summary mode: return compact markdown instead of full JSON
       if (summary) {
         const lines: string[] = [`**Inventory Summary** (${retrievedAt})`, ''];
 
@@ -252,7 +262,8 @@ export const inventoryTool: UnifiedToolContract = {
 
         if (heartbeatState) {
           const hs = heartbeatState;
-          lines.push(`**Cluster status:** ${hs.statistics.totalMachines} machines`);
+          lines.push(`**Cluster status (LOCAL-SELF only):** ${hs.statistics.totalMachines} machines`);
+          lines.push(`⚠️ Heartbeat data is local-process only — use type="status" for cross-machine.`);
           lines.push(`- Online (${hs.onlineMachines.length}): ${hs.onlineMachines.join(', ') || 'none'}`);
           lines.push(`- Unknown (${hs.unknownMachines.length}): ${hs.unknownMachines.join(', ') || 'none'}`);
           lines.push(`- Idle (${hs.idleMachines.length}): ${hs.idleMachines.join(', ') || 'none'}`);
@@ -303,7 +314,7 @@ export const inventoryTool: UnifiedToolContract = {
  */
 export const inventoryToolMetadata = {
   name: 'roosync_inventory',
-  description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système. type="status" pour snapshot compact avec flags actionnables (fused from roosync_get_status).',
+  description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système. IMPORTANT: types "heartbeat"/"all"/"machines" return LOCAL-SELF only data (not cross-machine). Use type="status" for reliable cross-machine presence.',
   inputSchema: {
     type: 'object' as const,
     properties: {
