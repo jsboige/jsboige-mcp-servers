@@ -196,7 +196,7 @@ describe('roosyncConfig', () => {
 
       const result = await roosyncConfig(args);
 
-      expect(result.status).toBe('success');
+      expect(result.status).toBe('warning');
       expect(mockCollectConfig).toHaveBeenCalledWith({
         targets: ['modes', 'mcp'],
         dryRun: true

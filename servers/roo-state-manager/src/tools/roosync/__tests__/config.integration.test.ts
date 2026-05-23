@@ -422,9 +422,9 @@ describe('roosyncConfig (integration)', () => {
         targets: ['modes']
       });
 
-      // Should return a result even if no files collected
+      // Should return warning when no files collected
       expect(result).toBeDefined();
-      expect(result.status).toBe('success');
+      expect(result.status).toBe('warning');
     });
   });
 
