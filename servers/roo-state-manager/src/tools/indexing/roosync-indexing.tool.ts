@@ -379,8 +379,23 @@ export async function handleRooSyncIndexing(
             if (state.qdrantIndexQueue.size > 0 && !state.qdrantIndexInterval) {
                 hints.push('Queue non vide mais worker non démarré. Le serveur MCP peut ne pas avoir initialisé les services background.');
             }
-            if (state.indexingMetrics.failedTasks > 0) {
-                hints.push(`${state.indexingMetrics.failedTasks} tâches en échec permanent. Utilisez action: "diagnose" pour plus de détails.`);
+
+            // #2307: Collect per-task failure details from cache
+            const failedTasks: Array<{ task_id: string; error: string; retry_count: number; last_attempt: string | undefined }> = [];
+            for (const [taskId, skeleton] of conversationCache) {
+                const idx = skeleton.metadata?.indexingState;
+                if (idx?.indexStatus === 'failed') {
+                    failedTasks.push({
+                        task_id: taskId,
+                        error: idx.indexError || 'unknown error',
+                        retry_count: idx.indexRetryCount ?? 0,
+                        last_attempt: idx.lastIndexAttempt,
+                    });
+                }
+            }
+
+            if (failedTasks.length > 0) {
+                hints.push(`${failedTasks.length} tâches en échec permanent (détails dans failed_task_details ci-dessous).`);
             }
 
             const status = {
@@ -397,6 +412,7 @@ export async function handleRooSyncIndexing(
                         bandwidth_saved_bytes: state.indexingMetrics.bandwidthSaved
                     }
                 },
+                failed_task_details: failedTasks.length > 0 ? failedTasks : undefined,
                 diagnostic_hints: hints.length > 0 ? hints : undefined
             };
             return {
@@ -573,6 +589,7 @@ export async function handleRooSyncIndexing(
 
         case 'repair_gaps': {
             // #2246: One-shot gap-repair — detect tasks missing from Qdrant or stale
+            // #2307: Optimized — pre-filter from metadata before Qdrant queries, then batch
             const isDryRun = args.dry_run !== false;
             const maxTasks = args.max_repair_tasks || 50;
             const { getQdrantClient } = await import('../../services/qdrant.js');
@@ -588,46 +605,70 @@ export async function handleRooSyncIndexing(
                 const repaired: string[] = [];
                 const errors: string[] = [];
 
+                // Phase 1: Pre-filter candidates from metadata (no Qdrant calls)
+                const candidates: Array<{ taskId: string; checkReason: string; needQdrantCount: boolean }> = [];
                 for (const [taskId, skeleton] of conversationCache) {
-                    if (gaps.length >= maxTasks) break;
-
+                    if (candidates.length >= maxTasks * 3) break; // over-sample to account for false positives
                     const metadata = skeleton.metadata;
                     if (!metadata) continue;
-
-                    let pointsCount = 0;
-                    try {
-                        // #2246: Use exact:true — approximate count with filters returns
-                        // spurious values (e.g. 161K for a task with 0 points).
-                        const countResult = await qdrant.count(collectionName, {
-                            filter: { must: [{ key: 'task_id', match: { value: taskId } }] },
-                            exact: true
-                        });
-                        pointsCount = (countResult as any).count ?? 0;
-                    } catch {
-                        errors.push(`${taskId}: Qdrant count query failed`);
-                        continue;
-                    }
 
                     const indexingState = metadata.indexingState;
                     const lastActivity = metadata.lastActivity;
                     const lastIndexedAt = indexingState?.lastIndexedAt;
 
-                    if (pointsCount === 0 && indexingState?.indexStatus === 'success') {
-                        gaps.push({ task_id: taskId, reason: 'indexed_success_but_zero_points', points_in_qdrant: 0 });
-                        continue;
-                    }
-
+                    // Stale: lastActivity > lastIndexedAt + 60s — always needs Qdrant count
                     if (lastActivity && lastIndexedAt) {
                         const activityTime = new Date(lastActivity).getTime();
                         const indexedTime = new Date(lastIndexedAt).getTime();
                         if (activityTime > indexedTime + 60_000) {
-                            gaps.push({ task_id: taskId, reason: `lastActivity > lastIndexedAt (${lastActivity} > ${lastIndexedAt})`, points_in_qdrant: pointsCount });
+                            candidates.push({ taskId, checkReason: `lastActivity > lastIndexedAt (${lastActivity} > ${lastIndexedAt})`, needQdrantCount: true });
                             continue;
                         }
                     }
 
+                    // Never indexed — always needs Qdrant count
                     if (!indexingState?.indexStatus && !metadata.qdrantIndexedAt) {
-                        gaps.push({ task_id: taskId, reason: 'never_indexed', points_in_qdrant: pointsCount });
+                        candidates.push({ taskId, checkReason: 'never_indexed', needQdrantCount: true });
+                        continue;
+                    }
+
+                    // Indexed success but might have 0 points — needs Qdrant count
+                    if (indexingState?.indexStatus === 'success') {
+                        candidates.push({ taskId, checkReason: 'indexed_success_verify_points', needQdrantCount: true });
+                    }
+                }
+
+                // Phase 2: Batch Qdrant count queries with concurrency=10
+                const BATCH_CONCURRENCY = 10;
+                const candidatesNeedingCount = candidates.filter(c => c.needQdrantCount).slice(0, maxTasks);
+
+                for (let i = 0; i < candidatesNeedingCount.length; i += BATCH_CONCURRENCY) {
+                    if (gaps.length >= maxTasks) break;
+                    const batch = candidatesNeedingCount.slice(i, i + BATCH_CONCURRENCY);
+                    const results = await Promise.all(batch.map(async (candidate) => {
+                        try {
+                            const countResult = await qdrant.count(collectionName, {
+                                filter: { must: [{ key: 'task_id', match: { value: candidate.taskId } }] },
+                                exact: true
+                            });
+                            const pointsCount = (countResult as any).count ?? 0;
+                            return { ...candidate, pointsCount, error: null as string | null };
+                        } catch {
+                            return { ...candidate, pointsCount: -1, error: `${candidate.taskId}: Qdrant count query failed` };
+                        }
+                    }));
+
+                    for (const r of results) {
+                        if (gaps.length >= maxTasks) break;
+                        if (r.error) { errors.push(r.error); continue; }
+
+                        if (r.pointsCount === 0 && r.checkReason === 'indexed_success_verify_points') {
+                            gaps.push({ task_id: r.taskId, reason: 'indexed_success_but_zero_points', points_in_qdrant: 0 });
+                        } else if (r.checkReason === 'never_indexed') {
+                            gaps.push({ task_id: r.taskId, reason: 'never_indexed', points_in_qdrant: r.pointsCount });
+                        } else if (r.checkReason.startsWith('lastActivity')) {
+                            gaps.push({ task_id: r.taskId, reason: r.checkReason, points_in_qdrant: r.pointsCount });
+                        }
                     }
                 }
 
@@ -665,7 +706,8 @@ export async function handleRooSyncIndexing(
                             action: 'repair_gaps',
                             mode: isDryRun ? 'dry_run' : 'executed',
                             total_cached_tasks: conversationCache.size,
-                            scanned_up_to: Math.min(maxTasks, conversationCache.size),
+                            candidates_prefiltered: candidates.length,
+                            qdrant_queries: candidatesNeedingCount.slice(0, maxTasks).length,
                             gaps_detected: gaps.length,
                             repaired: repaired.length,
                             errors: errors.length > 0 ? errors : undefined,
