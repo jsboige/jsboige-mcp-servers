@@ -763,9 +763,6 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
  * Découvre les versions de baseline disponibles (tags Git baseline-v*)
  */
 async function handleListVersionsAction(args: BaselineArgs, timestamp: string): Promise<BaselineResult> {
-  const sharedStatePath = getSharedStatePath();
-  const configDir = join(sharedStatePath, 'configs');
-
   interface VersionInfo {
     tag: string;
     date: string;
@@ -775,8 +772,7 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
   try {
     const allTags = execSync('git tag -l "baseline-v*"', {
       encoding: 'utf8',
-      timeout: GIT_QUICK_TIMEOUT_MS,
-      cwd: configDir
+      timeout: GIT_QUICK_TIMEOUT_MS
     });
 
     const tags = allTags.split('\n').filter(t => t.trim());
@@ -803,15 +799,13 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
       try {
         date = execSync(`git log -1 --format=%ai ${tag}`, {
           encoding: 'utf8',
-          timeout: GIT_QUICK_TIMEOUT_MS,
-          cwd: configDir
+          timeout: GIT_QUICK_TIMEOUT_MS
         }).trim();
       } catch { /* skip */ }
       try {
         message = execSync(`git log -1 --format=%s ${tag}`, {
           encoding: 'utf8',
-          timeout: GIT_QUICK_TIMEOUT_MS,
-          cwd: configDir
+          timeout: GIT_QUICK_TIMEOUT_MS
         }).trim();
       } catch { /* skip */ }
       versions.push({ tag, date, message });

@@ -141,6 +141,16 @@ export async function roosyncConfig(args: ConfigArgs) {
           scope // Issue #601 - Pass scope to collect
         });
 
+        if (result.filesCount === 0) {
+          return {
+            status: 'warning',
+            message: `Aucun fichier collecté pour les targets: ${targets.join(', ')}. Vérifiez que les répertoires sources existent.`,
+            packagePath: result.packagePath,
+            totalSize: result.totalSize,
+            manifest: result.manifest
+          };
+        }
+
         return {
           status: 'success',
           message: `Configuration collectée avec succès (${result.filesCount} fichiers)`,

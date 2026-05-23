@@ -100,7 +100,7 @@ describe('roosync_config - Execution - Action Collect', () => {
       dryRun: true
     });
 
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('warning');
     expect(mockCollectConfig).toHaveBeenCalledWith({
       targets: ['modes', 'mcp'],
       dryRun: true
