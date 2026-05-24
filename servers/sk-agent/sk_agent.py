@@ -24,7 +24,7 @@ Transport modes:
     SK_AGENT_PORT env var               -> override default HTTP port (8100)
     SK_AGENT_API_KEY env var            -> require Bearer token auth on HTTP mode (optional)
 
-Core tools:
+Core tools (9):
     call_agent(prompt, agent?, attachment?, options?, ...)  -- unified agent call
     run_conversation(prompt, conversation?, options?)       -- multi-agent conversations
     list_agents()           -- list configured agents
@@ -32,9 +32,7 @@ Core tools:
     list_tools()            -- list loaded MCP tools
     end_conversation(id)    -- cleanup thread
     install_libreoffice()   -- utility
-
-Deprecated aliases (backward compat):
-    ask, analyze_image, zoom_image, analyze_video, analyze_document, list_models
+    diagnostics()           -- health status
 
 Configuration:
     SK_AGENT_CONFIG env var or default sk_agent_config.json next to this file.
@@ -349,7 +347,7 @@ def build_call_agent_description(config: SKAgentConfig) -> str:
             "  prompt: The question or instruction",
             "  agent: Agent ID (default: auto-select based on attachment type)",
             "  attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)",
-            "  options: JSON string with type-specific params: region, mode, max_pages, page_range, num_frames",
+            "  options: JSON string with type-specific params: region ({\"x\":0,\"y\":0,\"width\":100,\"height\":100}), mode (visual/text/hybrid), max_pages, page_range, num_frames",
             "  conversation_id: Continue previous conversation",
             "  include_steps: Show intermediate tool/reasoning steps",
             "  model_override: Model ID to use instead of agent default (must be enabled)",
@@ -2108,233 +2106,6 @@ async def list_conversations() -> str:
 
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------------------
-# Deprecated Aliases (backward compatibility)
-# ---------------------------------------------------------------------------
-
-
-@mcp_server.tool()
-async def ask(
-    prompt: str,
-    model: str = "",
-    conversation_id: str = "",
-    system_prompt: str = "",
-    include_steps: bool = False,
-) -> str:
-    """[DEPRECATED - Use call_agent instead] Send a text prompt to the local LLM.
-
-    Args:
-        prompt: The user question or instruction.
-        model: Optional model ID. Uses default if not specified.
-        conversation_id: Optional conversation ID to continue.
-        system_prompt: Optional override for the system prompt.
-        include_steps: If True, include intermediate steps.
-
-    Returns:
-        JSON string with: response, conversation_id, model_used
-    """
-    manager = await _get_manager()
-    result = await manager.call_agent(
-        prompt=prompt,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-        include_steps=include_steps,
-    )
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def analyze_image(
-    image_source: str,
-    prompt: str = "Describe this image in detail",
-    model: str = "",
-    conversation_id: str = "",
-    zoom_context: str = "",
-) -> str:
-    """[DEPRECATED - Use call_agent with attachment instead] Analyze an image.
-
-    Args:
-        image_source: Path to image file or URL.
-        prompt: Question about the image.
-        model: Optional vision model ID.
-        conversation_id: Continue previous conversation.
-        zoom_context: Optional zoom context JSON.
-
-    Returns:
-        JSON string with: response, conversation_id, model_used
-    """
-    manager = await _get_manager()
-    opts = {}
-    if zoom_context:
-        opts["zoom_context"] = zoom_context
-    result = await manager.call_agent(
-        prompt=prompt,
-        attachment=image_source,
-        options=opts if opts else None,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-    )
-    if zoom_context:
-        result["zoom_context"] = zoom_context
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def zoom_image(
-    image_source: str,
-    region: str,
-    prompt: str = "Describe this region in detail",
-    model: str = "",
-    conversation_id: str = "",
-    zoom_context: str = "",
-) -> str:
-    """[DEPRECATED - Use call_agent with attachment+options.region instead] Zoom into image region.
-
-    Args:
-        image_source: Path to image file or URL.
-        region: JSON string with crop region.
-        prompt: Question about the region.
-        model: Optional vision model ID.
-        conversation_id: Continue previous conversation.
-        zoom_context: Previous zoom context.
-
-    Returns:
-        JSON string with: response, conversation_id, model_used, region_analyzed
-    """
-    try:
-        region_dict = json.loads(region)
-    except json.JSONDecodeError:
-        return json.dumps({"error": "Invalid region JSON"}, ensure_ascii=False)
-
-    manager = await _get_manager()
-    opts = {"region": region_dict}
-    if zoom_context:
-        opts["zoom_context"] = zoom_context
-    result = await manager.call_agent(
-        prompt=prompt,
-        attachment=image_source,
-        options=opts,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-    )
-    result["region_analyzed"] = region_dict
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def analyze_video(
-    video_source: str,
-    prompt: str = "Describe what happens in this video",
-    model: str = "",
-    conversation_id: str = "",
-    num_frames: int = 8,
-) -> str:
-    """[DEPRECATED - Use call_agent with attachment instead] Analyze a video.
-
-    Args:
-        video_source: Path to video file.
-        prompt: Question about the video.
-        model: Optional vision model ID.
-        conversation_id: Continue previous conversation.
-        num_frames: Number of frames to extract (default: 8, max: 20).
-
-    Returns:
-        JSON string with: response, conversation_id, model_used, frames_analyzed
-    """
-    manager = await _get_manager()
-    result = await manager.call_agent(
-        prompt=prompt,
-        attachment=video_source,
-        options={"num_frames": max(1, min(num_frames, 20))},
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-    )
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def analyze_document(
-    document_source: str,
-    prompt: str = "Summarize this document and extract key information",
-    model: str = "",
-    conversation_id: str = "",
-    max_pages: int = 10,
-    mode: str = "visual",
-    page_range: str = "",
-    auto_limit_tokens: bool = True,
-) -> str:
-    """[DEPRECATED - Use call_agent with attachment+options instead] Analyze a document.
-
-    Args:
-        document_source: Path to document file.
-        prompt: Question about the document.
-        model: Optional model ID.
-        conversation_id: Continue previous conversation.
-        max_pages: Max pages to analyze (default: 10, max: 50).
-        mode: Analysis mode - visual, text, or hybrid.
-        page_range: JSON with page range.
-        auto_limit_tokens: Auto-limit pages by context window.
-
-    Returns:
-        JSON string with: response, conversation_id, model_used, pages_analyzed, mode
-    """
-    opts: dict[str, Any] = {
-        "mode": mode,
-        "max_pages": max_pages,
-        "auto_limit_tokens": auto_limit_tokens,
-    }
-    if page_range:
-        try:
-            opts["page_range"] = json.loads(page_range)
-        except json.JSONDecodeError:
-            return json.dumps({"error": "Invalid page_range JSON"}, ensure_ascii=False)
-
-    manager = await _get_manager()
-    result = await manager.call_agent(
-        prompt=prompt,
-        attachment=document_source,
-        options=opts,
-        model_id=model if model else None,
-        conversation_id=conversation_id if conversation_id else None,
-    )
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp_server.tool()
-async def list_models() -> str:
-    """[DEPRECATED - Use list_agents instead] List configured models.
-
-    Returns model information. For agent-centric view, use list_agents().
-    """
-    manager = await _get_manager()
-    agents = manager.list_agents()
-
-    lines = ["# Available Models (via agents)", ""]
-    for a in agents:
-        badges = []
-        if a.get("is_default"):
-            badges.append("default-ask")
-        if a.get("is_default_vision"):
-            badges.append("default-vision")
-        if a.get("vision"):
-            badges.append("vision")
-
-        badge_str = f" [{', '.join(badges)}]" if badges else ""
-        lines.append(f"## {a.get('model', 'unknown')}{badge_str}")
-        lines.append(f"- Model: {a.get('model_id', 'unknown')}")
-        ctx = a.get("context_window", 0)
-        lines.append(
-            f"- Context: {ctx:,} tokens"
-            if isinstance(ctx, int)
-            else f"- Context: {ctx}"
-        )
-        lines.append(f"- Vision: {'Yes' if a.get('vision') else 'No'}")
-        if a.get("description"):
-            lines.append(f"- Description: {a['description']}")
-        lines.append("")
-
-    return "\n".join(lines)
 
 
 @mcp_server.tool()
