@@ -854,11 +854,13 @@ export async function handleRooSyncIndexing(
                             let entry: any;
                             try { entry = JSON.parse(trimmed); } catch { continue; }
 
-                            // Claude Code JSONL: each line has { type, message, ... }
+                            // Claude Code JSONL: each line has { type, message, timestamp, ... }
+                            // The timestamp is on the top-level entry, NOT inside message.
                             const message = entry.message || entry;
                             if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
 
-                            const ts = message.timestamp ? new Date(message.timestamp) : null;
+                            const tsRaw = entry.timestamp || message.timestamp;
+                            const ts = tsRaw ? new Date(tsRaw) : null;
                             if (ts && (ts < startDate || ts > endDate)) continue;
 
                             for (const block of message.content) {
