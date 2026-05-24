@@ -157,7 +157,8 @@ _INVALID_NAME_CHARS = re.compile(r"[^0-9A-Za-z_-]")
 
 
 def _sanitize_agent_name(name: str) -> str:
-    return _INVALID_NAME_CHARS.sub("-", name)
+    sanitized = _INVALID_NAME_CHARS.sub("-", name)
+    return sanitized.strip("-")
 
 
 # ---------------------------------------------------------------------------
