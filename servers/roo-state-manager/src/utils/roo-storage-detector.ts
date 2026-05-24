@@ -1706,7 +1706,7 @@ export class RooStorageDetector {
                 }
             }
             if (skippedLines > 0) {
-                console.warn(`[readJsonFile] ⚠️ \${skippedLines} invalid JSONL lines skipped in \${path.basename(filePath)}`);
+                console.warn(`[readJsonFile] ⚠️ ${skippedLines} invalid JSONL lines skipped in ${path.basename(filePath)}`);
             }
             if(items.length > 0) {
                 console.log(`[readJsonFile] ✅ Parsed ${items.length} items as JSONL from ${path.basename(filePath)}`);
