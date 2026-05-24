@@ -496,11 +496,11 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), analyze (roadmap), best-practices (MCP guide).',
+    description: 'Diagnostic et debug RooSync. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide)',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'] },
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'] },
             checkDiskSpace: { type: 'boolean' },
             verbose: { type: 'boolean' },
             clearCache: { type: 'boolean' },
@@ -508,7 +508,10 @@ export const roosyncDiagnoseDefinition = {
             message: { type: 'string' },
             roadmapPath: { type: 'string', description: 'Auto-detected if omitted' },
             generateReport: { type: 'boolean' },
-            mcp_name: { type: 'string', description: 'MCP name for best-practices action' }
+            mcp_name: { type: 'string', description: 'MCP name for best-practices action' },
+            state: { type: 'string', enum: ['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'], description: 'Target lifecycle state (action: lifecycle)' },
+            machineId: { type: 'string', description: 'Machine ID (action: lifecycle, default: hostname)' },
+            reason: { type: 'string', description: 'Reason for lifecycle transition (action: lifecycle)' }
         },
         required: ['action'],
         additionalProperties: false
