@@ -224,7 +224,7 @@ export const readVscodeLogsDefinition = {
 // ============================================================
 export const exportDataDefinition = {
     name: 'export_data',
-    description: 'Export data as XML, JSON, CSV, Markdown, or debug parsing. Targets: task, conversation, project.',
+    description: 'Export data as XML, JSON, CSV, Markdown, or debug parsing. Targets: task, conversation, project. Gotcha: large exports (full conversations/projects) can timeout — prefer filePath output and/or jsonVariant:light + truncationChars for big targets.',
     inputSchema: {
         type: 'object',
         properties: {
