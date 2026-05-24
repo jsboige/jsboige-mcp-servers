@@ -86,6 +86,49 @@ describe('ChunkExtractor', () => {
       expect(chunks[0].tool_details?.parameters).toEqual({ arg: 'val' });
     });
 
+    it('should extract tool_interaction from Anthropic tool_use blocks (#2336 D2)', async () => {
+      // Roo stores tool calls as tool_use blocks in the content array (Anthropic format)
+      const metadata = JSON.stringify({});
+      const apiHistory = JSON.stringify([
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'I will run a command' },
+            { type: 'tool_use', id: 'toolu_123', name: 'execute_command', input: { command: 'npm test' } },
+            { type: 'tool_use', id: 'toolu_456', name: 'read_file', input: { path: '/src/index.ts' } }
+          ],
+          timestamp: '2023-01-01T00:00:00Z'
+        }
+      ]);
+
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (filePath.toString().endsWith('task_metadata.json')) return metadata;
+        if (filePath.toString().endsWith('api_conversation_history.json')) return apiHistory;
+        return '';
+      });
+
+      const chunks = await extractChunksFromTask(taskId, taskPath);
+
+      // 1 message_exchange + 2 tool_interaction chunks
+      expect(chunks).toHaveLength(3);
+
+      const msgChunk = chunks.find(c => c.chunk_type === 'message_exchange');
+      expect(msgChunk).toBeDefined();
+      expect(msgChunk!.content).toBe('I will run a command');
+
+      const toolChunks = chunks.filter(c => c.chunk_type === 'tool_interaction');
+      expect(toolChunks).toHaveLength(2);
+
+      // Tool interactions should be indexed (#2247)
+      expect(toolChunks[0].indexed).toBe(true);
+      expect(toolChunks[0].tool_details?.tool_name).toBe('execute_command');
+      expect(toolChunks[0].tool_details?.parameters).toEqual({ command: 'npm test' });
+
+      expect(toolChunks[1].indexed).toBe(true);
+      expect(toolChunks[1].tool_details?.tool_name).toBe('read_file');
+      expect(toolChunks[1].tool_details?.parameters).toEqual({ path: '/src/index.ts' });
+    });
+
     it('should handle ui_messages.json', async () => {
       const metadata = JSON.stringify({});
       const apiHistory = JSON.stringify([]);

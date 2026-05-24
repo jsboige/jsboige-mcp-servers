@@ -213,6 +213,24 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         })
                         .join(' ')
                         .trim();
+
+                    // #2336 D2 étape B: Extract tool_use blocks (Anthropic format) → populate msg.tool_calls
+                    // so the existing handler below (line ~260) can emit tool_interaction chunks.
+                    if (!msg.tool_calls) {
+                        const toolUseBlocks = (msg.content as any[]).filter(
+                            (part: any) => part && typeof part === 'object' && part.type === 'tool_use'
+                        );
+                        if (toolUseBlocks.length > 0) {
+                            msg.tool_calls = toolUseBlocks.map((block: any) => ({
+                                function: {
+                                    name: block.name || 'unknown',
+                                    arguments: typeof block.input === 'string'
+                                        ? block.input
+                                        : JSON.stringify(block.input || {}),
+                                },
+                            }));
+                        }
+                    }
                 } else if (msg.content) {
                     // Fallback for any other type, ensuring it becomes a string
                     contentText = String(msg.content);
@@ -478,6 +496,7 @@ export async function extractChunksFromClaudeSession(
 
                         // Extract text content (can be string or array of content blocks)
                         let contentText = '';
+                        let claudeToolUseBlocks: any[] = [];
                         if (typeof message.content === 'string') {
                             contentText = message.content;
                         } else if (Array.isArray(message.content)) {
@@ -486,9 +505,14 @@ export async function extractChunksFromClaudeSession(
                                 .map((block: any) => block.text)
                                 .join(' ')
                                 .trim();
+
+                            // #2336 D2 étape B: Collect tool_use blocks for tool_interaction chunks
+                            claudeToolUseBlocks = message.content.filter(
+                                (block: any) => block && typeof block === 'object' && block.type === 'tool_use'
+                            );
                         }
 
-                        if (!contentText.trim()) continue;
+                        if (!contentText.trim() && claudeToolUseBlocks.length === 0) continue;
 
                         // Truncate oversized content to prevent embedding explosion
                         contentText = truncateForIndexing(contentText, `claude-${role}:msg#${messageIndex + 1}`);
@@ -524,6 +548,47 @@ export async function extractChunksFromClaudeSession(
                             model: entry.model || message?.model,
                             has_error: ccHasError || undefined,
                         });
+
+                        // #2336 D2 étape B: Emit tool_interaction chunks for Claude Code tool_use blocks
+                        for (const toolBlock of claudeToolUseBlocks) {
+                            const toolName = toolBlock.name || 'unknown';
+                            let parsedInput: any = {};
+                            try {
+                                parsedInput = typeof toolBlock.input === 'string'
+                                    ? JSON.parse(toolBlock.input)
+                                    : (toolBlock.input || {});
+                            } catch { parsedInput = { raw: toolBlock.input }; }
+
+                            const toolContent = truncateForIndexing(
+                                `Tool call: ${toolName} with args ${JSON.stringify(parsedInput)}`,
+                                `claude-tool:${toolName}`
+                            );
+
+                            const toolSeq = sequenceOrder++;
+                            chunks.push({
+                                chunk_id: computeChunkId(taskId, 'tool_interaction', toolSeq, toolContent),
+                                task_id: taskId,
+                                parent_task_id: null,
+                                root_task_id: null,
+                                chunk_type: 'tool_interaction',
+                                sequence_order: toolSeq,
+                                timestamp: entry.timestamp || new Date().toISOString(),
+                                indexed: true, // #2247: tool interactions are valuable search targets
+                                content: toolContent,
+                                tool_details: {
+                                    tool_name: toolName,
+                                    parameters: parsedInput,
+                                    status: 'success',
+                                },
+                                tool_name: toolName,
+                                model: entry.model || message?.model,
+                                workspace: metadata?.workspace,
+                                workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
+                                task_title: metadata?.title,
+                                host_os: getHostIdentifier(),
+                                source: 'claude-code',
+                            });
+                        }
                     } catch (parseError) {
                         // Skip malformed lines but log for debugging
                         console.warn(`[Claude] Skipping malformed line in ${jsonlFile}: ${parseError}`);
