@@ -352,6 +352,10 @@ def build_call_agent_description(config: SKAgentConfig) -> str:
             "  options: JSON string with type-specific params: region, mode, max_pages, page_range, num_frames",
             "  conversation_id: Continue previous conversation",
             "  include_steps: Show intermediate tool/reasoning steps",
+            "  model_override: Model ID to use instead of agent default (must be enabled)",
+            "  system_prompt: Override system prompt for this call",
+            "  mcp_overrides: JSON string: {\"replace\":[...]}, {\"add\":[...],\"remove\":[...]}",
+            "  timeout: Max seconds to wait (default: no limit)",
         ]
     )
 
@@ -979,6 +983,7 @@ class SKAgentManager:
                         conversation_id,
                         include_steps,
                         options.get("zoom_context"),
+                        model_override,
                     )
                 else:
                     # Pass single image or list of images
@@ -990,6 +995,7 @@ class SKAgentManager:
                         effective_prompt,
                         conversation_id,
                         include_steps,
+                        model_override,
                     )
             elif attachment_type == "video":
                 return await self._handle_video(
@@ -1000,6 +1006,7 @@ class SKAgentManager:
                     conversation_id,
                     include_steps,
                     options.get("num_frames", 8),
+                    model_override,
                 )
             elif attachment_type == "document":
                 return await self._handle_document(
@@ -1010,6 +1017,7 @@ class SKAgentManager:
                     conversation_id,
                     include_steps,
                     options,
+                    model_override,
                 )
             else:
                 return await self._handle_text(
@@ -1018,6 +1026,7 @@ class SKAgentManager:
                     effective_prompt,
                     conversation_id,
                     include_steps,
+                    model_override,
                 )
 
         try:
@@ -1084,6 +1093,7 @@ class SKAgentManager:
         prompt: str,
         conversation_id: str | None,
         include_steps: bool,
+        model_override: str | None = None,
     ) -> dict[str, Any]:
         """Handle text-only prompt."""
         conv_id, thread = self._get_or_create_thread(conversation_id)
@@ -1092,7 +1102,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs(agent_id)
+        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1123,6 +1133,7 @@ class SKAgentManager:
         prompt: str,
         conversation_id: str | None,
         include_steps: bool,
+        model_override: str | None = None,
     ) -> dict[str, Any]:
         """Handle image analysis. Supports single image or list of images."""
         try:
@@ -1145,7 +1156,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs(agent_id)
+            invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1181,6 +1192,7 @@ class SKAgentManager:
         conversation_id: str | None,
         include_steps: bool,
         zoom_context: str | None = None,
+        model_override: str | None = None,
     ) -> dict[str, Any]:
         """Handle image region analysis (zoom)."""
         try:
@@ -1221,7 +1233,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs(agent_id)
+            invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1258,6 +1270,7 @@ class SKAgentManager:
         conversation_id: str | None,
         include_steps: bool,
         num_frames: int = 8,
+        model_override: str | None = None,
     ) -> dict[str, Any]:
         """Handle video analysis."""
         # Convert file:/// URI to local path
@@ -1294,7 +1307,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs(agent_id)
+        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1332,6 +1345,7 @@ class SKAgentManager:
         conversation_id: str | None,
         include_steps: bool,
         options: dict,
+        model_override: str | None = None,
     ) -> dict[str, Any]:
         """Handle document analysis."""
         mode = options.get("mode", "visual")
@@ -1408,7 +1422,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs(agent_id)
+        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
