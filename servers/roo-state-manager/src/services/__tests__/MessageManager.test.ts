@@ -1228,4 +1228,72 @@ describe('MessageManager', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('phantom message fix (#2307 Phase 4)', () => {
+    test('markAsRead returns true when message already archived (idempotent)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Phantom Test', 'Body', 'LOW'
+      );
+
+      // Manually move message to archive (simulating auto-archive)
+      const inboxFile = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
+      const archiveFile = join(testSharedStatePath, 'messages/archive', `${msg.id}.json`);
+      const content = await fs.readFile(inboxFile, 'utf-8');
+      const message = JSON.parse(content);
+      message.status = 'archived';
+      await fs.writeFile(archiveFile, JSON.stringify(message, null, 2), 'utf-8');
+      await fs.unlink(inboxFile);
+
+      // markAsRead should return true (idempotent — already processed)
+      const result = await messageManager.markAsRead(msg.id, 'machine-a');
+      expect(result).toBe(true);
+    });
+
+    test('markAsRead returns false when message truly does not exist', async () => {
+      const result = await messageManager.markAsRead('msg-nonexistent-123456', 'machine-a');
+      expect(result).toBe(false);
+    });
+
+    test('archiveMessage returns true when message already archived (idempotent)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Archive Idempotent', 'Body', 'LOW'
+      );
+
+      // Archive it first
+      const firstArchive = await messageManager.archiveMessage(msg.id);
+      expect(firstArchive).toBe(true);
+
+      // Archive again — should return true (idempotent)
+      const secondArchive = await messageManager.archiveMessage(msg.id);
+      expect(secondArchive).toBe(true);
+    });
+
+    test('archiveMessage returns false when message truly does not exist', async () => {
+      const result = await messageManager.archiveMessage('msg-nonexistent-789012');
+      expect(result).toBe(false);
+    });
+
+    test('getMessage invalidates cache when stale entry detected', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'Cache Invalidation', 'Body', 'MEDIUM'
+      );
+
+      // Force cache build by reading inbox
+      await messageManager.readInbox('machine-a');
+
+      // Manually delete BOTH inbox and sent files (simulating external deletion)
+      const inboxFile = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
+      const sentFile = join(testSharedStatePath, 'messages/sent', `${msg.id}.json`);
+      await fs.unlink(inboxFile);
+      if (existsSync(sentFile)) await fs.unlink(sentFile);
+
+      // getMessage should return null and invalidate cache
+      const result = await messageManager.getMessage(msg.id, 'machine-a');
+      expect(result).toBeNull();
+
+      // Subsequent inbox read should not list the deleted message
+      const inbox = await messageManager.readInbox('machine-a');
+      expect(inbox.find(m => m.id === msg.id)).toBeUndefined();
+    });
+  });
 });

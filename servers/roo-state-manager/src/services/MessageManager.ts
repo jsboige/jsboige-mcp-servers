@@ -697,6 +697,16 @@ export class MessageManager {
     }
 
     logger.warn(`Message not found: ${messageId}`);
+
+    // #2307 Phase 4: If message was in cache but not on disk, force cache rebuild
+    if (this.inboxFullCache.has(messageId)) {
+      logger.info(`Stale cache entry detected for ${messageId}, forcing rebuild`);
+      this.inboxCache = null;
+      this.inboxFullCache = new Map();
+      this.cacheBuiltAt = 0;
+      this.lastInboxFileCount = -1;
+    }
+
     return null;
   }
 
@@ -717,7 +727,14 @@ export class MessageManager {
 
     const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
-      logger.warn(`Message not found in inbox: ${messageId}`);
+      // Phantom message fix (#2307 Phase 4): message may have been auto-archived
+      // between cache build and this mutation. Check archive for idempotency.
+      const archiveFile = join(this.archivePath, `${messageId}.json`);
+      if (existsSync(archiveFile)) {
+        logger.info(`Message found in archive (already processed): ${messageId}`);
+        return true;
+      }
+      logger.warn(`Message not found in inbox or archive: ${messageId}`);
       return false;
     }
 
@@ -1014,7 +1031,13 @@ export class MessageManager {
 
     const inboxFile = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(inboxFile)) {
-      logger.warn(`Message not found in inbox: ${messageId}`);
+      // Phantom message fix (#2307 Phase 4): already archived = success (idempotent)
+      const archiveFile = join(this.archivePath, `${messageId}.json`);
+      if (existsSync(archiveFile)) {
+        logger.info(`Message already archived: ${messageId}`);
+        return true;
+      }
+      logger.warn(`Message not found in inbox or archive: ${messageId}`);
       return false;
     }
 
