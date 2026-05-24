@@ -374,6 +374,49 @@ describe('roosync_diagnose', () => {
   });
 
   // ============================================================
+  // Tests action: 'analyze' (#1935 Cluster D — routing)
+  // ============================================================
+
+  describe('action: analyze', () => {
+    it('should dispatch to analyzeRooSyncProblems and return success', async () => {
+      const mockResult = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ success: true, totalDecisions: 5 }) }],
+        isError: false,
+      };
+
+      vi.doMock('../../diagnostic/analyze_problems.js', () => ({
+        analyzeRooSyncProblems: vi.fn().mockResolvedValue(mockResult)
+      }));
+
+      const args: DiagnoseArgs = { action: 'analyze' };
+      const result = await roosyncDiagnose(args);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('analyze');
+      expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(result.data).toEqual(mockResult);
+    });
+
+    it('should forward analyze result data even when isError=true', async () => {
+      const mockResult = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: 'roadmap not found' }) }],
+        isError: true,
+      };
+
+      vi.doMock('../../diagnostic/analyze_problems.js', () => ({
+        analyzeRooSyncProblems: vi.fn().mockResolvedValue(mockResult)
+      }));
+
+      const args: DiagnoseArgs = { action: 'analyze', roadmapPath: '/nonexistent/roadmap.md' };
+      const result = await roosyncDiagnose(args);
+
+      // Note: current routing checks analyzeResult.success (top-level), not isError
+      expect(result.action).toBe('analyze');
+      expect(result.data).toEqual(mockResult);
+    });
+  });
+
+  // ============================================================
   // Tests d'erreurs
   // ============================================================
 
