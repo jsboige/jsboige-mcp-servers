@@ -31,8 +31,8 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 // ====================================================================
 
 export const DiagnoseArgsSchema = z.object({
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'])
-    .describe('Operation: env, debug, reset, test, health, analyze (roadmap), best-practices (MCP guide, fused from get_mcp_best_practices)'),
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'])
+    .describe('Operation: env, debug, reset, test, health, lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Vérifier l\'espace disque (action: env)'),
@@ -59,7 +59,16 @@ export const DiagnoseArgsSchema = z.object({
 
   // #1935 Cluster D: Paramètres pour action: 'best-practices' (fused from get_mcp_best_practices)
   mcp_name: z.string().optional()
-    .describe('Nom du MCP spécifique à analyser (action: best-practices)')
+    .describe('Nom du MCP spécifique à analyser (action: best-practices)'),
+
+  // #1320: Paramètres pour action: 'lifecycle' (re-câblé depuis standalone tool, #512 arbitrage A)
+  state: z.enum(['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'])
+    .optional()
+    .describe('Target lifecycle state (action: lifecycle)'),
+  machineId: z.string().optional()
+    .describe('Machine ID (action: lifecycle, default: hostname)'),
+  reason: z.string().optional()
+    .describe('Reason for lifecycle transition (action: lifecycle)')
 });
 
 export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
@@ -67,7 +76,7 @@ export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
 export const DiagnoseResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si l\'opération a réussi'),
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'])
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'])
     .describe('Type d\'opération effectuée'),
   timestamp: z.string()
     .describe('Timestamp de l\'opération (ISO 8601)'),
@@ -109,6 +118,25 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 
       case 'health':
         return await handleHealthAction(args, timestamp);
+
+      // #1320: Lifecycle state machine (re-câblé depuis standalone tool, #512 arbitrage A)
+      case 'lifecycle': {
+        const m = await import('./lifecycle.js');
+        const lcResult = await m.reportLifecycle({
+          state: args.state!,
+          machineId: args.machineId,
+          reason: args.reason,
+        });
+        return {
+          success: lcResult.success,
+          action: 'lifecycle',
+          timestamp,
+          message: lcResult.success
+            ? `Lifecycle: ${lcResult.fromState} → ${lcResult.toState}`
+            : `Lifecycle transition failed: ${lcResult.error}`,
+          data: lcResult,
+        };
+      }
 
       // #1935 Cluster D: fused from analyze_roosync_problems
       case 'analyze': {

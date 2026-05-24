@@ -189,6 +189,17 @@ export type {
 // was removed (#1470, orphan never used by registry.ts). The MCP tool definitions
 // served to clients live in tool-definitions.ts (allToolDefinitions).
 
+// #1320: Lifecycle state machine tool
+export {
+  reportLifecycle,
+  LifecycleArgsSchema,
+  LifecycleResultSchema,
+  lifecycleToolMetadata,
+  AGENT_LIFECYCLE_STATES
+} from './lifecycle.js';
+export type { LifecycleArgs, LifecycleResult } from './lifecycle.js';
+import { lifecycleToolMetadata } from './lifecycle.js';
+
 // #675: Dashboards markdown partagés cross-machine
 // #1470: Metadata import from dashboard-schemas.ts (no handler dependency)
 import { dashboardToolMetadata } from './dashboard-schemas.js';
