@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { getEmbeddingMetrics } from '../../services/task-indexer/VectorIndexer.js';
 import { tryGetSharedStatePath } from '../../utils/shared-state-path.js';
+import { getServerCapabilities } from '../../utils/server-capabilities.js';
 
 // Lazy imports — only loaded when needed by debug/reset actions.
 // Static import was causing hangs on action="test" when RooSyncService init blocked (#1910).
@@ -221,6 +222,17 @@ async function handleEnvAction(
 
   // #2195: Surface embedding pipeline metrics
   report.embeddings = getEmbeddingMetrics();
+
+  // #1746-D: Surface degraded capability status
+  const caps = getServerCapabilities();
+  report.capabilities = {
+    degraded: caps.getAllDegraded().map(e => ({ capability: e.capability, reason: e.reason, since: e.since })),
+    available: caps.isDegraded() ? false : true,
+    report: caps.getReport(),
+  };
+  if (caps.isDegraded()) {
+    report.status = 'DEGRADED';
+  }
 
   return {
     success: report.status === 'OK',
