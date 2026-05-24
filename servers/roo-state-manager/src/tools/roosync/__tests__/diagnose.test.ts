@@ -333,6 +333,58 @@ describe('roosync_diagnose', () => {
   });
 
   // ============================================================
+  // Tests action: 'lifecycle' (#1320, #512 arbitrage A)
+  // ============================================================
+
+  describe('action: lifecycle', () => {
+    it('should route to reportLifecycle and return success', async () => {
+      vi.doMock('../lifecycle.js', () => ({
+        reportLifecycle: vi.fn().mockResolvedValue({
+          success: true,
+          fromState: 'idle',
+          toState: 'active',
+          machineId: 'test-machine',
+          timestamp: new Date().toISOString(),
+        }),
+      }));
+
+      const args: DiagnoseArgs = {
+        action: 'lifecycle',
+        state: 'active',
+        reason: 'Starting task',
+      };
+
+      const result = await roosyncDiagnose(args);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('lifecycle');
+      expect(result.message).toContain('idle → active');
+      expect(result.data.success).toBe(true);
+    });
+
+    it('should handle failed lifecycle transition', async () => {
+      vi.doMock('../lifecycle.js', () => ({
+        reportLifecycle: vi.fn().mockResolvedValue({
+          success: false,
+          error: 'Invalid transition',
+          fromState: 'unknown',
+          toState: 'unknown',
+        }),
+      }));
+
+      const args: DiagnoseArgs = {
+        action: 'lifecycle',
+        state: 'invalid_state',
+      };
+
+      const result = await roosyncDiagnose(args);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Lifecycle transition failed');
+    });
+  });
+
+  // ============================================================
   // Tests action: 'best-practices' (#1935 Cluster D)
   // ============================================================
 
