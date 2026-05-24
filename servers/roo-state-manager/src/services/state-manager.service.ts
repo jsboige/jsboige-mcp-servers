@@ -102,7 +102,8 @@ export class StateManager {
                 indexedTasks: 0,
                 failedTasks: 0,
                 retryTasks: 0,
-                bandwidthSaved: 0
+                bandwidthSaved: 0,
+                lastIndexedAt: undefined
             },
             skeletonRefreshInterval: null,
             lastSkeletonRefreshAt: 0,

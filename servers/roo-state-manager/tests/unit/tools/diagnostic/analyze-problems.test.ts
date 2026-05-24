@@ -14,6 +14,13 @@ const { mockAccess, mockReadFile, mockStat, mockMkdir, mockWriteFile } = vi.hois
 }));
 
 vi.mock('fs/promises', () => ({
+    default: {
+        access: mockAccess,
+        readFile: mockReadFile,
+        stat: mockStat,
+        mkdir: mockMkdir,
+        writeFile: mockWriteFile,
+    },
     access: mockAccess,
     readFile: mockReadFile,
     stat: mockStat,
@@ -21,7 +28,7 @@ vi.mock('fs/promises', () => ({
     writeFile: mockWriteFile
 }));
 
-vi.mock('../../../../src/utils/server-helpers.js', () => ({
+vi.mock('../../../../src/utils/shared-state-path.js', () => ({
     getSharedStatePath: vi.fn(() => '/mock/shared-state')
 }));
 
@@ -45,7 +52,8 @@ describe('analyze_roosync_problems', () => {
     });
 
     it('should return error when no roadmap file is found', async () => {
-        mockAccess.mockRejectedValue(new Error('ENOENT'));
+        const enoentError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+        mockStat.mockRejectedValue(enoentError);
 
         const result = await analyzeRooSyncProblems();
         const data = JSON.parse((result.content[0] as any).text);
@@ -147,16 +155,14 @@ describe('analyze_roosync_problems', () => {
         expect(data.issues.some((i: any) => i.type === 'STATUS_INCONSISTENCIES')).toBe(true);
     });
 
-    it('should use ROOSYNC_SHARED_PATH env var for auto-detection', async () => {
-        process.env.ROOSYNC_SHARED_PATH = '/env/shared';
-        mockAccess.mockResolvedValue(undefined);
+    it('should use getSharedStatePath for auto-detection', async () => {
         mockStat.mockResolvedValue({ size: 10 });
         mockReadFile.mockResolvedValue('');
 
         await analyzeRooSyncProblems();
 
-        // Should have tried to access the env-based path
-        expect(mockAccess).toHaveBeenCalled();
+        // Should have tried to stat the auto-detected path from getSharedStatePath
+        expect(mockStat).toHaveBeenCalledWith(expect.stringContaining('shared-state'));
     });
 
     it('should return isError on filesystem errors', async () => {

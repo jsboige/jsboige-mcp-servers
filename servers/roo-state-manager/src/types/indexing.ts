@@ -29,6 +29,7 @@ export interface IndexingMetrics {
     failedTasks: number;
     retryTasks: number;
     bandwidthSaved: number; // Estimation en octets
+    lastIndexedAt?: string; // ISO datetime of last successful indexing
 }
 
 export const INDEX_VERSION_CURRENT = "1.1";

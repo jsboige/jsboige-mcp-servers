@@ -7,12 +7,13 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { analyzeRooSyncProblems } from '../analyze_problems.js';
 
 // Mock fs/promises
-const { mockReadFile, mockAccess, mockStat, mockMkdir, mockWriteFile } = vi.hoisted(() => ({
+const { mockReadFile, mockAccess, mockStat, mockMkdir, mockWriteFile, mockGetSharedStatePath } = vi.hoisted(() => ({
 	mockReadFile: vi.fn(),
 	mockAccess: vi.fn(),
 	mockStat: vi.fn(),
 	mockMkdir: vi.fn(),
 	mockWriteFile: vi.fn(),
+	mockGetSharedStatePath: vi.fn(() => '/mock/shared-state'),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -30,15 +31,14 @@ vi.mock('fs/promises', () => ({
 	writeFile: mockWriteFile,
 }));
 
-vi.mock('../../../utils/server-helpers.js', () => ({
-	getSharedStatePath: () => '/mock/shared-state',
+vi.mock('../../../utils/shared-state-path.js', () => ({
+	getSharedStatePath: mockGetSharedStatePath,
 }));
 
 describe('analyze_problems', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		delete process.env.ROOSYNC_SHARED_PATH;
-		delete process.env.SHARED_STATE_PATH;
+		mockGetSharedStatePath.mockReturnValue('/mock/shared-state');
 	});
 
 	// ============================================================
@@ -46,24 +46,22 @@ describe('analyze_problems', () => {
 	// ============================================================
 
 	describe('path detection', () => {
-		test('returns error when roadmap file not found', async () => {
-			mockAccess.mockRejectedValue(new Error('ENOENT'));
+		test('returns error when shared state path not configured', async () => {
+			mockGetSharedStatePath.mockImplementation(() => { throw new Error('not configured'); });
 			const result = await analyzeRooSyncProblems({});
 			const data = JSON.parse(result.content[0].text);
 			expect(data.success).toBe(false);
 			expect(data.error).toContain('introuvable');
 		});
 
-		test('uses ROOSYNC_SHARED_PATH env var', async () => {
-			process.env.ROOSYNC_SHARED_PATH = '/env/shared';
-			mockAccess.mockResolvedValueOnce(undefined);
+		test('uses getSharedStatePath for auto-detection (#2307 Phase 4)', async () => {
 			mockStat.mockResolvedValueOnce({ size: 100 });
 			mockReadFile.mockResolvedValueOnce('');
 			await analyzeRooSyncProblems({});
-			expect(mockAccess).toHaveBeenCalled();
+			expect(mockStat).toHaveBeenCalledWith(expect.stringContaining('shared-state'));
 		});
 
-		test('uses explicit roadmapPath when provided', async () => {
+		test('explicit roadmapPath overrides auto-detection', async () => {
 			mockStat.mockResolvedValueOnce({ size: 200 });
 			mockReadFile.mockResolvedValueOnce('');
 			await analyzeRooSyncProblems({ roadmapPath: '/explicit/path.md' });

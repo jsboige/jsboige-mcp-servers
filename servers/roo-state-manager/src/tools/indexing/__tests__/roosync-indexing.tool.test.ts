@@ -332,7 +332,8 @@ describe('roosync_indexing status action', () => {
 				indexedTasks: 85,
 				failedTasks: 5,
 				retryTasks: 2,
-				bandwidthSaved: 1024000
+				bandwidthSaved: 1024000,
+				lastIndexedAt: '2026-05-24T10:00:00.000Z'
 			}
 		};
 
@@ -358,7 +359,7 @@ describe('roosync_indexing status action', () => {
 			qdrantIndexQueue: new Set<string>(),
 			qdrantIndexInterval: null,
 			isQdrantIndexingEnabled: false,
-			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
 		};
 
 		const result = await handleRooSyncIndexing(

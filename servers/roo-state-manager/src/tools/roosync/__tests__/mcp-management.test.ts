@@ -491,7 +491,7 @@ describe('roosyncMcpManagement', () => {
             await expect(roosyncMcpManagement({
                 action: 'rebuild',
                 mcp_name: 'test-mcp'
-            })).rejects.toThrow('Build échoué');
+            })).rejects.toThrow('Build failed');
         });
     });
 
