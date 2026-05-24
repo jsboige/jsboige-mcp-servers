@@ -606,14 +606,6 @@ async function gracefulShutdown(signal: string): Promise<void> {
             logger.info('MCP server stopped');
         }
 
-        const { getServiceRegistry } = await import('./services/ServiceRegistry.js');
-        const registry = getServiceRegistry();
-        if (registry) {
-            logger.info('Shutting down ServiceRegistry...');
-            await registry.shutdown();
-            logger.info('ServiceRegistry shutdown complete');
-        }
-
         clearTimeout(forceExitTimeout);
         logger.info(`Graceful shutdown completed successfully after ${signal}`);
         process.exit(0);
