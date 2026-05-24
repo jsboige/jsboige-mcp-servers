@@ -18,23 +18,33 @@ import { dashboardToolMetadata } from './roosync/dashboard-schemas.js';
 // ============================================================
 export const conversationBrowserDefinition = {
     name: 'conversation_browser',
-    description: 'Navigate, visualize and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster/synthesis), rebuild.',
+    description: 'Navigate, visualize and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster), rebuild. Note: synthesis is disabled (#788).',
     inputSchema: {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'], description: 'Start with "list" to discover task IDs.' },
-            limit: { type: 'number' },
+            // --- list ---
+            limit: { type: 'number', description: '[list] Max conversations to return.' },
+            page: { type: 'number', description: '[list] Page number (1-based). Default: 1.' },
+            per_page: { type: 'number', description: '[list] Results per page (10-100). Default: 10.' },
             sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'], default: 'lastActivity' },
             sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
             pendingSubtaskOnly: { type: 'boolean' },
             contentPattern: { type: 'string' },
-            conversation_id: { type: 'string' },
-            max_depth: { type: 'number' },
+            workspacePathMatch: { type: 'string', enum: ['exact', 'normalized', 'substring'], default: 'normalized', description: '[list] Workspace matching strategy.' },
+            startDate: { type: 'string', description: '[list] Start date filter (ISO 8601 or YYYY-MM-DD).' },
+            endDate: { type: 'string', description: '[list] End date filter (ISO 8601 or YYYY-MM-DD).' },
+            machineId: { type: 'string', description: '[list] Filter by machine ID.' },
+            includeArchives: { type: 'boolean', default: true, description: '[list] Include cross-machine GDrive archives (Tier 3).' },
+            // --- tree ---
+            conversation_id: { type: 'string', description: '[tree] Conversation ID.' },
+            max_depth: { type: 'number', description: '[tree] Max tree depth.' },
             include_siblings: { type: 'boolean', default: true },
             output_format: { type: 'string', enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'], default: 'json' },
             current_task_id: { type: 'string' },
             truncate_instruction: { type: 'number', default: 80 },
             show_metadata: { type: 'boolean', default: false },
+            // --- current/view ---
             workspace: { type: 'string' },
             task_id: { type: 'string' },
             view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain' },
@@ -43,8 +53,11 @@ export const conversationBrowserDefinition = {
             max_output_length: { type: 'number', default: 300000 },
             smart_truncation: { type: 'boolean', default: false },
             smart_truncation_config: { type: 'object', properties: { gradientStrength: { type: 'number' }, minPreservationRate: { type: 'number' }, maxTruncationRate: { type: 'number' } } },
+            messageStart: { type: 'number', description: '[view] 0-based start index (inclusive).' },
+            messageEnd: { type: 'number', description: '[view] 0-based end index (exclusive).' },
             output_file: { type: 'string' },
-            summarize_type: { type: 'string', enum: ['trace', 'cluster', 'synthesis'], description: 'trace=stats/timeline, cluster=parent-child, synthesis=LLM analysis.' },
+            // --- summarize ---
+            summarize_type: { type: 'string', enum: ['trace', 'cluster'], description: 'trace=stats/timeline, cluster=parent-child. Note: synthesis disabled (#788).' },
             taskId: { type: 'string' },
             source: { type: 'string', enum: ['roo', 'claude', 'all'], default: 'roo' },
             filePath: { type: 'string' },
@@ -65,9 +78,11 @@ export const conversationBrowserDefinition = {
             includeClusterTimeline: { type: 'boolean', default: false },
             clusterTruncationChars: { type: 'number', default: 0 },
             showTaskRelationships: { type: 'boolean', default: true },
-            synthesis_output_format: { type: 'string', enum: ['json', 'markdown'], default: 'json' },
+            // --- rebuild ---
             force_rebuild: { type: 'boolean', description: 'Rebuild all (slow). Default: missing/stale only.', default: false },
-            task_ids: { type: 'array', items: { type: 'string' } }
+            task_ids: { type: 'array', items: { type: 'string' } },
+            sources: { type: 'array', items: { type: 'string', enum: ['roo', 'claude', 'archive'] }, description: '[rebuild] Skeleton sources. Default: ["roo"].' },
+            reindex: { type: 'boolean', default: false, description: '[rebuild] Force Qdrant reindex for all built skeletons.' }
         },
         required: ['action']
     }
@@ -154,17 +169,17 @@ export const roosyncIndexingDefinition = {
 // ============================================================
 export const codebaseSearchDefinition = {
     name: 'codebase_search',
-    description: 'Recherche sémantique dans le code par concept. Always pass workspace explicitly.',
+    description: 'Recherche sémantique dans le code par concept. Auto-detects workspace if omitted.',
     inputSchema: {
         type: 'object',
         properties: {
             query: { type: 'string', description: 'Semantic query. Ex: "rate limiting for embeddings"' },
-            workspace: { type: 'string', description: 'Absolute workspace path (REQUIRED)' },
+            workspace: { type: 'string', description: 'Absolute workspace path. Auto-detected via MCP roots or WORKSPACE_PATH if omitted.' },
             directory_prefix: { type: 'string', description: 'Directory filter. Ex: "src/services"' },
-            limit: { type: 'number', description: 'Max results (default: 10, max: 30)' },
+            limit: { type: 'number', description: 'Max results (default: 15, max: 50)' },
             min_score: { type: 'number', description: 'Min similarity 0-1 (default: 0.5)' }
         },
-        required: ['query', 'workspace']
+        required: ['query']
     }
 };
 
