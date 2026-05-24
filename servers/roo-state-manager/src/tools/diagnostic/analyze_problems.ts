@@ -64,6 +64,7 @@ export const analyze_roosync_problems: Tool = {
 };
 
 export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
+    let isAutoDetected = false;
     try {
         // Path resolution: explicit param > standard shared state path (#2307 Phase 4)
         let roadmapPath = options.roadmapPath;
@@ -71,6 +72,7 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             try {
                 const sharedStatePath = getSharedStatePath();
                 roadmapPath = path.join(sharedStatePath, 'sync-roadmap.md');
+                isAutoDetected = true;
             } catch {
                 // getSharedStatePath() threw — no shared path configured
             }
@@ -315,6 +317,20 @@ ${JSON.stringify(analysis.issues, null, 2)}
         };
 
     } catch (error: any) {
+        // Auto-detected path that doesn't exist → friendly "introuvable" message
+        const isENOENT = error?.code === 'ENOENT' ||
+            (typeof error?.message === 'string' && error.message.includes('ENOENT'));
+        if (isAutoDetected && isENOENT) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: false,
+                        error: "Fichier sync-roadmap.md introuvable. Veuillez spécifier le chemin."
+                    }, null, 2)
+                }]
+            };
+        }
         return {
             content: [{
                 type: 'text',
