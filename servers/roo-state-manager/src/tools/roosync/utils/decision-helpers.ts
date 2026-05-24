@@ -217,7 +217,7 @@ export async function updateRoadmapStatusAsync(
   machineId: string
 ): Promise<void> {
   try {
-    const roadmapPath = join(process.cwd(), 'sync-roadmap.md');
+    const roadmapPath = join(getSharedStatePath(), 'sync-roadmap.md');
     let content = readFileSync(roadmapPath, 'utf-8');
 
     // Trouver et remplacer le bloc de décision

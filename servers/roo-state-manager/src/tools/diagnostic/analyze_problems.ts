@@ -65,43 +65,14 @@ export const analyze_roosync_problems: Tool = {
 
 export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
     try {
-        // Détection du chemin
+        // Path resolution: explicit param > standard shared state path (#2307 Phase 4)
         let roadmapPath = options.roadmapPath;
         if (!roadmapPath) {
-            // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH (prioritaire) ou SHARED_STATE_PATH (legacy)
-            const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || process.env.SHARED_STATE_PATH;
-            if (sharedStatePath) {
-                const envPath = path.join(sharedStatePath, 'sync-roadmap.md');
-                try {
-                    await fs.access(envPath);
-                    roadmapPath = envPath;
-                }
-                catch {
-                    // Fichier non trouvé via env, continuer avec fallback
-                }
-            }
-            // FALLBACK : Chemins hardcodés (si env non défini ou fichier non trouvé)
-            if (!roadmapPath) {
-                // Tentative de détection standard
-                // Note: En environnement MCP, les chemins relatifs peuvent varier.
-                // On suppose une structure relative connue ou on cherche.
-                // Pour l'instant on hardcode les chemins probables comme dans le script PS1 mais adaptés
-                const commonPaths = [
-                    '../../Drive/.shortcut-targets-by-id/1jEQqHabwXrIukTEI1vE05gWsJNYNNFVB/.shared-state/sync-roadmap.md', // Path du script PS1
-                    'RooSync/sync-roadmap.md',
-                    'docs/suivi/RooSync/sync-roadmap.md',
-                    '.shared-state/sync-roadmap.md'
-                ];
-                for (const p of commonPaths) {
-                    // Résolution du chemin absolu si nécessaire, ou relatif au CWD
-                    const resolvedPath = path.resolve(process.cwd(), p);
-                    try {
-                        await fs.access(resolvedPath);
-                        roadmapPath = resolvedPath;
-                        break;
-                    }
-                    catch { }
-                }
+            try {
+                const sharedStatePath = getSharedStatePath();
+                roadmapPath = path.join(sharedStatePath, 'sync-roadmap.md');
+            } catch {
+                // getSharedStatePath() threw — no shared path configured
             }
         }
         if (!roadmapPath) {
