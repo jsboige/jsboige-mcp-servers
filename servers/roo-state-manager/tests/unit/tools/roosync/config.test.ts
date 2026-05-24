@@ -29,13 +29,6 @@ describe('roosync_config - Interface', () => {
 
     expect(module.ConfigArgsSchema).toBeDefined();
   });
-
-  it('devrait exporter configToolMetadata', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-
-    expect(module.configToolMetadata).toBeDefined();
-    expect(module.configToolMetadata.name).toBe('roosync_config');
-  });
 });
 
 describe('roosync_config - Schema Validation - Action Collect', () => {
@@ -332,53 +325,6 @@ describe('roosync_config - Schema Validation - Actions Invalides', () => {
   });
 });
 
-describe('roosync_config - Metadata', () => {
-  it('devrait avoir les métadonnées correctes', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-    const metadata = module.configToolMetadata;
-
-    expect(metadata.name).toBe('roosync_config');
-    expect(metadata.description).toContain('config');
-    expect(metadata.description).toContain('RooSync');
-    expect(metadata.inputSchema).toBeDefined();
-    expect(metadata.inputSchema.type).toBe('object');
-    expect(metadata.inputSchema.properties).toHaveProperty('action');
-    expect(metadata.inputSchema.properties).toHaveProperty('targets');
-    expect(metadata.inputSchema.properties).toHaveProperty('version');
-    expect(metadata.inputSchema.properties).toHaveProperty('description');
-    expect(metadata.inputSchema.properties).toHaveProperty('packagePath');
-    expect(metadata.inputSchema.properties).toHaveProperty('backup');
-    expect(metadata.inputSchema.properties).toHaveProperty('machineId');
-    expect(metadata.inputSchema.properties).toHaveProperty('dryRun');
-    expect(metadata.inputSchema.required).toContain('action');
-  });
-
-  it('devrait documenter les 3 actions (collect, publish, apply)', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-    const metadata = module.configToolMetadata;
-
-    expect(metadata.description).toContain('collect');
-    expect(metadata.description).toContain('publish');
-    expect(metadata.description).toContain('apply');
-  });
-
-  it('devrait documenter le workflow atomique collect+publish', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-    const metadata = module.configToolMetadata;
-
-    // Test simplifié après #1922 Phase 2 - English descriptions
-    expect(metadata.description).toContain('collect');
-    expect(metadata.description).toContain('publish');
-  });
-
-  it('devrait avoir enum correct pour action', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-    const metadata = module.configToolMetadata;
-
-    expect(metadata.inputSchema.properties.action.enum).toEqual(['collect', 'publish', 'apply', 'apply_profile']);
-  });
-});
-
 describe('roosync_config - Retrocompatibilité', () => {
   it('devrait couvrir tous les cas d\'usage de collect_config', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
@@ -615,26 +561,6 @@ describe('roosync_config - Integration Tests - Action Collect', () => {
     expect(result.status).toBe('success');
     expect(result.totalSize).toBe(256000);
     expect(result.manifest['mcp:jupyter'].count).toBe(3);
-  });
-});
-
-describe('roosync_config - Metadata New Targets', () => {
-  it('devrait documenter les nouveaux targets dans la description', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-    const metadata = module.configToolMetadata;
-
-    expect(metadata.description).toContain('roomodes');
-    expect(metadata.description).toContain('model-configs');
-    expect(metadata.description).toContain('rules');
-  });
-
-  it('devrait documenter les targets dans le inputSchema', async () => {
-    const module = await import('../../../../src/tools/roosync/config.js');
-    const metadata = module.configToolMetadata;
-
-    expect(metadata.inputSchema.properties.targets.description).toContain('roomodes');
-    expect(metadata.inputSchema.properties.targets.description).toContain('model-configs');
-    expect(metadata.inputSchema.properties.targets.description).toContain('rules');
   });
 });
 

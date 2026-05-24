@@ -476,55 +476,6 @@ ${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).map(([s, c]) => `|
  * @param args Arguments de l'outil
  * @returns Résultat de l'opération
  */
-/**
- * Métadonnées de l'outil roosync_manage pour enregistrement MCP
- */
-export const manageToolMetadata = {
-  name: 'roosync_manage',
-  description: 'Gérer le cycle de vie des messages RooSync : marquer lu, archiver, opérations bulk, cleanup automatique, statistiques inbox',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['mark_read', 'archive', 'bulk_mark_read', 'bulk_archive', 'cleanup', 'stats'],
-        description: 'Action: mark_read/archive (un message), bulk_mark_read/bulk_archive (avec filtres), cleanup (auto-nettoyage), stats (statistiques inbox)'
-      },
-      message_id: {
-        type: 'string',
-        description: 'ID du message (requis pour mark_read/archive)'
-      },
-      from: {
-        type: 'string',
-        description: 'Filtre par expéditeur (substring, pour bulk/cleanup)'
-      },
-      priority: {
-        type: 'string',
-        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
-        description: 'Filtre par priorité (pour bulk)'
-      },
-      before_date: {
-        type: 'string',
-        description: 'Filtre messages avant cette date ISO-8601 (pour bulk)'
-      },
-      subject_contains: {
-        type: 'string',
-        description: 'Filtre par sujet contenant ce texte (pour bulk)'
-      },
-      tag: {
-        type: 'string',
-        description: 'Filtre par tag (pour bulk)'
-      },
-      format: {
-        type: 'string',
-        enum: ['json', 'markdown'],
-        description: 'Format de sortie pour stats: "json" pour données structurées, "markdown" pour tableau formaté (défaut)'
-      }
-    },
-    required: ['action']
-  }
-};
-
 export async function roosyncManage(
   args: RooSyncManageArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

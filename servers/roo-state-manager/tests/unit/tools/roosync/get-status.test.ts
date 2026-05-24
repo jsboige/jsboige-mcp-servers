@@ -11,7 +11,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
     roosyncGetStatus,
     parseHudDataFromDashboard,
-    getStatusToolMetadata,
 } from '../../../../src/tools/roosync/get-status.js';
 
 const {
@@ -331,14 +330,6 @@ describe('roosync_get_status', () => {
         it('wraps unknown errors in RooSyncServiceError', async () => {
             mockGetRooSyncService.mockRejectedValue(new Error('Unexpected crash'));
             await expect(roosyncGetStatus({})).rejects.toThrow('Unexpected crash');
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(getStatusToolMetadata.name).toBe('roosync_get_status');
-            expect(getStatusToolMetadata.inputSchema.properties.detail.enum).toContain('compact');
-            expect(getStatusToolMetadata.inputSchema.properties.detail.enum).toContain('full');
         });
     });
 });

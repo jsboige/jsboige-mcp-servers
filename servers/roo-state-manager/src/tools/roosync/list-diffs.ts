@@ -90,29 +90,3 @@ function determineSeverity(type: string): 'low' | 'medium' | 'high' {
   if (type === 'software') return 'medium';
   return 'low';
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- * Utilise Zod.shape natif pour compatibilité MCP
- */
-export const listDiffsToolMetadata = {
-  name: 'roosync_list_diffs',
-  description: 'Lister les différences détectées entre machines',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      filterType: {
-        type: 'string',
-        enum: ['all', 'config', 'files', 'settings'],
-        description: 'Filtrer par type de différence',
-        default: 'all'
-      },
-      forceRefresh: {
-        type: 'boolean',
-        description: 'Force le rafraîchissement du cache d\'inventaire (évite les données périmées)',
-        default: false
-      }
-    },
-    additionalProperties: false
-  }
-};

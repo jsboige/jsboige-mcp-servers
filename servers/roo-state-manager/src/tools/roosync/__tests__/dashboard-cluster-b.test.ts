@@ -10,8 +10,7 @@ const mockRefreshDashboard = vi.fn();
 vi.mock('../refresh-dashboard.js', () => ({
   roosyncRefreshDashboard: (...args: any[]) => mockRefreshDashboard(...args),
   RefreshDashboardArgsSchema: {},
-  RefreshDashboardResultSchema: {},
-  refreshDashboardToolMetadata: { name: 'roosync_refresh_dashboard' }
+  RefreshDashboardResultSchema: {}
 }));
 
 // Mock update-dashboard module
@@ -19,8 +18,7 @@ const mockUpdateDashboard = vi.fn();
 vi.mock('../update-dashboard.js', () => ({
   roosyncUpdateDashboard: (...args: any[]) => mockUpdateDashboard(...args),
   UpdateDashboardArgsSchema: {},
-  UpdateDashboardResultSchema: {},
-  updateDashboardToolMetadata: { name: 'roosync_update_dashboard' }
+  UpdateDashboardResultSchema: {}
 }));
 
 // Mock OpenAI for condensation

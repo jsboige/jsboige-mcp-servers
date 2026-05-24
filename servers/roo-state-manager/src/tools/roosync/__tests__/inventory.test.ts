@@ -121,7 +121,7 @@ const mockExecutionContext: any = {
 
 // Import après les mocks
 // Fix #636 timeout: Use static import instead of dynamic imports
-import { inventoryTool, inventoryToolMetadata } from '../inventory.js';
+import { inventoryTool } from '../inventory.js';
 import { InventoryService } from '../../../services/roosync/InventoryService.js';
 
 describe('inventoryTool', () => {
@@ -265,23 +265,6 @@ describe('inventoryTool', () => {
       );
 
       expect(result.data.heartbeatState.heartbeats).toBeUndefined();
-    });
-  });
-
-  // ============================================================
-  // Tests de validation
-  // ============================================================
-
-  describe('validation', () => {
-    test('should have correct metadata', async () => {
-      expect(inventoryToolMetadata.name).toBe('roosync_inventory');
-      expect(inventoryToolMetadata.description).toContain('inventaire');
-      expect(inventoryToolMetadata.inputSchema.properties.type).toBeDefined();
-      expect(inventoryToolMetadata.inputSchema.properties.type.enum).toEqual(['machine', 'heartbeat', 'all', 'machines', 'status']);
-    });
-
-    test('should require type parameter', async () => {
-      expect(inventoryToolMetadata.inputSchema.required).toContain('type');
     });
   });
 

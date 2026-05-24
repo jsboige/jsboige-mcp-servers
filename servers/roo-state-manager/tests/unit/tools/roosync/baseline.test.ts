@@ -31,11 +31,6 @@ describe('roosync_baseline - Interface', () => {
   it('devrait exporter BaselineResultSchema', () => {
     expect(module.BaselineResultSchema).toBeDefined();
   });
-
-  it('devrait exporter baselineToolMetadata', () => {
-    expect(module.baselineToolMetadata).toBeDefined();
-    expect(module.baselineToolMetadata.name).toBe('roosync_baseline');
-  });
 });
 
 describe('roosync_baseline - Schema Validation - Action: update', () => {
@@ -246,70 +241,5 @@ describe('roosync_baseline - Schema Validation - Errors', () => {
     });
 
     expect(result.success).toBe(false);
-  });
-});
-
-describe('roosync_baseline - Metadata', () => {
-  let module: any;
-
-  beforeAll(async () => {
-    module = await import('../../../../src/tools/roosync/baseline.js');
-  }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
-
-  it('devrait avoir le nom correct', () => {
-    const metadata = module.baselineToolMetadata;
-
-    expect(metadata.name).toBe('roosync_baseline');
-  });
-
-  it('devrait avoir une description', () => {
-    const metadata = module.baselineToolMetadata;
-
-    expect(metadata.description).toBeDefined();
-    expect(typeof metadata.description).toBe('string');
-    expect(metadata.description.length).toBeGreaterThan(0);
-  });
-
-  it('devrait avoir un inputSchema valide', () => {
-    const metadata = module.baselineToolMetadata;
-
-    expect(metadata.inputSchema).toBeDefined();
-    expect(metadata.inputSchema.type).toBe('object');
-    expect(metadata.inputSchema.properties).toBeDefined();
-    expect(metadata.inputSchema.properties.action).toBeDefined();
-    expect(metadata.inputSchema.properties.action.enum).toEqual(['update', 'version', 'restore', 'export', 'list_versions', 'current_version']);
-    expect(metadata.inputSchema.required).toEqual(['action']);
-  });
-
-  it('devrait documenter tous les paramètres des 4 actions', () => {
-    const metadata = module.baselineToolMetadata;
-    const props = metadata.inputSchema.properties;
-
-    // Paramètres update
-    expect(props.machineId).toBeDefined();
-    expect(props.mode).toBeDefined();
-    expect(props.aggregationConfig).toBeDefined();
-
-    // Paramètres version
-    expect(props.version).toBeDefined();
-    expect(props.message).toBeDefined();
-    expect(props.pushTags).toBeDefined();
-    expect(props.createChangelog).toBeDefined();
-
-    // Paramètres restore
-    expect(props.source).toBeDefined();
-    expect(props.targetVersion).toBeDefined();
-    expect(props.restoredBy).toBeDefined();
-
-    // Paramètres export
-    expect(props.format).toBeDefined();
-    expect(props.outputPath).toBeDefined();
-    expect(props.includeHistory).toBeDefined();
-    expect(props.includeMetadata).toBeDefined();
-    expect(props.prettyPrint).toBeDefined();
-
-    // Paramètres communs
-    expect(props.createBackup).toBeDefined();
-    expect(props.updateReason).toBeDefined();
   });
 });

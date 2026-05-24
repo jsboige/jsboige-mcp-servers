@@ -44,19 +44,13 @@ vi.mock('../../../utils/logger.js', () => ({
 }));
 
 // Fix #636 timeout: Use static import instead of dynamic imports
-import { cleanupMessages, cleanupToolMetadata } from '../cleanup.js';
+import { cleanupMessages } from '../cleanup.js';
 
 describe('cleanup', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockGetSharedStatePath.mockReturnValue('/shared/state');
 		mockGetLocalMachineId.mockReturnValue('test-machine');
-	});
-
-	test('exports cleanupToolMetadata', async () => {
-		expect(cleanupToolMetadata).toBeDefined();
-		expect(cleanupToolMetadata.name).toBe('roosync_cleanup_messages');
-		expect(cleanupToolMetadata.inputSchema.properties.operation).toBeDefined();
 	});
 
 	test('exports CleanupMessagesArgs type', async () => {
@@ -274,24 +268,5 @@ describe('cleanup', () => {
 
 		const text = result.content[0].text;
 		expect(text).not.toContain('IDs en échec');
-	});
-
-	test('inputSchema metadata is valid', async () => {
-		expect(cleanupToolMetadata.name).toBe('roosync_cleanup_messages');
-		expect(cleanupToolMetadata.inputSchema.type).toBe('object');
-		expect(cleanupToolMetadata.inputSchema.required).toContain('operation');
-
-		const operationProp = cleanupToolMetadata.inputSchema.properties.operation;
-		expect(operationProp.type).toBe('string');
-		expect(operationProp.enum).toEqual(['mark_read', 'archive']);
-
-		// Optional filter properties
-		expect(cleanupToolMetadata.inputSchema.properties.from).toBeDefined();
-		expect(cleanupToolMetadata.inputSchema.properties.priority).toBeDefined();
-		expect(cleanupToolMetadata.inputSchema.properties.before_date).toBeDefined();
-		expect(cleanupToolMetadata.inputSchema.properties.subject_contains).toBeDefined();
-		expect(cleanupToolMetadata.inputSchema.properties.tag).toBeDefined();
-		expect(cleanupToolMetadata.inputSchema.properties.status).toBeDefined();
-		expect(cleanupToolMetadata.inputSchema.properties.verbose).toBeDefined();
 	});
 });

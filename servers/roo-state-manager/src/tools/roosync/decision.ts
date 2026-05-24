@@ -382,12 +382,3 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
     };
   }
 }
-
-/**
- * Metadata pour l'outil MCP
- */
-export const roosyncDecisionToolMetadata = {
-  name: 'roosync_decision',
-  description: 'Gère le workflow de décision RooSync (approve/reject/apply/rollback/info). Action "info" = consultation read-only.',
-  inputSchema: zodToJsonSchema(RooSyncDecisionArgsSchema as any)
-};

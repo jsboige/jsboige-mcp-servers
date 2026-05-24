@@ -26,11 +26,6 @@ describe('roosync_debug_reset - Interface', () => {
   it('devrait exporter DebugResetArgsSchema', () => {
     expect(module.DebugResetArgsSchema).toBeDefined();
   });
-
-  it('devrait exporter debugResetToolMetadata', () => {
-    expect(module.debugResetToolMetadata).toBeDefined();
-    expect(module.debugResetToolMetadata.name).toBe('roosync_debug_reset');
-  });
 });
 
 describe('roosync_debug_reset - Schema Validation', () => {
@@ -101,28 +96,5 @@ describe('roosync_debug_reset - Schema Validation', () => {
       expect(result.data.verbose).toBe(false);
       expect(result.data.confirm).toBe(false);
     }
-  });
-});
-
-describe('roosync_debug_reset - Metadata', () => {
-  let module: any;
-
-  beforeAll(async () => {
-    module = await import('../../../../src/tools/roosync/debug-reset.js');
-  });
-
-  it('devrait avoir les métadonnées correctes', () => {
-    const metadata = module.debugResetToolMetadata;
-
-    expect(metadata.name).toBe('roosync_debug_reset');
-    expect(metadata.description).toContain('déboguer');
-    expect(metadata.description).toContain('réinitialiser');
-    expect(metadata.inputSchema).toBeDefined();
-    expect(metadata.inputSchema.type).toBe('object');
-    expect(metadata.inputSchema.properties).toHaveProperty('action');
-    expect(metadata.inputSchema.properties).toHaveProperty('clearCache');
-    expect(metadata.inputSchema.properties).toHaveProperty('verbose');
-    expect(metadata.inputSchema.properties).toHaveProperty('confirm');
-    expect(metadata.inputSchema.required).toContain('action');
   });
 });

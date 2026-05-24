@@ -374,14 +374,3 @@ describe('roosync_decision - Execution - Error Handling', () => {
     expect(result.error).toContain('non permise');
   });
 });
-
-describe('roosync_decision - Metadata', () => {
-  it('devrait avoir les métadonnées correctes', async () => {
-    const { roosyncDecisionToolMetadata } = await import('../../../../src/tools/roosync/decision.js');
-
-    expect(roosyncDecisionToolMetadata.name).toBe('roosync_decision');
-    expect(roosyncDecisionToolMetadata.description).toContain('approve');
-    expect(roosyncDecisionToolMetadata.description).toContain('reject');
-    expect(roosyncDecisionToolMetadata.inputSchema).toBeDefined();
-  });
-});

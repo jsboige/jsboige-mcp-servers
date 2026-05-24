@@ -158,38 +158,3 @@ async function handleResetAction(
     }
   };
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- */
-export const debugResetToolMetadata = {
-  name: 'roosync_debug_reset',
-  description: 'Outil consolidé pour déboguer le dashboard et réinitialiser le service RooSync',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['debug', 'reset'],
-        description: 'Action à effectuer: debug (dashboard) ou reset (service)'
-      },
-      clearCache: {
-        type: 'boolean',
-        description: 'Vider le cache du service (défaut: false)',
-        default: false
-      },
-      verbose: {
-        type: 'boolean',
-        description: 'Mode verbeux pour debug (défaut: false)',
-        default: false
-      },
-      confirm: {
-        type: 'boolean',
-        description: 'Confirmation pour reset (défaut: false)',
-        default: false
-      }
-    },
-    required: ['action'],
-    additionalProperties: false
-  }
-};

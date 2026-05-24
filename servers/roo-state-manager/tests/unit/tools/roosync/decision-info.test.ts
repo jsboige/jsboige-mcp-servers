@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { roosyncDecisionInfo, roosyncDecisionInfoToolMetadata } from '../../../../src/tools/roosync/decision-info.js';
+import { roosyncDecisionInfo } from '../../../../src/tools/roosync/decision-info.js';
 
 const {
     mockGetRooSyncService,
@@ -149,9 +149,5 @@ describe('roosync_decision_info', () => {
         expect(result.decision.type).toBe('config');
         expect(result.decision.sourceMachine).toBe('myia-po-2025');
         expect(result.decision.targetMachines).toEqual([]);
-    });
-
-    it('has correct metadata', () => {
-        expect(roosyncDecisionInfoToolMetadata.name).toBe('roosync_decision_info');
     });
 });

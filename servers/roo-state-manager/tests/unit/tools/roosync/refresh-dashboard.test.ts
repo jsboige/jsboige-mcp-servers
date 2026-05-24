@@ -8,7 +8,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
     roosyncRefreshDashboard,
-    refreshDashboardToolMetadata,
 } from '../../../../src/tools/roosync/refresh-dashboard.js';
 
 const {
@@ -135,13 +134,5 @@ describe('roosync_refresh_dashboard', () => {
         const result = await roosyncRefreshDashboard({});
         expect(result.success).toBe(true);
         expect(result.machines).toEqual([]);
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(refreshDashboardToolMetadata.name).toBe('roosync_refresh_dashboard');
-            expect(refreshDashboardToolMetadata.inputSchema.properties.baseline).toBeDefined();
-            expect(refreshDashboardToolMetadata.inputSchema.properties.outputDir).toBeDefined();
-        });
     });
 });

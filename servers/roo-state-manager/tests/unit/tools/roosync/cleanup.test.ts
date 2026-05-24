@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cleanupMessages, cleanupToolMetadata } from '../../../../src/tools/roosync/cleanup.js';
+import { cleanupMessages } from '../../../../src/tools/roosync/cleanup.js';
 
 const {
     mockGetMessageManager,
@@ -239,15 +239,6 @@ describe('roosync_cleanup_messages', () => {
             const result = await cleanupMessages({ operation: 'archive' });
             const text = result.content[0].text;
             expect(text).toContain('Erreur');
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(cleanupToolMetadata.name).toBe('roosync_cleanup_messages');
-            expect(cleanupToolMetadata.inputSchema.required).toContain('operation');
-            expect(cleanupToolMetadata.inputSchema.properties.operation.enum).toContain('mark_read');
-            expect(cleanupToolMetadata.inputSchema.properties.operation.enum).toContain('archive');
         });
     });
 });

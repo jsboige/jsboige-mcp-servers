@@ -8,8 +8,7 @@
 export {
   roosyncGetStatus,
   GetStatusArgsSchema,
-  GetStatusResultSchema,
-  getStatusToolMetadata
+  GetStatusResultSchema
 } from './get-status.js';
 
 export type {
@@ -20,8 +19,7 @@ export type {
 export {
   roosyncCompareConfig,
   CompareConfigArgsSchema,
-  CompareConfigResultSchema,
-  compareConfigToolMetadata
+  CompareConfigResultSchema
 } from './compare-config.js';
 
 export type {
@@ -32,8 +30,7 @@ export type {
 export {
   roosyncListDiffs,
   ListDiffsArgsSchema,
-  ListDiffsResultSchema,
-  listDiffsToolMetadata
+  ListDiffsResultSchema
 } from './list-diffs.js';
 
 export type {
@@ -47,8 +44,7 @@ export type {
 export {
   roosyncDecision,
   RooSyncDecisionArgsSchema,
-  RooSyncDecisionResultSchema,
-  roosyncDecisionToolMetadata
+  RooSyncDecisionResultSchema
 } from './decision.js';
 
 export type {
@@ -62,8 +58,7 @@ export type {
 export {
   roosyncInit,
   InitArgsSchema,
-  InitResultSchema,
-  initToolMetadata
+  InitResultSchema
 } from './roosync_init.js';
 
 export type {
@@ -78,8 +73,7 @@ export type {
 export {
   roosync_debug_reset,
   DebugResetArgsSchema,
-  DebugResetResultSchema,
-  debugResetToolMetadata
+  DebugResetResultSchema
 } from './debug-reset.js';
 
 export type {
@@ -93,8 +87,7 @@ export type {
 export {
   roosync_baseline,
   BaselineArgsSchema,
-  BaselineResultSchema,
-  baselineToolMetadata
+  BaselineResultSchema
 } from './baseline.js';
 
 export type {
@@ -107,7 +100,7 @@ export type {
 // Export des outils de configuration partagée (Cycle 6)
 
 // CONS-3: Outil consolidé de configuration (collect + publish + apply → roosync_config)
-export { roosyncConfig, ConfigArgsSchema, configToolMetadata } from './config.js';
+export { roosyncConfig, ConfigArgsSchema } from './config.js';
 export type { ConfigArgs } from './config.js';
 
 // Export des nouveaux outils de messagerie (Phase 1)
@@ -130,12 +123,12 @@ export { amendMessage } from './amend_message.js';
 // - roosyncRead (mode: inbox|message) → remplace read_inbox + get_message
 // - roosyncSend (action: send|reply|amend) → remplace send_message + reply_message + amend_message
 // - roosyncManage (action: mark_read|archive) → remplace mark_message_read + archive_message
-export { roosyncRead, readToolMetadata } from './read.js';
-export { roosyncSend, sendToolMetadata } from './send.js';
-export { roosyncManage, manageToolMetadata } from './manage.js';
+export { roosyncRead } from './read.js';
+export { roosyncSend } from './send.js';
+export { roosyncManage } from './manage.js';
 
 // CONS-8 (#1841 Cluster G): Outil consolide messagerie (4→1: send+read+manage+attachments)
-export { roosyncMessages, messagesToolMetadata } from './messages.js';
+export { roosyncMessages } from './messages.js';
 
 // [REMOVED #1863] Deprecated cleanup_messages exports — fused into roosync_manage(action: "bulk_*")
 // Source file cleanup.ts retained for: registry.ts redirect + tests
@@ -143,17 +136,13 @@ export { roosyncMessages, messagesToolMetadata } from './messages.js';
 // #674: Outils de gestion des pièces jointes (legacy — backward compat)
 export {
   roosyncListAttachments,
-  listAttachmentsToolMetadata,
   roosyncGetAttachment,
-  getAttachmentToolMetadata,
-  roosyncDeleteAttachment,
-  deleteAttachmentToolMetadata
+  roosyncDeleteAttachment
 } from './roosync-attachments.tool.js';
 
 // CONS-7: Outil consolidé (list + get + delete → 1)
 export {
-  roosyncAttachments,
-  attachmentsToolMetadata
+  roosyncAttachments
 } from './roosync-attachments.tool.js';
 
 // NOTE: modes-management.ts est une API INTERNE (pas un outil MCP séparé).
@@ -162,7 +151,7 @@ export {
 // Usage interne uniquement: import { readCustomModes, compareModes } from './modes-management.js';
 
 // CONS-6: Outils consolidés Inventory (4→2)
-export { inventoryTool, inventoryToolMetadata } from './inventory.js';
+export { inventoryTool } from './inventory.js';
 // [REMOVED #1863] Deprecated roosync_machines exports — fused into roosync_inventory(type: "machines")
 // Source file machines.ts retained for: registry.ts redirect + tests
 
@@ -172,77 +161,33 @@ export { inventoryTool, inventoryToolMetadata } from './inventory.js';
 
 // CONS-#443 Groupe 2: Outil consolidé de synchronisation automatique (2→1)
 // Remplace sync-on-offline + sync-on-online
-export { roosyncSyncEvent, syncEventToolMetadata } from './sync-event.js';
+export { roosyncSyncEvent } from './sync-event.js';
 
 // CONS-#443 Groupe 3: Outil consolidé de gestion MCP (3→1)
 // Remplace manage_mcp_settings + rebuild_and_restart_mcp + touch_mcp_settings
-export { roosyncMcpManagement, mcpManagementToolMetadata } from './mcp-management.js';
+export { roosyncMcpManagement } from './mcp-management.js';
 
 // CONS-#443 Groupe 4: Outil consolidé de gestion du stockage (2→1)
 // Remplace storage_info + maintenance
-export { roosyncStorageManagement, storageManagementToolMetadata } from './storage-management.js';
+export { roosyncStorageManagement } from './storage-management.js';
 
 // CONS-#443 Groupe 5: Outil consolidé de diagnostic (3→1)
 // Remplace diagnose_env + debug_reset + minimal_test_tool
-export { roosyncDiagnose, diagnoseToolMetadata } from './diagnose.js';
+export { roosyncDiagnose } from './diagnose.js';
 
 // Export des outils de dashboard (T3.17)
-export { roosyncRefreshDashboard, refreshDashboardToolMetadata } from './refresh-dashboard.js';
+export { roosyncRefreshDashboard } from './refresh-dashboard.js';
 // #546: Dashboard hiérarchique
-export { roosyncUpdateDashboard, UpdateDashboardArgsSchema, UpdateDashboardResultSchema, updateDashboardToolMetadata } from './update-dashboard.js';
+export { roosyncUpdateDashboard, UpdateDashboardArgsSchema, UpdateDashboardResultSchema } from './update-dashboard.js';
 
 export type {
 	UpdateDashboardArgs,
 	UpdateDashboardResult
 } from './update-dashboard.js';
 
-// Import des métadonnées pour l'array
-import { getStatusToolMetadata } from './get-status.js';
-import { compareConfigToolMetadata } from './compare-config.js';
-import { listDiffsToolMetadata } from './list-diffs.js';
-// CONS-5: Legacy decision imports replaced by consolidated
-import { roosyncDecisionToolMetadata } from './decision.js';
-// [REMOVED #1863] roosyncDecisionInfoToolMetadata import — not used in any array
-import { initToolMetadata } from './roosync_init.js';
-import { baselineToolMetadata } from './baseline.js';
-import { diagnoseToolMetadata } from './diagnose.js';
-import { configToolMetadata } from './config.js'; // CONS-3
-// Import des métadonnées des outils consolidés Inventory (CONS-6)
-import { inventoryToolMetadata } from './inventory.js';
-// [REMOVED #1863] machinesToolMetadata import — not used in any array
-
-// ADR 008 Phase 2: heartbeatToolMetadata import removed (dead file deleted)
-
-// CONS-#443 Groupe 2: Import de l'outil consolidé de synchronisation
-import { syncEventToolMetadata } from './sync-event.js';
-
-// CONS-#443 Groupe 3: Import de l'outil consolidé de gestion MCP
-import { mcpManagementToolMetadata } from './mcp-management.js';
-
-// CONS-#443 Groupe 4: Import de l'outil consolidé de gestion du stockage
-import { storageManagementToolMetadata } from './storage-management.js';
-
-// Import des métadonnées des outils de dashboard (T3.17)
-import { refreshDashboardToolMetadata } from './refresh-dashboard.js';
-// #546: Dashboard hiérarchique
-import { updateDashboardToolMetadata } from './update-dashboard.js';
-
-// CONS-1: Import des métadonnées des outils de messagerie consolidés
-import { sendToolMetadata } from './send.js';
-import { readToolMetadata } from './read.js';
-import { manageToolMetadata } from './manage.js';
-
-// [REMOVED #1863] cleanupToolMetadata import — not used in any array
-
-// #674: Import des métadonnées des outils d'attachments (legacy)
-import {
-  listAttachmentsToolMetadata,
-  getAttachmentToolMetadata,
-  deleteAttachmentToolMetadata
-} from './roosync-attachments.tool.js';
-
-// CONS-7: Import métadonnées outil consolidé
-import { attachmentsToolMetadata } from './roosync-attachments.tool.js';
+// [REMOVED] Dead *ToolMetadata imports — the roosyncTools array that consumed them
+// was removed (#1470, orphan never used by registry.ts). The MCP tool definitions
+// served to clients live in tool-definitions.ts (allToolDefinitions).
 
 // #675: Dashboards markdown partagés cross-machine
 // #1470: Metadata import from dashboard-schemas.ts (no handler dependency)
@@ -268,41 +213,6 @@ export type {
 
 // NOTE: modes-management.ts = API interne only, pas d'import MCP ici (#595/#603)
 
-// Métadonnées pour l'outil d'inventaire (format JSON Schema standard)
-// CONS-6: Remplacé par inventoryToolMetadata
-// const getMachineInventoryToolMetadata = {
-//   name: 'roosync_get_machine_inventory',
-//   description: 'Collecte l\'inventaire complet de configuration de la machine courante pour RooSync.',
-//   inputSchema: {
-//     type: 'object',
-//     properties: {
-//       machineId: {
-//         type: 'string',
-//         description: 'Identifiant optionnel de la machine (défaut: hostname)'
-//       }
-//     }
-//   }
-// };
-
-// [REMOVED Phase B #1863] exportBaselineToolMetadata (dead code, source file deleted)
-
-/**
- * Liste de tous les outils RooSync pour enregistrement MCP
- * Version 3.19 : 15 outils (CONS-8 #603: 4 dead tools removed — init, claim, decision, list_diffs)
- * Version 3.18 : 19 outils (#1863: 3 deprecated definitions removed from tools/list)
- *
- * - Configuration: compare-config, roosync_config (CONS-3), baseline (CONS-4)
- * - Services: inventory (CONS-6)
- * - Decision: REMOVED CONS-8 (pipeline mort)
- * - Init: REMOVED CONS-8 (dead code)
- * - Claim: REMOVED CONS-8 (never adopted)
- * - List-diffs: REMOVED CONS-8 (thin wrapper, use compare_config)
- * - Messagerie (CONS-8): roosync_messages (fused send+read+manage+attachments)
- * - Gestion MCP (CONS-#443 Groupe 3): roosync_mcp_management
- * - Gestion stockage (CONS-#443 Groupe 4): roosync_storage_management
- * - Diagnostic (CONS-#443 Groupe 5): roosync_diagnose
- * - Dashboards: roosync_dashboard (#675)
- */
-
 // #1470: roosyncTools array removed — orphan, never consumed by registry.ts
 // (registry uses allToolDefinitions from tool-definitions.ts instead)
+// #2224: 26 dead *ToolMetadata exports removed from handler files + this barrel.

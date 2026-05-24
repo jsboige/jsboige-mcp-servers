@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { roosyncCompareConfig, compareConfigToolMetadata } from '../../../../src/tools/roosync/compare-config.js';
+import { roosyncCompareConfig } from '../../../../src/tools/roosync/compare-config.js';
 
 // Mock du service RooSync
 const mockRooSyncService = {
@@ -62,13 +62,6 @@ describe('roosync_compare_config', () => {
     process.env = originalEnv;
   });
 
-  it('devrait avoir les métadonnées correctes', () => {
-    expect(compareConfigToolMetadata.name).toBe('roosync_compare_config');
-    expect(compareConfigToolMetadata.description).toContain('Compare les configurations Roo');
-    expect(compareConfigToolMetadata.description).toContain('Supporte également la comparaison avec des profils');
-    expect(compareConfigToolMetadata.inputSchema.properties.target.description).toContain('ID de la machine cible ou du profil');
-  });
-
   it('devrait supporter la comparaison standard entre deux machines', async () => {
     const args = {
       source: 'local-machine',
@@ -121,11 +114,6 @@ describe('roosync_compare_config', () => {
   });
 
   describe('granularity parameter', () => {
-    it('devrait inclure granularity dans les métadonnées', () => {
-      expect(compareConfigToolMetadata.inputSchema.properties.granularity).toBeDefined();
-      expect(compareConfigToolMetadata.inputSchema.properties.granularity.enum).toEqual(['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full']);
-    });
-
     it('devrait utiliser GranularDiffDetector quand granularity=full', async () => {
       const args = {
         source: 'machine-a',
@@ -246,11 +234,6 @@ describe('roosync_compare_config', () => {
   });
 
   describe('filter parameter', () => {
-    it('devrait inclure filter dans les métadonnées', () => {
-      expect(compareConfigToolMetadata.inputSchema.properties.filter).toBeDefined();
-      expect(compareConfigToolMetadata.inputSchema.properties.filter.description).toContain('Filtre optionnel');
-    });
-
     it('devrait filtrer les diffs par path', async () => {
       const args = {
         source: 'machine-a',
