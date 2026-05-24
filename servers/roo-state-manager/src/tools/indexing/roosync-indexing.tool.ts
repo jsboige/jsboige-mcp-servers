@@ -18,6 +18,7 @@ import * as path from 'path';
 import { indexTaskSemanticTool } from './index-task.tool.js';
 import { resetQdrantCollectionTool } from './reset-collection.tool.js';
 import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
+import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 
 /** #2336 D1: Convert ISO timestamp to YYYY-WNN week key */
 function getISOWeek(timestamp: string): string {
@@ -755,13 +756,13 @@ export async function handleRooSyncIndexing(
         }
 
         case 'tool_usage_stats': {
-            // #2336 D1: Fleet-wide tool usage aggregation from conversation index
-            const { getQdrantClient } = await import('../../services/qdrant.js');
-            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+            // #2336 D2: Parse tool calls directly from JSONL files (Roo + Claude Code)
+            // Previous implementation queried Qdrant for chunk_type=tool_interaction which
+            // returned 0 results (ChunkExtractor never populates msg.tool_calls).
+            const fs = await import('fs/promises');
+            const os = await import('os');
 
             try {
-                const qdrant = getQdrantClient();
-
                 // Resolve date range
                 const endDate = args.end_date ? new Date(args.end_date) : new Date();
                 const defaultStart = new Date(endDate);
@@ -772,64 +773,111 @@ export async function handleRooSyncIndexing(
                     return { isError: true, content: [{ type: 'text', text: 'Invalid start_date or end_date format. Use ISO 8601 or YYYY-MM-DD.' }] };
                 }
 
-                // Scroll all tool_interaction chunks in date range
-                const mustConditions: any[] = [
-                    { key: 'chunk_type', match: { value: 'tool_interaction' } },
-                    { key: 'timestamp', range: { gte: startDate.toISOString(), lte: endDate.toISOString() } },
-                ];
-
-                // Per-tool counts
                 const toolCounts: Record<string, number> = {};
-                // Weekly buckets: key = ISO week (YYYY-WNN), value = { tool_name: count }
                 const weeklyBuckets: Record<string, Record<string, number>> = {};
-                // Error counts per tool
                 const errorCounts: Record<string, number> = {};
-                // Per-source counts
                 const sourceCounts: Record<string, number> = {};
-                let totalPoints = 0;
+                let totalCalls = 0;
+                let filesScanned = 0;
 
-                const BATCH_SIZE = 500;
-                let offset: string | undefined = undefined;
+                // --- Scan Roo tasks (api_conversation_history.json) ---
+                const storageLocations = await RooStorageDetector.detectStorageLocations();
+                for (const loc of storageLocations) {
+                    const tasksPath = path.join(loc, 'tasks');
+                    let taskDirs: string[];
+                    try { taskDirs = await fs.readdir(tasksPath); } catch { continue; }
 
-                do {
-                    const scrollResult: any = await qdrant.scroll(collectionName, {
-                        filter: { must: mustConditions },
-                        limit: BATCH_SIZE,
-                        offset,
-                        with_payload: true,
-                        with_vector: false,
-                    });
+                    for (const taskId of taskDirs) {
+                        const apiPath = path.join(tasksPath, taskId, 'api_conversation_history.json');
+                        let content: string;
+                        try {
+                            content = await fs.readFile(apiPath, 'utf-8');
+                            if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+                        } catch { continue; }
 
-                    const points: any[] = Array.isArray(scrollResult)
-                        ? scrollResult
-                        : (scrollResult?.points || []);
+                        filesScanned++;
+                        let messages: any[];
+                        try {
+                            const data = JSON.parse(content);
+                            messages = Array.isArray(data) ? data : (data?.messages || []);
+                        } catch { continue; }
 
-                    for (const point of points) {
-                        const payload = point?.payload || {};
-                        totalPoints++;
+                        for (const msg of messages) {
+                            if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+                            const ts = msg.ts ? new Date(msg.ts) : null;
+                            if (ts && (ts < startDate || ts > endDate)) continue;
 
-                        const toolName = payload.tool_name || '__unknown__';
-                        toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                            for (const block of msg.content) {
+                                if (block.type === 'tool_use' && block.name) {
+                                    totalCalls++;
+                                    const toolName = block.name;
+                                    toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                                    sourceCounts['roo'] = (sourceCounts['roo'] || 0) + 1;
 
-                        const src = payload.source || '__unknown__';
-                        sourceCounts[src] = (sourceCounts[src] || 0) + 1;
-
-                        if (payload.has_error === true || payload.has_error === 'true') {
-                            errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
-                        }
-
-                        // Weekly bucket from timestamp
-                        const ts = payload.timestamp;
-                        if (ts) {
-                            const weekKey = getISOWeek(ts);
-                            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
-                            weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                    if (ts) {
+                                        const weekKey = getISOWeek(ts.toISOString());
+                                        if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
+                                        weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                    }
+                                }
+                            }
                         }
                     }
+                }
 
-                    offset = scrollResult?.next_page_offset;
-                    if (!offset || points.length === 0) break;
-                } while (true);
+                // --- Scan Claude Code sessions (*.jsonl) ---
+                const claudeBase = path.join(os.homedir(), '.claude', 'projects');
+                let projectDirs: string[];
+                try { projectDirs = await fs.readdir(claudeBase); } catch { projectDirs = []; }
+
+                for (const projDir of projectDirs) {
+                    const projPath = path.join(claudeBase, projDir);
+                    let stat;
+                    try { stat = await fs.stat(projPath); } catch { continue; }
+                    if (!stat.isDirectory()) continue;
+
+                    let jsonlFiles: string[];
+                    try { jsonlFiles = (await fs.readdir(projPath)).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+
+                    for (const jsonlFile of jsonlFiles) {
+                        const jsonlPath = path.join(projPath, jsonlFile);
+                        filesScanned++;
+
+                        // Read JSONL line-by-line to handle large files
+                        const { createReadStream } = await import('fs');
+                        const readline = await import('readline');
+                        const rl = readline.createInterface({ input: createReadStream(jsonlPath, 'utf-8'), crlfDelay: Infinity });
+
+                        for await (const line of rl) {
+                            const trimmed = line.trim();
+                            if (!trimmed) continue;
+                            let entry: any;
+                            try { entry = JSON.parse(trimmed); } catch { continue; }
+
+                            // Claude Code JSONL: each line has { type, message, ... }
+                            const message = entry.message || entry;
+                            if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+
+                            const ts = message.timestamp ? new Date(message.timestamp) : null;
+                            if (ts && (ts < startDate || ts > endDate)) continue;
+
+                            for (const block of message.content) {
+                                if (block.type === 'tool_use' && block.name) {
+                                    totalCalls++;
+                                    const toolName = block.name;
+                                    toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                                    sourceCounts['claude-code'] = (sourceCounts['claude-code'] || 0) + 1;
+
+                                    if (ts) {
+                                        const weekKey = getISOWeek(ts.toISOString());
+                                        if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
+                                        weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Sort tools by count descending
                 const sortedTools = Object.entries(toolCounts)
@@ -859,17 +907,19 @@ export async function handleRooSyncIndexing(
                         type: 'text',
                         text: JSON.stringify({
                             action: 'tool_usage_stats',
+                            method: 'jsonl_scan',
                             date_range: {
                                 start: startDate.toISOString().slice(0, 10),
                                 end: endDate.toISOString().slice(0, 10),
                                 weeks: sortedWeeks.length,
                             },
-                            total_tool_calls: totalPoints,
+                            files_scanned: filesScanned,
+                            total_tool_calls: totalCalls,
                             unique_tools: Object.keys(toolCounts).length,
                             source_distribution: sourceCounts,
                             tools: sortedTools,
                             weekly_trend: sortedWeeks,
-                            summary: `${totalPoints} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)})`,
+                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)})`,
                         }, null, 2)
                     }]
                 };

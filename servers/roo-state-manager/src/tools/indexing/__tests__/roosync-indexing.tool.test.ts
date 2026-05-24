@@ -9,7 +9,8 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHandler,
-	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById
+	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
+	mockDetectStorageLocations, mockFsReadDir, mockFsReadFile, mockFsStat
 } = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
@@ -18,7 +19,11 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockArchiveTask: vi.fn(),
 	mockArchiveClaudeCodeSessions: vi.fn(),
 	mockListArchivedTasks: vi.fn(),
-	mockFindConversationById: vi.fn()
+	mockFindConversationById: vi.fn(),
+	mockDetectStorageLocations: vi.fn(),
+	mockFsReadDir: vi.fn(),
+	mockFsReadFile: vi.fn(),
+	mockFsStat: vi.fn()
 }));
 
 vi.mock('../../../services/task-archiver/index.js', () => ({
@@ -31,7 +36,8 @@ vi.mock('../../../services/task-archiver/index.js', () => ({
 
 vi.mock('../../../utils/roo-storage-detector.js', () => ({
 	RooStorageDetector: {
-		findConversationById: mockFindConversationById
+		findConversationById: mockFindConversationById,
+		detectStorageLocations: mockDetectStorageLocations
 	}
 }));
 
