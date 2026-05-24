@@ -434,7 +434,7 @@ export const roosyncConfigDefinition = {
 
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: 'Machine inventory, heartbeat status, system snapshot. type="status" for compact RooSync status.',
+    description: 'Machine inventory, heartbeat status, system snapshot. type="status" for compact RooSync status with flags. Gotcha: use includeDetails:true for full metrics including tool usage stats.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -460,7 +460,7 @@ export const roosyncInventoryDefinition = {
 
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
-    description: 'MCP server management: manage (read/write/backup/update/toggle), rebuild (build+restart), touch (force reload).',
+    description: 'MCP server management: manage (read/write/backup/update/toggle), rebuild (build+restart), touch (force reload). Gotcha: rebuild retries 3x on EBUSY (Windows native .node locks).',
     inputSchema: {
         type: 'object',
         properties: {
@@ -480,7 +480,7 @@ export const roosyncMcpManagementDefinition = {
 
 export const roosyncStorageManagementDefinition = {
     name: 'roosync_storage_management',
-    description: 'Storage inspection and maintenance. Actions: storage (detect/stats), maintenance (cache_rebuild/diagnose_bom/repair_bom).',
+    description: 'Storage inspection and maintenance. Actions: storage (detect/stats), maintenance (cache_rebuild/diagnose_bom/repair_bom). Gotcha: BOM repair via maintenance→repair_bom for corrupted JSONL files.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -500,7 +500,7 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide).',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -629,7 +629,7 @@ export const roosyncAttachmentsDefinition = {
 // #1841 Cluster G: Outil consolide messagerie (4→1: send+read+manage+attachments)
 export const roosyncMessagesDefinition = {
     name: 'roosync_messages',
-    description: 'Messagerie inter-machines. Actions: send/reply/amend, inbox/message, mark_read/archive, bulk_*, cleanup/stats, attachments_list/get/delete.',
+    description: 'Messagerie inter-machines (CONS-8). Actions: send/reply/amend, inbox/message, mark_read/archive, bulk_*, cleanup/stats, attachments_list/get/delete. Gotcha: for cross-machine coordination, prefer roosync_dashboard (workspace) — messages are point-to-point, not broadcast.',
     inputSchema: {
         type: 'object' as const,
         properties: {
