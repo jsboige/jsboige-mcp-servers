@@ -1273,7 +1273,7 @@ describe('MessageManager', () => {
       expect(result).toBe(false);
     });
 
-    test('getMessage invalidates cache when stale entry detected', async () => {
+    test('getMessage returns cached copy as archived when stale entry detected (#2307 Phase 4)', async () => {
       const msg = await messageManager.sendMessage(
         'sender', 'machine-a', 'Cache Invalidation', 'Body', 'MEDIUM'
       );
@@ -1281,17 +1281,19 @@ describe('MessageManager', () => {
       // Force cache build by reading inbox
       await messageManager.readInbox('machine-a');
 
-      // Manually delete BOTH inbox and sent files (simulating external deletion)
+      // Manually delete BOTH inbox and sent files (simulating auto-archive race)
       const inboxFile = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
       const sentFile = join(testSharedStatePath, 'messages/sent', `${msg.id}.json`);
       await fs.unlink(inboxFile);
       if (existsSync(sentFile)) await fs.unlink(sentFile);
 
-      // getMessage should return null and invalidate cache
+      // getMessage should return cached copy with archived status (not null)
+      // so callers can handle it as "already processed" instead of "introuvable"
       const result = await messageManager.getMessage(msg.id, 'machine-a');
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.status).toBe('archived');
 
-      // Subsequent inbox read should not list the deleted message
+      // Subsequent inbox read should not list the deleted message (cache was invalidated)
       const inbox = await messageManager.readInbox('machine-a');
       expect(inbox.find(m => m.id === msg.id)).toBeUndefined();
     });

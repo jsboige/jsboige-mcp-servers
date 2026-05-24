@@ -91,6 +91,19 @@ Le message n'a pas été trouvé dans :
 - Utilisez \`roosync_read\` avec \`action: inbox\` pour lister les messages disponibles`;
   }
 
+  // #2307 Phase 4: Message was auto-archived between listing and this call
+  if (message.status === 'archived') {
+    return `ℹ️ **Message déjà archivé**
+
+**ID :** \`${args.message_id}\`
+**Sujet :** ${message.subject}
+**De :** ${message.from}
+**À :** ${message.to}
+**Date :** ${formatDateFull(message.timestamp)}
+
+Ce message a été automatiquement archivé entre le moment où il a été listé et maintenant. Aucune action nécessaire.`;
+  }
+
   // Vérifier si déjà lu (per-machine for broadcasts #629)
   const localMachine = getLocalMachineId();
   const isBroadcast = message.to === 'all' || message.to === 'All';
