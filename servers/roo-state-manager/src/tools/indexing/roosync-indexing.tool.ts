@@ -225,6 +225,7 @@ export interface IndexingState {
         failedTasks: number;
         retryTasks: number;
         bandwidthSaved: number;
+        lastIndexedAt?: string;
     };
 }
 
@@ -369,7 +370,7 @@ export async function handleRooSyncIndexing(
                 qdrantIndexQueue,
                 qdrantIndexInterval: null,
                 isQdrantIndexingEnabled: false,
-                indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
+                indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
             };
             // Diagnostic hints
             const hints: string[] = [];
@@ -409,7 +410,8 @@ export async function handleRooSyncIndexing(
                         skipped: state.indexingMetrics.skippedTasks,
                         failed: state.indexingMetrics.failedTasks,
                         retry: state.indexingMetrics.retryTasks,
-                        bandwidth_saved_bytes: state.indexingMetrics.bandwidthSaved
+                        bandwidth_saved_bytes: state.indexingMetrics.bandwidthSaved,
+                        last_indexed_at: state.indexingMetrics.lastIndexedAt
                     }
                 },
                 failed_task_details: failedTasks.length > 0 ? failedTasks : undefined,

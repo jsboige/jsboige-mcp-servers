@@ -147,6 +147,7 @@ function createMockState(): ServerState {
       failedTasks: 0,
       retryTasks: 0,
       bandwidthSaved: 0,
+      lastIndexedAt: undefined,
     },
     // Stubs for unused services
     xmlExporterService: {} as any,

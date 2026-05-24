@@ -983,6 +983,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
 
         state.qdrantIndexCache.set(taskId, Date.now());
         state.indexingMetrics.indexedTasks++;
+        state.indexingMetrics.lastIndexedAt = new Date().toISOString();
 
         console.log(`[SUCCESS] Task ${taskId} successfully indexed in Qdrant.`);
 
