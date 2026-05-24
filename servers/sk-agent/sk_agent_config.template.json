@@ -300,8 +300,8 @@
     },
     {
       "id": "fast",
-      "description": "Quick cloud responses via z.ai GLM-4.7-Flash. No tools, no thinking, fastest cloud option",
-      "model": "glm-4.7-flash",
+      "description": "Fast responses via local vLLM Qwen3.6 35B no-thinking (86 tok/s, 262K ctx). No tools, fastest reliable option (glm-4.7-flash deprecated: 60% rate-limit failures in benchmark)",
+      "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "Respond concisely and accurately. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -388,8 +388,8 @@
     },
     {
       "id": "synthesizer",
-      "description": "Expert at turning complex multi-source findings into clear, structured reports",
-      "model": "glm-5.1",
+      "description": "Expert at turning complex multi-source findings into clear, structured reports (non-thinking: synthesis = pattern matching, benchmark showed quality-neutral)",
+      "model": "glm-5.1-fast",
       "system_prompt": "You are an expert information synthesizer who turns chaos into clarity. Given raw research findings from multiple sources: identify the 3-5 key themes, resolve contradictions by weighing source authority and recency, organize into a logical narrative flow, and maintain full citations throughout. Your reports always start with a brief executive summary (3-4 sentences), followed by structured sections with clear headers. You flag remaining uncertainties explicitly rather than papering over gaps. Your writing is precise, well-structured, and accessible to non-specialists.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -430,8 +430,8 @@
     },
     {
       "id": "mediator",
-      "description": "Diplomatic synthesizer who builds consensus from competing perspectives",
-      "model": "glm-5.1",
+      "description": "Diplomatic synthesizer who builds consensus from competing perspectives (non-thinking: consensus building, benchmark showed quality-neutral)",
+      "model": "glm-5-fast",
       "system_prompt": "You are a diplomatic mediator who builds consensus from competing perspectives. Given analyses from an optimist, a devil's advocate, and a pragmatist, you: (1) identify the points where all perspectives genuinely agree, (2) map the tensions that remain and explain why they exist, (3) weigh each perspective's strongest arguments on their merits, and (4) recommend a course of action with explicit confidence levels for each element. You are transparent about trade-offs and honest about uncertainty. Your final recommendation always includes 'what we would need to learn to be more confident' alongside 'what we can decide now'.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -505,8 +505,8 @@
     {
       "_comment": "=== PR Review agents (Issue #1587 — multi-tier automated reviews) ===",
       "id": "fast-reviewer",
-      "description": "Tier 1 fast diff-only reviewer. GLM-4.7-Flash for speed, GitHub tools for PR access.",
-      "model": "glm-4.7-flash",
+      "description": "Tier 1 fast diff-only reviewer. GLM-5 non-thinking for speed + reliability (glm-4.7-flash had 60% rate-limit failures in benchmark).",
+      "model": "glm-5-fast",
       "system_prompt": "You are a fast code reviewer. Given a PR diff: (1) identify obvious bugs, security issues, and style problems, (2) produce a JSON verdict. Focus on correctness and security. Keep reviews concise — under 20 lines for trivial PRs. Always output valid JSON with keys: verdict, confidence, summary, blocking_issues, suggestions.",
       "mcps": [],
       "memory": { "enabled": false },
@@ -516,8 +516,8 @@
     },
     {
       "id": "integration-reviewer",
-      "description": "Tier 2 context-aware reviewer with GitHub tools for PR analysis. GLM-5.1 for deep reasoning.",
-      "model": "glm-5.1",
+      "description": "Tier 2 context-aware reviewer with GitHub tools for PR analysis. GLM-5 for more thorough reviews (benchmark: 3062 chars vs 1827 for glm-5.1).",
+      "model": "glm-5",
       "system_prompt": "You are a thorough code reviewer with access to GitHub tools. When reviewing a PR:\n1. Fetch the PR diff and metadata using get_pr_diff and get_pr_metadata\n2. For each changed file, read the surrounding context using read_file if the diff is unclear\n3. Trace integration points: entry points, callers, consumers, side effects\n4. Check for: bugs, security issues (OWASP Top 10), performance problems, missing error handling, test coverage\n5. Look for edge cases: empty inputs, null handling, concurrent access\n6. Output a JSON review with verdict, confidence, summary, blocking_issues, and suggestions\n\nBe thorough but fair. Acknowledge good practices. Prioritize findings by severity (critical > major > minor).",
       "mcps": [],
       "memory": { "enabled": false },
@@ -613,13 +613,13 @@
         {
           "id": "fact-checker",
           "description": "Verifies claims from both sides",
-          "model": "glm-5.1",
+          "model": "glm-5-fast",
           "system_prompt": "You are a fact-checker. Review claims made by both the proponent and opponent. Identify which claims are well-supported, which are speculative, and which are misleading. Rate each major claim on a confidence scale."
         },
         {
           "id": "debate-synthesizer",
           "description": "Produces balanced conclusion from the debate",
-          "model": "glm-5.1",
+          "model": "glm-5-fast",
           "system_prompt": "Given arguments for and against, plus fact-checking results: produce a nuanced conclusion. Identify what is well-established, what remains uncertain, and what conditions would change the answer. Provide a clear recommendation with caveats."
         }
       ]
@@ -641,7 +641,7 @@
         {
           "id": "risk-assessor",
           "description": "Assesses risk of each configuration difference",
-          "model": "glm-5.1",
+          "model": "glm-5-fast",
           "system_prompt": "You are a risk assessor for multi-machine environments. Given classified configuration differences, assess each one for: (1) operational risk if left unresolved, (2) risk of breaking something if forcefully harmonized, (3) security implications. Rate each as CRITICAL/HIGH/MEDIUM/LOW. Recommend: HARMONIZE (apply baseline), KEEP-LOCAL (intentional difference), or INVESTIGATE (need more info)."
         },
         {
@@ -653,7 +653,7 @@
         {
           "id": "harmonization-synthesizer",
           "description": "Produces final harmonization report with decisions",
-          "model": "glm-5.1",
+          "model": "glm-5-fast",
           "system_prompt": "Synthesize the detective's findings, risk assessor's ratings, and planner's steps into a final harmonization report. Structure: Executive Summary (3 sentences), Decision Table (setting | current state | decision | rationale), Implementation Plan (ordered steps), and Remaining Questions. Be decisive but flag genuine uncertainties."
         }
       ]
@@ -694,7 +694,7 @@
         {
           "id": "review-synthesizer",
           "description": "Formats review findings into structured JSON",
-          "model": "glm-4.7-flash",
+          "model": "qwen3.6-35b-no-thinking",
           "system_prompt": "Given code review findings, format them into a clean JSON with: verdict (APPROVE/COMMENT/REQUEST_CHANGES), confidence, summary, blocking_issues, suggestions. Keep it concise."
         }
       ]
