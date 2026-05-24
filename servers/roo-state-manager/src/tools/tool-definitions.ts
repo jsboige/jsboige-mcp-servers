@@ -408,13 +408,14 @@ export const roosyncInventoryDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'] },
-            machineId: { type: 'string' },
-            includeHeartbeats: { type: 'boolean' },
-            status: { type: 'string', enum: ['unknown', 'idle', 'all'] },
-            includeDetails: { type: 'boolean' },
-            detail: { type: 'string', enum: ['compact', 'full'], description: 'full adds claims + pipeline stages' },
-            resetCache: { type: 'boolean' }
+            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'], description: 'Inventory type to query' },
+            machineId: { type: 'string', description: 'Machine ID filter (default: hostname)' },
+            includeHeartbeats: { type: 'boolean', description: 'Include heartbeat data' },
+            status: { type: 'string', enum: ['unknown', 'idle', 'all'], description: 'Filter by status (type=machines)' },
+            includeDetails: { type: 'boolean', description: 'Full details or tool usage stats' },
+            detail: { type: 'string', enum: ['compact', 'full'], description: 'compact or full (adds claims + pipeline stages)' },
+            resetCache: { type: 'boolean', description: 'Force cache reset (status only)' },
+            summary: { type: 'boolean', description: 'Return compact markdown summary instead of full JSON' }
         },
         required: ['type'],
         additionalProperties: false
@@ -637,7 +638,8 @@ export const roosyncMessagesDefinition = {
             subject_contains: { type: 'string' },
             tag: { type: 'string' },
             uuid: { type: 'string' },
-            targetPath: { type: 'string' }
+            targetPath: { type: 'string' },
+            format: { type: 'string', enum: ['json', 'markdown'], description: 'Output format for inbox/message actions (default: markdown)' }
         },
         required: ['action'],
         additionalProperties: false
