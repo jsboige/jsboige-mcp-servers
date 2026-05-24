@@ -356,18 +356,24 @@ export const roosyncBaselineDefinition = {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['update', 'version', 'restore', 'export', 'list_versions', 'current_version'] },
-            machineId: { type: 'string' },
-            mode: { type: 'string', enum: ['standard', 'profile'] },
-            aggregationConfig: { type: 'object', description: 'Profile mode only' },
-            version: { type: 'string' },
+            machineId: { type: 'string', description: 'Machine ID or profile name' },
+            mode: { type: 'string', enum: ['standard', 'profile'], description: 'Update mode' },
+            aggregationConfig: { type: 'object', description: 'Aggregation config (profile mode only)' },
+            version: { type: 'string', description: 'Baseline version (semver)' },
             createBackup: { type: 'boolean', default: true },
-            updateReason: { type: 'string' },
-            updatedBy: { type: 'string' },
-            message: { type: 'string' },
+            updateReason: { type: 'string', description: 'Reason for change' },
+            updatedBy: { type: 'string', description: 'Author' },
+            message: { type: 'string', description: 'Git tag message' },
             pushTags: { type: 'boolean', default: true },
             createChangelog: { type: 'boolean', default: true },
-            source: { type: 'string', description: 'Git tag or backup path' },
-            targetVersion: { type: 'string' }
+            source: { type: 'string', description: 'Restore source (git tag or backup path)' },
+            targetVersion: { type: 'string', description: 'Target version for restore' },
+            restoredBy: { type: 'string', description: 'Author of restore operation' },
+            format: { type: 'string', enum: ['json', 'yaml', 'csv'], description: 'Export format (required for export)' },
+            outputPath: { type: 'string', description: 'Output path for exported file' },
+            includeHistory: { type: 'boolean', default: false, description: 'Include modification history in export' },
+            includeMetadata: { type: 'boolean', default: true, description: 'Include full metadata in export' },
+            prettyPrint: { type: 'boolean', default: true, description: 'Pretty-print output for readability' }
         },
         additionalProperties: false
     }

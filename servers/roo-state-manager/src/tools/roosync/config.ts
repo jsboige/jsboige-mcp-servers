@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
+import type { ConfigTarget } from '../../types/config-sharing.js';
 
 /**
  * Claude Code scope pour les configurations MCP
@@ -136,7 +137,7 @@ export async function roosyncConfig(args: ConfigArgs) {
         const { targets = ['modes', 'mcp'] } = args;
 
         const result = await configSharingService.collectConfig({
-          targets: targets as ('modes' | 'mcp' | 'profiles')[],
+          targets: targets as ConfigTarget[],
           dryRun,
           scope // Issue #601 - Pass scope to collect
         });
@@ -169,7 +170,7 @@ export async function roosyncConfig(args: ConfigArgs) {
         if (!packagePath && targets) {
           // Collect automatique
           const collectResult = await configSharingService.collectConfig({
-            targets: targets as ('modes' | 'mcp' | 'profiles')[],
+            targets: targets as ConfigTarget[],
             dryRun,
             scope // Issue #601 - Pass scope to collect
           });
@@ -300,9 +301,11 @@ export async function roosyncConfig(args: ConfigArgs) {
     if (error instanceof ConfigSharingServiceError) {
       throw error;
     }
+    const errorCode = action === 'publish' ? ConfigSharingServiceErrorCode.PUBLISH_FAILED
+      : ConfigSharingServiceErrorCode.COLLECTION_FAILED;
     throw new ConfigSharingServiceError(
       `Erreur lors de l'opération ${action}: ${error instanceof Error ? error.message : String(error)}`,
-      ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+      errorCode,
       { originalError: error instanceof Error ? error.message : String(error), args }
     );
   }
