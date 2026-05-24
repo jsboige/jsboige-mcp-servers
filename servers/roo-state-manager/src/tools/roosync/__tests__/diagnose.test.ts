@@ -100,7 +100,9 @@ describe('roosync_diagnose', () => {
       expect(result.action).toBe('env');
       expect(result.message).toContain('WARNING');
       expect(result.data.status).toBe('WARNING');
-      expect(result.data.directories['.']).toEqual({ exists: false, error: 'ENOENT' });
+      expect(result.data.directories['.']).toEqual(
+        expect.objectContaining({ exists: false, error: 'ENOENT' })
+      );
     });
 
     it('should check disk space when checkDiskSpace is true', async () => {

@@ -44,9 +44,13 @@ vi.mock('os', () => ({
 }));
 
 // Mock path — source uses `import * as path from 'path'`
-vi.mock('path', () => ({
-    resolve: vi.fn((...args: string[]) => args.join('/')),
-}));
+vi.mock('path', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('path')>();
+    return {
+        ...actual,
+        resolve: vi.fn((...args: string[]) => args.join('/')),
+    };
+});
 
 // Mock lazy-roosync
 vi.mock('../../../../src/services/lazy-roosync.js', () => ({
@@ -55,6 +59,13 @@ vi.mock('../../../../src/services/lazy-roosync.js', () => ({
         getInstance: mockGetInstance,
     },
     getRooSyncService: mockGetRooSyncService,
+}));
+
+// Mock shared-state-path — diagnose now imports tryGetSharedStatePath
+vi.mock('../../../../src/utils/shared-state-path.js', () => ({
+    tryGetSharedStatePath: vi.fn(() => '/mock/shared-state'),
+    getSharedStatePath: vi.fn(() => '/mock/shared-state'),
+    isSharedPathAccessible: vi.fn(() => true),
 }));
 
 // Mock skeleton-cache.service
