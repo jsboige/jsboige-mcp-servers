@@ -19,12 +19,22 @@ import { indexTaskSemanticTool } from './index-task.tool.js';
 import { resetQdrantCollectionTool } from './reset-collection.tool.js';
 import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
 
+/** #2336 D1: Convert ISO timestamp to YYYY-WNN week key */
+function getISOWeek(timestamp: string): string {
+    const d = new Date(timestamp);
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
 /**
  * Arguments du tool roosync_indexing unifié
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'tool_usage_stats';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -88,6 +98,12 @@ export interface RooSyncIndexingArgs {
 
     /** #2246: Max tasks to repair per call (pour action=repair_gaps). Défaut: 50 */
     max_repair_tasks?: number;
+
+    /** #2336 D1: Start date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago */
+    start_date?: string;
+
+    /** #2336 D1: End date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: now */
+    end_date?: string;
 }
 
 /**
@@ -101,8 +117,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), tool_usage_stats (fleet-wide tool usage aggregation)'
             },
             task_id: {
                 type: 'string',
@@ -204,6 +220,14 @@ export const roosyncIndexingTool: Tool = {
                 type: 'number',
                 description: 'For repair_gaps. Max tasks to scan per call. Default: 50.',
                 default: 50
+            },
+            start_date: {
+                type: 'string',
+                description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.'
+            },
+            end_date: {
+                type: 'string',
+                description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now.'
             }
         },
         required: ['action']
@@ -247,10 +271,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, tool_usage_stats` }]
         };
     }
 
@@ -726,6 +750,133 @@ export async function handleRooSyncIndexing(
                 return {
                     isError: true,
                     content: [{ type: 'text', text: `Error during repair_gaps: ${error.message}` }]
+                };
+            }
+        }
+
+        case 'tool_usage_stats': {
+            // #2336 D1: Fleet-wide tool usage aggregation from conversation index
+            const { getQdrantClient } = await import('../../services/qdrant.js');
+            const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+            try {
+                const qdrant = getQdrantClient();
+
+                // Resolve date range
+                const endDate = args.end_date ? new Date(args.end_date) : new Date();
+                const defaultStart = new Date(endDate);
+                defaultStart.setDate(defaultStart.getDate() - 28); // 4 weeks
+                const startDate = args.start_date ? new Date(args.start_date) : defaultStart;
+
+                if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+                    return { isError: true, content: [{ type: 'text', text: 'Invalid start_date or end_date format. Use ISO 8601 or YYYY-MM-DD.' }] };
+                }
+
+                // Scroll all tool_interaction chunks in date range
+                const mustConditions: any[] = [
+                    { key: 'chunk_type', match: { value: 'tool_interaction' } },
+                    { key: 'timestamp', range: { gte: startDate.toISOString(), lte: endDate.toISOString() } },
+                ];
+
+                // Per-tool counts
+                const toolCounts: Record<string, number> = {};
+                // Weekly buckets: key = ISO week (YYYY-WNN), value = { tool_name: count }
+                const weeklyBuckets: Record<string, Record<string, number>> = {};
+                // Error counts per tool
+                const errorCounts: Record<string, number> = {};
+                // Per-source counts
+                const sourceCounts: Record<string, number> = {};
+                let totalPoints = 0;
+
+                const BATCH_SIZE = 500;
+                let offset: string | undefined = undefined;
+
+                do {
+                    const scrollResult: any = await qdrant.scroll(collectionName, {
+                        filter: { must: mustConditions },
+                        limit: BATCH_SIZE,
+                        offset,
+                        with_payload: true,
+                        with_vector: false,
+                    });
+
+                    const points: any[] = Array.isArray(scrollResult)
+                        ? scrollResult
+                        : (scrollResult?.points || []);
+
+                    for (const point of points) {
+                        const payload = point?.payload || {};
+                        totalPoints++;
+
+                        const toolName = payload.tool_name || '__unknown__';
+                        toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+
+                        const src = payload.source || '__unknown__';
+                        sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+
+                        if (payload.has_error === true || payload.has_error === 'true') {
+                            errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                        }
+
+                        // Weekly bucket from timestamp
+                        const ts = payload.timestamp;
+                        if (ts) {
+                            const weekKey = getISOWeek(ts);
+                            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
+                            weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                        }
+                    }
+
+                    offset = scrollResult?.next_page_offset;
+                    if (!offset || points.length === 0) break;
+                } while (true);
+
+                // Sort tools by count descending
+                const sortedTools = Object.entries(toolCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([name, count]) => ({
+                        tool_name: name,
+                        calls: count,
+                        errors: errorCounts[name] || 0,
+                        error_rate: count > 0 ? +(errorCounts[name] / count * 100).toFixed(1) : 0,
+                    }));
+
+                // Sort weeks chronologically
+                const sortedWeeks = Object.entries(weeklyBuckets)
+                    .sort((a, b) => a[0].localeCompare(b[0]))
+                    .map(([week, tools]) => ({
+                        week,
+                        total_calls: Object.values(tools).reduce((s, c) => s + c, 0),
+                        top_tools: Object.entries(tools)
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 10)
+                            .map(([name, count]) => ({ tool_name: name, calls: count })),
+                    }));
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'tool_usage_stats',
+                            date_range: {
+                                start: startDate.toISOString().slice(0, 10),
+                                end: endDate.toISOString().slice(0, 10),
+                                weeks: sortedWeeks.length,
+                            },
+                            total_tool_calls: totalPoints,
+                            unique_tools: Object.keys(toolCounts).length,
+                            source_distribution: sourceCounts,
+                            tools: sortedTools,
+                            weekly_trend: sortedWeeks,
+                            summary: `${totalPoints} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)})`,
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Error during tool_usage_stats: ${error.message}` }]
                 };
             }
         }
