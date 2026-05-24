@@ -356,18 +356,24 @@ export const roosyncBaselineDefinition = {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['update', 'version', 'restore', 'export', 'list_versions', 'current_version'] },
-            machineId: { type: 'string' },
-            mode: { type: 'string', enum: ['standard', 'profile'] },
-            aggregationConfig: { type: 'object', description: 'Profile mode only' },
-            version: { type: 'string' },
+            machineId: { type: 'string', description: 'Machine ID or profile name' },
+            mode: { type: 'string', enum: ['standard', 'profile'], description: 'Update mode' },
+            aggregationConfig: { type: 'object', description: 'Aggregation config (profile mode only)' },
+            version: { type: 'string', description: 'Baseline version (semver)' },
             createBackup: { type: 'boolean', default: true },
-            updateReason: { type: 'string' },
-            updatedBy: { type: 'string' },
-            message: { type: 'string' },
+            updateReason: { type: 'string', description: 'Reason for change' },
+            updatedBy: { type: 'string', description: 'Author' },
+            message: { type: 'string', description: 'Git tag message' },
             pushTags: { type: 'boolean', default: true },
             createChangelog: { type: 'boolean', default: true },
-            source: { type: 'string', description: 'Git tag or backup path' },
-            targetVersion: { type: 'string' }
+            source: { type: 'string', description: 'Restore source (git tag or backup path)' },
+            targetVersion: { type: 'string', description: 'Target version for restore' },
+            restoredBy: { type: 'string', description: 'Author of restore operation' },
+            format: { type: 'string', enum: ['json', 'yaml', 'csv'], description: 'Export format (required for export)' },
+            outputPath: { type: 'string', description: 'Output path for exported file' },
+            includeHistory: { type: 'boolean', default: false, description: 'Include modification history in export' },
+            includeMetadata: { type: 'boolean', default: true, description: 'Include full metadata in export' },
+            prettyPrint: { type: 'boolean', default: true, description: 'Pretty-print output for readability' }
         },
         additionalProperties: false
     }
@@ -402,13 +408,14 @@ export const roosyncInventoryDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'] },
-            machineId: { type: 'string' },
-            includeHeartbeats: { type: 'boolean' },
-            status: { type: 'string', enum: ['unknown', 'idle', 'all'] },
-            includeDetails: { type: 'boolean' },
-            detail: { type: 'string', enum: ['compact', 'full'], description: 'full adds claims + pipeline stages' },
-            resetCache: { type: 'boolean' }
+            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'], description: 'Inventory type to query' },
+            machineId: { type: 'string', description: 'Machine ID filter (default: hostname)' },
+            includeHeartbeats: { type: 'boolean', description: 'Include heartbeat data' },
+            status: { type: 'string', enum: ['unknown', 'idle', 'all'], description: 'Filter by status (type=machines)' },
+            includeDetails: { type: 'boolean', description: 'Full details or tool usage stats' },
+            detail: { type: 'string', enum: ['compact', 'full'], description: 'compact or full (adds claims + pipeline stages)' },
+            resetCache: { type: 'boolean', description: 'Force cache reset (status only)' },
+            summary: { type: 'boolean', description: 'Return compact markdown summary instead of full JSON' }
         },
         required: ['type'],
         additionalProperties: false
@@ -631,7 +638,8 @@ export const roosyncMessagesDefinition = {
             subject_contains: { type: 'string' },
             tag: { type: 'string' },
             uuid: { type: 'string' },
-            targetPath: { type: 'string' }
+            targetPath: { type: 'string' },
+            format: { type: 'string', enum: ['json', 'markdown'], description: 'Output format for inbox/message actions (default: markdown)' }
         },
         required: ['action'],
         additionalProperties: false

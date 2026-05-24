@@ -111,13 +111,13 @@ export class ConfigSharingService implements IConfigSharingService {
     }
 
     // Collecte de ~/.claude.json (Claude Code MCP configuration) - #603 B2.1
-    if (options.targets.includes('claude-config' as any)) {
+    if (options.targets.includes('claude-config')) {
       const claudeConfigFiles = await this.collectClaudeConfig(tempDir);
       manifest.files.push(...claudeConfigFiles);
     }
 
     // Collecte de custom_modes.yaml (modes globaux Roo) - #603 B2.1
-    if (options.targets.includes('modes-yaml' as any)) {
+    if (options.targets.includes('modes-yaml')) {
       const modesYamlFiles = await this.collectModesYaml(tempDir);
       manifest.files.push(...modesYamlFiles);
     }
@@ -328,8 +328,8 @@ export class ConfigSharingService implements IConfigSharingService {
       const hasModelConfigsTarget = options.targets?.includes('model-configs') || false;
       const hasRulesTarget = options.targets?.includes('rules') || false;
       const hasSettingsTarget = options.targets?.includes('settings') || false;
-      const hasClaudeConfigTarget = options.targets?.includes('claude-config' as any) || false;
-      const hasModesYamlTarget = options.targets?.includes('modes-yaml' as any) || false;
+      const hasClaudeConfigTarget = options.targets?.includes('claude-config') || false;
+      const hasModesYamlTarget = options.targets?.includes('modes-yaml') || false;
 
       // Si aucun target n'est spécifié, tout appliquer par défaut
       const applyAll = options.targets === undefined || options.targets.length === 0;
