@@ -377,25 +377,3 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
     );
   }
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- */
-export const initToolMetadata = {
-  name: 'roosync_init',
-  description: 'Initialiser l\'infrastructure RooSync (dashboard, roadmap, répertoires)',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      force: {
-        type: 'boolean',
-        description: 'Forcer la réinitialisation même si les fichiers existent (défaut: false)'
-      },
-      createRoadmap: {
-        type: 'boolean',
-        description: 'Créer un fichier sync-roadmap.md initial (défaut: true)'
-      }
-    },
-    additionalProperties: false
-  }
-};

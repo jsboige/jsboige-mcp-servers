@@ -214,12 +214,3 @@ export async function roosyncDecisionInfo(
     rollbackPoint
   };
 }
-
-/**
- * Metadata pour l'outil MCP
- */
-export const roosyncDecisionInfoToolMetadata = {
-  name: 'roosync_decision_info',
-  description: 'Consulte les détails d\'une décision RooSync (read-only)',
-  inputSchema: zodToJsonSchema(RooSyncDecisionInfoArgsSchema as any)
-};

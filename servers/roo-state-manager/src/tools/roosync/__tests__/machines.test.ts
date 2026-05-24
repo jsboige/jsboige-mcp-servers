@@ -53,7 +53,7 @@ const mockExecutionContext: any = {
   cacheManager: { get: vi.fn(), set: vi.fn(), delete: vi.fn() }
 };
 
-import { machinesTool, machinesToolMetadata } from '../machines.js';
+import { machinesTool } from '../machines.js';
 import { getRooSyncService } from '../../../services/RooSyncService.js';
 
 describe('machinesTool', () => {
@@ -131,17 +131,6 @@ describe('machinesTool', () => {
 
       expect(result.data.unknownMachines![0].status).toBe('unknown');
       expect(result.data.idleMachines![0].status).toBe('idle');
-    });
-  });
-
-  describe('validation', () => {
-    test('should have correct metadata', () => {
-      expect(machinesToolMetadata.name).toBe('roosync_machines');
-      expect(machinesToolMetadata.inputSchema.properties.status.enum).toEqual(['unknown', 'idle', 'all']);
-    });
-
-    test('should require status parameter', () => {
-      expect(machinesToolMetadata.inputSchema.required).toContain('status');
     });
   });
 

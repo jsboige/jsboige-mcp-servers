@@ -477,30 +477,3 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     );
   }
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- */
-export const getStatusToolMetadata = {
-  name: 'roosync_get_status',
-  description: 'Obtenir un snapshot compact de l\'état RooSync avec flags actionnables. Remplace 4-5 appels séparés. #1855: detail="full" ajoute claims actifs et pipeline stages pour HUD statusline.',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      machineFilter: {
-        type: 'string',
-        description: 'ID de machine pour filtrer les résultats (optionnel)'
-      },
-      resetCache: {
-        type: 'boolean',
-        description: 'Forcer la réinitialisation du cache du service (défaut: false)'
-      },
-      detail: {
-        type: 'string',
-        enum: ['compact', 'full'],
-        description: 'Niveau de détail: "compact" (défaut) = status minimal, "full" = ajoute claims actifs et stages pipeline (#1855 HUD)'
-      }
-    },
-    additionalProperties: false
-  }
-};

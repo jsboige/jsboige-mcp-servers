@@ -410,63 +410,6 @@ Aucune pièce jointe pour ce message.
  * @param args Arguments de l'outil
  * @returns Résultat formaté
  */
-/**
- * Métadonnées de l'outil roosync_read pour enregistrement MCP
- */
-export const readToolMetadata = {
-  name: 'roosync_read',
-  description: 'Lire la boîte de réception des messages RooSync, obtenir les détails complets d\'un message spécifique, ou lister les pièces jointes d\'un message',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      mode: {
-        type: 'string',
-        enum: ['inbox', 'message', 'attachments'],
-        description: 'Mode de lecture : inbox (liste des messages), message (détails d\'un message), ou attachments (pièces jointes d\'un message)'
-      },
-      status: {
-        type: 'string',
-        enum: ['unread', 'read', 'all'],
-        description: 'Filtrer par status (mode inbox, défaut: all)'
-      },
-      limit: {
-        type: 'number',
-        description: 'Nombre maximum de messages à retourner (mode inbox). Use page/per_page for pagination instead.'
-      },
-      page: {
-        type: 'number',
-        description: 'Page number (1-based) for pagination. Requires per_page.'
-      },
-      per_page: {
-        type: 'number',
-        description: 'Messages per page. Requires page. Recommended: 20.'
-      },
-      message_id: {
-        type: 'string',
-        description: 'ID du message à récupérer (requis pour mode=message ou mode=attachments)'
-      },
-      mark_as_read: {
-        type: 'boolean',
-        description: 'Marquer automatiquement comme lu (mode message, défaut: false)'
-      },
-      workspace: {
-        type: 'string',
-        description: '(mode inbox, #1498) Override workspace filter. Défaut: workspace du process MCP. Permet à un scheduler tournant dans workspace X de lire l\'inbox adressée à workspace Y sur la même machine (dashboard-watcher multi-workspace).'
-      },
-      to_machine: {
-        type: 'string',
-        description: '(mode inbox, #1498, avancé) Override machine filter. Défaut: machine locale. Normalement tu veux ta propre machine.'
-      },
-      format: {
-        type: 'string',
-        enum: ['json', 'markdown'],
-        description: '(mode inbox) Format de sortie: "json" pour données structurées, "markdown" pour tableau formaté (défaut)'
-      }
-    },
-    required: ['mode']
-  }
-};
-
 export async function roosyncRead(
   args: RooSyncReadArgs
 ): Promise<{ content: Array<{ type: string; text: string }> }> {

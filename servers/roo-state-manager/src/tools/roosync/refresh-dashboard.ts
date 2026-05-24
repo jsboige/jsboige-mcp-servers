@@ -216,25 +216,3 @@ async function parseDashboardMachines(dashboardPath: string): Promise<Array<{
     return [];
   }
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- */
-export const refreshDashboardToolMetadata = {
-  name: 'roosync_refresh_dashboard',
-  description: 'Rafraîchit le dashboard MCP en exécutant le script generate-mcp-dashboard.ps1',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      baseline: {
-        type: 'string',
-        description: 'Machine à utiliser comme baseline (défaut: myia-ai-01)'
-      },
-      outputDir: {
-        type: 'string',
-        description: 'Répertoire de sortie pour le dashboard (défaut: $ROOSYNC_SHARED_PATH/dashboards)'
-      }
-    },
-    additionalProperties: false
-  }
-};

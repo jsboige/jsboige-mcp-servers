@@ -35,22 +35,14 @@ vi.mock('../../../utils/logger.js', () => ({
 
 import {
   roosyncListAttachments,
-  listAttachmentsToolMetadata,
   roosyncGetAttachment,
-  getAttachmentToolMetadata,
   roosyncDeleteAttachment,
-  deleteAttachmentToolMetadata,
   roosyncAttachments,
-  attachmentsToolMetadata
 } from '../roosync-attachments.tool.js';
 
 // ============================================================
 describe('roosync_list_attachments', () => {
   beforeEach(() => vi.clearAllMocks());
-
-  test('exports listAttachmentsToolMetadata with correct name', () => {
-    expect(listAttachmentsToolMetadata.name).toBe('roosync_list_attachments');
-  });
 
   test('returns empty message when no attachments', async () => {
     mockListAttachments.mockResolvedValue([]);
@@ -102,12 +94,6 @@ describe('roosync_list_attachments', () => {
 describe('roosync_get_attachment', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  test('exports getAttachmentToolMetadata with required params', () => {
-    expect(getAttachmentToolMetadata.name).toBe('roosync_get_attachment');
-    expect(getAttachmentToolMetadata.inputSchema.required).toContain('uuid');
-    expect(getAttachmentToolMetadata.inputSchema.required).toContain('targetPath');
-  });
-
   test('returns error when uuid is missing', async () => {
     const result = await roosyncGetAttachment({ uuid: '', targetPath: '/tmp/out.txt' });
     expect(result.content[0].text).toContain('uuid');
@@ -148,11 +134,6 @@ describe('roosync_get_attachment', () => {
 // ============================================================
 describe('roosync_delete_attachment', () => {
   beforeEach(() => vi.clearAllMocks());
-
-  test('exports deleteAttachmentToolMetadata with required params', () => {
-    expect(deleteAttachmentToolMetadata.name).toBe('roosync_delete_attachment');
-    expect(deleteAttachmentToolMetadata.inputSchema.required).toContain('uuid');
-  });
 
   test('returns error when uuid is missing', async () => {
     const result = await roosyncDeleteAttachment({ uuid: '' });
@@ -202,14 +183,6 @@ describe('roosync_delete_attachment', () => {
 
 describe('roosync_attachments (CONS-7)', () => {
   beforeEach(() => vi.clearAllMocks());
-
-  test('exports attachmentsToolMetadata with name roosync_attachments', () => {
-    expect(attachmentsToolMetadata.name).toBe('roosync_attachments');
-  });
-
-  test('requires action field', () => {
-    expect(attachmentsToolMetadata.inputSchema.required).toContain('action');
-  });
 
   test('action=list delegates to roosyncListAttachments', async () => {
     mockListAttachments.mockResolvedValue([]);

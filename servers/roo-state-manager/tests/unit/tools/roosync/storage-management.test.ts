@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { roosyncStorageManagement, storageManagementToolMetadata } from '../../../../src/tools/roosync/storage-management.js';
+import { roosyncStorageManagement } from '../../../../src/tools/roosync/storage-management.js';
 
 const {
     mockHandleStorageInfo,
@@ -176,15 +176,6 @@ describe('roosync_storage_management', () => {
                 action: 'storage', storageAction: 'detect',
             });
             expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(storageManagementToolMetadata.name).toBe('roosync_storage_management');
-            expect(storageManagementToolMetadata.inputSchema.required).toContain('action');
-            expect(storageManagementToolMetadata.inputSchema.properties.action.enum).toContain('storage');
-            expect(storageManagementToolMetadata.inputSchema.properties.action.enum).toContain('maintenance');
         });
     });
 });

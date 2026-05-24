@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { roosyncSend, sendToolMetadata } from '../../../../src/tools/roosync/send.js';
+import { roosyncSend } from '../../../../src/tools/roosync/send.js';
 
 const {
     mockGetMessageManager,
@@ -326,16 +326,6 @@ describe('roosync_send', () => {
                 action: 'send', to: 'myia-ai-01', subject: 'Test', body: 'Body',
             });
             expect(mockRecordActivity).toHaveBeenCalledWith('send', { action: 'send' });
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(sendToolMetadata.name).toBe('roosync_send');
-            expect(sendToolMetadata.inputSchema.required).toContain('action');
-            expect(sendToolMetadata.inputSchema.properties.action.enum).toContain('send');
-            expect(sendToolMetadata.inputSchema.properties.action.enum).toContain('reply');
-            expect(sendToolMetadata.inputSchema.properties.action.enum).toContain('amend');
         });
     });
 });

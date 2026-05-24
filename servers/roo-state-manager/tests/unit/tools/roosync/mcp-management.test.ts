@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { roosyncMcpManagement, mcpManagementToolMetadata } from '../../../../src/tools/roosync/mcp-management.js';
+import { roosyncMcpManagement } from '../../../../src/tools/roosync/mcp-management.js';
 
 const {
     mockReadFile,
@@ -296,16 +296,6 @@ describe('roosync_mcp_management', () => {
             // First call will wrap, but check it's a proper error
             await expect(roosyncMcpManagement({ action: 'manage', subAction: 'read' }))
                 .rejects.toThrow();
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(mcpManagementToolMetadata.name).toBe('roosync_mcp_management');
-            expect(mcpManagementToolMetadata.inputSchema.required).toContain('action');
-            expect(mcpManagementToolMetadata.inputSchema.properties.action.enum).toContain('manage');
-            expect(mcpManagementToolMetadata.inputSchema.properties.action.enum).toContain('rebuild');
-            expect(mcpManagementToolMetadata.inputSchema.properties.action.enum).toContain('touch');
         });
     });
 });

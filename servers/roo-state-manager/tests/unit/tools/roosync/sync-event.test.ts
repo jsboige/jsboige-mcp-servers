@@ -197,13 +197,4 @@ describe('roosync_sync_event', () => {
             }
         });
     });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', async () => {
-            const { syncEventToolMetadata } = await import('../../../../src/tools/roosync/sync-event.js');
-            expect(syncEventToolMetadata.name).toBe('roosync_sync_event');
-            expect(syncEventToolMetadata.inputSchema.required).toContain('action');
-            expect(syncEventToolMetadata.inputSchema.required).toContain('machineId');
-        });
-    });
 });

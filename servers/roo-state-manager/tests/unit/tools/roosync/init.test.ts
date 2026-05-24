@@ -30,12 +30,6 @@ describe('roosync_init - Interface', () => {
   it('devrait exporter InitArgsSchema', () => {
     expect(module.InitArgsSchema).toBeDefined();
   });
-
-  it('devrait exporter initToolMetadata', () => {
-    expect(module.initToolMetadata).toBeDefined();
-    expect(module.initToolMetadata.name).toBe('roosync_init');
-    expect(module.initToolMetadata.description).toContain('RooSync');
-  });
 });
 
 describe('roosync_init - Schema Validation', () => {
@@ -71,23 +65,5 @@ describe('roosync_init - Schema Validation', () => {
   it('devrait rejeter les types invalides', () => {
     const result = module.InitArgsSchema.safeParse({ force: 'yes' });
     expect(result.success).toBe(false);
-  });
-});
-
-describe('roosync_init - Metadata', () => {
-  let module: any;
-
-  beforeAll(async () => {
-    module = await import('../../../../src/tools/roosync/roosync_init.js');
-  });
-
-  it('devrait avoir les métadonnées correctes', () => {
-    const metadata = module.initToolMetadata;
-
-    expect(metadata.name).toBe('roosync_init');
-    expect(metadata.inputSchema).toBeDefined();
-    expect(metadata.inputSchema.type).toBe('object');
-    expect(metadata.inputSchema.properties).toHaveProperty('force');
-    expect(metadata.inputSchema.properties).toHaveProperty('createRoadmap');
   });
 });

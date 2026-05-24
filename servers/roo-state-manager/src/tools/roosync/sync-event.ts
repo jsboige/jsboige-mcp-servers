@@ -157,39 +157,3 @@ export async function roosyncSyncEvent(args: SyncEventArgs): Promise<SyncEventRe
     );
   }
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- */
-export const syncEventToolMetadata = {
-  name: 'roosync_sync_event',
-  description: 'Synchronise automatiquement les baselines lors des changements d\'état online/offline d\'une machine. Actions : offline (sauvegarde baseline avant déconnexion), online (restauration baseline après reconnexion). Généralement appelé automatiquement par le service heartbeat.',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['online', 'offline'],
-        description: 'Type d\'événement de synchronisation: online (machine revient) ou offline (machine part)'
-      },
-      machineId: {
-        type: 'string',
-        description: 'Identifiant de la machine concernée'
-      },
-      createBackup: {
-        type: 'boolean',
-        description: 'Créer une sauvegarde avant synchronisation (défaut: true)'
-      },
-      dryRun: {
-        type: 'boolean',
-        description: 'Mode simulation sans modification réelle (défaut: false)'
-      },
-      syncFromBaseline: {
-        type: 'boolean',
-        description: 'Synchroniser depuis la baseline (défaut: true, online uniquement)'
-      }
-    },
-    required: ['action', 'machineId'],
-    additionalProperties: false
-  }
-};

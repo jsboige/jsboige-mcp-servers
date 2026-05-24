@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { roosyncManage, manageToolMetadata } from '../../../../src/tools/roosync/manage.js';
+import { roosyncManage } from '../../../../src/tools/roosync/manage.js';
 
 const {
     mockGetMessageManager,
@@ -283,15 +283,6 @@ describe('roosync_manage', () => {
             const result = await roosyncManage({ action: 'bulk_mark_read' });
             expect(result.content[0].text).toContain('Erreur');
             expect(result.content[0].text).toContain('DB connection lost');
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(manageToolMetadata.name).toBe('roosync_manage');
-            expect(manageToolMetadata.inputSchema.required).toContain('action');
-            expect(manageToolMetadata.inputSchema.properties.action.enum).toContain('cleanup');
-            expect(manageToolMetadata.inputSchema.properties.action.enum).toContain('stats');
         });
     });
 });

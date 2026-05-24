@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { roosyncRead, readToolMetadata } from '../../../../src/tools/roosync/read.js';
+import { roosyncRead } from '../../../../src/tools/roosync/read.js';
 
 const {
     mockGetMessageManager,
@@ -375,16 +375,6 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             await roosyncRead({ mode: 'inbox' });
             expect(mockRecordActivity).toHaveBeenCalledWith('read', { mode: 'inbox' });
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(readToolMetadata.name).toBe('roosync_read');
-            expect(readToolMetadata.inputSchema.required).toContain('mode');
-            expect(readToolMetadata.inputSchema.properties.mode.enum).toContain('inbox');
-            expect(readToolMetadata.inputSchema.properties.mode.enum).toContain('message');
-            expect(readToolMetadata.inputSchema.properties.mode.enum).toContain('attachments');
         });
     });
 });

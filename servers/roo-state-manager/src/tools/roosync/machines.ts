@@ -210,27 +210,3 @@ export const machinesTool: UnifiedToolContract = {
 export async function roosyncMachines(args: MachinesArgs, context?: any): Promise<ToolResult<any>> {
   return machinesTool.execute(args, context);
 }
-
-/**
- * Métadonnées de l'outil pour l'enregistrement MCP
- */
-export const machinesToolMetadata = {
-  name: 'roosync_machines',
-  description: 'Récupération des machines unknown et/ou idle. WARNING: LOCAL-SELF only data — not cross-machine reliable. Use roosync_inventory(type="status") for reliable cross-machine presence. (#2318)',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      status: {
-        type: 'string',
-        enum: ['unknown', 'idle', 'all'],
-        description: 'Statut des machines à récupérer'
-      },
-      includeDetails: {
-        type: 'boolean',
-        description: 'Inclure les détails complets de chaque machine (défaut: false)'
-      }
-    },
-    required: ['status'],
-    additionalProperties: false
-  }
-};

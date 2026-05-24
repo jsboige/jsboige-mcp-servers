@@ -8,7 +8,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
     roosyncUpdateDashboard,
-    updateDashboardToolMetadata,
 } from '../../../../src/tools/roosync/update-dashboard.js';
 
 const {
@@ -231,14 +230,6 @@ describe('roosync_update_dashboard', () => {
                 section: 'machine',
                 content: 'Test',
             })).rejects.toThrow('ROOSYNC_MACHINE_ID');
-        });
-    });
-
-    describe('metadata', () => {
-        it('has correct tool metadata', () => {
-            expect(updateDashboardToolMetadata.name).toBe('roosync_update_dashboard');
-            expect(updateDashboardToolMetadata.inputSchema.required).toContain('section');
-            expect(updateDashboardToolMetadata.inputSchema.required).toContain('content');
         });
     });
 });

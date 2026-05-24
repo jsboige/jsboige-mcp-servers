@@ -19,20 +19,6 @@ const logger = createLogger('RooSyncAttachmentTools');
 // roosync_list_attachments
 // ============================================================
 
-export const listAttachmentsToolMetadata = {
-  name: 'roosync_list_attachments',
-  description: 'Lister les pièces jointes d\'un message RooSync ou toutes les pièces jointes disponibles',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      message_id: {
-        type: 'string',
-        description: 'ID du message dont on veut lister les pièces jointes (optionnel — si absent, liste tout)'
-      }
-    }
-  }
-};
-
 export async function roosyncListAttachments(
   args: { message_id?: string }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
@@ -92,25 +78,6 @@ ${rows}
 // roosync_get_attachment
 // ============================================================
 
-export const getAttachmentToolMetadata = {
-  name: 'roosync_get_attachment',
-  description: 'Récupérer une pièce jointe RooSync et la copier vers un chemin local',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      uuid: {
-        type: 'string',
-        description: 'UUID de la pièce jointe à récupérer'
-      },
-      targetPath: {
-        type: 'string',
-        description: 'Chemin local de destination où copier le fichier'
-      }
-    },
-    required: ['uuid', 'targetPath']
-  }
-};
-
 export async function roosyncGetAttachment(
   args: { uuid: string; targetPath: string }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
@@ -163,21 +130,6 @@ export async function roosyncGetAttachment(
 // ============================================================
 // roosync_delete_attachment
 // ============================================================
-
-export const deleteAttachmentToolMetadata = {
-  name: 'roosync_delete_attachment',
-  description: 'Supprimer une pièce jointe RooSync du stockage partagé',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      uuid: {
-        type: 'string',
-        description: 'UUID de la pièce jointe à supprimer'
-      }
-    },
-    required: ['uuid']
-  }
-};
 
 export async function roosyncDeleteAttachment(
   args: { uuid: string }
@@ -237,34 +189,6 @@ Utilisez \`roosync_list_attachments\` pour voir les UUIDs disponibles.`
 // ============================================================
 // CONS-7: Outil consolidé roosync_attachments (list + get + delete → 1)
 // ============================================================
-
-export const attachmentsToolMetadata = {
-  name: 'roosync_attachments',
-  description: 'Gestion unifiée des pièces jointes RooSync (list, get, delete)',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['list', 'get', 'delete'],
-        description: 'Action à effectuer : list (lister), get (récupérer), delete (supprimer)'
-      },
-      message_id: {
-        type: 'string',
-        description: '[list] ID du message dont on veut lister les pièces jointes (optionnel — si absent, liste tout)'
-      },
-      uuid: {
-        type: 'string',
-        description: '[get|delete] UUID de la pièce jointe'
-      },
-      targetPath: {
-        type: 'string',
-        description: '[get] Chemin local de destination où copier le fichier'
-      }
-    },
-    required: ['action']
-  }
-};
 
 export async function roosyncAttachments(
   args: { action: 'list' | 'get' | 'delete'; message_id?: string; uuid?: string; targetPath?: string }
