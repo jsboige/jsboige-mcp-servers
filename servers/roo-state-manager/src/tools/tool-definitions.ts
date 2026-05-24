@@ -439,6 +439,23 @@ export const roosyncInventoryDefinition = {
 
 // #1863 FUSION A2: roosync_machines removed — use roosync_inventory(type: "machines")
 // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
+
+// #1320: Lifecycle state machine tool
+export const roosyncReportLifecycleDefinition = {
+    name: 'roosync_report_lifecycle',
+    description: 'Report agent lifecycle state transition (#1320). Workers use this to signal their current phase: BOOTSTRAPPING (starting up), READY (MCP confirmed), CLAIMED (task assigned), WORKING (active code changes), REPORTING (posting results), IDLE (waiting), ERROR (failed), RECOVERING (auto-healing). Transitions are validated — invalid transitions return an error.',
+    inputSchema: {
+        type: 'object' as const,
+        properties: {
+            state: { type: 'string', enum: ['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'], description: 'Target lifecycle state' },
+            machineId: { type: 'string', description: 'Machine ID (default: hostname)' },
+            reason: { type: 'string', description: 'Reason for the transition' },
+        },
+        required: ['state'],
+        additionalProperties: false,
+    }
+};
+
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
     description: 'MCP server management: manage (read/write/backup/update/toggle), rebuild (build+restart), touch (force reload).',
@@ -694,6 +711,8 @@ export const allToolDefinitions = [
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
+    // #1320: Lifecycle state machine
+    roosyncReportLifecycleDefinition,
     // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,

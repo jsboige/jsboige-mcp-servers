@@ -55,11 +55,18 @@ export const HeartbeatDataSchema = z.object({
     .describe('Timestamp du dernier heartbeat (ISO 8601)'),
   status: z.enum(['online', 'idle', 'unknown'])
     .describe('Statut de la machine'),
+  lifecycleState: z.enum(['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'])
+    .optional()
+    .describe('Agent lifecycle state (#1320). BOOTSTRAPPING→READY→CLAIMED→WORKING→REPORTING→IDLE, any→ERROR→RECOVERING→READY'),
   metadata: z.object({
     firstSeen: z.string()
       .describe('Timestamp de première détection (ISO 8601)'),
     lastUpdated: z.string()
-      .describe('Timestamp de dernière mise à jour (ISO 8601)')
+      .describe('Timestamp de dernière mise à jour (ISO 8601)'),
+    lifecycleSince: z.string().optional()
+      .describe('Timestamp since current lifecycle state (ISO 8601)'),
+    lifecycleReason: z.string().optional()
+      .describe('Reason for last lifecycle transition'),
   })
 });
 

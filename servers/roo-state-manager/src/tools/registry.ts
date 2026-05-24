@@ -601,6 +601,17 @@ export function registerCallToolHandler(
           }
           // #1863 FUSION A2: roosync_machines removed — redirects to roosync_inventory(type: "machines")
           // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
+          // #1320: Lifecycle state machine
+          case 'roosync_report_lifecycle': {
+              try {
+                  const m = await import('./roosync/lifecycle.js');
+                  const lcResult = await m.reportLifecycle(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(lcResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          }
           // CONS-1: Outils messagerie consolidés (6→3)
            case 'roosync_send': {
                try {

@@ -308,8 +308,9 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     // Cluster H (#1841) fused task_export → export_data: 19 → 18
     // #1836 added roosync_claim: 18 → 19
     // CONS-8 #603 removed 4 dead tools (init, claim, decision, list_diffs): 19 → 15
+    // #1320 added roosync_report_lifecycle: 15 → 16
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(15);
+    expect(allToolDefinitions.length).toBe(16);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {
