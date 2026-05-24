@@ -698,13 +698,20 @@ export class MessageManager {
 
     logger.warn(`Message not found: ${messageId}`);
 
-    // #2307 Phase 4: If message was in cache but not on disk, force cache rebuild
+    // #2307 Phase 4: If message was in cache but not on disk, it was likely
+    // auto-archived between cache build and this call. Return the cached copy
+    // (marked as archived) so callers can handle it as "already processed"
+    // instead of returning "Message introuvable" to the agent.
     if (this.inboxFullCache.has(messageId)) {
-      logger.info(`Stale cache entry detected for ${messageId}, forcing rebuild`);
+      logger.info(`Stale cache entry for ${messageId} — returning cached copy as archived`);
+      const cached = this.inboxFullCache.get(messageId)!;
+      // Force cache rebuild so next call is fresh
       this.inboxCache = null;
       this.inboxFullCache = new Map();
       this.cacheBuiltAt = 0;
       this.lastInboxFileCount = -1;
+      // Return cached message with archived status so callers treat it as processed
+      return { ...cached, status: 'archived' as const };
     }
 
     return null;

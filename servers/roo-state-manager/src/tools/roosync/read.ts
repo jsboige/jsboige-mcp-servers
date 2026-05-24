@@ -94,6 +94,33 @@ async function readInboxMode(
 
   logger.info('📬 Reading inbox', { machineId: effectiveMachineId, workspaceId: effectiveWorkspaceId, status, limit, page, perPage });
 
+  // #2307 Phase 4: Run cleanup BEFORE listing to prevent phantom-message race.
+  // Previously fire-and-forget AFTER listing — autoArchiveOld could move files
+  // between cache build and a subsequent mark_read/archive call, causing
+  // "Message introuvable" on messages that were just listed.
+  const now = Date.now();
+  if (now - lastCleanupRunAt > CLEANUP_THROTTLE_MS) {
+    lastCleanupRunAt = now;
+    try {
+      const archived = await messageManager.autoArchiveOld(7, true);
+      if (archived > 0) logger.info(`Auto-archived ${archived} old messages (pre-listing)`);
+    } catch (err) {
+      logger.debug('Auto-archive skipped (non-critical)', { error: String(err) });
+    }
+    try {
+      const destroyed = await messageManager.cleanupExpiredMessages();
+      if (destroyed > 0) logger.info(`Destroyed ${destroyed} expired auto-destruct messages`);
+    } catch (err) {
+      logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) });
+    }
+    try {
+      const reminders = await messageManager.sendExpiryReminders();
+      if (reminders > 0) logger.info(`Sent ${reminders} expiry reminders`);
+    } catch (err) {
+      logger.debug('Expiry reminders skipped (non-critical)', { error: String(err) });
+    }
+  }
+
   // Get counts from cache (single scan, no double-read — #638 perf fix)
   const counts = await messageManager.getFilteredCount(effectiveMachineId, 'all', effectiveWorkspaceId);
 
@@ -108,27 +135,6 @@ async function readInboxMode(
     .then(svc => svc.getHeartbeatService()
       .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_read_inbox', messageCount: messages.length }))
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
-
-  // Throttled fire-and-forget cleanup tasks (run at most once every 5 min)
-  const now = Date.now();
-  if (now - lastCleanupRunAt > CLEANUP_THROTTLE_MS) {
-    lastCleanupRunAt = now;
-
-    // Auto-archive old read messages (#638 Phase 3, #809 reduced from 30d to 7d)
-    messageManager.autoArchiveOld(7, true)
-      .then(n => { if (n > 0) logger.info(`Auto-archived ${n} old messages`); })
-      .catch(err => logger.debug('Auto-archive skipped (non-critical)', { error: String(err) }));
-
-    // Cleanup expired auto-destruct messages (#629)
-    messageManager.cleanupExpiredMessages()
-      .then(n => { if (n > 0) logger.info(`Destroyed ${n} expired auto-destruct messages`); })
-      .catch(err => logger.debug('Auto-destruct cleanup skipped (non-critical)', { error: String(err) }));
-
-    // Expiry reminders for approaching TTL (#629)
-    messageManager.sendExpiryReminders()
-      .then(n => { if (n > 0) logger.info(`Sent ${n} expiry reminders`); })
-      .catch(err => logger.debug('Expiry reminders skipped (non-critical)', { error: String(err) }));
-  }
 
   // Cas : aucun message
   if (messages.length === 0 && counts.total === 0) {
