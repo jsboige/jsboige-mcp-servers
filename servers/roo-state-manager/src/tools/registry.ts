@@ -601,11 +601,13 @@ export function registerCallToolHandler(
           }
           // #1863 FUSION A2: roosync_machines removed — redirects to roosync_inventory(type: "machines")
           // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
-          // #1320: Lifecycle state machine
+          // #1320: Lifecycle state machine → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
+          // Redirect backward-compat callers to roosync_diagnose(action: "lifecycle", ...)
           case 'roosync_report_lifecycle': {
               try {
-                  const m = await import('./roosync/lifecycle.js');
-                  const lcResult = await m.reportLifecycle(args as any);
+                  const m = await import('./roosync/diagnose.js');
+                  const lcArgs = { ...args, action: 'lifecycle' as const };
+                  const lcResult = await m.roosyncDiagnose(lcArgs as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(lcResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };

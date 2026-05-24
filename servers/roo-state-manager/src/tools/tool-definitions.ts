@@ -455,21 +455,8 @@ export const roosyncInventoryDefinition = {
 // #1863 FUSION A2: roosync_machines removed — use roosync_inventory(type: "machines")
 // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 
-// #1320: Lifecycle state machine tool
-export const roosyncReportLifecycleDefinition = {
-    name: 'roosync_report_lifecycle',
-    description: 'Report agent lifecycle state transition (#1320). Workers use this to signal their current phase: BOOTSTRAPPING (starting up), READY (MCP confirmed), CLAIMED (task assigned), WORKING (active code changes), REPORTING (posting results), IDLE (waiting), ERROR (failed), RECOVERING (auto-healing). Transitions are validated — invalid transitions return an error.',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {
-            state: { type: 'string', enum: ['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'], description: 'Target lifecycle state' },
-            machineId: { type: 'string', description: 'Machine ID (default: hostname)' },
-            reason: { type: 'string', description: 'Reason for the transition' },
-        },
-        required: ['state'],
-        additionalProperties: false,
-    }
-};
+// #1320: Lifecycle state machine → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
+// Standalone tool retiré — RSM reste 15 outils servis.
 
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
@@ -513,11 +500,11 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), analyze (roadmap), best-practices (MCP guide).',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'] },
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'] },
             checkDiskSpace: { type: 'boolean' },
             verbose: { type: 'boolean' },
             clearCache: { type: 'boolean' },
@@ -525,7 +512,11 @@ export const roosyncDiagnoseDefinition = {
             message: { type: 'string' },
             roadmapPath: { type: 'string', description: 'Auto-detected if omitted' },
             generateReport: { type: 'boolean' },
-            mcp_name: { type: 'string', description: 'MCP name for best-practices action' }
+            mcp_name: { type: 'string', description: 'MCP name for best-practices action' },
+            // lifecycle action params (#1320)
+            state: { type: 'string', enum: ['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'], description: 'Target lifecycle state (action: lifecycle)' },
+            machineId: { type: 'string', description: 'Machine ID (default: hostname)' },
+            reason: { type: 'string', description: 'Reason for lifecycle transition' }
         },
         required: ['action'],
         additionalProperties: false
@@ -726,8 +717,7 @@ export const allToolDefinitions = [
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
-    // #1320: Lifecycle state machine
-    roosyncReportLifecycleDefinition,
+    // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas d'outil standalone.
     // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
