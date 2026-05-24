@@ -18,7 +18,7 @@ import { dashboardToolMetadata } from './roosync/dashboard-schemas.js';
 // ============================================================
 export const conversationBrowserDefinition = {
     name: 'conversation_browser',
-    description: 'Navigate, visualize and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster), rebuild. Note: synthesis is disabled (#788).',
+    description: 'Navigate, visualize and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster), rebuild. Gotchas: (1) ALWAYS start with "list" to discover IDs — other actions need task_id. (2) synthesis is disabled (#788), use trace or cluster. (3) For view, use smart_truncation:true for conversations >10K chars.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -117,7 +117,7 @@ export const taskExportDefinition = {
 // ============================================================
 export const roosyncSearchDefinition = {
     name: 'roosync_search',
-    description: "Recherche unifiée dans les tâches Roo (semantic, text, index diagnostics)",
+    description: "Recherche unifiée dans les tâches Roo (semantic, text, index diagnostics). Gotcha: workspace defaults to MCP server workspace — pass '*' or 'all' for cross-workspace search.",
     inputSchema: {
         type: 'object',
         properties: {
@@ -125,7 +125,7 @@ export const roosyncSearchDefinition = {
             search_query: { type: 'string', description: 'Required for semantic/text' },
             conversation_id: { type: 'string' },
             max_results: { type: 'number' },
-            workspace: { type: 'string', description: 'Workspace name or "*" for cross-workspace. Auto-defaults to MCP workspace.' },
+            workspace: { type: 'string', description: 'Workspace name. Defaults to MCP server workspace — use "*" or "all" for cross-workspace search.' },
             source: { type: 'string', enum: ['roo', 'claude-code'] },
             chunk_type: { type: 'string', enum: ['message_exchange', 'tool_interaction'] },
             role: { type: 'string', enum: ['user', 'assistant'] },
@@ -169,12 +169,12 @@ export const roosyncIndexingDefinition = {
 // ============================================================
 export const codebaseSearchDefinition = {
     name: 'codebase_search',
-    description: 'Recherche sémantique dans le code par concept. Auto-detects workspace if omitted.',
+    description: 'Recherche sémantique dans le code par concept. ALWAYS pass workspace explicitly — auto-detection hard-fails if MCP roots/WORKSPACE_PATH unavailable (#1861). Use English keywords matching code vocabulary, not natural language.',
     inputSchema: {
         type: 'object',
         properties: {
-            query: { type: 'string', description: 'Semantic query. Ex: "rate limiting for embeddings"' },
-            workspace: { type: 'string', description: 'Absolute workspace path. Auto-detected via MCP roots or WORKSPACE_PATH if omitted.' },
+            query: { type: 'string', description: 'Semantic query in English (concept, not exact text). Ex: "rate limiting for embeddings", "authentication middleware"' },
+            workspace: { type: 'string', description: 'REQUIRED: Absolute workspace path. Auto-detection may fail — always pass explicitly. Ex: "C:/dev/roo-extensions".' },
             directory_prefix: { type: 'string', description: 'Directory filter. Ex: "src/services"' },
             limit: { type: 'number', description: 'Max results (default: 15, max: 50)' },
             min_score: { type: 'number', description: 'Min similarity 0-1 (default: 0.5)' }

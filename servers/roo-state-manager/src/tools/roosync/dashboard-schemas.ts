@@ -213,7 +213,7 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Auto-condensation at 92% threshold — no manual condense needed.',
+  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Gotchas: (1) Only 3 types exist: global, machine, workspace. (2) If response contains "written to file:", use Read tool on that file path. (3) Auto-condensation at 92% — no manual condense needed.',
   inputSchema: (() => {
     const schema = zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' }) as any;
     // Force 'type' into required array so LLMs always pass it (#1862 schema mismatch fix)
