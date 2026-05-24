@@ -299,7 +299,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         chunk_type: 'tool_interaction',
                         sequence_order: seq,
                         timestamp: msg.timestamp || new Date().toISOString(),
-                        indexed: false, // #2336 D2: metadata-only (filterable, not embedded) — prevents embedding explosion
+                        indexed: true, // #2247: tool interactions are valuable search targets
                         content: toolContent,
                         tool_details: {
                             tool_name: toolCall.function.name,
@@ -573,7 +573,7 @@ export async function extractChunksFromClaudeSession(
                                 chunk_type: 'tool_interaction',
                                 sequence_order: toolSeq,
                                 timestamp: entry.timestamp || new Date().toISOString(),
-                                indexed: false, // Metadata-only: filterable but not embedded (#2336 explosion guard)
+                                indexed: true, // #2247: tool interactions are valuable search targets
                                 content: toolContent,
                                 tool_details: {
                                     tool_name: toolName,

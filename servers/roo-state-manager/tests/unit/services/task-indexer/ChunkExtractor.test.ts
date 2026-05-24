@@ -119,12 +119,12 @@ describe('ChunkExtractor', () => {
       const toolChunks = chunks.filter(c => c.chunk_type === 'tool_interaction');
       expect(toolChunks).toHaveLength(2);
 
-      // Tool interactions should NOT be indexed (explosion guard)
-      expect(toolChunks[0].indexed).toBe(false);
+      // Tool interactions should be indexed (#2247)
+      expect(toolChunks[0].indexed).toBe(true);
       expect(toolChunks[0].tool_details?.tool_name).toBe('execute_command');
       expect(toolChunks[0].tool_details?.parameters).toEqual({ command: 'npm test' });
 
-      expect(toolChunks[1].indexed).toBe(false);
+      expect(toolChunks[1].indexed).toBe(true);
       expect(toolChunks[1].tool_details?.tool_name).toBe('read_file');
       expect(toolChunks[1].tool_details?.parameters).toEqual({ path: '/src/index.ts' });
     });
