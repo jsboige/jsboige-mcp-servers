@@ -590,7 +590,17 @@ export class MessageManager {
           }
         }
 
-        filtered.push(item);
+        // #2307 Phase 4: For broadcast messages, adjust status per-machine so
+        // callers (read.ts inbox display) see the correct read/unread state.
+        // Without this, broadcast messages always show "unread" even after being read.
+        const isBroadcast = fullMsg.to === 'all' || fullMsg.to === 'All';
+        if (isBroadcast && fullMsg.read_by) {
+          const readerMachineId = parseMachineWorkspace(machineId).machineId;
+          const hasRead = fullMsg.read_by.includes(readerMachineId);
+          filtered.push({ ...item, status: hasRead ? 'read' : 'unread' });
+        } else {
+          filtered.push(item);
+        }
       }
 
       // Apply pagination (#638)
