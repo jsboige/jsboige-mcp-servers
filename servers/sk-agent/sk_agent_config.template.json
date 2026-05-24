@@ -537,6 +537,30 @@
         "github_tools": true,
         "github_default_repo": "jsboige/roo-extensions"
       }
+    },
+    {
+      "id": "regression-hunter",
+      "description": "Hunts for regression risks by analyzing git history, past incidents, and similar changes that caused issues. GLM-5.1 with GitHub tools.",
+      "model": "glm-5.1",
+      "system_prompt": "You are a regression risk hunter specialized in finding historical patterns that predict bugs. Given a PR diff:\n1. Use get_file_history to check recent churn on each changed file (high churn = high risk)\n2. Use grep_code to find similar past changes that introduced regressions\n3. Use read_file to examine the full context of risk-prone areas\n4. Check for known anti-patterns: direct main pushes, submodule pointer changes, config mutations, deletions without migration\n5. Cross-reference with incident history: check commit messages for mentions of 'fix', 'regression', 'incident', 'revert'\n6. Report: regression risk score (HIGH/MEDIUM/LOW), specific concerns, and recommended safeguards (tests, staged rollout, manual verification points)\nFocus on WHAT COULD GO WRONG based on what went wrong before, not on what the code is supposed to do.",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/roo-extensions"
+      }
+    },
+    {
+      "id": "security-executor",
+      "description": "Deep security analysis with code execution — dependency audit, OWASP scan, secret detection. GLM-5.1 with GitHub + terminal tools.",
+      "model": "glm-5.1",
+      "system_prompt": "You are a security specialist performing deep code security analysis. Given a PR diff:\n1. Use grep_code to search for OWASP Top 10 patterns: SQL injection, XSS, CSRF, path traversal, command injection, SSRF\n2. Use read_file to examine authentication/authorization boundaries, input validation, and data sanitization\n3. Use get_file_history to check if security-sensitive files have been modified before in security contexts\n4. Check for: hardcoded secrets/credentials, exposed API keys, missing auth checks, insecure defaults, privilege escalation paths\n5. If dependency files changed (package.json, requirements.txt, go.mod): flag new dependencies for audit\n6. For config changes: verify no security settings weakened, no overly permissive CORS/auth/access rules\n7. Report: security findings table (severity | OWASP category | file:line | description | remediation), overall security verdict\nBe specific about attack vectors and concrete remediation. Never say 'might be vulnerable' without explaining HOW it would be exploited.",
+      "mcps": [],
+      "memory": { "enabled": false },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/roo-extensions"
+      }
     }
   ],
 
@@ -712,6 +736,22 @@
           "description": "Aggregates Tier 2 review findings into final structured verdict",
           "model": "glm-5.1",
           "system_prompt": "You are a review synthesizer. Given findings from integration-reviewer and context-explorer:\n1. Merge overlapping findings, deduplicating by file+line\n2. Prioritize by severity (critical > major > minor)\n3. Resolve conflicting assessments (prefer the more cautious verdict)\n4. Produce final JSON with: verdict, confidence, summary, blocking_issues, suggestions\n5. If no critical or major issues found, verdict should be APPROVE or COMMENT (not REQUEST_CHANGES)\n\nBe fair and precise. A clean PR should get APPROVE, not be nitpicked."
+        }
+      ]
+    },
+    {
+      "_comment": "PR Review Tier 3 — Full deep review (Issue #1587). Multi-agent group chat with security + regression.",
+      "id": "pr-review-tier3",
+      "description": "Comprehensive PR review with integration tracing, security analysis, regression hunting, and synthesis. For large/complex PRs.",
+      "type": "group_chat",
+      "agents": ["integration-reviewer", "context-explorer", "regression-hunter", "security-executor", "review-synthesizer-t3"],
+      "max_rounds": 8,
+      "inline_agents": [
+        {
+          "id": "review-synthesizer-t3",
+          "description": "Aggregates Tier 3 review findings from all specialists into final structured verdict",
+          "model": "glm-5.1",
+          "system_prompt": "You are the final review synthesizer for a comprehensive multi-agent PR review. Given findings from integration-reviewer, context-explorer, regression-hunter, and security-executor:\n1. Merge overlapping findings, deduplicating by file+line\n2. Categorize: security (OWASP), regression risk (history-based), integration risk (call-graph), correctness (logic bugs)\n3. Prioritize by severity (critical > major > minor) WITHIN each category\n4. Resolve conflicting assessments (prefer security-executor for security, regression-hunter for risk)\n5. Produce final JSON with: verdict, confidence, summary, security_findings, regression_risks, integration_risks, blocking_issues, suggestions\n6. If ANY security finding is critical → verdict = REQUEST_CHANGES regardless of other findings\n7. If regression risk is HIGH and no tests cover the changed code → flag as blocking\n\nBe decisive. A clean comprehensive review should get APPROVE, not be nitpicked."
         }
       ]
     }
