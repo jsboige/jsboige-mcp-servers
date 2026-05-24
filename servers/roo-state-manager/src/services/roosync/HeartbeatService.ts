@@ -21,6 +21,48 @@ const IDLE_THRESHOLD = 120 * 60 * 1000;   // 120 min
 
 export type MachineStatus = 'online' | 'idle' | 'unknown';
 
+/**
+ * Agent lifecycle states (#1320 — claw-code pattern: state machine first).
+ *
+ * Workers explicitly report transitions. Status is NOT derived from timestamps.
+ * Combined with MachineStatus: MachineStatus = "is the MCP process alive?",
+ * AgentLifecycleState = "what is the agent DOING?"
+ *
+ * Valid transitions:
+ *   BOOTSTRAPPING → READY → CLAIMED → WORKING → REPORTING → IDLE
+ *   Any state → ERROR → RECOVERING → READY
+ *   IDLE → CLAIMED (new task)
+ *   BOOTSTRAPPING → ERROR (startup failed)
+ */
+export type AgentLifecycleState =
+  | 'BOOTSTRAPPING'  // Process started, MCP/tools not yet confirmed
+  | 'READY'          // MCP confirmed, awaiting dispatch
+  | 'CLAIMED'        // Task assigned, investigation starting
+  | 'WORKING'        // Active code changes / implementation
+  | 'REPORTING'      // Posting [DONE] to dashboard
+  | 'IDLE'           // No tasks in queue, waiting
+  | 'ERROR'          // Failure detected
+  | 'RECOVERING';    // Auto-healing (rebuild MCP, rebase git, etc.)
+
+const VALID_TRANSITIONS: Record<AgentLifecycleState, AgentLifecycleState[]> = {
+  BOOTSTRAPPING: ['READY', 'ERROR'],
+  READY: ['CLAIMED', 'IDLE', 'ERROR'],
+  CLAIMED: ['WORKING', 'IDLE', 'ERROR'],
+  WORKING: ['REPORTING', 'IDLE', 'ERROR'],
+  REPORTING: ['IDLE', 'ERROR'],
+  IDLE: ['CLAIMED', 'READY', 'ERROR'],
+  ERROR: ['RECOVERING', 'IDLE'],
+  RECOVERING: ['READY', 'ERROR'],
+};
+
+export interface LifecycleTransitionEvent {
+  machineId: string;
+  fromState: AgentLifecycleState;
+  toState: AgentLifecycleState;
+  reason?: string;
+  timestamp: string;
+}
+
 export interface HeartbeatConfig {
   // ADR 008 Phase 2: All config properties removed (no disk I/O, no background intervals).
   // Interface kept empty for forward compat with callers that pass config objects.
@@ -40,10 +82,13 @@ export interface HeartbeatData {
   machineId: string;
   lastHeartbeat: string;
   status: MachineStatus;
+  lifecycleState?: AgentLifecycleState;
   metadata: {
     firstSeen: string;
     lastUpdated: string;
     scheduler?: SchedulerMetrics;
+    lifecycleSince?: string;
+    lifecycleReason?: string;
   };
 }
 
@@ -86,6 +131,9 @@ export class HeartbeatService {
   private state: HeartbeatServiceState;
   private config: HeartbeatConfig;
   private onStatusChangeCallback?: (machineId: string, oldStatus: MachineStatus, newStatus: MachineStatus) => void;
+  private onLifecycleChangeCallback?: (event: LifecycleTransitionEvent) => void;
+  private lifecycleHistory: LifecycleTransitionEvent[] = [];
+  private static MAX_HISTORY = 100;
 
   constructor(
     _sharedPath?: string,
@@ -141,6 +189,102 @@ export class HeartbeatService {
     if (previousStatus && previousStatus !== 'online' && this.onStatusChangeCallback) {
       this.onStatusChangeCallback(machineId, previousStatus, 'online');
     }
+  }
+
+  /**
+   * Transition a machine's lifecycle state (#1320).
+   *
+   * Validates the transition against VALID_TRANSITIONS.
+   * Auto-registers the machine if not yet known (initial state = BOOTSTRAPPING).
+   *
+   * @returns The transition event, or throws HeartbeatServiceError on invalid transition.
+   */
+  public transitionLifecycle(
+    machineId: string,
+    newState: AgentLifecycleState,
+    reason?: string
+  ): LifecycleTransitionEvent {
+    machineId = machineId.toLowerCase();
+    const now = new Date().toISOString();
+
+    let data = this.state.heartbeats.get(machineId);
+    if (!data) {
+      // Auto-register with BOOTSTRAPPING as initial state
+      data = {
+        machineId,
+        lastHeartbeat: now,
+        status: 'online',
+        lifecycleState: 'BOOTSTRAPPING',
+        metadata: { firstSeen: now, lastUpdated: now, lifecycleSince: now }
+      };
+      this.state.heartbeats.set(machineId, data);
+      this.updateMachineStatus();
+    }
+
+    const currentState = data.lifecycleState || 'BOOTSTRAPPING';
+
+    if (currentState === newState) {
+      logger.debug(`Lifecycle no-op: ${machineId} already ${newState}`);
+      return { machineId, fromState: currentState, toState: newState, reason, timestamp: now };
+    }
+
+    const allowed = VALID_TRANSITIONS[currentState];
+    if (!allowed || !allowed.includes(newState)) {
+      const msg = `Invalid lifecycle transition: ${machineId} ${currentState} → ${newState} (allowed: ${allowed?.join(', ') || 'none'})`;
+      logger.warn(msg);
+      throw new HeartbeatServiceError(msg, 'INVALID_TRANSITION');
+    }
+
+    const event: LifecycleTransitionEvent = {
+      machineId,
+      fromState: currentState,
+      toState: newState,
+      reason,
+      timestamp: now,
+    };
+
+    data.lifecycleState = newState;
+    data.metadata.lifecycleSince = now;
+    data.metadata.lifecycleReason = reason;
+    data.metadata.lastUpdated = now;
+    this.state.heartbeats.set(machineId, data);
+
+    // Record history (bounded)
+    this.lifecycleHistory.push(event);
+    if (this.lifecycleHistory.length > HeartbeatService.MAX_HISTORY) {
+      this.lifecycleHistory = this.lifecycleHistory.slice(-HeartbeatService.MAX_HISTORY);
+    }
+
+    logger.info(`Lifecycle: ${machineId} ${currentState} → ${newState}${reason ? ` (${reason})` : ''}`);
+
+    if (this.onLifecycleChangeCallback) {
+      this.onLifecycleChangeCallback(event);
+    }
+
+    return event;
+  }
+
+  /**
+   * Get the current lifecycle state for a machine.
+   */
+  public getLifecycleState(machineId: string): AgentLifecycleState | undefined {
+    const data = this.state.heartbeats.get(machineId.toLowerCase());
+    return data?.lifecycleState;
+  }
+
+  /**
+   * Get recent lifecycle transition history.
+   */
+  public getLifecycleHistory(limit?: number): LifecycleTransitionEvent[] {
+    const events = limit ? this.lifecycleHistory.slice(-limit) : this.lifecycleHistory;
+    return [...events];
+  }
+
+  /**
+   * Set callback for lifecycle state changes.
+   */
+  public onLifecycleChange(callback: (event: LifecycleTransitionEvent) => void): void {
+    this.onLifecycleChangeCallback = callback;
   }
 
   /**

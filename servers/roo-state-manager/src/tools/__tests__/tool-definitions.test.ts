@@ -30,6 +30,8 @@ import {
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
+    // #1320: Lifecycle state machine
+    roosyncReportLifecycleDefinition,
     // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
     // #1863: roosyncDecisionInfoDefinition, roosyncMachinesDefinition, roosyncCleanupMessagesDefinition removed
     roosyncMcpManagementDefinition,
@@ -44,10 +46,11 @@ import {
     roosyncManageDefinition,
     roosyncAttachmentsDefinition,
     roosyncDashboardDefinition,
-    roosyncMessagesDefinition
+    roosyncMessagesDefinition,
+    roosyncReportLifecycleDefinition
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 15; // CONS-8 #603: 19 → 15 (removed init, claim, decision, list_diffs)
+const EXPECTED_TOOL_COUNT = 16; // #1320 added roosync_report_lifecycle: 15 → 16
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
@@ -65,6 +68,8 @@ const allDefinitions = [
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncInventoryDefinition,
+    // #1320: Lifecycle state machine
+    roosyncReportLifecycleDefinition,
     roosyncMcpManagementDefinition,
     roosyncStorageManagementDefinition,
     roosyncDiagnoseDefinition,
