@@ -145,11 +145,11 @@ export const roosyncSearchDefinition = {
 // ============================================================
 export const roosyncIndexingDefinition = {
     name: 'roosync_indexing',
-    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, cleanup, garbage_scan, cleanup_orphans)",
+    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, cleanup, garbage_scan, cleanup_orphans, tool_usage_stats)",
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=detect junk, cleanup_orphans=purge' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'tool_usage_stats'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=detect junk, cleanup_orphans=purge, tool_usage_stats=fleet-wide usage aggregation' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
@@ -170,7 +170,9 @@ export const roosyncIndexingDefinition = {
             remove_skeletons: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete skeletons.', default: true },
             remove_vectors: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete Qdrant vectors.', default: true },
             confirm_orphan_cleanup: { type: 'boolean', description: 'For cleanup_orphans with dry_run=false. Required confirmation.', default: false },
-            max_repair_tasks: { type: 'number', description: 'For repair_gaps. Max tasks per call (default: 50).', default: 50 }
+            max_repair_tasks: { type: 'number', description: 'For repair_gaps. Max tasks per call (default: 50).', default: 50 },
+            start_date: { type: 'string', description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.' },
+            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now.' }
         },
         required: ['action']
     }
