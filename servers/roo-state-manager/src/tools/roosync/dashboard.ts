@@ -121,6 +121,18 @@ const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 
+// #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
+// generation is already bounded UNDER the ~600s IIS→vLLM gateway by
+// CONDENSE_LLM_MAX_TOKENS, so the only thing the old 1800s/900s ceilings ever
+// caught was a TRUE hang (socket held open, neither a response nor a 502). Sit
+// just above the gateway (default 720s) so legitimate slow-but-completing
+// condensations (user mandate: "qu'elle prenne longtemps… mais elle doit
+// aboutir") and gateway-502 runaways still succeed / retry stochastically, while
+// a real hang fast-fails to the #1792 truncation fallback in ~12 min instead of
+// blocking the dashboard the full 1800s registry ceiling (#2267 incident).
+// Env-overridable (raise to tolerate slower GPUs).
+const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 720000;
+
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
 // 2026-05-23: regression fix. Commit 9beb7e93 (2026-04-20) bumped this 10000 →
@@ -502,6 +514,63 @@ ${intercomSection}
 }
 
 /**
+ * #2328: Apply condensed dashboard with smart-merge to avoid overwriting
+ * concurrent appends from other machines during the LLM condensation window (~9 min).
+ *
+ * Before overwriting, re-reads the file from disk and stitches any messages
+ * appended by other machines (identified by msg.id) into the condensed result.
+ * Also guards against double-condensation (skips if another condensation won).
+ */
+async function applyCondensedWithMerge(
+  key: string,
+  snapshotBefore: Dashboard,
+  condensedDashboard: Dashboard
+): Promise<void> {
+  const current = await readDashboardFile(key);
+  if (!current) {
+    await writeDashboardFile(key, condensedDashboard);
+    return;
+  }
+
+  // Guard: if another condensation completed while our LLM was running,
+  // don't overwrite with our stale result.
+  if (
+    current.intercom.lastCondensedAt &&
+    current.intercom.lastCondensedAt > (snapshotBefore.intercom.lastCondensedAt ?? '')
+  ) {
+    logger.warn('[COLLISION] concurrent condensation won — skipping stale overwrite', { key });
+    return;
+  }
+
+  // Delta = messages on disk that weren't in our pre-condensation snapshot.
+  // append-only => these are concurrent appends => always a suffix.
+  const seen = new Set(snapshotBefore.intercom.messages.map(m => m.id));
+  const delta = current.intercom.messages.filter(m => !seen.has(m.id));
+
+  if (delta.length === 0) {
+    await writeDashboardFile(key, condensedDashboard);
+    return;
+  }
+
+  logger.warn('[COLLISION] stitching concurrent appends into condensed result', {
+    key, deltaCount: delta.length, deltaIds: delta.map(m => m.id)
+  });
+
+  const merged: Dashboard = {
+    ...condensedDashboard,
+    lastModified: current.lastModified > condensedDashboard.lastModified
+      ? current.lastModified
+      : condensedDashboard.lastModified,
+    intercom: {
+      messages: [...condensedDashboard.intercom.messages, ...delta],
+      totalMessages: condensedDashboard.intercom.totalMessages + delta.length,
+      lastCondensedAt: condensedDashboard.intercom.lastCondensedAt,
+    },
+  };
+  await writeDashboardFile(key, merged);
+}
+
+/**
  * Append messages to the dashboard file without rewriting existing content.
  * Only updates frontmatter (in-place regex) and appends new messages at the end.
  * Used by handleAppend when no condensation occurred (the common case).
@@ -785,11 +854,10 @@ function truncateError(msg: string): string {
  * @returns Résumé markdown + stats. content = null si échec (3 retries failed).
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<LLMCallResult> {
-  // #1497: bumped 600s → 1800s (30 min). Qwen3.6 thinking mode can take 60-90s
-  // per call on 40KB prompts; with 3 retries + backoff 2s/4s/8s, total
-  // wall-clock per call can exceed 5 min. Since the 2 LLM calls now run in
-  // parallel (see condenseIntercom), one slow call would still drag the total.
-  const timeoutMs = 1800000;
+  // #2267 follow-up: was 1800s (#1497). The 1800s ceiling only ever caught a TRUE
+  // hang — CONDENSE_LLM_MAX_TOKENS already bounds a runaway under the ~600s gateway.
+  // See CONDENSE_LLM_TIMEOUT_MS definition for the full rationale.
+  const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
 
   // Construire le prompt avec les messages
   const messagesContent = messages.map(msg => {
@@ -897,7 +965,10 @@ FORMAT :
       } else {
         logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
-      if (attempt < LLM_MAX_RETRIES) {
+      // #2267 follow-up: do NOT retry a timeout. A hung endpoint won't recover in a
+      // 2-8s backoff — retrying just burns another full CONDENSE_LLM_TIMEOUT_MS. Fail
+      // fast to the truncation fallback. (502/empty errors still retry below.)
+      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -928,8 +999,8 @@ async function generateStatusUpdate(
   allMessages: IntercomMessage[],
   archivedCount: number
 ): Promise<LLMCallResult> {
-  // #1497: bumped 600s → 1800s (30 min) — see generateLLMSummary for rationale.
-  const timeoutMs = 1800000;
+  // #2267 follow-up: was 1800s (#1497) — see generateLLMSummary / CONDENSE_LLM_TIMEOUT_MS.
+  const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
 
   // Format messages with archive/keep annotations
   const messagesContent = allMessages.map((msg, index) => {
@@ -1090,7 +1161,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       } else {
         logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
-      if (attempt < LLM_MAX_RETRIES) {
+      // #2267 follow-up: do NOT retry a timeout (see generateLLMSummary catch).
+      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -1160,7 +1232,7 @@ RÈGLES :
       max_tokens: CONDENSE_LLM_MAX_TOKENS,
       temperature: 0.3
     }, {
-      timeout: 900000  // #1497: 5 min → 15 min, accommodate thinking-mode latency
+      timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
     });
 
     const condensed = response.choices[0]?.message?.content;
@@ -2231,9 +2303,9 @@ async function handleAppend(
       archivedCount = newlyArchived;
       condensed = newlyArchived > 0;
 
-      // If condensation succeeded, overwrite the incremental append with the condensed version
+      // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
       if (condensed) {
-        await writeDashboardFile(key, finalDashboard);
+        await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
       }
     } catch (condenseErr) {
       // Condensation failed — message is already persisted, log and continue
@@ -2428,97 +2500,6 @@ async function handleAppend(
       writeMs
     },
     message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}`
-  };
-}
-
-async function handleCondense(
-  key: string,
-  args: DashboardArgs,
-  requestEcho: DashboardRequestEcho
-): Promise<DashboardResult> {
-  const dashboard = await readDashboardFile(key);
-  if (!dashboard) {
-    return {
-      success: false,
-      action: 'condense',
-      key,
-      type: args.type!,
-      request: requestEcho,
-      message: `Dashboard '${key}' introuvable`
-    };
-  }
-
-  const keepCount = args.keepMessages ?? CONDENSE_KEEP;
-  const beforeCount = dashboard.intercom.messages.length;
-  const preSizes = buildSizes(dashboard);
-
-  if (beforeCount <= keepCount) {
-    return {
-      success: true,
-      action: 'condense',
-      key,
-      type: args.type!,
-      request: requestEcho,
-      sizes: buildSizes(dashboard),
-      messageCount: beforeCount,
-      condensed: false,
-      archivedCount: 0,
-      message: `Aucune condensation nécessaire (${beforeCount} messages ≤ seuil ${keepCount})`
-    };
-  }
-
-  const condenseStart = Date.now();
-  const manualDiag = newDiagnostic('manual');
-  const condensedDashboard = await condenseIntercom(key, dashboard, keepCount, manualDiag);
-  const condenseElapsed = Date.now() - condenseStart;
-  const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
-  // Persist whenever the dashboard changed — either condensation succeeded
-  // (count decreased) or LLM failed and an ERROR system message was injected
-  // (count increased). writeDashboardFile is atomic (tmp+rename).
-  const dashboardChanged = condensedDashboard.intercom.messages.length !== beforeCount;
-
-  if (dashboardChanged) {
-    await writeDashboardFile(key, condensedDashboard);
-  }
-
-  const archivedCount = actuallyCondensed ? beforeCount - condensedDashboard.intercom.messages.length : 0;
-
-  // Build a rich diag suffix when the LLM failed, so the tool's `message` field
-  // carries the "why" without requiring the caller to parse condenseDiagnostic.
-  let failureDetail = '';
-  if (!actuallyCondensed && manualDiag.llm) {
-    const summary = manualDiag.llm.summary;
-    const status = manualDiag.llm.status;
-    const llmBits = [
-      `summary=${summary.finalOutcome}×${summary.attempts} (${Math.round(summary.elapsedMs / 1000)}s)`,
-      `status=${status.finalOutcome}×${status.attempts} (${Math.round(status.elapsedMs / 1000)}s)`
-    ];
-    failureDetail = ` [${llmBits.join(', ')}]`;
-    if (manualDiag.outcome === 'llm-failed-dedup') {
-      failureDetail += ' (dedup: recent error msg within window, not re-injected)';
-    }
-  }
-
-  // #2306: Advisory warning when utilization is below 80%
-  const lowUtilizationWarning = preSizes.utilizationPct < 80
-    ? `Dashboard utilization at ${preSizes.utilizationPct.toFixed(1)}% — auto-condensation triggers at 92%. Manual condense is usually unnecessary.`
-    : undefined;
-
-  return {
-    success: true,
-    action: 'condense',
-    key,
-    type: args.type!,
-    request: requestEcho,
-    sizes: buildSizes(condensedDashboard),
-    messageCount: condensedDashboard.intercom.messages.length,
-    condensed: actuallyCondensed,
-    archivedCount,
-    condenseDiagnostic: [manualDiag],
-    warning: lowUtilizationWarning,
-    message: actuallyCondensed
-      ? `Condensation terminée en ${Math.round(condenseElapsed / 1000)}s : ${archivedCount} messages archivés, ${condensedDashboard.intercom.messages.length} conservés`
-      : `Condensation annulée (LLM indisponible) — ${beforeCount} messages inchangés (${Math.round(condenseElapsed / 1000)}s)${failureDetail}`
   };
 }
 

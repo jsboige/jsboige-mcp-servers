@@ -12,6 +12,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { getEmbeddingMetrics } from '../../services/task-indexer/VectorIndexer.js';
+import { tryGetSharedStatePath } from '../../utils/shared-state-path.js';
 
 // Lazy imports — only loaded when needed by debug/reset actions.
 // Static import was causing hangs on action="test" when RooSyncService init blocked (#1910).
@@ -113,7 +114,7 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
         const m = await import('../diagnostic/analyze_problems.js');
         const analyzeResult = await m.analyzeRooSyncProblems(args as any) as any;
         return {
-          success: true,
+          success: analyzeResult?.success !== false,
           action: 'analyze',
           timestamp,
           data: analyzeResult
@@ -123,9 +124,9 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
       // #1935 Cluster D: fused from get_mcp_best_practices
       case 'best-practices': {
         const m = await import('../get_mcp_best_practices.js');
-        const result = await m.getMcpBestPractices.handler({ mcp_name: args.mcp_name });
+        const result = await m.getMcpBestPractices.handler({ mcp_name: args.mcp_name }) as any;
         return {
-          success: true,
+          success: !result?.isError,
           action: 'best-practices',
           timestamp,
           data: result
@@ -173,21 +174,32 @@ async function handleEnvAction(
     status: 'OK'
   };
 
-  const criticalDirs = [
-    '.',
-    '.shared-state',
-    'roo-config',
-    'mcps',
-    'logs'
+  // Resolve directories using configured sharedPath instead of MCP CWD.
+  // .shared-state, roo-config, logs live at the RooSync shared state location (GDrive).
+  // . and mcps are MCP-server-local and use process.cwd().
+  const sharedPath = tryGetSharedStatePath();
+  const sharedBase = sharedPath ? path.dirname(sharedPath) : null;
+
+  const criticalDirs: Array<{ name: string; base: string | null }> = [
+    { name: '.', base: process.cwd() },
+    { name: '.shared-state', base: sharedPath },
+    { name: 'roo-config', base: sharedBase },
+    { name: 'mcps', base: process.cwd() },
+    { name: 'logs', base: sharedBase },
   ];
 
-  for (const dir of criticalDirs) {
-    const fullPath = path.resolve(process.cwd(), dir);
+  for (const { name, base } of criticalDirs) {
+    if (!base) {
+      report.directories[name] = { exists: false, error: 'ENOENT', note: 'sharedPath not configured' };
+      report.status = 'WARNING';
+      continue;
+    }
+    const fullPath = path.resolve(base, name);
     try {
       await fs.access(fullPath, fs.constants.R_OK | fs.constants.W_OK);
-      report.directories[dir] = { exists: true, writable: true };
+      report.directories[name] = { exists: true, writable: true, resolvedPath: fullPath };
     } catch (err: any) {
-      report.directories[dir] = { exists: false, error: err.code };
+      report.directories[name] = { exists: false, error: err.code, resolvedPath: fullPath };
       report.status = 'WARNING';
     }
   }

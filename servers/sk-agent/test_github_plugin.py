@@ -205,6 +205,69 @@ class TestReadFile:
         assert "repos/owner/repo/contents/src/file.ts?ref=abc123" in args
 
 
+class TestGetFileHistory:
+    @patch("github_plugin.subprocess.run")
+    def test_returns_commits(self, mock_run, plugin):
+        jq_output = (
+            '{"sha":"abc123456789","author":"dev","date":"2026-05-20","message":"fix bug"}\n'
+            '{"sha":"def456789abc","author":"dev2","date":"2026-05-19","message":"add feature"}\n'
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=jq_output)
+        result = plugin.get_file_history("src/main.ts", repo="owner/repo")
+        commits = json.loads(result)
+        assert len(commits) == 2
+        assert commits[0]["sha"] == "abc123456789"
+        assert commits[1]["author"] == "dev2"
+
+    @patch("github_plugin.subprocess.run")
+    def test_uses_default_repo(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        plugin.get_file_history("src/file.ts")
+        args = mock_run.call_args[0][0]
+        assert any("test-owner/test-repo" in a for a in args)
+
+    def test_requires_repo(self):
+        p = GitHubPlugin()
+        result = p.get_file_history("file.txt")
+        data = json.loads(result)
+        assert "error" in data
+
+    @patch("github_plugin.subprocess.run")
+    def test_handles_error(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=1, stderr="path not found")
+        result = plugin.get_file_history("missing.ts", repo="owner/repo")
+        data = json.loads(result)
+        assert "error" in data
+
+    @patch("github_plugin.subprocess.run")
+    def test_limit_clamped_to_20(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        plugin.get_file_history("f.ts", repo="o/r", limit=100)
+        args = mock_run.call_args[0][0]
+        assert "[:20]" in " ".join(args)
+
+    @patch("github_plugin.subprocess.run")
+    def test_limit_minimum_1(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        plugin.get_file_history("f.ts", repo="o/r", limit=-5)
+        args = mock_run.call_args[0][0]
+        assert "[:1]" in " ".join(args)
+
+    @patch("github_plugin.subprocess.run")
+    def test_branch_param_passed(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        plugin.get_file_history("f.ts", repo="o/r", branch="develop")
+        args = mock_run.call_args[0][0]
+        assert any("develop" in a for a in args)
+
+    @patch("github_plugin.subprocess.run")
+    def test_empty_history(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        result = plugin.get_file_history("new.ts", repo="owner/repo")
+        commits = json.loads(result)
+        assert commits == []
+
+
 class TestGrepCode:
     @patch("github_plugin.subprocess.run")
     def test_returns_matches(self, mock_run, plugin):

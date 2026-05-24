@@ -88,6 +88,7 @@ MODELS = [
     "glm-5.1-not",
     "glm-5-not",
     "glm-4.7-flash",
+    "qwen3.6-35b-a3b",
 ]
 
 

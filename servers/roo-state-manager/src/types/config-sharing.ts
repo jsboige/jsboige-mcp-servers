@@ -24,8 +24,10 @@ export interface ConfigManifest {
   files: ConfigManifestFile[];
 }
 
+export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'modes-yaml' | `mcp:${string}`;
+
 export interface CollectConfigOptions {
-  targets: ('modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | `mcp:${string}`)[];
+  targets: ConfigTarget[];
   dryRun?: boolean;
   description?: string;
   scope?: ClaudeCodeScope; // Issue #601 - Scope Claude Code (user/project/settings)
@@ -55,7 +57,7 @@ export interface PublishConfigResult {
 export interface ApplyConfigOptions {
   version?: string; // Défaut: latest
   machineId?: string; // CORRECTION SDDD : Optionnel, utilise ROOSYNC_MACHINE_ID par défaut
-  targets?: ('modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | `mcp:${string}`)[];
+  targets?: ConfigTarget[];
   backup?: boolean; // Défaut: true
   dryRun?: boolean;
   scope?: ClaudeCodeScope; // Issue #601 - Scope Claude Code (user/project/settings)
