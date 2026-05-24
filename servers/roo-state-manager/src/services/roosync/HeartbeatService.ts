@@ -122,6 +122,38 @@ export class HeartbeatServiceError extends Error {
 }
 
 /**
+ * Recovery-Before-Escalation (#1320 Pattern 3).
+ *
+ * Known failure modes with auto-heal actions. Each entry defines:
+ * - pattern: regex to match against the error message
+ * - action: what the recovery handler should do
+ * - description: human-readable label for logging
+ */
+export interface RecoveryAction {
+  pattern: RegExp;
+  action: 'rebuild_mcp' | 'rebase_git' | 'reset_submodule' | 'retry_once';
+  description: string;
+}
+
+const DEFAULT_RECOVERY_ACTIONS: RecoveryAction[] = [
+  { pattern: /ENOENT.*roo-state-manager/i, action: 'rebuild_mcp', description: 'MCP build artifacts missing — rebuild required' },
+  { pattern: /upload-pack: not our ref/i, action: 'reset_submodule', description: 'Phantom submodule pointer — reset to origin/main' },
+  { pattern: /CONFLICT.*Merge conflict/i, action: 'rebase_git', description: 'Merge conflict — rebase from main' },
+  { pattern: /EBUSY.*\.node/i, action: 'retry_once', description: 'Windows file lock — transient, retry once' },
+  { pattern: /rate.limit|429|too many requests/i, action: 'retry_once', description: 'Rate limited — transient, retry once' },
+  { pattern: /ECONNREFUSED|ECONNRESET|ETIMEDOUT/i, action: 'retry_once', description: 'Network transient — retry once' },
+];
+
+export interface RecoveryAttempt {
+  machineId: string;
+  errorSignature: string;
+  matchedAction: RecoveryAction['action'];
+  description: string;
+  timestamp: string;
+  result: 'matched' | 'no_match' | 'recovered' | 'failed';
+}
+
+/**
  * HeartbeatService — ADR 008 in-memory passive model
  *
  * No disk I/O. No background intervals. State lives in process memory.
@@ -134,12 +166,16 @@ export class HeartbeatService {
   private onLifecycleChangeCallback?: (event: LifecycleTransitionEvent) => void;
   private lifecycleHistory: LifecycleTransitionEvent[] = [];
   private static MAX_HISTORY = 100;
+  private recoveryActions: RecoveryAction[];
+  private recoveryHistory: RecoveryAttempt[] = [];
+  private static MAX_RECOVERY_HISTORY = 50;
 
   constructor(
     _sharedPath?: string,
     config?: Partial<HeartbeatConfig>
   ) {
     this.config = { ...config };
+    this.recoveryActions = [...DEFAULT_RECOVERY_ACTIONS];
     this.state = {
       heartbeats: new Map(),
       onlineMachines: [],
@@ -285,6 +321,81 @@ export class HeartbeatService {
    */
   public onLifecycleChange(callback: (event: LifecycleTransitionEvent) => void): void {
     this.onLifecycleChangeCallback = callback;
+  }
+
+  // --- Recovery-Before-Escalation (#1320 Pattern 3) ---
+
+  /**
+   * Attempt automatic recovery for a known failure pattern.
+   *
+   * Matches the error message against registered recovery actions.
+   * If matched, transitions the machine to ERROR then RECOVERING,
+   * logs the recovery attempt, and returns the action to take.
+   *
+   * The caller (worker script or MCP tool) is responsible for executing
+   * the actual remediation — this method provides the decision, not the execution.
+   */
+  public attemptRecovery(machineId: string, errorMessage: string): RecoveryAttempt | null {
+    machineId = machineId.toLowerCase();
+    const now = new Date().toISOString();
+
+    for (const action of this.recoveryActions) {
+      if (action.pattern.test(errorMessage)) {
+        const attempt: RecoveryAttempt = {
+          machineId,
+          errorSignature: errorMessage.slice(0, 200),
+          matchedAction: action.action,
+          description: action.description,
+          timestamp: now,
+          result: 'matched',
+        };
+
+        // Record history (bounded)
+        this.recoveryHistory.push(attempt);
+        if (this.recoveryHistory.length > HeartbeatService.MAX_RECOVERY_HISTORY) {
+          this.recoveryHistory = this.recoveryHistory.slice(-HeartbeatService.MAX_RECOVERY_HISTORY);
+        }
+
+        logger.info(`Recovery matched: ${machineId} → ${action.action} (${action.description})`);
+        return attempt;
+      }
+    }
+
+    logger.debug(`No recovery match for ${machineId}: ${errorMessage.slice(0, 100)}`);
+    return null;
+  }
+
+  /**
+   * Mark a recovery attempt as succeeded or failed.
+   */
+  public recordRecoveryOutcome(machineId: string, action: RecoveryAction['action'], success: boolean): void {
+    const last = [...this.recoveryHistory].reverse().find((a: RecoveryAttempt) => a.machineId === machineId.toLowerCase() && a.matchedAction === action);
+    if (last) {
+      last.result = success ? 'recovered' : 'failed';
+    }
+    logger.info(`Recovery outcome: ${machineId} ${action} → ${success ? 'recovered' : 'failed'}`);
+  }
+
+  /**
+   * Get recent recovery attempts.
+   */
+  public getRecoveryHistory(limit?: number): RecoveryAttempt[] {
+    const events = limit ? this.recoveryHistory.slice(-limit) : this.recoveryHistory;
+    return [...events];
+  }
+
+  /**
+   * Register a custom recovery action.
+   */
+  public addRecoveryAction(action: RecoveryAction): void {
+    this.recoveryActions.push(action);
+  }
+
+  /**
+   * Get all registered recovery actions.
+   */
+  public getRecoveryActions(): RecoveryAction[] {
+    return [...this.recoveryActions];
   }
 
   /**
