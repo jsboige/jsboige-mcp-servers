@@ -591,16 +591,34 @@ async function backupMcpSettings(): Promise<string> {
     return backupPath;
 }
 
-async function runNpmBuild(mcpPath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
-            if (error) {
-                reject(new HeartbeatServiceError(`Build échoué: ${error.message}`, 'BUILD_FAILED'));
-            } else {
-                resolve(stdout);
+async function runNpmBuild(mcpPath: string, retries = 3): Promise<string> {
+    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const result = await new Promise<string>((resolve, reject) => {
+                exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
+                    if (error) {
+                        reject(error);
+                    } else {
+                        resolve(stdout);
+                    }
+                });
+            });
+            return result;
+        } catch (error: any) {
+            const isEBUSY = error?.message?.includes('EBUSY') || error?.code === 'EBUSY';
+            if (isEBUSY && attempt < retries) {
+                const backoffMs = attempt * 2000;
+                await delay(backoffMs);
+                continue;
             }
-        });
-    });
+            throw new HeartbeatServiceError(
+                `Build failed (attempt ${attempt}/${retries}): ${error?.message || error}`,
+                'BUILD_FAILED'
+            );
+        }
+    }
+    throw new HeartbeatServiceError('Build failed: max retries exceeded', 'BUILD_FAILED');
 }
 
 async function touchFile(filePath: string): Promise<void> {
