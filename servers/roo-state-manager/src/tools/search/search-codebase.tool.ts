@@ -141,7 +141,7 @@ export interface CodebaseSearchArgs {
 	/** Préfixe de répertoire pour filtrer les résultats */
 	directory_prefix?: string;
 
-	/** Nombre max de résultats (défaut: 10, max: 30) */
+	/** Nombre max de résultats (défaut: 15, max: 50) */
 	limit?: number;
 
 	/** Score minimum de similarité 0-1 (défaut: 0.5) */
@@ -178,7 +178,7 @@ export const codebaseSearchTool: Tool = {
 			},
 			limit: {
 				type: 'number',
-				description: 'Nombre max de résultats (défaut: 10, max: 30)'
+				description: 'Nombre max de résultats (défaut: 15, max: 50)'
 			},
 			min_score: {
 				type: 'number',

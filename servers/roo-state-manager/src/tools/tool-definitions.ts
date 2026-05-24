@@ -149,16 +149,28 @@ export const roosyncIndexingDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=orphan tasks, garbage_scan=detect, cleanup_orphans=purge' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=detect junk, cleanup_orphans=purge' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
-            workspace_filter: { type: 'string' },
+            workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
             max_tasks: { type: 'number', description: '0 = all', default: 0 },
-            dry_run: { type: 'boolean', default: false },
-            machine_id: { type: 'string' },
-            claude_code_sessions: { type: 'boolean', default: false },
+            dry_run: { type: 'boolean', description: 'Simulation mode (rebuild, garbage_scan, cleanup_orphans)', default: false },
+            machine_id: { type: 'string', description: 'Machine filter (for archive)' },
+            claude_code_sessions: { type: 'boolean', description: 'BLOCKED — sessions are sanctuary (#1621)', default: false },
             max_sessions: { type: 'number', description: '0 = all', default: 0 },
-            source: { type: 'string', enum: ['roo', 'claude-code'], description: "For action=index. Default: 'roo'" }
+            source: { type: 'string', enum: ['roo', 'claude-code'], description: "For action=index. Default: 'roo'" },
+            max_age_days: { type: 'number', description: 'For cleanup. Max age in days (default: 90).', default: 90 },
+            workspace_name_filter: { type: 'string', description: 'For cleanup. Optional workspace_name filter.' },
+            deep: { type: 'boolean', description: 'For diagnose. Enable deep diagnostic.', default: false },
+            sample_size: { type: 'number', description: 'For diagnose with deep=true. Scroll sample size (default 1000, max 5000).', default: 1000 },
+            top_n_workspaces: { type: 'number', description: 'For diagnose with deep=true. Top N workspaces (default 20, max 100).', default: 20 },
+            garbage_category: { type: 'string', enum: ['death_spiral', 'duplicate', 'low_value', 'all'], description: 'For garbage_scan. Default: all' },
+            min_messages: { type: 'number', description: 'For garbage_scan. Min messages threshold (default: 10).', default: 10 },
+            max_results: { type: 'number', description: 'For garbage_scan. Max results (default: 100).', default: 100 },
+            remove_skeletons: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete skeletons.', default: true },
+            remove_vectors: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete Qdrant vectors.', default: true },
+            confirm_orphan_cleanup: { type: 'boolean', description: 'For cleanup_orphans with dry_run=false. Required confirmation.', default: false },
+            max_repair_tasks: { type: 'number', description: 'For repair_gaps. Max tasks per call (default: 50).', default: 50 }
         },
         required: ['action']
     }
@@ -390,6 +402,7 @@ export const roosyncBaselineDefinition = {
             includeMetadata: { type: 'boolean', default: true, description: 'Include full metadata in export' },
             prettyPrint: { type: 'boolean', default: true, description: 'Pretty-print output for readability' }
         },
+        required: ['action'],
         additionalProperties: false
     }
 };
