@@ -121,6 +121,18 @@ const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 
+// #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
+// generation is already bounded UNDER the ~600s IIS→vLLM gateway by
+// CONDENSE_LLM_MAX_TOKENS, so the only thing the old 1800s/900s ceilings ever
+// caught was a TRUE hang (socket held open, neither a response nor a 502). Sit
+// just above the gateway (default 720s) so legitimate slow-but-completing
+// condensations (user mandate: "qu'elle prenne longtemps… mais elle doit
+// aboutir") and gateway-502 runaways still succeed / retry stochastically, while
+// a real hang fast-fails to the #1792 truncation fallback in ~12 min instead of
+// blocking the dashboard the full 1800s registry ceiling (#2267 incident).
+// Env-overridable (raise to tolerate slower GPUs).
+const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 720000;
+
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
 // 2026-05-23: regression fix. Commit 9beb7e93 (2026-04-20) bumped this 10000 →
@@ -842,11 +854,10 @@ function truncateError(msg: string): string {
  * @returns Résumé markdown + stats. content = null si échec (3 retries failed).
  */
 async function generateLLMSummary(messages: IntercomMessage[]): Promise<LLMCallResult> {
-  // #1497: bumped 600s → 1800s (30 min). Qwen3.6 thinking mode can take 60-90s
-  // per call on 40KB prompts; with 3 retries + backoff 2s/4s/8s, total
-  // wall-clock per call can exceed 5 min. Since the 2 LLM calls now run in
-  // parallel (see condenseIntercom), one slow call would still drag the total.
-  const timeoutMs = 1800000;
+  // #2267 follow-up: was 1800s (#1497). The 1800s ceiling only ever caught a TRUE
+  // hang — CONDENSE_LLM_MAX_TOKENS already bounds a runaway under the ~600s gateway.
+  // See CONDENSE_LLM_TIMEOUT_MS definition for the full rationale.
+  const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
 
   // Construire le prompt avec les messages
   const messagesContent = messages.map(msg => {
@@ -954,7 +965,10 @@ FORMAT :
       } else {
         logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
-      if (attempt < LLM_MAX_RETRIES) {
+      // #2267 follow-up: do NOT retry a timeout. A hung endpoint won't recover in a
+      // 2-8s backoff — retrying just burns another full CONDENSE_LLM_TIMEOUT_MS. Fail
+      // fast to the truncation fallback. (502/empty errors still retry below.)
+      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -985,8 +999,8 @@ async function generateStatusUpdate(
   allMessages: IntercomMessage[],
   archivedCount: number
 ): Promise<LLMCallResult> {
-  // #1497: bumped 600s → 1800s (30 min) — see generateLLMSummary for rationale.
-  const timeoutMs = 1800000;
+  // #2267 follow-up: was 1800s (#1497) — see generateLLMSummary / CONDENSE_LLM_TIMEOUT_MS.
+  const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
 
   // Format messages with archive/keep annotations
   const messagesContent = allMessages.map((msg, index) => {
@@ -1147,7 +1161,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       } else {
         logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
-      if (attempt < LLM_MAX_RETRIES) {
+      // #2267 follow-up: do NOT retry a timeout (see generateLLMSummary catch).
+      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -1217,7 +1232,7 @@ RÈGLES :
       max_tokens: CONDENSE_LLM_MAX_TOKENS,
       temperature: 0.3
     }, {
-      timeout: 900000  // #1497: 5 min → 15 min, accommodate thinking-mode latency
+      timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
     });
 
     const condensed = response.choices[0]?.message?.content;
