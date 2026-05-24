@@ -114,7 +114,7 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
         const m = await import('../diagnostic/analyze_problems.js');
         const analyzeResult = await m.analyzeRooSyncProblems(args as any) as any;
         return {
-          success: true,
+          success: analyzeResult?.success !== false,
           action: 'analyze',
           timestamp,
           data: analyzeResult
@@ -124,9 +124,9 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
       // #1935 Cluster D: fused from get_mcp_best_practices
       case 'best-practices': {
         const m = await import('../get_mcp_best_practices.js');
-        const result = await m.getMcpBestPractices.handler({ mcp_name: args.mcp_name });
+        const result = await m.getMcpBestPractices.handler({ mcp_name: args.mcp_name }) as any;
         return {
-          success: true,
+          success: !result?.isError,
           action: 'best-practices',
           timestamp,
           data: result

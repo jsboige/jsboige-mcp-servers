@@ -130,11 +130,11 @@ export const roosyncSearchDefinition = {
 // ============================================================
 export const roosyncIndexingDefinition = {
     name: 'roosync_indexing',
-    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps)",
+    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, cleanup, garbage_scan, cleanup_orphans)",
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps'], description: 'index=Qdrant, reset=clear collection, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix missing' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=orphan tasks, garbage_scan=detect, cleanup_orphans=purge' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             workspace_filter: { type: 'string' },
@@ -459,11 +459,11 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, analyze (roadmap), best-practices (MCP guide).',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), analyze (roadmap), best-practices (MCP guide).',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'analyze', 'best-practices'] },
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'analyze', 'best-practices'] },
             checkDiskSpace: { type: 'boolean' },
             verbose: { type: 'boolean' },
             clearCache: { type: 'boolean' },
