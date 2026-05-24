@@ -502,6 +502,63 @@ ${intercomSection}
 }
 
 /**
+ * #2328: Apply condensed dashboard with smart-merge to avoid overwriting
+ * concurrent appends from other machines during the LLM condensation window (~9 min).
+ *
+ * Before overwriting, re-reads the file from disk and stitches any messages
+ * appended by other machines (identified by msg.id) into the condensed result.
+ * Also guards against double-condensation (skips if another condensation won).
+ */
+async function applyCondensedWithMerge(
+  key: string,
+  snapshotBefore: Dashboard,
+  condensedDashboard: Dashboard
+): Promise<void> {
+  const current = await readDashboardFile(key);
+  if (!current) {
+    await writeDashboardFile(key, condensedDashboard);
+    return;
+  }
+
+  // Guard: if another condensation completed while our LLM was running,
+  // don't overwrite with our stale result.
+  if (
+    current.intercom.lastCondensedAt &&
+    current.intercom.lastCondensedAt > (snapshotBefore.intercom.lastCondensedAt ?? '')
+  ) {
+    logger.warn('[COLLISION] concurrent condensation won — skipping stale overwrite', { key });
+    return;
+  }
+
+  // Delta = messages on disk that weren't in our pre-condensation snapshot.
+  // append-only => these are concurrent appends => always a suffix.
+  const seen = new Set(snapshotBefore.intercom.messages.map(m => m.id));
+  const delta = current.intercom.messages.filter(m => !seen.has(m.id));
+
+  if (delta.length === 0) {
+    await writeDashboardFile(key, condensedDashboard);
+    return;
+  }
+
+  logger.warn('[COLLISION] stitching concurrent appends into condensed result', {
+    key, deltaCount: delta.length, deltaIds: delta.map(m => m.id)
+  });
+
+  const merged: Dashboard = {
+    ...condensedDashboard,
+    lastModified: current.lastModified > condensedDashboard.lastModified
+      ? current.lastModified
+      : condensedDashboard.lastModified,
+    intercom: {
+      messages: [...condensedDashboard.intercom.messages, ...delta],
+      totalMessages: condensedDashboard.intercom.totalMessages + delta.length,
+      lastCondensedAt: condensedDashboard.intercom.lastCondensedAt,
+    },
+  };
+  await writeDashboardFile(key, merged);
+}
+
+/**
  * Append messages to the dashboard file without rewriting existing content.
  * Only updates frontmatter (in-place regex) and appends new messages at the end.
  * Used by handleAppend when no condensation occurred (the common case).
@@ -2231,9 +2288,9 @@ async function handleAppend(
       archivedCount = newlyArchived;
       condensed = newlyArchived > 0;
 
-      // If condensation succeeded, overwrite the incremental append with the condensed version
+      // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
       if (condensed) {
-        await writeDashboardFile(key, finalDashboard);
+        await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
       }
     } catch (condenseErr) {
       // Condensation failed — message is already persisted, log and continue
@@ -2474,11 +2531,11 @@ async function handleCondense(
   const actuallyCondensed = condensedDashboard.intercom.messages.length < beforeCount;
   // Persist whenever the dashboard changed — either condensation succeeded
   // (count decreased) or LLM failed and an ERROR system message was injected
-  // (count increased). writeDashboardFile is atomic (tmp+rename).
+  // (count increased). Use smart-merge to avoid overwriting concurrent appends (#2328).
   const dashboardChanged = condensedDashboard.intercom.messages.length !== beforeCount;
 
   if (dashboardChanged) {
-    await writeDashboardFile(key, condensedDashboard);
+    await applyCondensedWithMerge(key, dashboard, condensedDashboard);
   }
 
   const archivedCount = actuallyCondensed ? beforeCount - condensedDashboard.intercom.messages.length : 0;
