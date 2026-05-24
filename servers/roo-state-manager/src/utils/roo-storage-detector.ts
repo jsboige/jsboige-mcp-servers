@@ -8,6 +8,7 @@ import { createReadStream, Stats, existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
+import { stripBOM } from './encoding-helpers.js';
 import { glob } from 'glob';
 import {
     RooStorageLocation,
@@ -1235,7 +1236,7 @@ export class RooStorageDetector {
       allSkeletonPaths,
       async (skeletonPath) => {
         try {
-          const skeletonContent = await fs.readFile(skeletonPath, 'utf-8');
+          const skeletonContent = stripBOM(await fs.readFile(skeletonPath, 'utf-8'));
           const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
 
           if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
@@ -1423,14 +1424,18 @@ export class RooStorageDetector {
           // Tentative 3: JSONL (une entrée JSON par ligne)
           const lines = processedContent.split('\n');
           const jsonlItems: any[] = [];
+          let skippedJsonl = 0;
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
             try {
               jsonlItems.push(JSON.parse(trimmed));
             } catch (_e3) {
-              // ignorer les lignes invalides
+              skippedJsonl++;
             }
+          }
+          if (skippedJsonl > 0) {
+            console.warn(`[extractFromMessageFile] ⚠️ ${skippedJsonl} invalid JSONL lines skipped in ${path.basename(filePath)}`);
           }
           if (jsonlItems.length > 0) {
             messages = jsonlItems;
@@ -1557,7 +1562,7 @@ export class RooStorageDetector {
    */
   private static async extractParentFromApiHistory(apiHistoryPath: string): Promise<string | undefined> {
     try {
-      const content = await fs.readFile(apiHistoryPath, 'utf-8');
+      const content = stripBOM(await fs.readFile(apiHistoryPath, 'utf-8'));
       const data = JSON.parse(content);
       const messages = Array.isArray(data) ? data : (data?.messages || []);
 
@@ -1581,7 +1586,7 @@ export class RooStorageDetector {
    */
   private static async extractParentFromUiMessages(uiMessagesPath: string): Promise<string | undefined> {
     try {
-      const content = await fs.readFile(uiMessagesPath, 'utf-8');
+      const content = stripBOM(await fs.readFile(uiMessagesPath, 'utf-8'));
       const data = JSON.parse(content);
       const messages = Array.isArray(data) ? data : [];
 
@@ -1690,14 +1695,18 @@ export class RooStorageDetector {
             // 3. Fallback final en mode JSONL
             const lines = content.split('\n');
             const items: any[] = [];
+            let skippedLines = 0;
             for (const line of lines) {
                 if (line.trim()) {
                     try {
                         items.push(JSON.parse(line));
                     } catch (lineError) {
-                       // ignorer la ligne
+                       skippedLines++;
                     }
                 }
+            }
+            if (skippedLines > 0) {
+                console.warn(`[readJsonFile] ⚠️ \${skippedLines} invalid JSONL lines skipped in \${path.basename(filePath)}`);
             }
             if(items.length > 0) {
                 console.log(`[readJsonFile] ✅ Parsed ${items.length} items as JSONL from ${path.basename(filePath)}`);

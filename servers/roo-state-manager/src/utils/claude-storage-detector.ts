@@ -10,6 +10,7 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { stripBOM } from './encoding-helpers.js';
 import {
     ConversationSkeleton,
     MessageSkeleton,
@@ -251,14 +252,20 @@ export class ClaudeStorageDetector {
                 return entries;
             }
 
-            const content = await fs.readFile(filePath, 'utf-8');
+            const content = stripBOM(await fs.readFile(filePath, 'utf-8'));
             const lines = content.split('\n');
 
+            let skippedEntries = 0;
             for (const line of lines) {
                 const entry = await this.parseJsonlLine(line);
                 if (entry) {
                     entries.push(entry);
+                } else if (line.trim()) {
+                    skippedEntries++;
                 }
+            }
+            if (skippedEntries > 0) {
+                console.warn(`[ClaudeStorageDetector] ⚠️ ${skippedEntries} invalid JSONL lines skipped in ${path.basename(filePath)}`);
             }
         } catch (error) {
             console.error(`[ClaudeStorageDetector] Error parsing JSONL file ${filePath}:`, error);
