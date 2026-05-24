@@ -14,6 +14,13 @@ const { mockAccess, mockReadFile, mockStat, mockMkdir, mockWriteFile } = vi.hois
 }));
 
 vi.mock('fs/promises', () => ({
+    default: {
+        access: mockAccess,
+        readFile: mockReadFile,
+        stat: mockStat,
+        mkdir: mockMkdir,
+        writeFile: mockWriteFile,
+    },
     access: mockAccess,
     readFile: mockReadFile,
     stat: mockStat,
@@ -21,7 +28,7 @@ vi.mock('fs/promises', () => ({
     writeFile: mockWriteFile
 }));
 
-vi.mock('../../../../src/utils/server-helpers.js', () => ({
+vi.mock('../../../../src/utils/shared-state-path.js', () => ({
     getSharedStatePath: vi.fn(() => '/mock/shared-state')
 }));
 
