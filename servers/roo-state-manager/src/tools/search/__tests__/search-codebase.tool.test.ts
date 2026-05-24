@@ -245,11 +245,20 @@ describe('search-codebase.tool', () => {
 	// ============================================================
 
 	describe('handleCodebaseSearch', () => {
-		test('auto-detects workspace when not provided (falls back to cwd)', async () => {
+		test('handles empty workspace gracefully (resolves it or returns workspace-required guidance)', async () => {
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '' });
 			const text = typeof result.content[0].text === 'string' ? result.content[0].text : '';
-			const parsed = JSON.parse(text);
-			expect(parsed.workspace || parsed.message).toBeDefined();
+			// #2307 Phase 4: when the workspace cannot be auto-detected (no MCP roots, no WORKSPACE_PATH),
+			// the tool hard-fails with clear guidance instead of silently searching the MCP server dir.
+			// Depending on the environment it may instead resolve and return a JSON payload — accept
+			// both outcomes, but the tool must never crash on an empty workspace.
+			try {
+				const parsed = JSON.parse(text);
+				expect(parsed.workspace || parsed.message || parsed.status).toBeDefined();
+			} catch {
+				expect((result as any).isError).toBe(true);
+				expect(text.toLowerCase()).toContain('workspace');
+			}
 		});
 
 		test('returns error for empty query', async () => {

@@ -67,11 +67,9 @@ describe('workspace-resolver', () => {
 			});
 		});
 
-		it('falls back to process.cwd() as last resort', async () => {
-			// No server, no env var
-			const result = await resolveWorkspace();
-			expect(result.source).toBe('cwd');
-			expect(result.workspace).toBe(process.cwd());
+		it('hard-fails when no explicit workspace, MCP roots, or WORKSPACE_PATH (#2307 Phase 4)', async () => {
+			// No server, no env var — should throw instead of returning cwd
+			await expect(resolveWorkspace()).rejects.toThrow('Workspace auto-detection failed');
 		});
 
 		it('falls back from MCP roots error to env var', async () => {

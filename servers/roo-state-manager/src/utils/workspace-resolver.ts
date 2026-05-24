@@ -8,9 +8,9 @@
  * 1. Explicit parameter — caller provided workspace
  * 2. MCP roots — server.listRoots() from the connected client
  * 3. WORKSPACE_PATH env var — configured in .claude.json
- * 4. process.cwd() — last resort (MCP server dir, usually wrong)
+ * 4. HARD-FAIL — cwd is almost always the MCP server dir (#2307 Phase 4)
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -85,8 +85,14 @@ export async function resolveWorkspace(explicitWorkspace?: string): Promise<{
 		return { workspace: envWorkspace, source: 'env-var' };
 	}
 
-	// 4. Last resort: process.cwd() (usually the MCP server dir)
-	return { workspace: process.cwd(), source: 'cwd' };
+	// 4. Hard-fail: cwd is almost always the MCP server dir (#2307 Phase 4)
+	// Silently falling back to cwd produces wrong results — better to error clearly.
+	logger.warn(`[resolveWorkspace] No explicit workspace, no MCP roots, no WORKSPACE_PATH env — cwd "${process.cwd()}" is likely the MCP server dir`);
+	throw new Error(
+		'Workspace auto-detection failed: no explicit workspace provided, MCP roots unavailable, and WORKSPACE_PATH not set. ' +
+		'Please pass the "workspace" parameter explicitly (e.g., "C:/dev/roo-extensions" or "/home/user/project"). ' +
+		'Auto-detection via process.cwd() is disabled because it typically resolves to the MCP server directory, producing incorrect results.'
+	);
 }
 
 /**
