@@ -228,6 +228,46 @@ class GitHubPlugin:
             return json.dumps({"error": f"Failed to decode file: {e}"})
 
     @kernel_function(
+        description="Get recent commit history for a file. Returns last N commits with SHA, author, date, message.",
+        name="get_file_history",
+    )
+    def get_file_history(
+        self,
+        path: str,
+        repo: str = "",
+        limit: int = 10,
+        branch: str = "main",
+    ) -> str:
+        """Get commit history for a file in a repository.
+
+        Args:
+            path: File path in the repository
+            repo: Repository in owner/repo format
+            limit: Number of recent commits to return (max 20). Default: 10
+            branch: Branch to check. Default: main
+        """
+        repo = repo or self._default_repo
+        if not repo:
+            return json.dumps({"error": "repo is required"})
+        limit = max(1, min(20, limit))
+        args = [
+            "api", f"repos/{repo}/commits",
+            "--jq", f".[:{limit}] | .[] | {{sha: .sha[:12], author: .commit.author.name, date: .commit.author.date[:10], message: .commit.message[:120]}}",
+            "-f", f"path={path}",
+            "-f", f"sha={branch}",
+        ]
+        output = self._run_gh(args, timeout=20)
+        if output.startswith('{"error"'):
+            return output
+        try:
+            # The --jq output is one JSON object per line, wrap in array
+            lines = [l.strip() for l in output.strip().split("\n") if l.strip()]
+            commits = [json.loads(l) for l in lines]
+            return json.dumps(commits, indent=2, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            return output
+
+    @kernel_function(
         description="Search code in a repository using grep pattern. Returns matching file paths and line numbers.",
         name="grep_code",
     )
