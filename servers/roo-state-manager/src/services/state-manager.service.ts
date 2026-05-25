@@ -32,6 +32,8 @@ export interface ServerState {
     qdrantIndexQueue: Set<string>;
     qdrantIndexInterval: NodeJS.Timeout | null;
     isQdrantIndexingEnabled: boolean;
+    // #2352: Leader-election — only one MCP instance indexes at a time
+    isIndexLeader: boolean;
 
     // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau (LEGACY)
     qdrantIndexCache: Map<string, number>;
@@ -110,6 +112,7 @@ export class StateManager {
             qdrantIndexQueue: new Set(),
             qdrantIndexInterval: null,
             isQdrantIndexingEnabled: true,
+            isIndexLeader: false,
             qdrantIndexCache: new Map(),
             lastQdrantConsistencyCheck: 0,
         };

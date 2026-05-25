@@ -703,6 +703,13 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
         }
 
         // Phase 3: Start background process (always safe - doesn't contact Qdrant immediately)
+        // #2352: Attempt leader-election at startup
+        state.isIndexLeader = await tryAcquireLeaderLock();
+        if (state.isIndexLeader) {
+            console.log(`🔑 [Leader-Election] PID ${process.pid} is indexing leader at startup`);
+        } else {
+            console.log(`🔄 [Leader-Election] PID ${process.pid} is follower — will attempt takeover if leader goes stale`);
+        }
         startQdrantIndexingBackgroundProcess(state);
 
         console.log('✅ Service d\'indexation Qdrant initialisé (indexation en arrière-plan activée)');
@@ -866,6 +873,72 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
 export const QDRANT_INDEX_BATCH_SIZE = 5;
 
 /**
+ * #2352: Leader-election for Qdrant indexing.
+ * Only one MCP instance per machine runs embeddings at a time.
+ * Lock is a file in the skeletons directory containing { pid, timestamp }.
+ * Stale after LEADER_LOCK_STALE_MS — allows takeover if leader process crashes.
+ */
+const LEADER_LOCK_FILENAME = '.indexer-leader.lock';
+const LEADER_LOCK_STALE_MS = 15 * 60 * 1000; // 15 min (3× the 5-min indexing interval)
+
+async function getLeaderLockPath(): Promise<string | null> {
+    const locations = await RooStorageDetector.detectStorageLocations();
+    if (locations.length === 0) return null;
+    return path.join(locations[0], 'tasks', '.skeletons', LEADER_LOCK_FILENAME);
+}
+
+/**
+ * Try to acquire or renew the leader lock. Non-blocking (single attempt).
+ * Returns true if this process is the leader.
+ */
+async function tryAcquireLeaderLock(): Promise<boolean> {
+    const lockPath = await getLeaderLockPath();
+    if (!lockPath) return true; // No storage → single-instance, assume leader
+
+    const lockData = { pid: process.pid, timestamp: Date.now() };
+
+    try {
+        // Try to create the lock file exclusively
+        await fs.writeFile(lockPath, JSON.stringify(lockData), { flag: 'wx' });
+        return true; // Created → we are the leader
+    } catch (error: any) {
+        if (error.code !== 'EEXIST') {
+            // Unexpected error (permissions, disk full) — assume leader to avoid blocking indexing
+            console.warn(`⚠️ [Leader-Election] Unexpected error acquiring lock: ${error.message}. Assuming leader.`);
+            return true;
+        }
+
+        // Lock exists — check if it's ours or stale
+        try {
+            const content = await fs.readFile(lockPath, 'utf-8');
+            const existing = JSON.parse(content);
+
+            // If it's our PID, renew the timestamp
+            if (existing.pid === process.pid) {
+                await fs.writeFile(lockPath, JSON.stringify(lockData));
+                return true;
+            }
+
+            // Check staleness
+            const age = Date.now() - existing.timestamp;
+            if (age > LEADER_LOCK_STALE_MS) {
+                // Stale — steal the lock
+                await fs.writeFile(lockPath, JSON.stringify(lockData));
+                console.log(`🔑 [Leader-Election] Stolen stale lock (previous PID ${existing.pid}, age ${Math.round(age / 1000)}s). PID ${process.pid} is now leader.`);
+                return true;
+            }
+
+            // Active lock held by another process
+            return false;
+        } catch {
+            // Corrupt/unreadable lock — overwrite
+            await fs.writeFile(lockPath, JSON.stringify(lockData));
+            return true;
+        }
+    }
+}
+
+/**
  * Démarre le processus d'indexation Qdrant en arrière-plan
  * Traite jusqu'à QDRANT_INDEX_BATCH_SIZE tâches par intervalle (batch processing)
  */
@@ -890,6 +963,26 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
 
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
             return;
+        }
+
+        // #2352: Leader-election — only the leader does indexing
+        if (!state.isIndexLeader) {
+            // Try to become leader (non-blocking)
+            const won = await tryAcquireLeaderLock();
+            if (won) {
+                state.isIndexLeader = true;
+                console.log(`🔑 [Leader-Election] PID ${process.pid} became indexing leader`);
+            } else {
+                return; // Another instance is leader — skip indexing
+            }
+        } else {
+            // Already leader — renew lock
+            const renewed = await tryAcquireLeaderLock();
+            if (!renewed) {
+                state.isIndexLeader = false;
+                console.warn(`⚠️ [Leader-Election] PID ${process.pid} lost leadership (lock stolen). Stepping down.`);
+                return;
+            }
         }
 
         // #2165: Global back-off. If the Qdrant circuit breaker is OPEN, every
