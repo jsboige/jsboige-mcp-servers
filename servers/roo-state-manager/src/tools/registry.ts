@@ -107,6 +107,7 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_indexing: ['sharedPath'],
 	roosync_mcp_management: ['sharedPath'],
 	roosync_storage_management: ['sharedPath'],
+	roosync_health_view: ['sharedPath'],
 	conversation_browser: ['sharedPath'],
 	export_data: ['sharedPath'],
 	maintenance: ['sharedPath'],
@@ -745,7 +746,23 @@ export function registerCallToolHandler(
                }
                break;
            }
-          // [REMOVED CONS-8 #603] roosync_claim — never adopted (#1836), no harness integration
+                    // #1746-B: Unified health view — aggregates inventory + drift + env + capabilities
+          case 'roosync_health_view': {
+              try {
+                  const m = await import('./roosync/health-view.js');
+                  const healthResult = await m.roosyncHealthView(args as any);
+                  if ((args as any)?.format === 'markdown') {
+                      const { formatMarkdown } = await import('./roosync/health-view.js');
+                      result = { content: [{ type: 'text', text: formatMarkdown(healthResult) }] };
+                  } else {
+                      result = { content: [{ type: 'text', text: JSON.stringify(healthResult, null, 2) }] };
+                  }
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          }
+// [REMOVED CONS-8 #603] roosync_claim — never adopted (#1836), no harness integration
           case 'roosync_claim': {
               result = {
                   content: [{ type: 'text', text: JSON.stringify({

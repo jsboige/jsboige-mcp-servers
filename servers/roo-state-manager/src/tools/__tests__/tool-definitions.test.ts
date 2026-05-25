@@ -46,9 +46,10 @@ import {
     roosyncAttachmentsDefinition,
     roosyncDashboardDefinition,
     roosyncMessagesDefinition,
+    roosyncHealthViewDefinition,
 } from '../tool-definitions.js';
 
-const EXPECTED_TOOL_COUNT = 15; // #512 arbitrage A: lifecycle re-câblé comme action de roosync_diagnose, reste 15 outils servis
+const EXPECTED_TOOL_COUNT = 16; // #1746-B: added roosync_health_view. #512 arbitrage A: lifecycle re-câblé comme action de roosync_diagnose, reste 15 outils servis
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
@@ -72,13 +73,14 @@ const allDefinitions = [
     roosyncDiagnoseDefinition,
     // [REMOVED CONS-8 #603] roosyncClaimDefinition — never adopted
     roosyncMessagesDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    roosyncHealthViewDefinition
 ];
 
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 19 tool definitions', () => {
+        it('should have exactly 16 tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 

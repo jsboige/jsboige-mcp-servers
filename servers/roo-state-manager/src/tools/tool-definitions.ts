@@ -687,6 +687,21 @@ export const roosyncMessagesDefinition = {
 // #1470: Derived from Zod schema in dashboard-schemas.ts (single source of truth)
 export const roosyncDashboardDefinition = dashboardToolMetadata;
 
+// #1746-B: Unified health view — aggregates inventory + drift + env + capabilities
+export const roosyncHealthViewDefinition = {
+    name: 'roosync_health_view',
+    description: 'Unified cluster health view — aggregates system status, config drift, env vars, and capabilities in one call. Returns a health score (0-100) with actionable flags. Use this instead of calling roosync_inventory + roosync_compare_config separately.',
+    inputSchema: {
+        type: 'object' as const,
+        properties: {
+            machineId: { type: 'string', description: 'Machine for drift check (default: local)' },
+            driftBaseline: { type: 'string', enum: ['latest', 'local'], description: 'Drift baseline source (default: latest)' },
+            includeEnvCheck: { type: 'boolean', description: 'Check critical env vars (default: true)' },
+            format: { type: 'string', enum: ['json', 'markdown'], description: 'Output format (default: json)' }
+        }
+    }
+};
+
 // ============================================================
 // allToolDefinitions — the complete ordered list for ListTools
 // This mirrors the order in the current registerListToolsHandler.
@@ -730,5 +745,6 @@ export const allToolDefinitions = [
     // [REMOVED #1841 Cluster G] roosyncManageDefinition — fused into roosync_messages(action: "mark_read"/"archive"/"bulk_*"/"cleanup"/"stats"), redirect in registry.ts
     // [REMOVED #1841 Cluster G] roosyncAttachmentsDefinition — fused into roosync_messages(action: "attachments_*"), redirect in registry.ts
     roosyncMessagesDefinition,
-    roosyncDashboardDefinition
+    roosyncDashboardDefinition,
+    roosyncHealthViewDefinition
 ];
