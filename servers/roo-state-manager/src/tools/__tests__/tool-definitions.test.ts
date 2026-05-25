@@ -237,12 +237,14 @@ describe('tool-definitions.ts — Schema Validation', () => {
 
         // #1609: roosync_heartbeat test removed — auto-heartbeat on any tool call
 
-        it('roosync_diagnose should have env/debug/reset/test/analyze/best-practices actions', () => {
+        it('roosync_diagnose should have all documented actions including health and lifecycle', () => {
             const actions = (roosyncDiagnoseDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
             expect(actions).toContain('env');
             expect(actions).toContain('debug');
             expect(actions).toContain('reset');
             expect(actions).toContain('test');
+            expect(actions).toContain('health');
+            expect(actions).toContain('lifecycle'); // #1320: re-câblé from standalone tool (#512 arbitrage A)
             expect(actions).toContain('analyze'); // #1935 Cluster D: fused from analyze_roosync_problems
             expect(actions).toContain('best-practices'); // #1935 Cluster D: fused from get_mcp_best_practices
         });
@@ -251,6 +253,18 @@ describe('tool-definitions.ts — Schema Validation', () => {
             const props = roosyncDiagnoseDefinition.inputSchema.properties as Record<string, unknown>;
             expect(props).toHaveProperty('mcp_name');
             expect((props.mcp_name as Record<string, unknown>).description).toContain('best-practices');
+        });
+
+        it('roosync_diagnose should have lifecycle parameters (state, machineId, reason)', () => {
+            const props = roosyncDiagnoseDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('state');
+            expect(props).toHaveProperty('machineId');
+            expect(props).toHaveProperty('reason');
+            const stateEnum = (props.state as Record<string, unknown>).enum as string[];
+            expect(stateEnum).toContain('BOOTSTRAPPING');
+            expect(stateEnum).toContain('READY');
+            expect(stateEnum).toContain('WORKING');
+            expect(stateEnum).toContain('IDLE');
         });
 
         it('roosync_config should support collect/publish/apply/apply_profile', () => {
