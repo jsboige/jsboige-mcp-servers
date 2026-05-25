@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
+import { getCustomModesPath as getExtensionCustomModesPath } from '../../utils/extension-paths.js';
 
 // ====================================================================
 // TYPES
@@ -48,16 +49,9 @@ export interface ModesSummary {
 
 /**
  * Returns the path to custom_modes.yaml on the current machine.
- * Windows: %APPDATA%/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/custom_modes.yaml
  */
 export function getCustomModesPath(): string {
-    const appdata = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(
-        appdata,
-        'Code', 'User', 'globalStorage',
-        'rooveterinaryinc.roo-cline', 'settings',
-        'custom_modes.yaml'
-    );
+    return getExtensionCustomModesPath();
 }
 
 // ====================================================================

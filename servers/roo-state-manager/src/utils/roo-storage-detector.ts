@@ -30,6 +30,7 @@ import { HierarchyReconstructionEngine } from './hierarchy-reconstruction-engine
 import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 import { WorkspaceDetector } from './workspace-detector.js';
+import { isZooCode } from './extension-paths.js';
 
 export class RooStorageDetector {
   private static readonly MAX_CONVERSATION_FILE_SIZE = 10 * 1024 * 1024; // 10MB — prevents OOM on traces >40MB
@@ -48,7 +49,9 @@ export class RooStorageDetector {
     '**/saoudrizwan.claude-dev-*',
     '**/claude-dev*',
     '**/roo*',
-    '**/cline*'
+    '**/cline*',
+    '**/zoo-code*',       // Zoo-Code (#2134)
+    '**/zoocodeorgan*',   // Zoo-Code full publisher dir (#2134)
   ];
 
   // Override pour les tests unitaires (injection de dépendance)
