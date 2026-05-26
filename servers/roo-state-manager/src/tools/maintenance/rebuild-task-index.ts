@@ -22,6 +22,7 @@ import { existsSync, copyFileSync } from 'fs';
 import sqlite3 from 'sqlite3';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { getVscdbKey, getTasksPath } from '../../utils/extension-paths.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('rebuild-task-index');
@@ -30,7 +31,7 @@ const logger = createLogger('rebuild-task-index');
  * The key VS Code uses to store Roo extension state in SQLite.
  * Must match the extension's actual key (case-sensitive in SQLite).
  */
-const VSCDB_KEY = 'RooVeterinaryInc.roo-cline';
+const VSCDB_KEY = getVscdbKey();
 
 const VSCDB_RELATIVE_PATH = path.join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
 
@@ -165,10 +166,7 @@ export async function handleRebuildTaskIndex(args: RebuildTaskIndexArgs): Promis
 		}
 
 		// 2. Scan tasks on disk
-		const tasksDir = path.join(
-			os.homedir(), 'AppData', 'Roaming', 'Code', 'User',
-			'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks'
-		);
+		const tasksDir = getTasksPath();
 
 		let diskTasks: Array<{ id: string; workspace?: string; lastActivity: Date }> = [];
 

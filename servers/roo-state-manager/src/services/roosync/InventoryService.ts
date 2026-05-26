@@ -8,6 +8,7 @@ import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getMcpSettingsPath as getExtensionMcpSettingsPath } from '../../utils/extension-paths.js';
 
 export class InventoryService {
   private static instance: InventoryService;
@@ -51,7 +52,7 @@ export class InventoryService {
     // In a real scenario, these might be configurable or auto-detected
     const userHome = os.homedir();
     this.ROO_EXTENSIONS_PATH = InventoryService.findRooExtensionsRoot();
-    this.MCP_SETTINGS_PATH = path.join(userHome, 'AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json');
+    this.MCP_SETTINGS_PATH = getExtensionMcpSettingsPath();
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
     this.CLAUDE_JSON_PATH = path.join(userHome, '.claude.json'); // #489: Ajout chemin ~/.claude.json

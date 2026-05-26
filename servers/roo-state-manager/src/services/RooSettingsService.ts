@@ -17,8 +17,9 @@ import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import sqlite3 from 'sqlite3';
 import { createLogger, Logger } from '../utils/logger.js';
+import { getVscdbKey } from '../utils/extension-paths.js';
 
-const VSCDB_KEY = 'RooVeterinaryInc.roo-cline';
+const VSCDB_KEY = getVscdbKey();
 const VSCDB_RELATIVE_PATH = join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
 
 /**

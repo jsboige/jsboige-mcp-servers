@@ -13,6 +13,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
+import { getMcpSettingsPath as getExtensionMcpSettingsPath } from '../../utils/extension-paths.js';
 
 // Types pour les serveurs MCP
 interface McpServer {
@@ -47,15 +48,7 @@ interface McpSettings {
  * Roo MCP configs on ai-01 (753 backup files created).
  */
 export function getMcpSettingsPath(): string {
-    const resolved = path.join(
-        process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-        'Code',
-        'User',
-        'globalStorage',
-        'rooveterinaryinc.roo-cline',
-        'settings',
-        'mcp_settings.json'
-    );
+    const resolved = getExtensionMcpSettingsPath();
     // SAFETY GUARD: In test environments, reject paths that point to the REAL
     // mcp_settings.json. This prevents tests from wiping production MCP configs.
     // Incidents: 2026-03-08 (ai-01, 753 backups), 2026-04-03 (po-2023).

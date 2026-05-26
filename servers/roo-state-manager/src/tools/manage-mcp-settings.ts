@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { getMcpSettingsPath as getExtensionMcpSettingsPath } from '../utils/extension-paths.js';
 
 interface McpServer {
     transportType?: string;
@@ -30,11 +31,7 @@ interface McpSettings {
  * isolation — see incident 2026-03-08 (ai-01 wipe) and 2026-03-10 (po-2026 wipe).
  */
 function getMcpSettingsPath(): string {
-    return path.join(
-        process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-        'Code', 'User', 'globalStorage',
-        'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json'
-    );
+    return getExtensionMcpSettingsPath();
 }
 
 // ====================================================================

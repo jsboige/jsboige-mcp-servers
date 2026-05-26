@@ -3,6 +3,7 @@
  */
 
 import { promises as fs } from 'fs';
+import { getMcpSettingsPath as getExtensionMcpSettingsPath } from './extension-paths.js';
 import path from 'path';
 import os from 'os';
 import { exec } from 'child_process'; // kept for potential future use
@@ -97,19 +98,18 @@ export function injectDuration(
  */
 export async function handleTouchMcpSettings(): Promise<CallToolResult> {
     try {
-        const appDataPath = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-        const settingsPath = path.join(appDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+        const settingsPath = getExtensionMcpSettingsPath();
 
         // SAFETY GUARD: In test environments, reject paths to REAL mcp_settings.json.
         // Incidents: 2026-03-08 (ai-01), 2026-04-03 (po-2023).
         if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
-            const isTestPath = appDataPath.includes('__test-data__') ||
-                appDataPath.includes('__roo-state-manager-test-appdata__') ||
-                appDataPath.includes('mcp-settings-integration') ||
-                settingsPath.includes('__test-data__') ||
-                appDataPath === 'C:\\Users\\Test\\AppData\\Roaming' ||
-                appDataPath.includes('/home/test') ||
-                appDataPath.includes('/tmp/');
+            const isTestPath = settingsPath.includes('__test-data__') ||
+                settingsPath.includes('__roo-state-manager-test-appdata__') ||
+                settingsPath.includes('mcp-settings-integration') ||
+                (process.env.APPDATA || '').includes('__test-data__') ||
+                (process.env.APPDATA || '') === 'C:\\Users\\Test\\AppData\\Roaming' ||
+                (process.env.APPDATA || '').includes('/home/test') ||
+                (process.env.APPDATA || '').includes('/tmp/');
             if (!isTestPath) {
                 throw new Error(
                     `SAFETY ABORT: handleTouchMcpSettings() would touch REAL mcp_settings.json in test mode!\n` +

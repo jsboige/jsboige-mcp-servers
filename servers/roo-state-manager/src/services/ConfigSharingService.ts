@@ -8,6 +8,7 @@ import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { ConfigDiffService } from './ConfigDiffService.js';
 import { JsonMerger } from '../utils/JsonMerger.js';
 import { RooSettingsService } from './RooSettingsService.js';
+import { getSettingsPath as getExtensionSettingsPath } from '../utils/extension-paths.js';
 import { IConfigSharingService,
    CollectConfigOptions,
    CollectConfigResult,
@@ -437,8 +438,7 @@ export class ConfigSharingService implements IConfigSharingService {
             destPath = join(homedir(), '.claude.json');
           } else if (file.path.startsWith('modes-yaml/')) {
             // modes-yaml/custom_modes.yaml -> %APPDATA%/.../custom_modes.yaml
-            destPath = join(homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage',
-              'rooveterinaryinc.roo-cline', 'settings', 'custom_modes.yaml');
+            destPath = join(getExtensionSettingsPath(), 'custom_modes.yaml');
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
             continue;
@@ -1415,10 +1415,7 @@ export class ConfigSharingService implements IConfigSharingService {
     const modesYamlDir = join(tempDir, 'modes-yaml');
     await fs.mkdir(modesYamlDir, { recursive: true });
 
-    const rooSettingsDir = join(
-      homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage',
-      'rooveterinaryinc.roo-cline', 'settings'
-    );
+    const rooSettingsDir = getExtensionSettingsPath();
     const yamlPath = join(rooSettingsDir, 'custom_modes.yaml');
 
     if (!existsSync(yamlPath)) {
