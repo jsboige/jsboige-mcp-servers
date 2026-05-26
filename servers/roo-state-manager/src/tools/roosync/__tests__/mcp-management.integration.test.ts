@@ -41,9 +41,10 @@ vi.mock('../../../utils/message-helpers.js', async () => {
 // Cannot use `join` from import here (not initialized yet), use require
 const { testAppDataPath, testMcpSettingsDir, testMcpSettingsPath } = vi.hoisted(() => {
   const path = require('path');
+  const extensionId = process.env.ROO_EXTENSION_ID || 'rooveterinaryinc.roo-cline';
   const testAppDataPath = path.join(__dirname, '../../../__test-data__/appdata-mcp-management');
   process.env.APPDATA = testAppDataPath;
-  const testMcpSettingsDir = path.join(testAppDataPath, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings');
+  const testMcpSettingsDir = path.join(testAppDataPath, 'Code', 'User', 'globalStorage', extensionId, 'settings');
   const testMcpSettingsPath = path.join(testMcpSettingsDir, 'mcp_settings.json');
   return { testAppDataPath, testMcpSettingsDir, testMcpSettingsPath };
 });

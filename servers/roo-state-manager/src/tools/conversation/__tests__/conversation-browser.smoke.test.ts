@@ -15,6 +15,7 @@ import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
 import { globalCacheManager } from '../../../utils/cache-manager.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getExtensionId } from '../../../utils/extension-paths.js';
 
 // Unmock modules that jest.setup.js mocks globally.
 // Smoke tests need real filesystem and real services (not mocks).
@@ -34,7 +35,7 @@ describe('SMOKE: conversation_browser', () => {
     originalEnv = { ...process.env };
 
     // Compute test path after setup-env.ts has redirected APPDATA
-    testTasksPath = path.join(process.env.APPDATA, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks');
+    testTasksPath = path.join(process.env.APPDATA, 'Code', 'User', 'globalStorage', getExtensionId(), 'tasks');
 
     // Setup test environment with required env vars
     process.env.ROOSYNC_WORKSPACE_ID = 'roo-extensions';

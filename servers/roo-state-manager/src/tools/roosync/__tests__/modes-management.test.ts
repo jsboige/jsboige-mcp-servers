@@ -28,6 +28,7 @@ import {
   type ModesDiff,
   type ModesComparison
 } from '../modes-management';
+import { getExtensionId } from '../../../utils/extension-paths';
 
 const mockedFsPromises = vi.mocked(fsPromises);
 
@@ -68,7 +69,7 @@ describe('modes-management', () => {
     it('should return the correct path on Windows', () => {
       const result = getCustomModesPath();
       expect(result).toContain('custom_modes.yaml');
-      expect(result).toContain('rooveterinaryinc.roo-cline');
+      expect(result).toContain(getExtensionId());
     });
   });
 
