@@ -434,18 +434,20 @@ export const roosyncConfigDefinition = {
 
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: 'Machine inventory, heartbeat status, system snapshot. type="status" for compact RooSync status with flags. Gotcha: use includeDetails:true for full metrics including tool usage stats.',
+    description: 'Machine inventory, heartbeat status, system snapshot, cluster health. type="status" for compact RooSync status. type="health" for unified cluster health with score (#2224). Gotcha: use includeDetails:true for full metrics including tool usage stats.',
     inputSchema: {
         type: 'object',
         properties: {
-            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status'], description: 'Inventory type to query' },
+            type: { type: 'string', enum: ['machine', 'heartbeat', 'all', 'machines', 'status', 'health'], description: 'Inventory type to query. "health" = unified cluster health view with score (#2224)' },
             machineId: { type: 'string', description: 'Machine ID filter (default: hostname)' },
             includeHeartbeats: { type: 'boolean', description: 'Include heartbeat data' },
             status: { type: 'string', enum: ['unknown', 'idle', 'all'], description: 'Filter by status (type=machines)' },
             includeDetails: { type: 'boolean', description: 'Full details or tool usage stats' },
             detail: { type: 'string', enum: ['compact', 'full'], description: 'compact or full (adds claims + pipeline stages)' },
             resetCache: { type: 'boolean', description: 'Force cache reset (status only)' },
-            summary: { type: 'boolean', description: 'Return compact markdown summary instead of full JSON' }
+            summary: { type: 'boolean', description: 'Return compact markdown summary instead of full JSON' },
+            format: { type: 'string', enum: ['json', 'markdown'], description: 'Output format for type="health". Default: json' },
+            includeEnvCheck: { type: 'boolean', description: 'Include env var checks in type="health". Default: true' }
         },
         required: ['type'],
         additionalProperties: false

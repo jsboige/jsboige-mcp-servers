@@ -327,6 +327,16 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(roosyncInventoryDefinition.inputSchema.required).toContain('type');
         });
 
+        // #2224: health type re-wired from standalone roosync_health_view
+        it('roosync_inventory should support type="health"', () => {
+            const types = (roosyncInventoryDefinition.inputSchema.properties.type as Record<string, unknown>).enum as string[];
+            expect(types).toContain('health');
+            // Also verify format and includeEnvCheck params for health
+            const props = roosyncInventoryDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('format');
+            expect(props).toHaveProperty('includeEnvCheck');
+        });
+
         it('export_config should require action', () => {
             expect(exportConfigDefinition.inputSchema.required).toContain('action');
         });

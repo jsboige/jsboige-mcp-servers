@@ -323,6 +323,8 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     expect(names).not.toContain('roosync_claim');
     expect(names).not.toContain('roosync_decision');
     expect(names).not.toContain('roosync_list_diffs');
+    // #2224: health_view rewired as inventory(type: "health"), not standalone
+    expect(names).not.toContain('roosync_health_view');
   });
 
   it('canonical tools should not be deprecated', () => {
