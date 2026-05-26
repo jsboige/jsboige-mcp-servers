@@ -1323,10 +1323,13 @@ export class RooStorageDetector {
         if (!existsSync(uiMessagesPath)) {
           return undefined;
         }
+        const stat = await fs.stat(uiMessagesPath);
+        if (stat.size > RooStorageDetector.MAX_CONVERSATION_FILE_SIZE) {
+          return undefined;
+        }
 
         content = await fs.readFile(uiMessagesPath, 'utf-8');
 
-        // Nettoyage BOM
         if (content.charCodeAt(0) === 0xFEFF) {
           content = content.slice(1);
         }
@@ -1392,6 +1395,11 @@ export class RooStorageDetector {
         if (!existsSync(filePath)) {
           return;
         }
+        const stat = await fs.stat(filePath);
+        if (stat.size > RooStorageDetector.MAX_CONVERSATION_FILE_SIZE) {
+          return;
+        }
+
 
         content = await fs.readFile(filePath, 'utf-8');
 
@@ -1660,6 +1668,8 @@ export class RooStorageDetector {
                 content = preloadedContent;
             } else {
                 if (!existsSync(filePath)) return [];
+                const stat = await fs.stat(filePath);
+                if (stat.size > RooStorageDetector.MAX_CONVERSATION_FILE_SIZE) return [];
                 content = await fs.readFile(filePath, 'utf-8');
                 if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
             }
