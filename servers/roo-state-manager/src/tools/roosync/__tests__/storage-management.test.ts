@@ -18,6 +18,7 @@ import { roosyncStorageManagement, type StorageManagementArgs } from '../storage
 import { HeartbeatServiceError } from '../../../services/roosync/HeartbeatService.js';
 import * as storageInfoModule from '../../storage/storage-info.js';
 import * as maintenanceModule from '../../maintenance/maintenance.js';
+import { getExtensionId } from '../../../utils/extension-paths.js';
 
 // Mock des modules
 vi.mock('../../storage/storage-info.js');
@@ -35,7 +36,7 @@ describe('roosyncStorageManagement', () => {
     describe('action: storage - storageAction: detect', () => {
         test('should detect storage successfully', async () => {
             const mockDetectResult = {
-                tasksDir: 'C:\\Users\\Test\\AppData\\Roaming\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\tasks',
+                tasksDir: `C:\\Users\\Test\\AppData\\Roaming\\Code\\User\\globalStorage\\${getExtensionId()}\\tasks`,
                 exists: true,
                 taskCount: 42
             };
