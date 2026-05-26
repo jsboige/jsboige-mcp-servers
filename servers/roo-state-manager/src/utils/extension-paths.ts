@@ -76,8 +76,4 @@ export function getSettingsPath(): string {
 	return path.join(getGlobalStoragePath(), 'settings');
 }
 
-/** Path: `%APPDATA%/Code/User/globalStorage/state.vscdb` */
-export function getVscdbPath(): string {
-	const appdata = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-	return path.join(appdata, 'Code', 'User', 'globalStorage', 'state.vscdb');
-}
+
