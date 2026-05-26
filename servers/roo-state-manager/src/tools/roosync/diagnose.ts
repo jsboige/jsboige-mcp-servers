@@ -69,6 +69,9 @@ export const DiagnoseArgsSchema = z.object({
     .describe('Machine ID (action: lifecycle, default: hostname)'),
   reason: z.string().optional()
     .describe('Reason for lifecycle transition (action: lifecycle)')
+}).refine(data => !(data.action === 'lifecycle' && !data.state), {
+  message: 'state is required when action is "lifecycle"',
+  path: ['state'],
 });
 
 export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
