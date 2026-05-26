@@ -498,8 +498,8 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
                         })),
                     },
                     limit: 1000,
-                    with_payload: false,
                     with_vector: false,
+                    with_payload: { include: ['contentHash'] },
                 });
 
                 for (const point of results.points) {
@@ -517,8 +517,8 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
                         },
                         limit: 1000,
                         offset: results.next_page_offset,
-                        with_payload: false,
                         with_vector: false,
+                        with_payload: { include: ['contentHash'] },
                     });
                     for (const point of nextResults.points) {
                         const hash = (point.payload as any)?.contentHash as string | undefined;
@@ -685,8 +685,8 @@ async function preflightDedupByContentHash(
                         })),
                     },
                     limit: 1000,
-                    with_payload: false,
                     with_vector: false,
+                    with_payload: { include: ['contentHash'] },
                 });
 
                 for (const point of results.points) {
@@ -704,8 +704,8 @@ async function preflightDedupByContentHash(
                         },
                         limit: 1000,
                         offset: results.next_page_offset,
-                        with_payload: false,
                         with_vector: false,
+                        with_payload: { include: ['contentHash'] },
                     });
                     for (const point of nextResults.points) {
                         const hash = (point.payload as any)?.contentHash as string | undefined;
