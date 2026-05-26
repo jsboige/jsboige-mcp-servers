@@ -18,6 +18,9 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, rmSync, mkdirSync, writeFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { handleTouchMcpSettings } from '../server-helpers.js';
+import { getExtensionId } from '../extension-paths.js';
+
+const EXTENSION_ID = getExtensionId();
 
 describe('handleTouchMcpSettings (integration)', () => {
   const originalAppdata = process.env.APPDATA;
@@ -26,11 +29,11 @@ describe('handleTouchMcpSettings (integration)', () => {
 
   beforeEach(() => {
     // Créer la structure de test
-    // %APPDATA%/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json
+    // %APPDATA%/Code/User/globalStorage/<extensionId>/settings/mcp_settings.json
     const codeDir = join(testSettingsBase, 'Code');
     const userDir = join(codeDir, 'User');
     const globalStorageDir = join(userDir, 'globalStorage');
-    const rooDir = join(globalStorageDir, 'rooveterinaryinc.roo-cline');
+    const rooDir = join(globalStorageDir, EXTENSION_ID);
     const settingsDir = join(rooDir, 'settings');
 
     for (const dir of [testSettingsBase, codeDir, userDir, globalStorageDir, rooDir, settingsDir]) {
@@ -63,7 +66,7 @@ describe('handleTouchMcpSettings (integration)', () => {
 
   describe('basic functionality', () => {
     test('should touch the mcp_settings.json file successfully', async () => {
-      const settingsPath = join(testSettingsBase, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+      const settingsPath = join(testSettingsBase, 'Code', 'User', 'globalStorage', EXTENSION_ID, 'settings', 'mcp_settings.json');
 
       // Obtenir le timestamp avant
       const statsBefore = statSync(settingsPath);
@@ -97,7 +100,7 @@ describe('handleTouchMcpSettings (integration)', () => {
 
     test('should return error when mcp_settings.json does not exist', async () => {
       // Supprimer le fichier créé par beforeEach
-      const settingsDir = join(testSettingsBase, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings');
+      const settingsDir = join(testSettingsBase, 'Code', 'User', 'globalStorage', EXTENSION_ID, 'settings');
       const settingsPath = join(settingsDir, 'mcp_settings.json');
       if (existsSync(settingsPath)) {
         rmSync(settingsPath);
@@ -153,7 +156,7 @@ describe('handleTouchMcpSettings (integration)', () => {
       expect(parsed.path).toContain('Code');
       expect(parsed.path).toContain('User');
       expect(parsed.path).toContain('globalStorage');
-      expect(parsed.path).toContain('rooveterinaryinc.roo-cline');
+      expect(parsed.path).toContain(EXTENSION_ID);
       expect(parsed.path).toContain('settings');
       expect(parsed.path).toContain('mcp_settings.json');
     });
@@ -196,7 +199,7 @@ describe('handleTouchMcpSettings (integration)', () => {
   describe('error handling', () => {
     test('should return isError=true when file not found', async () => {
       // Supprimer le fichier
-      const settingsPath = join(testSettingsBase, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+      const settingsPath = join(testSettingsBase, 'Code', 'User', 'globalStorage', EXTENSION_ID, 'settings', 'mcp_settings.json');
       if (existsSync(settingsPath)) {
         rmSync(settingsPath);
       }
@@ -208,7 +211,7 @@ describe('handleTouchMcpSettings (integration)', () => {
 
     test('should return structured error response', async () => {
       // Supprimer le fichier
-      const settingsPath = join(testSettingsBase, 'Code', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'settings', 'mcp_settings.json');
+      const settingsPath = join(testSettingsBase, 'Code', 'User', 'globalStorage', EXTENSION_ID, 'settings', 'mcp_settings.json');
       if (existsSync(settingsPath)) {
         rmSync(settingsPath);
       }
