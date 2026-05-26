@@ -20,7 +20,7 @@ const logger = createLogger('PresenceManager');
  */
 export interface PresenceData {
   id: string;
-  status: 'online' | 'offline' | 'conflict';
+  status: 'online' | 'idle' | 'unknown' | 'offline' | 'conflict';
   lastSeen: string;
   version: string;
   mode: string;
@@ -63,10 +63,11 @@ export class PresenceManager {
   /**
    * Map HeartbeatService status to PresenceData status
    */
+  // #2121 Phase 2: Align with ADR 008 — no 'offline' status, only online/idle/unknown.
   private mapStatus(s: 'online' | 'idle' | 'unknown'): PresenceData['status'] {
     if (s === 'online') return 'online';
-    if (s === 'idle') return 'offline';
-    return 'offline';
+    if (s === 'idle') return 'idle';
+    return 'unknown';
   }
 
   /**

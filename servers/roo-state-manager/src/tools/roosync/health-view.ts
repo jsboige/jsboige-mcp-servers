@@ -12,10 +12,10 @@
 import { z } from 'zod';
 import { getServerCapabilities } from '../../utils/server-capabilities.js';
 import { createLogger } from '../../utils/logger.js';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { readdirSync, readFileSync } from 'fs';
+import { extractMachineActivity } from '../../utils/dashboard-activity.js';
 import * as os from 'os';
 
 const logger = createLogger('HealthView');
@@ -95,42 +95,58 @@ async function collectSystemHealth(): Promise<{
   totalCount: number;
   flags: string[];
 }> {
+  // #2121 Phase 2: Dashboard-derived presence (ADR 008 Phase 4).
+  // Previously read ghost heartbeat/ files (pre-ADR 008, no longer written).
+  // Now parses dashboard content — the single source of cross-machine presence truth.
   const sharedPath = getSharedStatePath();
   let onlineCount = 0;
   let unknownCount = 0;
   const flags: string[] = [];
+  const now = Date.now();
+  const TWO_HOURS = 2 * 60 * 60 * 1000;
+  const ONE_DAY = 24 * 60 * 60 * 1000;
 
   try {
-    const heartbeatDir = join(sharedPath, 'heartbeat');
-    if (existsSync(heartbeatDir)) {
-      const files = readdirSync(heartbeatDir).filter(f => f.endsWith('.json'));
-      const now = Date.now();
-      const twoHoursAgo = now - 2 * 60 * 60 * 1000;
-      const oneDayAgo = now - 24 * 60 * 60 * 1000;
+    const dashboardsDir = join(sharedPath, 'dashboards');
+    if (!existsSync(dashboardsDir)) {
+      return { onlineCount: 0, unknownCount: 0, totalCount: 0, flags: ['DASHBOARDS_DIR_MISSING'] };
+    }
 
-      for (const file of files) {
-        const machineId = file.replace('.json', '').toLowerCase();
-        if (!isKnownMachine(machineId)) continue;
+    const dashboardFiles = readdirSync(dashboardsDir).filter(f => f.endsWith('.md'));
+    const contents: string[] = [];
+    for (const file of dashboardFiles) {
+      try {
+        contents.push(readFileSync(join(dashboardsDir, file), 'utf-8'));
+      } catch { /* skip unreadable */ }
+    }
 
-        try {
-          const data = JSON.parse(readFileSync(join(heartbeatDir, file), 'utf-8'));
-          const lastSeen = data.lastHeartbeat ? new Date(data.lastHeartbeat).getTime() : 0;
-          if (lastSeen > twoHoursAgo) {
-            onlineCount++;
-          } else {
-            unknownCount++;
-            if (lastSeen > 0 && lastSeen < oneDayAgo) {
-              flags.push(`SYNC_STALE:${machineId}`);
-            }
-          }
-        } catch {
-          unknownCount++;
+    const activity = extractMachineActivity(contents);
+    for (const [machineId, lastSeenStr] of activity) {
+      const id = machineId.toLowerCase();
+      if (!isKnownMachine(id)) continue;
+
+      const lastSeen = new Date(lastSeenStr).getTime();
+      if (now - lastSeen < TWO_HOURS) {
+        onlineCount++;
+      } else {
+        unknownCount++;
+        if (now - lastSeen > ONE_DAY) {
+          flags.push(`SYNC_STALE:${id}`);
         }
       }
     }
+
+    // Flag machines in registry but absent from dashboards
+    const KNOWN_MACHINES = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
+    for (const m of KNOWN_MACHINES) {
+      if (!activity.has(m)) {
+        flags.push(`SYNC_STALE:${m}`);
+        unknownCount++;
+      }
+    }
   } catch (error) {
-    flags.push('HEALTH_CHECK_FAILED:heartbeat_read_error');
-    logger.warn('Failed to read heartbeat data', { error: (error as Error).message });
+    flags.push('HEALTH_CHECK_FAILED:dashboard_read_error');
+    logger.warn('Failed to derive presence from dashboards', { error: (error as Error).message });
   }
 
   return {
