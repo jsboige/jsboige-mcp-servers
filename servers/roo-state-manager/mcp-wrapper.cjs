@@ -173,9 +173,65 @@ process.stdin.on('data', (data) => {
     }
 });
 
-process.stdin.on('end', () => {
-    server.stdin.end();
-});
+// --- Orphan-leak fix (incident 2026-05-26, 73 orphans on ai-01) ---
+// Windows has no parent-death signal (no SIGHUP-on-parent-death, no POSIX
+// process groups). When the MCP client (Claude Code / Roo) goes away, its
+// only signal to us is stdin EOF. We previously called only `server.stdin.end()`
+// and waited indefinitely on `server.on('exit')` — but the server's event loop
+// is pinned by `qdrantIndexInterval` + `_gdriveHealthInterval` + Qdrant client,
+// so it never exited. Result: orphan processes accumulate (73 on ai-01,
+// 23.9 GB RAM, 73 parallel embedding loops hammering embeddings.myia.io).
+//
+// Fix: cascade SIGTERM/SIGKILL with timers and a final force-exit; plus a
+// parent-PID liveness watchdog as a belt-and-braces against stdin-EOF being
+// lost through the cmd.exe shim or detached stdio.
+let killCascadeArmed = false;
+function forceKillServerCascade(reason) {
+    if (killCascadeArmed) return;
+    killCascadeArmed = true;
+    console.error(`[MCP-WRAPPER] 🛑 ${reason} — initiating server kill cascade`);
+    try { server.stdin.end(); } catch {}
+    setTimeout(() => {
+        try {
+            console.error('[MCP-WRAPPER] kill-cascade T+5s: SIGTERM');
+            server.kill('SIGTERM');
+        } catch {}
+    }, 5000).unref();
+    setTimeout(() => {
+        try {
+            console.error('[MCP-WRAPPER] kill-cascade T+10s: SIGKILL');
+            server.kill('SIGKILL');
+        } catch {}
+    }, 10000).unref();
+    setTimeout(() => {
+        console.error('[MCP-WRAPPER] kill-cascade T+12s: wrapper force-exit');
+        process.exit(0);
+    }, 12000).unref();
+}
+
+process.stdin.on('end', () => forceKillServerCascade('stdin EOF'));
+process.stdin.on('close', () => forceKillServerCascade('stdin closed'));
+
+// Parent-PID liveness watchdog. Windows doesn't notify children when the
+// parent dies, so we poll every 30s with `process.kill(ppid, 0)` (no-signal
+// liveness probe). If the parent is gone (ESRCH), our wrapper has become an
+// orphan — trigger the kill cascade.
+const initialParentPid = process.ppid;
+if (initialParentPid && initialParentPid !== 0) {
+    const parentWatchdog = setInterval(() => {
+        try {
+            process.kill(initialParentPid, 0);
+        } catch (e) {
+            if (e && e.code === 'ESRCH') {
+                clearInterval(parentWatchdog);
+                forceKillServerCascade(`parent PID ${initialParentPid} no longer exists`);
+            }
+            // EPERM = parent exists but we can't signal it (still alive) — keep watching.
+        }
+    }, 30_000);
+    parentWatchdog.unref();
+    console.error(`[MCP-WRAPPER] 👁  Parent-PID liveness watchdog armed (ppid=${initialParentPid}, 30s poll)`);
+}
 
 // --- stdout: process server → client messages ---
 // Returns string to forward, or null to suppress

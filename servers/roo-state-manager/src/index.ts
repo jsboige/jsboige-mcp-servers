@@ -620,6 +620,20 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
 
+// Orphan-leak fix (incident 2026-05-26, 73 orphans on ai-01 hammering embeddings):
+// Windows has no parent-death signal, and the signal handlers above never fire
+// when the MCP client (Claude Code / Roo) just disappears. The only reliable
+// notification is stdin EOF / close from our wrapper (which itself watches for
+// parent death). Without these listeners, qdrantIndexInterval + _gdriveHealthInterval
+// + Qdrant client pin the event loop forever → the server becomes an orphan
+// that keeps emitting embedding requests against embeddings.myia.io.
+process.stdin.on('end', () => {
+    void gracefulShutdown('stdin-end');
+});
+process.stdin.on('close', () => {
+    void gracefulShutdown('stdin-close');
+});
+
 // #1918: Periodic GDrive health check — when sharedPath is degraded,
 // probe every 30s and recover when GDrive comes back online.
 let _gdriveHealthInterval: ReturnType<typeof setInterval> | null = null;
