@@ -99,6 +99,7 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_refresh_dashboard: ['sharedPath'],
 	roosync_get_status: ['sharedPath'],
 	roosync_inventory: ['sharedPath'],
+	roosync_health_view: ['sharedPath'], // #2224: backward-compat redirect → inventory(type: "health")
 	roosync_config: ['sharedPath'],
 	roosync_compare_config: ['sharedPath'],
 	// [REMOVED CONS-8 #603] roosync_list_diffs, roosync_decision, roosync_init — dead tools
@@ -499,6 +500,30 @@ export function registerCallToolHandler(
                   const invResult = await m.inventoryTool.execute(redirectArgs, {} as any);
                   if (invResult.success) {
                       result = { content: [{ type: 'text', text: JSON.stringify(invResult.data, null, 2) }] };
+                  } else {
+                      result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
+                  }
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          }
+          // #2224: roosync_health_view standalone → redirect to roosync_inventory(type: "health")
+          case 'roosync_health_view': {
+              try {
+                  const m = await import('./roosync/inventory.js');
+                  const legacyArgs = args as Record<string, unknown>;
+                  const redirectArgs = InventoryArgsSchema.parse({
+                      type: 'health',
+                      machineId: legacyArgs.machineId,
+                      includeEnvCheck: legacyArgs.includeEnvCheck,
+                      format: legacyArgs.format,
+                  });
+                  const invResult = await m.inventoryTool.execute(redirectArgs, {} as any);
+                  if (invResult.success) {
+                      const data = invResult.data as any;
+                      const text = data?.markdownContent ?? JSON.stringify(data, null, 2);
+                      result = { content: [{ type: 'text', text }] };
                   } else {
                       result = { content: [{ type: 'text', text: `Error: ${invResult.error?.message}` }], isError: true };
                   }

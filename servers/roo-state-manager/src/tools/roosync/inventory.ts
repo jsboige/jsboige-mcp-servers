@@ -23,8 +23,8 @@ import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.j
  * Schema de validation pour roosync_inventory
  */
 export const InventoryArgsSchema = z.object({
-  type: z.enum(['machine', 'heartbeat', 'all', 'machines', 'status'])
-    .describe('Type d\'inventaire à récupérer. "machines" = unknown/idle machines. "status" = compact system snapshot (fused from roosync_get_status)'),
+  type: z.enum(['machine', 'heartbeat', 'all', 'machines', 'status', 'health'])
+    .describe('Type d\'inventaire à récupérer. "machines" = unknown/idle machines. "status" = compact system snapshot. "health" = unified cluster health view with score (#2224)'),
   machineId: z.string().optional()
     .describe('Identifiant optionnel de la machine (défaut: hostname)'),
   includeHeartbeats: z.boolean().optional()
@@ -40,7 +40,12 @@ export const InventoryArgsSchema = z.object({
   detail: z.enum(['compact', 'full']).optional()
     .describe('Niveau de détail pour type="status". "full" ajoute claims + pipeline stages'),
   resetCache: z.boolean().optional()
-    .describe('Forcer la réinitialisation du cache (type="status" uniquement)')
+    .describe('Forcer la réinitialisation du cache (type="status" uniquement)'),
+  // #2224: health view params (fused from roosync_health_view standalone)
+  format: z.enum(['json', 'markdown']).optional()
+    .describe('Output format for type="health". Default: json'),
+  includeEnvCheck: z.boolean().optional()
+    .describe('Include env var checks in type="health". Default: true')
 });
 
 export type InventoryArgs = z.infer<typeof InventoryArgsSchema>;
@@ -154,6 +159,35 @@ export const inventoryTool: UnifiedToolContract = {
         return {
           success: true,
           data: statusResult,
+          metrics: {
+            executionTime: Date.now() - startTime,
+            processingLevel: ProcessingLevel.IMMEDIATE
+          }
+        };
+      }
+
+      // #2224: type="health" — fused from roosync_health_view standalone (pattern #512 arbitrage A)
+      if (type === 'health') {
+        const { roosyncHealthView, formatMarkdown } = await import('./health-view.js');
+        const healthResult = await roosyncHealthView({
+          machineId,
+          includeEnvCheck: input.includeEnvCheck,
+          format: input.format,
+        });
+        // If markdown format requested, format and return as text
+        if (input.format === 'markdown') {
+          return {
+            success: true,
+            data: { markdownContent: formatMarkdown(healthResult), retrievedAt },
+            metrics: {
+              executionTime: Date.now() - startTime,
+              processingLevel: ProcessingLevel.IMMEDIATE
+            }
+          };
+        }
+        return {
+          success: true,
+          data: healthResult,
           metrics: {
             executionTime: Date.now() - startTime,
             processingLevel: ProcessingLevel.IMMEDIATE
