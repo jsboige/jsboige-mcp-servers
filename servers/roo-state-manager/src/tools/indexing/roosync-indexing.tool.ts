@@ -776,6 +776,7 @@ export async function handleRooSyncIndexing(
                 const toolCounts: Record<string, number> = {};
                 const weeklyBuckets: Record<string, Record<string, number>> = {};
                 const errorCounts: Record<string, number> = {};
+                const retryCounts: Record<string, number> = {};
                 const sourceCounts: Record<string, number> = {};
                 let totalCalls = 0;
                 let filesScanned = 0;
@@ -802,22 +803,52 @@ export async function handleRooSyncIndexing(
                             messages = Array.isArray(data) ? data : (data?.messages || []);
                         } catch { continue; }
 
+                        // Per-conversation tracking for error matching and retry detection
+                        const localIdMap = new Map<string, string>();
+                        let lastToolName = '';
+
                         for (const msg of messages) {
-                            if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+                            if (!Array.isArray(msg.content)) continue;
                             const ts = msg.ts ? new Date(msg.ts) : null;
-                            if (ts && (ts < startDate || ts > endDate)) continue;
 
-                            for (const block of msg.content) {
-                                if (block.type === 'tool_use' && block.name) {
-                                    totalCalls++;
-                                    const toolName = block.name;
-                                    toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
-                                    sourceCounts['roo'] = (sourceCounts['roo'] || 0) + 1;
+                            if (msg.role === 'assistant') {
+                                if (ts && (ts < startDate || ts > endDate)) continue;
 
-                                    if (ts) {
-                                        const weekKey = getISOWeek(ts.toISOString());
-                                        if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
-                                        weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                for (const block of msg.content) {
+                                    if (block.type === 'tool_use' && block.name) {
+                                        totalCalls++;
+                                        const toolName = block.name;
+                                        toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                                        sourceCounts['roo'] = (sourceCounts['roo'] || 0) + 1;
+
+                                        // Track tool_use_id → tool_name for error matching
+                                        if (block.id) localIdMap.set(block.id, toolName);
+
+                                        // Retry detection: consecutive same tool in same conversation
+                                        if (lastToolName === toolName) {
+                                            retryCounts[toolName] = (retryCounts[toolName] || 0) + 1;
+                                        }
+                                        lastToolName = toolName;
+
+                                        if (ts) {
+                                            const weekKey = getISOWeek(ts.toISOString());
+                                            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
+                                            weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                        }
+                                    }
+                                }
+                            } else if (msg.role === 'user') {
+                                // Scan tool_result blocks for error detection
+                                for (const block of msg.content) {
+                                    if (block.type === 'tool_result') {
+                                        const toolUseId = block.tool_use_id;
+                                        const isError = block.is_error === true;
+                                        if (toolUseId && isError) {
+                                            const toolName = localIdMap.get(toolUseId);
+                                            if (toolName) {
+                                                errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -843,6 +874,10 @@ export async function handleRooSyncIndexing(
                         const jsonlPath = path.join(projPath, jsonlFile);
                         filesScanned++;
 
+                        // Per-session tracking for error matching and retry detection
+                        const localIdMap = new Map<string, string>();
+                        let lastToolName = '';
+
                         // Read JSONL line-by-line to handle large files
                         const { createReadStream } = await import('fs');
                         const readline = await import('readline');
@@ -855,25 +890,49 @@ export async function handleRooSyncIndexing(
                             try { entry = JSON.parse(trimmed); } catch { continue; }
 
                             // Claude Code JSONL: each line has { type, message, timestamp, ... }
-                            // The timestamp is on the top-level entry, NOT inside message.
                             const message = entry.message || entry;
-                            if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
 
-                            const tsRaw = entry.timestamp || message.timestamp;
-                            const ts = tsRaw ? new Date(tsRaw) : null;
-                            if (ts && (ts < startDate || ts > endDate)) continue;
+                            if (message.role === 'assistant' && Array.isArray(message.content)) {
+                                const tsRaw = entry.timestamp || message.timestamp;
+                                const ts = tsRaw ? new Date(tsRaw) : null;
+                                if (ts && (ts < startDate || ts > endDate)) continue;
 
-                            for (const block of message.content) {
-                                if (block.type === 'tool_use' && block.name) {
-                                    totalCalls++;
-                                    const toolName = block.name;
-                                    toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
-                                    sourceCounts['claude-code'] = (sourceCounts['claude-code'] || 0) + 1;
+                                for (const block of message.content) {
+                                    if (block.type === 'tool_use' && block.name) {
+                                        totalCalls++;
+                                        const toolName = block.name;
+                                        toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                                        sourceCounts['claude-code'] = (sourceCounts['claude-code'] || 0) + 1;
 
-                                    if (ts) {
-                                        const weekKey = getISOWeek(ts.toISOString());
-                                        if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
-                                        weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                        // Track tool_use_id → tool_name for error matching
+                                        const toolUseId = block.id || block.toolUse?.id;
+                                        if (toolUseId) localIdMap.set(toolUseId, toolName);
+
+                                        // Retry detection
+                                        if (lastToolName === toolName) {
+                                            retryCounts[toolName] = (retryCounts[toolName] || 0) + 1;
+                                        }
+                                        lastToolName = toolName;
+
+                                        if (ts) {
+                                            const weekKey = getISOWeek(ts.toISOString());
+                                            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
+                                            weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
+                                        }
+                                    }
+                                }
+                            } else if (message.role === 'user' && Array.isArray(message.content)) {
+                                // Scan tool_result blocks for error detection
+                                for (const block of message.content) {
+                                    if (block.type === 'tool_result') {
+                                        const toolUseId = block.tool_use_id || block.toolResult?.tool_use_id;
+                                        const isError = block.is_error === true || block.toolResult?.is_error === true;
+                                        if (toolUseId && isError) {
+                                            const toolName = localIdMap.get(toolUseId);
+                                            if (toolName) {
+                                                errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -888,7 +947,9 @@ export async function handleRooSyncIndexing(
                         tool_name: name,
                         calls: count,
                         errors: errorCounts[name] || 0,
-                        error_rate: count > 0 ? +(errorCounts[name] / count * 100).toFixed(1) : 0,
+                        error_rate: count > 0 ? +((errorCounts[name] || 0) / count * 100).toFixed(1) : 0,
+                        retries: retryCounts[name] || 0,
+                        retry_rate: count > 0 ? +((retryCounts[name] || 0) / count * 100).toFixed(1) : 0,
                     }));
 
                 // Sort weeks chronologically
@@ -921,7 +982,7 @@ export async function handleRooSyncIndexing(
                             source_distribution: sourceCounts,
                             tools: sortedTools,
                             weekly_trend: sortedWeeks,
-                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)})`,
+                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}). Errors: ${Object.values(errorCounts).reduce((s, c) => s + c, 0)}, Retries: ${Object.values(retryCounts).reduce((s, c) => s + c, 0)}`,
                         }, null, 2)
                     }]
                 };
