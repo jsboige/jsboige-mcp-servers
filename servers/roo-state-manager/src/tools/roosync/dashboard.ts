@@ -135,24 +135,22 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
+// 2026-05-26: thinking mode disabled at every call site (see chat_template_kwargs
+// below). Per user mandate "passe la condensation en non thinking, vue la situation
+// catastrophique du cluster ce sera un moindre mal" — Qwen3.6 thinking-loop hang
+// was bringing the whole dashboard channel down during the orphan-leak crisis.
+// With thinking off, generation is direct markdown output (~4000 tokens), well
+// under the gateway; the 12000 cap (sized to the 600s IIS → vLLM gateway at
+// ~37 tok/s) is retained as a runaway-guard if the model ever flips back into
+// a long output.
+//
+// History (kept for context — apply *with* enable_thinking=false now):
 // 2026-05-23: regression fix. Commit 9beb7e93 (2026-04-20) bumped this 10000 →
 // 30000 to "give Qwen3.6 thinking room". That was the bug behind "la condensation
 // n'aboutit plus d'elle-même quand on poste": qwen3.6 has a known thinking-loop
 // repetition failure mode (vLLM+Qwen) where a runaway generation walks all the way
-// to max_tokens. At ~37 tok/s, 30000 tokens = ~810s of generation, which exceeds
-// the ~600s reverse-proxy (IIS → vLLM) gateway timeout → the request dies with
-// HTTP 502 mid-thinking, the SDK retries (each ~600s), and after 3 failures the
-// circuit breaker falls back to truncation. The request never "aboutit".
-//
-// Bounding generation at 12000 tokens caps a runaway at ~325s — comfortably UNDER
-// the gateway — so even a runaway returns cleanly (finish_reason=length, null
-// content) and is retried, succeeding stochastically. Legitimate condensations use
-// 3500-4400 total tokens, so 12000 leaves ~3x headroom for a real thinking phase
-// plus the markdown output. Latency is acceptable (user mandate: "qu'elle prenne
-// longtemps ne devrait pas être un problème, mais elle doit aboutir"); completion
-// under the gateway is the requirement. NOT a blind revert to 10000: 12000 is sized
-// to the gateway constraint, leaving the status call (largest legit output ~4000
-// tokens + thinking) genuine room.
+// to max_tokens. 30000 tokens × ~37 tok/s = ~810s, > 600s gateway = HTTP 502.
+// Bounding at 12000 caps a runaway at ~325s, comfortably under the gateway.
 const CONDENSE_LLM_MAX_TOKENS = 12000;
 
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
@@ -926,7 +924,13 @@ FORMAT :
         // before the ~600s reverse-proxy gateway timeout (502) — lets condensation
         // actually complete instead of dying mid-thinking and falling to truncation.
         max_tokens: CONDENSE_LLM_MAX_TOKENS,
-        temperature: 0.3
+        temperature: 0.3,
+        // Disable Qwen3.6 thinking mode (user mandate 2026-05-26): thinking-loop
+        // runaway repetition causes null content (finish_reason=length) and chains
+        // of retries that hang the dashboard append. Non-thinking trades nuance for
+        // reliability — "moindre mal" while the cluster is in crisis.
+        // @ts-expect-error vLLM-specific OpenAI-compatible extension
+        chat_template_kwargs: { enable_thinking: false }
       }, {
         timeout: timeoutMs
       });
@@ -1122,7 +1126,10 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         ],
         // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
         max_tokens: CONDENSE_LLM_MAX_TOKENS,
-        temperature: 0.3
+        temperature: 0.3,
+        // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
+        // @ts-expect-error vLLM-specific OpenAI-compatible extension
+        chat_template_kwargs: { enable_thinking: false }
       }, {
         timeout: timeoutMs
       });
@@ -1230,7 +1237,10 @@ RÈGLES :
       ],
       // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
       max_tokens: CONDENSE_LLM_MAX_TOKENS,
-      temperature: 0.3
+      temperature: 0.3,
+      // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
+      // @ts-expect-error vLLM-specific OpenAI-compatible extension
+      chat_template_kwargs: { enable_thinking: false }
     }, {
       timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
     });
