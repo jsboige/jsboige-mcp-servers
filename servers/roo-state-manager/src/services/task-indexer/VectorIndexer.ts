@@ -653,6 +653,88 @@ async function preflightDedupByChunkId(
     }
 }
 
+/**
+ * #2369: Pre-flight contentHash dedup BEFORE embedding computation.
+ * Handles the case where split sub-chunks have new UUIDs (bypassing chunk_id preflight)
+ * but their content already exists in Qdrant. Without this, ~90% of embeddings are
+ * computed needlessly only to be discarded by post-index dedupByContentHash.
+ * Reuses the same scroll-based contentHash query as dedupByContentHash but operates
+ * on sub-chunks (before embedding) instead of PointStructs (after embedding).
+ */
+async function preflightDedupByContentHash(
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>
+): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
+    if (subChunks.length === 0) return subChunks;
+
+    const contentHashes = subChunks.map(sc => sc.contentHash);
+    const uniqueHashes = [...new Set(contentHashes)];
+    const existingHashes = new Set<string>();
+
+    try {
+        const qdrant = getQdrantClient();
+        const BATCH_SIZE = 100;
+
+        for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
+            const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
+            try {
+                const results = await qdrant.scroll(COLLECTION_NAME, {
+                    filter: {
+                        should: batch.map(hash => ({
+                            key: 'contentHash',
+                            match: { value: hash },
+                        })),
+                    },
+                    limit: 1000,
+                    with_payload: false,
+                    with_vector: false,
+                });
+
+                for (const point of results.points) {
+                    const hash = (point.payload as any)?.contentHash as string | undefined;
+                    if (hash) existingHashes.add(hash);
+                }
+
+                while (results.next_page_offset) {
+                    const nextResults = await qdrant.scroll(COLLECTION_NAME, {
+                        filter: {
+                            should: batch.map(hash => ({
+                                key: 'contentHash',
+                                match: { value: hash },
+                            })),
+                        },
+                        limit: 1000,
+                        offset: results.next_page_offset,
+                        with_payload: false,
+                        with_vector: false,
+                    });
+                    for (const point of nextResults.points) {
+                        const hash = (point.payload as any)?.contentHash as string | undefined;
+                        if (hash) existingHashes.add(hash);
+                    }
+                    if (!nextResults.next_page_offset) break;
+                }
+            } catch (scrollError: any) {
+                console.warn(`[#2369] Preflight contentHash scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
+                // Non-blocking: on failure, keep chunks (will be caught by post-index dedup)
+            }
+        }
+
+        if (existingHashes.size === 0) return subChunks;
+
+        const before = subChunks.length;
+        const filtered = subChunks.filter(sc => !existingHashes.has(sc.contentHash));
+        const skipped = before - filtered.length;
+        _metrics.embeddings_preflight_skipped_total += skipped;
+        if (skipped > 0) {
+            console.log(`[#2369] Preflight contentHash dedup: ${skipped}/${before} sub-chunks already in Qdrant — skipped before embedding`);
+        }
+        return filtered;
+    } catch (error: any) {
+        console.warn(`[#2369] Preflight contentHash dedup failed (non-blocking): ${error?.message || error}`);
+        return subChunks;
+    }
+}
+
 // #2194: Split sub-chunks into batches respecting size and token limits
 function buildBatches(
     entries: Array<{ chunk: Chunk; contentHash: string }>,
@@ -843,9 +925,15 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             }
         }
 
-        // Phase B: #2018 Phase 2 — Pre-flight dedup (skip already-indexed chunks BEFORE embeddings)
+        // Phase B: #2018 Phase 2 — Pre-flight dedup by chunk_id (skip already-indexed chunks BEFORE embeddings)
         const preflight = await preflightDedupByChunkId(allSubChunks);
-        const subChunksToEmbed = preflight.subChunks;
+        let subChunksToEmbed = preflight.subChunks;
+
+        // Phase B2: #2369 — Pre-flight dedup by contentHash (catches split sub-chunks
+        // with new UUIDs that bypassed chunk_id preflight but whose content already exists)
+        if (subChunksToEmbed.length > 0) {
+            subChunksToEmbed = await preflightDedupByContentHash(subChunksToEmbed);
+        }
 
         // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
         // set is unreliable — it most likely contains chunks already indexed. Embedding
