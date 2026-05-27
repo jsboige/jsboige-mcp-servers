@@ -265,10 +265,10 @@
     {
       "_comment": "=== Core utility agents ===",
       "id": "analyst",
-      "description": "General analyst with web search and memory. Local: Qwen3.6 35B MoE (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1 (45.3/113 coding)",
+      "description": "General analyst with web search, document conversion, and memory. Local: Qwen3.6 35B MoE (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1 (45.3/113 coding)",
       "model": "glm-5.1",
-      "system_prompt": "You are a helpful analyst with web search and memory capabilities. Use them when needed. Always respond in the same language as the user.",
-      "mcps": ["searxng", "playwright"],
+      "system_prompt": "You are a helpful analyst with web search, browsing, and document conversion capabilities. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
+      "mcps": ["searxng", "playwright", "markitdown"],
       "memory": {
         "enabled": true,
         "collection": "analyst-memory"
@@ -284,10 +284,10 @@
     },
     {
       "id": "vision-local",
-      "description": "Fast local vision+thinking with web context (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis",
+      "description": "Fast local vision+thinking with web context and document conversion (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis",
       "model": "qwen3.6-35b-a3b",
-      "system_prompt": "You are a vision analysis assistant with web search and browsing capabilities. Analyze images carefully, describe what you see, and search for context when needed. Be concise but thorough.",
-      "mcps": ["searxng", "playwright"],
+      "system_prompt": "You are a vision analysis assistant with web search, browsing, and document conversion capabilities. Analyze images carefully, describe what you see, and search for context when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Be concise but thorough.",
+      "mcps": ["searxng", "playwright", "markitdown"],
       "memory": { "enabled": false }
     },
     {
