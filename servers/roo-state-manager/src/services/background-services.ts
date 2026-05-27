@@ -602,7 +602,7 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             state.lastSkeletonRefreshAt = Date.now();
             // Once index is loaded, discover Claude sessions too
             return loadClaudeCodeSessions(state.conversationCache);
-        }).then(() => {
+        }).then(async () => {
             // #1747 sub-issue B: Log tier summary after all background loading completes
             const instance = SkeletonCacheService.getInstance();
             const stats = instance.getCacheTierStats();
@@ -612,6 +612,22 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
                 `Tier3(Archives)=${stats.config.enableArchiveTier ? stats.tier3_archives : 'OFF'} ` +
                 `— Total: ${stats.total}`
             );
+
+            // #2165 ARCHITECTURE NOTE:
+            // Both loadSkeletonsFromDisk and initializeQdrantIndexingService are fire-and-forget
+            // at startup (see lines ~598 and ~640). If scanForOutdatedQdrantIndex runs before
+            // the skeleton cache populates, totalTasks stays at 0 and indexing stalls forever.
+            // This conditional re-scan only fires when the initial scan missed the cache,
+            // avoiding unnecessary double-scans on every startup.
+            if (state.conversationCache.size > 0 && state.isQdrantIndexingEnabled
+                && state.indexingMetrics.totalTasks === 0) {
+                try {
+                    await scanForOutdatedQdrantIndex(state);
+                    console.log(`[Post-Load] Re-scanned ${state.indexingMetrics.totalTasks} skeletons for Qdrant indexing (initial scan missed cache)`);
+                } catch (error: any) {
+                    console.error('[Post-Load] Re-scan failed, indexing may be incomplete:', error?.message || error);
+                }
+            }
         }).catch((error: any) => {
             console.warn('[Startup] Background skeleton/Claude load failed (non-blocking):', error?.message || error);
         });
