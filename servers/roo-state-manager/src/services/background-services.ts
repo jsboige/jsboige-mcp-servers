@@ -613,15 +613,19 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
                 `— Total: ${stats.total}`
             );
 
-            // #2165 fix: Re-scan for outdated Qdrant index now that skeleton cache is populated.
-            // The initial scan in initializeQdrantIndexingService may have run on an empty cache
-            // (race condition: both are fire-and-forget). This re-scan ensures tasks are queued.
-            if (state.conversationCache.size > 0 && state.isQdrantIndexingEnabled) {
+            // #2165 ARCHITECTURE NOTE:
+            // Both loadSkeletonsFromDisk and initializeQdrantIndexingService are fire-and-forget
+            // at startup (see lines ~598 and ~640). If scanForOutdatedQdrantIndex runs before
+            // the skeleton cache populates, totalTasks stays at 0 and indexing stalls forever.
+            // This conditional re-scan only fires when the initial scan missed the cache,
+            // avoiding unnecessary double-scans on every startup.
+            if (state.conversationCache.size > 0 && state.isQdrantIndexingEnabled
+                && state.indexingMetrics.totalTasks === 0) {
                 try {
                     await scanForOutdatedQdrantIndex(state);
-                    console.log(`[Post-Load] Re-scanned ${state.indexingMetrics.totalTasks} skeletons for Qdrant indexing`);
+                    console.log(`[Post-Load] Re-scanned ${state.indexingMetrics.totalTasks} skeletons for Qdrant indexing (initial scan missed cache)`);
                 } catch (error: any) {
-                    console.warn('[Post-Load] Re-scan failed (non-critical):', error?.message || error);
+                    console.error('[Post-Load] Re-scan failed, indexing may be incomplete:', error?.message || error);
                 }
             }
         }).catch((error: any) => {
