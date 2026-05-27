@@ -16,6 +16,7 @@ import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
 import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT } from '../types/indexing.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
+import { shouldIndexTask } from './task-partition.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
@@ -468,7 +469,8 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
                                     // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                     const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
-                                    if (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                    if ((!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
+                                        && shouldIndexTask(entry.name, state.machineId, state.fleetRoster)) {
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
                                     if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -524,7 +526,8 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         state.conversationCache.set(taskId, newHeader);
                                         // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                         const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
-                                        if (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime()) {
+                                        if ((!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
+                                            && shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
                                             state.qdrantIndexQueue.add(taskId);
                                         }
                                         if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -726,6 +729,12 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
         } else {
             console.log(`🔄 [Leader-Election] PID ${process.pid} is follower — will attempt takeover if leader goes stale`);
         }
+        // #2352: Log task-space partition status
+        if (state.fleetRoster && state.fleetRoster.length > 0) {
+            console.log(`🎯 [Partition] Task-space partition enabled: ${state.fleetRoster.length} machines, this=${state.machineId}, shard=~${Math.round(100 / state.fleetRoster.length)}% of tasks`);
+        } else {
+            console.log(`🎯 [Partition] Task-space partition disabled (no ROO_FLEET_ROSTER) — all machines index all tasks`);
+        }
         startQdrantIndexingBackgroundProcess(state);
 
         console.log('✅ Service d\'indexation Qdrant initialisé (indexation en arrière-plan activée)');
@@ -758,6 +767,13 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
 
     for (const [taskId, skeleton] of state.conversationCache.entries()) {
         state.indexingMetrics.totalTasks++;
+
+        // #2352: Task-space partition — skip tasks owned by other machines
+        if (!shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
+            skipCount++;
+            state.indexingMetrics.skippedTasks++;
+            continue;
+        }
 
         // Migration automatique des anciens formats
         if (state.indexingDecisionService.migrateLegacyIndexingState(skeleton)) {

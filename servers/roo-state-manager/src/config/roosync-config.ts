@@ -12,6 +12,7 @@
 import { existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
 import { createLogger } from '../utils/logger.js';
+import { parseFleetRoster } from '../services/task-partition.js';
 
 const logger = createLogger('RooSyncConfig');
 
@@ -33,6 +34,12 @@ export interface RooSyncConfig {
 
   /** Niveau de verbosité des logs */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+
+  /**
+   * #2352: Fleet roster for task-space partitioning.
+   * Sorted array of machine IDs. null = partition disabled.
+   */
+  fleetRoster: string[] | null;
 }
 
 /**
@@ -94,7 +101,8 @@ export function loadRooSyncConfig(): RooSyncConfig {
       machineId: process.env.ROOSYNC_MACHINE_ID!.toLowerCase(),
       autoSync,
       conflictStrategy: conflictStrategy as 'manual' | 'auto-local' | 'auto-remote',
-      logLevel: logLevel as 'debug' | 'info' | 'warn' | 'error'
+      logLevel: logLevel as 'debug' | 'info' | 'warn' | 'error',
+      fleetRoster: parseFleetRoster(process.env.ROO_FLEET_ROSTER),
     };
   }
 
@@ -190,13 +198,23 @@ export function loadRooSyncConfig(): RooSyncConfig {
     );
   }
 
-  // 7. Retourner la configuration validée
+  // 7. #2352: Validate optional fleet roster
+  const fleetRoster = parseFleetRoster(process.env.ROO_FLEET_ROSTER);
+  if (fleetRoster && !fleetRoster.includes(machineId)) {
+    throw new RooSyncConfigError(
+      `ROO_FLEET_ROSTER does not include this machine (${machineId}). ` +
+      `Roster: ${fleetRoster.join(', ')}`
+    );
+  }
+
+  // 8. Retourner la configuration validée
   return {
     sharedPath: resolvedPath,
     machineId,
     autoSync,
     conflictStrategy,
-    logLevel
+    logLevel,
+    fleetRoster
   };
 }
 
