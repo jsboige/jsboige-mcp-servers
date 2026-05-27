@@ -602,7 +602,7 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             state.lastSkeletonRefreshAt = Date.now();
             // Once index is loaded, discover Claude sessions too
             return loadClaudeCodeSessions(state.conversationCache);
-        }).then(() => {
+        }).then(async () => {
             // #1747 sub-issue B: Log tier summary after all background loading completes
             const instance = SkeletonCacheService.getInstance();
             const stats = instance.getCacheTierStats();
@@ -612,6 +612,18 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
                 `Tier3(Archives)=${stats.config.enableArchiveTier ? stats.tier3_archives : 'OFF'} ` +
                 `— Total: ${stats.total}`
             );
+
+            // #2165 fix: Re-scan for outdated Qdrant index now that skeleton cache is populated.
+            // The initial scan in initializeQdrantIndexingService may have run on an empty cache
+            // (race condition: both are fire-and-forget). This re-scan ensures tasks are queued.
+            if (state.conversationCache.size > 0 && state.isQdrantIndexingEnabled) {
+                try {
+                    await scanForOutdatedQdrantIndex(state);
+                    console.log(`[Post-Load] Re-scanned ${state.indexingMetrics.totalTasks} skeletons for Qdrant indexing`);
+                } catch (error: any) {
+                    console.warn('[Post-Load] Re-scan failed (non-critical):', error?.message || error);
+                }
+            }
         }).catch((error: any) => {
             console.warn('[Startup] Background skeleton/Claude load failed (non-blocking):', error?.message || error);
         });
