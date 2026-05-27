@@ -30,9 +30,19 @@ from semantic_kernel.agents.strategies import (
 from semantic_kernel.contents import ChatMessageContent, AuthorRole
 
 from sk_agent_config import SKAgentConfig, AgentConfig, ConversationConfig
-from sk_agent import _sanitize_agent_name
 
 log = logging.getLogger("sk-agent.conversations")
+
+# Inlined from sk_agent to avoid circular import when sk_agent.py is the entry
+# point (loaded as __main__, which causes a second import as 'sk_agent' if we
+# reference it here).
+import re as _re
+_INVALID_NAME_CHARS = _re.compile(r"[^0-9A-Za-z_-]")
+
+
+def _sanitize_agent_name(name: str) -> str:
+    sanitized = _INVALID_NAME_CHARS.sub("-", name)
+    return sanitized.strip("-")
 
 
 # ---------------------------------------------------------------------------
