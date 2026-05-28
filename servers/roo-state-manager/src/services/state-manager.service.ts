@@ -12,6 +12,7 @@ import { NarrativeContextBuilderService } from './synthesis/NarrativeContextBuil
 import { SynthesisOrchestratorService } from './synthesis/SynthesisOrchestratorService.js';
 import { IndexingMetrics } from '../types/indexing.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
+import { tryLoadRooSyncConfig } from '../config/roosync-config.js';
 
 export interface ServerState {
     conversationCache: Map<string, SkeletonHeader>;
@@ -34,6 +35,9 @@ export interface ServerState {
     isQdrantIndexingEnabled: boolean;
     // #2352: Leader-election — only one MCP instance indexes at a time
     isIndexLeader: boolean;
+    // #2352: Task-space partitioning — null = disabled (all machines index everything)
+    fleetRoster: string[] | null;
+    machineId: string;
 
     // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau (LEGACY)
     qdrantIndexCache: Map<string, number>;
@@ -89,6 +93,8 @@ export class StateManager {
             defaultOrchestratorOptions
         );
 
+        const rooSyncCfg = tryLoadRooSyncConfig();
+
         this.state = {
             conversationCache,
             xmlExporterService: new XmlExporterService(),
@@ -113,6 +119,8 @@ export class StateManager {
             qdrantIndexInterval: null,
             isQdrantIndexingEnabled: true,
             isIndexLeader: false,
+            fleetRoster: rooSyncCfg?.fleetRoster ?? null,
+            machineId: rooSyncCfg?.machineId ?? (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),
             qdrantIndexCache: new Map(),
             lastQdrantConsistencyCheck: 0,
         };
