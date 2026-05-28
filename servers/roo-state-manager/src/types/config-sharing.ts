@@ -61,6 +61,8 @@ export interface ApplyConfigOptions {
   backup?: boolean; // Défaut: true
   dryRun?: boolean;
   scope?: ClaudeCodeScope; // Issue #601 - Scope Claude Code (user/project/settings)
+  /** #2413 — Vérifier que la configuration est effectivement appliquée et opérationnelle après écriture */
+  validate?: boolean;
 }
 
 export interface ApplyConfigResult {
@@ -68,6 +70,13 @@ export interface ApplyConfigResult {
   filesApplied: number;
   backupPath?: string;
   errors?: string[];
+  /** #2413 — Résultat de la validation post-apply si validate=true */
+  validation?: {
+    performed: boolean;
+    success: boolean;
+    /** Détails par target appliqué */
+    targetValidations?: Array<{ target: string; success: boolean; details?: any }>;
+  };
 }
 
 /**
@@ -85,6 +94,8 @@ export interface ApplyProfileOptions {
   dryRun?: boolean;
   /** Régénérer .roomodes après application du profil (défaut: true). Appelle generate-modes.js --profile --deploy */
   generateModes?: boolean;
+  /** #2413 — Vérifier que le profil est effectivement appliqué (.roomodes + state.vscdb) après écriture */
+  validate?: boolean;
 }
 
 export interface ApplyProfileResult {
@@ -105,6 +116,20 @@ export interface ApplyProfileResult {
     profileThresholds: Record<string, number>;
   };
   errors?: string[];
+  /**
+   * #2413 — Résultat de la validation post-apply si validate=true.
+   *  - success=true => .roomodes aligné avec profile.modeOverrides
+   *  - success=false => drift détecté (liste détaillée dans drift)
+   *  - activeApiConfigInSync indique si state.vscdb.currentApiConfigName correspond
+   *    au profil attendu (undefined si state.vscdb non lisible)
+   */
+  validation?: {
+    performed: boolean;
+    success: boolean;
+    drift?: Array<{ field: string; expected: any; actual: any }>;
+    activeApiConfigName?: string;
+    activeApiConfigInSync?: boolean;
+  };
 }
 
 export interface ConfigChange {
