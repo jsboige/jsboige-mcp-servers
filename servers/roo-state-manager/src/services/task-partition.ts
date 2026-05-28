@@ -7,6 +7,16 @@
  * The fleet roster is configured via the `ROO_FLEET_ROSTER` env var
  * (comma-separated, sorted alphabetically). Each machine must have the same
  * roster value — mismatch means some tasks fall through the cracks.
+ *
+ * ## Roster change migration
+ *
+ * Changing `ROO_FLEET_ROSTER` (adding/removing machines) shifts ALL hash
+ * buckets: previously-owned tasks become unowned and vice-versa. After a
+ * roster change, each machine MUST perform a full reindex:
+ * 1. Update ROO_FLEET_ROSTER on ALL machines simultaneously
+ * 2. Restart all MCP instances (new roster takes effect at startup)
+ * 3. Run `roosync_indexing(action: "rebuild")` on each machine — this will
+ *    index the new shard and skip the old one automatically
  */
 
 /**

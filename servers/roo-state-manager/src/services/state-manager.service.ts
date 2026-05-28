@@ -12,7 +12,7 @@ import { NarrativeContextBuilderService } from './synthesis/NarrativeContextBuil
 import { SynthesisOrchestratorService } from './synthesis/SynthesisOrchestratorService.js';
 import { IndexingMetrics } from '../types/indexing.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
-import { parseFleetRoster } from './task-partition.js';
+import { tryLoadRooSyncConfig } from '../config/roosync-config.js';
 
 export interface ServerState {
     conversationCache: Map<string, SkeletonHeader>;
@@ -93,6 +93,8 @@ export class StateManager {
             defaultOrchestratorOptions
         );
 
+        const rooSyncCfg = tryLoadRooSyncConfig();
+
         this.state = {
             conversationCache,
             xmlExporterService: new XmlExporterService(),
@@ -117,8 +119,8 @@ export class StateManager {
             qdrantIndexInterval: null,
             isQdrantIndexingEnabled: true,
             isIndexLeader: false,
-            fleetRoster: parseFleetRoster(process.env.ROO_FLEET_ROSTER),
-            machineId: (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),
+            fleetRoster: rooSyncCfg?.fleetRoster ?? null,
+            machineId: rooSyncCfg?.machineId ?? (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),
             qdrantIndexCache: new Map(),
             lastQdrantConsistencyCheck: 0,
         };
