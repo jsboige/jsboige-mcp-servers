@@ -497,12 +497,14 @@ export class LLMService {
             // Configuration de l'appel
             // #954: Prepend /no_think for Qwen 3.5 thinking models — prevents content:null
             // when reasoning tokens consume all max_tokens before generating output
+            // 2026-05-29: GLM-4.7 ignores /no_think and burns 600+ thinking tokens per call;
+            // budget raised from 4000 to 16000 so reasoning + output both fit (vLLM ai-01 DOWN, z.ai fallback active)
             const effectivePrompt = '/no_think\n' + prompt;
             const openaiParams = {
                 model: modelConfig.modelName,
                 messages: [{ role: 'user' as const, content: effectivePrompt }],
                 temperature: 0.1,
-                max_tokens: 4000,
+                max_tokens: 16000,
                 // Ajouter response_format si présent
                 ...(parameters?.response_format ? { response_format: parameters.response_format } : {})
             };
