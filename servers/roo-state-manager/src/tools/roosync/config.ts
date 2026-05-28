@@ -52,6 +52,9 @@ export const ConfigArgsSchema = z.object({
   // Pour apply
   backup: z.boolean().optional().describe('Create local backup before apply (default: true). For apply and apply_profile'),
 
+  // #2413 — Pour apply et apply_profile : validation post-apply
+  validate: z.boolean().optional().describe('Validate config is effectively applied after write (default: false). For apply and apply_profile. Profile validation reads .roomodes and state.vscdb.currentApiConfigName.'),
+
   // Pour apply_profile (#498 Phase 2)
   profileName: z.string().optional().describe('Profile name (required for apply_profile). E.g. "Production (Qwen 3.5 + GLM-5)"'),
   sourceMachineId: z.string().optional().describe('Source machine ID for model-configs.json (default: local file)')
@@ -203,7 +206,7 @@ export async function roosyncConfig(args: ConfigArgs) {
 
       case 'apply': {
         // Action apply: Applique une configuration depuis le stockage
-        const { version, targets, backup = true } = args;
+        const { version, targets, backup = true, validate } = args;
 
         // Vérifier la version de configuration requise
         const configService = rooSyncService.getConfigService();
@@ -238,21 +241,29 @@ export async function roosyncConfig(args: ConfigArgs) {
           targets: parseTargets(targets),
           backup,
           dryRun,
-          scope // Issue #601 - Pass scope to apply
+          scope, // Issue #601 - Pass scope to apply
+          validate // #2413 - Propagate validate flag
         });
 
+        // #2413 — Si validation activée et drift détecté, marquer le statut comme drift
+        const validationFailed = !!result.validation && result.validation.success === false;
+        const overallSuccess = result.success && !validationFailed;
+
         return {
-          status: result.success ? 'success' : 'error',
-          message: result.success ? 'Configuration appliquée avec succès' : 'Échec de l\'application de la configuration',
+          status: overallSuccess ? 'success' : (validationFailed ? 'drift' : 'error'),
+          message: overallSuccess
+            ? (result.validation ? 'Configuration appliquée et validée avec succès' : 'Configuration appliquée avec succès')
+            : (validationFailed ? 'Configuration appliquée mais drift détecté lors de la validation' : 'Échec de l\'application de la configuration'),
           filesApplied: result.filesApplied,
           backupPath: result.backupPath,
-          errors: result.errors
+          errors: result.errors,
+          validation: result.validation
         };
       }
 
       case 'apply_profile': {
         // Action apply_profile: Applique un profil de modèle (#498 Phase 2)
-        const { profileName, sourceMachineId, backup = true } = args;
+        const { profileName, sourceMachineId, backup = true, validate } = args;
 
         if (!profileName) {
           throw new ConfigSharingServiceError(
@@ -266,7 +277,8 @@ export async function roosyncConfig(args: ConfigArgs) {
           profileName,
           sourceMachineId,
           backup,
-          dryRun
+          dryRun,
+          validate // #2413 - Propagate validate flag
         });
 
         const modesMsg = result.roomodesGenerated
@@ -275,10 +287,18 @@ export async function roosyncConfig(args: ConfigArgs) {
             ? ` (⚠️ .roomodes non régénéré)`
             : '';
 
+        // #2413 — Si validation activée et drift détecté, statut "drift" (pas pure error)
+        const validationFailed = !!result.validation && result.validation.success === false;
+        const validationMsg = result.validation
+          ? (result.validation.success ? ' + validation OK' : ` + drift détecté (${result.validation.drift?.length || 0} entrées)`)
+          : '';
+
         return {
-          status: result.success ? 'success' : 'error',
+          status: !result.success
+            ? 'error'
+            : (validationFailed ? 'drift' : 'success'),
           message: result.success
-            ? `Profil '${result.profileName}' appliqué avec succès (${result.modesConfigured} modes, ${result.apiConfigsCount} configs API${modesMsg})`
+            ? `Profil '${result.profileName}' appliqué avec succès (${result.modesConfigured} modes, ${result.apiConfigsCount} configs API${modesMsg}${validationMsg})`
             : `Échec de l'application du profil '${result.profileName}'`,
           profileName: result.profileName,
           modesConfigured: result.modesConfigured,
@@ -286,7 +306,8 @@ export async function roosyncConfig(args: ConfigArgs) {
           backupPath: result.backupPath,
           changes: result.changes,
           roomodesGenerated: result.roomodesGenerated,
-          errors: result.errors
+          errors: result.errors,
+          validation: result.validation
         };
       }
 

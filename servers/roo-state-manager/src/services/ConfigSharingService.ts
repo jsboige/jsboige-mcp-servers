@@ -30,6 +30,7 @@ import { InventoryService } from './roosync/InventoryService.js';
 import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 import { RollbackManager } from './RollbackManager.js';
 import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
+import yaml from 'js-yaml';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
@@ -666,10 +667,20 @@ export class ConfigSharingService implements IConfigSharingService {
         } as any;
     }
 
+    // #2413 — Validation post-apply optionnelle pour applyConfig
+    let validation: ApplyConfigResult['validation'] = undefined;
+    if (options.validate && errors.length === 0 && appliedFilePaths.length > 0) {
+      validation = await this.validateConfigApplication(appliedFilePaths);
+      if (!validation.success) {
+        this.logger.warn(`Validation post-apply applyConfig: drift détecté`);
+      }
+    }
+
     return {
       success: errors.length === 0,
       filesApplied,
-      errors
+      errors,
+      validation
     };
   }
 
@@ -864,6 +875,18 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
+      // 6. Validation post-apply (#2413) — vérifie que le profil est effectivement déployé
+      let validation: ApplyProfileResult['validation'] = undefined;
+      if (options.validate && !options.dryRun) {
+        const roomodesPath = join(inventory.paths.rooExtensions, '.roomodes');
+        validation = await this.validateProfileApplication(profile, newModeApiConfigs, roomodesPath);
+        if (!validation.success) {
+          this.logger.warn(`Validation post-apply: drift détecté (${validation.drift?.length || 0} entrées)`);
+        } else {
+          this.logger.info('Validation post-apply: OK');
+        }
+      }
+
       return {
         success: true,
         profileName: profile.name,
@@ -875,7 +898,8 @@ export class ConfigSharingService implements IConfigSharingService {
           modeApiConfigs: newModeApiConfigs,
           profileThresholds: newThresholds
         },
-        errors: errors.length > 0 ? errors : undefined
+        errors: errors.length > 0 ? errors : undefined,
+        validation
       };
 
     } catch (err: any) {
@@ -893,6 +917,175 @@ export class ConfigSharingService implements IConfigSharingService {
         errors
       };
     }
+  }
+
+  /**
+   * #2413 — Valide qu'un profil de modèle est effectivement appliqué après applyProfile().
+   *
+   * Vérifie deux niveaux :
+   *  1. `.roomodes` déployé : chaque mode listé dans `expectedModeApiConfigs` doit avoir
+   *     l'`apiConfigId` attendu dans `customModes[]`. Supporte les formats YAML et JSON.
+   *  2. `state.vscdb` (via RooSettingsService) : lit `currentApiConfigName` pour signaler
+   *     un éventuel désalignement si VS Code n'a pas été redémarré.
+   *
+   * NOTE : Drift sur `state.vscdb` n'est PAS toujours un échec — c'est attendu tant que
+   * Roo Code/VS Code n'a pas été relancé. C'est exposé comme information, non comme erreur.
+   *
+   * @param profile - Profil source (avec `modeOverrides`, `defaultApiConfig` optionnel)
+   * @param expectedModeApiConfigs - Mode → apiConfigId attendu, déjà fusionné avec defaults
+   * @param roomodesPath - Chemin absolu vers `.roomodes`
+   */
+  private async validateProfileApplication(
+    profile: any,
+    expectedModeApiConfigs: Record<string, string>,
+    roomodesPath: string,
+  ): Promise<NonNullable<ApplyProfileResult['validation']>> {
+    const drift: Array<{ field: string; expected: any; actual: any }> = [];
+
+    // 1. Lire et parser .roomodes (format YAML par défaut sur disque, JSON aussi supporté)
+    let deployedModes: any = null;
+    if (!existsSync(roomodesPath)) {
+      drift.push({ field: '.roomodes', expected: 'existing file', actual: 'missing' });
+    } else {
+      try {
+        const content = await fs.readFile(roomodesPath, 'utf-8');
+        // Try JSON first (generate-modes.js default format), then YAML
+        try {
+          deployedModes = JSON.parse(content);
+        } catch {
+          deployedModes = yaml.load(content);
+        }
+      } catch (e: any) {
+        drift.push({ field: '.roomodes', expected: 'parseable content', actual: `parse error: ${e.message}` });
+      }
+    }
+
+    // 2. Comparer chaque mode du profile.modeOverrides vs .roomodes
+    if (deployedModes && Array.isArray(deployedModes.customModes)) {
+      // Vérifier uniquement les modes explicitement dans modeOverrides du profil
+      // (pas les modes "default" injectés artificiellement par applyProfile)
+      const explicitOverrides = profile?.modeOverrides || {};
+      for (const [modeSlug, expectedApiConfigId] of Object.entries(explicitOverrides)) {
+        const deployedMode = deployedModes.customModes.find((m: any) => m && m.slug === modeSlug);
+        if (!deployedMode) {
+          drift.push({
+            field: `customModes.${modeSlug}`,
+            expected: 'present',
+            actual: 'missing',
+          });
+          continue;
+        }
+        if (deployedMode.apiConfigId !== expectedApiConfigId) {
+          drift.push({
+            field: `customModes.${modeSlug}.apiConfigId`,
+            expected: expectedApiConfigId,
+            actual: deployedMode.apiConfigId ?? null,
+          });
+        }
+      }
+    } else if (deployedModes !== null) {
+      drift.push({
+        field: '.roomodes.customModes',
+        expected: 'array',
+        actual: typeof deployedModes.customModes,
+      });
+    }
+
+    // 3. Lire state.vscdb pour currentApiConfigName via RooSettingsService
+    let activeApiConfigName: string | undefined;
+    let activeApiConfigInSync: boolean | undefined;
+    try {
+      const rooSettings = new RooSettingsService();
+      if (rooSettings.isAvailable()) {
+        const value = await rooSettings.getSetting('currentApiConfigName');
+        activeApiConfigName = typeof value === 'string' ? value : undefined;
+        // Si le profil spécifie un defaultApiConfig, drift si state.vscdb ne le reflète pas.
+        // Sinon (cas courant : profil-by-mode-only), on rapporte juste activeApiConfigName.
+        if (profile?.defaultApiConfig && activeApiConfigName) {
+          if (activeApiConfigName !== profile.defaultApiConfig) {
+            activeApiConfigInSync = false;
+            // state.vscdb drift est INFORMATIF — pas un fail strict (VS Code restart needed)
+            // On le pousse dans drift pour visibilité mais on ne le compte pas comme échec critique.
+            drift.push({
+              field: 'state.vscdb.currentApiConfigName',
+              expected: profile.defaultApiConfig,
+              actual: activeApiConfigName,
+            });
+          } else {
+            activeApiConfigInSync = true;
+          }
+        }
+      } else {
+        // state.vscdb non disponible — non-fatal
+        activeApiConfigInSync = undefined;
+      }
+    } catch (e: any) {
+      this.logger.warn(`Validation: lecture state.vscdb échouée (non-fatal): ${e.message}`);
+      activeApiConfigInSync = undefined;
+    }
+
+    return {
+      performed: true,
+      success: drift.length === 0,
+      drift: drift.length > 0 ? drift : undefined,
+      activeApiConfigName,
+      activeApiConfigInSync,
+    };
+  }
+
+  /**
+   * #2413 — Validation post-apply pour `applyConfig`. Pour chaque target appliqué,
+   * exécute un check basique (`json_valid` / `file_readable`) via `ConfigHealthCheckService`.
+   * Cette version est intentionnellement minimaliste — l'objectif principal de #2413 est
+   * la validation profile/modes (cf. `validateProfileApplication`).
+   */
+  private async validateConfigApplication(
+    appliedFiles: Array<{ path: string; type: string }>,
+  ): Promise<NonNullable<ApplyConfigResult['validation']>> {
+    const healthChecker = new ConfigHealthCheckService(this.logger);
+    const targetValidations: Array<{ target: string; success: boolean; details?: any }> = [];
+
+    for (const { path: filePath, type } of appliedFiles) {
+      // Skip rules (text files, no JSON check)
+      if (type === 'rules_config') {
+        targetValidations.push({ target: filePath, success: true, details: { skipped: 'text file' } });
+        continue;
+      }
+
+      const configTypeMap: Record<string, HealthCheckConfigType> = {
+        'mcp_config': 'mcp_config',
+        'mode_definition': 'mode_definition',
+        'roomodes_config': 'roomodes_config',
+        'model_config': 'model_config',
+        'profile_settings': 'profile_settings',
+        'settings_config': 'settings_config',
+      };
+      const healthConfigType = configTypeMap[type] || 'mcp_config';
+
+      try {
+        const result = await healthChecker.checkHealth(filePath, healthConfigType, {
+          checks: ['file_readable', 'json_valid'],
+        });
+        targetValidations.push({
+          target: filePath,
+          success: result.healthy,
+          details: result.healthy ? undefined : { errors: result.errors },
+        });
+      } catch (err: any) {
+        targetValidations.push({
+          target: filePath,
+          success: false,
+          details: { error: err.message },
+        });
+      }
+    }
+
+    const allSuccess = targetValidations.every((tv) => tv.success);
+    return {
+      performed: true,
+      success: allSuccess,
+      targetValidations,
+    };
   }
 
   /**
