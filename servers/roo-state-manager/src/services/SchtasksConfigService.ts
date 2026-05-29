@@ -96,62 +96,6 @@ export interface SchtasksApplyResult {
 }
 
 /**
- * PowerShell script to collect scheduled tasks as JSON
- * Filters by name pattern to only get project tasks
- */
-const COLLECT_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-$filterPatterns = '{{FILTER_PATTERNS}}'
-
-$allTasks = Get-ScheduledTask | Where-Object {
-    $_.TaskPath -notlike '\\Microsoft\\*' -and
-    ($filterPatterns | ForEach-Object { $_.TaskName -like $_ } | Where-Object { $_ }).Count -gt 0
-}
-
-$results = @()
-foreach ($task in $allTasks) {
-    $action = $task.Actions | Select-Object -First 1
-    $taskInfo = [ordered]@{
-        taskName = $task.TaskName
-        taskPath = $task.TaskPath
-        execute = if ($action) { $action.Execute } else { '' }
-        arguments = if ($action) { $action.Arguments } else { '' }
-        workingDirectory = if ($action) { $action.WorkingDirectory } else { '' }
-        state = $task.State.ToString()
-        description = $task.Description
-        principal = if ($task.Principal) {
-            @{
-                userId = $task.Principal.UserId
-                logonType = $task.Principal.LogonType.ToString()
-                runLevel = $task.Principal.RunLevel.ToString()
-            }
-        } else { @{} }
-        triggers = @()
-    }
-
-    foreach ($trigger in $task.Triggers) {
-        $schedule = switch ($trigger.CimClass.CimClassName) {
-            'MSFT_TaskTimeTrigger' { "Once at $($trigger.StartBoundary)" }
-            'MSFT_TaskDailyTrigger' { "Daily at $($trigger.StartBoundary)" }
-            'MSFT_TaskWeeklyTrigger' { "Weekly at $($trigger.StartBoundary)" }
-            'MSFT_TaskBootTrigger' { 'At startup' }
-            'MSFT_TaskLogonTrigger' { 'At logon' }
-            default { $trigger.CimClass.CimClassName }
-        }
-        $taskInfo.triggers += @{
-            type = $trigger.CimClass.CimClassName -replace 'MSFT_Task(\\w+)Trigger', '$1'
-            schedule = $schedule
-            enabled = $trigger.Enabled
-        }
-    }
-
-    $results += $taskInfo
-}
-
-$results | ConvertTo-Json -Depth 5 -Compress
-`;
-
-/**
  * PowerShell script to apply a single task configuration
  * Uses Set-ScheduledTask for idempotent updates (preserves triggers and principal)
  */
@@ -241,17 +185,15 @@ export class SchtasksConfigService {
     const patterns = filterPatterns ?? DEFAULT_FILTER_PATTERNS;
     this.logger.info('Collecting scheduled tasks', { patterns });
 
-    const patternsJson = JSON.stringify(patterns);
-    const script = COLLECT_SCRIPT.replace('{{FILTER_PATTERNS}}', patternsJson);
-
     // Write inline script to temp file for PowerShellExecutor
+    // Uses native PowerShell -like operator for safe glob matching (no regex injection)
     const scriptContent = `
 $ErrorActionPreference = 'Stop'
 $filterPatterns = @(${patterns.map(p => `'${p}'`).join(', ')})
 
 $allTasks = Get-ScheduledTask | Where-Object {
-    $_.TaskPath -notlike '\\\\Microsoft\\\\*' -and
-    ($filterPatterns | ForEach-Object { $_ -replace '\\*', '.*' -replace '\\?', '.' } | ForEach-Object { $_.TaskName -match $_ } | Where-Object { $_ }).Count -gt 0
+    $_.TaskPath -notlike '\\Microsoft\\*' -and
+    ($filterPatterns | ForEach-Object { $taskName = $_.TaskName; ($filterPatterns | Where-Object { $taskName -like $_ }).Count -gt 0 })
 }
 
 $results = @()
@@ -370,7 +312,7 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
   /**
    * Apply a single task configuration
    */
-  private async applySingleTask(task: SchtaskConfig): Promise<{ taskName: string; action: string; details?: string }> {
+  private async applySingleTask(task: SchtaskConfig): Promise<{ taskName: string; action: 'updated' | 'skipped' | 'missing' | 'error'; details?: string }> {
     // Write apply script to temp file
     const tempDir = path.join(os.tmpdir(), `schtasks-apply-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
@@ -398,9 +340,17 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
 
       try {
         const parsed = PowerShellExecutor.parseJsonOutput<{ action: string; taskName: string; changes?: string[]; error?: string }>(result.stdout);
+        // Map action to a known set of values
+        const actionMap: Record<string, 'updated' | 'skipped' | 'missing' | 'error'> = {
+          updated: 'updated',
+          skipped: 'skipped',
+          missing: 'missing',
+          error: 'error',
+        };
+        const mappedAction = actionMap[parsed.action] ?? 'updated';
         return {
           taskName: parsed.taskName || task.taskName,
-          action: parsed.action as any,
+          action: mappedAction,
           details: parsed.changes?.join('; ') || parsed.error,
         };
       } catch {
