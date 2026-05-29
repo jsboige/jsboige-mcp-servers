@@ -137,8 +137,8 @@ describe('UnifiedTaskSchema', () => {
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
 describe('Task enums', () => {
-  test('TaskSource has exactly 2 values', () => {
-    expect(TaskSource.options).toEqual(['roo', 'claude-code']);
+  test('TaskSource has expected values', () => {
+    expect(TaskSource.options).toEqual(['roo', 'claude-code', 'zoo-code']);
   });
 
   test('TaskStatus has expected values', () => {

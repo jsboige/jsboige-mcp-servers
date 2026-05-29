@@ -1,5 +1,6 @@
 /**
  * Tests pour l'outil consolidé storage_info (CONS-13)
+ * Updated for #2429: Zoo-Code storage stats alongside Roo.
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
@@ -8,12 +9,22 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 const mockDetectRooStorage = vi.fn();
 const mockGetStorageStats = vi.fn();
 const mockGetWorkspaceBreakdown = vi.fn();
+const mockZooDetectStorageLocations = vi.fn();
+const mockZooGetStorageStats = vi.fn();
 
 vi.mock('../../../utils/roo-storage-detector.js', () => ({
     RooStorageDetector: {
         detectRooStorage: mockDetectRooStorage,
         getStorageStats: mockGetStorageStats,
         getWorkspaceBreakdown: mockGetWorkspaceBreakdown
+    }
+}));
+
+vi.mock('../../../utils/zoo-storage-detector.js', () => ({
+    ZOO_CODE_EXTENSION_ID: 'zoocodeorganization.zoo-code',
+    ZooStorageDetector: {
+        detectStorageLocations: mockZooDetectStorageLocations,
+        getStorageStats: mockZooGetStorageStats,
     }
 }));
 
@@ -31,11 +42,20 @@ describe('storage_info tool (CONS-13)', () => {
         });
         mockGetStorageStats.mockResolvedValue({
             totalSize: 1024000,
-            totalConversations: 10
+            totalConversations: 10,
+            totalLocations: 1
         });
         mockGetWorkspaceBreakdown.mockResolvedValue({
             '/workspace/a': { conversations: 5, size: 512000 },
             '/workspace/b': { conversations: 5, size: 512000 }
+        });
+
+        // Zoo-Code: no storage by default
+        mockZooDetectStorageLocations.mockResolvedValue([]);
+        mockZooGetStorageStats.mockResolvedValue({
+            totalLocations: 0,
+            totalConversations: 0,
+            totalSize: 0
         });
 
         const mod = await import('../storage-info.js');
@@ -91,10 +111,37 @@ describe('storage_info tool (CONS-13)', () => {
             expect(mockGetWorkspaceBreakdown).toHaveBeenCalled();
 
             const data = JSON.parse((result.content[0] as any).text);
+            // Flat top-level backward compatible keys
             expect(data.totalSize).toBe(1024000);
             expect(data.totalConversations).toBe(10);
+            // Nested roo stats
+            expect(data.roo).toBeDefined();
+            expect(data.roo.totalSize).toBe(1024000);
+            expect(data.roo.totalConversations).toBe(10);
             expect(data.workspaceBreakdown).toBeDefined();
             expect(data.totalWorkspaces).toBe(2);
+        });
+
+        test('should not include zooCode when no Zoo storage present', async () => {
+            const result = await handleStorageInfo({ action: 'stats' });
+            const data = JSON.parse((result.content[0] as any).text);
+
+            expect(data.zooCode).toBeUndefined();
+        });
+
+        test('should include zooCode when Zoo storage is present', async () => {
+            mockZooGetStorageStats.mockResolvedValue({
+                totalLocations: 1,
+                totalConversations: 360,
+                totalSize: 2048000
+            });
+
+            const result = await handleStorageInfo({ action: 'stats' });
+            const data = JSON.parse((result.content[0] as any).text);
+
+            expect(data.zooCode).toBeDefined();
+            expect(data.zooCode.totalConversations).toBe(360);
+            expect(data.zooCode.totalSize).toBe(2048000);
         });
 
         test('should include workspace breakdown details', async () => {

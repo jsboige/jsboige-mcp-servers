@@ -5,6 +5,7 @@
  * (`zoocodeorganization.zoo-code`) via the `ROO_EXTENSION_ID` env-var override.
  *
  * #2134 — Zoo-Code migration compatibility.
+ * #2429 — Zoo-Code storage detection + source attribution.
  */
 
 import * as path from 'path';
@@ -74,6 +75,24 @@ export function getTasksPath(): string {
 /** Path: `...globalStorage/<extensionId>/settings/` */
 export function getSettingsPath(): string {
 	return path.join(getGlobalStoragePath(), 'settings');
+}
+
+// ── Source detection from storage path (#2429) ─────────────────────────
+
+/**
+ * Determine the task source ('roo', 'zoo-code', or 'claude-code') from a
+ * storage path. Used when attributing tasks discovered by RooStorageDetector
+ * or scanClaudeSessions to the correct source system.
+ *
+ * @param storagePath - The globalStorage directory path or dataSource field
+ * @returns The source identifier
+ */
+export function detectSourceFromPath(storagePath: string | undefined): 'roo' | 'zoo-code' | 'claude-code' {
+	if (!storagePath) return 'roo';
+	const normalized = storagePath.replace(/\\/g, '/').toLowerCase();
+	if (normalized.includes('zoocodeorganization.zoo-code')) return 'zoo-code';
+	if (normalized.includes('.claude/projects') || normalized.startsWith('claude-')) return 'claude-code';
+	return 'roo';
 }
 
 

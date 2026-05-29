@@ -6,13 +6,16 @@
  *   - detect_roo_storage
  *   - get_storage_stats
  *
+ * #2429: Added Zoo-Code storage stats alongside Roo.
+ *
  * @module tools/storage/storage-info
- * @version 1.0.0
+ * @version 1.1.0
  * @since CONS-13
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { ZooStorageDetector } from '../../utils/zoo-storage-detector.js';
 import { Tool } from '../../types/tool-definitions.js';
 
 /**
@@ -34,7 +37,7 @@ export interface StorageInfoArgs {
 export const storageInfoTool: Tool<StorageInfoArgs> = {
     definition: {
         name: 'storage_info',
-        description: 'Informations sur le stockage Roo. action=detect pour localiser, action=stats pour les statistiques.',
+        description: 'Informations sur le stockage Roo et Zoo-Code. action=detect pour localiser, action=stats pour les statistiques.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -87,15 +90,22 @@ async function handleDetect(): Promise<CallToolResult> {
 
 /**
  * Calcule les statistiques de stockage (ex get_storage_stats)
+ * #2429: Includes Zoo-Code storage stats when present.
  */
 async function handleStats(): Promise<CallToolResult> {
-    const stats = await RooStorageDetector.getStorageStats();
+    const rooStats = await RooStorageDetector.getStorageStats();
+    const zooStats = await ZooStorageDetector.getStorageStats();
 
     // FIX CRITIQUE: Calculer breakdown cohérent avec le total
     const workspaceBreakdown = await RooStorageDetector.getWorkspaceBreakdown();
 
+    // Keep flat top-level keys for backward compatibility + nest under 'roo'
     const enhancedStats = {
-        ...stats,
+        totalLocations: rooStats.totalLocations,
+        totalConversations: rooStats.totalConversations,
+        totalSize: rooStats.totalSize,
+        roo: rooStats,
+        ...(zooStats.totalLocations > 0 ? { zooCode: zooStats } : {}),
         workspaceBreakdown,
         totalWorkspaces: Object.keys(workspaceBreakdown).length
     };
