@@ -30,7 +30,7 @@ import { HierarchyReconstructionEngine } from './hierarchy-reconstruction-engine
 import { SkeletonComparator } from './skeleton-comparator.js';
 import { getParsingConfig, isComparisonMode, shouldUseNewParsing } from './parsing-config.js';
 import { WorkspaceDetector } from './workspace-detector.js';
-import { isZooCode } from './extension-paths.js';
+import { isZooCode, detectSourceFromPath } from './extension-paths.js';
 
 export class RooStorageDetector {
   private static readonly MAX_CONVERSATION_FILE_SIZE = 10 * 1024 * 1024; // 10MB — prevents OOM on traces >40MB
@@ -684,6 +684,7 @@ export class RooStorageDetector {
                 totalSize,
                 workspace: extractedWorkspace || rawMetadata.workspace,
                 dataSource: taskPath, // ✅ CRITIQUE: Chemin pour que HierarchyEngine trouve ui_messages.json
+                source: detectSourceFromPath(taskPath), // #2429: 'zoo-code' vs 'roo'
                 ...(oversizedFiles.length > 0 ? { oversizedFiles } : {}),
             },
             childTaskInstructionPrefixes: childTaskInstructionPrefixes.length > 0 ? childTaskInstructionPrefixes : undefined,
@@ -735,6 +736,7 @@ export class RooStorageDetector {
                         actionCount: 0,
                         totalSize: 0,
                         workspace: 'unknown',
+                        source: detectSourceFromPath(taskPath),
                     },
                 };
             } else {

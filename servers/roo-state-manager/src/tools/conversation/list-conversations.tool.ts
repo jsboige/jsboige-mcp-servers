@@ -78,7 +78,7 @@ interface ApiMessage {
 interface ConversationSummary {
     taskId: string;
     /** #883 / #1244 Couche 3.2 — 'roo' or 'claude'. Prefer metadata.source over taskId prefix. */
-    source?: 'roo' | 'claude';
+    source?: 'roo' | 'claude' | 'zoo';
     /** #1244 Couche 3.2 — 'local' (hot tier 1/2) or 'archive' (cold tier 3 GDrive). */
     tier?: 'local' | 'archive';
     parentTaskId?: string;
@@ -252,12 +252,15 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     // Build summary — always include key fields for readability
     const summary: Record<string, unknown> = { taskId: node.taskId };
 
-    // #883: Always show source type (roo/claude)
+    // #883: Always show source type (roo/claude/zoo)
     // #1244 Couche 3.2 — Prefer metadata.source (set by SkeletonCacheService Tier 2/3)
     // before falling back to taskId prefix detection.
+    // #2429 — Added 'zoo-code' source attribution.
     const metaSource = (node.metadata as any)?.source;
     if (metaSource === 'claude-code' || metaSource === 'claude') {
         summary.source = 'claude';
+    } else if (metaSource === 'zoo-code') {
+        summary.source = 'zoo';
     } else if (metaSource === 'roo') {
         summary.source = 'roo';
     } else {

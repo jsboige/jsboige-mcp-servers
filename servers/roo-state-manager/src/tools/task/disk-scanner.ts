@@ -12,6 +12,7 @@ import * as path from 'path';
 import os from 'os';
 import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { detectSourceFromPath } from '../../utils/extension-paths.js';
 
 /**
  * Read task_metadata.json for a task (small file, ~200 bytes).
@@ -40,6 +41,9 @@ async function quickAnalyze(
     // Read task_metadata.json for workspace, totalSize, accurate counts
     const taskMeta = await readTaskMetadata(taskPath);
 
+    // #2429: Detect source from storage path (zoo-code vs roo)
+    const source = detectSourceFromPath(taskPath);
+
     const uiPath = path.join(taskPath, 'ui_messages.json');
 
     try {
@@ -62,6 +66,7 @@ async function quickAnalyze(
                 totalSize: taskMeta.totalSize || 0,
                 workspace: taskMeta.workspace || '',
                 machineId: os.hostname(),
+                source,
             },
             parentTaskId: undefined,
             sequence: []
@@ -80,6 +85,7 @@ async function quickAnalyze(
                 totalSize: taskMeta.totalSize || 0,
                 workspace: taskMeta.workspace || '',
                 machineId: os.hostname(),
+                source,
             },
             parentTaskId: undefined,
             sequence: []

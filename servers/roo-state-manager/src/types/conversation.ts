@@ -50,7 +50,7 @@ export interface SkeletonMetadata {
     machineId?: string;
     qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
     dataSource?: string;
-    source?: 'roo' | 'claude-code';
+    source?: 'roo' | 'claude-code' | 'zoo-code';
     parentTaskId?: string;
     indexingState?: IndexingState;
     synthesis?: import('../models/synthesis/SynthesisModels.js').SynthesisMetadata;

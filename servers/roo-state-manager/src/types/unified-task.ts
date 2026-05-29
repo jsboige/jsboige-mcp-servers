@@ -2,11 +2,11 @@
  * UnifiedTask — Schema unifié pour les tâches Roo et Claude Code
  *
  * @module types/unified-task
- * @issue #1391 (#1360-1)
- * @version 1.0.0
+ * @issue #1391 (#1360-1), #2429 (zoo-code source)
+ * @version 1.1.0
  *
  * Représente une tâche (conversation/session) de N'IMPORTE QUELLE source
- * (Roo Code ou Claude Code) dans un format commun, permettant la recherche
+ * (Roo Code, Zoo-Code, ou Claude Code) dans un format commun, permettant la recherche
  * cross-source, le reporting unifié et le stockage partagé.
  */
 
@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
-export const TaskSource = z.enum(['roo', 'claude-code']);
+export const TaskSource = z.enum(['roo', 'claude-code', 'zoo-code']);
 export type TaskSource = z.infer<typeof TaskSource>;
 
 export const TaskStatus = z.enum(['active', 'completed', 'abandoned', 'stuck', 'unknown']);
@@ -31,7 +31,7 @@ export type StorageTier = z.infer<typeof StorageTier>;
 export const UnifiedTaskSchema = z.object({
   id: z.string().describe('Unique task identifier (taskId from source system)'),
 
-  source: TaskSource.describe('Origin system: Roo Code or Claude Code'),
+  source: TaskSource.describe('Origin system: Roo Code, Zoo-Code, or Claude Code'),
 
   parentId: z.string().optional().describe('Parent task ID for sub-task relationships'),
 
@@ -93,7 +93,7 @@ interface SourceTaskLike {
     workspace?: string;
     machineId?: string;
     qdrantIndexedAt?: string;
-    source?: 'roo' | 'claude-code';
+    source?: 'roo' | 'claude-code' | 'zoo-code';
     parentTaskId?: string;
   };
   truncatedInstruction?: string;
