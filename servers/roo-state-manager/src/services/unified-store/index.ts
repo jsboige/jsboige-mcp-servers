@@ -9,9 +9,13 @@
  * See docker-compose.postgres.yml for DEV Postgres bootstrap.
  *
  * Phase roadmap:
- *   A (now)    — scaffold: types, interfaces, null objects, SQL, docker (THIS PR)
- *   B (cycle+) — UnifiedStoreWriter impl + dual-write hook (env-gated)
- *   C (cycle+) — UnifiedStoreReader impl + conversation_browser hook (opt-in)
+ *   A (now)    — scaffold: types, interfaces, Null objects, SQL, docker (THIS PR)
+ *   B (cycle+) — UnifiedStoreWriter concrete impl + dual-write hook (env-gated)
+ *   C (cycle+) — UnifiedStoreReader concrete impl + conversation_browser hook (opt-in)
+ *
+ * Phase A intentionally exports only interfaces and Null objects — the concrete
+ * throwing skeletons were removed to satisfy the #815 anti-stub detection gate.
+ * Phase B/C will reintroduce the real implementations at the hook sites.
  */
 
 export type {
@@ -23,14 +27,8 @@ export type {
   UnifiedStoreSearchHit,
 } from './types.js';
 
-export {
-  UnifiedStoreWriter,
-  NullUnifiedStoreWriter,
-} from './UnifiedStoreWriter.js';
+export { NullUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 export type { IUnifiedStoreWriter, UnifiedStoreWriterConfig } from './UnifiedStoreWriter.js';
 
-export {
-  UnifiedStoreReader,
-  NullUnifiedStoreReader,
-} from './UnifiedStoreReader.js';
+export { NullUnifiedStoreReader } from './UnifiedStoreReader.js';
 export type { IUnifiedStoreReader, UnifiedStoreReaderConfig } from './UnifiedStoreReader.js';

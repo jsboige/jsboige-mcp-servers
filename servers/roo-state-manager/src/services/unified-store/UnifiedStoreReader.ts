@@ -3,7 +3,7 @@
  *
  * @module services/unified-store/UnifiedStoreReader
  * @issue #2426 (Epic #2191 unified store)
- * @phase A (scaffold — interface + no-op stubs; Phase C implements)
+ * @phase A (interface + Null object only; concrete impl deferred to Phase C per #815 gate)
  *
  * 2-step read path (ADR 010 v2.0 Scenario B):
  *   1. Qdrant ANN over content embeddings -> top-K task_id + score
@@ -12,8 +12,13 @@
  * This restores roosync_search #636 filters (has_errors, tool_name, role, etc.)
  * via the GIN idx_msg_toolcalls + plain BTREE on conversations.
  *
- * Phase A: interface sealed, throws to flag accidental wiring.
- * Phase C will hook into conversation_browser as an opt-in source.
+ * Phase A surface intentionally restricted to:
+ *   - IUnifiedStoreReader interface (contract for Phase C)
+ *   - NullUnifiedStoreReader (no-op, safe — used when opt-in is OFF)
+ *
+ * The concrete throwing skeleton was removed (gate #815 — anti-stub detection
+ * scans all of src/ recursively). Phase C will reintroduce a real implementation
+ * and hook it into conversation_browser as an opt-in source.
  */
 
 import type {
@@ -46,38 +51,6 @@ export interface IUnifiedStoreReader {
     filters?: UnifiedStoreSearchFilters,
   ): Promise<UnifiedStoreSearchHit[]>;
   ping(): Promise<boolean>;
-}
-
-export class UnifiedStoreReader implements IUnifiedStoreReader {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(private readonly _config: UnifiedStoreReaderConfig) {}
-
-  async init(): Promise<void> {
-    throw new Error('UnifiedStoreReader.init: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async close(): Promise<void> {
-    throw new Error('UnifiedStoreReader.close: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async getConversation(_taskId: string): Promise<ConversationRow | null> {
-    throw new Error('UnifiedStoreReader.getConversation: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async getMessages(_taskId: string, _opts?: { limit?: number; offset?: number }): Promise<MessageRow[]> {
-    throw new Error('UnifiedStoreReader.getMessages: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async joinFromQdrant(
-    _qdrantHits: Array<{ task_id: string; score: number }>,
-    _filters?: UnifiedStoreSearchFilters,
-  ): Promise<UnifiedStoreSearchHit[]> {
-    throw new Error('UnifiedStoreReader.joinFromQdrant: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async ping(): Promise<boolean> {
-    throw new Error('UnifiedStoreReader.ping: not implemented (Phase A scaffold, #2426)');
-  }
 }
 
 /** Null object for opt-out read path. */

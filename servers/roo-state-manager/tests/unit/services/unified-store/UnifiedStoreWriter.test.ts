@@ -1,8 +1,10 @@
 /**
  * UnifiedStoreWriter — Phase A smoke tests.
  *
- * Validates that the scaffold compiles, the null object is a true no-op,
- * and the skeleton class throws to flag accidental wiring before Phase B.
+ * Phase A intentionally ships only the IUnifiedStoreWriter interface and the
+ * NullUnifiedStoreWriter no-op implementation. The concrete throwing skeleton
+ * was removed to satisfy the #815 anti-stub gate; Phase B will reintroduce a
+ * real implementation at the SkeletonCacheService hook site.
  *
  * No live Postgres required.
  *
@@ -11,7 +13,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  UnifiedStoreWriter,
   NullUnifiedStoreWriter,
   type ConversationBundle,
   type ConversationRow,
@@ -63,17 +64,5 @@ describe('NullUnifiedStoreWriter', () => {
   it('ping returns false (always unhealthy)', async () => {
     const w = new NullUnifiedStoreWriter();
     await expect(w.ping()).resolves.toBe(false);
-  });
-});
-
-describe('UnifiedStoreWriter (Phase A skeleton)', () => {
-  it('throws not implemented on init', async () => {
-    const w = new UnifiedStoreWriter({ connectionString: 'postgres://x' });
-    await expect(w.init()).rejects.toThrow(/Phase A scaffold/);
-  });
-
-  it('throws not implemented on upsertConversation', async () => {
-    const w = new UnifiedStoreWriter({ connectionString: 'postgres://x' });
-    await expect(w.upsertConversation(dummyBundle)).rejects.toThrow(/Phase A scaffold/);
   });
 });

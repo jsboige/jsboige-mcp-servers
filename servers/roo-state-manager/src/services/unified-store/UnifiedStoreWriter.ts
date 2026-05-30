@@ -3,7 +3,7 @@
  *
  * @module services/unified-store/UnifiedStoreWriter
  * @issue #2426 (Epic #2191 unified store)
- * @phase A (scaffold — interface + no-op stubs; Phase B implements upsert)
+ * @phase A (interface + Null object only; concrete impl deferred to Phase B per #815 gate)
  *
  * Contract for Phase B/C:
  *   - upsertConversation: idempotent, ON CONFLICT DO UPDATE on (task_id)
@@ -13,9 +13,13 @@
  *   - Failure NEVER blocks skeleton cache — writer must absorb its own errors
  *     and log + emit metric
  *
- * Phase A: interface is sealed, implementation throws to make accidental wiring
- * fail loudly. Phase B replaces the body with a real pg.Pool + parameterized
- * queries + retry + circuit-breaker.
+ * Phase A surface intentionally restricted to:
+ *   - IUnifiedStoreWriter interface (contract for Phase B)
+ *   - NullUnifiedStoreWriter (no-op, safe — used when dual-write is OFF)
+ *
+ * The concrete throwing skeleton was removed (gate #815 — anti-stub detection
+ * scans all of src/ recursively). Phase B will reintroduce a real implementation
+ * (pg.Pool + parameterized queries + retry + circuit-breaker) at the hook site.
  */
 
 import type {
@@ -46,45 +50,6 @@ export interface IUnifiedStoreWriter {
   upsertMessages(rows: MessageRow[]): Promise<void>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
-}
-
-/**
- * Phase A skeleton. Methods throw "not implemented" so any accidental hook
- * lights up immediately rather than silently no-op.
- *
- * Phase B will:
- *   - import { Pool } from 'pg'
- *   - parameterize INSERT ... ON CONFLICT
- *   - wrap each call in a small retry (3x exponential) + circuit-breaker
- *   - emit metric unified_store.write.{ok,fail,latency}
- */
-export class UnifiedStoreWriter implements IUnifiedStoreWriter {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(private readonly _config: UnifiedStoreWriterConfig) {}
-
-  async init(): Promise<void> {
-    throw new Error('UnifiedStoreWriter.init: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async close(): Promise<void> {
-    throw new Error('UnifiedStoreWriter.close: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async upsertConversation(_bundle: ConversationBundle): Promise<void> {
-    throw new Error('UnifiedStoreWriter.upsertConversation: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async upsertConversationOnly(_row: ConversationRow): Promise<void> {
-    throw new Error('UnifiedStoreWriter.upsertConversationOnly: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async upsertMessages(_rows: MessageRow[]): Promise<void> {
-    throw new Error('UnifiedStoreWriter.upsertMessages: not implemented (Phase A scaffold, #2426)');
-  }
-
-  async ping(): Promise<boolean> {
-    throw new Error('UnifiedStoreWriter.ping: not implemented (Phase A scaffold, #2426)');
-  }
 }
 
 /**

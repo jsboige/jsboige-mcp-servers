@@ -1,8 +1,10 @@
 /**
  * UnifiedStoreReader — Phase A smoke tests.
  *
- * Validates that the scaffold compiles, the null object is a true no-op,
- * and the skeleton class throws to flag accidental wiring before Phase C.
+ * Phase A intentionally ships only the IUnifiedStoreReader interface and the
+ * NullUnifiedStoreReader no-op implementation. The concrete throwing skeleton
+ * was removed to satisfy the #815 anti-stub gate; Phase C will reintroduce a
+ * real implementation at the conversation_browser hook site.
  *
  * No live Postgres required.
  *
@@ -10,10 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  UnifiedStoreReader,
-  NullUnifiedStoreReader,
-} from '../../../../src/services/unified-store/index.js';
+import { NullUnifiedStoreReader } from '../../../../src/services/unified-store/index.js';
 
 describe('NullUnifiedStoreReader', () => {
   it('init/close are no-op', async () => {
@@ -42,19 +41,5 @@ describe('NullUnifiedStoreReader', () => {
   it('ping returns false', async () => {
     const r = new NullUnifiedStoreReader();
     await expect(r.ping()).resolves.toBe(false);
-  });
-});
-
-describe('UnifiedStoreReader (Phase A skeleton)', () => {
-  it('throws not implemented on init', async () => {
-    const r = new UnifiedStoreReader({ connectionString: 'postgres://x' });
-    await expect(r.init()).rejects.toThrow(/Phase A scaffold/);
-  });
-
-  it('throws not implemented on joinFromQdrant', async () => {
-    const r = new UnifiedStoreReader({ connectionString: 'postgres://x' });
-    await expect(
-      r.joinFromQdrant([{ task_id: 't-1', score: 0.9 }]),
-    ).rejects.toThrow(/Phase A scaffold/);
   });
 });
