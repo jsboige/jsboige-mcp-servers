@@ -24,7 +24,7 @@ export interface ConfigManifest {
   files: ConfigManifestFile[];
 }
 
-export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'modes-yaml' | `mcp:${string}`;
+export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'modes-yaml' | `mcp:${string}` | `services:${string}`;
 
 export interface CollectConfigOptions {
   targets: ConfigTarget[];

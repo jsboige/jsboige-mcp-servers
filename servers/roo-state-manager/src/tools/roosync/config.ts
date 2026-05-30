@@ -36,13 +36,18 @@ export const ConfigArgsSchema = z.object({
           const serverName = target.slice(4);
           return serverName && serverName.trim() !== '';
         }
+        // #2409 — services:<name> target
+        if (target.startsWith('services:')) {
+          const serviceName = target.slice(9);
+          return serviceName && serviceName.trim() !== '';
+        }
         return false;
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, ou mcp:<nomServeur>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>"
     }
-  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>. Default: ["modes", "mcp"]'),
+  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
@@ -92,7 +97,7 @@ export type ConfigArgs = z.infer<typeof ConfigArgsSchema>;
  * @returns Liste des targets validés
  * @throws ConfigSharingServiceError si un target est invalide
  */
-function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:${string}`)[] {
+function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:${string}` | `services:${string}`)[] {
   if (!targets) return [];
 
   return targets.map(target => {
@@ -108,12 +113,25 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
       return target as `mcp:${string}`;
     }
 
+    // #2409 — services:<name> target
+    if (target.startsWith('services:')) {
+      const serviceName = target.slice(9);
+      if (!serviceName || serviceName.trim() === '') {
+        throw new ConfigSharingServiceError(
+          `Format de target services invalide: '${target}'. Le nom du service ne peut pas être vide.`,
+          ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
+          { target }
+        );
+      }
+      return target as `services:${string}`;
+    }
+
     if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'modes-yaml') {
       return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, ou mcp:<nomServeur>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>, services:<nomService>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
