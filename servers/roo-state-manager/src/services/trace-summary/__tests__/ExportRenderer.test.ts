@@ -381,6 +381,39 @@ describe('ExportRenderer - generateHeader', () => {
         const header = renderer.generateHeader(conversation, options);
         expect(header).toContain('0.5 KB');
     });
+
+    it('should use dataSource basename as Fichier source when available', () => {
+        const conversation = makeConversation({
+            metadata: {
+                ...makeConversation().metadata,
+                dataSource: 'c:/dev/roo-extensions/tasks/roo_task_may-30_task.md'
+            }
+        });
+        const options = makeDefaultOptions();
+        const header = renderer.generateHeader(conversation, options);
+        expect(header).toContain('roo_task_may-30_task.md');
+        expect(header).not.toContain('roo_task_sep-8-2025');
+    });
+
+    it('should use taskId as Fichier source when no dataSource', () => {
+        const conversation = makeConversation();
+        const options = makeDefaultOptions();
+        const header = renderer.generateHeader(conversation, options);
+        expect(header).toContain('test-task-001');
+        expect(header).not.toContain('roo_task_sep-8-2025');
+    });
+
+    it('should handle Windows-style dataSource path', () => {
+        const conversation = makeConversation({
+            metadata: {
+                ...makeConversation().metadata,
+                dataSource: 'C:\\Users\\test\\.claude\\projects\\abc\\session.jsonl'
+            }
+        });
+        const options = makeDefaultOptions();
+        const header = renderer.generateHeader(conversation, options);
+        expect(header).toContain('session.jsonl');
+    });
 });
 
 describe('ExportRenderer - generateMetadata', () => {

@@ -322,14 +322,17 @@ export class ExportRenderer {
             hour12: false
         }).replace(',', ' a');
 
-        // Note: getOriginalContentSize est dans SummaryGenerator, on peut l'injecter ou le recalculer
-        // Pour simplifier, on utilise une valeur approximative ou on passe la stat
-        // Ici on va utiliser une méthode simplifiée
         const sourceSizeKB = Math.round(conversation.metadata.totalSize / 1024 * 10) / 10;
+
+        // Derive source label from metadata (dataSource path or taskId), not hardcoded
+        const dataSource = conversation.metadata.dataSource as string | undefined;
+        const sourceLabel = dataSource
+            ? dataSource.split('/').pop()!.split('\\').pop()!
+            : conversation.taskId;
 
         return `# RESUME DE TRACE D'ORCHESTRATION ROO
 
-**Fichier source :** roo_task_sep-8-2025_11-11-29-pm.md
+**Fichier source :** ${sourceLabel}
 **Date de generation :** ${dateStr}
 **Taille source :** ${sourceSizeKB} KB`;
     }
