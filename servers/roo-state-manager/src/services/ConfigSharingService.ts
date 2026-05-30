@@ -32,6 +32,7 @@ import { RollbackManager } from './RollbackManager.js';
 import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
 import { ServicesConfigService } from './ServicesConfigService.js';
 import yaml from 'js-yaml';
+import { SchtasksConfigService } from './SchtasksConfigService.js';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
@@ -130,6 +131,12 @@ export class ConfigSharingService implements IConfigSharingService {
     if (servicesTargets.length > 0) {
       const servicesFiles = await this.collectServices(tempDir, servicesTargets);
       manifest.files.push(...servicesFiles);
+    }
+
+    // Collecte des schtasks (tâches planifiées Windows) - #2408 VibeSync Phase 2
+    if (options.targets.includes('schtasks')) {
+      const schtasksFiles = await this.collectSchtasks(tempDir);
+      manifest.files.push(...schtasksFiles);
     }
 
     // Calcul de la taille totale
@@ -1788,5 +1795,41 @@ export class ConfigSharingService implements IConfigSharingService {
   private async calculateHash(filePath: string): Promise<string> {
     const content = await fs.readFile(filePath);
     return createHash('sha256').update(content).digest('hex');
+  }
+
+  /**
+   * Collecte les tâches planifiées Windows via SchtasksConfigService
+   * #2408 VibeSync Phase 2
+   */
+  private async collectSchtasks(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const schtasksDir = join(tempDir, 'schtasks');
+    await fs.mkdir(schtasksDir, { recursive: true });
+
+    try {
+      const schtasksService = new SchtasksConfigService();
+      const collectResult = await schtasksService.collect();
+
+      const destPath = join(schtasksDir, 'schtasks-inventory.json');
+      const content = JSON.stringify(collectResult, null, 2);
+      await fs.writeFile(destPath, content, 'utf-8');
+
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'schtasks/schtasks-inventory.json',
+        hash,
+        type: 'other',
+        size: stats.size,
+      });
+
+      this.logger.info(`Schtasks collectés: ${collectResult.count} tâches`);
+    } catch (error) {
+      this.logger.warn(`Erreur lors de la collecte des schtasks: ${error}`);
+      // Ne pas faire échouer toute la collecte si les schtasks ne sont pas disponibles
+    }
+
+    return files;
   }
 }

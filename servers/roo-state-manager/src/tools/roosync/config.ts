@@ -30,7 +30,7 @@ export const ConfigArgsSchema = z.object({
     (targets) => {
       if (!targets) return true;
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'modes-yaml') {
+        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'modes-yaml' || target === 'schtasks') {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -51,9 +51,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>, env:<service>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, schtasks, mcp:<server>, services:<name>, env:<service>"
     }
-  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
+  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, schtasks, mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
@@ -103,7 +103,7 @@ export type ConfigArgs = z.infer<typeof ConfigArgsSchema>;
  * @returns Liste des targets validés
  * @throws ConfigSharingServiceError si un target est invalide
  */
-function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
+function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'schtasks' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
   if (!targets) return [];
 
   return targets.map(target => {
@@ -145,12 +145,12 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
       return target as `env:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'modes-yaml') {
+    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'modes-yaml' || target === 'schtasks') {
       return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, schtasks, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
