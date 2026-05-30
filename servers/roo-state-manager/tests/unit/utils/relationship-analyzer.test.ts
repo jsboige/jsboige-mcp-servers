@@ -490,6 +490,9 @@ describe('RelationshipAnalyzer', () => {
         (r.source === 'se-2' && r.target === 'se-1')
       );
       expect(pairRel).toBeDefined();
+      expect(pairRel!.weight).toBeGreaterThan(0.5);
+      expect(pairRel!.metadata.confidence).toBeGreaterThanOrEqual(0.6);
+      expect(pairRel!.metadata.evidence.length).toBeGreaterThan(0);
     });
 
     it('includes common mode in semantic evidence', async () => {
@@ -516,6 +519,8 @@ describe('RelationshipAnalyzer', () => {
         (r.source === 'sm-2' && r.target === 'sm-1')
       );
       expect(pairRel).toBeDefined();
+      expect(pairRel!.weight).toBeGreaterThan(0.5);
+      expect(pairRel!.metadata.evidence.length).toBeGreaterThan(0);
       // Both conversations share mode 'code'; the SEMANTIC analyzer would
       // include 'Mode commun: code' in evidence. After dedup, the surviving
       // relationship may be FILE_DEPENDENCY instead, so we just verify the pair is linked.
@@ -544,6 +549,8 @@ describe('RelationshipAnalyzer', () => {
         (r.source === 'st-2' && r.target === 'st-1')
       );
       expect(pairRel).toBeDefined();
+      expect(pairRel!.weight).toBeGreaterThan(0.5);
+      expect(pairRel!.metadata.confidence).toBeGreaterThanOrEqual(0.6);
     });
   });
 
