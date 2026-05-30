@@ -30,5 +30,9 @@ export type {
 export { NullUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 export type { IUnifiedStoreWriter, UnifiedStoreWriterConfig } from './UnifiedStoreWriter.js';
 
+export { PgUnifiedStoreWriter } from './PgUnifiedStoreWriter.js';
+
+export { getUnifiedStoreWriter, resetWriterInstance } from './writer-factory.js';
+
 export { NullUnifiedStoreReader } from './UnifiedStoreReader.js';
 export type { IUnifiedStoreReader, UnifiedStoreReaderConfig } from './UnifiedStoreReader.js';
