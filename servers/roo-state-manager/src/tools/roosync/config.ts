@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 import type { ConfigTarget } from '../../types/config-sharing.js';
+import { EnvRotationService } from '../../services/EnvRotationService.js';
 
 /**
  * Claude Code scope pour les configurations MCP
@@ -41,13 +42,18 @@ export const ConfigArgsSchema = z.object({
           const serviceName = target.slice(9);
           return serviceName && serviceName.trim() !== '';
         }
+        // #2410 — env:<service> target for secret rotation
+        if (target.startsWith('env:')) {
+          const serviceName = target.slice(4);
+          return serviceName && serviceName.trim() !== '';
+        }
         return false;
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>, env:<service>"
     }
-  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>. Default: ["modes", "mcp"]'),
+  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
@@ -97,7 +103,7 @@ export type ConfigArgs = z.infer<typeof ConfigArgsSchema>;
  * @returns Liste des targets validés
  * @throws ConfigSharingServiceError si un target est invalide
  */
-function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:${string}` | `services:${string}`)[] {
+function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
   if (!targets) return [];
 
   return targets.map(target => {
@@ -126,12 +132,25 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | `mcp:
       return target as `services:${string}`;
     }
 
+    // #2410 — env:<service> target for secret rotation
+    if (target.startsWith('env:')) {
+      const serviceName = target.slice(4);
+      if (!serviceName || serviceName.trim() === '') {
+        throw new ConfigSharingServiceError(
+          `Format de target env invalide: '${target}'. Le nom du service ne peut pas être vide.`,
+          ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
+          { target }
+        );
+      }
+      return target as `env:${string}`;
+    }
+
     if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'modes-yaml') {
       return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>, services:<nomService>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
@@ -151,6 +170,68 @@ export async function roosyncConfig(args: ConfigArgs) {
   try {
     const rooSyncService = await getRooSyncService();
     const configSharingService = rooSyncService.getConfigSharingService();
+
+    // #2410 — Env rotation short-circuit (different workflow: encrypt direct, no file collect)
+    const envTargets = (args.targets || []).filter((t: string) => t.startsWith('env:'));
+    if (envTargets.length > 0) {
+      const envService = new EnvRotationService();
+      const configService = rooSyncService.getConfigService();
+      const sharedStatePath = configService.getSharedStatePath();
+
+      if (action === 'publish') {
+        const { version, description } = args;
+        if (!version || !description) {
+          throw new ConfigSharingServiceError(
+            "env: publish requiert 'version' et 'description'",
+            ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
+            { targets: envTargets }
+          );
+        }
+        const results = [];
+        for (const target of envTargets) {
+          const serviceName = target.slice(4);
+          // Default .env path: same directory as roo-state-manager
+          const envPath = process.env[`${serviceName.toUpperCase()}_ENV_PATH`]
+            || `config/${serviceName}/.env`;
+          const result = await envService.publish({
+            service: serviceName,
+            envPath,
+            sharedStatePath,
+            version,
+            description,
+            machineId: machineId || process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown',
+            dryRun,
+          });
+          results.push(result);
+        }
+        return { status: 'success', results };
+      }
+
+      if (action === 'apply') {
+        const { backup = true } = args;
+        const results = [];
+        for (const target of envTargets) {
+          const serviceName = target.slice(4);
+          const targetEnvPath = process.env[`${serviceName.toUpperCase()}_ENV_PATH`]
+            || `config/${serviceName}/.env`;
+          const result = await envService.apply({
+            service: serviceName,
+            targetEnvPath,
+            sharedStatePath,
+            backup,
+            dryRun,
+          });
+          results.push(result);
+        }
+        return { status: 'success', results };
+      }
+
+      // collect not applicable for env (use publish directly)
+      return {
+        status: 'warning',
+        message: 'env: targets use publish/apply only. Collect is not applicable for encrypted secrets.',
+      };
+    }
 
     switch (action) {
       case 'collect': {
