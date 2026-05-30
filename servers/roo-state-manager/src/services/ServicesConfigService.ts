@@ -150,18 +150,28 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
 // PowerShell scripts (inline for PowerShellExecutor)
 // ──────────────────────────────────────────────────
 
-const COLLECT_SERVICE_SCRIPT = `
+/**
+ * Build a PowerShell script to collect Windows service info.
+ * Uses string interpolation (not param()) because PowerShellExecutor
+ * invokes via `-Command` which does not bind param() blocks (#2409 review).
+ */
+function buildCollectServiceScript(serviceName: string, ports: number[]): string {
+  const portCheck = ports.length > 0 ? `
+$Ports = @(${ports.join(',')})
+$listeningPorts = @()
+foreach ($port in $Ports) {
+  $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if ($listener) { $listeningPorts += $port }
+}
+$result.ListeningPorts = $listeningPorts` : '';
+
+  return `
 $ErrorActionPreference = 'Stop'
 $result = @{}
 
-param(
-  [string]$ServiceName,
-  [int[]]$Ports = @()
-)
-
 # Get service info
 try {
-  $svc = Get-Service -Name $ServiceName -ErrorAction Stop
+  $svc = Get-Service -Name '${serviceName}' -ErrorAction Stop
   $result.Status = $svc.Status.ToString()
   $result.StartType = $svc.StartType.ToString()
   $result.DisplayName = $svc.DisplayName
@@ -172,70 +182,50 @@ try {
 
 # Get PID from Win32_Service
 try {
-  $wmi = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
-  if ($wmi) {
-    $result.Pid = $wmi.ProcessId
-  }
+  $wmi = Get-CimInstance -ClassName Win32_Service -Filter "Name='${serviceName}'" -ErrorAction SilentlyContinue
+  if ($wmi) { $result.Pid = $wmi.ProcessId }
 } catch {}
-
-# Check ports
-if ($Ports.Count -gt 0) {
-  $listeningPorts = @()
-  foreach ($port in $Ports) {
-    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if ($listener) {
-      $listeningPorts += $port
-    }
-  }
-  $result.ListeningPorts = $listeningPorts
-}
+${portCheck}
 
 $result | ConvertTo-Json -Depth 5
 `;
+}
 
-const COLLECT_PROCESS_SCRIPT = `
-param(
-  [string]$ProcessName,
-  [int[]]$Ports = @()
-)
+function buildCollectProcessScript(processName: string, ports: number[]): string {
+  const portCheck = ports.length > 0 ? `
+$Ports = @(${ports.join(',')})
+$listeningPorts = @()
+foreach ($port in $Ports) {
+  $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if ($listener) { $listeningPorts += $port }
+}
+$result.ListeningPorts = $listeningPorts` : '';
 
+  return `
 $ErrorActionPreference = 'Stop'
 $result = @{}
 
 # Find process
-$procs = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
+$procs = Get-Process -Name '${processName}' -ErrorAction SilentlyContinue
 if ($procs) {
   $result.Status = 'Running'
   $result.Pids = @($procs | ForEach-Object { $_.Id })
 } else {
   $result.Status = 'Stopped'
 }
-
-# Check ports
-if ($Ports.Count -gt 0) {
-  $listeningPorts = @()
-  foreach ($port in $Ports) {
-    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if ($listener) {
-      $listeningPorts += $port
-    }
-  }
-  $result.ListeningPorts = $listeningPorts
-}
+${portCheck}
 
 $result | ConvertTo-Json -Depth 5
 `;
+}
 
-const COLLECT_CONTAINER_SCRIPT = `
-param(
-  [string]$ContainerName
-)
-
+function buildCollectContainerScript(containerName: string): string {
+  return `
 $ErrorActionPreference = 'Stop'
 $result = @{}
 
 try {
-  $container = docker inspect --format '{{.State.Status}}' $ContainerName 2>$null
+  $container = docker inspect --format '{{.State.Status}}' '${containerName}' 2>$null
   if ($LASTEXITCODE -eq 0) {
     $result.Status = $container.Trim()
   } else {
@@ -248,6 +238,7 @@ try {
 
 $result | ConvertTo-Json -Depth 5
 `;
+}
 
 // ──────────────────────────────────────────────────
 // Service class
@@ -320,11 +311,12 @@ export class ServicesConfigService {
 
     switch (entry.kind) {
       case 'service': {
-        const script = COLLECT_SERVICE_SCRIPT;
+        const script = buildCollectServiceScript(
+          entry.windowsServiceName || entry.name,
+          entry.ports ?? []
+        );
         const result = await this.executor.executeScript(
-          '', // inline script
-          ['-Command', script, '-ServiceName', entry.windowsServiceName || entry.name,
-           ...(entry.ports?.length ? ['-Ports', entry.ports.join(',')] : [])],
+          '', ['-Command', script],
           { timeout: 15000 }
         );
         if (result.success) {
@@ -338,10 +330,12 @@ export class ServicesConfigService {
         break;
       }
       case 'process': {
+        const script = buildCollectProcessScript(
+          entry.processName || entry.name,
+          entry.ports ?? []
+        );
         const result = await this.executor.executeScript(
-          '',
-          ['-Command', COLLECT_PROCESS_SCRIPT, '-ProcessName', entry.processName || entry.name,
-           ...(entry.ports?.length ? ['-Ports', entry.ports.join(',')] : [])],
+          '', ['-Command', script],
           { timeout: 15000 }
         );
         if (result.success) {
@@ -355,9 +349,9 @@ export class ServicesConfigService {
         break;
       }
       case 'container': {
+        const script = buildCollectContainerScript(entry.containerName || entry.name);
         const result = await this.executor.executeScript(
-          '',
-          ['-Command', COLLECT_CONTAINER_SCRIPT, '-ContainerName', entry.containerName || entry.name],
+          '', ['-Command', script],
           { timeout: 15000 }
         );
         if (result.success) {

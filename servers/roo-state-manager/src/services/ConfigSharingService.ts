@@ -345,14 +345,45 @@ export class ConfigSharingService implements IConfigSharingService {
       const servicesTargets = options.targets?.filter(t => typeof t === 'string' && t.startsWith('services:')) as string[] || [];
       if (servicesTargets.length > 0) {
         const serviceNames = servicesTargets.map(t => (t as string).slice(9));
-        // Read services-state.json from the config package for the intended operation
         const servicesStatePath = join(configDir, 'services', 'services-state.json');
         if (existsSync(servicesStatePath)) {
           this.logger.info(`Applying services targets: ${serviceNames.join(', ')}`);
-          // Services apply is a separate flow — collect current state, compare, apply changes
-          // The actual start/stop/restart is handled by ServicesConfigService.apply()
-          // For now, just log that we would apply service changes
-          this.logger.info('Services apply: reading state from package', { servicesStatePath });
+          try {
+            const servicesConfig = new ServicesConfigService();
+            const packageStateRaw = await fs.readFile(servicesStatePath, 'utf-8');
+            const packageState = JSON.parse(packageStateRaw) as { services: Array<{ name: string; status: string }> };
+
+            // Collect current local state
+            const localState = await servicesConfig.collect(serviceNames);
+
+            // Determine operations needed: start services that are stopped in the package state but running in the target
+            const toStart: string[] = [];
+            for (const pkgService of packageState.services) {
+              if (!serviceNames.includes(pkgService.name)) continue;
+              const local = localState.services.find(s => s.name === pkgService.name);
+              if (local && local.status !== pkgService.status) {
+                // If package says Running and local says Stopped → start
+                if (pkgService.status === 'Running' && (local.status === 'Stopped' || local.status === 'NotFound')) {
+                  toStart.push(pkgService.name);
+                }
+              }
+            }
+
+            if (toStart.length > 0) {
+              this.logger.info(`Services to reconcile: ${toStart.join(', ')}`);
+              if (!options.dryRun) {
+                const applyResult = await servicesConfig.apply(toStart, 'start', options.dryRun);
+                if (!applyResult.success) {
+                  errors.push(...(applyResult.errors || []));
+                }
+                filesApplied += toStart.length;
+              }
+            }
+          } catch (svcErr) {
+            errors.push(`Services apply failed: ${svcErr instanceof Error ? svcErr.message : String(svcErr)}`);
+          }
+        } else {
+          this.logger.warn('Services state file not found in package', { servicesStatePath });
         }
       }
 
