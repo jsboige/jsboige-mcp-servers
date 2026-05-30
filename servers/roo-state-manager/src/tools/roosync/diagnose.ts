@@ -214,7 +214,7 @@ async function handleEnvAction(
 
   const criticalDirs: Array<{ name: string; base: string | null }> = [
     { name: '.', base: process.cwd() },
-    { name: '.shared-state', base: sharedPath },
+    { name: '.', base: sharedPath }, // sharedPath already points to .shared-state directory
     { name: 'roo-config', base: sharedBase },
     { name: 'mcps', base: process.cwd() },
     { name: 'logs', base: sharedBase },

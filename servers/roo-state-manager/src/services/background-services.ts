@@ -675,7 +675,7 @@ async function loadNoiseFilterBlacklist(state: ServerState): Promise<void> {
             return;
         }
 
-        const blacklistPath = path.join(sharedPath, '.shared-state', 'qdrant-blacklist.json');
+        const blacklistPath = path.join(sharedPath, 'qdrant-blacklist.json'); // sharedPath already points to .shared-state
         const content = await fs.readFile(blacklistPath, 'utf8');
 
         const cleaned = content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content;
