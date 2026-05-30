@@ -54,6 +54,7 @@
     "js-yaml": "^4.1.1",
     "marked": "^14.1.0",
     "openai": "^4.20.0",
+    "pg": "^8.13.0",
     "proper-lockfile": "^4.1.2",
     "roo-state-manager": "file:",
     "sqlite3": "^5.1.7",
