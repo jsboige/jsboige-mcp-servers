@@ -385,14 +385,20 @@ export class ServicesConfigService {
    * Apply an operation to specified service targets.
    * Enforces ownership: refuses if current machine ≠ designated owner.
    *
+   * W3: Reconciliation is bidirectional — start AND stop. If a `desiredStatus`
+   *     is provided for each target, the operation is auto-determined from
+   *     current vs desired state. Otherwise the explicit `operation` is used.
+   *
    * @param targets - Service names with operation (e.g. ['vllm'])
    * @param operation - 'start' | 'stop' | 'restart'
    * @param dryRun - If true, only report what would be done
+   * @param desiredStatuses - Optional map of target name → desired status for bidirectional reconciliation
    */
   async apply(
     targets: string[],
     operation: 'start' | 'stop' | 'restart',
-    dryRun?: boolean
+    dryRun?: boolean,
+    desiredStatuses?: Record<string, string>
   ): Promise<ServicesApplyResult> {
     const changes: AppliedChange[] = [];
     const errors: string[] = [];
@@ -411,6 +417,13 @@ export class ServicesConfigService {
         continue;
       }
 
+      // W3: Determine effective operation from desired state if provided
+      let effectiveOp = operation;
+      let needsReconciliation = false;
+      if (desiredStatuses && desiredStatuses[name]) {
+        needsReconciliation = true;
+      }
+
       if (dryRun) {
         changes.push({
           name,
@@ -425,9 +438,35 @@ export class ServicesConfigService {
         // Collect before state
         const before = await this.collectSingle(regEntry);
         const beforeStatus = before.status;
+        const beforePid = before.pid;
+
+        // W3: If reconciliation mode, determine operation from current vs desired
+        if (needsReconciliation && desiredStatuses) {
+          const desired = desiredStatuses[name];
+          const isRunning = ['Running', 'OK'].includes(beforeStatus);
+          const shouldBeRunning = ['Running', 'OK'].includes(desired);
+
+          if (isRunning && !shouldBeRunning) {
+            effectiveOp = 'stop';
+            this.logger.info(`Reconciliation: ${name} is ${beforeStatus}, should be ${desired} → stopping`);
+          } else if (!isRunning && shouldBeRunning) {
+            effectiveOp = 'start';
+            this.logger.info(`Reconciliation: ${name} is ${beforeStatus}, should be ${desired} → starting`);
+          } else {
+            // Already in desired state, skip
+            this.logger.info(`Reconciliation: ${name} already in desired state (${beforeStatus})`);
+            changes.push({
+              name,
+              action: effectiveOp,
+              before: beforeStatus,
+              after: beforeStatus,
+            });
+            continue;
+          }
+        }
 
         // Execute the operation
-        await this.applySingle(regEntry, operation);
+        await this.applySingle(regEntry, effectiveOp, beforePid);
 
         // Wait a moment for the service to stabilize
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -436,18 +475,19 @@ export class ServicesConfigService {
         const after = await this.collectSingle(regEntry);
         const afterStatus = after.status;
 
-        // Health check
+        // Health check (only for start/restart)
         let healthAfter: ServiceHealth | undefined;
-        if (regEntry.healthEndpoint) {
+        if (regEntry.healthEndpoint && (effectiveOp === 'start' || effectiveOp === 'restart')) {
           healthAfter = await this.probeHealth(regEntry.healthEndpoint);
         }
 
         // Rollback if health check fails on start/restart
-        if ((operation === 'start' || operation === 'restart') && healthAfter && !healthAfter.healthy) {
-          this.logger.warn(`Health check failed for ${name} after ${operation}. Rolling back.`);
+        if ((effectiveOp === 'start' || effectiveOp === 'restart') && healthAfter && !healthAfter.healthy) {
+          this.logger.warn(`Health check failed for ${name} after ${effectiveOp}. Rolling back.`);
           // Best-effort rollback: stop what we just started
           try {
-            await this.applySingle(regEntry, 'stop');
+            const afterRollback = await this.collectSingle(regEntry);
+            await this.applySingle(regEntry, 'stop', afterRollback.pid);
             rollbackPerformed = true;
           } catch (rollbackErr) {
             this.logger.error(`Rollback failed for ${name}: ${rollbackErr}`);
@@ -456,7 +496,7 @@ export class ServicesConfigService {
 
         changes.push({
           name,
-          action: operation,
+          action: effectiveOp,
           before: beforeStatus,
           after: afterStatus,
           healthAfter,
@@ -474,7 +514,19 @@ export class ServicesConfigService {
     };
   }
 
-  private async applySingle(entry: ServiceRegistryEntry, operation: 'start' | 'stop' | 'restart'): Promise<void> {
+  /**
+   * Apply an operation to a single registry entry.
+   *
+   * W1: Process stop uses PID filter (or CommandLine fallback) instead of
+   *     `Stop-Process -Name` which kills ALL processes with that name.
+   * W2: startArgs is passed as a PowerShell array `@('arg1','arg2')`
+   *     instead of a flat joined string.
+   */
+  private async applySingle(
+    entry: ServiceRegistryEntry,
+    operation: 'start' | 'stop' | 'restart',
+    collectedPid?: number
+  ): Promise<void> {
     const opVerb = operation === 'start' ? 'Start' : operation === 'stop' ? 'Stop' : 'Restart';
 
     switch (entry.kind) {
@@ -489,8 +541,7 @@ export class ServicesConfigService {
       }
       case 'process': {
         if (operation === 'stop' || operation === 'restart') {
-          const killScript = `Get-Process -Name '${entry.processName}' -ErrorAction SilentlyContinue | Stop-Process -Force`;
-          await this.executor.executeScript('', ['-Command', killScript], { timeout: 15000 });
+          await this.stopProcess(entry, collectedPid);
           if (operation === 'stop') break;
           // For restart, wait for process to die
           await new Promise(resolve => setTimeout(resolve, 1000));
@@ -499,11 +550,15 @@ export class ServicesConfigService {
           if (!entry.startCommand) {
             throw new Error(`No startCommand defined for process target: ${entry.name}`);
           }
+          // W2: Build PowerShell array for ArgumentList instead of flat join
+          const argsFragment = entry.startArgs?.length
+            ? `-ArgumentList @(${entry.startArgs.map(a => `'${a.replace(/'/g, "''")}'`).join(',')})`
+            : '';
           const startScript = [
             'Start-Process',
-            `-FilePath '${entry.startCommand}'`,
-            ...(entry.startArgs?.length ? [`-ArgumentList '${entry.startArgs.join(' ')}'`] : []),
-            ...(entry.startCwd ? [`-WorkingDirectory '${entry.startCwd}'`] : []),
+            `-FilePath '${entry.startCommand.replace(/'/g, "''")}'`,
+            ...(argsFragment ? [argsFragment] : []),
+            ...(entry.startCwd ? [`-WorkingDirectory '${entry.startCwd.replace(/'/g, "''")}'`] : []),
             '-WindowStyle Hidden',
           ].join(' ');
           const result = await this.executor.executeScript('', ['-Command', startScript], { timeout: 15000 });
@@ -525,6 +580,36 @@ export class ServicesConfigService {
         break;
       }
     }
+  }
+
+  /**
+   * W1: Stop a process target safely — prefers PID, then CommandLine filter,
+   *     falls back to name-based kill with a warning.
+   */
+  private async stopProcess(entry: ServiceRegistryEntry, collectedPid?: number): Promise<void> {
+    // Strategy 1: PID-based kill (most precise)
+    if (collectedPid) {
+      const killScript = `Stop-Process -Id ${collectedPid} -Force -ErrorAction SilentlyContinue`;
+      await this.executor.executeScript('', ['-Command', killScript], { timeout: 15000 });
+      return;
+    }
+
+    // Strategy 2: CommandLine filter (narrower than name)
+    if (entry.processName && entry.startCommand) {
+      const safeName = entry.processName.replace(/'/g, "''");
+      const safeCmd = entry.startCommand.replace(/'/g, "''");
+      const killScript = `
+$procs = Get-CimInstance -ClassName Win32_Process -Filter "Name='${safeName}.exe'" -ErrorAction SilentlyContinue
+$target = $procs | Where-Object { $_.CommandLine -like '*${safeCmd}*' }
+if ($target) { $target | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }`.trim();
+      await this.executor.executeScript('', ['-Command', killScript], { timeout: 15000 });
+      return;
+    }
+
+    // Strategy 3: Last resort — name-based kill (broad, logs warning)
+    this.logger.warn(`Broad stop for ${entry.name}: no PID or startCommand filter, using name '${entry.processName}'`);
+    const fallbackScript = `Stop-Process -Name '${entry.processName}' -Force -ErrorAction SilentlyContinue`;
+    await this.executor.executeScript('', ['-Command', fallbackScript], { timeout: 15000 });
   }
 
   // ── Health probe ───────────────────────────────
