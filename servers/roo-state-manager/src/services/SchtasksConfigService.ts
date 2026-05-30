@@ -193,7 +193,7 @@ $filterPatterns = @(${patterns.map(p => `'${p}'`).join(', ')})
 
 $allTasks = Get-ScheduledTask | Where-Object {
     $_.TaskPath -notlike '\\Microsoft\\*' -and
-    ($filterPatterns | ForEach-Object { $taskName = $_.TaskName; ($filterPatterns | Where-Object { $taskName -like $_ }).Count -gt 0 })
+    ($t = $_; $filterPatterns | Where-Object { $t.TaskName -like $_ }).Count -gt 0
 }
 
 $results = @()
