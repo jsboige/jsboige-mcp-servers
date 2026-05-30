@@ -1,0 +1,43 @@
+# docker-compose.postgres.yml
+# Issue: #2426 (Postgres prototype, Epic #2191 unified store)
+# Scope: DEV-only local validation. Production deployment = ai-01 single DB
+# (Q1 override, no replication, exposed via pg.myia.io TCP+SSL).
+#
+# Usage (DEV):
+#   docker compose -f docker-compose.postgres.yml up -d
+#   psql "host=localhost port=5433 user=unified_store dbname=unified_store sslmode=disable"
+#   docker compose -f docker-compose.postgres.yml down -v   # destroys volume
+#
+# Apply schema after first start:
+#   psql ... -f migrations/001_init_unified_store.sql
+#
+# Production (ai-01) will use a separate compose file with:
+#   - SSL certificate signed by Let's Encrypt or internal CA (no self-signed)
+#   - Persistent volume on host disk with backup hook (Q3 30-day retention)
+#   - pg.myia.io DNS + TCP exposure (NOT through IIS — Postgres protocol is TCP-native)
+#   - Restricted ingress firewall (only ai-01 + fleet machines)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: unified-store-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: unified_store
+      POSTGRES_USER: unified_store
+      # DEV-only credential; production uses secret manager. NEVER commit prod creds.
+      POSTGRES_PASSWORD: dev_local_only_change_me
+    ports:
+      - "5433:5432"
+    volumes:
+      - unified_store_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unified_store -d unified_store"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  unified_store_data:
+    name: unified-store-postgres-dev-data
