@@ -11,11 +11,10 @@ import { promises as fs } from 'fs';
 import { join, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createLogger, Logger } from '../utils/logger.js';
-import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32; // 256 bits
-const IV_LENGTH = 16;  // 128 bits — GCM supports both 12 (fast path) and 16 (GHASH derivation, NIST SP 800-38D §5.2.1.2)
+const IV_LENGTH = 12;  // 96 bits — NIST SP 800-38D §5.2.1.1 recommended (fast path, no GHASH derivation needed)
 const TAG_LENGTH = 16; // 128 bits
 const SALT_LENGTH = 32;
 
@@ -267,6 +266,19 @@ export class EnvRotationService {
     const { salt, iv, tag, ciphertext } = this.deserializeEncrypted(wire);
     const plaintext = this.decrypt(ciphertext, iv, tag, salt);
     const envContent = plaintext.toString('utf-8');
+
+    // Validate decrypted content looks like a .env file (Hermes concern #3)
+    // Reject binary/corrupted content that doesn't contain at least one KEY=VALUE line
+    const hasValidLine = envContent.split('\n').some(l => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l.trim()));
+    if (!hasValidLine) {
+      return {
+        status: 'error',
+        message: `Decrypted content does not appear to be a valid .env file (no KEY=VALUE lines found). ` +
+          `Possible key mismatch or data corruption for ${service} v${latestVersion}.`,
+        service,
+        keysWritten: 0,
+      };
+    }
 
     // Parse and count keys
     const keys = envContent.split('\n').filter(l => l.includes('=') && !l.startsWith('#'));
