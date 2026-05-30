@@ -210,8 +210,8 @@ describe('EnvRotationService', () => {
       const elapsed = Date.now() - start;
 
       expect(decrypted.toString('utf-8')).toBe(env);
-      // Performance: should complete in < 100ms
-      expect(elapsed).toBeLessThan(100);
+      // Performance: scrypt N=32768 is intentionally slower for security
+      expect(elapsed).toBeLessThan(500);
     });
 
     it('should handle multi-line values (quoted)', () => {

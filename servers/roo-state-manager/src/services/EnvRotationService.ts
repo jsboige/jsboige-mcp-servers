@@ -15,7 +15,7 @@ import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32; // 256 bits
-const IV_LENGTH = 16;  // 128 bits
+const IV_LENGTH = 16;  // 128 bits — GCM supports both 12 (fast path) and 16 (GHASH derivation, NIST SP 800-38D §5.2.1.2)
 const TAG_LENGTH = 16; // 128 bits
 const SALT_LENGTH = 32;
 
@@ -78,8 +78,9 @@ export class EnvRotationService {
         `ROOSYNC_ENV_KEY too short (${envKey.length} chars). Minimum 32 characters required.`
       );
     }
-    // Derive 256-bit key from passphrase using scrypt
-    return scryptSync(envKey, salt, KEY_LENGTH);
+    // Derive 256-bit key from passphrase using scrypt (OWASP 2024 params)
+    // maxmem = N * r * p * 128 + N * r * 256 (approx) — allocate generously
+    return scryptSync(envKey, salt, KEY_LENGTH, { N: 32768, r: 8, p: 2, maxmem: 128 * 32768 * 8 * 2 });
   }
 
   /**
@@ -192,7 +193,7 @@ export class EnvRotationService {
     mkdirSync(envDir, { recursive: true });
 
     const encryptedPath = join(envDir, `${version}.enc`);
-    await fs.writeFile(encryptedPath, wire);
+    await fs.writeFile(encryptedPath, wire, { mode: 0o600 });
 
     const metadataPath = join(envDir, `${version}.json`);
     await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
@@ -295,7 +296,7 @@ export class EnvRotationService {
     if (!existsSync(targetDir)) {
       mkdirSync(targetDir, { recursive: true });
     }
-    await fs.writeFile(targetEnvPath, envContent, 'utf-8');
+    await fs.writeFile(targetEnvPath, envContent, { encoding: 'utf-8', mode: 0o600 });
 
     this.logger.info(`Applied env ${service} v${latestVersion}`, { keys: keysWritten });
 
