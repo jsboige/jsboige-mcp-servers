@@ -283,9 +283,8 @@ describe('TaskInstructionIndex', () => {
             expect(results.length).toBeGreaterThan(0);
             const debugMatch = results.find(r => r.taskId === 'task-001');
             expect(debugMatch).toBeDefined();
-            if (debugMatch) {
-                expect(debugMatch.similarityScore).toBeGreaterThan(0.2);
-            }
+            expect(debugMatch!.similarityScore).toBeGreaterThan(0.2);
+            expect(debugMatch!.taskId).toBe('task-001');
         });
 
         it('should respect similarity threshold', async () => {
@@ -310,8 +309,9 @@ describe('TaskInstructionIndex', () => {
             
             const match = results.find(r => r.taskId === 'task-001');
             expect(match).toBeDefined();
-            if (match && match.similarityScore !== undefined && match.similarityScore < 1) {
-                expect(['prefix', 'fuzzy']).toContain(match.matchType);
+            expect(match!.similarityScore).toBeGreaterThan(0);
+            if (match!.similarityScore !== undefined && match!.similarityScore < 1) {
+                expect(['prefix', 'fuzzy']).toContain(match!.matchType);
             }
         });
 
@@ -335,6 +335,7 @@ describe('TaskInstructionIndex', () => {
             // Devrait trouver task-001 car ils partagent des mots significatifs
             const match = results.find(r => r.taskId === 'task-001');
             expect(match).toBeDefined();
+            expect(match!.similarityScore).toBeGreaterThan(0.2);
         });
     });
 
@@ -551,7 +552,7 @@ describe('TaskInstructionIndex', () => {
             
             return index.searchSimilar('!@#$', 0.1).then(results => {
                 // Ne devrait pas crasher
-                expect(results).toBeDefined();
+                expect(results).toBeInstanceOf(Array);
             });
         });
 
@@ -559,7 +560,7 @@ describe('TaskInstructionIndex', () => {
             index.addInstruction('parent-001', '测试中文字符 テスト 🎉');
             
             return index.searchSimilar('测试', 0.1).then(results => {
-                expect(results).toBeDefined();
+                expect(results).toBeInstanceOf(Array);
             });
         });
 
@@ -586,9 +587,8 @@ describe('TaskInstructionIndex', () => {
             
             const match = results.find(r => r.taskId === 'task-001');
             expect(match).toBeDefined();
-            if (match) {
-                expect(match.similarityScore).toBeGreaterThan(0.5);
-            }
+            expect(match!.similarityScore).toBeGreaterThan(0.5);
+            expect(match!.taskId).toBe('task-001');
         });
 
         it('should give low score to different texts', async () => {
