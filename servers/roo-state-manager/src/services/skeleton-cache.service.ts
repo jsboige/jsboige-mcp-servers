@@ -107,11 +107,57 @@ export class SkeletonCacheService {
     }
 
     /**
-     * Add or update a skeleton in both RAM cache and disk
+     * Add or update a skeleton in both RAM cache and disk.
+     *
+     * #2426 Phase B: also fires a best-effort dual-write to the unified Postgres
+     * store when UNIFIED_STORE_DUAL_WRITE=1 is set. The Postgres write is
+     * fire-and-forget (non-blocking) — failure is absorbed by the writer's
+     * circuit-breaker and never blocks the local cache path.
      */
     public async addOrUpdate(taskId: string, skeleton: ConversationSkeleton): Promise<void> {
         this.cache.set(taskId, skeleton);
         await this.saveSkeleton(taskId, skeleton);
+
+        // #2426 Phase B — dual-write to Postgres (fire-and-forget, env-gated)
+        this.dualWriteToStore(taskId, skeleton).catch(() => {
+          // Intentionally swallowed — writer handles its own errors + circuit breaker
+        });
+    }
+
+    /**
+     * #2426 Phase B: best-effort dual-write to the unified Postgres store.
+     * Maps ConversationSkeleton → ConversationBundle and calls the writer.
+     * The writer's circuit-breaker absorbs transient failures.
+     */
+    private async dualWriteToStore(taskId: string, skeleton: ConversationSkeleton): Promise<void> {
+      try {
+        const { getUnifiedStoreWriter } = await import('./unified-store/writer-factory.js');
+        const writer = getUnifiedStoreWriter();
+
+        // Map skeleton.metadata.source → Harness
+        const source = skeleton.metadata?.source;
+        let harness: 'roo' | 'zoo' | 'claude' = 'roo';
+        if (source === 'claude-code') harness = 'claude';
+        else if (source === 'zoo-code') harness = 'zoo';
+
+        // Map ConversationSkeleton → ConversationRow
+        const conversationRow: import('./unified-store/types.js').ConversationRow = {
+          task_id: taskId,
+          machine_id: skeleton.metadata?.machineId ?? process.env.ROOSYNC_MACHINE_ID ?? process.env.COMPUTERNAME ?? 'unknown',
+          harness,
+          workspace: skeleton.metadata?.workspace ?? null,
+          parent_task_id: skeleton.parentTaskId ?? skeleton.metadata?.parentTaskId ?? null,
+          title: skeleton.metadata?.title ?? null,
+          first_ts: skeleton.metadata?.createdAt ?? null,
+          last_ts: skeleton.metadata?.lastActivity ?? null,
+          msg_count: skeleton.metadata?.messageCount ?? 0,
+          metadata: skeleton.metadata ? { ...skeleton.metadata } as Record<string, unknown> : null,
+        };
+
+        await writer.upsertConversationOnly(conversationRow);
+      } catch {
+        // Swallow all errors — dual-write must never block the caller
+      }
     }
 
     /**
