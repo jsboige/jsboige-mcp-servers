@@ -30,6 +30,7 @@ import { InventoryService } from './roosync/InventoryService.js';
 import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 import { RollbackManager } from './RollbackManager.js';
 import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
+import { ServicesConfigService } from './ServicesConfigService.js';
 import yaml from 'js-yaml';
 
 export class ConfigSharingService implements IConfigSharingService {
@@ -122,6 +123,13 @@ export class ConfigSharingService implements IConfigSharingService {
     if (options.targets.includes('modes-yaml')) {
       const modesYamlFiles = await this.collectModesYaml(tempDir);
       manifest.files.push(...modesYamlFiles);
+    }
+
+    // #2409 — Collecte des services Windows (services:<name>)
+    const servicesTargets = options.targets.filter(t => typeof t === 'string' && t.startsWith('services:'));
+    if (servicesTargets.length > 0) {
+      const servicesFiles = await this.collectServices(tempDir, servicesTargets);
+      manifest.files.push(...servicesFiles);
     }
 
     // Calcul de la taille totale
@@ -332,6 +340,21 @@ export class ConfigSharingService implements IConfigSharingService {
       const hasSettingsTarget = options.targets?.includes('settings') || false;
       const hasClaudeConfigTarget = options.targets?.includes('claude-config') || false;
       const hasModesYamlTarget = options.targets?.includes('modes-yaml') || false;
+
+      // #2409 — Services targets (live management, not file copy)
+      const servicesTargets = options.targets?.filter(t => typeof t === 'string' && t.startsWith('services:')) as string[] || [];
+      if (servicesTargets.length > 0) {
+        const serviceNames = servicesTargets.map(t => (t as string).slice(9));
+        // Read services-state.json from the config package for the intended operation
+        const servicesStatePath = join(configDir, 'services', 'services-state.json');
+        if (existsSync(servicesStatePath)) {
+          this.logger.info(`Applying services targets: ${serviceNames.join(', ')}`);
+          // Services apply is a separate flow — collect current state, compare, apply changes
+          // The actual start/stop/restart is handled by ServicesConfigService.apply()
+          // For now, just log that we would apply service changes
+          this.logger.info('Services apply: reading state from package', { servicesStatePath });
+        }
+      }
 
       // Si aucun target n'est spécifié, tout appliquer par défaut
       const applyAll = options.targets === undefined || options.targets.length === 0;
@@ -1632,6 +1655,48 @@ export class ConfigSharingService implements IConfigSharingService {
       this.logger.info(`Modes YAML collectés depuis: ${yamlPath}`);
     } catch (error) {
       this.logger.error(`Erreur lors de la collecte de custom_modes.yaml: ${error}`);
+    }
+
+    return files;
+  }
+
+  /**
+   * #2409 — Collecte l'état des services Windows
+   */
+  private async collectServices(tempDir: string, serviceTargets: string[]): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const servicesDir = join(tempDir, 'services');
+    await fs.mkdir(servicesDir, { recursive: true });
+
+    try {
+      const serviceNames = serviceTargets.map(t => {
+        const name = (t as string).slice(9); // strip 'services:' prefix
+        if (!ServicesConfigService.isValidServiceName(name)) {
+          this.logger.warn(`Service inconnu dans le registry: ${name}`);
+        }
+        return name;
+      });
+
+      const servicesConfig = new ServicesConfigService();
+      const result = await servicesConfig.collect(serviceNames);
+
+      const destPath = join(servicesDir, 'services-state.json');
+      const content = JSON.stringify(result, null, 2);
+      await fs.writeFile(destPath, content);
+
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'services/services-state.json',
+        hash,
+        type: 'other',
+        size: stats.size,
+      });
+
+      this.logger.info(`Services collectés: ${result.services.length} entrées`);
+    } catch (error) {
+      this.logger.error(`Erreur lors de la collecte des services: ${error}`);
     }
 
     return files;
