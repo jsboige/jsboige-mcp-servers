@@ -153,6 +153,39 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // Bounding at 12000 caps a runaway at ~325s, comfortably under the gateway.
 const CONDENSE_LLM_MAX_TOKENS = 12000;
 
+/**
+ * #2336: Detect if the LLM endpoint is vLLM (supports chat_template_kwargs).
+ * z.ai and other providers reject this parameter with HTTP 400, causing the
+ * condenser to fall back to brute truncation (losing all nuance).
+ * When NOT vLLM, we prepend /no_think to the prompt instead.
+ */
+function isVLlmEndpoint(): boolean {
+    const baseUrl = process.env.OPENAI_BASE_URL || '';
+    return baseUrl.includes('text-generation-webui') || baseUrl.includes(':5002') || baseUrl.includes(':3000');
+}
+
+/**
+ * Build LLM call options with the appropriate thinking-mode control.
+ * vLLM: use chat_template_kwargs: { enable_thinking: false }
+ * z.ai/others: prepend /no_think to the user prompt
+ */
+function buildThinkingDisabledOpts(userPrompt: string): {
+    messages: Array<{ role: string; content: string }>;
+    extra: Record<string, unknown>;
+} {
+    if (isVLlmEndpoint()) {
+        return {
+            messages: [],  // caller sets messages
+            extra: { chat_template_kwargs: { enable_thinking: false } },
+        };
+    }
+    // z.ai / non-vLLM: prepend /no_think prefix (same pattern as LLMService.ts:502)
+    return {
+        messages: [],  // caller sets messages
+        extra: {},
+    };
+}
+
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
 // when LLM is down and every append re-triggers a failed condensation).
 // 2026-04-20: bumped 5min → 20min. A single append triggers up to 2 condense
@@ -914,24 +947,23 @@ FORMAT :
     stats.attempts = attempt;
     const startTime = Date.now();
     try {
+      // #2336: z.ai rejects chat_template_kwargs (400), use /no_think prefix instead
+      const effectiveUserPrompt = isVLlmEndpoint() ? userPrompt : '/no_think\n' + userPrompt;
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+          { role: 'user', content: effectiveUserPrompt }
         ],
         // See CONDENSE_LLM_MAX_TOKENS: bounded so a runaway thinking loop returns
         // before the ~600s reverse-proxy gateway timeout (502) — lets condensation
         // actually complete instead of dying mid-thinking and falling to truncation.
         max_tokens: CONDENSE_LLM_MAX_TOKENS,
         temperature: 0.3,
-        // Disable Qwen3.6 thinking mode (user mandate 2026-05-26): thinking-loop
-        // runaway repetition causes null content (finish_reason=length) and chains
-        // of retries that hang the dashboard append. Non-thinking trades nuance for
-        // reliability — "moindre mal" while the cluster is in crisis.
-        // @ts-expect-error vLLM-specific OpenAI-compatible extension
-        chat_template_kwargs: { enable_thinking: false }
-      }, {
+        // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
+        // #2336: Only send chat_template_kwargs to vLLM — z.ai rejects it with 400.
+        ...(isVLlmEndpoint() ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+      } as any, {
         timeout: timeoutMs
       });
 
@@ -1118,19 +1150,21 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     stats.attempts = attempt;
     const startTime = Date.now();
     try {
+      // #2336: z.ai rejects chat_template_kwargs (400), use /no_think prefix instead
+      const effectiveUserPrompt = isVLlmEndpoint() ? userPrompt : '/no_think\n' + userPrompt;
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+          { role: 'user', content: effectiveUserPrompt }
         ],
         // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
         max_tokens: CONDENSE_LLM_MAX_TOKENS,
         temperature: 0.3,
         // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
-        // @ts-expect-error vLLM-specific OpenAI-compatible extension
-        chat_template_kwargs: { enable_thinking: false }
-      }, {
+        // #2336: Only send chat_template_kwargs to vLLM — z.ai rejects it with 400.
+        ...(isVLlmEndpoint() ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+      } as any, {
         timeout: timeoutMs
       });
 
@@ -1229,19 +1263,21 @@ RÈGLES :
 
   const startTime = Date.now();
   try {
+    // #2336: z.ai rejects chat_template_kwargs (400), use /no_think prefix instead
+    const effectiveText = isVLlmEndpoint() ? text : '/no_think\n' + text;
     const response = await openai.chat.completions.create({
       model: modelId,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: text }
+        { role: 'user', content: effectiveText }
       ],
       // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
       max_tokens: CONDENSE_LLM_MAX_TOKENS,
       temperature: 0.3,
       // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
-      // @ts-expect-error vLLM-specific OpenAI-compatible extension
-      chat_template_kwargs: { enable_thinking: false }
-    }, {
+      // #2336: Only send chat_template_kwargs to vLLM — z.ai rejects it with 400.
+      ...(isVLlmEndpoint() ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+    } as any, {
       timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
     });
 
