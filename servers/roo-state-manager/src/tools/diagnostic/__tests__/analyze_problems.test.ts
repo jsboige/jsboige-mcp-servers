@@ -235,23 +235,27 @@ describe('analyze_problems', () => {
 		// ============================================================
 
 		describe('stale decision cleanup', () => {
+			// Dates are computed relative to "now" so the fixtures never drift across
+			// the STALE_THRESHOLD_DAYS (30j) boundary on a given calendar day.
+			const daysAgo = (n: number) =>
+				new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 			const staleContent = [
 				'<!-- DECISION_BLOCK_START -->',
 				'**ID:** `DEC-STALE-1`',
 				'**Statut:** pending',
-				'**Créé:** 2025-12-01',
+				`**Créé:** ${daysAgo(180)}`,
 				'<!-- DECISION_BLOCK_END -->',
 				'',
 				'<!-- DECISION_BLOCK_START -->',
 				'**ID:** `DEC-FRESH`',
 				'**Statut:** pending',
-				'**Créé:** 2026-05-01',
+				`**Créé:** ${daysAgo(5)}`,
 				'<!-- DECISION_BLOCK_END -->',
 				'',
 				'<!-- DECISION_BLOCK_START -->',
 				'**ID:** `DEC-STALE-2`',
 				'**Statut:** pending',
-				'**Créé:** 2025-11-15',
+				`**Créé:** ${daysAgo(200)}`,
 				'<!-- DECISION_BLOCK_END -->',
 			].join('\n');
 
@@ -286,7 +290,7 @@ describe('analyze_problems', () => {
 					'<!-- DECISION_BLOCK_START -->',
 					'**ID:** `DEC-FRESH`',
 					'**Statut:** pending',
-					'**Créé:** 2026-05-01',
+					`**Créé:** ${daysAgo(5)}`,
 					'<!-- DECISION_BLOCK_END -->',
 				].join('\n');
 				mockStat.mockResolvedValueOnce({ size: 200 });
