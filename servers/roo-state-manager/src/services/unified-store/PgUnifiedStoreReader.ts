@@ -79,6 +79,8 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     }
   }
 
+  isNull(): boolean { return false; }
+
   // ─── Single lookups ────────────────────────────────────────────
 
   async getConversation(taskId: string): Promise<ConversationRow | null> {
@@ -157,16 +159,17 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     }
 
     const whereClause = conditions.join(' AND ');
+    // #2426 Phase C+: No ORDER BY — preserve Qdrant ANN relevance ranking
+    // (re-sorted by score after constructing hits)
     const sql = `
       SELECT DISTINCT c.*
       FROM conversations c${joinClause}
       WHERE ${whereClause}
-      ORDER BY c.last_ts DESC
     `;
 
     const result = await this.pool.query(sql, params);
 
-    // If tool_name filter, also fetch matching messages for each hit
+    // Construct hits with Qdrant scores, then sort by score DESC to preserve ANN ranking
     const hits: UnifiedStoreSearchHit[] = [];
     for (const row of result.rows) {
       const conv = this.mapConversationRow(row);
@@ -184,6 +187,8 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
       hits.push(hit);
     }
 
+    // Sort by Qdrant ANN score descending (highest relevance first)
+    hits.sort((a, b) => b.score - a.score);
     return hits;
   }
 

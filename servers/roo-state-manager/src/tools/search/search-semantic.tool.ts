@@ -11,6 +11,8 @@ import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
+import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
+import type { UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
 
 // #1232: Circuit breaker for embedding API failures
 // When the embedding API returns 502/503, skip semantic search and go directly to text fallback
@@ -708,7 +710,39 @@ export const searchTasksByContentTool = {
                 : results;
 
             // Group by task_id: deduplicate multiple chunks from the same conversation
-            const groupedResults = groupResultsByTask(filteredResults);
+            let groupedResults = groupResultsByTask(filteredResults);
+
+            // #2426 Phase C+: Unified-store Postgres enrichment (env-gate)
+            // When PgUnifiedStoreReader is active, use joinFromQdrant() to:
+            //   (a) Apply message-level filters (tool_name) via Postgres GIN index
+            //   (b) Enrich results with conversation metadata from Postgres
+            //   (c) Preserve ANN ranking (sorted by Qdrant score)
+            const unifiedStoreReader = getUnifiedStoreReader();
+            if (!unifiedStoreReader.isNull()) {
+                try {
+                    const qdrantHits = groupedResults.map(g => ({
+                        task_id: g.taskId,
+                        score: g.best_score,
+                    }));
+                    const pgFilters: UnifiedStoreSearchFilters = {};
+                    if (workspace) pgFilters.workspace = workspace;
+                    // tool_name filter: delegate to Postgres instead of Qdrant payload
+                    if (tool_name) pgFilters.tool_name = tool_name;
+
+                    const pgHits = await unifiedStoreReader.joinFromQdrant(qdrantHits, pgFilters);
+                    const pgTaskIds = new Set(pgHits.map(h => h.task_id));
+
+                    // Filter groupedResults to only those confirmed by Postgres
+                    // Re-order by ANN score (pgHits is already sorted by score DESC)
+                    const pgScoreMap = new Map(pgHits.map(h => [h.task_id, h.score]));
+                    groupedResults = groupedResults
+                        .filter(g => pgTaskIds.has(g.taskId))
+                        .sort((a, b) => (pgScoreMap.get(b.taskId) ?? 0) - (pgScoreMap.get(a.taskId) ?? 0));
+                } catch (err) {
+                    // Postgres enrichment failed — fall back to Qdrant-only results (non-blocking)
+                    console.warn('[WARN] #2426: Unified-store Postgres JOIN failed, using Qdrant-only results:', err instanceof Error ? err.message : String(err));
+                }
+            }
 
             // #636 Phase 2: Enrich grouped results with conversation stats from cache
             for (const group of groupedResults) {

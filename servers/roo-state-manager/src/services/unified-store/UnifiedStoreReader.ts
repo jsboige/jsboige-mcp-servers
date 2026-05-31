@@ -51,6 +51,8 @@ export interface IUnifiedStoreReader {
     filters?: UnifiedStoreSearchFilters,
   ): Promise<UnifiedStoreSearchHit[]>;
   ping(): Promise<boolean>;
+  /** Returns true if this is a NullUnifiedStoreReader (env-gate OFF). */
+  isNull(): boolean;
 }
 
 /** Null object for opt-out read path. */
@@ -66,4 +68,5 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
     return [];
   }
   async ping(): Promise<boolean> { return false; }
+  isNull(): boolean { return true; }
 }
