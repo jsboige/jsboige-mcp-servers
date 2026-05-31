@@ -153,6 +153,35 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // Bounding at 12000 caps a runaway at ~325s, comfortably under the gateway.
 const CONDENSE_LLM_MAX_TOKENS = 12000;
 
+// #2426 Phase C+ follow-up: Detect LLM provider for thinking-mode control.
+// vLLM (local) supports chat_template_kwargs; z.ai and other remote APIs reject it (400).
+// When NOT vLLM, prepend /no_think to user prompt instead (same effect, compatible).
+const isOpenAICompatVLlm = (): boolean => {
+  const baseUrl = process.env.OPENAI_BASE_URL || '';
+  // vLLM local endpoints typically contain 'text-generation-webui', 'localhost', or private IPs
+  return baseUrl.includes('text-generation-webui') ||
+         baseUrl.includes('localhost') ||
+         baseUrl.includes('127.0.0.1') ||
+         baseUrl.includes('192.168.') ||
+         baseUrl.includes('10.0.') ||
+         baseUrl.includes('172.');
+};
+
+/** Build LLM params for thinking-mode control based on provider. */
+function buildThinkingControl(isVllm: boolean): {
+  chatTemplateKwargs?: Record<string, boolean>;
+  promptPrefix: string;
+} {
+  if (isVllm) {
+    return {
+      chatTemplateKwargs: { enable_thinking: false },
+      promptPrefix: '',
+    };
+  }
+  // z.ai / remote: use /no_think prefix (same as LLMService.ts #954)
+  return { chatTemplateKwargs: undefined, promptPrefix: '/no_think\n' };
+}
+
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
 // when LLM is down and every append re-triggers a failed condensation).
 // 2026-04-20: bumped 5min → 20min. A single append triggers up to 2 condense
@@ -914,11 +943,12 @@ FORMAT :
     stats.attempts = attempt;
     const startTime = Date.now();
     try {
+      const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+          { role: 'user', content: thinkingCtrl.promptPrefix + userPrompt }
         ],
         // See CONDENSE_LLM_MAX_TOKENS: bounded so a runaway thinking loop returns
         // before the ~600s reverse-proxy gateway timeout (502) — lets condensation
@@ -929,8 +959,7 @@ FORMAT :
         // runaway repetition causes null content (finish_reason=length) and chains
         // of retries that hang the dashboard append. Non-thinking trades nuance for
         // reliability — "moindre mal" while the cluster is in crisis.
-        // @ts-expect-error vLLM-specific OpenAI-compatible extension
-        chat_template_kwargs: { enable_thinking: false }
+        ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
         timeout: timeoutMs
       });
@@ -1118,18 +1147,18 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     stats.attempts = attempt;
     const startTime = Date.now();
     try {
+      const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
       const response = await openai.chat.completions.create({
         model: modelId,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+          { role: 'user', content: thinkingCtrl.promptPrefix + userPrompt }
         ],
         // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
         max_tokens: CONDENSE_LLM_MAX_TOKENS,
         temperature: 0.3,
         // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
-        // @ts-expect-error vLLM-specific OpenAI-compatible extension
-        chat_template_kwargs: { enable_thinking: false }
+        ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
         timeout: timeoutMs
       });
@@ -1229,18 +1258,18 @@ RÈGLES :
 
   const startTime = Date.now();
   try {
+    const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
     const response = await openai.chat.completions.create({
       model: modelId,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: text }
+        { role: 'user', content: thinkingCtrl.promptPrefix + text }
       ],
       // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
       max_tokens: CONDENSE_LLM_MAX_TOKENS,
       temperature: 0.3,
       // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
-      // @ts-expect-error vLLM-specific OpenAI-compatible extension
-      chat_template_kwargs: { enable_thinking: false }
+      ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
     }, {
       timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
     });
