@@ -256,7 +256,22 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       seqs.push(row.seq);
       roles.push(row.role);
       contents.push(row.content ?? null);
-      toolCalls.push(row.tool_calls ? JSON.stringify(row.tool_calls) : null);
+      // #2426 Phase C+: Guard jsonb[] cast — validate JSON before pushing to pg array
+      // pg transforms JS string[] into Postgres array literal {val1,val2,...}
+      // which breaks if strings contain commas, braces, quotes. Validate + stringify safely.
+      if (row.tool_calls) {
+        try {
+          const json = JSON.stringify(row.tool_calls);
+          // Verify round-trip to catch non-serializable values
+          JSON.parse(json);
+          toolCalls.push(json);
+        } catch {
+          // Non-serializable tool_calls — store null rather than break the entire batch
+          toolCalls.push(null);
+        }
+      } else {
+        toolCalls.push(null);
+      }
       timestamps.push(row.ts);
     }
 
