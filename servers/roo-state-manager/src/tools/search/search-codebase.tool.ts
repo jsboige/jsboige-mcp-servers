@@ -135,7 +135,7 @@ export interface CodebaseSearchArgs {
 	/** Requête de recherche sémantique */
 	query: string;
 
-	/** Chemin absolu du workspace (optionnel — auto-detecte via MCP roots ou WORKSPACE_PATH) */
+	/** Chemin absolu du workspace. Fortement recommande — auto-detection via MCP roots/WORKSPACE_PATH echoue souvent. */
 	workspace: string;
 
 	/** Préfixe de répertoire pour filtrer les résultats */
@@ -170,7 +170,7 @@ export const codebaseSearchTool: Tool = {
 			},
 			workspace: {
 				type: 'string',
-				description: 'Chemin absolu du workspace. Optionnel - auto-detecte via MCP roots ou WORKSPACE_PATH. Passer explicitement si le resultat semble incorrect.'
+				description: 'Chemin absolu du workspace. Fortement recommande — auto-detection via MCP roots/WORKSPACE_PATH echoue souvent. Passer explicitement recommande.'
 			},
 			directory_prefix: {
 				type: 'string',

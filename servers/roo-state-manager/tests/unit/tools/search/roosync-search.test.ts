@@ -346,4 +346,50 @@ describe('roosync_search - CONS-11', () => {
             expect(searchCall.filter.must).toContainEqual({ key: 'workspace_name', match: { value: 'test-ws' } });
         });
     });
+
+    // ============================================================
+    // #2473: max_results clamp [1, 100]
+    // ============================================================
+
+    describe('#2473 max_results clamp', () => {
+        it('should clamp max_results > 100 to 100', async () => {
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query', max_results: 500, workspace: 'd:\\test-workspace' },
+                conversationCache,
+                ensureCacheFreshCallback,
+                fallbackHandler
+            );
+
+            expect(result.isError).toBeFalsy();
+            const searchCall = mockQdrantClient.search.mock.calls[0][1];
+            expect(searchCall.limit).toBe(100);
+        });
+
+        it('should clamp max_results < 1 to 1', async () => {
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query', max_results: 0, workspace: 'd:\\test-workspace' },
+                conversationCache,
+                ensureCacheFreshCallback,
+                fallbackHandler
+            );
+
+            expect(result.isError).toBeFalsy();
+            const searchCall = mockQdrantClient.search.mock.calls[0][1];
+            // max_results=0 is falsy, falls back to default 10 then clamped
+            expect(searchCall.limit).toBe(10);
+        });
+
+        it('should preserve max_results within [1, 100]', async () => {
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query', max_results: 50, workspace: 'd:\\test-workspace' },
+                conversationCache,
+                ensureCacheFreshCallback,
+                fallbackHandler
+            );
+
+            expect(result.isError).toBeFalsy();
+            const searchCall = mockQdrantClient.search.mock.calls[0][1];
+            expect(searchCall.limit).toBe(50);
+        });
+    });
 });
