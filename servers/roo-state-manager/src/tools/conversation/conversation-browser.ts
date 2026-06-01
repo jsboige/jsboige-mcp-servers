@@ -8,8 +8,9 @@
  * - 'current'   : Tâche actuellement active (anciennement task_browse action=current)
  * - 'view'      : Vue arborescente d'une conversation (anciennement view_conversation_tree)
  * - 'summarize' : Résumé/synthèse de conversation (anciennement roosync_summarize)
+ * - 'rebuild'   : Reconstruction du cache de squelettes (anciennement build_skeleton_cache)
  *
- * Changement tool count : -2 (3 outils → 1 dans ListTools)
+ * Changement tool count : -3 (4 outils → 1 dans ListTools après ajout de rebuild)
  * Backward compat : Les anciens noms restent fonctionnels via CallTool dans registry.ts
  */
 
@@ -481,7 +482,7 @@ export const conversationBrowserTool: Tool = {
 function validateArgs(args: ConversationBrowserArgs): void {
     if (!args.action) {
         throw new StateManagerError(
-            'Le paramètre "action" est requis. Valeurs possibles: "list", "tree", "current", "view", "summarize".',
+            'Le paramètre "action" est requis. Valeurs possibles: "list", "tree", "current", "view", "summarize", "rebuild".',
             'VALIDATION_FAILED',
             'ConversationBrowserTool',
             { providedArgs: Object.keys(args) }
