@@ -32,7 +32,7 @@ import { RollbackManager } from './RollbackManager.js';
 import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
 import { ServicesConfigService } from './ServicesConfigService.js';
 import yaml from 'js-yaml';
-import { SchtasksConfigService } from './SchtasksConfigService.js';
+import { SchtasksConfigService, type SchtaskConfig } from './SchtasksConfigService.js';
 
 export class ConfigSharingService implements IConfigSharingService {
   private logger: Logger;
@@ -396,6 +396,32 @@ export class ConfigSharingService implements IConfigSharingService {
 
       // Si aucun target n'est spécifié, tout appliquer par défaut
       const applyAll = options.targets === undefined || options.targets.length === 0;
+
+      // #2408 — Schtasks target apply (inventory file → Set-ScheduledTask)
+      const hasSchtasksTarget = options.targets?.includes('schtasks') || false;
+      if (hasSchtasksTarget || applyAll) {
+        const schtasksStatePath = join(configDir, 'schtasks', 'schtasks-inventory.json');
+        if (existsSync(schtasksStatePath)) {
+          this.logger.info('Applying schtasks target');
+          try {
+            const schtasksService = new SchtasksConfigService();
+            const inventoryRaw = await fs.readFile(schtasksStatePath, 'utf-8');
+            const inventory = JSON.parse(inventoryRaw) as { tasks: SchtaskConfig[] };
+            if (inventory.tasks && Array.isArray(inventory.tasks) && inventory.tasks.length > 0) {
+              const applyResult = await schtasksService.apply(inventory.tasks, options.dryRun);
+              filesApplied += applyResult.modified + applyResult.created;
+              this.logger.info(`Schtasks applied: ${applyResult.modified} modified, ${applyResult.created} created, ${applyResult.skipped} skipped`);
+              if (applyResult.errors.length > 0) {
+                errors.push(...applyResult.errors);
+              }
+            } else {
+              this.logger.info('Schtasks inventory empty, nothing to apply');
+            }
+          } catch (schtasksErr) {
+            errors.push(`Schtasks apply failed: ${schtasksErr instanceof Error ? schtasksErr.message : String(schtasksErr)}`);
+          }
+        }
+      }
 
       this.logger.info('Targets de configuration', {
         applyAll,
