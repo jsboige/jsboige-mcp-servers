@@ -424,6 +424,10 @@ async function handleProjectXml(
 ): Promise<CallToolResult> {
     const { projectPath, filePath, startDate, endDate, prettyPrint = true } = args;
 
+    if (!projectPath) {
+        return { content: [{ type: 'text', text: 'Error: projectPath is required for project XML export.' }] };
+    }
+
     await ensureSkeletonCacheIsFresh({ workspace: projectPath });
 
     // Filtrer les conversations par workspace et date
@@ -447,8 +451,7 @@ async function handleProjectXml(
         return true;
     });
 
-    const xmlContent = (xmlExporterService as any).generateProjectXml(relevantTasks, {
-        projectPath,
+    const xmlContent = xmlExporterService.generateProjectXml(relevantTasks, projectPath, {
         startDate,
         endDate,
         prettyPrint
