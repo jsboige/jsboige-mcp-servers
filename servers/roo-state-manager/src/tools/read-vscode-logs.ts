@@ -55,9 +55,9 @@ export const readVscodeLogs = {
     },
     async handler(args: { lines?: number; filter?: string; maxSessions?: number }): Promise<CallToolResult> {
         const safeArgs = args || {};
-        const lineCount = safeArgs.lines || 100;
+        const lineCount = safeArgs.lines ?? 100;
         const { filter } = safeArgs;
-        const maxSessions = safeArgs.maxSessions || 1;
+        const maxSessions = safeArgs.maxSessions ?? 1;
         const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
         const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
 
@@ -166,7 +166,7 @@ export const readVscodeLogs = {
         } catch (error) {
             // 🎯 CORRECTION SDDD: Gestion robuste des erreurs de filtrage
             // Si filter est undefined, ne pas essayer de l'utiliser dans le message d'erreur
-            const errorMessage = `Failed to read VS Code logs: ${(error as Error).stack}\n\nDEBUG LOG:\n${debugLog.join('\n')}`;
+            const errorMessage = `Failed to read VS Code logs: ${(error as Error).message}\n\nDEBUG LOG:\n${debugLog.join('\n')}`;
             console.error(errorMessage);
             return { content: [{ type: 'text' as const, text: errorMessage }] };
         }
