@@ -1393,6 +1393,34 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
  * with a simple template summary (no LLM). Prevents dashboard from growing unbounded
  * during LLM outages.
  */
+/**
+ * Deterministic (non-LLM) truncation: keeps the most recent lines that fit within maxSizeBytes.
+ * Used when LLM condensation fails (#2463 — status should never exceed its cap, even in fallback).
+ */
+function truncateToMaxSize(text: string, maxSizeBytes: number, label: string): string {
+  const sizeBytes = Buffer.byteLength(text, 'utf8');
+  if (sizeBytes <= maxSizeBytes) return text;
+
+  const lines = text.split('\n');
+  // Keep lines from the end (most recent) until we fit
+  let result = '';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const candidate = lines.slice(i).join('\n');
+    if (Buffer.byteLength(candidate, 'utf8') > maxSizeBytes) break;
+    result = candidate;
+  }
+
+  const truncated = result || lines[lines.length - 1] || '';
+  logger.info(`Deterministic truncation applied to ${label}`, {
+    originalBytes: sizeBytes,
+    truncatedBytes: Buffer.byteLength(truncated, 'utf8'),
+    limitBytes: maxSizeBytes,
+    linesRemoved: lines.length - truncated.split('\n').length,
+  });
+
+  return truncated;
+}
+
 async function executeTruncationFallback(
   key: string,
   dashboard: Dashboard,
@@ -1483,8 +1511,15 @@ ${archiveMessages}
     diagnostic.archivedMessageCount = toArchive.length;
   }
 
+  // #2463: Deterministic status truncation — never let status exceed its cap,
+  // even when LLM is unavailable (the exact scenario where truncation matters most).
+  const truncatedStatus = truncateToMaxSize(
+    dashboard.status.markdown, MAX_STATUS_SIZE_BYTES, 'Status (fallback)'
+  );
+
   return {
     ...dashboard,
+    status: { ...dashboard.status, markdown: truncatedStatus },
     lastModified: now,
     intercom: {
       messages: [noticeMessage, ...toKeep],
