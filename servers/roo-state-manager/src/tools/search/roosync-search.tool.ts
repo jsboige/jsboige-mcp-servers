@@ -91,7 +91,7 @@ export const roosyncSearchTool: Tool = {
             },
             max_results: {
                 type: 'number',
-                description: 'Max results to return'
+                description: 'Max results to return (default: 10, max: 100)'
             },
             workspace: {
                 type: 'string',
@@ -185,6 +185,9 @@ export async function handleRooSyncSearch(
                 effectiveWorkspace = undefined;
             }
 
+            // #2473: Clamp max_results to [1, 100] to prevent unbounded Qdrant queries
+            const clampedMaxResults = Math.min(Math.max(args.max_results || 10, 1), 100);
+
             // #249: Try semantic with retry (handled inside search-semantic.tool.ts),
             // then auto-fallback to text search if semantic fails, WITH a warning flag.
             // This replaces #1496 strict_mode=true which blocked fallback entirely.
@@ -192,7 +195,7 @@ export async function handleRooSyncSearch(
             const semanticArgs: SearchTasksByContentArgs = {
                 search_query: args.search_query,
                 conversation_id: args.conversation_id,
-                max_results: args.max_results,
+                max_results: clampedMaxResults,
                 workspace: effectiveWorkspace,
                 source: args.source,
                 diagnose_index: false,
