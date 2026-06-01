@@ -36,6 +36,7 @@ import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
@@ -292,6 +293,13 @@ async function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 // Track custom messageIds for dashboard messages by key
 // This ensures custom IDs are available across function boundaries
 const pendingMessageIds = new Map<string, string>();
+
+// #2464: Condensation loop prevention — hash cache.
+// Before each condensation, compute SHA-256 of the messages that would be
+// condensed (toArchive). If the hash matches the last successful condensation
+// for this key, skip the LLM calls — the result would be identical.
+// Prevents repeated condensation on unchanged content (3-4x per 30min observed).
+const lastCondenseHash = new Map<string, string>();
 
 // === Utilitaires ===
 
@@ -2402,39 +2410,71 @@ async function handleAppend(
     && updatedDashboard.intercom.messages.length > CONDENSE_KEEP;
 
   if (needsCondense) {
-    logger.info('Post-append condensation triggered (append-first)', {
-      key,
-      estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
-      threshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB`,
-      messageCount: updatedDashboard.intercom.messages.length
-    });
-    try {
-      const beforeCount = updatedDashboard.intercom.messages.length;
-      const condenseDiag = newDiagnostic('post-append');
-      const tCondense = Date.now();
-      finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, condenseDiag);
-      preemptiveCondenseMs = Date.now() - tCondense;
-      condenseDiagnostics.push(condenseDiag);
-      const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
-      archivedCount = newlyArchived;
-      condensed = newlyArchived > 0;
+    // #2464: Hash-based skip — if the messages to condense + current status haven't
+    // changed since the last successful condensation, skip the LLM calls entirely.
+    // This prevents the observed loop where condensation fires 3-4× per 30min on
+    // unchanged content, burning ~350KB prompts + 12K output tokens each time.
+    const toArchiveCount = updatedDashboard.intercom.messages.length - CONDENSE_KEEP;
+    const condensePayload = updatedDashboard.intercom.messages
+      .slice(0, toArchiveCount)
+      .map(m => `${m.timestamp || ''}|${m.content || ''}`)
+      .join('\n')
+      + '\n[STATUS]\n'
+      + (updatedDashboard.status?.markdown || '');
+    const payloadHash = createHash('sha256').update(condensePayload).digest('hex').substring(0, 16);
+    const lastHash = lastCondenseHash.get(key);
 
-      // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
-      if (condensed) {
-        await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
-      }
-    } catch (condenseErr) {
-      // Condensation failed — message is already persisted, log and continue
-      logger.warn('Post-append condensation failed (message already persisted, no data loss)', {
+    if (lastHash === payloadHash) {
+      logger.info('Condensation skipped — content unchanged since last pass (#2464)', {
         key,
-        error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
+        payloadHash,
+        estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
+        messageCount: updatedDashboard.intercom.messages.length
       });
-      const failedDiag = newDiagnostic('post-append');
-      failedDiag.outcome = 'llm-failed-injected';
-      failedDiag.elapsedMs = 0;
-      condenseDiagnostics.push(failedDiag);
-    }
-  }
+      condensed = false;
+      archivedCount = 0;
+    } else {
+      logger.info('Post-append condensation triggered (append-first)', {
+        key,
+        estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
+        threshold: `${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)}KB`,
+        messageCount: updatedDashboard.intercom.messages.length,
+        payloadHash,
+        lastHash: lastHash || '(none)'
+      });
+      try {
+        const beforeCount = updatedDashboard.intercom.messages.length;
+        const condenseDiag = newDiagnostic('post-append');
+        const tCondense = Date.now();
+        finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, condenseDiag);
+        preemptiveCondenseMs = Date.now() - tCondense;
+        condenseDiagnostics.push(condenseDiag);
+        const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
+        archivedCount = newlyArchived;
+        condensed = newlyArchived > 0;
+
+        // #2464: Update hash cache after successful condensation
+        if (condensed) {
+          lastCondenseHash.set(key, payloadHash);
+        }
+
+        // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
+        if (condensed) {
+          await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
+        }
+      } catch (condenseErr) {
+        // Condensation failed — message is already persisted, log and continue
+        logger.warn('Post-append condensation failed (message already persisted, no data loss)', {
+          key,
+          error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
+        });
+        const failedDiag = newDiagnostic('post-append');
+        failedDiag.outcome = 'llm-failed-injected';
+        failedDiag.elapsedMs = 0;
+        condenseDiagnostics.push(failedDiag);
+      }
+    } // else (hash mismatch → condensation attempted)
+  } // if (needsCondense)
 
   // Fire-and-forget: Send mention notifications if mentions were detected
   if (mentions.length > 0) {
