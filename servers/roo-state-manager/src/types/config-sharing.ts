@@ -12,7 +12,7 @@ export type ClaudeCodeScope = 'user' | 'project' | 'settings';
 export interface ConfigManifestFile {
   path: string;
   hash: string;
-  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'roo_settings' | 'claude_config' | 'modes_yaml' | 'other';
+  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'roo_settings' | 'claude_config' | 'modes_yaml' | 'schedules_config' | 'other';
   size: number;
 }
 
@@ -24,7 +24,7 @@ export interface ConfigManifest {
   files: ConfigManifestFile[];
 }
 
-export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'modes-yaml' | 'schtasks' | `mcp:${string}` | `services:${string}` | `env:${string}`;
+export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'modes-yaml' | 'schtasks' | 'schedules' | `mcp:${string}` | `services:${string}` | `env:${string}`;
 
 export interface CollectConfigOptions {
   targets: ConfigTarget[];
@@ -110,10 +110,18 @@ export interface ApplyProfileResult {
   backupPath?: string;
   /** Indique si .roomodes a été généré et déployé */
   roomodesGenerated?: boolean;
+  /** #2411 — Nombre de schedules appliquées/mergées */
+  schedulesApplied?: number;
+  /** #2411 — Nombre de rules synchronisées */
+  rulesApplied?: number;
   /** Détails des changements */
   changes?: {
     modeApiConfigs: Record<string, string>;
     profileThresholds: Record<string, number>;
+    /** #2411 — Schedule IDs mergées (updated + added) */
+    schedulesMerged?: string[];
+    /** #2411 — Rules filenames synchronisées */
+    rulesSynced?: string[];
   };
   errors?: string[];
   /**

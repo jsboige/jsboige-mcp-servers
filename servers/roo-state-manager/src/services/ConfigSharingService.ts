@@ -139,6 +139,12 @@ export class ConfigSharingService implements IConfigSharingService {
       manifest.files.push(...schtasksFiles);
     }
 
+    // #2411 — Collecte des schedules Roo (.roo/schedules.json)
+    if (options.targets.includes('schedules')) {
+      const schedulesFiles = await this.collectSchedules(tempDir);
+      manifest.files.push(...schedulesFiles);
+    }
+
     // Calcul de la taille totale
     for (const file of manifest.files) {
       totalSize += file.size;
@@ -347,6 +353,7 @@ export class ConfigSharingService implements IConfigSharingService {
       const hasSettingsTarget = options.targets?.includes('settings') || false;
       const hasClaudeConfigTarget = options.targets?.includes('claude-config') || false;
       const hasModesYamlTarget = options.targets?.includes('modes-yaml') || false;
+      const hasSchedulesTarget = options.targets?.includes('schedules') || false;
 
       // #2409 — Services targets (live management, not file copy)
       const servicesTargets = options.targets?.filter(t => typeof t === 'string' && t.startsWith('services:')) as string[] || [];
@@ -423,6 +430,48 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
+      // #2411 — Schedules target apply (ID-based merge into .roo/schedules.json)
+      if (hasSchedulesTarget || applyAll) {
+        const schedulesStatePath = join(configDir, 'schedules', 'schedules.json');
+        if (existsSync(schedulesStatePath)) {
+          this.logger.info('Applying schedules target');
+          try {
+            const inventory2 = await this.inventoryService.getMachineInventory() as any;
+            if (inventory2?.paths?.rooExtensions) {
+              const localSchedulesPath = join(inventory2.paths.rooExtensions, '.roo', 'schedules.json');
+              const packageRaw = await fs.readFile(schedulesStatePath, 'utf-8');
+              const packageData = JSON.parse(packageRaw) as { schedules: any[] };
+
+              // ID-based merge
+              let localSchedules: any[] = [];
+              if (existsSync(localSchedulesPath)) {
+                const localRaw = await fs.readFile(localSchedulesPath, 'utf-8');
+                const localData = JSON.parse(localRaw) as { schedules: any[] };
+                localSchedules = localData.schedules || [];
+              }
+
+              const merged = this.mergeSchedulesById(packageData.schedules || [], localSchedules);
+
+              if (!options.dryRun) {
+                // Backup
+                if (options.backup !== false && existsSync(localSchedulesPath)) {
+                  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                  const backupSchedPath = `${localSchedulesPath}.backup_${ts}`;
+                  await fs.copyFile(localSchedulesPath, backupSchedPath);
+                  this.logger.info(`Schedules backup: ${backupSchedPath}`);
+                }
+                await fs.mkdir(dirname(localSchedulesPath), { recursive: true });
+                await fs.writeFile(localSchedulesPath, JSON.stringify({ schedules: merged }, null, 2), 'utf-8');
+                filesApplied++;
+                this.logger.info(`Schedules applied: ${merged.length} schedules (merged from ${packageData.schedules?.length || 0} package + ${localSchedules.length} local)`);
+              }
+            }
+          } catch (schedErr) {
+            errors.push(`Schedules apply failed: ${schedErr instanceof Error ? schedErr.message : String(schedErr)}`);
+          }
+        }
+      }
+
       this.logger.info('Targets de configuration', {
         applyAll,
         hasMcpTarget,
@@ -432,6 +481,7 @@ export class ConfigSharingService implements IConfigSharingService {
         hasModelConfigsTarget,
         hasRulesTarget,
         hasSettingsTarget,
+        hasSchedulesTarget,
         mcpServerNames
       });
 
@@ -461,6 +511,8 @@ export class ConfigSharingService implements IConfigSharingService {
             shouldProcess = hasClaudeConfigTarget;
           } else if (file.path.startsWith('modes-yaml/')) {
             shouldProcess = hasModesYamlTarget;
+          } else if (file.path.startsWith('schedules/')) {
+            shouldProcess = hasSchedulesTarget;
           } else if (file.path.startsWith('mcp-settings/')) {
             // #601: Handle all MCP settings files (mcp_settings.json, mcp_user.json, mcp_project.json)
             shouldProcess = hasMcpTarget || hasMcpTargets;
@@ -527,6 +579,9 @@ export class ConfigSharingService implements IConfigSharingService {
           } else if (file.path.startsWith('modes-yaml/')) {
             // modes-yaml/custom_modes.yaml -> %APPDATA%/.../custom_modes.yaml
             destPath = join(getExtensionSettingsPath(), 'custom_modes.yaml');
+          } else if (file.path.startsWith('schedules/')) {
+            // #2411 — schedules/schedules.json -> .roo/schedules.json (skip, handled by merge above)
+            continue;
           } else {
             this.logger.warn(`Type de fichier non supporté ou chemin inconnu: ${file.path}`);
             continue;
@@ -962,7 +1017,104 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
-      // 6. Validation post-apply (#2413) — vérifie que le profil est effectivement déployé
+      // 6. #2411 — Apply schedules overrides from profile (if present)
+      let schedulesApplied = 0;
+      const schedulesMerged: string[] = [];
+      if (profile.schedulesOverrides && !options.dryRun) {
+        try {
+          const localSchedulesPath = join(inventory.paths.rooExtensions, '.roo', 'schedules.json');
+
+          // Read current local schedules
+          let localSchedules: any[] = [];
+          if (existsSync(localSchedulesPath)) {
+            const localRaw = await fs.readFile(localSchedulesPath, 'utf-8');
+            const localData = JSON.parse(localRaw) as { schedules: any[] };
+            localSchedules = localData.schedules || [];
+          }
+
+          // Merge: profile overrides are the source, local schedules are the base
+          const overridesArray = Array.isArray(profile.schedulesOverrides)
+            ? profile.schedulesOverrides
+            : Object.values(profile.schedulesOverrides);
+          const merged = this.mergeSchedulesById(overridesArray, localSchedules);
+
+          // Track which schedule IDs were affected
+          for (const override of overridesArray) {
+            if (override.id) {
+              schedulesMerged.push(override.id);
+            }
+          }
+          schedulesApplied = overridesArray.length;
+
+          // Backup before write
+          if (options.backup !== false && existsSync(localSchedulesPath)) {
+            const ts = new Date().toISOString().replace(/[:.]/g, '-');
+            await fs.copyFile(localSchedulesPath, `${localSchedulesPath}.backup_${ts}`);
+          }
+
+          await fs.mkdir(dirname(localSchedulesPath), { recursive: true });
+          await fs.writeFile(localSchedulesPath, JSON.stringify({ schedules: merged }, null, 2), 'utf-8');
+          this.logger.info(`Schedules overrides applied: ${schedulesApplied} schedules merged`);
+        } catch (schedErr: any) {
+          errors.push(`Schedules overrides failed: ${schedErr.message}`);
+        }
+      }
+
+      // 7. #2411 — Apply rules overrides from profile (if present)
+      let rulesApplied = 0;
+      const rulesSynced: string[] = [];
+      if (profile.rulesOverrides && !options.dryRun) {
+        try {
+          const rulesDir = join(inventory.paths.rooExtensions, '.roo', 'rules');
+          await fs.mkdir(rulesDir, { recursive: true });
+
+          // Rules source: from roo-config/rules-global/ or inline in profile
+          const rulesSourceDir = join(inventory.paths.rooExtensions, 'roo-config', 'rules-global');
+
+          for (const ruleSpec of profile.rulesOverrides as string[]) {
+            if (ruleSpec.startsWith('+')) {
+              // Add/copy rule
+              const ruleName = ruleSpec.slice(1);
+              const srcPath = join(rulesSourceDir, ruleName);
+              const destPath = join(rulesDir, ruleName);
+              if (existsSync(srcPath)) {
+                await fs.copyFile(srcPath, destPath);
+                rulesApplied++;
+                rulesSynced.push(ruleName);
+              } else {
+                errors.push(`Rule source not found: ${ruleName}`);
+              }
+            } else if (ruleSpec.startsWith('-')) {
+              // Remove rule (preserve *-local.md files)
+              const ruleName = ruleSpec.slice(1);
+              if (ruleName.endsWith('-local.md')) {
+                this.logger.warn(`Skipping removal of local rule: ${ruleName}`);
+                continue;
+              }
+              const destPath = join(rulesDir, ruleName);
+              if (existsSync(destPath)) {
+                await fs.unlink(destPath);
+                rulesApplied++;
+                rulesSynced.push(ruleName);
+              }
+            } else {
+              // Plain name = copy (backward compat)
+              const srcPath = join(rulesSourceDir, ruleSpec);
+              const destPath = join(rulesDir, ruleSpec);
+              if (existsSync(srcPath)) {
+                await fs.copyFile(srcPath, destPath);
+                rulesApplied++;
+                rulesSynced.push(ruleSpec);
+              }
+            }
+          }
+          this.logger.info(`Rules overrides applied: ${rulesApplied} rules synced`);
+        } catch (ruleErr: any) {
+          errors.push(`Rules overrides failed: ${ruleErr.message}`);
+        }
+      }
+
+      // 8. Validation post-apply (#2413) — vérifie que le profil est effectivement déployé
       let validation: ApplyProfileResult['validation'] = undefined;
       if (options.validate && !options.dryRun) {
         const roomodesPath = join(inventory.paths.rooExtensions, '.roomodes');
@@ -981,9 +1133,13 @@ export class ConfigSharingService implements IConfigSharingService {
         apiConfigsCount: Object.keys(modelConfigs.apiConfigs || {}).length,
         backupPath,
         roomodesGenerated,
+        schedulesApplied: schedulesApplied > 0 ? schedulesApplied : undefined,
+        rulesApplied: rulesApplied > 0 ? rulesApplied : undefined,
         changes: {
           modeApiConfigs: newModeApiConfigs,
-          profileThresholds: newThresholds
+          profileThresholds: newThresholds,
+          schedulesMerged: schedulesMerged.length > 0 ? schedulesMerged : undefined,
+          rulesSynced: rulesSynced.length > 0 ? rulesSynced : undefined
         },
         errors: errors.length > 0 ? errors : undefined,
         validation
@@ -1857,5 +2013,81 @@ export class ConfigSharingService implements IConfigSharingService {
     }
 
     return files;
+  }
+
+  /**
+   * #2411 — Collecte les schedules Roo (.roo/schedules.json)
+   */
+  private async collectSchedules(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const schedulesDir = join(tempDir, 'schedules');
+    await fs.mkdir(schedulesDir, { recursive: true });
+
+    const inventory = await this.inventoryService.getMachineInventory() as any;
+    if (!inventory?.paths?.rooExtensions) {
+      this.logger.warn('Inventaire incomplet: paths.rooExtensions non disponible pour collecter schedules');
+      return files;
+    }
+
+    const schedulesPath = join(inventory.paths.rooExtensions, '.roo', 'schedules.json');
+
+    if (!existsSync(schedulesPath)) {
+      this.logger.warn(`schedules.json non trouvé: ${schedulesPath}`);
+      return files;
+    }
+
+    try {
+      const destPath = join(schedulesDir, 'schedules.json');
+      await fs.copyFile(schedulesPath, destPath);
+
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'schedules/schedules.json',
+        hash,
+        type: 'schedules_config',
+        size: stats.size,
+      });
+
+      this.logger.info(`Schedules collectées depuis: ${schedulesPath}`);
+    } catch (error) {
+      this.logger.error(`Erreur lors de la collecte des schedules: ${error}`);
+    }
+
+    return files;
+  }
+
+  /**
+   * #2411 — Merge schedules by ID (source overrides target where IDs match)
+   *
+   * Strategy:
+   *  - If a schedule in `source` has the same `id` as one in `target`, the source wins (fields override)
+   *  - Schedules in `source` without matching IDs are added
+   *  - Schedules in `target` without matching source IDs are preserved
+   */
+  private mergeSchedulesById(source: any[], target: any[]): any[] {
+    const result = [...target.map(s => ({ ...s }))];
+    const targetIdMap = new Map(result.map((s, i) => [s.id, i]));
+
+    for (const sourceSchedule of source) {
+      if (!sourceSchedule.id) {
+        // Schedule without ID — always add
+        result.push({ ...sourceSchedule });
+        continue;
+      }
+
+      const existingIdx = targetIdMap.get(sourceSchedule.id);
+      if (existingIdx !== undefined) {
+        // ID match — merge: source overrides target fields
+        result[existingIdx] = { ...result[existingIdx], ...sourceSchedule };
+      } else {
+        // New schedule — add
+        result.push({ ...sourceSchedule });
+        targetIdMap.set(sourceSchedule.id, result.length - 1);
+      }
+    }
+
+    return result;
   }
 }
