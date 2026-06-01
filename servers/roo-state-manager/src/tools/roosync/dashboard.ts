@@ -874,6 +874,42 @@ function truncateError(msg: string): string {
   return msg.length > 240 ? `${msg.slice(0, 237)}...` : msg;
 }
 
+/** Host[:port] of the condensation LLM endpoint — for explicit error context (host only, no secret). */
+export function condenseEndpointHost(): string {
+  const raw = process.env.OPENAI_BASE_URL || '';
+  try { return new URL(raw).host || '(OPENAI_BASE_URL unset)'; }
+  catch { return raw || '(OPENAI_BASE_URL unset)'; }
+}
+
+/**
+ * Build an EXPLICIT, human-readable failure string for a failed condensation LLM call.
+ *
+ * User mandate 2026-06-01: "le condenser doit exploser avec des erreurs explicites le
+ * cas échéant, pas nous mettre des timeout dont on ne sait ce qu'il y a derrière."
+ * A bare "timeout" tells the operator nothing — this surfaces WHAT failed (HTTP status,
+ * provider body, or a socket hang), against WHICH endpoint/model, and after how long.
+ */
+export function describeLLMError(
+  error: unknown,
+  opts: { isTimeout: boolean; timeoutMs: number; elapsedMs: number; model: string }
+): string {
+  const host = condenseEndpointHost();
+  const provider = isOpenAICompatVLlm() ? 'vLLM' : 'remote';
+  const ctx = `[${provider} ${host} model=${opts.model}]`;
+  if (opts.isTimeout) {
+    return `TIMEOUT after ${Math.round(opts.elapsedMs / 1000)}s (limit ${Math.round(opts.timeoutMs / 1000)}s): `
+      + `no response — socket held open, neither a completion nor an HTTP error. `
+      + `Endpoint likely hung (check vLLM/gateway health). ${ctx}`;
+  }
+  // OpenAI SDK APIError exposes .status (HTTP code) / .code / .error.message
+  const e = error as { status?: number; code?: string; message?: string; error?: { message?: string } };
+  const httpStatus = typeof e?.status === 'number' ? `HTTP ${e.status}` : '';
+  const code = e?.code ? `code=${e.code}` : '';
+  const body = e?.error?.message || e?.message || String(error);
+  const prefix = [httpStatus, code].filter(Boolean).join(' ');
+  return truncateError(`${prefix ? prefix + ': ' : ''}${body} ${ctx}`);
+}
+
 /**
  * Génère un résumé LLM des messages intercom (#858)
  *
@@ -1009,7 +1045,7 @@ FORMAT :
       }
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
-      stats.lastError = truncateError(errStr);
+      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       return { content: null, stats };
     }
   }
@@ -1206,7 +1242,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       }
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
-      stats.lastError = truncateError(errStr);
+      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       return { content: null, stats };
     }
   }
@@ -1415,10 +1451,16 @@ ${archiveMessages}
   const totalElapsed = Date.now() - condensationStart;
   let errorDetail = '';
   if (failedCalls) {
-    const s = failedCalls.statusCall;
-    const sm = failedCalls.summaryCall;
-    if (s) errorDetail += `Status: ${s.stats.finalOutcome}. `;
-    if (sm) errorDetail += `Summary: ${sm.stats.finalOutcome}. `;
+    // Surface the EXPLICIT cause (HTTP status / timeout+endpoint), not just the outcome
+    // label — user mandate 2026-06-01: no opaque "timeout" without what's behind it.
+    const fmtFail = (label: string, c?: LLMCallResult): string => {
+      if (!c) return '';
+      const st = c.stats;
+      if (st.finalOutcome === 'ok') return `${label}: ok.\n`;
+      const why = st.lastError ? ` — ${st.lastError}` : '';
+      return `${label}: ${st.finalOutcome} (${st.attempts} attempt${st.attempts === 1 ? '' : 's'}, ${Math.round(st.elapsedMs / 1000)}s)${why}\n`;
+    };
+    errorDetail = fmtFail('Status', failedCalls.statusCall) + fmtFail('Summary', failedCalls.summaryCall);
   }
 
   const noticeMessage: IntercomMessage = {
@@ -2493,24 +2535,30 @@ async function handleAppend(
   // Build a diagnostic suffix for the human message whenever condensation was
   // attempted — so the failure mode is visible in the primary tool result
   // (not just in condenseDiagnostic which some consumers won't inspect).
+  // Surface condensation failures in the PRIMARY tool result regardless of the
+  // `condensed` flag. The truncation fallback archives messages (so condensed=true)
+  // yet the LLM failed — without this, the agent sees "auto-condensation OK" and never
+  // learns the summary was brute-truncated. User mandate 2026-06-01: explicit, not opaque.
   let diagSuffix = '';
-  if (condenseDiagnostics.length > 0 && !condensed) {
-    const failed = condenseDiagnostics.filter(d =>
-      d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected'
-    );
-    if (failed.length > 0) {
-      const first = failed[0];
-      const totalS = Math.round(failed.reduce((sum, d) => sum + d.elapsedMs, 0) / 1000);
-      const summary = first.llm?.summary;
-      const status = first.llm?.status;
-      const llmBits: string[] = [];
-      if (summary) llmBits.push(`summary=${summary.finalOutcome}×${summary.attempts}`);
-      if (status) llmBits.push(`status=${status.finalOutcome}×${status.attempts}`);
-      const dedupNote = failed.some(d => d.outcome === 'llm-failed-dedup')
-        ? ' [recent error msg within dedup window → not re-injected]'
-        : '';
-      diagSuffix = ` — LLM échoué (${totalS}s total, ${llmBits.join(', ')})${dedupNote}`;
-    }
+  const failedDiags = condenseDiagnostics.filter(d =>
+    d.outcome === 'llm-failed-dedup' || d.outcome === 'llm-failed-injected' || d.outcome === 'fallback-truncated'
+  );
+  if (failedDiags.length > 0) {
+    const first = failedDiags[0];
+    const totalS = Math.round(failedDiags.reduce((sum, d) => sum + d.elapsedMs, 0) / 1000);
+    const summary = first.llm?.summary;
+    const status = first.llm?.status;
+    const llmBits: string[] = [];
+    if (summary) llmBits.push(`summary=${summary.finalOutcome}×${summary.attempts}`);
+    if (status) llmBits.push(`status=${status.finalOutcome}×${status.attempts}`);
+    // Explicit underlying cause — HTTP status / timeout+endpoint — not just the label.
+    const why = summary?.lastError || status?.lastError || '';
+    const dedupNote = failedDiags.some(d => d.outcome === 'llm-failed-dedup')
+      ? ' [recent error msg within dedup window → not re-injected]' : '';
+    const truncNote = failedDiags.some(d => d.outcome === 'fallback-truncated')
+      ? ' [truncation fallback: messages archived WITHOUT LLM summary]' : '';
+    const head = llmBits.length > 0 ? `LLM échoué (${totalS}s, ${llmBits.join(', ')})` : `condensation dégradée (${totalS}s)`;
+    diagSuffix = ` — ⚠️ ${head}${why ? `: ${why}` : ''}${dedupNote}${truncNote}`;
   }
 
   const totalMs = Date.now() - appendStart;
