@@ -41,7 +41,7 @@ const __dirname = dirname(__filename);
 const envPath = path.join(__dirname, '..', '.env');
 // #1140: quiet: true prevents dotenv v17 from writing to stdout,
 // which would corrupt the MCP JSON-RPC stdio transport.
-const envResult = dotenv.config({ path: envPath, override: true, quiet: true });
+const envResult = dotenv.config({ path: envPath, quiet: true });
 if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
 }
