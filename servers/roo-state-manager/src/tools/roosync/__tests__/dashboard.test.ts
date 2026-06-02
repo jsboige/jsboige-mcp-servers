@@ -1615,4 +1615,61 @@ describe('roosync_dashboard', () => {
       expect(keys).toContain('workspace-wt-worker-substantial');
     });
   });
+
+  // ============================================================
+  // #2463: Deterministic status truncation (LLM-independent)
+  // Verify that executeTruncationFallback caps status to 15 KB
+  // even when LLM is unavailable.
+  // ============================================================
+  describe('#2463: deterministic status truncation (LLM-independent)', () => {
+    it('caps status to ≤15 KB when LLM is unavailable (fallback truncation)', async () => {
+      // 1. Write an oversized status (> 15 KB) — single long line to test hard-truncation
+      const oversizedStatus = '# Big Status\n' + 'x'.repeat(20 * 1024); // ~20 KB
+      await roosyncDashboard({ action: 'write', type: 'global', content: oversizedStatus });
+
+      // Verify status is > 15 KB before condensation
+      const before = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      const beforeSize = Buffer.byteLength(before.data?.status?.markdown ?? '', 'utf8');
+      expect(beforeSize).toBeGreaterThan(15 * 1024);
+
+      // 2. Trigger condensation by appending enough large messages to exceed ~46 KB
+      // LLM is already mocked to throw (default setup, line 45)
+      const largeContent = 'Y'.repeat(2500); // ~2.5 KB per message
+      for (let i = 0; i < 25; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}: ${largeContent}` });
+      }
+
+      // 3. After condensation with LLM failure, status should be ≤ 15 KB
+      const after = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      const afterSize = Buffer.byteLength(after.data?.status?.markdown ?? '', 'utf8');
+      expect(afterSize).toBeLessThanOrEqual(15 * 1024);
+    });
+
+    it('breaks the vicious circle: status < threshold allows next condensation to succeed', async () => {
+      // Simulate: status starts > 15 KB, condensation truncates it,
+      // then a second condensation cycle should NOT fail due to status size
+      const oversizedStatus = '# Status\n' + 'z'.repeat(20 * 1024);
+      await roosyncDashboard({ action: 'write', type: 'global', content: oversizedStatus });
+
+      // First condensation
+      const largeContent = 'A'.repeat(2500);
+      for (let i = 0; i < 25; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}: ${largeContent}` });
+      }
+
+      const afterFirst = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      const sizeAfterFirst = Buffer.byteLength(afterFirst.data?.status?.markdown ?? '', 'utf8');
+      expect(sizeAfterFirst).toBeLessThanOrEqual(15 * 1024);
+
+      // Second condensation cycle — status is now small, should not grow back
+      for (let i = 0; i < 25; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg2 ${i}: ${largeContent}` });
+      }
+
+      const afterSecond = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      const sizeAfterSecond = Buffer.byteLength(afterSecond.data?.status?.markdown ?? '', 'utf8');
+      // Status should still be ≤ 15 KB (not grown back to oversized)
+      expect(sizeAfterSecond).toBeLessThanOrEqual(15 * 1024);
+    });
+  });
 });
