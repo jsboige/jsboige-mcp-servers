@@ -1297,5 +1297,39 @@ describe('MessageManager', () => {
       const inbox = await messageManager.readInbox('machine-a');
       expect(inbox.find(m => m.id === msg.id)).toBeUndefined();
     });
+
+    test('inbox file whose name differs from its internal id is NOT listed (anti-phantom)', async () => {
+      // Regression for the long-standing "message fantôme" bug: a file whose on-disk
+      // name does not match its internal `id` was LISTED forever (ensureInboxCache keys
+      // by `message.id`) yet could never be opened, marked read, or archived — every
+      // mutation reconstructs `inbox/${id}.json`, which does not exist. Real-world
+      // offender: a legacy `roosync-report.json` carrying id `msg-...-po2026-status`.
+      const phantomId = 'msg-20260226T080000-po2026-status';
+      const phantom = {
+        id: phantomId,
+        from: 'machine-b',
+        to: 'machine-a',
+        subject: '[STATUS] Legacy seed report',
+        body: 'Stale status report whose filename does not match its id.',
+        priority: 'LOW',
+        timestamp: '2026-02-26T08:00:00.000Z',
+        status: 'unread',
+        tags: ['status']
+      };
+      // Write with a NON-canonical filename (name !== `${id}.json`).
+      const mismatchedFile = join(testSharedStatePath, 'messages/inbox', 'legacy-report.json');
+      await fs.writeFile(mismatchedFile, JSON.stringify(phantom, null, 2), 'utf-8');
+
+      // File was written outside the manager → force a cache rebuild.
+      messageManager.invalidateCache();
+
+      // The mis-named file must be skipped from the listing (guarded in ensureInboxCache).
+      const inbox = await messageManager.readInbox('machine-a', 'all');
+      expect(inbox.find(m => m.id === phantomId)).toBeUndefined();
+
+      // And it must not inflate the unread count.
+      const counts = await messageManager.getFilteredCount('machine-a', 'all');
+      expect(counts.total).toBe(0);
+    });
   });
 });
