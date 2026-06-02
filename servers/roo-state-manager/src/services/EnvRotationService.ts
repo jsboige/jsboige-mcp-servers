@@ -109,7 +109,7 @@ export class EnvRotationService {
 
   /**
    * Sérialise les données chiffrées au format wire (binary)
-   * Format: [salt(32)][iv(16)][tag(16)][ciphertext(remaining)]
+   * Format: [salt(32)][iv(12)][tag(16)][ciphertext(remaining)]
    */
   serializeEncrypted(encrypted: { ciphertext: Buffer; iv: Buffer; tag: Buffer; salt: Buffer }): Buffer {
     return Buffer.concat([encrypted.salt, encrypted.iv, encrypted.tag, encrypted.ciphertext]);
@@ -193,6 +193,11 @@ export class EnvRotationService {
 
     const encryptedPath = join(envDir, `${version}.enc`);
     await fs.writeFile(encryptedPath, wire, { mode: 0o600 });
+    // #2410: mode:0o600 is Unix-only. On Windows, file permissions are ACL-based.
+    // For production hardening, apply ACL restrictions via icacls or PowerShell.
+    if (process.platform === 'win32') {
+      this.logger.warn(`Windows: mode:0o600 ignored for ${encryptedPath}. Apply ACL manually for production.`);
+    }
 
     const metadataPath = join(envDir, `${version}.json`);
     await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
@@ -309,6 +314,10 @@ export class EnvRotationService {
       mkdirSync(targetDir, { recursive: true });
     }
     await fs.writeFile(targetEnvPath, envContent, { encoding: 'utf-8', mode: 0o600 });
+    // #2410: mode:0o600 is Unix-only. On Windows, file permissions are ACL-based.
+    if (process.platform === 'win32') {
+      this.logger.warn(`Windows: mode:0o600 ignored for ${targetEnvPath}. Apply ACL manually for production.`);
+    }
 
     this.logger.info(`Applied env ${service} v${latestVersion}`, { keys: keysWritten });
 

@@ -171,6 +171,22 @@ describe('EnvRotationService', () => {
       expect(wire.length).toBe(32 + 12 + 16 + encrypted.ciphertext.length);
     });
 
+    it('#2410: should use correct header sizes — salt(32) + iv(12) + tag(16)', () => {
+      // Verify cryptographic constants match NIST/OWASP recommendations
+      const plaintext = Buffer.from('A=1\n', 'utf-8');
+      const encrypted = service.encrypt(plaintext);
+
+      // IV must be 12 bytes (96 bits) for AES-GCM — NIST SP 800-38D §5.2.1.1
+      expect(encrypted.iv.length).toBe(12);
+      // Salt must be 32 bytes (256 bits) for scrypt
+      expect(encrypted.salt.length).toBe(32);
+      // Auth tag must be 16 bytes (128 bits)
+      expect(encrypted.tag.length).toBe(16);
+      // Wire header = 32 + 12 + 16 = 60 bytes
+      const wire = service.serializeEncrypted(encrypted);
+      expect(wire.length).toBe(60 + encrypted.ciphertext.length);
+    });
+
     it('should reject invalid wire data (too short)', () => {
       const shortWire = randomBytes(10);
       expect(() => {
