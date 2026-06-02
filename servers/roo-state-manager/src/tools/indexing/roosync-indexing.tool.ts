@@ -19,6 +19,7 @@ import { indexTaskSemanticTool } from './index-task.tool.js';
 import { resetQdrantCollectionTool } from './reset-collection.tool.js';
 import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
 
 /** #2336 D1: Convert ISO timestamp to YYYY-WNN week key */
 function getISOWeek(timestamp: string): string {
@@ -35,7 +36,7 @@ function getISOWeek(timestamp: string): string {
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'tool_usage_stats';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -118,8 +119,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), tool_usage_stats (fleet-wide tool usage aggregation)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
             },
             task_id: {
                 type: 'string',
@@ -1056,6 +1057,185 @@ export async function handleRooSyncIndexing(
                 return {
                     isError: true,
                     content: [{ type: 'text', text: `Error during tool_usage_stats: ${error.message}` }]
+                };
+            }
+        }
+
+        // #2336 D3: Persist weekly tool_usage_stats snapshot to shared storage
+        case 'save_snapshot': {
+            const fs = await import('fs/promises');
+            const os = await import('os');
+
+            try {
+                // 1. Compute tool_usage_stats by recursing into the handler
+                const statsResult = await handleRooSyncIndexing(
+                    { action: 'tool_usage_stats', start_date: args.start_date, end_date: args.end_date },
+                    conversationCache, ensureCacheFreshCallback, saveSkeletonCallback, qdrantIndexQueue, setQdrantIndexingEnabled, rebuildHandler, indexingState,
+                );
+                if (statsResult.isError) return statsResult;
+
+                // 2. Determine snapshot path
+                const sharedPath = getSharedStatePath();
+                const snapshotsDir = path.join(sharedPath, 'tool-usage-snapshots');
+                await fs.mkdir(snapshotsDir, { recursive: true });
+
+                const hostname = os.hostname();
+                const now = new Date();
+                const dateStr = now.toISOString().slice(0, 10);
+                const filename = `${hostname}-${dateStr}.json`;
+                const snapshotPath = path.join(snapshotsDir, filename);
+
+                // 3. Enrich with metadata — safely extract text from CallToolResult
+                const textContent = statsResult.content.find((c: any) => c.type === 'text');
+                if (!textContent || !('text' in textContent)) {
+                    return { isError: true, content: [{ type: 'text', text: 'tool_usage_stats returned no text content' }] };
+                }
+                const parsed = JSON.parse((textContent as any).text);
+                const snapshot = {
+                    ...parsed,
+                    snapshot_metadata: {
+                        machine: hostname,
+                        captured_at: now.toISOString(),
+                        snapshot_type: 'weekly_baseline',
+                    },
+                };
+
+                await fs.writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+
+                // 4. List existing snapshots
+                let existingFiles: string[] = [];
+                try { existingFiles = (await fs.readdir(snapshotsDir)).filter(f => f.endsWith('.json')).sort(); } catch { /* empty */ }
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'save_snapshot',
+                            status: 'saved',
+                            path: snapshotPath,
+                            filename,
+                            total_tool_calls: parsed.total_tool_calls,
+                            unique_tools: parsed.unique_tools,
+                            date_range: parsed.date_range,
+                            total_snapshots: existingFiles.length,
+                            all_snapshots: existingFiles,
+                        }, null, 2),
+                    }],
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Error during save_snapshot: ${error.message}` }],
+                };
+            }
+        }
+
+        // #2336 D3: Generate trend report comparing snapshots
+        case 'trend_report': {
+            const fs = await import('fs/promises');
+
+            try {
+                const sharedPath = getSharedStatePath();
+                const snapshotsDir = path.join(sharedPath, 'tool-usage-snapshots');
+
+                // Load all snapshots
+                let files: string[];
+                try { files = (await fs.readdir(snapshotsDir)).filter(f => f.endsWith('.json')).sort(); } catch {
+                    return {
+                        isError: true,
+                        content: [{ type: 'text', text: 'No snapshots found. Run save_snapshot first.' }],
+                    };
+                }
+
+                if (files.length < 1) {
+                    return {
+                        isError: true,
+                        content: [{ type: 'text', text: 'No snapshots found. Run save_snapshot first.' }],
+                    };
+                }
+
+                // Load the 2 most recent snapshots (or 1 if only 1 exists)
+                const toLoad = files.slice(-2);
+                const snapshots: any[] = [];
+                for (const f of toLoad) {
+                    const content = await fs.readFile(path.join(snapshotsDir, f), 'utf-8');
+                    snapshots.push(JSON.parse(content));
+                }
+
+                const latest = snapshots[snapshots.length - 1];
+                const previous = snapshots.length > 1 ? snapshots[snapshots.length - 2] : null;
+
+                // Build trend report as markdown
+                const lines: string[] = [];
+                lines.push(`# Tool Usage Trend Report`);
+                lines.push(``);
+                lines.push(`**Generated:** ${new Date().toISOString().slice(0, 10)}`);
+                lines.push(`**Snapshots:** ${files.length} total, comparing ${toLoad[0]}${previous ? ' → ' + toLoad[1] : ' (baseline only)'}`);
+                lines.push(``);
+
+                // Summary comparison
+                lines.push(`## Summary`);
+                lines.push(``);
+                if (previous) {
+                    const callsDiff = latest.total_tool_calls - previous.total_tool_calls;
+                    const toolsDiff = latest.unique_tools - previous.unique_tools;
+                    const arrow = (n: number) => n > 0 ? `↑+${n}` : n < 0 ? `↓${n}` : `→`;
+                    lines.push(`| Metric | Previous | Latest | Change |`);
+                    lines.push(`|--------|----------|--------|--------|`);
+                    lines.push(`| Total calls | ${previous.total_tool_calls} | ${latest.total_tool_calls} | ${arrow(callsDiff)} |`);
+                    lines.push(`| Unique tools | ${previous.unique_tools} | ${latest.unique_tools} | ${arrow(toolsDiff)} |`);
+                    lines.push(`| Files scanned | ${previous.files_scanned} | ${latest.files_scanned} | ${arrow(latest.files_scanned - previous.files_scanned)} |`);
+                } else {
+                    lines.push(`Baseline snapshot only — no comparison available yet.`);
+                    lines.push(`- Total calls: ${latest.total_tool_calls}`);
+                    lines.push(`- Unique tools: ${latest.unique_tools}`);
+                    lines.push(`- Date range: ${latest.date_range?.start} → ${latest.date_range?.end}`);
+                }
+                lines.push(``);
+
+                // Per-tool trend (top 20)
+                lines.push(`## Per-Tool Trend (Top 20)`);
+                lines.push(``);
+                if (previous) {
+                    const prevMap: Map<string, any> = new Map(previous.tools.map((t: any) => [t.tool_name, t]));
+                    const rows = latest.tools.slice(0, 20).map((t: any) => {
+                        const p: any = prevMap.get(t.tool_name);
+                        const callsArrow = p ? (t.calls > p.calls ? '↑' : t.calls < p.calls ? '↓' : '→') : '🆕';
+                        const errorArrow = p ? (t.error_rate > p.error_rate ? '↑' : t.error_rate < p.error_rate ? '↓' : '→') : '-';
+                        const retryArrow = p ? (t.retry_rate > p.retry_rate ? '↑' : t.retry_rate < p.retry_rate ? '↓' : '→') : '-';
+                        return `| ${t.tool_name} | ${t.calls} | ${callsArrow} | ${t.error_rate}% | ${errorArrow} | ${t.retry_rate}% | ${retryArrow} | ${t.downstream_action_rate ?? '-'}% |`;
+                    });
+                    lines.push(`| Tool | Calls | Trend | Err% | Trend | Retry% | Trend | DwnAct% |`);
+                    lines.push(`|------|-------|-------|------|-------|--------|-------|--------|`);
+                    lines.push(...rows);
+                } else {
+                    lines.push(`| Tool | Calls | Err% | Retry% | DwnAct% |`);
+                    lines.push(`|------|-------|------|--------|---------|`);
+                    for (const t of latest.tools.slice(0, 20)) {
+                        lines.push(`| ${t.tool_name} | ${t.calls} | ${t.error_rate}% | ${t.retry_rate}% | ${t.downstream_action_rate ?? '-'}% |`);
+                    }
+                }
+                lines.push(``);
+
+                // All snapshots
+                lines.push(`## Available Snapshots (${files.length})`);
+                lines.push(``);
+                for (const f of files) {
+                    lines.push(`- ${f}`);
+                }
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: lines.join('\n'),
+                    }],
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Error during trend_report: ${error.message}` }],
                 };
             }
         }
