@@ -87,63 +87,56 @@ export function getMcpSettingsPath(): string {
 // 🔒 MÉCANISME DE SÉCURISATION - Protection contre l'écriture sans lecture préalable
 // ====================================================================
 
-let lastReadTimestamps: Map<string, number> = new Map(); // #2307 Phase 2: per-server lock instead of global
+let lastReadTimestamp: number | null = null;
 const WRITE_AUTHORIZATION_TIMEOUT = 300000; // 5 minutes (fix #496: operations with file reads need more time)
 
-function checkWriteAuthorization(serverName?: string): { isAuthorized: boolean; message: string } {
-    const key = serverName || '__global__';
-    const lastRead = lastReadTimestamps.get(key) ?? null;
-
-    if (lastRead === null) {
+function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
+    if (lastReadTimestamp === null) {
         return {
             isAuthorized: false,
-            message: `🚨 SÉCURITÉ: Lecture préalable requise avant toute écriture pour "${key}". Utilisez d'abord l'action "manage" avec subAction "read" pour ce serveur.`
+            message: '🚨 SÉCURITÉ: Lecture préalable requise avant toute écriture. Utilisez d\'abord l\'action "manage" avec subAction "read".'
         };
     }
 
     const now = Date.now();
-    const timeSinceRead = now - lastRead;
+    const timeSinceRead = now - lastReadTimestamp;
     const remainingTime = WRITE_AUTHORIZATION_TIMEOUT - timeSinceRead;
 
     if (timeSinceRead > WRITE_AUTHORIZATION_TIMEOUT) {
         const minutesExpired = Math.ceil(timeSinceRead / 60000);
         return {
             isAuthorized: false,
-            message: `🚨 SÉCURITÉ: Autorisation d'écriture expirée pour "${key}" (lecture effectuée il y a ${minutesExpired} minute${minutesExpired > 1 ? 's' : ''}). Relancez d\'abord une action "manage" avec subAction "read" pour ce serveur.`
+            message: `🚨 SÉCURITÉ: Autorisation d'écriture expirée (lecture effectuée il y a ${minutesExpired} minute${minutesExpired > 1 ? 's' : ''}). Relancez d\'abord une action "manage" avec subAction "read".`
         };
     }
 
     const remainingMinutes = Math.ceil(remainingTime / 60000);
     return {
         isAuthorized: true,
-        message: `✅ Écriture autorisée pour "${key}" (autorisation valable encore ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`
+        message: `✅ Écriture autorisée (autorisation valable encore ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`
     };
 }
 
-function recordSuccessfulRead(serverName?: string): void {
-    const key = serverName || '__global__';
-    lastReadTimestamps.set(key, Date.now());
+function recordSuccessfulRead(): void {
+    lastReadTimestamp = Date.now();
 }
 
-function getAuthorizationStatus(serverName?: string): string {
-    const key = serverName || '__global__';
-    const lastRead = lastReadTimestamps.get(key) ?? null;
-
-    if (lastRead === null) {
-        return `🔒 Aucune lecture effectuée pour "${key}" - Écriture non autorisée`;
+function getAuthorizationStatus(): string {
+    if (lastReadTimestamp === null) {
+        return '🔒 Aucune lecture effectuée - Écriture non autorisée';
     }
 
     const now = Date.now();
-    const timeSinceRead = now - lastRead;
+    const timeSinceRead = now - lastReadTimestamp;
     const remainingTime = WRITE_AUTHORIZATION_TIMEOUT - timeSinceRead;
 
     if (timeSinceRead > WRITE_AUTHORIZATION_TIMEOUT) {
         const minutesExpired = Math.ceil(timeSinceRead / 60000);
-        return `⏰ Autorisation expirée pour "${key}" depuis ${minutesExpired} minute${minutesExpired > 1 ? 's' : ''}`;
+        return `⏰ Autorisation expirée depuis ${minutesExpired} minute${minutesExpired > 1 ? 's' : ''}`;
     }
 
     const remainingMinutes = Math.ceil(remainingTime / 60000);
-    return `🟢 Autorisation active pour "${key}" (expire dans ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`;
+    return `🟢 Autorisation active (expire dans ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`;
 }
 
 // ====================================================================
@@ -212,7 +205,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
         case 'read': {
             const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
             const mcpSettings = JSON.parse(content) as McpSettings;
-            recordSuccessfulRead(server_name);
+            recordSuccessfulRead();
 
             return {
                 success: true,
@@ -229,10 +222,10 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 throw new HeartbeatServiceError('settings requis pour subAction "write"', 'MISSING_SETTINGS');
             }
 
-            const authCheck = checkWriteAuthorization(server_name);
+            const authCheck = checkWriteAuthorization();
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
-                    `ÉCRITURE REFUSÉE: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus(server_name)}`,
+                    `ÉCRITURE REFUSÉE: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
                     'WRITE_NOT_AUTHORIZED'
                 );
             }
@@ -280,10 +273,10 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const authCheck = checkWriteAuthorization(server_name);
+            const authCheck = checkWriteAuthorization();
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
-                    `MISE À JOUR SERVEUR REFUSÉE: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus(server_name)}`,
+                    `MISE À JOUR SERVEUR REFUSÉE: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
                     'WRITE_NOT_AUTHORIZED'
                 );
             }
@@ -319,10 +312,10 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const authCheck4 = checkWriteAuthorization(server_name);
+            const authCheck4 = checkWriteAuthorization();
             if (!authCheck4.isAuthorized) {
                 throw new HeartbeatServiceError(
-                    `MISE À JOUR CHAMP REFUSÉE: ${authCheck4.message}\n\n📋 État actuel: ${getAuthorizationStatus(server_name)}`,
+                    `MISE À JOUR CHAMP REFUSÉE: ${authCheck4.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
                     'WRITE_NOT_AUTHORIZED'
                 );
             }
@@ -368,10 +361,10 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 throw new HeartbeatServiceError('server_name requis pour subAction "toggle_server"', 'MISSING_SERVER_NAME');
             }
 
-            const authCheck = checkWriteAuthorization(server_name);
+            const authCheck = checkWriteAuthorization();
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
-                    `BASCULEMENT SERVEUR REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus(server_name)}`,
+                    `BASCULEMENT SERVEUR REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
                     'WRITE_NOT_AUTHORIZED'
                 );
             }
@@ -409,10 +402,10 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 throw new HeartbeatServiceError('server_name requis pour subAction "sync_always_allow"', 'MISSING_SERVER_NAME');
             }
 
-            const authCheck = checkWriteAuthorization(server_name);
+            const authCheck = checkWriteAuthorization();
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
-                    `SYNC AUTO-APPROVE REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus(server_name)}`,
+                    `SYNC AUTO-APPROVE REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
                     'WRITE_NOT_AUTHORIZED'
                 );
             }
