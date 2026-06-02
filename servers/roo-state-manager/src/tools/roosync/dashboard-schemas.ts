@@ -199,7 +199,7 @@ export const DashboardArgsSchema = z.object({
   // Pour update (#1935 Cluster B)
   mode: z.enum(['replace', 'append', 'prepend']).optional()
     .describe('(update) Update mode: replace, append, prepend (default: replace)')
-}).refine(
+}).passthrough().refine(
   // #2307 Phase 2: type is required EXCEPT for actions that don't need it
   (data) => {
     const TYPE_OPTIONAL_ACTIONS = ['list', 'read_overview', 'refresh', 'update'];
@@ -207,7 +207,7 @@ export const DashboardArgsSchema = z.object({
     return !!data.type;
   },
   { message: 'type is required for this action (must be one of: global, machine, workspace)', path: ['type'] }
-).passthrough();
+);
 
 export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string, any>;
 
