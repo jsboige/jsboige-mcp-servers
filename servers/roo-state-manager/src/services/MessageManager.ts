@@ -326,6 +326,17 @@ export class MessageManager {
         const result = results[r];
         if (result.status === 'fulfilled') {
           const message = result.value;
+          // Phantom-message guard: the inbox is LISTED by each file's internal `id`,
+          // but every mutation (getMessage/markAsRead/archiveMessage/destroyMessage)
+          // locates the file by reconstructing `inbox/${id}.json`. A file whose name
+          // does not match its `id` is therefore listed forever yet can never be
+          // opened, marked read, or archived — a silent un-actionable phantom.
+          // Skip such files from the listing and warn so the operator can archive/rename.
+          const fileName = chunk[r];
+          if (fileName !== `${message.id}.json`) {
+            logger.warn(`Inbox file name/id mismatch — skipping to avoid phantom listing: file="${fileName}", id="${message.id}" (expected "${message.id}.json"). Archive or rename this file.`);
+            continue;
+          }
           full.set(message.id, message);
           items.push({
             id: message.id,
