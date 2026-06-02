@@ -57,8 +57,8 @@ export const ConfigArgsSchema = z.object({
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
-  version: z.string().optional().describe('Config version (e.g., "2.3.0"). Required for publish'),
-  description: z.string().optional().describe('Change description. Required for publish'),
+  version: z.string().optional().describe('Config version (e.g., "2.3.0"). REQUIRED for action=publish'),
+  description: z.string().optional().describe('Change description. REQUIRED for action=publish'),
 
   // Pour apply
   backup: z.boolean().optional().describe('Create local backup before apply (default: true). For apply and apply_profile'),
@@ -67,7 +67,7 @@ export const ConfigArgsSchema = z.object({
   validate: z.boolean().optional().describe('Validate config is effectively applied after write (default: false). For apply and apply_profile. Profile validation reads .roomodes and state.vscdb.currentApiConfigName.'),
 
   // Pour apply_profile (#498 Phase 2)
-  profileName: z.string().optional().describe('Profile name (required for apply_profile). E.g. "Production (Qwen 3.5 + GLM-5)"'),
+  profileName: z.string().optional().describe('Profile name. REQUIRED for action=apply_profile. E.g. "Production (Qwen 3.5 + GLM-5)"'),
   sourceMachineId: z.string().optional().describe('Source machine ID for model-configs.json (default: local file)')
 }).refine(
   (data) => {

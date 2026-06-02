@@ -1251,6 +1251,15 @@ export class MessageManager {
     const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
     logger.info(`Bulk ${operation} for ${machineId}:${effectiveWorkspaceId}`, { filters });
 
+    // #2307 Phase 2: Defense-in-depth — reject archive without filters
+    if (operation === 'archive') {
+      const hasAnyFilter = !!(filters.from || filters.priority || filters.before_date || filters.subject_contains || filters.tag);
+      if (!hasAnyFilter) {
+        logger.warn(`Bulk archive rejected: no filters provided (would archive entire inbox)`);
+        return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [], failed_reasons: { _guard: 'Bulk archive requires at least one filter to prevent inbox-wide deletion' } };
+      }
+    }
+
     if (!existsSync(this.inboxPath)) {
       return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [], failed_reasons: {} };
     }
