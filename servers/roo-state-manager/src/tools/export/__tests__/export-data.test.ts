@@ -15,7 +15,7 @@
  * @version 1.0.0 (CONS-10)
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleExportData, exportDataTool, ExportDataArgs } from '../export-data.js';
 import { ConversationSkeleton } from '../../../types/conversation.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -396,6 +396,103 @@ describe('export_data - CONS-10', () => {
 
             expect(result.isError).toBeFalsy();
             expect(mockEnsureCache).toHaveBeenCalledWith({ workspace: '/test/workspace' });
+        });
+
+        // #2307 Phase 1 item #2 — memory guards (count cap, byte cap, boundary)
+
+        test('should reject when conversation count exceeds cap', async () => {
+            // Lower the cap to 5 to trigger guard without populating 50001 entries
+            vi.stubEnv('EXPORT_MAX_PROJECT_CONVERSATIONS', '5');
+            vi.stubEnv('EXPORT_MAX_PROJECT_BYTES', String(100 * 1024 * 1024));
+
+            // mockCache already has 3 entries from beforeEach; add 3 more to push count to 6
+            for (let i = 0; i < 3; i++) {
+                mockCache.set(
+                    `extra-task-${i}`,
+                    createMockSkeleton(`extra-task-${i}`)
+                );
+            }
+
+            const args: ExportDataArgs = {
+                target: 'project',
+                format: 'xml',
+                projectPath: '/test/workspace'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            // handleExportData wraps StateManagerError as { isError: true, text: "Erreur: ... (code)" }
+            expect(result.isError).toBe(true);
+            const text = getTextContent(result);
+            expect(text).toContain('EXPORT_TOO_LARGE');
+            expect(text).toContain('6 conversations > 5 max');
+            // generateProjectXml must NOT be called when guard fires
+            expect(mockXmlExporterService.generateProjectXml).not.toHaveBeenCalled();
+        });
+
+        test('should reject when XML byte size exceeds cap', async () => {
+            // 1KB cap; mock XML is '<project>mock xml</project>' (~22 bytes) — bump mock to exceed
+            vi.stubEnv('EXPORT_MAX_PROJECT_CONVERSATIONS', '50000');
+            vi.stubEnv('EXPORT_MAX_PROJECT_BYTES', String(1024));
+
+            // 2KB string > 1KB cap
+            const oversizedXml = '<project>' + 'x'.repeat(2048) + '</project>';
+            mockXmlExporterService.generateProjectXml.mockReturnValue(oversizedXml);
+
+            const args: ExportDataArgs = {
+                target: 'project',
+                format: 'xml',
+                projectPath: '/test/workspace'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            expect(result.isError).toBe(true);
+            const text = getTextContent(result);
+            expect(text).toContain('EXPORT_TOO_LARGE');
+            expect(text).toContain('size cap exceeded');
+            // saveXmlToFile must NOT be called when guard fires
+            expect(mockXmlExporterService.saveXmlToFile).not.toHaveBeenCalled();
+        });
+
+        test('should accept export at exactly the cap (boundary > not >=)', async () => {
+            // Cap = cache size — must NOT throw (boundary is > not >=)
+            vi.stubEnv('EXPORT_MAX_PROJECT_CONVERSATIONS', '3');
+            vi.stubEnv('EXPORT_MAX_PROJECT_BYTES', String(100 * 1024 * 1024));
+
+            // mockCache has exactly 3 entries from beforeEach (all /test/workspace)
+            const args: ExportDataArgs = {
+                target: 'project',
+                format: 'xml',
+                projectPath: '/test/workspace'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            expect(result.isError).toBeFalsy();
+            expect(mockXmlExporterService.generateProjectXml).toHaveBeenCalledTimes(1);
+        });
+
+        afterEach(() => {
+            vi.unstubAllEnvs();
         });
     });
 
