@@ -778,6 +778,7 @@ export async function handleRooSyncIndexing(
                 const errorCounts: Record<string, number> = {};
                 const retryCounts: Record<string, number> = {};
                 const sourceCounts: Record<string, number> = {};
+                const downstreamActionCounts: Record<string, number> = {}; // #2336 D2: tool_use followed by non-tool action
                 let totalCalls = 0;
                 let filesScanned = 0;
 
@@ -807,7 +808,14 @@ export async function handleRooSyncIndexing(
                         const localIdMap = new Map<string, string>();
                         let lastToolName = '';
 
-                        for (const msg of messages) {
+                        // #2336 D2: Track tool_use positions for downstream-action detection.
+                        // downstream-action = tool_use followed by an assistant message with non-tool content
+                        // (reasoning, text, edit — NOT another identical tool call).
+                        interface ToolUseRecord { toolName: string; msgIdx: number; }
+                        const toolUseRecords: ToolUseRecord[] = [];
+
+                        for (let i = 0; i < messages.length; i++) {
+                            const msg = messages[i];
                             if (!Array.isArray(msg.content)) continue;
                             const ts = msg.ts ? new Date(msg.ts) : null;
 
@@ -830,6 +838,9 @@ export async function handleRooSyncIndexing(
                                         }
                                         lastToolName = toolName;
 
+                                        // #2336 D2: record position for downstream-action scan
+                                        toolUseRecords.push({ toolName, msgIdx: i });
+
                                         if (ts) {
                                             const weekKey = getISOWeek(ts.toISOString());
                                             if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
@@ -851,6 +862,23 @@ export async function handleRooSyncIndexing(
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // #2336 D2: Compute downstream-action rate for Roo conversation.
+                        // For each tool_use, check if the next assistant message has non-tool content.
+                        for (const rec of toolUseRecords) {
+                            for (let j = rec.msgIdx + 1; j < messages.length; j++) {
+                                const nextMsg = messages[j];
+                                if (nextMsg.role !== 'assistant' || !Array.isArray(nextMsg.content)) continue;
+                                // Found the next assistant message — check if it has non-tool_use content
+                                const hasNonToolContent = nextMsg.content.some(
+                                    (b: any) => b.type !== 'tool_use'
+                                );
+                                if (hasNonToolContent) {
+                                    downstreamActionCounts[rec.toolName] = (downstreamActionCounts[rec.toolName] || 0) + 1;
+                                }
+                                break; // Only check the first assistant message after the tool_use
                             }
                         }
                     }
@@ -878,6 +906,11 @@ export async function handleRooSyncIndexing(
                         const localIdMap = new Map<string, string>();
                         let lastToolName = '';
 
+                        // #2336 D2: Track tool_use names from previous assistant message for downstream-action.
+                        // When we see an assistant message with non-tool content, we attribute
+                        // downstream-action to all tool_uses from the previous assistant message.
+                        let prevAssistantToolUses: string[] = [];
+
                         // Read JSONL line-by-line to handle large files
                         const { createReadStream } = await import('fs');
                         const readline = await import('readline');
@@ -895,7 +928,24 @@ export async function handleRooSyncIndexing(
                             if (message.role === 'assistant' && Array.isArray(message.content)) {
                                 const tsRaw = entry.timestamp || message.timestamp;
                                 const ts = tsRaw ? new Date(tsRaw) : null;
-                                if (ts && (ts < startDate || ts > endDate)) continue;
+                                if (ts && (ts < startDate || ts > endDate)) {
+                                    prevAssistantToolUses = [];
+                                    continue;
+                                }
+
+                                // #2336 D2: Check if this assistant message has non-tool content
+                                // (meaning previous tool_uses led to productive action)
+                                const hasNonToolContent = message.content.some(
+                                    (b: any) => b.type !== 'tool_use'
+                                );
+                                if (hasNonToolContent && prevAssistantToolUses.length > 0) {
+                                    for (const prevTool of prevAssistantToolUses) {
+                                        downstreamActionCounts[prevTool] = (downstreamActionCounts[prevTool] || 0) + 1;
+                                    }
+                                }
+
+                                // Collect tool_uses from this message for next-iteration check
+                                const currentToolUses: string[] = [];
 
                                 for (const block of message.content) {
                                     if (block.type === 'tool_use' && block.name) {
@@ -914,12 +964,26 @@ export async function handleRooSyncIndexing(
                                         }
                                         lastToolName = toolName;
 
+                                        currentToolUses.push(toolName);
+
                                         if (ts) {
                                             const weekKey = getISOWeek(ts.toISOString());
                                             if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
                                             weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
                                         }
                                     }
+                                }
+
+                                // #2336 D2: If this message has ONLY tool_uses (no text/thinking),
+                                // those tools haven't led to downstream action yet — check next message.
+                                // If this message has BOTH tool_uses AND non-tool content, the
+                                // non-tool content is itself a downstream action for the tool_uses
+                                // in the SAME message (but we only count cross-message to avoid
+                                // inflating counts — same-message is just the agent calling+reasoning).
+                                if (currentToolUses.length > 0 && !hasNonToolContent) {
+                                    prevAssistantToolUses = currentToolUses;
+                                } else {
+                                    prevAssistantToolUses = [];
                                 }
                             } else if (message.role === 'user' && Array.isArray(message.content)) {
                                 // Scan tool_result blocks for error detection
@@ -950,6 +1014,8 @@ export async function handleRooSyncIndexing(
                         error_rate: count > 0 ? +((errorCounts[name] || 0) / count * 100).toFixed(1) : 0,
                         retries: retryCounts[name] || 0,
                         retry_rate: count > 0 ? +((retryCounts[name] || 0) / count * 100).toFixed(1) : 0,
+                        downstream_actions: downstreamActionCounts[name] || 0,
+                        downstream_action_rate: count > 0 ? +((downstreamActionCounts[name] || 0) / count * 100).toFixed(1) : 0,
                     }));
 
                 // Sort weeks chronologically
@@ -982,7 +1048,7 @@ export async function handleRooSyncIndexing(
                             source_distribution: sourceCounts,
                             tools: sortedTools,
                             weekly_trend: sortedWeeks,
-                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}). Errors: ${Object.values(errorCounts).reduce((s, c) => s + c, 0)}, Retries: ${Object.values(retryCounts).reduce((s, c) => s + c, 0)}`,
+                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}). Errors: ${Object.values(errorCounts).reduce((s, c) => s + c, 0)}, Retries: ${Object.values(retryCounts).reduce((s, c) => s + c, 0)}, Downstream actions: ${Object.values(downstreamActionCounts).reduce((s, c) => s + c, 0)}`,
                         }, null, 2)
                     }]
                 };

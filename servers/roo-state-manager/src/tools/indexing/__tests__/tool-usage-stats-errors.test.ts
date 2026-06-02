@@ -63,6 +63,156 @@ async function createClaudeSessionFixture(
 	return filePath;
 }
 
+describe('tool_usage_stats — downstream_action_rate (#2336 D2)', () => {
+    const cache = new Map();
+    const ensureFresh = vi.fn().mockResolvedValue(true);
+    const saveSkeleton = vi.fn();
+    const setEnabled = vi.fn();
+    const rebuildHandler = vi.fn();
+    let tmpDir: string;
+
+    beforeEach(async () => {
+        vi.clearAllMocks();
+        mockDetectStorageLocations.mockResolvedValue([]);
+        tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tus-da-test-'));
+        fakeHomedir = tmpDir;
+    });
+
+    afterEach(async () => {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+        fakeHomedir = realHomedir();
+    });
+
+    test('counts downstream_action when tool_use is followed by non-tool content', async () => {
+        // Bash call → next assistant message has text (non-tool) = downstream action
+        const projDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
+        const entries = [
+            // Assistant: Bash tool_use only (no text)
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'tool_use', id: 'toolu_da1', name: 'Bash', input: { command: 'ls' } },
+                ] },
+                timestamp: '2026-05-20T10:00:00Z',
+            },
+            { type: 'user', message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'toolu_da1', content: 'file1.txt\nfile2.txt' },
+            ] } },
+            // Assistant: text reasoning (non-tool) = downstream action for Bash
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'text', text: 'I can see the files. Let me read file1.txt.' },
+                    { type: 'tool_use', id: 'toolu_da2', name: 'Read', input: { file_path: '/file1.txt' } },
+                ] },
+                timestamp: '2026-05-20T10:01:00Z',
+            },
+        ];
+
+        await createClaudeSessionFixture(projDir, 'session-da-001.jsonl', entries);
+
+        const result = await handleRooSyncIndexing(
+            { action: 'tool_usage_stats', start_date: '2026-05-19', end_date: '2026-05-21' },
+            cache, ensureFresh, saveSkeleton, new Set(), setEnabled, rebuildHandler,
+        );
+
+        expect(result.isError).toBe(false);
+        const parsed = JSON.parse(result.content[0].text);
+        const bash = parsed.tools.find((t: any) => t.tool_name === 'Bash');
+        expect(bash).toBeDefined();
+        expect(bash.downstream_actions).toBe(1);
+        expect(bash.downstream_action_rate).toBe(100.0); // 1/1 * 100
+    });
+
+    test('no downstream_action when tool_use is followed by another tool_use only', async () => {
+        // Edit → next assistant message has ONLY another Edit (no text) = no downstream action
+        const projDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
+        const entries = [
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'tool_use', id: 'toolu_da10', name: 'Edit', input: {} },
+                ] },
+                timestamp: '2026-05-20T11:00:00Z',
+            },
+            { type: 'user', message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'toolu_da10', content: 'ok' },
+            ] } },
+            // Next assistant: ONLY tool_use (retry) = no downstream action
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'tool_use', id: 'toolu_da11', name: 'Edit', input: {} },
+                ] },
+                timestamp: '2026-05-20T11:01:00Z',
+            },
+        ];
+
+        await createClaudeSessionFixture(projDir, 'session-da-002.jsonl', entries);
+
+        const result = await handleRooSyncIndexing(
+            { action: 'tool_usage_stats', start_date: '2026-05-19', end_date: '2026-05-21' },
+            cache, ensureFresh, saveSkeleton, new Set(), setEnabled, rebuildHandler,
+        );
+
+        const parsed = JSON.parse(result.content[0].text);
+        const edit = parsed.tools.find((t: any) => t.tool_name === 'Edit');
+        expect(edit).toBeDefined();
+        expect(edit.downstream_actions).toBe(0);
+        expect(edit.downstream_action_rate).toBe(0);
+    });
+
+    test('mixed: some tool_uses get downstream actions, others do not', async () => {
+        const projDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
+        const entries = [
+            // Bash → no downstream (next is only tool_use)
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'tool_use', id: 'toolu_da20', name: 'Bash', input: {} },
+                ] },
+                timestamp: '2026-05-20T12:00:00Z',
+            },
+            { type: 'user', message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'toolu_da20', content: 'ok' },
+            ] } },
+            // Assistant: only Bash tool_use = no downstream for first Bash
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'tool_use', id: 'toolu_da21', name: 'Bash', input: {} },
+                ] },
+                timestamp: '2026-05-20T12:01:00Z',
+            },
+            { type: 'user', message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'toolu_da21', content: 'ok' },
+            ] } },
+            // Assistant: text reasoning = downstream for second Bash
+            {
+                type: 'assistant',
+                message: { role: 'assistant', content: [
+                    { type: 'text', text: 'Good, the command worked.' },
+                ] },
+                timestamp: '2026-05-20T12:02:00Z',
+            },
+        ];
+
+        await createClaudeSessionFixture(projDir, 'session-da-003.jsonl', entries);
+
+        const result = await handleRooSyncIndexing(
+            { action: 'tool_usage_stats', start_date: '2026-05-19', end_date: '2026-05-21' },
+            cache, ensureFresh, saveSkeleton, new Set(), setEnabled, rebuildHandler,
+        );
+
+        const parsed = JSON.parse(result.content[0].text);
+        const bash = parsed.tools.find((t: any) => t.tool_name === 'Bash');
+        expect(bash).toBeDefined();
+        expect(bash.calls).toBe(2);
+        expect(bash.downstream_actions).toBe(1);
+        expect(bash.downstream_action_rate).toBe(50.0); // 1/2 * 100
+    });
+});
+
 describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () => {
 	const cache = new Map();
 	const ensureFresh = vi.fn().mockResolvedValue(true);
