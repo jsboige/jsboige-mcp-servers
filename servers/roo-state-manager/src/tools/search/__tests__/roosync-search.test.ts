@@ -484,7 +484,8 @@ describe('roosync_search', () => {
 			// #883: Full paths are passed through — semantic handler does flexible matching
 			expect(callArgs.workspace).toBe('d:\\test-workspace');
 			expect(callArgs.conversation_id).toBeUndefined();
-			expect(callArgs.max_results).toBeUndefined();
+			// #2473: max_results now defaults to 10 (clamped [1,100]) instead of undefined
+			expect(callArgs.max_results).toBe(10);
 		});
 
 		test('text works without workspace', async () => {

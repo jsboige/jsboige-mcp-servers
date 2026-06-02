@@ -186,10 +186,6 @@ export const DashboardArgsSchema = z.object({
   crossPost: z.array(CrossPostSchema).optional()
     .describe('(append) Cross-post to other dashboards'),
 
-  // Pour condense
-  keepMessages: z.number().optional()
-    .describe('Messages to keep (default: 10)'),
-
   // Pour read_archive
   archiveFile: z.string().optional()
     .describe('(read_archive) Archive filename (omit to list)'),
@@ -203,7 +199,15 @@ export const DashboardArgsSchema = z.object({
   // Pour update (#1935 Cluster B)
   mode: z.enum(['replace', 'append', 'prepend']).optional()
     .describe('(update) Update mode: replace, append, prepend (default: replace)')
-}).passthrough();
+}).passthrough().refine(
+  // #2307 Phase 2: type is required EXCEPT for actions that don't need it
+  (data) => {
+    const TYPE_OPTIONAL_ACTIONS = ['list', 'read_overview', 'refresh', 'update'];
+    if (TYPE_OPTIONAL_ACTIONS.includes(data.action)) return true;
+    return !!data.type;
+  },
+  { message: 'type is required for this action (must be one of: global, machine, workspace)', path: ['type'] }
+);
 
 export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string, any>;
 
@@ -216,13 +220,8 @@ export const dashboardToolMetadata = {
   description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Gotchas: (1) Only 3 types exist: global, machine, workspace. (2) If response contains "written to file:", use Read tool on that file path. (3) Auto-condensation at 92% — no manual condense needed.',
   inputSchema: (() => {
     const schema = zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' }) as any;
-    // Force 'type' into required array so LLMs always pass it (#1862 schema mismatch fix)
-    // Handler gracefully handles omission for list/read_overview/refresh/update
-    if (schema.required && Array.isArray(schema.required) && !schema.required.includes('type')) {
-      schema.required.push('type');
-    } else if (!schema.required) {
-      schema.required = ['action', 'type'];
-    }
+    // #2307 Phase 2: Removed blanket 'type' required push — Zod .refine() now handles
+    // conditional type requirement (required for read/write/append/delete, optional for list/read_overview/refresh/update)
     return schema;
   })()
 };

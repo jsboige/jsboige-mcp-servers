@@ -275,6 +275,20 @@ async function bulkOperationHandler(
   operation: 'mark_read' | 'archive'
 ): Promise<string> {
   const opName = operation === 'mark_read' ? 'marquer comme lus' : 'archiver';
+
+  // #2307 Phase 2: Guard against destructive bulk_archive without filters
+  // bulk_archive without any filter would archive the ENTIRE inbox — dangerous.
+  // bulk_mark_read is non-destructive and allowed without filters.
+  if (operation === 'archive') {
+    const hasAnyFilter = !!(args.from || args.priority || args.before_date || args.subject_contains || args.tag);
+    if (!hasAnyFilter) {
+      throw new MessageManagerError(
+        'bulk_archive requires at least one filter (from, priority, before_date, subject_contains, tag) to prevent accidental inbox-wide deletion. Use cleanup action for controlled auto-cleanup.',
+        MessageManagerErrorCode.BULK_OPERATION_NO_FILTER
+      );
+    }
+  }
+
   logger.info(`🔄 Starting bulk ${operation}`, { filters: { from: args.from, priority: args.priority, before_date: args.before_date, subject_contains: args.subject_contains, tag: args.tag } });
 
   const result = await messageManager.bulkOperation(
