@@ -30,6 +30,27 @@ import fs from 'fs/promises';
 import path from 'path';
 
 /**
+ * Hard caps to prevent OOM on large workspaces during project XML export.
+ * Configurable via env vars for unusual deployments.
+ *
+ * Rationale: 50k conversations × ~500 bytes XML ≈ 25MB string, well under the
+ * 100MB byte cap. The byte cap leaves headroom for the Node write buffer.
+ * See #2307 Phase 1 audit item #2 (export_data memory guard).
+ *
+ * Note: wrapped in functions so unit tests can override via vi.stubEnv()
+ * without module reload gymnastics.
+ */
+function getMaxProjectExportConversations(): number {
+    return parseInt(process.env.EXPORT_MAX_PROJECT_CONVERSATIONS || '50000', 10);
+}
+function getMaxProjectExportBytes(): number {
+    return parseInt(
+        process.env.EXPORT_MAX_PROJECT_BYTES || String(100 * 1024 * 1024),
+        10
+    );
+}
+
+/**
  * Types d'export supportés
  */
 export type ExportTarget = 'task' | 'conversation' | 'project';
@@ -143,11 +164,13 @@ export const exportDataTool: Tool = {
             },
             startDate: {
                 type: 'string',
-                description: 'ISO 8601 start date filter (XML project)'
+                description:
+                    'ISO 8601 start date filter (XML project). Recommended for large workspaces — without date filter, project XML export is capped at EXPORT_MAX_PROJECT_CONVERSATIONS conversations (default 50000) and EXPORT_MAX_PROJECT_BYTES (default 100MB).'
             },
             endDate: {
                 type: 'string',
-                description: 'ISO 8601 end date filter (XML project)'
+                description:
+                    'ISO 8601 end date filter (XML project). Recommended for large workspaces — without date filter, project XML export is capped at EXPORT_MAX_PROJECT_CONVERSATIONS conversations (default 50000) and EXPORT_MAX_PROJECT_BYTES (default 100MB).'
             },
             // Options JSON
             jsonVariant: {
@@ -451,11 +474,38 @@ async function handleProjectXml(
         return true;
     });
 
+    // Memory guard: reject exports exceeding conversation cap (#2307 Phase 1 item #2)
+    const maxConversations = getMaxProjectExportConversations();
+    if (relevantTasks.length > maxConversations) {
+        throw new StateManagerError(
+            `Project export cap exceeded: ${relevantTasks.length} conversations > ${maxConversations} max. ` +
+                `Narrow the date range (startDate/endDate) or move to a per-task export. ` +
+                `Override via EXPORT_MAX_PROJECT_CONVERSATIONS env var.`,
+            'EXPORT_TOO_LARGE',
+            'ExportDataTool',
+            { conversationCount: relevantTasks.length, max: maxConversations }
+        );
+    }
+
     const xmlContent = xmlExporterService.generateProjectXml(relevantTasks, projectPath, {
         startDate,
         endDate,
         prettyPrint
     });
+
+    // Memory guard: reject exports exceeding byte cap (#2307 Phase 1 item #2)
+    const maxBytes = getMaxProjectExportBytes();
+    const xmlSizeBytes = Buffer.byteLength(xmlContent, 'utf-8');
+    if (xmlSizeBytes > maxBytes) {
+        throw new StateManagerError(
+            `Project export size cap exceeded: ${xmlSizeBytes} bytes > ${maxBytes} max. ` +
+                `Narrow the date range (startDate/endDate). ` +
+                `Override via EXPORT_MAX_PROJECT_BYTES env var.`,
+            'EXPORT_TOO_LARGE',
+            'ExportDataTool',
+            { sizeBytes: xmlSizeBytes, max: maxBytes }
+        );
+    }
 
     if (filePath) {
         await xmlExporterService.saveXmlToFile(xmlContent, filePath);
