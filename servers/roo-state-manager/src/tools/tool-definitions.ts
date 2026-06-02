@@ -149,15 +149,13 @@ export const roosyncIndexingDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'tool_usage_stats'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=detect junk, cleanup_orphans=purge, tool_usage_stats=fleet-wide usage aggregation' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'tool_usage_stats'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, tool_usage_stats=usage aggregation' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
             max_tasks: { type: 'number', description: '0 = all', default: 0 },
             dry_run: { type: 'boolean', description: 'Simulation mode (rebuild, garbage_scan, cleanup_orphans)', default: false },
             machine_id: { type: 'string', description: 'Machine filter (for archive)' },
-            claude_code_sessions: { type: 'boolean', description: 'BLOCKED — sessions are sanctuary (#1621)', default: false },
-            max_sessions: { type: 'number', description: '0 = all', default: 0 },
             source: { type: 'string', enum: ['roo', 'claude-code'], description: "For action=index. Default: 'roo'" },
             max_age_days: { type: 'number', description: 'For cleanup. Max age in days (default: 90).', default: 90 },
             workspace_name_filter: { type: 'string', description: 'For cleanup. Optional workspace_name filter.' },
