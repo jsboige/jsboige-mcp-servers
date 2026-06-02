@@ -186,10 +186,6 @@ export const DashboardArgsSchema = z.object({
   crossPost: z.array(CrossPostSchema).optional()
     .describe('(append) Cross-post to other dashboards'),
 
-  // Pour condense
-  keepMessages: z.number().optional()
-    .describe('Messages to keep (default: 10)'),
-
   // Pour read_archive
   archiveFile: z.string().optional()
     .describe('(read_archive) Archive filename (omit to list)'),

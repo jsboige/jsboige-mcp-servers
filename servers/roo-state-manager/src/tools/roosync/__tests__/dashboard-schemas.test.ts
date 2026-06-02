@@ -283,7 +283,6 @@ describe('DashboardArgsSchema', () => {
     const result = DashboardArgsSchema.safeParse({
       action: 'condense',
       type: 'workspace',
-      keepMessages: 20,
     });
     expect(result.success).toBe(false);
   });
