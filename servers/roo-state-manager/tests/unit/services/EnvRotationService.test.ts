@@ -258,6 +258,83 @@ describe('EnvRotationService', () => {
     });
   });
 
+  describe('adversarial: key rotation scenario (#2410 follow-up)', () => {
+    it('should fail when decrypting with wrong key after key rotation', () => {
+      const env = 'ROTATED_SECRET=new_value_after_rotation\n';
+      const plaintext = Buffer.from(env, 'utf-8');
+
+      // Encrypt with original key
+      const encrypted = service.encrypt(plaintext);
+
+      // Simulate key rotation — change the passphrase
+      process.env.ROOSYNC_ENV_KEY = 'rotated-key-that-is-at-least-32-characters!!';
+
+      // Should fail with rotated key
+      expect(() => {
+        service.decrypt(encrypted.ciphertext, encrypted.iv, encrypted.tag, encrypted.salt);
+      }).toThrow();
+
+      // Restore original key — should succeed again
+      process.env.ROOSYNC_ENV_KEY = TEST_KEY;
+      const decrypted = service.decrypt(encrypted.ciphertext, encrypted.iv, encrypted.tag, encrypted.salt);
+      expect(decrypted.toString('utf-8')).toBe(env);
+    });
+
+    it('should produce different ciphertexts after key rotation (same salt would still differ)', () => {
+      const env = 'SAME=content\n';
+      const plaintext = Buffer.from(env, 'utf-8');
+
+      const enc1 = service.encrypt(plaintext);
+
+      // Rotate key
+      process.env.ROOSYNC_ENV_KEY = 'rotated-key-that-is-at-least-32-characters!!';
+      const enc2 = service.encrypt(plaintext);
+
+      // Different salts → different ciphertexts even with different keys
+      expect(enc1.ciphertext.equals(enc2.ciphertext)).toBe(false);
+
+      // Restore original key to decrypt enc1
+      process.env.ROOSYNC_ENV_KEY = TEST_KEY;
+      const dec1 = service.decrypt(enc1.ciphertext, enc1.iv, enc1.tag, enc1.salt);
+      // Switch back to rotated key to decrypt enc2
+      process.env.ROOSYNC_ENV_KEY = 'rotated-key-that-is-at-least-32-characters!!';
+      const dec2 = service.decrypt(enc2.ciphertext, enc2.iv, enc2.tag, enc2.salt);
+
+      expect(dec1.toString()).toBe(env);
+      expect(dec2.toString()).toBe(env);
+    });
+
+    it('should reject swapped auth tags between different encryptions', () => {
+      const env1 = 'SECRET_A=value_a\n';
+      const env2 = 'SECRET_B=value_b\n';
+
+      const enc1 = service.encrypt(Buffer.from(env1, 'utf-8'));
+      const enc2 = service.encrypt(Buffer.from(env2, 'utf-8'));
+
+      // Swap auth tags — each should fail
+      expect(() => {
+        service.decrypt(enc1.ciphertext, enc1.iv, enc2.tag, enc1.salt);
+      }).toThrow();
+
+      expect(() => {
+        service.decrypt(enc2.ciphertext, enc2.iv, enc1.tag, enc2.salt);
+      }).toThrow();
+    });
+
+    it('should reject swapped ciphertexts between encryptions (same key)', () => {
+      const env1 = 'FIRST=secret\n';
+      const env2 = 'SECOND=other\n';
+
+      const enc1 = service.encrypt(Buffer.from(env1, 'utf-8'));
+      const enc2 = service.encrypt(Buffer.from(env2, 'utf-8'));
+
+      // Swap ciphertexts — each should fail (different IV/salt)
+      expect(() => {
+        service.decrypt(enc2.ciphertext, enc1.iv, enc1.tag, enc1.salt);
+      }).toThrow();
+    });
+  });
+
   describe('env validation (apply)', () => {
     it('should validate decrypted content looks like .env', async () => {
       // This test verifies the validation logic in apply()
