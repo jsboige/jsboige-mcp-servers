@@ -145,11 +145,11 @@ export const roosyncSearchDefinition = {
 // ============================================================
 export const roosyncIndexingDefinition = {
     name: 'roosync_indexing',
-    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, cleanup, garbage_scan, cleanup_orphans, tool_usage_stats)",
+    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, cleanup, garbage_scan, cleanup_orphans, tool_usage_stats, save_snapshot, trend_report)",
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'tool_usage_stats'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, tool_usage_stats=usage aggregation' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'tool_usage_stats', 'save_snapshot', 'trend_report'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
