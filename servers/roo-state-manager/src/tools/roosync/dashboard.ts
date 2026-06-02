@@ -1418,7 +1418,17 @@ function truncateToMaxSize(text: string, maxSizeBytes: number, label: string): s
     result = candidate;
   }
 
-  const truncated = result || lines[lines.length - 1] || '';
+  // #2463: If even the last single line exceeds the cap (e.g. a single long line),
+  // hard-truncate it by character count (UTF-8 safe: worst case 4 bytes/char).
+  if (!result) {
+    const lastLine = lines[lines.length - 1] || '';
+    const maxChars = Math.floor(maxSizeBytes / 2); // safe for any UTF-8 (2 bytes min for supplementary)
+    result = lastLine.length > maxChars
+      ? lastLine.slice(-maxChars)
+      : lastLine;
+  }
+
+  const truncated = result;
   logger.info(`Deterministic truncation applied to ${label}`, {
     originalBytes: sizeBytes,
     truncatedBytes: Buffer.byteLength(truncated, 'utf8'),
