@@ -70,6 +70,47 @@ def build_review_prompt(repo: str, pr_number: int, tier: int = 2) -> str:
     return "\n".join(prompt_parts)
 
 
+# --- #1587 fix: tier-adaptive timeout + error propagation ---
+
+DEFAULT_TIMEOUT = 120  # matches sk_agent.py review_pr default
+
+
+def resolve_effective_timeout(timeout: int, tier: int) -> int:
+    """Compute effective timeout for review_pr call_agent.
+
+    When timeout is the default (120), replace with tier-appropriate value.
+    When explicitly set by the caller, respect it.
+    """
+    if timeout == DEFAULT_TIMEOUT:
+        return {1: 60, 2: 180, 3: 300}.get(tier, DEFAULT_TIMEOUT)
+    return timeout
+
+
+def format_review_result(result, agent_id: str, tier: int, elapsed: float,
+                         effective_timeout: int) -> str:
+    """Format review_pr result, propagating errors instead of silently swallowing.
+
+    Returns JSON string with either "response" or "error" key.
+    Mirrors the logic in review_pr's error propagation fix (#1587).
+    """
+    if isinstance(result, dict) and "error" in result:
+        return json.dumps({
+            "error": result["error"],
+            "agent_used": agent_id,
+            "tier": tier,
+            "duration_seconds": elapsed,
+            "timeout_used": effective_timeout,
+        }, indent=2, ensure_ascii=False)
+
+    return json.dumps({
+        "response": result.get("response", "") if isinstance(result, dict) else str(result),
+        "agent_used": agent_id,
+        "model_used": result.get("model_used", "") if isinstance(result, dict) else "",
+        "tier": tier,
+        "duration_seconds": elapsed,
+    }, indent=2, ensure_ascii=False)
+
+
 # --- Tests ---
 
 
@@ -190,3 +231,113 @@ class TestTier3Distinct:
 
     def test_tier3_conversation_is_pr_review_tier3(self):
         assert resolve_conversation(3) == "pr-review-tier3"
+
+
+# --- #1587 fix tests ---
+
+
+class TestResolveEffectiveTimeout:
+    """Tier-adaptive timeout: default 120 is replaced with tier-appropriate values."""
+
+    def test_tier1_default_gets_60(self):
+        assert resolve_effective_timeout(120, 1) == 60
+
+    def test_tier2_default_gets_180(self):
+        assert resolve_effective_timeout(120, 2) == 180
+
+    def test_tier3_default_gets_300(self):
+        assert resolve_effective_timeout(120, 3) == 300
+
+    def test_explicit_timeout_preserved_tier2(self):
+        """If caller explicitly sets timeout=60, don't override."""
+        assert resolve_effective_timeout(60, 2) == 60
+
+    def test_explicit_timeout_preserved_tier3(self):
+        """If caller explicitly sets timeout=500, don't override."""
+        assert resolve_effective_timeout(500, 3) == 500
+
+    def test_zero_timeout_not_overridden(self):
+        """Edge case: explicit 0 should be preserved (no timeout)."""
+        assert resolve_effective_timeout(0, 2) == 0
+
+
+class TestFormatReviewResultErrorPropagation:
+    """#1587: Error dicts from call_agent must be propagated, not silently swallowed."""
+
+    def test_timeout_error_propagated(self):
+        """The original bug: timeout returned {"error": "...", "timeout": N}
+        and .get("response", "") returned "" — silent swallow."""
+        error_result = {"error": "call_agent timed out after 180s", "timeout": 180}
+        output = format_review_result(
+            result=error_result,
+            agent_id="integration-reviewer",
+            tier=2,
+            elapsed=180.2,
+            effective_timeout=180,
+        )
+        parsed = json.loads(output)
+        assert "error" in parsed
+        assert "timed out" in parsed["error"]
+        assert parsed["agent_used"] == "integration-reviewer"
+        assert parsed["tier"] == 2
+        assert parsed["timeout_used"] == 180
+        # The key fix: "response" must NOT be present in error output
+        assert "response" not in parsed
+
+    def test_agent_resolution_error_propagated(self):
+        """Non-timeout errors (e.g., agent not found) also propagated."""
+        error_result = {"error": "Agent 'unknown-agent' not found"}
+        output = format_review_result(
+            result=error_result,
+            agent_id="unknown-agent",
+            tier=2,
+            elapsed=0.1,
+            effective_timeout=180,
+        )
+        parsed = json.loads(output)
+        assert "error" in parsed
+        assert "not found" in parsed["error"]
+        assert "response" not in parsed
+
+    def test_success_result_not_affected(self):
+        """Successful results should still have "response" key as before."""
+        success_result = {"response": "LGTM", "model_used": "glm-5"}
+        output = format_review_result(
+            result=success_result,
+            agent_id="fast-reviewer",
+            tier=1,
+            elapsed=15.3,
+            effective_timeout=60,
+        )
+        parsed = json.loads(output)
+        assert parsed["response"] == "LGTM"
+        assert parsed["model_used"] == "glm-5"
+        assert parsed["agent_used"] == "fast-reviewer"
+        assert parsed["tier"] == 1
+        assert "error" not in parsed
+
+    def test_string_result_handled(self):
+        """If call_agent returns a plain string (not dict), wrap it."""
+        output = format_review_result(
+            result="Plain text review",
+            agent_id="integration-reviewer",
+            tier=2,
+            elapsed=10.0,
+            effective_timeout=180,
+        )
+        parsed = json.loads(output)
+        assert parsed["response"] == "Plain text review"
+
+    def test_dict_without_response_key(self):
+        """Edge case: success dict missing 'response' key defaults to empty string."""
+        result = {"model_used": "glm-5"}
+        output = format_review_result(
+            result=result,
+            agent_id="fast-reviewer",
+            tier=1,
+            elapsed=5.0,
+            effective_timeout=60,
+        )
+        parsed = json.loads(output)
+        assert parsed["response"] == ""
+        assert "error" not in parsed
