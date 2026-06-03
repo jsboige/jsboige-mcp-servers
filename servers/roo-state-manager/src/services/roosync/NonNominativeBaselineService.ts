@@ -555,8 +555,8 @@ export class NonNominativeBaselineService {
   }
 
   /**
-   * Vérifie si un profil est applicable à une machine
-   * TODO(#1843): Implement actual applicability rules (OS match, GPU presence, etc.)
+   * Vérifie si un profil est applicable à une machine.
+   * Delegates to ProfileApplicabilityHelper (implemented #1843).
    */
   private isProfileApplicable(profile: ConfigurationProfile, inventory: MachineInventory): boolean {
     return ProfileApplicabilityHelper.isApplicable(profile, inventory);
