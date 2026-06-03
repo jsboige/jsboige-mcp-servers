@@ -1891,14 +1891,31 @@ async def review_pr(
 
     prompt = "\n".join(prompt_parts)
 
+    # Tier-adaptive timeout: thinking models + tool calls need more time
+    effective_timeout = timeout
+    if timeout == 120:  # default value — override with tier-appropriate timeout
+        effective_timeout = {1: 60, 2: 180, 3: 300}.get(tier, 120)
+
     result = await manager.call_agent(
         prompt=prompt,
         agent_id=agent_id,
         conversation_id=conv_id if tier >= 2 else "",
-        timeout=timeout,
+        timeout=effective_timeout,
     )
 
     elapsed = round(time.time() - start, 1)
+
+    # Propagate errors (timeout, agent resolution, etc.) instead of silently
+    # returning empty response. Fixes #1587 — review_pr returned response=""
+    # when call_agent timed out because the error dict lacked "response" key.
+    if isinstance(result, dict) and "error" in result:
+        return json.dumps({
+            "error": result["error"],
+            "agent_used": agent_id,
+            "tier": tier,
+            "duration_seconds": elapsed,
+            "timeout_used": effective_timeout,
+        }, indent=2, ensure_ascii=False)
 
     return json.dumps({
         "response": result.get("response", "") if isinstance(result, dict) else str(result),
