@@ -295,36 +295,52 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		}
 
 
-		// Phase B: Fallback — list all ws-* collections from Qdrant
+		// Phase B: Diagnostic fallback — no blind collection selection (#2455)
 		// #1085: Hash mismatches between Roo (Windows fsPath backslashes) and
 		// Claude Code (Git Bash forward slashes) produce different hashes.
+		// #2455: Previously, Phase B blindly took the first ws-* collection with
+		// points_count > 0, serving results from unrelated workspaces. Now it
+		// returns enriched diagnostic info to help the caller take action.
 		if (!collectionName) {
-			// #1275: Limit to max 5 collections to prevent cascade timeouts
-			const allWsCollections = (await listWorkspaceCollections()).slice(0, 5);
-			for (const wsCol of allWsCollections) {
+			// Collect diagnostic info about existing ws-* collections
+			const allWsCollections = await listWorkspaceCollections();
+			const collectionDiagnostics = [];
+			for (const wsCol of allWsCollections.slice(0, 10)) {
 				try {
 					const info = await qdrant.getCollection(wsCol);
-					if (info && (info as any).points_count > 0) {
-						collectionName = wsCol;
-						break;
-					}
+					collectionDiagnostics.push({
+						collection: wsCol,
+						points_count: (info as any)?.points_count ?? 0,
+						status: info?.status ?? 'unknown'
+					});
 				} catch {
-					continue;
+					collectionDiagnostics.push({
+						collection: wsCol,
+						points_count: -1,
+						status: 'error'
+					});
 				}
 			}
-		}
-		if (!collectionName) {
+
 			return {
 				isError: false,
 				content: [{
 					type: 'text',
 					text: JSON.stringify({
 						status: 'collection_not_found',
-						message: `Collection Qdrant non trouvée pour le workspace "${workspace}".`,
-						hint: 'Le workspace doit être indexé par Roo Code avant de pouvoir effectuer des recherches. Ouvrez le workspace dans VS Code avec Roo activé pour démarrer l\'indexation automatique. Alternativement, exécutez "roosync_indexing" avec action: "rebuild" pour forcer la reconstruction de l\'index.',
-						tried_collections: collectionVariants,
+						message: `No Qdrant collection matching workspace "${workspace}" (primary hash: ${primaryCollectionName}). ${collectionVariants.length} hash variants tried, none matched.`,
+						hint: 'The workspace must be indexed by Roo Code before searching. If already indexed, the path format may differ from what the indexer used. Check the diagnostic info below for existing collections.',
+						tried_variants: collectionVariants,
+						primary_hash: primaryCollectionName,
+						workspace: workspace,
+						workspace_source: workspaceSource,
+						existing_collections: collectionDiagnostics,
 						fallback_list_tried: true,
-						workspace: workspace
+						troubleshooting: {
+							ripgrep_vscode_1122: 'VS Code 1.122+ renamed ripgrep package to @vscode/ripgrep-universal. Roo Code 3.54 cannot find rg.exe → indexing never starts → collection stays empty. Workaround: copy rg.exe from new path to old path.',
+							hash_mismatch: 'Path format differs between indexing (Roo Code fsPath) and search (Claude Code). Common on Windows: backslash vs forward slash, case differences, UNC prefixes.',
+							action: 'Re-index the workspace from this machine via Roo Code, or verify the ripgrep binary is accessible.'
+						}
 					}, null, 2)
 				}]
 			};
