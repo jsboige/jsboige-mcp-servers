@@ -191,37 +191,29 @@ describe('search-codebase.tool', () => {
 				delete process.env.EMBEDDING_API_KEY;
 			});
 
-			test('falls back to listWorkspaceCollections when no hash variant matches', async () => {
-				// Phase A: all hash variants fail (getCollection rejects for non-fallback names)
-				// Phase B: getCollection succeeds for ws-fallbackcollection
+			test('returns collection_not_found with diagnostic info when no hash variant matches (#2455)', async () => {
+				// #2455: Phase B no longer blindly selects the first ws-* collection.
+				// It returns diagnostic info instead, preventing wrong-workspace results.
 				mockQdrant.getCollection.mockImplementation(async (name: string) => {
 					if (name === 'ws-fallbackcollection') {
-						return { points_count: 5000 };
+						return { points_count: 5000, status: 'green' };
 					}
 					throw new Error('not found');
 				});
 
-				// Phase B: listCollections returns a ws-* collection
+				// Phase B: listCollections returns a ws-* collection (unrelated to workspace)
 				mockQdrant.getCollections.mockResolvedValue({
 					collections: [{ name: 'ws-fallbackcollection' }]
 				});
 
-				// Embedding + search succeed
-				mockEmbeddingCreate.mockResolvedValue({
-					data: [{ embedding: new Array(8).fill(0.1) }]
-				});
-				mockQdrant.query.mockResolvedValue({
-					points: [{
-						score: 0.85,
-						payload: { filePath: 'src/app.ts', codeChunk: 'const x = 1;', startLine: 1, endLine: 5 }
-					}]
-				});
-
 				const result = await handleCodebaseSearch({ query: 'app', workspace: '/ws' });
 				const parsed = JSON.parse(result.content[0].text);
-				expect(parsed.status).toBe('success');
-				expect(parsed.collection).toBe('ws-fallbackcollection');
-				expect(mockQdrant.getCollections).toHaveBeenCalled();
+				// Phase B now returns diagnostic info, NOT results from unrelated collection
+				expect(parsed.status).toBe('collection_not_found');
+				expect(parsed.fallback_list_tried).toBe(true);
+				expect(parsed.existing_collections).toBeDefined();
+				expect(parsed.troubleshooting).toBeDefined();
+				expect(parsed.primary_hash).toMatch(/^ws-[a-f0-9]{16}$/);
 			});
 
 			test('returns collection_not_found with fallback_list_tried when both phases fail', async () => {
@@ -296,7 +288,7 @@ describe('search-codebase.tool', () => {
 
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('collection_not_found');
-			expect(parsed.tried_collections.length).toBeGreaterThan(0);
+			expect(parsed.tried_variants.length).toBeGreaterThan(0);
 		});
 	});
 

@@ -153,14 +153,14 @@ describe('codebase_search - handleCodebaseSearch - Collection not found', () => 
 		expect(result.isError).toBe(false);
 		const response = JSON.parse(result.content[0].text);
 		expect(response.status).toBe('collection_not_found');
-		expect(response.tried_collections).toBeDefined();
-		expect(response.tried_collections.length).toBeGreaterThan(0);
+		expect(response.tried_variants).toBeDefined();
+		expect(response.tried_variants.length).toBeGreaterThan(0);
 	});
 
 	it('devrait inclure un hint pour indexer le workspace', async () => {
 		const result = await handleCodebaseSearch({ query: 'test', workspace: 'd:\\test' });
 		const response = JSON.parse(result.content[0].text);
-		expect(response.hint).toContain('indexé par Roo Code');
+		expect(response.hint).toContain('Roo Code');
 	});
 
 	it('devrait inclure le workspace testé', async () => {
