@@ -192,7 +192,7 @@ describe('roosync_diagnose tool', () => {
 
     describe('action=health', () => {
         it('returns skeleton cache tier stats', async () => {
-            mockGetCacheTierStats.mockReturnValue({
+            mockGetCacheTierStats.mockResolvedValue({
                 tier1_roo: 100,
                 tier2_claude: 50,
                 tier3_archives: 25,
@@ -208,7 +208,7 @@ describe('roosync_diagnose tool', () => {
         });
 
         it('shows disabled tiers correctly', async () => {
-            mockGetCacheTierStats.mockReturnValue({
+            mockGetCacheTierStats.mockResolvedValue({
                 tier1_roo: 80,
                 tier2_claude: 0,
                 tier3_archives: 0,
@@ -224,9 +224,7 @@ describe('roosync_diagnose tool', () => {
     describe('error handling', () => {
         it('wraps errors with action context', async () => {
             // Force an error in health action
-            mockGetCacheTierStats.mockImplementation(() => {
-                throw new Error('Cache corrupt');
-            });
+            mockGetCacheTierStats.mockRejectedValue(new Error('Cache corrupt'));
             await expect(roosyncDiagnose({ action: 'health' })).rejects.toThrow('health');
             await expect(roosyncDiagnose({ action: 'health' })).rejects.toThrow('Cache corrupt');
         });

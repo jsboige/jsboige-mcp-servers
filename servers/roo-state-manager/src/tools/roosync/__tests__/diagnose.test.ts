@@ -277,7 +277,7 @@ describe('roosync_diagnose', () => {
         config: { enableClaudeTier: true, enableArchiveTier: true },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
-        getCacheTierStats: vi.fn(() => mockStats),
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
       } as any);
 
       const result = await roosyncDiagnose({ action: 'health' });
@@ -305,7 +305,7 @@ describe('roosync_diagnose', () => {
         config: { enableClaudeTier: false, enableArchiveTier: false },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
-        getCacheTierStats: vi.fn(() => mockStats),
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
       } as any);
 
       const result = await roosyncDiagnose({ action: 'health' });
@@ -323,7 +323,7 @@ describe('roosync_diagnose', () => {
         config: { enableClaudeTier: false, enableArchiveTier: false },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
-        getCacheTierStats: vi.fn(() => mockStats),
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
       } as any);
 
       const result = await roosyncDiagnose({ action: 'health' });

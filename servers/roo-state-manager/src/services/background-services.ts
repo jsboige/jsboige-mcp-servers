@@ -608,7 +608,7 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         }).then(async () => {
             // #1747 sub-issue B: Log tier summary after all background loading completes
             const instance = SkeletonCacheService.getInstance();
-            const stats = instance.getCacheTierStats();
+            const stats = await instance.getCacheTierStats();
             console.log(
                 `✅ Skeleton cache loaded: Tier1(Roo)=${stats.tier1_roo} ` +
                 `Tier2(Claude)=${stats.config.enableClaudeTier ? stats.tier2_claude : 'OFF'} ` +
