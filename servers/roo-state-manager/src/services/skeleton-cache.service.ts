@@ -520,13 +520,18 @@ export class SkeletonCacheService {
      *   - 'claude'          → Tier 2 (Claude local)
      *   - 'gdrive-archive'  → Tier 3 (GDrive archives)
      */
-    public getCacheTierStats(): {
+    // #2434: Made async to call ensureFreshCache() before reading cache.
+    // Without this, tier stats could be computed against a stale/cold cache
+    // (unlike every other read path in this class which already awaits ensureFreshCache).
+    public async getCacheTierStats(): Promise<{
         tier1_roo: number;
         tier2_claude: number;
         tier3_archives: number;
         total: number;
         config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
-    } {
+    }> {
+        await this.ensureFreshCache();
+
         let tier1 = 0;
         let tier2 = 0;
         let tier3 = 0;

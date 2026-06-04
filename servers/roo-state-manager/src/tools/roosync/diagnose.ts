@@ -413,7 +413,7 @@ async function handleHealthAction(
 ): Promise<DiagnoseResult> {
   const { SkeletonCacheService } = await import('../../services/skeleton-cache.service.js');
   const instance = SkeletonCacheService.getInstance();
-  const stats = instance.getCacheTierStats();
+  const stats = await instance.getCacheTierStats();
 
   const tierSummary =
     `Tier1(Roo): ${stats.tier1_roo} | ` +
