@@ -2,9 +2,9 @@
  * UnifiedTaskExtractor — Orchestrator for cross-format task extraction
  *
  * @module services/extraction/unified-task-extractor
- * @issue #1392 (#1360-2)
+ * @issue #1392 (#1360-2), #2429 (zoo-code source)
  *
- * Delegates to RooTaskExtractor and ClaudeTaskExtractor,
+ * Delegates to RooTaskExtractor, ClaudeTaskExtractor, and ZooTaskExtractor,
  * merging results into a single unified collection.
  */
 
@@ -16,14 +16,15 @@ import type {
 } from './task-extractor.js';
 import { RooTaskExtractor } from './roo-task-extractor.js';
 import { ClaudeTaskExtractor } from './claude-task-extractor.js';
+import { ZooTaskExtractor } from './zoo-task-extractor.js';
+
+/** Source types supported by the unified extractor */
+type SupportedSource = 'roo' | 'claude-code' | 'zoo-code';
 
 /** Combined result from all extractors */
 export interface UnifiedExtractionResult {
   tasks: UnifiedTask[];
-  bySource: {
-    roo: ExtractionResult;
-    'claude-code': ExtractionResult;
-  };
+  bySource: Record<SupportedSource, ExtractionResult>;
   totalErrors: number;
 }
 
@@ -34,25 +35,26 @@ export class UnifiedTaskExtractor {
     this.extractors = extractors ?? [
       new RooTaskExtractor(),
       new ClaudeTaskExtractor(),
+      new ZooTaskExtractor(),
     ];
   }
 
   /** Extract tasks from all available sources */
   async extractAll(options?: ExtractionOptions): Promise<UnifiedExtractionResult> {
-    const rooResult = await this.extractors[0].extractAll(options);
-    const claudeResult = await this.extractors[1].extractAll(options);
+    const results = await Promise.all(
+      this.extractors.map(ext => ext.extractAll(options)),
+    );
 
-    const allTasks = [...rooResult.tasks, ...claudeResult.tasks];
-    const totalErrors = rooResult.errors.length + claudeResult.errors.length;
+    const allTasks = results.flatMap(r => r.tasks);
+    const totalErrors = results.reduce((sum, r) => sum + r.errors.length, 0);
 
-    return {
-      tasks: allTasks,
-      bySource: {
-        roo: rooResult,
-        'claude-code': claudeResult,
-      },
-      totalErrors,
-    };
+    const bySource = {} as Record<SupportedSource, ExtractionResult>;
+    for (let i = 0; i < this.extractors.length; i++) {
+      const sourceName = this.extractors[i].sourceName as SupportedSource;
+      bySource[sourceName] = results[i];
+    }
+
+    return { tasks: allTasks, bySource, totalErrors };
   }
 
   /** Extract a single task by ID from the appropriate source */
@@ -60,18 +62,17 @@ export class UnifiedTaskExtractor {
     taskId: string,
     options?: ExtractionOptions,
   ): Promise<UnifiedTask | null> {
-    // Determine source from taskId format
     const extractor = this.getExtractorForTask(taskId);
     return extractor.extractById(taskId, options);
   }
 
   /** Check which sources are available */
-  async getAvailableSources(): Promise<Array<'roo' | 'claude-code'>> {
-    const available: Array<'roo' | 'claude-code'> = [];
+  async getAvailableSources(): Promise<SupportedSource[]> {
+    const available: SupportedSource[] = [];
 
     for (const extractor of this.extractors) {
       if (await extractor.isAvailable()) {
-        available.push(extractor.sourceName);
+        available.push(extractor.sourceName as SupportedSource);
       }
     }
 
@@ -83,7 +84,8 @@ export class UnifiedTaskExtractor {
     // Claude tasks use "claude-{projectName}" format
     if (taskId.startsWith('claude-')) {
       return this.extractors.find(e => e.sourceName === 'claude-code')
-        ?? this.extractors[1];
+        ?? this.extractors.find(e => e.sourceName !== 'roo')
+        ?? this.extractors[0];
     }
     // Default to Roo (UUID format or other)
     return this.extractors.find(e => e.sourceName === 'roo')
