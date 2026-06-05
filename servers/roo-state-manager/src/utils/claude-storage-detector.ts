@@ -530,10 +530,11 @@ export class ClaudeStorageDetector {
         const locations = await this.detectStorageLocations();
 
         // #852: Extract project name from taskId (format: claude-{projectName})
+        // #937: Also handle per-session format: claude-{projectName}--{sessionUuid}
         if (!taskId.startsWith('claude-')) {
             return null;
         }
-        const targetProjectName = taskId.substring(7); // Remove 'claude-' prefix
+        const suffix = taskId.substring(7); // Remove 'claude-' prefix
 
         for (const location of locations) {
             // Chercher dans tous les projets
@@ -541,7 +542,8 @@ export class ClaudeStorageDetector {
 
             for (const projectName of projects) {
                 // #852 FIX: Only check projects that match the taskId
-                if (projectName !== targetProjectName) {
+                // #937 FIX: Match both per-project (exact) and per-session (--{uuid}) formats
+                if (projectName !== suffix && !suffix.startsWith(projectName + '--')) {
                     continue;
                 }
 
