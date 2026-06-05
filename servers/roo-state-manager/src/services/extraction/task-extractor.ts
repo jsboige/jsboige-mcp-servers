@@ -21,17 +21,17 @@ export interface ExtractionOptions {
 /** Result of a single-source extraction */
 export interface ExtractionResult {
   tasks: UnifiedTask[];
-  source: 'roo' | 'claude-code';
+  source: 'roo' | 'claude-code' | 'zoo-code';
   errors: Array<{ taskId?: string; message: string }>;
 }
 
 /**
  * Base interface for task extractors.
- * Each source (Roo, Claude Code) implements this interface.
+ * Each source (Roo, Claude Code, Zoo-Code) implements this interface.
  */
 export interface TaskExtractor {
   /** Human-readable source name */
-  readonly sourceName: 'roo' | 'claude-code';
+  readonly sourceName: 'roo' | 'claude-code' | 'zoo-code';
 
   /** Extract all tasks from this source */
   extractAll(options?: ExtractionOptions): Promise<ExtractionResult>;
