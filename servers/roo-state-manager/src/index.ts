@@ -114,6 +114,18 @@ import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
 import { createLogger } from './utils/logger.js';
 import { recordToolCall } from './utils/tool-call-metrics.js';
 
+// #2267: Per-MCP-call global timeout — prevents tool calls from hanging indefinitely.
+// Observed incident: roosync_dashboard hung 22h (TBXark session death + GDrive I/O stall).
+// Default: 5 min. Override via MCP_TOOL_TIMEOUT_MS env var.
+const MCP_TOOL_TIMEOUT_MS = parseInt(process.env.MCP_TOOL_TIMEOUT_MS || '300000', 10);
+// Legitimately-slow tools get a higher cap (10 min).
+const MCP_TOOL_TIMEOUT_OVERRIDES: Readonly<Record<string, number>> = {
+    export_data: 600000,
+    roosync_baseline: 600000,
+    roosync_indexing: 600000,
+    roosync_storage_management: 600000,
+};
+
 const logger = createLogger('RooStateManagerServer');
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -397,19 +409,40 @@ class RooStateManagerServer {
 
                 let result;
                 let hadError = false;
+                // #2267: Per-call timeout guard. Race the actual tool against a timer;
+                // on timeout return a structured error instead of hanging forever.
+                let timeoutHandle: NodeJS.Timeout | undefined;
                 try {
-                    if (this.toolInterceptor) {
-                        result = await this.toolInterceptor.interceptToolCall(
+                    const timeoutMs = MCP_TOOL_TIMEOUT_OVERRIDES[toolName ?? ''] ?? MCP_TOOL_TIMEOUT_MS;
+                    const timeoutPromise = new Promise<never>((_, reject) => {
+                        timeoutHandle = setTimeout(() => {
+                            reject(new Error(
+                                `[#2267] Tool "${toolName}" timed out after ${timeoutMs}ms. ` +
+                                `Likely cause: GDrive I/O stall or dead TBXark proxy session. ` +
+                                `Override timeout via MCP_TOOL_TIMEOUT_MS env var.`
+                            ));
+                        }, timeoutMs);
+                        if (typeof timeoutHandle?.unref === 'function') timeoutHandle.unref();
+                    });
+                    const toolCallPromise = this.toolInterceptor
+                        ? this.toolInterceptor.interceptToolCall(
                             request.params.name,
                             request.params.arguments,
                             async () => await originalCallTool(request)
-                        );
-                    } else {
-                        result = await originalCallTool(request);
-                    }
+                          )
+                        : originalCallTool(request);
+                    result = await Promise.race([toolCallPromise, timeoutPromise]);
                 } catch (toolError) {
                     hadError = true;
-                    throw toolError;
+                    const msg = toolError instanceof Error ? toolError.message : String(toolError);
+                    if (msg.includes('[#2267]')) {
+                        // Timeout: surface as structured error result, not an unhandled throw
+                        result = { content: [{ type: 'text', text: msg }], isError: true };
+                    } else {
+                        throw toolError;
+                    }
+                } finally {
+                    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
                 }
 
                 const durationMs = Date.now() - startMs;
