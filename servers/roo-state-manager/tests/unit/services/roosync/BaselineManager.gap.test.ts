@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BaselineManager } from '../../../../src/services/roosync/BaselineManager.js';
-import { promises as fs, existsSync, readFileSync } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 
 vi.mock('fs', () => ({
   constants: { R_OK: 4, W_OK: 2, F_OK: 0 },
@@ -29,7 +29,6 @@ vi.mock('fs', () => ({
     rm: vi.fn(),
   },
   existsSync: vi.fn(),
-  readFileSync: vi.fn(),
 }));
 
 vi.mock('../../../../src/services/BaselineService.js');
@@ -61,63 +60,66 @@ afterEach(() => {
   console.log = originalLog;
 });
 
-function createManager(overrides: { nonNominative?: any; sharedPath?: string } = {}) {
+async function createManager(overrides: { nonNominative?: any; sharedPath?: string } = {}) {
   const config = {
     machineId: 'test-machine',
     sharedPath: overrides.sharedPath || '/tmp/shared',
   } as any;
   const baselineService = { loadBaseline: vi.fn() };
   const configComparator = { listDiffs: vi.fn() };
-  return new BaselineManager(
+  const mgr = new BaselineManager(
     config,
     baselineService,
     configComparator,
     overrides.nonNominative
   );
+  // #2267: loadMachineRegistry() is now async — await before accessing registry
+  await mgr.waitForRegistry();
+  return mgr;
 }
 
 // ─── Machine Registry ───────────────────────────────────────────────
 
 describe('BaselineManager — Machine Registry', () => {
-  it('loads empty registry when file does not exist', () => {
+  it('loads empty registry when file does not exist', async () => {
     (existsSync as any).mockReturnValue(false);
-    const mgr = createManager();
+    const mgr = await createManager();
     expect(mgr.getKnownMachineIds()).toEqual([]);
   });
 
-  it('loads existing registry from disk', () => {
+  it('loads existing registry from disk', async () => {
     (existsSync as any).mockReturnValue(true);
-    (readFileSync as any).mockReturnValue(JSON.stringify({
+    (fs.readFile as any).mockResolvedValue(JSON.stringify({
       machines: {
         'machine-a': { machineId: 'machine-a', firstSeen: '2026-01-01', lastSeen: '2026-01-02', source: 'dashboard', status: 'online' },
         'machine-b': { machineId: 'machine-b', firstSeen: '2026-01-01', lastSeen: '2026-01-03', source: 'config', status: 'offline' },
       },
     }));
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const ids = mgr.getKnownMachineIds();
     expect(ids).toContain('machine-a');
     expect(ids).toContain('machine-b');
     expect(ids).toHaveLength(2);
   });
 
-  it('handles corrupted registry gracefully (empty result)', () => {
+  it('handles corrupted registry gracefully (empty result)', async () => {
     (existsSync as any).mockReturnValue(true);
-    (readFileSync as any).mockReturnValue('invalid json {{{');
+    (fs.readFile as any).mockResolvedValue('invalid json {{{');
 
-    const mgr = createManager();
+    const mgr = await createManager();
     expect(mgr.getKnownMachineIds()).toEqual([]);
   });
 
-  it('normalizes keys to lowercase when loading', () => {
+  it('normalizes keys to lowercase when loading', async () => {
     (existsSync as any).mockReturnValue(true);
-    (readFileSync as any).mockReturnValue(JSON.stringify({
+    (fs.readFile as any).mockResolvedValue(JSON.stringify({
       machines: {
         'MY-MACHINE': { machineId: 'MY-MACHINE', firstSeen: '2026-01-01', lastSeen: '2026-01-01', source: 'dashboard', status: 'online' },
       },
     }));
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const ids = mgr.getKnownMachineIds();
     expect(ids).toContain('my-machine');
   });
@@ -125,8 +127,9 @@ describe('BaselineManager — Machine Registry', () => {
   it('saves registry after adding a machine', async () => {
     (existsSync as any).mockReturnValue(false);
     (fs.writeFile as any).mockResolvedValue(undefined);
+    (fs.readFile as any).mockResolvedValue('{}');
 
-    const mgr = createManager();
+    const mgr = await createManager();
 
     // Trigger add via loadDashboard with machine not in dashboard
     (existsSync as any).mockImplementation((p: string) => {
@@ -134,11 +137,11 @@ describe('BaselineManager — Machine Registry', () => {
       if (p.includes('sync-dashboard.json')) return true;
       return false;
     });
-    (readFileSync as any).mockImplementation((p: string) => {
+    (fs.readFile as any).mockImplementation((p: string) => {
       if (p.includes('sync-dashboard.json')) {
-        return JSON.stringify({ machines: {} });
+        return Promise.resolve(JSON.stringify({ machines: {} }));
       }
-      return '{}';
+      return Promise.resolve('{}');
     });
     (fs.writeFile as any).mockResolvedValue(undefined);
 
@@ -161,33 +164,33 @@ describe('BaselineManager — Machine Registry', () => {
       if (p.includes('.machine-registry')) return true;
       return false;
     });
-    (readFileSync as any).mockImplementation((p: string) => {
+    (fs.readFile as any).mockImplementation((p: string) => {
       if (p.includes('.machine-registry')) {
-        return JSON.stringify({
+        return Promise.resolve(JSON.stringify({
           machines: {
             'test-machine': { machineId: 'test-machine', firstSeen: '2026-01-01', lastSeen: '2026-01-01', source: 'dashboard', status: 'online' },
           },
-        });
+        }));
       }
-      return '{}';
+      return Promise.resolve('{}');
     });
     (fs.writeFile as any).mockResolvedValue(undefined);
 
-    const mgr = createManager();
+    const mgr = await createManager();
 
     // Load dashboard triggers addMachineToRegistry with same source = dashboard
-    (readFileSync as any).mockImplementation((p: string) => {
+    (fs.readFile as any).mockImplementation((p: string) => {
       if (p.includes('.machine-registry')) {
-        return JSON.stringify({
+        return Promise.resolve(JSON.stringify({
           machines: {
             'test-machine': { machineId: 'test-machine', firstSeen: '2026-01-01', lastSeen: '2026-01-01', source: 'dashboard', status: 'online' },
           },
-        });
+        }));
       }
       if (p.includes('sync-dashboard.json')) {
-        return JSON.stringify({ machines: { 'test-machine': { lastSync: '2026-01-01', status: 'synced', diffsCount: 0, pendingDecisions: 0 } } });
+        return Promise.resolve(JSON.stringify({ machines: { 'test-machine': { lastSync: '2026-01-01', status: 'synced', diffsCount: 0, pendingDecisions: 0 } } }));
       }
-      return '{}';
+      return Promise.resolve('{}');
     });
     (existsSync as any).mockReturnValue(true);
 
@@ -204,22 +207,22 @@ describe('BaselineManager — Machine Registry', () => {
       if (p.includes('sync-dashboard.json')) return true;
       return false;
     });
-    (readFileSync as any).mockImplementation((p: string) => {
+    (fs.readFile as any).mockImplementation((p: string) => {
       if (p.includes('.machine-registry')) {
-        return JSON.stringify({
+        return Promise.resolve(JSON.stringify({
           machines: {
             'test-machine': { machineId: 'test-machine', firstSeen: '2026-01-01', lastSeen: '2026-01-01', source: 'config', status: 'online' },
           },
-        });
+        }));
       }
       if (p.includes('sync-dashboard.json')) {
-        return JSON.stringify({ machines: {} });
+        return Promise.resolve(JSON.stringify({ machines: {} }));
       }
-      return '{}';
+      return Promise.resolve('{}');
     });
     (fs.writeFile as any).mockResolvedValue(undefined);
 
-    const mgr = createManager();
+    const mgr = await createManager();
 
     const cacheCallback = vi.fn().mockImplementation((_key: string, fn: () => Promise<any>) => fn());
     const dashboard = await mgr.loadDashboard(cacheCallback);
@@ -235,7 +238,7 @@ describe('BaselineManager — Machine Registry', () => {
 describe('BaselineManager — listRollbackPoints', () => {
   it('returns empty array when rollback dir does not exist', async () => {
     (existsSync as any).mockReturnValue(false);
-    const mgr = createManager();
+    const mgr = await createManager();
     const points = await mgr.listRollbackPoints();
     expect(points).toEqual([]);
   });
@@ -254,7 +257,7 @@ describe('BaselineManager — listRollbackPoints', () => {
       return Promise.resolve(JSON.stringify({ decisionId: 'decision-2', timestamp: '2026-01-02T12:00:00', machine: 'm2', files: ['f2'] }));
     });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const points = await mgr.listRollbackPoints();
     expect(points).toHaveLength(2);
     expect(points[0].decisionId).toBe('decision-2'); // Most recent first
@@ -268,7 +271,7 @@ describe('BaselineManager — listRollbackPoints', () => {
     });
     (fs.readdir as any).mockResolvedValue(['decision-1_2026-01-01T10-00-00']);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const points = await mgr.listRollbackPoints();
     expect(points).toEqual([]);
   });
@@ -277,7 +280,7 @@ describe('BaselineManager — listRollbackPoints', () => {
     (existsSync as any).mockReturnValue(true);
     (fs.readdir as any).mockRejectedValue(new Error('Permission denied'));
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const points = await mgr.listRollbackPoints();
     expect(points).toEqual([]);
   });
@@ -288,7 +291,7 @@ describe('BaselineManager — listRollbackPoints', () => {
 describe('BaselineManager — cleanupOldRollbacks', () => {
   it('returns error when rollback dir does not exist', async () => {
     (existsSync as any).mockReturnValue(false);
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.cleanupOldRollbacks();
     expect(result.errors).toContain('Rollback directory not found');
     expect(result.deleted).toEqual([]);
@@ -303,7 +306,7 @@ describe('BaselineManager — cleanupOldRollbacks', () => {
       'decision-1_2026-01-03T14-00-00',
     ]);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.cleanupOldRollbacks({ keepPerDecision: 1 });
 
     expect(result.kept).toHaveLength(1);
@@ -318,7 +321,7 @@ describe('BaselineManager — cleanupOldRollbacks', () => {
       'decision-1_2026-01-02T12-00-00',
     ]);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.cleanupOldRollbacks({ keepPerDecision: 1, dryRun: true });
 
     expect(result.deleted).toHaveLength(1);
@@ -333,7 +336,7 @@ describe('BaselineManager — cleanupOldRollbacks', () => {
       'decision-1_2026-01-02T12-00-00',
     ]);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.cleanupOldRollbacks({ keepPerDecision: 1 });
 
     expect(result.errors.length).toBeGreaterThan(0);
@@ -345,7 +348,7 @@ describe('BaselineManager — cleanupOldRollbacks', () => {
 describe('BaselineManager — validateRollbackPoint', () => {
   it('returns invalid when rollback dir does not exist', async () => {
     (existsSync as any).mockReturnValue(false);
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.validateRollbackPoint('decision-1');
     expect(result.isValid).toBe(false);
     expect(result.errors).toContain('Rollback directory not found');
@@ -354,7 +357,7 @@ describe('BaselineManager — validateRollbackPoint', () => {
   it('returns invalid when no matching rollback found', async () => {
     (existsSync as any).mockReturnValue(true);
     (fs.readdir as any).mockResolvedValue(['other-decision_2026-01-01']);
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.validateRollbackPoint('decision-1');
     expect(result.isValid).toBe(false);
     expect(result.errors[0]).toContain('No rollback found');
@@ -379,7 +382,7 @@ describe('BaselineManager — validateRollbackPoint', () => {
     });
     (fs.stat as any).mockResolvedValue({ size: 100 });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.validateRollbackPoint('decision-1');
     expect(result.isValid).toBe(true);
     expect(result.files).toHaveLength(2);
@@ -405,7 +408,7 @@ describe('BaselineManager — validateRollbackPoint', () => {
     });
     (fs.stat as any).mockResolvedValue({ size: 0 });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.validateRollbackPoint('decision-1');
     expect(result.isValid).toBe(false);
     expect(result.errors).toContain('Empty file: empty-file.txt');
@@ -436,7 +439,7 @@ describe('BaselineManager — validateRollbackPoint', () => {
       return Promise.resolve(Buffer.from(''));
     });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.validateRollbackPoint('decision-1');
     expect(result.isValid).toBe(false);
     expect(result.errors.some((e: string) => e.includes('File not found'))).toBe(true);
@@ -456,7 +459,7 @@ describe('BaselineManager — createRollbackPoint edge cases', () => {
     (fs.copyFile as any).mockResolvedValue(undefined);
     (fs.writeFile as any).mockResolvedValue(undefined);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     await mgr.createRollbackPoint('decision-x');
 
     // copyFile should be called only for the existing file
@@ -467,7 +470,7 @@ describe('BaselineManager — createRollbackPoint edge cases', () => {
     (existsSync as any).mockReturnValue(false);
     (fs.mkdir as any).mockRejectedValue(new Error('Disk full'));
 
-    const mgr = createManager();
+    const mgr = await createManager();
     await expect(mgr.createRollbackPoint('decision-x')).rejects.toThrow('Échec création rollback point');
   });
 });
@@ -481,12 +484,12 @@ describe('BaselineManager — loadDashboard edge cases', () => {
       if (p.includes('sync-dashboard.json')) return true;
       return false;
     });
-    (readFileSync as any).mockImplementation((p: string) => {
-      if (p.includes('sync-dashboard.json')) return '{ broken json';
-      return '{}';
+    (fs.readFile as any).mockImplementation((p: string) => {
+      if (p.includes('sync-dashboard.json')) return Promise.resolve('{ broken json');
+      return Promise.resolve('{}');
     });
 
-    const mgr = createManager();
+    const mgr = await createManager();
 
     // Mock baseline and comparator for calculateDashboardFromBaseline fallback
     (mgr as any).baselineService.loadBaseline.mockResolvedValue({ machineId: 'test-machine' });
@@ -505,13 +508,13 @@ describe('BaselineManager — loadDashboard edge cases', () => {
       if (p.includes('sync-dashboard.json')) return true;
       return false;
     });
-    (readFileSync as any).mockImplementation((p: string) => {
-      if (p.includes('sync-dashboard.json')) return JSON.stringify({ version: '2.1.0' });
-      return '{}';
+    (fs.readFile as any).mockImplementation((p: string) => {
+      if (p.includes('sync-dashboard.json')) return Promise.resolve(JSON.stringify({ version: '2.1.0' }));
+      return Promise.resolve('{}');
     });
     (fs.writeFile as any).mockResolvedValue(undefined);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const cacheCallback = vi.fn().mockImplementation((_key: string, fn: () => Promise<any>) => fn());
     const dashboard = await mgr.loadDashboard(cacheCallback);
 
@@ -524,12 +527,12 @@ describe('BaselineManager — loadDashboard edge cases', () => {
 
 describe('BaselineManager — getStatus edge cases', () => {
   it('throws on null dashboard', async () => {
-    const mgr = createManager();
+    const mgr = await createManager();
     await expect(mgr.getStatus(vi.fn().mockResolvedValue(null))).rejects.toThrow('Dashboard invalide');
   });
 
   it('throws on dashboard without machines property', async () => {
-    const mgr = createManager();
+    const mgr = await createManager();
     await expect(mgr.getStatus(vi.fn().mockResolvedValue({ version: '2.1.0' }))).rejects.toThrow('Dashboard invalide');
   });
 });
@@ -540,7 +543,7 @@ describe('BaselineManager — Non-nominative additional methods', () => {
   let mgr: BaselineManager;
   let mockNN: any;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     mockNN = {
       createBaseline: vi.fn(),
       getActiveBaseline: vi.fn(),
@@ -549,7 +552,7 @@ describe('BaselineManager — Non-nominative additional methods', () => {
       generateMachineHash: vi.fn(),
       getState: vi.fn(),
     };
-    mgr = createManager({ nonNominative: mockNN });
+    mgr = await createManager({ nonNominative: mockNN });
   });
 
   describe('mapMachineToNonNominativeBaseline', () => {
@@ -573,7 +576,7 @@ describe('BaselineManager — Non-nominative additional methods', () => {
     });
 
     it('throws when non-nominative service unavailable', async () => {
-      const mgrNoNN = createManager();
+      const mgrNoNN = await createManager();
       await expect(mgrNoNN.mapMachineToNonNominativeBaseline('machine-x')).rejects.toThrow('NonNominativeBaselineService non disponible');
     });
   });
@@ -590,7 +593,7 @@ describe('BaselineManager — restoreFromRollbackPoint additional cases', () => 
     (fs.access as any).mockRejectedValue(new Error('EACCES'));
     (fs.stat as any).mockResolvedValue({ size: 100 });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.restoreFromRollbackPoint('decision-1', vi.fn());
 
     expect(result.success).toBe(false);
@@ -598,7 +601,7 @@ describe('BaselineManager — restoreFromRollbackPoint additional cases', () => 
 
   it('handles rollback directory not existing', async () => {
     (existsSync as any).mockReturnValue(false);
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.restoreFromRollbackPoint('decision-1', vi.fn());
     expect(result.success).toBe(false);
     expect(result.error).toContain('No rollback directory found');
@@ -615,7 +618,7 @@ describe('BaselineManager — restoreFromRollbackPoint additional cases', () => 
 
     const badCallback = vi.fn().mockImplementation(() => { throw new Error('Cache explosion'); });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.restoreFromRollbackPoint('decision-1', badCallback);
 
     // Should still succeed — cache error is logged but non-fatal
@@ -635,7 +638,7 @@ describe('BaselineManager — restoreFromRollbackPoint additional cases', () => 
     (fs.stat as any).mockResolvedValue({ size: 100 });
     (fs.unlink as any).mockResolvedValue(undefined);
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.restoreFromRollbackPoint('decision-1', vi.fn());
 
     // Should use default files and still attempt restore
@@ -645,7 +648,7 @@ describe('BaselineManager — restoreFromRollbackPoint additional cases', () => 
   it('handles critical error in outer try-catch', async () => {
     (existsSync as any).mockImplementation(() => { throw new Error('Unexpected'); });
 
-    const mgr = createManager();
+    const mgr = await createManager();
     const result = await mgr.restoreFromRollbackPoint('decision-1', vi.fn());
 
     expect(result.success).toBe(false);
