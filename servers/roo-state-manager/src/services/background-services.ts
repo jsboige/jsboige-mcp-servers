@@ -426,7 +426,10 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
     state.skeletonRefreshInterval = setInterval(async () => {
         try {
             const startTime = Date.now();
-            const lastCheck = state.lastSkeletonRefreshAt || 0;
+            // #596: ROO_INDEX_FORCE forces a full rescan (bypass mtime incremental filter)
+            // so previously unseen files (e.g., old Claude Code sessions) get discovered.
+            const forceRescan = process.env.ROO_INDEX_FORCE === '1' || process.env.ROO_INDEX_FORCE === 'true';
+            const lastCheck = forceRescan ? 0 : (state.lastSkeletonRefreshAt || 0);
             let updatedCount = 0;
             let newCount = 0;
 
