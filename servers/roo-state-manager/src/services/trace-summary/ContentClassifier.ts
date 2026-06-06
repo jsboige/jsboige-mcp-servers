@@ -138,12 +138,10 @@ export class ContentClassifier {
 
         // 1. Messages de completion (priorité haute)
         if (content.includes('<attempt_completion>')) {
-            console.log(`✅ Matched: Completion`);
             return 'Completion';
         }
 
         // 2. Messages d'outils normaux
-        console.log(`❌ No special match, defaulting to ToolCall`);
         return 'ToolCall';
     }
 
