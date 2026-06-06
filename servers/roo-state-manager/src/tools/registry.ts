@@ -68,12 +68,12 @@ const TOOL_TIMEOUTS: Record<string, number> = {
     // been observed (490s for the status leg alone). The prior 60s cap (#453),
     // then 600s, both cancelled legitimate condensations, write-blocking the
     // fleet's main coord channel (regression — dashboards worked before #453).
-    // Each LLM call has its own 1800s internal timeout (see dashboard.ts), so we
-    // align the MCP wrapper to 1800s: the wrapper must never be tighter than the
-    // operation's own timeout + circuit-breaker (#1792), which are the real
-    // hang-protection. The status section size is bounded separately by its own
-    // targeted condensation (condenseTextIfTooLarge).
-    roosync_dashboard: 1_800_000,   // 30 min (parallel LLM condensation; matches internal per-call timeout)
+    // #2267 follow-up: reduced from 1800s to 720s (12 min). The internal per-LLM-call
+    // timeout (CONDENSE_LLM_TIMEOUT_MS, dashboard.ts) was already reduced to 720s.
+    // The wrapper timeout aligns to the internal ceiling + circuit-breaker (#1792).
+    // This ensures a true hang (stuck GDrive, dead transport) fails within 12 min
+    // instead of blocking the MCP connection for 30 min.
+    roosync_dashboard: 720_000,     // 12 min (#2267: reduced from 30 min; aligns to CONDENSE_LLM_TIMEOUT_MS)
     roosync_compare_config: 60_000, // 1 min
     roosync_inventory: 60_000,      // 1 min
 };

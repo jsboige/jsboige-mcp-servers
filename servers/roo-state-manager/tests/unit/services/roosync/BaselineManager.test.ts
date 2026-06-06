@@ -3,7 +3,7 @@ import { BaselineManager } from '../../../../src/services/roosync/BaselineManage
 import { RooSyncConfig } from '../../../../src/config/roosync-config.js';
 import { BaselineService } from '../../../../src/services/BaselineService.js';
 import { ConfigComparator } from '../../../../src/services/roosync/ConfigComparator.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { promises as fs } from 'fs';
 
 vi.mock('fs', () => ({
@@ -23,7 +23,6 @@ vi.mock('fs', () => ({
         unlink: vi.fn(),
     },
     existsSync: vi.fn(),
-    readFileSync: vi.fn()
 }));
 
 vi.mock('../../../../src/services/BaselineService.js');
@@ -35,7 +34,7 @@ describe('BaselineManager', () => {
     let mockBaselineService: any;
     let mockConfigComparator: any;
 
-    beforeEach(() => {
+    beforeEach(async () => {
         mockConfig = {
             machineId: 'test-machine',
             sharedPath: '/tmp/shared'
@@ -49,17 +48,22 @@ describe('BaselineManager', () => {
             listDiffs: vi.fn()
         };
 
+        // #2267: Default mock for async readFile (registry loading)
+        (fs.readFile as any).mockResolvedValue('{}');
+
         manager = new BaselineManager(
             mockConfig,
             mockBaselineService as unknown as BaselineService,
             mockConfigComparator as unknown as ConfigComparator
         );
+        // #2267: Await async registry init before accessing manager
+        await manager.waitForRegistry();
     });
 
     describe('loadDashboard', () => {
         it('should load existing dashboard', async () => {
             (existsSync as any).mockReturnValue(true);
-            (readFileSync as any).mockReturnValue(JSON.stringify({
+            (fs.readFile as any).mockResolvedValue(JSON.stringify({
                 machines: { 'test-machine': {} }
             }));
 
@@ -238,7 +242,7 @@ describe('BaselineManager', () => {
     describe('NonNominativeBaseline Integration', () => {
         let mockNonNominativeService: any;
 
-        beforeEach(() => {
+        beforeEach(async () => {
             mockNonNominativeService = {
                 createBaseline: vi.fn(),
                 getActiveBaseline: vi.fn(),
@@ -247,12 +251,16 @@ describe('BaselineManager', () => {
                 generateMachineHash: vi.fn()
             };
 
+            (fs.readFile as any).mockResolvedValue('{}');
+
             manager = new BaselineManager(
                 mockConfig,
                 mockBaselineService as unknown as BaselineService,
                 mockConfigComparator as unknown as ConfigComparator,
                 mockNonNominativeService
             );
+            // #2267: Await async registry init
+            await manager.waitForRegistry();
         });
 
         describe('migrateToNonNominative', () => {
