@@ -1096,8 +1096,11 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         // Manual indexing via roosync_indexing(action: "index") is still allowed.
         // Root cause: Claude Code sessions get new UUIDs on resume/compact, causing
         // 3-4x duplicate vectors (49% of Qdrant storage = duplicates).
-        if (source === 'claude-code') {
-            console.log(`[SKIP] Task ${taskId}: Claude Code session — automatic indexing blocked (#1985 sanctuary protection)`);
+        // #937 mitigation: Per-session taskIds + UUIDv5 deterministic chunk_ids resolve the
+        // duplicate risk. Set ROO_INDEX_CLAUDE_SESSIONS=true to lift sanctuary per-machine.
+        const allowClaudeIndexing = process.env.ROO_INDEX_CLAUDE_SESSIONS === 'true';
+        if (source === 'claude-code' && !allowClaudeIndexing) {
+            console.log(`[SKIP] Task ${taskId}: Claude Code session — automatic indexing blocked (#1985 sanctuary protection). Set ROO_INDEX_CLAUDE_SESSIONS=true to enable.`);
             return;
         }
 
