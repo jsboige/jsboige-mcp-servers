@@ -388,6 +388,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		}
 
 		// 5. Effectuer la recherche
+		// #2267: Use native Qdrant timeout (seconds) to prevent indefinite hangs.
+		// Follows #1275 convention used in task-searcher.ts and search-semantic.tool.ts.
+		const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
 		const searchResults = await qdrant.query(collectionName, {
 			query: queryVector,
 			filter: filter,
@@ -397,6 +400,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				hnsw_ef: 256,
 				exact: false
 			},
+			timeout: searchTimeoutSec,
 			with_payload: {
 				include: ['filePath', 'codeChunk', 'startLine', 'endLine', 'pathSegments']
 			}

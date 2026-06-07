@@ -7,7 +7,7 @@
  * - État de synchronisation
  */
 
-import { promises as fs, existsSync, readFileSync, constants } from 'fs';
+import { promises as fs, existsSync, constants } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../../types/errors.js';
@@ -62,6 +62,8 @@ export interface RollbackRestoreResult {
 export class BaselineManager {
   private logger = createLogger('BaselineManager');
   private machineRegistry: MachineRegistry;
+  // #2267: registry init promise — avoids blocking constructor on GDrive readFileSync
+  private registryInitPromise: Promise<void>;
 
   constructor(
     private config: RooSyncConfig,
@@ -82,17 +84,28 @@ export class BaselineManager {
       this.logger.warn('NonNominativeBaselineService non disponible');
     }
 
-    // Charger le registre existant s'il y en a un
-    this.loadMachineRegistry();
+    // #2267: Fire-and-forget async registry load — avoids blocking constructor on GDrive FUSE stalls.
+    // Methods that read the registry should await registryInitPromise first.
+    this.registryInitPromise = this.loadMachineRegistry();
+  }
+
+  /**
+   * Wait for the machine registry to be loaded from disk (GDrive).
+   * #2267: Safe to call multiple times — resolves immediately after first load.
+   */
+  async waitForRegistry(): Promise<void> {
+    await this.registryInitPromise;
   }
 
   /**
    * Charger le registre des machines depuis le disque
+   * #2267: Converted from sync to async to avoid blocking Node.js event loop on GDrive reads.
    */
-  private loadMachineRegistry(): void {
+  private async loadMachineRegistry(): Promise<void> {
     try {
       if (existsSync(this.machineRegistry.registryPath)) {
-        const registryContent = readFileSync(this.machineRegistry.registryPath, 'utf-8');
+        // #2267: async read replaces readFileSync — GDrive FUSE stalls no longer block event loop
+        const registryContent = await fs.readFile(this.machineRegistry.registryPath, 'utf-8');
         const registryData = JSON.parse(registryContent);
 
         // Reconstruire la Map depuis les données JSON (normaliser les clés en lowercase)
@@ -248,8 +261,8 @@ export class BaselineManager {
       if (existsSync(dashboardPath)) {
         this.logger.info(`Dashboard existant trouvé, chargement depuis: ${dashboardPath}`);
         try {
-          const dashboardContent = readFileSync(dashboardPath, 'utf-8');
-          const dashboard = JSON.parse(dashboardContent);
+          // #2267: async read avoids blocking Node.js event loop on GDrive FUSE stalls
+          const dashboard = JSON.parse(await fs.readFile(dashboardPath, 'utf-8'));
           this.logger.info('Dashboard chargé avec succès depuis le fichier existant');
 
           // S'assurer que le dashboard a bien la propriété machines
@@ -329,8 +342,8 @@ export class BaselineManager {
     // Si un dashboard existe déjà, l'utiliser et s'assurer que la machine courante est présente
     if (existsSync(dashboardPath)) {
       try {
-        const dashboardContent = readFileSync(dashboardPath, 'utf-8');
-        const existingDashboard = JSON.parse(dashboardContent);
+        // #2267: async read avoids blocking Node.js event loop on GDrive FUSE stalls
+        const existingDashboard = JSON.parse(await fs.readFile(dashboardPath, 'utf-8'));
         this.logger.info('Dashboard existant trouvé, vérification de la machine courante');
 
         if (!existingDashboard.machines) {

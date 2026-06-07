@@ -13,16 +13,30 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { extractChunksFromClaudeSession } from '../../../../src/services/task-indexer/ChunkExtractor.js';
-import { promises as fs } from 'fs';
+import { promises as fs, createReadStream as realCreateReadStream } from 'fs';
+import { Readable } from 'stream';
 
-// Mock fs/promises — extractChunksFromClaudeSession reads JSONL files
-vi.mock('fs', () => ({
-    promises: {
-        readFile: vi.fn(),
-        stat: vi.fn(),
-        readdir: vi.fn(),
-    }
-}));
+// Mock fs — extractChunksFromClaudeSession reads JSONL files via promises + createReadStream.
+// createReadStream returns a real Readable that emits the JSONL content from a queue.
+vi.mock('fs', () => {
+    const { Readable } = require('stream');
+    const _jsonlQueue: string[] = [];
+    return {
+        promises: {
+            readFile: vi.fn(),
+            stat: vi.fn(),
+            readdir: vi.fn(),
+        },
+        createReadStream: (_path: string, _encoding: string) => {
+            const content = _jsonlQueue.shift();
+            if (content !== undefined) {
+                return Readable.from([content]);
+            }
+            return Readable.from(['']);
+        },
+        __setJsonl: (jsonl: string) => { _jsonlQueue.push(jsonl); },
+    };
+});
 
 // Mock os (hostname used in getHostIdentifier)
 vi.mock('os', () => ({
@@ -41,12 +55,25 @@ const mockReadFile = vi.mocked(fs.readFile);
 const mockStat = vi.mocked(fs.stat);
 const mockReaddir = vi.mocked(fs.readdir);
 
+// Access the fs mock's __setJsonl function for createReadStream side-channel
+import * as fsMock from 'fs';
+const fsMockAny = fsMock as any;
+
 /**
  * Build a Claude Code JSONL string from an array of entries.
  * Each entry becomes one line.
  */
 function buildJsonl(entries: Record<string, any>[]): string {
     return entries.map(e => JSON.stringify(e)).join('\n');
+}
+
+/**
+ * Set the JSONL content for both readFile mock and createReadStream mock.
+ * createReadStream uses __setJsonl to return a Readable with the content.
+ */
+function setJsonlContent(jsonl: string): void {
+    mockReadFile.mockResolvedValue(jsonl);
+    fsMockAny.__setJsonl(jsonl);
 }
 
 /**
@@ -105,7 +132,7 @@ describe('extractChunksFromClaudeSession', () => {
         const jsonl = buildJsonl([
             textEntry('assistant', 'Hello, I can help with that.'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -120,7 +147,7 @@ describe('extractChunksFromClaudeSession', () => {
         const jsonl = buildJsonl([
             textEntry('user', 'Please run the tests.'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -137,7 +164,7 @@ describe('extractChunksFromClaudeSession', () => {
             { type: 'system', message: { role: 'system', content: 'System prompt' } },
             textEntry('user', 'Only this should appear'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -153,7 +180,7 @@ describe('extractChunksFromClaudeSession', () => {
         const jsonl = buildJsonl([
             toolUseEntry('Bash', { command: 'npm test' }),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -177,7 +204,7 @@ describe('extractChunksFromClaudeSession', () => {
                 { type: 'tool_use', id: 'call_bash_001', name: 'Bash', input: { command: 'npm test' } },
             ]),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -203,7 +230,7 @@ describe('extractChunksFromClaudeSession', () => {
                 { type: 'tool_use', id: 'call_1', name: 'Edit', input: '{"file_path":"/a.ts","old":"x","new":"y"}' },
             ]),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -220,7 +247,7 @@ describe('extractChunksFromClaudeSession', () => {
                 { type: 'tool_use', id: 'call_1', name: 'Bash', input: 'not-valid-json{' },
             ]),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -235,7 +262,7 @@ describe('extractChunksFromClaudeSession', () => {
         const jsonl = buildJsonl([
             toolUseEntry('roosync_dashboard', { action: 'read', type: 'workspace' }),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -256,7 +283,7 @@ describe('extractChunksFromClaudeSession', () => {
                 { type: 'tool_result', tool_use_id: 'call_001', content: 'Tests passed. 10/10 tests OK.' },
             ]),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -279,7 +306,7 @@ describe('extractChunksFromClaudeSession', () => {
             ]),
             toolResultEntry('call_bash_001', 'Tests: 10 passed, 0 failed'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -302,7 +329,7 @@ describe('extractChunksFromClaudeSession', () => {
         const jsonl = buildJsonl([
             textEntry('assistant', 'Hello'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, {
             workspace: '/dev/roo-extensions',
@@ -319,7 +346,7 @@ describe('extractChunksFromClaudeSession', () => {
             textEntry('user', 'Query'),
             toolUseEntry('Read', { file_path: '/a.ts' }),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -332,7 +359,7 @@ describe('extractChunksFromClaudeSession', () => {
         const jsonl = buildJsonl([
             textEntry('assistant', 'Response', { model: 'claude-sonnet-4-20250514' }),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -346,6 +373,9 @@ describe('extractChunksFromClaudeSession', () => {
     it('scans directory for JSONL files', async () => {
         mockStat.mockResolvedValue({ isDirectory: () => true } as any);
         mockReaddir.mockResolvedValue(['session1.jsonl', 'session2.jsonl', 'notes.txt'] as any);
+        // Queue both JSONL contents for the streaming reader (createReadStream is called per-file)
+        setJsonlContent(buildJsonl([textEntry('user', 'From session 1')]));
+        setJsonlContent(buildJsonl([textEntry('user', 'From session 2')]));
         mockReadFile
             .mockResolvedValueOnce(buildJsonl([textEntry('user', 'From session 1')]))
             .mockResolvedValueOnce(buildJsonl([textEntry('user', 'From session 2')]));
@@ -378,7 +408,7 @@ describe('extractChunksFromClaudeSession', () => {
             JSON.stringify(textEntry('user', 'Hello')),
             '',
         ].join('\n');
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -392,7 +422,7 @@ describe('extractChunksFromClaudeSession', () => {
             JSON.stringify(textEntry('user', 'Valid')),
             '{broken json',
         ].join('\n');
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -405,7 +435,7 @@ describe('extractChunksFromClaudeSession', () => {
             { type: 'assistant', timestamp: '2024-06-15T10:00:00Z', message: { role: 'assistant' } },
             textEntry('user', 'After null'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -419,7 +449,7 @@ describe('extractChunksFromClaudeSession', () => {
             toolUseEntry('Bash', { command: 'test' }),
             textEntry('assistant', 'Done'),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -435,7 +465,7 @@ describe('extractChunksFromClaudeSession', () => {
                 { type: 'tool_use', id: 'call_1', input: {} }, // no name field
             ]),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 
@@ -450,7 +480,7 @@ describe('extractChunksFromClaudeSession', () => {
                 { type: 'tool_use', id: 'call_1', name: 'Glob' }, // no input field
             ]),
         ]);
-        mockReadFile.mockResolvedValue(jsonl);
+        setJsonlContent(jsonl);
 
         const chunks = await extractChunksFromClaudeSession(taskId, jsonlPath, metadata);
 

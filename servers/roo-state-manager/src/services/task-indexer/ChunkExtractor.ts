@@ -1,7 +1,8 @@
-import { promises as fs } from 'fs';
+import { promises as fs, createReadStream } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import * as readline from 'readline';
 import { v5 as uuidv5 } from 'uuid';
 import { StateManagerError } from '../../types/errors.js';
 
@@ -469,16 +470,28 @@ export async function extractChunksFromClaudeSession(
 
         for (const jsonlFile of jsonlFiles) {
             try {
-                const content = await fs.readFile(jsonlFile, 'utf-8');
-                const lines = content.split('\n').filter(line => line.trim());
-                let fileMessageCount = 0;
+                // Stream JSONL instead of loading entire file into memory.
+                // 112 MB files cause 300s+ timeout when read+split all at once.
+                const fileStream = createReadStream(jsonlFile, 'utf-8');
+                const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
-                // #1758: Early stop for large JSONL files
-                if (lines.length > MAX_MESSAGES_PER_TASK) {
-                    console.warn(`⚠️ [#1758] Claude session ${taskId} has ${lines.length} lines — exceeding MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}. Processing first ${MAX_MESSAGES_PER_TASK} only.`);
+                const linesToProcess: string[] = [];
+                let totalLines = 0;
+                for await (const line of rl) {
+                    if (!line.trim()) continue;
+                    totalLines++;
+                    if (linesToProcess.length < MAX_MESSAGES_PER_TASK) {
+                        linesToProcess.push(line);
+                    }
+                }
+                rl.close();
+                fileStream.destroy();
+
+                if (totalLines > MAX_MESSAGES_PER_TASK) {
+                    console.warn(`⚠️ [#1758] Claude session ${taskId} has ${totalLines} lines — processing first ${MAX_MESSAGES_PER_TASK} only.`);
                 }
 
-                const linesToProcess = lines.slice(0, MAX_MESSAGES_PER_TASK);
+                let fileMessageCount = 0;
 
                 for (const line of linesToProcess) {
                     try {
