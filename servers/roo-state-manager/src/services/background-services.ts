@@ -426,7 +426,10 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
     state.skeletonRefreshInterval = setInterval(async () => {
         try {
             const startTime = Date.now();
-            const lastCheck = state.lastSkeletonRefreshAt || 0;
+            // #596: ROO_INDEX_FORCE forces a full rescan (bypass mtime incremental filter)
+            // so previously unseen files (e.g., old Claude Code sessions) get discovered.
+            const forceRescan = process.env.ROO_INDEX_FORCE === '1' || process.env.ROO_INDEX_FORCE === 'true';
+            const lastCheck = forceRescan ? 0 : (state.lastSkeletonRefreshAt || 0);
             let updatedCount = 0;
             let newCount = 0;
 
@@ -1105,7 +1108,15 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         }
 
         const taskIndexer = new TaskIndexer();
-        await taskIndexer.indexTask(taskId, source);
+        const TASK_TIMEOUT_MS = parseInt(process.env.INDEX_TASK_TIMEOUT_MS || '300', 10) * 1000;
+        await Promise.race([
+            taskIndexer.indexTask(taskId, source),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(
+                    `Indexing timeout for ${taskId} after ${TASK_TIMEOUT_MS}ms — session too large or embedding backlog`
+                )), TASK_TIMEOUT_MS).unref()
+            ),
+        ]);
 
         state.indexingDecisionService.markIndexingSuccess(skeleton);
         await saveSkeletonToDisk(skeleton);
