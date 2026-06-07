@@ -1074,7 +1074,8 @@ FORMAT :
 async function generateStatusUpdate(
   previousStatus: string,
   allMessages: IntercomMessage[],
-  archivedCount: number
+  archivedCount: number,
+  dashboardKey: string
 ): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497) — see generateLLMSummary / CONDENSE_LLM_TIMEOUT_MS.
   const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
@@ -1120,7 +1121,7 @@ EXIGENCES :
 9. INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas EXPLICITEMENT dans les sources (ancien statut + messages)
 
 STRUCTURE :
-## [Workspace] — État au ${lastDate}
+## [${dashboardKey}] — État au ${lastDate}
 
 ### Résumé
 [2-3 phrases INTERPRÉTATIVES : état global, tendance — clairement séparé des faits ci-dessous]
@@ -1596,7 +1597,7 @@ async function condenseIntercom(
   // via the existing null-check below.
   const tParallel = Date.now();
   const [statusCall, summaryCall] = await Promise.all([
-    generateStatusUpdate(previousStatus, messages, toArchive.length),
+    generateStatusUpdate(previousStatus, messages, toArchive.length, key),
     generateLLMSummary(toArchive)
   ]);
   if (diagnostic) {
