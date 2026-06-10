@@ -348,30 +348,45 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Skel
         }
 
         let loaded = 0;
+        let projectDirs = 0;
+        // P3 fix: per-session taskIds (`claude-{project}--{sessionUuid}`) match the
+        // skeleton refresh worker (background-services.ts line ~512) and TaskIndexer
+        // path resolution (#937). The previous per-project format (`claude-{project}`)
+        // produced orphan skeletons never resolved by the indexer.
         for (const location of locations) {
+            projectDirs++;
             try {
-                const taskId = `claude-${path.basename(location.projectPath)}`;
+                const files = (await fs.readdir(location.projectPath)).filter(f => f.endsWith('.jsonl'));
+                if (files.length === 0) continue;
+                const projectBasename = path.basename(location.projectPath);
 
-                // Skip if already in cache
-                if (conversationCache.has(taskId)) continue;
+                for (const file of files) {
+                    const sessionUuid = file.replace(/\.jsonl$/, '');
+                    const taskId = `claude-${projectBasename}--${sessionUuid}`;
 
-                const skeleton = await ClaudeStorageDetector.analyzeConversation(
-                    taskId, location.projectPath
-                );
-                if (skeleton && (skeleton.sequence ?? []).length > 0) {
-                    // #937 FIX: Set both source and dataSource consistently for Claude sessions
-                    if (!skeleton.metadata) skeleton.metadata = {} as any;
-                    skeleton.metadata.source = 'claude-code'; // For filtering in Qdrant
-                    skeleton.metadata.dataSource = 'claude'; // For indexTaskInQdrant() source detection
-                    conversationCache.set(taskId, toHeader(skeleton));
-                    loaded++;
+                    if (conversationCache.has(taskId)) continue;
+
+                    try {
+                        const skeleton = await ClaudeStorageDetector.analyzeConversation(
+                            taskId, location.projectPath
+                        );
+                        if (skeleton && (skeleton.sequence ?? []).length > 0) {
+                            if (!skeleton.metadata) skeleton.metadata = {} as any;
+                            skeleton.metadata.source = 'claude-code'; // Qdrant filtering
+                            skeleton.metadata.dataSource = 'claude';  // indexTaskInQdrant() source detection
+                            conversationCache.set(taskId, toHeader(skeleton));
+                            loaded++;
+                        }
+                    } catch (error) {
+                        console.warn(`[Claude] Failed to load session ${taskId}:`, error);
+                    }
                 }
             } catch (error) {
-                console.warn(`[Claude] Failed to load session from ${location.projectPath}:`, error);
+                console.warn(`[Claude] Failed to read project dir ${location.projectPath}:`, error);
             }
         }
 
-        console.log(`[Claude] Loaded ${loaded} Claude Code sessions into cache (from ${locations.length} project dirs)`);
+        console.log(`[Claude] Loaded ${loaded} Claude Code sessions into cache (from ${projectDirs} project dirs)`);
     } catch (error) {
         console.warn('[Claude] Claude Code session discovery failed (non-blocking):', error);
     }
@@ -472,7 +487,19 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
                                     // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                     const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
-                                    if ((!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
+                                    const indexStatus = newHeader.metadata?.indexingState?.indexStatus;
+                                    // P2 fix: in FORCE mode, skip tasks already indexed success whose
+                                    // file hasn't changed since lastIndexedAt — otherwise this worker
+                                    // re-queues identical tasks every 2 min, producing the
+                                    // EMB-METRICS called=0 enqueue/dequeue cycle (preflight dedup
+                                    // skips them all, markIndexingSuccess refreshes the timestamp,
+                                    // next cycle re-queues again).
+                                    const alreadyIndexedInForceMode = forceRescan
+                                        && indexStatus === 'success'
+                                        && lastIndexed
+                                        && mtimeMs <= new Date(lastIndexed).getTime();
+                                    if (!alreadyIndexedInForceMode
+                                        && (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
                                         && shouldIndexTask(entry.name, state.machineId, state.fleetRoster)) {
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
@@ -529,7 +556,14 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         state.conversationCache.set(taskId, newHeader);
                                         // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                         const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
-                                        if ((!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
+                                        const indexStatus = newHeader.metadata?.indexingState?.indexStatus;
+                                        // P2 fix: same FORCE-mode guard as Roo branch (see comment above)
+                                        const alreadyIndexedInForceMode = forceRescan
+                                            && indexStatus === 'success'
+                                            && lastIndexed
+                                            && stat.mtime.getTime() <= new Date(lastIndexed).getTime();
+                                        if (!alreadyIndexedInForceMode
+                                            && (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
                                             && shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
                                             state.qdrantIndexQueue.add(taskId);
                                         }
