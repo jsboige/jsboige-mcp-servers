@@ -1126,6 +1126,53 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
+      // 9. #2543 Phase 1(b) — Write listApiConfigMeta + currentApiConfigName to vscdb
+      let vscdbWritten = false;
+      if (!options.dryRun && modelConfigs.apiConfigs) {
+        try {
+          const { RooSettingsService } = await import('./RooSettingsService.js');
+          const settingsService = new RooSettingsService({
+            targetExtension: options.targetExtension || 'roo'
+          });
+
+          if (settingsService.isAvailable()) {
+            // Build listApiConfigMeta from apiConfigs
+            const listApiConfigMeta = Object.entries(modelConfigs.apiConfigs).map(
+              ([id, config]: [string, any]) => ({
+                id,
+                name: config.name || id,
+                apiProvider: config.apiProvider,
+                ...(config.modelId && { modelId: config.modelId }),
+                ...(config.openAiModelId && { openAiModelId: config.openAiModelId }),
+              })
+            );
+
+            // Determine default config name
+            const defaultConfigName = profile.defaultApiConfig || 'default';
+
+            const settingsToInject: Record<string, unknown> = {
+              listApiConfigMeta,
+              currentApiConfigName: defaultConfigName,
+              modeApiConfigs: newModeApiConfigs,
+            };
+
+            const injectResult = await settingsService.injectSettings(settingsToInject, {
+              keys: ['listApiConfigMeta', 'currentApiConfigName', 'modeApiConfigs'],
+            });
+
+            vscdbWritten = true;
+            this.logger.info(`vscdb updated (${options.targetExtension || 'roo'}): ${listApiConfigMeta.length} configs written, default="${defaultConfigName}", applied=${injectResult.applied}`);
+          } else {
+            this.logger.warn('state.vscdb not available for listApiConfigMeta write (non-fatal)');
+          }
+        } catch (vscdbErr: any) {
+          // Non-fatal — apply_profile succeeds even if vscdb write fails
+          const errMsg = `vscdb listApiConfigMeta write failed: ${vscdbErr.message}`;
+          this.logger.warn(errMsg);
+          errors.push(errMsg);
+        }
+      }
+
       return {
         success: true,
         profileName: profile.name,
@@ -1135,6 +1182,7 @@ export class ConfigSharingService implements IConfigSharingService {
         roomodesGenerated,
         schedulesApplied: schedulesApplied > 0 ? schedulesApplied : undefined,
         rulesApplied: rulesApplied > 0 ? rulesApplied : undefined,
+        vscdbWritten,
         changes: {
           modeApiConfigs: newModeApiConfigs,
           profileThresholds: newThresholds,

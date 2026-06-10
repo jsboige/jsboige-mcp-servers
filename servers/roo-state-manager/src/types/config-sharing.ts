@@ -96,6 +96,8 @@ export interface ApplyProfileOptions {
   generateModes?: boolean;
   /** #2413 — Vérifier que le profil est effectivement appliqué (.roomodes + state.vscdb) après écriture */
   validate?: boolean;
+  /** #2543 Phase 1(b) — Target extension for vscdb writes: 'roo' or 'zoo'. Default: 'roo' */
+  targetExtension?: 'roo' | 'zoo';
 }
 
 export interface ApplyProfileResult {
@@ -124,6 +126,8 @@ export interface ApplyProfileResult {
     rulesSynced?: string[];
   };
   errors?: string[];
+  /** #2543 Phase 1(b) — Whether listApiConfigMeta was written to vscdb */
+  vscdbWritten?: boolean;
   /**
    * #2413 — Résultat de la validation post-apply si validate=true.
    *  - success=true => .roomodes aligné avec profile.modeOverrides

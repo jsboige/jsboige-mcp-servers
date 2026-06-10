@@ -40,6 +40,8 @@ const DEFAULT_VSCDB_KEY = 'RooVeterinaryInc.roo-cline';
 /** Zoo-Code SQLite ItemTable key (case-sensitive). */
 const ZOO_CODE_VSCDB_KEY = 'ZooCodeOrganization.zoo-code';
 
+export { DEFAULT_VSCDB_KEY, ZOO_CODE_VSCDB_KEY };
+
 /**
  * The SQLite ItemTable key for the active extension.
  * Override via `ROO_VSCDB_KEY` env-var, or derived from extension ID.
