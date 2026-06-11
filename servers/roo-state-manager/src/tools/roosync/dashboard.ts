@@ -136,14 +136,20 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
+// #2557: Capped from 12000 → 4096. A dashboard condensation is a concise summary
+// (system prompts explicitly ask for ≤20 lines / <5KB). At 4096 tokens the model
+// has ample room for a complete summary (~1500-3000 tokens observed) while keeping
+// the vLLM slot occupied for only ~40s at 100 tok/s instead of ~3 min at 12000.
+// This prevents the condensation loop observed 2026-06-11 where 14 identical
+// requests burned GPU time in tight retry cycles because each 15K-token generation
+// took 3 min → client timeout → retry.
+//
 // 2026-05-26: thinking mode disabled at every call site (see chat_template_kwargs
 // below). Per user mandate "passe la condensation en non thinking, vue la situation
 // catastrophique du cluster ce sera un moindre mal" — Qwen3.6 thinking-loop hang
 // was bringing the whole dashboard channel down during the orphan-leak crisis.
 // With thinking off, generation is direct markdown output (~4000 tokens), well
-// under the gateway; the 12000 cap (sized to the 600s IIS → vLLM gateway at
-// ~37 tok/s) is retained as a runaway-guard if the model ever flips back into
-// a long output.
+// under the gateway; the 4096 cap is now sized to actual need, not runaway-guard.
 //
 // History (kept for context — apply *with* enable_thinking=false now):
 // 2026-05-23: regression fix. Commit 9beb7e93 (2026-04-20) bumped this 10000 →
@@ -152,7 +158,7 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // repetition failure mode (vLLM+Qwen) where a runaway generation walks all the way
 // to max_tokens. 30000 tokens × ~37 tok/s = ~810s, > 600s gateway = HTTP 502.
 // Bounding at 12000 caps a runaway at ~325s, comfortably under the gateway.
-const CONDENSE_LLM_MAX_TOKENS = 12000;
+const CONDENSE_LLM_MAX_TOKENS = 4096;
 
 // #2426 Phase C+ follow-up: Detect LLM provider for thinking-mode control.
 // vLLM (local) supports chat_template_kwargs; z.ai and other remote APIs reject it (400).
