@@ -17,10 +17,25 @@ import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import sqlite3 from 'sqlite3';
 import { createLogger, Logger } from '../utils/logger.js';
-import { getVscdbKey } from '../utils/extension-paths.js';
+import { getVscdbKey, ZOO_CODE_VSCDB_KEY, DEFAULT_VSCDB_KEY } from '../utils/extension-paths.js';
 
-const VSCDB_KEY = getVscdbKey();
+/**
+ * Default VSCDB key resolved at module load (backward compat).
+ * Individual instances can override via constructor option.
+ */
+const DEFAULT_KEY = getVscdbKey();
 const VSCDB_RELATIVE_PATH = join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
+
+/** Options for RooSettingsService construction (#2543 Phase 1a). */
+export interface RooSettingsServiceOptions {
+  /**
+   * Target extension identity for vscdb operations.
+   * - 'roo' (default) = RooVeterinaryInc.roo-cline
+   * - 'zoo' = ZooCodeOrganization.zoo-code
+   * - Or a raw vscdb key string for advanced usage.
+   */
+  targetExtension?: 'roo' | 'zoo' | string;
+}
 
 /**
  * Settings that should NEVER be exported/synced (machine-specific or sensitive)
@@ -165,9 +180,19 @@ export interface InjectResult {
 
 export class RooSettingsService {
   private logger: Logger;
+  private readonly vscdbKey: string;
 
-  constructor() {
+  constructor(options?: RooSettingsServiceOptions) {
     this.logger = createLogger('RooSettingsService');
+    // Resolve target vscdb key from options, falling back to module-load default
+    if (options?.targetExtension === 'zoo') {
+      this.vscdbKey = ZOO_CODE_VSCDB_KEY;
+    } else if (options?.targetExtension && options.targetExtension !== 'roo') {
+      // Custom raw key
+      this.vscdbKey = options.targetExtension;
+    } else {
+      this.vscdbKey = DEFAULT_KEY;
+    }
   }
 
   /**
@@ -297,9 +322,9 @@ export class RooSettingsService {
 
       const db = await this.openDatabase(tmpPath, sqlite3.OPEN_READONLY);
       try {
-        const row = await this.dbGet(db, `SELECT value FROM ItemTable WHERE key = ?`, [VSCDB_KEY]);
+        const row = await this.dbGet(db, `SELECT value FROM ItemTable WHERE key = ?`, [this.vscdbKey]);
         if (!row) {
-          throw new Error(`Key '${VSCDB_KEY}' not found in state.vscdb`);
+          throw new Error(`Key '${this.vscdbKey}' not found in state.vscdb`);
         }
 
         let value = row.value;
@@ -334,7 +359,7 @@ export class RooSettingsService {
     const db = await this.openDatabase(dbPath, sqlite3.OPEN_READWRITE);
     try {
       const value = JSON.stringify(settings);
-      await this.dbRun(db, `UPDATE ItemTable SET value = ? WHERE key = ?`, [value, VSCDB_KEY]);
+      await this.dbRun(db, `UPDATE ItemTable SET value = ? WHERE key = ?`, [value, this.vscdbKey]);
       this.logger.info('Settings written to state.vscdb');
     } finally {
       await this.closeDatabase(db);

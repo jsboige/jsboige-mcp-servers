@@ -15,7 +15,8 @@ import { createLogger } from '../../utils/logger.js';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { extractMachineActivity } from '../../utils/dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive } from '../../utils/dashboard-activity.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import * as os from 'os';
 
 const logger = createLogger('HealthView');
@@ -63,6 +64,11 @@ export interface HealthViewResult {
     sharedPath: boolean;
     qdrant: boolean;
     embeddings: boolean;
+    /**
+     * #2547: Distinguish "configured" (env vars present) from "reachable" (live probe).
+     * `embeddings` above checks env-var presence only; this field reflects actual backend health.
+     */
+    embeddingsReachable?: boolean;
   };
   drift: {
     checked: boolean;
@@ -95,15 +101,14 @@ async function collectSystemHealth(): Promise<{
   totalCount: number;
   flags: string[];
 }> {
-  // #2121 Phase 2: Dashboard-derived presence (ADR 008 Phase 4).
-  // Previously read ghost heartbeat/ files (pre-ADR 008, no longer written).
-  // Now parses dashboard content — the single source of cross-machine presence truth.
+  // #2546: Unified machine presence — uses the same dashboard-activity utilities
+  // and thresholds as get-status.ts to eliminate contradictory readings.
+  // Previously used a hardcoded 2h threshold + hardcoded KNOWN_MACHINES list,
+  // causing status=CRITICAL vs health=HEALTHY contradictions.
   const sharedPath = getSharedStatePath();
   let onlineCount = 0;
   let unknownCount = 0;
   const flags: string[] = [];
-  const now = Date.now();
-  const TWO_HOURS = 2 * 60 * 60 * 1000;
   const ONE_DAY = 24 * 60 * 60 * 1000;
 
   try {
@@ -120,27 +125,50 @@ async function collectSystemHealth(): Promise<{
       } catch { /* skip unreadable */ }
     }
 
+    // #2546: Use shared extractMachineActivity + isRecentlyActive (8h threshold)
+    // same as get-status.ts — single source of truth for presence classification
     const activity = extractMachineActivity(contents);
+    const onlineMachines: string[] = [];
+
     for (const [machineId, lastSeenStr] of activity) {
       const id = machineId.toLowerCase();
       if (!isKnownMachine(id)) continue;
 
-      const lastSeen = new Date(lastSeenStr).getTime();
-      if (now - lastSeen < TWO_HOURS) {
+      if (isRecentlyActive(lastSeenStr)) {
         onlineCount++;
-      } else {
-        unknownCount++;
-        if (now - lastSeen > ONE_DAY) {
-          flags.push(`SYNC_STALE:${id}`);
-        }
+        onlineMachines.push(id);
       }
+      // Machines with stale dashboard activity (>8h) are not counted as online
+      // but are also NOT double-counted as unknown — they'll be caught by the
+      // registry check below if they haven't posted at all.
     }
 
-    // Flag machines in registry but absent from dashboards
-    const KNOWN_MACHINES = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
-    for (const m of KNOWN_MACHINES) {
-      if (!activity.has(m)) {
-        flags.push(`SYNC_STALE:${m}`);
+    // #2546: Use dynamic registry (service.getKnownMachineIds()) instead of
+    // hardcoded KNOWN_MACHINES list — stays in sync with fleet changes.
+    // Machines in registry but absent from ALL dashboard activity = unknown.
+    const seenSet = new Set(onlineMachines.map(m => m.toLowerCase()));
+    let registryMachineIds: string[] = [];
+    try {
+      const service = await getRooSyncService();
+      registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
+    } catch {
+      // Fallback to hardcoded list if service unavailable
+      registryMachineIds = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
+    }
+
+    for (const mid of registryMachineIds) {
+      if (!seenSet.has(mid.toLowerCase())) {
+        // Check if this machine has ANY dashboard activity at all (even stale)
+        const lastSeen = activity.get(mid.toLowerCase());
+        if (lastSeen) {
+          const lastSeenMs = new Date(lastSeen).getTime();
+          if (Date.now() - lastSeenMs > ONE_DAY) {
+            flags.push(`SYNC_STALE:${mid}`);
+          }
+        } else {
+          // Never seen on any dashboard — flag as SYNC_STALE
+          flags.push(`SYNC_STALE:${mid}`);
+        }
         unknownCount++;
       }
     }
@@ -161,13 +189,39 @@ function collectCapabilities(): {
   sharedPath: boolean;
   qdrant: boolean;
   embeddings: boolean;
+  embeddingsReachable?: boolean;
 } {
   const caps = getServerCapabilities();
+  const embeddingsConfigured = caps.isAvailable('embeddings');
+
+  // #2547: embeddingsReachable is intentionally omitted here (undefined).
+  // It is populated asynchronously in roosyncHealthView() via probeEmbeddingBackend()
+  // to avoid blocking the synchronous capability check.
   return {
     sharedPath: caps.isAvailable('sharedPath'),
     qdrant: caps.isAvailable('qdrant'),
-    embeddings: caps.isAvailable('embeddings'),
+    embeddings: embeddingsConfigured,
   };
+}
+
+/**
+ * #2547: Async live probe of the embedding backend.
+ * Distinguishes "configured" (env vars present) from "reachable" (backend responds).
+ * Uses the same connectivity cache as diagnose-index.tool.ts to avoid redundant API calls.
+ */
+async function probeEmbeddingBackend(): Promise<boolean> {
+  try {
+    const getOpenAIClient = (await import('../../services/openai.js')).default;
+    const { getEmbeddingModel } = await import('../../services/openai.js');
+    const openai = getOpenAIClient();
+    const result = await openai.embeddings.create({
+      model: getEmbeddingModel(),
+      input: 'health-check',
+    });
+    return result?.data?.[0]?.embedding?.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function collectDrift(
@@ -329,7 +383,11 @@ export function formatMarkdown(result: HealthViewResult): string {
   lines.push('## Capabilities');
   lines.push(`- SharedPath: ${result.capabilities.sharedPath ? 'OK' : 'MISSING'}`);
   lines.push(`- Qdrant: ${result.capabilities.qdrant ? 'OK' : 'MISSING'}`);
-  lines.push(`- Embeddings: ${result.capabilities.embeddings ? 'OK' : 'MISSING'}`);
+  const embStatus = !result.capabilities.embeddings ? 'MISSING (not configured)'
+    : result.capabilities.embeddingsReachable === true ? 'OK (configured + reachable)'
+    : result.capabilities.embeddingsReachable === false ? 'DEGRADED (configured but unreachable)'
+    : 'OK (configured)';
+  lines.push(`- Embeddings: ${embStatus}`);
   lines.push('');
 
   lines.push('## Config Drift');
@@ -374,14 +432,18 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   const localMachineId = getLocalMachineId();
   const targetMachine = args.machineId || localMachineId;
 
-  // Collect all data sources in parallel
-  const [systemHealth, capabilities, drift, envCheck] = await Promise.all([
+  // #2547: Collect sync capabilities first to decide whether to probe embeddings
+  const capabilities = collectCapabilities();
+
+  // Collect all data sources in parallel (including optional embedding probe)
+  const [systemHealth, drift, envCheck, embeddingsReachable] = await Promise.all([
     collectSystemHealth(),
-    Promise.resolve(collectCapabilities()),
     collectDrift(targetMachine),
     args.includeEnvCheck !== false ? Promise.resolve(collectEnvCheck()) : Promise.resolve({
       checked: false, missing: [], present: [],
     }),
+    // #2547: Async live probe of embedding backend (only if configured)
+    capabilities.embeddings ? probeEmbeddingBackend() : Promise.resolve(false as boolean),
   ]);
 
   const criticalEnvMissing = envCheck.missing.filter(e => e.severity === 'critical').length;
@@ -401,6 +463,12 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
     envCheck.missing
   );
 
+  // #2547: Merge the async embedding probe result into capabilities
+  const enrichedCapabilities = {
+    ...capabilities,
+    embeddingsReachable: capabilities.embeddings ? embeddingsReachable : false,
+  };
+
   const result: HealthViewResult = {
     status,
     score,
@@ -412,7 +480,7 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
       machinesTotal: systemHealth.totalCount,
       flags: systemHealth.flags,
     },
-    capabilities,
+    capabilities: enrichedCapabilities,
     drift,
     envCheck,
     recommendations,

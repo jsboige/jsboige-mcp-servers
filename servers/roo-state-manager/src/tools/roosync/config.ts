@@ -68,7 +68,10 @@ export const ConfigArgsSchema = z.object({
 
   // Pour apply_profile (#498 Phase 2)
   profileName: z.string().optional().describe('Profile name. REQUIRED for action=apply_profile. E.g. "Production (Qwen 3.5 + GLM-5)"'),
-  sourceMachineId: z.string().optional().describe('Source machine ID for model-configs.json (default: local file)')
+  sourceMachineId: z.string().optional().describe('Source machine ID for model-configs.json (default: local file)'),
+
+  // #2543 Phase 1(b) — target extension for vscdb writes
+  targetExtension: z.enum(['roo', 'zoo']).optional().describe('Target extension for vscdb writes. "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. Default: "roo"')
 }).refine(
   (data) => {
     // Validation spécifique par action
@@ -362,7 +365,7 @@ export async function roosyncConfig(args: ConfigArgs) {
 
       case 'apply_profile': {
         // Action apply_profile: Applique un profil de modèle (#498 Phase 2)
-        const { profileName, sourceMachineId, backup = true, validate } = args;
+        const { profileName, sourceMachineId, backup = true, validate, targetExtension } = args;
 
         if (!profileName) {
           throw new ConfigSharingServiceError(
@@ -377,6 +380,7 @@ export async function roosyncConfig(args: ConfigArgs) {
           sourceMachineId,
           backup,
           dryRun,
+          targetExtension,
           validate // #2413 - Propagate validate flag
         });
 
@@ -405,6 +409,7 @@ export async function roosyncConfig(args: ConfigArgs) {
           backupPath: result.backupPath,
           changes: result.changes,
           roomodesGenerated: result.roomodesGenerated,
+          vscdbWritten: result.vscdbWritten,
           errors: result.errors,
           validation: result.validation
         };

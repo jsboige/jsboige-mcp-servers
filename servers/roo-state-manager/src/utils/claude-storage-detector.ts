@@ -7,7 +7,8 @@
  */
 
 import * as fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { createReadStream, existsSync } from 'fs';
+import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import { stripBOM } from './encoding-helpers.js';
@@ -27,7 +28,12 @@ import {
  * Détecteur pour les conversations Claude Code
  */
 export class ClaudeStorageDetector {
-    private static readonly MAX_CONVERSATION_FILE_SIZE = 10 * 1024 * 1024; // 10MB — prevents OOM on traces >40MB
+    // P1 fix: streamed line-by-line (no full-load) — 500MB hard cap is a sanity guard
+    // against runaway files, not an OOM threshold. Previous 10MB limit silently
+    // dropped 15/147 sessions (CoursIA 103MB, large traces 24-26MB) at discovery.
+    private static readonly MAX_CONVERSATION_FILE_SIZE = 500 * 1024 * 1024;
+    // Skeleton is metadata-only; cap line count to bound memory under truly huge files.
+    private static readonly MAX_SKELETON_LINES = 20000;
     // Nom du répertoire de stockage Claude Code
     private static readonly CLAUDE_PROJECTS_DIR = 'projects';
     private static readonly CLAUDE_CONFIG_DIR = '.claude';
@@ -198,7 +204,7 @@ export class ClaudeStorageDetector {
                 totalSize += fileStats.size;
 
                 if (fileStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
-                    console.warn(`⚠️ [ClaudeStorageDetector] File too large, skipping: ${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
+                    console.warn(`⚠️ [ClaudeStorageDetector] File exceeds ${this.MAX_CONVERSATION_FILE_SIZE / 1024 / 1024}MB sanity cap, skipping: ${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
                     oversizedFiles.push(`${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
                     continue;
                 }
@@ -240,35 +246,52 @@ export class ClaudeStorageDetector {
     }
 
     /**
-     * Parse un fichier JSONL complet
+     * Parse un fichier JSONL complet en streaming (readline).
+     *
+     * P1 fix: previously `fs.readFile` + `content.split('\n')` would crash on
+     * 100MB+ traces (CoursIA 103MB, large roo-extensions sessions 24-26MB).
+     * Pattern mirrored from ChunkExtractor.ts:471-488.
+     * Caps at MAX_SKELETON_LINES — skeleton is metadata, not full content.
      */
     private static async parseJsonlFile(filePath: string): Promise<ClaudeJsonlEntry[]> {
         const entries: ClaudeJsonlEntry[] = [];
+        let skippedEntries = 0;
+        let lineCount = 0;
+        let truncated = false;
+
+        const fileStream = createReadStream(filePath, { encoding: 'utf-8' });
+        const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
         try {
-            const fileStats = await fs.stat(filePath);
-            if (fileStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
-                console.warn(`⚠️ [ClaudeStorageDetector] parseJsonlFile: File too large, skipping: ${filePath} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
-                return entries;
-            }
+            for await (const rawLine of rl) {
+                // stripBOM on the first line only (handles UTF-8 BOM at file start)
+                const line = lineCount === 0 ? stripBOM(rawLine) : rawLine;
+                lineCount++;
 
-            const content = stripBOM(await fs.readFile(filePath, 'utf-8'));
-            const lines = content.split('\n');
-
-            let skippedEntries = 0;
-            for (const line of lines) {
                 const entry = await this.parseJsonlLine(line);
                 if (entry) {
                     entries.push(entry);
                 } else if (line.trim()) {
                     skippedEntries++;
                 }
-            }
-            if (skippedEntries > 0) {
-                console.warn(`[ClaudeStorageDetector] ⚠️ ${skippedEntries} invalid JSONL lines skipped in ${path.basename(filePath)}`);
+
+                if (entries.length >= this.MAX_SKELETON_LINES) {
+                    truncated = true;
+                    break;
+                }
             }
         } catch (error) {
-            console.error(`[ClaudeStorageDetector] Error parsing JSONL file ${filePath}:`, error);
+            console.error(`[ClaudeStorageDetector] Error streaming JSONL file ${filePath}:`, error);
+        } finally {
+            rl.close();
+            fileStream.destroy();
+        }
+
+        if (skippedEntries > 0) {
+            console.warn(`[ClaudeStorageDetector] ⚠️ ${skippedEntries} invalid JSONL lines skipped in ${path.basename(filePath)}`);
+        }
+        if (truncated) {
+            console.warn(`[ClaudeStorageDetector] ⚠️ Truncated at ${this.MAX_SKELETON_LINES} entries in ${path.basename(filePath)} (skeleton metadata only)`);
         }
 
         return entries;

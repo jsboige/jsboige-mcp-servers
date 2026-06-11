@@ -7,6 +7,10 @@ export interface SearchFallbackArgs {
   workspace?: string;
   /** #604: Filter by conversation source (roo tasks or claude-code sessions) */
   source?: 'roo' | 'claude-code';
+  /** #2548: Max results to return (prevents unbounded dumps) */
+  max_results?: number;
+  /** #2548: Whether advanced filters were requested but not applied */
+  filters_requested?: boolean;
 }
 
 /**
@@ -17,7 +21,7 @@ export async function searchFallbackTool(
   conversationCache: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult> {
   try {
-    const { query, workspace, source } = args;
+    const { query, workspace, source, max_results, filters_requested } = args;
 
     if (!query || query.trim().length === 0) {
       return {
@@ -124,8 +128,22 @@ export async function searchFallbackTool(
       return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
     });
 
+    // #2548: Cap results to max_results (prevents unbounded context dumps)
+    const cappedResults = max_results && max_results > 0
+      ? results.slice(0, Math.min(max_results, 100))
+      : results;
+
     // Strip internal _score before returning
-    const cleanResults = results.map(({ _score, ...rest }) => rest);
+    const cleanResults = cappedResults.map(({ _score, ...rest }) => rest);
+
+    // #2548: Build metadata with warnings if filters were requested but not applied
+    const warnings: string[] = [];
+    if (filters_requested) {
+      warnings.push('Advanced filters (chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results) were requested but not applied in text fallback mode. Results are unfiltered.');
+    }
+    if (max_results && results.length > max_results) {
+      warnings.push(`Results capped from ${results.length} to ${max_results}.`);
+    }
 
     return {
       content: [{
@@ -136,6 +154,7 @@ export async function searchFallbackTool(
           query,
           searchType: 'text',
           totalFound: cleanResults.length,
+          ...(warnings.length > 0 && { warnings }),
           metadata: {
             searchMethod: 'text',
             tokenCount: tokens.length,

@@ -322,6 +322,17 @@ export async function handleDiagnoseSemanticIndex(
         }
     }
 
+    // #2547: Downgrade status if embedding backend is unreachable.
+    // Previously, status could be "healthy" (Qdrant OK) while openai_connection was "failed",
+    // masking a complete indexing/search outage from health checkers.
+    if (diagnostics.status === 'healthy' && diagnostics.details.openai_connection === 'failed') {
+        diagnostics.status = 'degraded';
+        diagnostics.errors.push(
+            'Embedding backend unreachable — status downgraded from healthy to degraded. ' +
+            'Indexing and semantic search will fail until embedding service is restored.'
+        );
+    }
+
     // Recommandations basées sur le diagnostic
     const recommendations: string[] = [];
     if (diagnostics.status === 'missing_collection') {
