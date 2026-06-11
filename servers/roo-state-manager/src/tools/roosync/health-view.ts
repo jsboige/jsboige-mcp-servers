@@ -15,7 +15,8 @@ import { createLogger } from '../../utils/logger.js';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { extractMachineActivity } from '../../utils/dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive } from '../../utils/dashboard-activity.js';
+import { getRooSyncService } from '../../services/lazy-roosync.js';
 import * as os from 'os';
 
 const logger = createLogger('HealthView');
@@ -95,15 +96,14 @@ async function collectSystemHealth(): Promise<{
   totalCount: number;
   flags: string[];
 }> {
-  // #2121 Phase 2: Dashboard-derived presence (ADR 008 Phase 4).
-  // Previously read ghost heartbeat/ files (pre-ADR 008, no longer written).
-  // Now parses dashboard content — the single source of cross-machine presence truth.
+  // #2546: Unified machine presence — uses the same dashboard-activity utilities
+  // and thresholds as get-status.ts to eliminate contradictory readings.
+  // Previously used a hardcoded 2h threshold + hardcoded KNOWN_MACHINES list,
+  // causing status=CRITICAL vs health=HEALTHY contradictions.
   const sharedPath = getSharedStatePath();
   let onlineCount = 0;
   let unknownCount = 0;
   const flags: string[] = [];
-  const now = Date.now();
-  const TWO_HOURS = 2 * 60 * 60 * 1000;
   const ONE_DAY = 24 * 60 * 60 * 1000;
 
   try {
@@ -120,27 +120,50 @@ async function collectSystemHealth(): Promise<{
       } catch { /* skip unreadable */ }
     }
 
+    // #2546: Use shared extractMachineActivity + isRecentlyActive (8h threshold)
+    // same as get-status.ts — single source of truth for presence classification
     const activity = extractMachineActivity(contents);
+    const onlineMachines: string[] = [];
+
     for (const [machineId, lastSeenStr] of activity) {
       const id = machineId.toLowerCase();
       if (!isKnownMachine(id)) continue;
 
-      const lastSeen = new Date(lastSeenStr).getTime();
-      if (now - lastSeen < TWO_HOURS) {
+      if (isRecentlyActive(lastSeenStr)) {
         onlineCount++;
-      } else {
-        unknownCount++;
-        if (now - lastSeen > ONE_DAY) {
-          flags.push(`SYNC_STALE:${id}`);
-        }
+        onlineMachines.push(id);
       }
+      // Machines with stale dashboard activity (>8h) are not counted as online
+      // but are also NOT double-counted as unknown — they'll be caught by the
+      // registry check below if they haven't posted at all.
     }
 
-    // Flag machines in registry but absent from dashboards
-    const KNOWN_MACHINES = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
-    for (const m of KNOWN_MACHINES) {
-      if (!activity.has(m)) {
-        flags.push(`SYNC_STALE:${m}`);
+    // #2546: Use dynamic registry (service.getKnownMachineIds()) instead of
+    // hardcoded KNOWN_MACHINES list — stays in sync with fleet changes.
+    // Machines in registry but absent from ALL dashboard activity = unknown.
+    const seenSet = new Set(onlineMachines.map(m => m.toLowerCase()));
+    let registryMachineIds: string[] = [];
+    try {
+      const service = await getRooSyncService();
+      registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
+    } catch {
+      // Fallback to hardcoded list if service unavailable
+      registryMachineIds = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
+    }
+
+    for (const mid of registryMachineIds) {
+      if (!seenSet.has(mid.toLowerCase())) {
+        // Check if this machine has ANY dashboard activity at all (even stale)
+        const lastSeen = activity.get(mid.toLowerCase());
+        if (lastSeen) {
+          const lastSeenMs = new Date(lastSeen).getTime();
+          if (Date.now() - lastSeenMs > ONE_DAY) {
+            flags.push(`SYNC_STALE:${mid}`);
+          }
+        } else {
+          // Never seen on any dashboard — flag as SYNC_STALE
+          flags.push(`SYNC_STALE:${mid}`);
+        }
         unknownCount++;
       }
     }
