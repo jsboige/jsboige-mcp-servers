@@ -1142,9 +1142,14 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         }
 
         const taskIndexer = new TaskIndexer();
+        // Extract workspace/title from skeleton metadata for Claude Code sessions
+        // so that codebase_search can filter by workspace_name (#2554 workspace_name bug)
+        const indexingMetadata = (source === 'claude-code' && skeleton.metadata)
+            ? { workspace: skeleton.metadata.workspace, title: skeleton.metadata.title }
+            : undefined;
         const TASK_TIMEOUT_MS = parseInt(process.env.INDEX_TASK_TIMEOUT_MS || '300', 10) * 1000;
         await Promise.race([
-            taskIndexer.indexTask(taskId, source),
+            taskIndexer.indexTask(taskId, source, indexingMetadata),
             new Promise((_, reject) =>
                 setTimeout(() => reject(new Error(
                     `Indexing timeout for ${taskId} after ${TASK_TIMEOUT_MS}ms — session too large or embedding backlog`
