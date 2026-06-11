@@ -648,8 +648,8 @@ describe('handleDiagnoseSemanticIndex', () => {
             });
         });
 
-        it('should still report healthy status even when only OpenAI fails', async () => {
-            // Qdrant is healthy, but OpenAI fails
+        it('should downgrade to degraded when OpenAI fails (#2547)', async () => {
+            // Qdrant is healthy, but OpenAI fails → status should be 'degraded' (#2547)
             mockGetOpenAIClient.mockReturnValue({
                 embeddings: {
                     create: vi.fn().mockRejectedValue(new Error('OpenAI down'))
@@ -659,9 +659,10 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            // Status is determined by Qdrant collection, not OpenAI
-            expect(diag.status).toBe('healthy');
+            // #2547: Status is downgraded from healthy to degraded when embedding backend is unreachable
+            expect(diag.status).toBe('degraded');
             expect(diag.details.openai_connection).toBe('failed');
+            expect(diag.errors.some((e: string) => e.includes('downgraded from healthy to degraded'))).toBe(true);
         });
 
         it('should handle getOpenAIClient throwing', async () => {
@@ -864,7 +865,7 @@ describe('handleDiagnoseSemanticIndex', () => {
     // ============================================================
 
     describe('combined scenarios', () => {
-        it('should handle healthy Qdrant with failed OpenAI gracefully', async () => {
+        it('should handle healthy Qdrant with failed OpenAI by downgrading to degraded (#2547)', async () => {
             mockGetOpenAIClient.mockReturnValue({
                 embeddings: {
                     create: vi.fn().mockRejectedValue(new Error('Timeout'))
@@ -874,7 +875,8 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            expect(diag.status).toBe('healthy');
+            // #2547: Status downgraded from healthy to degraded when embedding backend unreachable
+            expect(diag.status).toBe('degraded');
             expect(diag.details.qdrant_connection).toBe('success');
             expect(diag.details.openai_connection).toBe('failed');
             expect(diag.errors.length).toBeGreaterThan(0);
