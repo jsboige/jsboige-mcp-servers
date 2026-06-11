@@ -261,6 +261,82 @@ describe('export_data - CONS-10', () => {
             expect(result.isError).toBe(true);
             expect(getTextContent(result)).toContain('non trouvée');
         });
+
+        // #2549 regression test: handleTaskXml must load full skeleton from disk,
+        // not use the cache (which only has SkeletonHeader without sequence).
+        test('should load full skeleton via getConversationSkeleton, not cache (#2549)', async () => {
+            // Cache skeleton has NO sequence (like SkeletonHeader in production)
+            const cacheOnlySkeleton = createMockSkeleton('task-123');
+            (cacheOnlySkeleton as any).sequence = undefined;
+            mockCache.set('task-123', cacheOnlySkeleton);
+
+            // Full skeleton loaded from disk HAS sequence
+            const fullSkeleton: ConversationSkeleton = {
+                taskId: 'task-123',
+                metadata: {
+                    title: 'Full Task',
+                    lastActivity: new Date().toISOString(),
+                    createdAt: new Date().toISOString(),
+                    messageCount: 2,
+                    actionCount: 1,
+                    totalSize: 500,
+                    workspace: '/test'
+                },
+                sequence: [
+                    { role: 'user', content: 'Hello', timestamp: new Date().toISOString(), isTruncated: false } as any,
+                    { role: 'assistant', content: 'World', timestamp: new Date().toISOString(), isTruncated: false } as any,
+                ]
+            };
+
+            mockGetSkeleton = vi.fn(async () => fullSkeleton);
+
+            const args: ExportDataArgs = {
+                target: 'task',
+                format: 'xml',
+                taskId: 'task-123'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            // getConversationSkeleton must have been called with the taskId
+            expect(mockGetSkeleton).toHaveBeenCalledWith('task-123');
+
+            // generateTaskXml must have been called with the FULL skeleton (not the cache one)
+            expect(mockXmlExporterService.generateTaskXml).toHaveBeenCalledWith(
+                fullSkeleton,
+                expect.objectContaining({ includeContent: false, prettyPrint: true })
+            );
+
+            expect(result.isError).toBeFalsy();
+        });
+
+        test('should return error when full skeleton cannot be loaded (#2549)', async () => {
+            // Task exists in cache but disk read fails
+            mockGetSkeleton = vi.fn(async () => null);
+
+            const args: ExportDataArgs = {
+                target: 'task',
+                format: 'xml',
+                taskId: 'task-123'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            expect(result.isError).toBe(true);
+            expect(getTextContent(result)).toContain('Impossible de charger le skeleton complet');
+        });
     });
 
     // ============================================================

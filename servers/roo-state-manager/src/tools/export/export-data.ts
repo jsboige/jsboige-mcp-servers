@@ -339,19 +339,24 @@ function validateExportFilePath(filePath: string): void {
 
 /**
  * Handler pour export XML d'une tâche individuelle
+ *
+ * #2549 fix: Uses getConversationSkeleton (loads full skeleton from disk)
+ * instead of conversationCache (which only stores SkeletonHeader without sequence).
+ * The cache is still used to verify the task exists before the expensive disk read.
  */
 async function handleTaskXml(
     args: ExportDataArgs,
     conversationCache: Map<string, ConversationSkeleton>,
     xmlExporterService: XmlExporterService,
-    ensureSkeletonCacheIsFresh: () => Promise<void>
+    ensureSkeletonCacheIsFresh: () => Promise<void>,
+    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
 ): Promise<CallToolResult> {
     const { taskId, filePath, includeContent = false, prettyPrint = true } = args;
 
     await ensureSkeletonCacheIsFresh();
 
-    const skeleton = conversationCache.get(taskId!);
-    if (!skeleton) {
+    // Verify task exists in cache (lightweight check)
+    if (!conversationCache.has(taskId!)) {
         throw new StateManagerError(
             `Tâche avec l'ID '${taskId}' non trouvée dans le cache`,
             'TASK_NOT_FOUND',
@@ -360,7 +365,18 @@ async function handleTaskXml(
         );
     }
 
-    const xmlContent = (xmlExporterService as any).generateTaskXml(skeleton, {
+    // Load full skeleton from disk (includes sequence) — #2549
+    const fullSkeleton = await getConversationSkeleton(taskId!);
+    if (!fullSkeleton) {
+        throw new StateManagerError(
+            `Impossible de charger le skeleton complet pour la tâche '${taskId}'`,
+            'SKELETON_LOAD_FAILED',
+            'ExportDataTool',
+            { taskId }
+        );
+    }
+
+    const xmlContent = xmlExporterService.generateTaskXml(fullSkeleton, {
         includeContent,
         prettyPrint
     });
@@ -734,7 +750,7 @@ export async function handleExportData(
 
         if (target === 'task') {
             if (format === 'xml') {
-                return await handleTaskXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh);
+                return await handleTaskXml(args, conversationCache, xmlExporterService, ensureSkeletonCacheIsFresh, getConversationSkeleton);
             }
             if (format === 'debug') {
                 return await handleTaskDebug(args);
