@@ -231,7 +231,15 @@ export async function handleRooSyncSearch(
             const fallbackArgs: SearchFallbackArgs = {
                 query: args.search_query,
                 workspace: effectiveWorkspace,
-                source: args.source
+                source: args.source,
+                // #2548: Propagate max_results to prevent unbounded dumps
+                max_results: clampedMaxResults,
+                // #2548: Signal that advanced filters were requested but can't be applied
+                filters_requested: !!(
+                    args.chunk_type || args.role || args.tool_name ||
+                    args.has_errors || args.model || args.start_date ||
+                    args.end_date || args.exclude_tool_results
+                )
             };
             const textResult = await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
 
@@ -271,7 +279,14 @@ export async function handleRooSyncSearch(
             const fallbackArgs: SearchFallbackArgs = {
                 query: args.search_query,
                 workspace: textWorkspace,
-                source: args.source
+                source: args.source,
+                // #2548: Propagate max_results
+                max_results: Math.min(Math.max(args.max_results || 10, 1), 100),
+                filters_requested: !!(
+                    args.chunk_type || args.role || args.tool_name ||
+                    args.has_errors || args.model || args.start_date ||
+                    args.end_date || args.exclude_tool_results
+                )
             };
             return await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
         }

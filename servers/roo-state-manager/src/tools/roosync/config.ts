@@ -409,6 +409,7 @@ export async function roosyncConfig(args: ConfigArgs) {
           backupPath: result.backupPath,
           changes: result.changes,
           roomodesGenerated: result.roomodesGenerated,
+          vscdbWritten: result.vscdbWritten,
           errors: result.errors,
           validation: result.validation
         };
