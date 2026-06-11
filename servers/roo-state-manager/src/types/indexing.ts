@@ -32,7 +32,7 @@ export interface IndexingMetrics {
     lastIndexedAt?: string; // ISO datetime of last successful indexing
 }
 
-export const INDEX_VERSION_CURRENT = "1.1";
+export const INDEX_VERSION_CURRENT = "1.2"; // #2455: bump to trigger fleet-wide reindex for workspace_name propagation
 export const DEFAULT_REINDEX_TTL_HOURS = 168; // 7 jours
 export const MAX_RETRY_ATTEMPTS = 3;
 export const RETRY_BACKOFF_BASE_MS = 60000; // 1 minute base
