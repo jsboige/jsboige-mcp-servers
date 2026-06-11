@@ -63,6 +63,11 @@ export interface HealthViewResult {
     sharedPath: boolean;
     qdrant: boolean;
     embeddings: boolean;
+    /**
+     * #2547: Distinguish "configured" (env vars present) from "reachable" (live probe).
+     * `embeddings` above checks env-var presence only; this field reflects actual backend health.
+     */
+    embeddingsReachable?: boolean;
   };
   drift: {
     checked: boolean;
@@ -161,13 +166,39 @@ function collectCapabilities(): {
   sharedPath: boolean;
   qdrant: boolean;
   embeddings: boolean;
+  embeddingsReachable?: boolean;
 } {
   const caps = getServerCapabilities();
+  const embeddingsConfigured = caps.isAvailable('embeddings');
+
+  // #2547: embeddingsReachable is intentionally omitted here (undefined).
+  // It is populated asynchronously in roosyncHealthView() via probeEmbeddingBackend()
+  // to avoid blocking the synchronous capability check.
   return {
     sharedPath: caps.isAvailable('sharedPath'),
     qdrant: caps.isAvailable('qdrant'),
-    embeddings: caps.isAvailable('embeddings'),
+    embeddings: embeddingsConfigured,
   };
+}
+
+/**
+ * #2547: Async live probe of the embedding backend.
+ * Distinguishes "configured" (env vars present) from "reachable" (backend responds).
+ * Uses the same connectivity cache as diagnose-index.tool.ts to avoid redundant API calls.
+ */
+async function probeEmbeddingBackend(): Promise<boolean> {
+  try {
+    const getOpenAIClient = (await import('../../services/openai.js')).default;
+    const { getEmbeddingModel } = await import('../../services/openai.js');
+    const openai = getOpenAIClient();
+    const result = await openai.embeddings.create({
+      model: getEmbeddingModel(),
+      input: 'health-check',
+    });
+    return result?.data?.[0]?.embedding?.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function collectDrift(
@@ -329,7 +360,11 @@ export function formatMarkdown(result: HealthViewResult): string {
   lines.push('## Capabilities');
   lines.push(`- SharedPath: ${result.capabilities.sharedPath ? 'OK' : 'MISSING'}`);
   lines.push(`- Qdrant: ${result.capabilities.qdrant ? 'OK' : 'MISSING'}`);
-  lines.push(`- Embeddings: ${result.capabilities.embeddings ? 'OK' : 'MISSING'}`);
+  const embStatus = !result.capabilities.embeddings ? 'MISSING (not configured)'
+    : result.capabilities.embeddingsReachable === true ? 'OK (configured + reachable)'
+    : result.capabilities.embeddingsReachable === false ? 'DEGRADED (configured but unreachable)'
+    : 'OK (configured)';
+  lines.push(`- Embeddings: ${embStatus}`);
   lines.push('');
 
   lines.push('## Config Drift');
@@ -374,14 +409,18 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   const localMachineId = getLocalMachineId();
   const targetMachine = args.machineId || localMachineId;
 
-  // Collect all data sources in parallel
-  const [systemHealth, capabilities, drift, envCheck] = await Promise.all([
+  // #2547: Collect sync capabilities first to decide whether to probe embeddings
+  const capabilities = collectCapabilities();
+
+  // Collect all data sources in parallel (including optional embedding probe)
+  const [systemHealth, drift, envCheck, embeddingsReachable] = await Promise.all([
     collectSystemHealth(),
-    Promise.resolve(collectCapabilities()),
     collectDrift(targetMachine),
     args.includeEnvCheck !== false ? Promise.resolve(collectEnvCheck()) : Promise.resolve({
       checked: false, missing: [], present: [],
     }),
+    // #2547: Async live probe of embedding backend (only if configured)
+    capabilities.embeddings ? probeEmbeddingBackend() : Promise.resolve(false as boolean),
   ]);
 
   const criticalEnvMissing = envCheck.missing.filter(e => e.severity === 'critical').length;
@@ -401,6 +440,12 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
     envCheck.missing
   );
 
+  // #2547: Merge the async embedding probe result into capabilities
+  const enrichedCapabilities = {
+    ...capabilities,
+    embeddingsReachable: capabilities.embeddings ? embeddingsReachable : false,
+  };
+
   const result: HealthViewResult = {
     status,
     score,
@@ -412,7 +457,7 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
       machinesTotal: systemHealth.totalCount,
       flags: systemHealth.flags,
     },
-    capabilities,
+    capabilities: enrichedCapabilities,
     drift,
     envCheck,
     recommendations,
