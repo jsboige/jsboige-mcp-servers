@@ -423,7 +423,9 @@ export const roosyncConfigDefinition = {
             description: { type: 'string', description: 'Required for publish' },
             backup: { type: 'boolean', default: true },
             profileName: { type: 'string', description: 'Required for apply_profile' },
-            sourceMachineId: { type: 'string', description: 'For model-configs.json' }
+            sourceMachineId: { type: 'string', description: 'For model-configs.json' },
+            validate: { type: 'boolean', description: 'Validate config is effectively applied after write (default: false)' },
+            targetExtension: { type: 'string', enum: ['roo', 'zoo'], description: 'Target extension for vscdb writes. "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. Default: "roo" (#2543)' }
         },
         required: ['action'],
         additionalProperties: false
