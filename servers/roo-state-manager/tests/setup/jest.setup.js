@@ -21,8 +21,12 @@ if (!process.env.QDRANT_API_KEY) process.env.QDRANT_API_KEY = 'test-key';
 if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = 'sk-test-key';
 if (!process.env.OPENAI_CHAT_MODEL_ID) process.env.OPENAI_CHAT_MODEL_ID = 'gpt-4o-mini';
 if (!process.env.QDRANT_COLLECTION_NAME) process.env.QDRANT_COLLECTION_NAME = 'roo_tasks_semantic_index';
-if (!process.env.ROOSYNC_SHARED_PATH) process.env.ROOSYNC_SHARED_PATH = process.env.TMPDIR || process.env.TMP || '/tmp';
-if (!process.env.ROOSYNC_MACHINE_ID) process.env.ROOSYNC_MACHINE_ID = 'ci-test-machine';
+
+// ALWAYS isolate ROOSYNC_SHARED_PATH in test mode, even if .env set the live GDrive path (#2592).
+// The previous if(!...) guard was bypassed when .env (loaded earlier by setup-env.ts)
+// already set the live path, causing integration tests to leak msg-*.json into production inbox.
+process.env.ROOSYNC_SHARED_PATH = process.env.TMPDIR || process.env.TMP || '/tmp';
+process.env.ROOSYNC_MACHINE_ID = 'ci-test-machine';
 
 // Mock des APIs externes
 vi.mock('openai', () => ({
