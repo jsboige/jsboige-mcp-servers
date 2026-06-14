@@ -203,6 +203,38 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
           };
       }
 
+    // #alias-validation: catch partial-alias typos before the misleading downstream
+    // "inventory missing" CRITICAL. Only "local-machine" is a recognized alias (L181);
+    // a literal "local"/"remote" resolves to nothing, then getInventory() looks for
+    // inventories/local.json (absent) and returns a generic CRITICAL. This gives the
+    // caller an actionable message instead.
+    const PARTIAL_ALIASES: Record<string, string> = {
+      'local': 'local-machine',
+      'remote': 'remote-machine',
+    };
+    const aliasIssues: string[] = [];
+    if (PARTIAL_ALIASES[sourceMachineId]) {
+      aliasIssues.push(`source "${sourceMachineId}" — vouliez-vous l'alias "${PARTIAL_ALIASES[sourceMachineId]}" ?`);
+    }
+    if (PARTIAL_ALIASES[targetMachineId]) {
+      aliasIssues.push(`target "${targetMachineId}" — vouliez-vous l'alias "${PARTIAL_ALIASES[targetMachineId]}" ?`);
+    }
+    if (aliasIssues.length > 0) {
+      return {
+        source: sourceMachineId,
+        target: targetMachineId,
+        granularity: args.granularity || 'full',
+        differences: [{
+          category: 'validation',
+          severity: 'CRITICAL',
+          path: 'input.machineId',
+          description: `machineId inconnu: ${aliasIssues.join('; ')}. Le seul alias reconnu est "local-machine" (résolu vers la machine locale). Les machines distantes s'adressent par leur machineId (ex: "myia-ai-01", "myia-po-2024").`,
+          action: 'Utiliser "local-machine" pour la machine locale, ou un vrai machineId pour une machine distante.'
+        }],
+        summary: { total: 1, critical: 1, important: 0, warning: 0, info: 0 }
+      };
+    }
+
     // Settings comparison: uses RooSettingsService + GDrive published settings
     if (args.granularity === 'settings') {
       return await compareSettings(sourceMachineId, targetMachineId, service, args.filter);
