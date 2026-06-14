@@ -14,6 +14,7 @@ import { getSharedStatePath } from './shared-state-path.js';
 import { getLocalMachineId } from './message-helpers.js';
 import { createLogger, Logger } from './logger.js';
 import { getMessageManager } from '../services/MessageManager.js';
+import { tryLoadRooSyncConfig } from '../config/roosync-config.js';
 import type { Mention, UserId } from '../tools/roosync/dashboard.js';
 
 const execAsync = promisify(exec);
@@ -218,7 +219,26 @@ export async function sendMentionNotificationsAsync(
     }
 
     // Construire et envoyer les notifications
+    // Validate recipients against the fleet roster before sending (#2591).
+    // Without this, prose tokens / bot names / test leaks mis-classified as
+    // machine mentions (e.g. "NanoClaw", "vscode", "test-machine", bare "ai-01")
+    // create orphan notifications addressed to non-existent recipients that no
+    // cleanup agent ever processes → shared inbox bloats → roosync_messages timeout.
+    const roster = tryLoadRooSyncConfig()?.fleetRoster ?? null;
+
     for (const [machine, machineMentions] of mentionsByMachine) {
+      // Skip recipients not in the fleet roster (when a roster is configured).
+      // fleetRoster is null when ROO_FLEET_ROSTER is unset — then we keep the
+      // legacy behavior (send to all) for backward compatibility.
+      if (roster && !roster.includes(machine)) {
+        logger.debug('Skipping mention notification to non-fleet recipient (#2591)', {
+          messageId,
+          machine,
+          rosterSize: roster.length
+        });
+        continue;
+      }
+
       const subject = `[MENTION] Nouveau message dashboard mentionnant @${machine}`;
       const mentionList = machineMentions
         .map(m => `- @${m.target}${m.type === 'agent' ? ' (agent)' : ''}`)
