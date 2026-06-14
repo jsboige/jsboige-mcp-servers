@@ -868,7 +868,7 @@ async function embedBatch(
  * @param taskId L'ID de la tâche à indexer.
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
  */
-export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     try {
@@ -897,7 +897,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
 
         // Dispatch to appropriate chunk extractor based on source
         const chunks = source === 'claude-code'
-            ? await extractChunksFromClaudeSession(taskId, taskPath)
+            ? await extractChunksFromClaudeSession(taskId, taskPath, metadata)
             : await extractChunksFromTask(taskId, taskPath);
 
         if (chunks.length === 0) {

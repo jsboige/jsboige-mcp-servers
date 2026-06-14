@@ -30,8 +30,8 @@ export { getHostIdentifier };
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
  * @param source Source de la tâche ('roo' ou 'claude-code'), défaut: 'roo'
  */
-export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
-    return indexTaskVector(taskId, taskPath, source);
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
+    return indexTaskVector(taskId, taskPath, source, metadata);
 }
 
 /**
@@ -95,7 +95,7 @@ export class TaskIndexer {
     /**
      * Indexe une tâche à partir de son ID (trouve automatiquement le chemin)
      */
-    async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo'): Promise<PointStruct[]> {
+    async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
         try {
             // #604/#937: For Claude Code sessions, resolve path via ClaudeStorageDetector
             // Supports two taskId formats:
@@ -109,7 +109,7 @@ export class TaskIndexer {
                     const basename = path.basename(loc.projectPath);
                     if (basename === suffix) {
                         // Per-project taskId (legacy): index entire project directory
-                        const points = await indexTask(taskId, loc.projectPath, source);
+                        const points = await indexTask(taskId, loc.projectPath, source, metadata);
                         return points;
                     }
                     // #937: Per-session taskId — match project dir prefix, resolve specific JSONL file
@@ -119,7 +119,7 @@ export class TaskIndexer {
                         try {
                             await fs.access(sessionFile);
                             // Pass the specific file — extractChunksFromClaudeSession() handles single files
-                            const points = await indexTask(taskId, sessionFile, source);
+                            const points = await indexTask(taskId, sessionFile, source, metadata);
                             return points;
                         } catch {
                             // File doesn't exist in this location, continue searching
@@ -142,7 +142,7 @@ export class TaskIndexer {
                 const taskPath = path.join(location, 'tasks', taskId);
                 try {
                     await fs.access(taskPath);
-                    const points = await indexTask(taskId, taskPath, source);
+                    const points = await indexTask(taskId, taskPath, source, metadata);
 
                     // FIX ARCHITECTURAL: Mettre à jour le squelette ICI, pas dans index.ts
                     await this.updateSkeletonIndexTimestamp(taskId, location);

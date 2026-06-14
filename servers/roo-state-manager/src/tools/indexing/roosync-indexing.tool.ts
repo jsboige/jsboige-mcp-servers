@@ -32,6 +32,34 @@ function getISOWeek(timestamp: string): string {
 }
 
 /**
+ * Normalize a raw tool name from a JSONL tool_use block into a canonical key.
+ *
+ * The same tool is recorded under different prefixes across sources:
+ *   - `mcp__<server>__<tool>` (Claude Code, double-underscore)
+ *   - `mcp--<server>--<tool>` (double-dash variant)
+ *   - `<tool>` (bare name, typically malformed/failed calls)
+ * Without normalization, tool_usage_stats counted each variant as a distinct
+ * tool, fragmenting totals and inflating unique_tools (~103 vs ~15 real).
+ * Fix for #2336 (reported ai-01 2026-06-10).
+ *
+ * Splits on the prefix separator and returns the final segment (the tool name),
+ * which is robust to server names containing the separator char (e.g. `4_5v_mcp`).
+ * Bare names and built-in tools (Bash, Read, …) pass through unchanged.
+ */
+export function normalizeToolName(rawName: string): string {
+    const name = rawName.trim();
+    if (name.startsWith('mcp__')) {
+        const parts = name.split('__');
+        return parts[parts.length - 1] || name;
+    }
+    if (name.startsWith('mcp--')) {
+        const parts = name.split('--');
+        return parts[parts.length - 1] || name;
+    }
+    return name;
+}
+
+/**
  * Arguments du tool roosync_indexing unifié
  */
 export interface RooSyncIndexingArgs {
@@ -826,7 +854,7 @@ export async function handleRooSyncIndexing(
                                 for (const block of msg.content) {
                                     if (block.type === 'tool_use' && block.name) {
                                         totalCalls++;
-                                        const toolName = block.name;
+                                        const toolName = normalizeToolName(block.name);
                                         toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
                                         sourceCounts['roo'] = (sourceCounts['roo'] || 0) + 1;
 
@@ -951,7 +979,7 @@ export async function handleRooSyncIndexing(
                                 for (const block of message.content) {
                                     if (block.type === 'tool_use' && block.name) {
                                         totalCalls++;
-                                        const toolName = block.name;
+                                        const toolName = normalizeToolName(block.name);
                                         toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
                                         sourceCounts['claude-code'] = (sourceCounts['claude-code'] || 0) + 1;
 

@@ -18,6 +18,20 @@ const IV_LENGTH = 12;  // 96 bits — NIST SP 800-38D §5.2.1.1 recommended (fas
 const TAG_LENGTH = 16; // 128 bits
 const SALT_LENGTH = 32;
 
+/**
+ * Allowlist of service names permitted for env rotation.
+ * Prevents accidental exposure of arbitrary .env files.
+ * Issue #2410 — security requirement.
+ */
+export const ALLOWED_SERVICES = [
+  'rsm',        // roo-state-manager MCP server
+  'sk-agent',   // sk-agent MCP server
+  'embedding',  // embedding API credentials
+  'mcp-auth',   // MCP authentication tokens
+] as const;
+
+export type AllowedService = typeof ALLOWED_SERVICES[number];
+
 export interface EnvPublishOptions {
   service: string;
   envPath: string;
@@ -132,8 +146,52 @@ export class EnvRotationService {
   /**
    * Publish — chiffre et pousse un .env vers GDrive shared state
    */
+  /**
+   * Validates that the service is in the allowlist.
+   * @throws Error if service is not allowed
+   */
+  private validateService(service: string): void {
+    if (!ALLOWED_SERVICES.includes(service as AllowedService)) {
+      throw new Error(
+        `Service '${service}' is not in the env rotation allowlist. ` +
+        `Allowed services: ${ALLOWED_SERVICES.join(', ')}. ` +
+        `Add '${service}' to ALLOWED_SERVICES in EnvRotationService.ts if needed.`
+      );
+    }
+  }
+
+  /**
+   * Appends an audit log entry to shared state.
+   * Format: one JSON object per line (JSONL).
+   */
+  private async writeAuditLog(sharedStatePath: string, entry: {
+    action: 'publish' | 'apply';
+    service: string;
+    version?: string;
+    machineId?: string;
+    status: string;
+    keysWritten?: number;
+    error?: string;
+  }): Promise<void> {
+    const envDir = join(sharedStatePath, 'env');
+    if (!existsSync(envDir)) {
+      mkdirSync(envDir, { recursive: true });
+    }
+    const auditPath = join(envDir, 'audit.jsonl');
+    const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() }) + '\n';
+    try {
+      await fs.appendFile(auditPath, line, 'utf-8');
+    } catch (err) {
+      // Audit log failure is non-blocking — log warning but don't throw
+      this.logger.warn('Failed to write audit log', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   async publish(options: EnvPublishOptions): Promise<EnvPublishResult> {
     const { service, envPath, sharedStatePath, version, description, machineId, dryRun } = options;
+
+    // Validate service allowlist
+    this.validateService(service);
 
     // Read .env file
     if (!existsSync(envPath)) {
@@ -204,6 +262,15 @@ export class EnvRotationService {
 
     this.logger.info(`Published env ${service} v${version}`, { size: plaintext.length });
 
+    // Audit log
+    await this.writeAuditLog(sharedStatePath, {
+      action: 'publish',
+      service,
+      version,
+      machineId,
+      status: 'success',
+    });
+
     return {
       status: 'success',
       message: `Published ${service} v${version} (${plaintext.length} bytes encrypted)`,
@@ -219,6 +286,9 @@ export class EnvRotationService {
    */
   async apply(options: EnvApplyOptions): Promise<EnvApplyResult> {
     const { service, targetEnvPath, sharedStatePath, backup = true, dryRun } = options;
+
+    // Validate service allowlist
+    this.validateService(service);
 
     // Find latest version
     const envDir = join(sharedStatePath, 'env', service);
@@ -320,6 +390,15 @@ export class EnvRotationService {
     }
 
     this.logger.info(`Applied env ${service} v${latestVersion}`, { keys: keysWritten });
+
+    // Audit log
+    await this.writeAuditLog(sharedStatePath, {
+      action: 'apply',
+      service,
+      version: latestVersion,
+      status: 'success',
+      keysWritten,
+    });
 
     return {
       status: 'success',

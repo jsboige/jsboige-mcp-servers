@@ -366,6 +366,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 participants: [msg.author === 'agent' ? 'assistant' : 'user'],
                 tool_details: null,
                 workspace: workspace,
+                workspace_name: workspace ? path.basename(workspace) : undefined,
                 task_title: taskTitle,
                 host_os: getHostIdentifier(),
                 // #636: Enriched metadata
