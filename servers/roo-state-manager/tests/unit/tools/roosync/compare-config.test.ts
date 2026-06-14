@@ -324,6 +324,72 @@ describe('roosync_compare_config', () => {
     });
   });
 
+  describe('partial-alias validation (#alias-validation)', () => {
+    it('devrait détecter source="local" (alias partiel) et suggérer "local-machine"', async () => {
+      const args = {
+        source: 'local',
+        target: 'myia-ai-01',
+        granularity: 'mcp' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'myia-po-2024' });
+      // getDefaultTargetMachine is awaited only when target is undefined; here it's set.
+      mockRooSyncService.getInventory.mockResolvedValue({ machineId: 'x', inventory: {} });
+
+      const result = await roosyncCompareConfig(args);
+
+      // Early return: validation CRITICAL, no inventory lookup performed.
+      expect(mockRooSyncService.getInventory).not.toHaveBeenCalled();
+      expect(result.summary.critical).toBe(1);
+      expect(result.differences).toHaveLength(1);
+      expect(result.differences[0].category).toBe('validation');
+      expect(result.differences[0].description).toContain('local-machine');
+      expect(result.differences[0].description).toContain('source "local"');
+    });
+
+    it('devrait détecter target="local" (alias partiel) aussi', async () => {
+      const args = {
+        source: 'myia-ai-01',
+        target: 'local',
+        granularity: 'full' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'myia-po-2024' });
+      mockRooSyncService.getInventory.mockResolvedValue({ machineId: 'x', inventory: {} });
+
+      const result = await roosyncCompareConfig(args);
+
+      expect(mockRooSyncService.getInventory).not.toHaveBeenCalled();
+      expect(result.summary.critical).toBe(1);
+      expect(result.differences[0].description).toContain('local-machine');
+      expect(result.differences[0].description).toContain('target "local"');
+    });
+
+    it('ne doit PAS bloquer les vrais machineIds ni l\'alias complet "local-machine"', async () => {
+      // source = local-machine alias (résolu vers config.machineId), target = vrai machineId
+      const args = {
+        source: 'local-machine',
+        target: 'myia-ai-01',
+        granularity: 'full' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'myia-po-2024' });
+      mockRooSyncService.getInventory.mockResolvedValue({ machineId: 'x', inventory: {} });
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 't', timestamp: new Date().toISOString(),
+        sourceLabel: 'myia-po-2024', targetLabel: 'myia-ai-01',
+        diffs: [], summary: { total: 0, byType: {}, bySeverity: {}, byCategory: {} },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      // Pas de validation CRITICAL — l'inventaire est bien consulté.
+      expect(mockRooSyncService.getInventory).toHaveBeenCalled();
+      expect(result.differences.every(d => d.category !== 'validation')).toBe(true);
+    });
+  });
+
   describe('error handling with granularity', () => {
     it('devrait retourner un avertissement si inventaire source manquant', async () => {
       const args = {
