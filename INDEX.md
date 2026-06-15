@@ -8,7 +8,7 @@ Active servers in this repository. See [README.md](README.md) for full details.
 
 The core RooSync multi-agent coordination server.
 
-- **34 MCP tools** — conversations, RooSync messaging, dashboards, semantic search, baselines, diagnostics
+- **15 MCP tools** — conversations, RooSync messaging, dashboards, semantic search, baselines, diagnostics
 - **Stack**: TypeScript, Node.js 20.18.0, Vitest (~7900 tests)
 - **Storage**: Qdrant (semantic index), GDrive (shared state)
 - **Doc**: [servers/roo-state-manager/README.md](servers/roo-state-manager/README.md)
