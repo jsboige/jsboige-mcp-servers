@@ -99,6 +99,19 @@ const logger: Logger = createLogger('DashboardTool');
 const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024; // 50 KB
 const CONDENSE_KEEP = 10;
 
+// #2598: Byte-budget the kept-message window. The old policy kept a FIXED
+// CONDENSE_KEEP (10) most-recent messages regardless of their byte size.
+// Combined with the 15KB status cap, that pinned the post-condense floor at
+// ~15KB (status) + 10×~3KB (kept messages) ≈ 45KB — essentially equal to the
+// 46KB preemptive threshold. With zero headroom, every subsequent post
+// re-crossed the threshold and re-condensed (observed on workspace-CoursIA:
+// condensation on nearly every append, each a multi-second LLM round-trip).
+// Retaining the most-recent messages up to a byte budget instead caps the
+// intercom contribution to the floor: floor ≈ 15KB status + 16KB intercom
+// = 31KB, ~15KB below the threshold = several posts between condensations.
+const CONDENSE_KEEP_MIN = 4;                       // always keep >= this many recent messages
+const KEEP_INTERCOM_BUDGET_BYTES = 16 * 1024;      // 16 KB target for retained intercom
+
 // #1497: Preemptive condensation threshold (92% of MAX)
 // Triggered BEFORE appending a new message when the dashboard is near-full, so
 // that the condense (which can take ~30s via LLM) completes on smaller data
@@ -1549,6 +1562,37 @@ ${archiveMessages}
 }
 
 /**
+ * #2598: Compute how many of the most-recent intercom messages to retain when
+ * condensing, based on a byte budget rather than a fixed count. Walks from the
+ * newest message backward, accumulating UTF-8 byte size, and keeps messages
+ * while under `budgetBytes` — but never fewer than `minKeep` and never more than
+ * `maxKeep` (default CONDENSE_KEEP). This is always <= the old fixed keep: for
+ * small messages it keeps up to `maxKeep` (unchanged behaviour); for large
+ * messages it keeps fewer, capping the intercom contribution to the
+ * post-condense size floor and preventing the perpetual re-condensation loop.
+ */
+export function computeKeepCount(
+  messages: Pick<IntercomMessage, 'content'>[],
+  maxKeep: number = CONDENSE_KEEP,
+  budgetBytes: number = KEEP_INTERCOM_BUDGET_BYTES,
+  minKeep: number = CONDENSE_KEEP_MIN
+): number {
+  const n = messages.length;
+  if (n === 0) return 0;
+  const minK = Math.min(minKeep, n);
+  let bytes = 0;
+  let kept = 0;
+  for (let i = n - 1; i >= 0 && kept < maxKeep; i--) {
+    const msgBytes = Buffer.byteLength(messages[i].content || '', 'utf8');
+    // Past the guaranteed minimum, stop before exceeding the byte budget.
+    if (kept >= minK && bytes + msgBytes > budgetBytes) break;
+    bytes += msgBytes;
+    kept++;
+  }
+  return kept;
+}
+
+/**
  * Condense les messages intercom : archive les anciens, conserve les récents.
  * Met à jour le statut avec les informations des messages archivés (#858 Phase 2).
  * Si le statut ou le résumé dépasse les limites de taille, auto-condense via LLM.
@@ -2417,15 +2461,20 @@ async function handleAppend(
   // the file with the condensed version. If it fails, the incremental append
   // above is the authoritative state — no message loss.
   const estimatedSize = estimateDashboardSize(updatedDashboard);
+  // #2598: the retained-message window is byte-budgeted (computeKeepCount), not a
+  // fixed CONDENSE_KEEP. Using the same effectiveKeep for the trigger gate, the
+  // #2464 hash payload and the condenseIntercom call keeps all three consistent
+  // with the slice that condenseIntercom will actually perform.
+  const effectiveKeep = computeKeepCount(updatedDashboard.intercom.messages);
   const needsCondense = estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES
-    && updatedDashboard.intercom.messages.length > CONDENSE_KEEP;
+    && updatedDashboard.intercom.messages.length > effectiveKeep;
 
   if (needsCondense) {
     // #2464: Hash-based skip — if the messages to condense + current status haven't
     // changed since the last successful condensation, skip the LLM calls entirely.
     // This prevents the observed loop where condensation fires 3-4× per 30min on
     // unchanged content, burning ~350KB prompts + 12K output tokens each time.
-    const toArchiveCount = updatedDashboard.intercom.messages.length - CONDENSE_KEEP;
+    const toArchiveCount = updatedDashboard.intercom.messages.length - effectiveKeep;
     const condensePayload = updatedDashboard.intercom.messages
       .slice(0, toArchiveCount)
       .map(m => `${m.timestamp || ''}|${m.content || ''}`)
@@ -2457,7 +2506,7 @@ async function handleAppend(
         const beforeCount = updatedDashboard.intercom.messages.length;
         const condenseDiag = newDiagnostic('post-append');
         const tCondense = Date.now();
-        finalDashboard = await condenseIntercom(key, updatedDashboard, CONDENSE_KEEP, condenseDiag);
+        finalDashboard = await condenseIntercom(key, updatedDashboard, effectiveKeep, condenseDiag);
         preemptiveCondenseMs = Date.now() - tCondense;
         condenseDiagnostics.push(condenseDiag);
         const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
