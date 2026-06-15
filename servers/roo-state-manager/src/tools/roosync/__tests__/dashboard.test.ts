@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -784,9 +784,16 @@ describe('roosync_dashboard', () => {
       // Regression: prior behaviour was "single large message protected by
       // CONDENSE_KEEP slice policy → dashboard stays above threshold forever".
       // With per-append split (#1589), a 47KB message becomes ~12 parts (4KB
-      // cap each). After an initial small message + the big one split into
-      // parts, messages.length > CONDENSE_KEEP and the next append correctly
-      // triggers condensation.
+      // cap each) so the bulk becomes archivable rather than protected.
+      //
+      // #2598 sharpened this: the kept window is now byte-budgeted
+      // (computeKeepCount, 16KB) instead of a fixed CONDENSE_KEEP=10. The 12
+      // parts blow past the 16KB keep-budget, so condensation archives the
+      // oldest parts on the *first* append already (previously condenseIntercom
+      // refused to archive the mere 2 messages over keep=10, leaving all 12 and
+      // only condensing on the next append). This is strictly more aggressive
+      // archival of large content — exactly the #1589 anti-"protected forever"
+      // intent — so the post-condense window is bounded by the byte budget.
       mockGetChatClient.mockReturnValue({
         chat: { completions: { create: mockChatCreate } }
       });
@@ -798,9 +805,16 @@ describe('roosync_dashboard', () => {
       const huge = 'Y'.repeat(47 * 1024); // 47 KB single message
       const firstResult = await roosyncDashboard({ action: 'append', type: 'global', content: huge });
 
-      // The 47KB content is split into ~12 parts of 4KB each.
-      expect(firstResult.splitCount).toBeGreaterThan(1);
-      expect(firstResult.messageCount).toBeGreaterThan(10);
+      // The 47KB content is split into ~12 parts of 4KB each (the split itself
+      // is independent of the keep policy — this is the core #1589 behaviour).
+      expect(firstResult.splitCount).toBeGreaterThan(10);
+      // The oversized message is archived (NOT protected forever): condensation
+      // fires and archives the oldest parts, retaining only a byte-budgeted
+      // recent window (#2598) bounded by [CONDENSE_KEEP_MIN=4, CONDENSE_KEEP=10].
+      expect(firstResult.condensed).toBe(true);
+      expect(firstResult.archivedCount).toBeGreaterThan(0);
+      expect(firstResult.messageCount).toBeGreaterThanOrEqual(4);  // CONDENSE_KEEP_MIN
+      expect(firstResult.messageCount).toBeLessThanOrEqual(10);    // CONDENSE_KEEP
 
       const result = await roosyncDashboard({
         action: 'append',
@@ -809,8 +823,7 @@ describe('roosync_dashboard', () => {
       });
 
       expect(result.success).toBe(true);
-      // Now that the big message is multiple parts and count > CONDENSE_KEEP,
-      // preemptive condense fires and LLM is called.
+      // The LLM condense path was exercised (fired on the first append already).
       expect(mockChatCreate).toHaveBeenCalled();
     });
 
@@ -1671,5 +1684,51 @@ describe('roosync_dashboard', () => {
       // Status should still be ≤ 15 KB (not grown back to oversized)
       expect(sizeAfterSecond).toBeLessThanOrEqual(15 * 1024);
     });
+  });
+});
+
+// #2598: byte-budgeted keep window — guards against the perpetual-condensation
+// loop where a fixed keep-count (10) + 15KB status pinned the post-condense
+// floor at ~the 46KB preemptive threshold, re-condensing on nearly every post.
+describe('computeKeepCount (#2598 byte-budgeted keep window)', () => {
+  const CONDENSE_KEEP = 10;
+  const CONDENSE_KEEP_MIN = 4;
+  const KEEP_BUDGET = 16 * 1024;
+  const PREEMPTIVE_THRESHOLD = Math.floor(50 * 1024 * 0.92); // ~46 KB
+  const STATUS_CAP = 15 * 1024;
+
+  const mk = (n: number, sizeBytes: number) =>
+    Array.from({ length: n }, (_, i) => ({ content: 'x'.repeat(sizeBytes) + `#${i}` }));
+  const keptBytes = (msgs: { content: string }[], keep: number) =>
+    msgs.slice(msgs.length - keep).reduce((s, m) => s + Buffer.byteLength(m.content, 'utf8'), 0);
+
+  it('keeps up to CONDENSE_KEEP for small messages (unchanged behaviour)', () => {
+    expect(computeKeepCount(mk(30, 200))).toBe(CONDENSE_KEEP);
+  });
+
+  it('keeps fewer than CONDENSE_KEEP when messages are large (budget-bound)', () => {
+    const msgs = mk(30, 3 * 1024); // ~3 KB each
+    const keep = computeKeepCount(msgs);
+    expect(keep).toBeLessThan(CONDENSE_KEEP);
+    expect(keep).toBeGreaterThanOrEqual(CONDENSE_KEEP_MIN);
+    // kept bytes stay within budget plus at most one over-budget message
+    expect(keptBytes(msgs, keep)).toBeLessThanOrEqual(KEEP_BUDGET + 3 * 1024);
+  });
+
+  it('never keeps fewer than CONDENSE_KEEP_MIN even for huge messages', () => {
+    expect(computeKeepCount(mk(10, 20 * 1024))).toBe(CONDENSE_KEEP_MIN);
+  });
+
+  it('returns 0 for an empty intercom and is bounded by message count', () => {
+    expect(computeKeepCount([])).toBe(0);
+    expect(computeKeepCount(mk(2, 100))).toBe(2);
+  });
+
+  it('post-condense floor (status + kept intercom) stays well below the threshold', () => {
+    // 40 messages of ~3 KB + a 15 KB status: the floor must leave real headroom
+    // under the 46 KB preemptive threshold so posting does not re-condense.
+    const msgs = mk(40, 3 * 1024);
+    const floor = STATUS_CAP + keptBytes(msgs, computeKeepCount(msgs));
+    expect(floor).toBeLessThan(PREEMPTIVE_THRESHOLD - 8 * 1024); // >= 8 KB headroom
   });
 });
