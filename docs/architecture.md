@@ -39,7 +39,7 @@ Un serveur MCP est un service qui implémente le protocole MCP et expose des out
 
 Dans ce dépôt, les serveurs MCP sont placés directement dans le répertoire `servers/`:
 
-- **roo-state-manager**: 34 outils MCP pour la coordination multi-agent (RooSync)
+- **roo-state-manager**: 15 outils MCP pour la coordination multi-agent (RooSync)
 - **sk-agent**: LLM proxy multi-agent avec mémoire vectorielle
 
 ### 2. Outils (Tools)

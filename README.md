@@ -37,7 +37,7 @@ Les serveurs MCP sont placés dans le répertoire `servers/`:
 
 Le composant central du système RooSync Multi-Agent:
 
-- **34 outils MCP** pour la coordination multi-machine
+- **15 outils MCP** pour la coordination multi-machine
 - **Conversations**: browse, view, tree, summarize (Roo + Claude Code)
 - **RooSync**: send, read, manage, heartbeat, compare_config
 - **Dashboards**: global, machine, workspace (cross-machine coordination)
@@ -113,7 +113,7 @@ pip install -r requirements.txt
 
 ```text
 servers/
-├── roo-state-manager/   # TypeScript — 34 tools, RooSync core
+├── roo-state-manager/   # TypeScript — 15 tools, RooSync core
 │   ├── src/tools/       # Tool definitions + handlers
 │   ├── src/services/    # Business logic (RooSync, Qdrant, heartbeat)
 │   ├── src/resources/   # MCP resources
