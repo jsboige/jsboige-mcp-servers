@@ -61,7 +61,7 @@ Configuré via l'interface VS Code ou le fichier settings.json global.
 **Statut : PASS** si tous les critères sont remplis, sinon **FAIL**
 - Serveur présent dans mcp_settings.json
 - disabled: false
-- alwaysAllow contient les 15 outils roosync_*
+- alwaysAllow contient les outils roosync_* actifs (alias legacy pré-CONS tolérés)
 - alwaysAllow contient les outils de gestion
 - Chemin pointe vers mcps/internal/servers/roo-state-manager/mcp-wrapper.cjs
 
