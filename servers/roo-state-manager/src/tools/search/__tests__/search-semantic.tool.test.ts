@@ -36,6 +36,17 @@ const { mockGetHostIdentifier } = vi.hoisted(() => ({
 	mockGetHostIdentifier: vi.fn().mockReturnValue('test-host-01')
 }));
 
+// #2426 follow-up: the unified-store reader was NEVER mocked, so every test ran
+// with Postgres OFF (NullUnifiedStoreReader) — the opposite of production, where
+// dual-write is ON and the JOIN executes. We mock it here so the deployed code
+// path can actually be exercised. Default = OFF (matches prior test behavior).
+const { mockUnifiedStoreReader } = vi.hoisted(() => ({
+	mockUnifiedStoreReader: {
+		isNull: vi.fn().mockReturnValue(true),
+		joinFromQdrant: vi.fn(async () => [] as Array<{ task_id: string; score: number }>)
+	}
+}));
+
 vi.mock('../../../services/qdrant.js', () => ({
 	getQdrantClient: () => mockQdrantClient,
 	resetQdrantClient: vi.fn(),
@@ -59,6 +70,10 @@ vi.mock('../../../services/task-indexer/ChunkExtractor.js', () => ({
 
 vi.mock('../search-fallback.tool.js', () => ({
 	handleSearchTasksSemanticFallback: mockFallbackHandler
+}));
+
+vi.mock('../../../services/unified-store/reader-factory.js', () => ({
+	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
 import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker } from '../search-semantic.tool.js';
@@ -88,6 +103,11 @@ beforeEach(() => {
 	_resetEmbeddingCircuitBreaker();
 	mockGetEmbeddingModel.mockReturnValue('test-model');
 	mockGetHostIdentifier.mockReturnValue('test-host-01');
+	// #2426 follow-up: default unified store OFF every test; the regression
+	// describe-block below flips it ON explicitly. clearAllMocks() does not reset
+	// return values, so reassert defaults here to prevent cross-test leakage.
+	mockUnifiedStoreReader.isNull.mockReturnValue(true);
+	mockUnifiedStoreReader.joinFromQdrant.mockResolvedValue([]);
 	delete process.env.QDRANT_COLLECTION_NAME;
 });
 
@@ -789,6 +809,83 @@ describe('helper functions (indirect via handler)', () => {
 		expect(parsed.results[1].taskId).toBe('task-b');
 		expect(parsed.results[1].chunks).toHaveLength(2);
 		expect(parsed.results[1].best_score).toBe(0.7);
+	});
+
+	// ============================================================
+	// #2426 follow-up: unified-store Postgres JOIN must ENRICH, not GATE.
+	// These tests exercise the DEPLOYED config (dual-write ON), which the rest of
+	// the suite never did. The first one fails on the pre-fix code (results: []),
+	// which is exactly the fleet-wide "semantic search returns nothing" symptom.
+	// ============================================================
+
+	describe('#2426 unified-store JOIN (production config)', () => {
+		beforeEach(() => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+		});
+
+		test('keeps Qdrant results when the store is active but empty (backfill gap)', async () => {
+			// Reader active (dual-write ON) but Postgres returns no rows.
+			mockUnifiedStoreReader.isNull.mockReturnValue(false);
+			mockUnifiedStoreReader.joinFromQdrant.mockResolvedValue([]);
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.82, payload: { task_id: 'task-1', content: 'yesterday debrief', host_os: 'win32' } },
+				{ score: 0.71, payload: { task_id: 'task-2', content: 'coordination notes', host_os: 'win32' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'debrief' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			// Pre-fix: results: [] and unique_tasks: 0 (the bug). Post-fix: hits survive.
+			expect(parsed.results.length).toBe(2);
+			expect(parsed.current_machine.unique_tasks).toBe(2);
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-1', 'task-2']);
+		});
+
+		test('applies Postgres ranking when the store DOES return rows', async () => {
+			// When Postgres is populated, the JOIN still filters + re-ranks (intended #2426 behavior).
+			mockUnifiedStoreReader.isNull.mockReturnValue(false);
+			mockUnifiedStoreReader.joinFromQdrant.mockResolvedValue([
+				{ task_id: 'task-2', score: 0.99 },
+				{ task_id: 'task-1', score: 0.50 },
+			]);
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.82, payload: { task_id: 'task-1', content: 'a', host_os: 'win32' } },
+				{ score: 0.71, payload: { task_id: 'task-2', content: 'b', host_os: 'win32' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'x' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-2', 'task-1']);
+		});
+
+		test('requests host_os in the Qdrant payload include (machines_found populated)', async () => {
+			// Real Qdrant honours the include whitelist; omitting host_os made
+			// machines_found always ['unknown']. Assert the field is requested.
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.8, payload: { task_id: 't1', content: 'x', host_os: 'win32' } },
+			]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'x' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1] as any;
+			expect(searchCall.with_payload.include).toContain('host_os');
+		});
 	});
 
 	// ============================================================
