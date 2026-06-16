@@ -651,7 +651,10 @@ export const searchTasksByContentTool = {
                     quantization: { rescore: true }
                 },
                 with_payload: {
-                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error']
+                    // #2426 follow-up: 'host_os' must be in the include whitelist, otherwise
+                    // cross_machine_analysis.machines_found is always ['unknown'] (the payload
+                    // field exists but is never retrieved).
+                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os']
                 },
                 timeout: searchTimeoutSec,
             }));
@@ -730,14 +733,26 @@ export const searchTasksByContentTool = {
                     if (tool_name) pgFilters.tool_name = tool_name;
 
                     const pgHits = await unifiedStoreReader.joinFromQdrant(qdrantHits, pgFilters);
-                    const pgTaskIds = new Set(pgHits.map(h => h.task_id));
 
-                    // Filter groupedResults to only those confirmed by Postgres
-                    // Re-order by ANN score (pgHits is already sorted by score DESC)
-                    const pgScoreMap = new Map(pgHits.map(h => [h.task_id, h.score]));
-                    groupedResults = groupedResults
-                        .filter(g => pgTaskIds.has(g.taskId))
-                        .sort((a, b) => (pgScoreMap.get(b.taskId) ?? 0) - (pgScoreMap.get(a.taskId) ?? 0));
+                    // #2426 follow-up (semantic-recall regression, 2026-06-16): the unified
+                    // Postgres store is a DERIVED index that may be incomplete (dual-write
+                    // backfill gap). Treat it as ENRICHMENT, not a gate: only apply the
+                    // inner-join filter when Postgres actually returned rows; otherwise keep
+                    // the Qdrant-only ANN ranking. Without this guard an empty/un-backfilled
+                    // Postgres silently nuked every semantic result fleet-wide (the tool
+                    // reported results_count > 0 but unique_tasks: 0, results: []).
+                    // tool_name filtering is already enforced upstream in the Qdrant filter
+                    // (see filterConditions above), so falling back to Qdrant-only when
+                    // Postgres has no rows loses no correctness.
+                    if (pgHits.length > 0) {
+                        const pgTaskIds = new Set(pgHits.map(h => h.task_id));
+                        // Filter groupedResults to only those confirmed by Postgres,
+                        // re-ordered by ANN score (pgHits is already sorted by score DESC)
+                        const pgScoreMap = new Map(pgHits.map(h => [h.task_id, h.score]));
+                        groupedResults = groupedResults
+                            .filter(g => pgTaskIds.has(g.taskId))
+                            .sort((a, b) => (pgScoreMap.get(b.taskId) ?? 0) - (pgScoreMap.get(a.taskId) ?? 0));
+                    }
                 } catch (err) {
                     // Postgres enrichment failed — fall back to Qdrant-only results (non-blocking)
                     console.warn('[WARN] #2426: Unified-store Postgres JOIN failed, using Qdrant-only results:', err instanceof Error ? err.message : String(err));
