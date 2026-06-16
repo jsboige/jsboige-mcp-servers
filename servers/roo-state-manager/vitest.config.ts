@@ -40,6 +40,8 @@ export default defineConfig({
       '**/backups/**',
       '**/vitest-migration/backups/**',
       'vitest-migration/backups/**',
+      // Eval harness — runs only via vitest.config.eval-harness.ts (live services required)
+      'tests/eval-harness/**',
       // Fichiers causant des boucles infinies ou timeouts (scan massif de 3870+ tâches)
       'tests/unit/parent-child-validation.test.ts',
       'tests/unit/skeleton-cache-reconstruction.test.ts',

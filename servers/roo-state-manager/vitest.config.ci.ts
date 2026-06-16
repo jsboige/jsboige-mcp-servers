@@ -111,6 +111,9 @@ export default mergeConfig(unitConfig, defineConfig({
       // These tests have timing thresholds that fail on slower machines (16GB RAM, --maxWorkers=1)
       'src/tools/roosync/__tests__/stress-large-inbox.test.ts',
 
+      // ===== EVAL HARNESS (live services — excluded from CI) =====
+      'tests/eval-harness/**',
+
       // ===== E2E (already excluded in base) =====
       'tests/e2e/**',
     ],
