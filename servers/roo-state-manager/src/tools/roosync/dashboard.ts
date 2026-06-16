@@ -1279,7 +1279,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
  * Uses a dedicated LLM call asking to compress the text while preserving all info.
  * Returns the condensed text, or the original if condensation fails.
  */
-async function condenseTextIfTooLarge(
+export async function condenseTextIfTooLarge(
   text: string,
   maxSizeBytes: number,
   label: string
@@ -1289,18 +1289,37 @@ async function condenseTextIfTooLarge(
 
   logger.info(`${label} exceeds size limit, auto-condensing`, { sizeBytes, limit: maxSizeBytes, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
 
+  // #2598 follow-up — Mechanism 2 (the dedicated "too big" condenser) is the ONLY
+  // size guardian and MUST make the cap a HARD guarantee, not best-effort. Every
+  // exit below returns <= maxSizeBytes. The LLM is the intelligent primary; the
+  // deterministic truncateToMaxSize floor is the last resort when it can't converge
+  // (no client / empty output / exception / still-over-cap after a bounded retry).
+  // (Status GROWTH is Mechanism 1's business — see generateStatusUpdate; not touched here.)
   let openai: OpenAI;
   try {
     openai = getChatOpenAIClient();
   } catch {
-    logger.warn(`Cannot auto-condense ${label}: no LLM client`);
-    return text;
+    logger.warn(`Cannot auto-condense ${label}: no LLM client — applying deterministic truncation`);
+    return truncateToMaxSize(text, maxSizeBytes, label);
   }
   const modelId = getLLMModelId();
+  const capKb = Math.round(maxSizeBytes / 1024);
 
-  const systemPrompt = `Tu es un expert en synthèse. Le texte suivant dépasse la limite de ${Math.round(maxSizeBytes / 1024)} Ko.
+  // Up to 2 LLM attempts. The 2nd targets a tighter budget (~80% of the cap) with a
+  // stronger instruction, used only if the 1st came back still over the limit.
+  const MAX_ATTEMPTS = 2;
+  let bestCandidate = text;
+  let bestSize = sizeBytes;
 
-MISSION : Condenser ce texte en dessous de ${Math.round(maxSizeBytes / 1024)} Ko tout en préservant TOUTE l'information critique.
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const targetKb = attempt === 1 ? capKb : Math.max(1, Math.floor((maxSizeBytes * 0.8) / 1024));
+    const aggressiveNote = attempt === 1
+      ? ''
+      : `\n\nCRITIQUE : la version précédente dépassait ENCORE la limite. Sois plus agressif — vise ${targetKb} Ko, fusionne/supprime davantage de redondance, SANS perdre aucune décision, métrique chiffrée ni blocage.`;
+
+    const systemPrompt = `Tu es un expert en synthèse. Le texte suivant dépasse la limite de ${capKb} Ko.
+
+MISSION : Condenser ce texte en dessous de ${targetKb} Ko tout en préservant TOUTE l'information critique.
 
 RÈGLES :
 - Préserver les métriques chiffrées exactes
@@ -1312,50 +1331,64 @@ RÈGLES :
 - Le résultat DOIT être plus court que l'original
 - LAST-KNOWN-STATE WINS : pour chaque sujet, ne garder QUE le dernier état connu (#1502)
 - INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas dans le texte source (#1502)
-- SUPPRIMER les faits contredits par des informations plus récentes dans le texte (#1502)`;
+- SUPPRIMER les faits contredits par des informations plus récentes dans le texte (#1502)${aggressiveNote}`;
 
-  const startTime = Date.now();
-  try {
-    const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
-    const response = await openai.chat.completions.create({
-      model: modelId,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: thinkingCtrl.promptPrefix + text }
-      ],
-      // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
-      max_tokens: CONDENSE_LLM_MAX_TOKENS,
-      temperature: 0.3,
-      // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
-      ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
-    }, {
-      timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
-    });
+    const startTime = Date.now();
+    try {
+      const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
+      const response = await openai.chat.completions.create({
+        model: modelId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: thinkingCtrl.promptPrefix + text }
+        ],
+        // Bounded under the ~600s gateway timeout (see CONDENSE_LLM_MAX_TOKENS).
+        max_tokens: CONDENSE_LLM_MAX_TOKENS,
+        temperature: 0.3,
+        // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
+        ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
+      }, {
+        timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
+      });
 
-    const condensed = response.choices[0]?.message?.content;
-    if (!condensed) {
-      logger.warn(`Auto-condense ${label}: LLM returned empty, keeping original`);
-      return text;
+      const condensed = response.choices[0]?.message?.content;
+      const elapsed = Date.now() - startTime;
+      if (!condensed) {
+        logger.warn(`Auto-condense ${label} attempt ${attempt}: LLM returned empty`, { elapsed: `${elapsed}ms` });
+        continue;
+      }
+
+      const newSize = Buffer.byteLength(condensed, 'utf8');
+      logger.info(`Auto-condensed ${label} (attempt ${attempt})`, {
+        elapsed: `${elapsed}ms`,
+        beforeKB: `${(sizeBytes / 1024).toFixed(1)}KB`,
+        afterKB: `${(newSize / 1024).toFixed(1)}KB`,
+        reduction: `${Math.round((1 - newSize / sizeBytes) * 100)}%`,
+        targetKB: targetKb
+      });
+
+      if (newSize <= maxSizeBytes) return condensed;  // converged under cap — done
+
+      // Still over cap: keep the smallest candidate seen, then retry tighter (or fall through).
+      if (newSize < bestSize) { bestCandidate = condensed; bestSize = newSize; }
+      logger.warn(`Auto-condense ${label} attempt ${attempt} still over cap`, {
+        afterKB: `${(newSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB`
+      });
+    } catch (error) {
+      const elapsed = Date.now() - startTime;
+      logger.warn(`Auto-condense ${label} attempt ${attempt} failed`, {
+        elapsed: `${elapsed}ms`,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
-
-    const newSize = Buffer.byteLength(condensed, 'utf8');
-    const elapsed = Date.now() - startTime;
-    logger.info(`Auto-condensed ${label}`, {
-      elapsed: `${elapsed}ms`,
-      beforeKB: `${(sizeBytes / 1024).toFixed(1)}KB`,
-      afterKB: `${(newSize / 1024).toFixed(1)}KB`,
-      reduction: `${Math.round((1 - newSize / sizeBytes) * 100)}%`
-    });
-    return condensed;
-
-  } catch (error) {
-    const elapsed = Date.now() - startTime;
-    logger.warn(`Auto-condense ${label} failed, keeping original`, {
-      elapsed: `${elapsed}ms`,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return text;
   }
+
+  // LLM never converged under the cap (down, empty, or still oversized) → deterministic
+  // backstop on the smallest candidate so ${label} NEVER exceeds its cap (the #2598 bug).
+  logger.warn(`Auto-condense ${label}: LLM did not converge under ${capKb}KB, applying deterministic truncation`, {
+    bestKB: `${(bestSize / 1024).toFixed(1)}KB`
+  });
+  return truncateToMaxSize(bestCandidate, maxSizeBytes, label);
 }
 
 /**
@@ -1419,7 +1452,7 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
  * Deterministic (non-LLM) truncation: keeps the most recent lines that fit within maxSizeBytes.
  * Used when LLM condensation fails (#2463 — status should never exceed its cap, even in fallback).
  */
-function truncateToMaxSize(text: string, maxSizeBytes: number, label: string): string {
+export function truncateToMaxSize(text: string, maxSizeBytes: number, label: string): string {
   const sizeBytes = Buffer.byteLength(text, 'utf8');
   if (sizeBytes <= maxSizeBytes) return text;
 
