@@ -760,7 +760,7 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
 
         // Phase 3: Start background process (always safe - doesn't contact Qdrant immediately)
         // #2352: Attempt leader-election at startup
-        state.isIndexLeader = await tryAcquireLeaderLock();
+        state.isIndexLeader = await tryAcquireLeaderLock(state.machineId);
         if (state.isIndexLeader) {
             console.log(`🔑 [Leader-Election] PID ${process.pid} is indexing leader at startup`);
         } else {
@@ -944,25 +944,37 @@ export const QDRANT_INDEX_BATCH_SIZE = 5;
 /**
  * #2352: Leader-election for Qdrant indexing.
  * Only one MCP instance per machine runs embeddings at a time.
- * Lock is a file in the skeletons directory containing { pid, timestamp }.
+ * Lock is a machine-local file under os.tmpdir() (keyed by machineId) containing { pid, timestamp }.
  * Stale after LEADER_LOCK_STALE_MS — allows takeover if leader process crashes.
  */
-const LEADER_LOCK_FILENAME = '.indexer-leader.lock';
 const LEADER_LOCK_STALE_MS = 15 * 60 * 1000; // 15 min (3× the 5-min indexing interval)
 
-async function getLeaderLockPath(): Promise<string | null> {
-    const locations = await RooStorageDetector.detectStorageLocations();
-    if (locations.length === 0) return null;
-    return path.join(locations[0], 'tasks', '.skeletons', LEADER_LOCK_FILENAME);
+/**
+ * #2352: Returns the MACHINE-LOCAL leader-lock path for Qdrant indexing.
+ *
+ * Fix (fleet consensus 2026-06-17, ai-01 sign-off): keyed on `machineId` under
+ * `os.tmpdir()`, NOT on `RooStorageDetector.detectStorageLocations()[0]`. The old
+ * per-storage-path keying meant every MCP host that detected a DIFFERENT storage
+ * location (Roo globalStorage vs Zoo globalStorage, or different client builds)
+ * elected itself leader of its own lock file → N concurrent indexers on the ONE
+ * shared `roo_tasks_semantic_index` collection → Qdrant congestion collapse.
+ * `os.tmpdir()` is machine-local and never GDrive-synced (unlike ROOSYNC_SHARED_PATH,
+ * which would replicate the lock cross-machine and re-split leaders) → all hosts on a
+ * machine compete for a SINGLE lock regardless of detected storage → exactly one
+ * indexing leader per machine (with ROO_FLEET_ROSTER partitioning = one leader per
+ * ~1/6 shard fleet-wide, the #2352 intent).
+ */
+export async function getLeaderLockPath(machineId: string): Promise<string> {
+    const safeId = (machineId || 'local').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+    return path.join(os.tmpdir(), `roosync-indexer-leader-${safeId}.lock`);
 }
 
 /**
  * Try to acquire or renew the leader lock. Non-blocking (single attempt).
  * Returns true if this process is the leader.
  */
-async function tryAcquireLeaderLock(): Promise<boolean> {
-    const lockPath = await getLeaderLockPath();
-    if (!lockPath) return true; // No storage → single-instance, assume leader
+async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
+    const lockPath = await getLeaderLockPath(machineId);
 
     const lockData = { pid: process.pid, timestamp: Date.now() };
 
@@ -1037,7 +1049,7 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         // #2352: Leader-election — only the leader does indexing
         if (!state.isIndexLeader) {
             // Try to become leader (non-blocking)
-            const won = await tryAcquireLeaderLock();
+            const won = await tryAcquireLeaderLock(state.machineId);
             if (won) {
                 state.isIndexLeader = true;
                 console.log(`🔑 [Leader-Election] PID ${process.pid} became indexing leader`);
@@ -1046,7 +1058,7 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             }
         } else {
             // Already leader — renew lock
-            const renewed = await tryAcquireLeaderLock();
+            const renewed = await tryAcquireLeaderLock(state.machineId);
             if (!renewed) {
                 state.isIndexLeader = false;
                 console.warn(`⚠️ [Leader-Election] PID ${process.pid} lost leadership (lock stolen). Stepping down.`);

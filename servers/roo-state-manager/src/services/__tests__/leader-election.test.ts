@@ -10,6 +10,10 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
+import path from 'path';
+import * as os from 'os';
+import { getLeaderLockPath } from '../background-services.js';
+import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 
 // Mock fs
 vi.mock('fs', async () => {
@@ -24,8 +28,10 @@ vi.mock('fs', async () => {
   };
 });
 
-// Mock RooStorageDetector to return a deterministic path
-const MOCK_STORAGE_PATH = '/mock/storage';
+// Mock RooStorageDetector to return a deterministic path.
+// vi.hoisted() makes MOCK_STORAGE_PATH available to the hoisted vi.mock factory
+// (vi.mock is hoisted above top-level const initialization).
+const { MOCK_STORAGE_PATH } = vi.hoisted(() => ({ MOCK_STORAGE_PATH: '/mock/storage' }));
 vi.mock('../../utils/roo-storage-detector.js', () => ({
   RooStorageDetector: {
     detectStorageLocations: vi.fn().mockResolvedValue([MOCK_STORAGE_PATH]),
@@ -192,5 +198,53 @@ describe('Leader-election (#2352)', () => {
     expect(writtenData.pid).toBe(process.pid);
     expect(writtenData.timestamp).toBeGreaterThanOrEqual(before);
     expect(writtenData.timestamp).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+// --- #2352 fix regression: path-resolution contract (production code, not a copy) ---
+// The describe above tests the lock CONTENTION algorithm via a local reimplementation
+// (path-agnostic). These tests exercise the REAL getLeaderLockPath export to prove the
+// fleet-storm fix: the lock path is machine-local and INVARIANT to detected storage.
+describe('getLeaderLockPath — #2352 machine-local keying (regression)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns a path under os.tmpdir() (machine-local, not a storage path)', async () => {
+    const p = await getLeaderLockPath('myia-po-2026');
+    expect(p.startsWith(os.tmpdir())).toBe(true);
+    expect(p.endsWith('roosync-indexer-leader-myia-po-2026.lock')).toBe(true);
+  });
+
+  it('is INVARIANT to detected storage locations (the exact #2352 bug)', async () => {
+    // Pre-fix: path = locations[0]/tasks/.skeletons/.indexer-leader.lock → different
+    // storages = different locks = N concurrent leaders on the shared collection.
+    // Post-fix: storage detection must NOT affect the path at all.
+    (RooStorageDetector.detectStorageLocations as any).mockResolvedValue(['/roo/globalStorage']);
+    const p1 = await getLeaderLockPath('myia-po-2026');
+    (RooStorageDetector.detectStorageLocations as any).mockResolvedValue(['/roo/globalStorage', '/zoo/globalStorage']);
+    const p2 = await getLeaderLockPath('myia-po-2026');
+    (RooStorageDetector.detectStorageLocations as any).mockResolvedValue([]); // zero storage locations
+    const p3 = await getLeaderLockPath('myia-po-2026');
+    expect(p1).toBe(p2);
+    expect(p2).toBe(p3);
+  });
+
+  it('gives each machine its own lock (machineId-keyed)', async () => {
+    const a = await getLeaderLockPath('myia-ai-01');
+    const b = await getLeaderLockPath('myia-po-2026');
+    expect(a).not.toBe(b);
+    expect(a.endsWith('roosync-indexer-leader-myia-ai-01.lock')).toBe(true);
+    expect(b.endsWith('roosync-indexer-leader-myia-po-2026.lock')).toBe(true);
+  });
+
+  it('sanitizes unsafe machineId chars for filesystem safety', async () => {
+    const p = await getLeaderLockPath('My_Bad Machine/01');
+    expect(p.endsWith('roosync-indexer-leader-my-bad-machine-01.lock')).toBe(true);
+  });
+
+  it('falls back to "local" when machineId is empty', async () => {
+    const p = await getLeaderLockPath('');
+    expect(p.endsWith('roosync-indexer-leader-local.lock')).toBe(true);
   });
 });
