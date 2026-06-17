@@ -6,7 +6,16 @@
  * @module tools/indexing/__tests__/roosync-indexing.tool
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Mutable shared-state path so trend_report tests can point at a temp dir.
+// vi.mock is hoisted, so the factory must reference this hoisted holder.
+const { sharedStatePathHolder } = vi.hoisted(() => ({
+	sharedStatePathHolder: { value: '' as string },
+}));
 
 const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHandler,
 	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
@@ -24,6 +33,12 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockFsReadDir: vi.fn(),
 	mockFsReadFile: vi.fn(),
 	mockFsStat: vi.fn()
+}));
+
+// Default mock for shared-state-path — returns '' unless a test sets the holder.
+vi.mock('../../../utils/shared-state-path.js', () => ({
+	getSharedStatePath: () => sharedStatePathHolder.value,
+	tryGetSharedStatePath: () => sharedStatePathHolder.value,
 }));
 
 vi.mock('../../../services/task-archiver/index.js', () => ({
@@ -392,3 +407,100 @@ describe('roosync_indexing status action', () => {
 		expect(parsed.background_indexer.queue_size).toBe(1);
 	});
 });
+
+// ============================================================
+// trend_report action — #2623 schema-drift robustness
+// Older snapshots lack a `.tools` array; trend_report must not crash.
+// ============================================================
+
+describe('roosync_indexing trend_report action', () => {
+	const cache = new Map();
+	const ensureFresh = vi.fn().mockResolvedValue(true);
+	const saveSkeleton = vi.fn();
+	const setEnabled = vi.fn();
+	const mockRebuildHandler = vi.fn();
+
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-trend-'));
+		sharedStatePathHolder.value = tmpDir;
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+		sharedStatePathHolder.value = '';
+	});
+
+	test('does not crash when previous snapshot has no .tools array (schema drift)', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Old-shape snapshot: no `.tools`, no `.weekly_trend` (pre per-tool breakdown).
+		const oldShape = {
+			action: 'tool_usage_stats', method: 'jsonl_scan',
+			date_range: { start: '2026-05-19', end: '2026-06-04', weeks: 2 },
+			files_scanned: 150, total_tool_calls: 25499, unique_tools: 38,
+			summary: '25499 calls across 38 tools',
+		};
+		// New-shape snapshot: has `.tools` + `.weekly_trend`.
+		const newShape = {
+			action: 'tool_usage_stats', method: 'jsonl_scan',
+			date_range: { start: '2026-05-19', end: '2026-06-17', weeks: 5 },
+			files_scanned: 194, total_tool_calls: 45181, unique_tools: 55,
+			tools: [
+				{ tool_name: 'Bash', calls: 15314, errors: 1042, error_rate: 6.8, retries: 11430, retry_rate: 74.6, downstream_actions: 9214, downstream_action_rate: 60.2 },
+				{ tool_name: 'Read', calls: 2808, errors: 44, error_rate: 1.6, retries: 874, retry_rate: 31.1, downstream_actions: 1836, downstream_action_rate: 65.4 },
+			],
+			weekly_trend: [],
+			summary: '45181 calls across 55 tools',
+		};
+		fs.writeFileSync(path.join(snapshotsDir, 'myia-po-2026-2026-06-04.json'), JSON.stringify(oldShape));
+		fs.writeFileSync(path.join(snapshotsDir, 'myia-po-2026-2026-06-17.json'), JSON.stringify(newShape));
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		// Pre-#2623 this crashed with "Cannot read properties of undefined (reading 'map')".
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+		// Summary comparison still works (total_tool_calls present on both).
+		expect(text).toContain('| Total calls | 25499 | 45181');
+		// Schema-drift note surfaced.
+		expect(text).toContain('older schema');
+		// Latest per-tool table still rendered (baseline-only fallback).
+		expect(text).toContain('Bash');
+		expect(text).toContain('15314');
+	});
+
+	test('renders full per-tool trend when both snapshots have .tools', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		const prev = {
+			action: 'tool_usage_stats', total_tool_calls: 1000, unique_tools: 10, files_scanned: 50,
+			tools: [{ tool_name: 'Bash', calls: 500, errors: 10, error_rate: 2.0, retries: 50, retry_rate: 10.0, downstream_actions: 300, downstream_action_rate: 60.0 }],
+		};
+		const curr = {
+			action: 'tool_usage_stats', total_tool_calls: 2000, unique_tools: 12, files_scanned: 80,
+			tools: [{ tool_name: 'Bash', calls: 900, errors: 90, error_rate: 10.0, retries: 600, retry_rate: 66.7, downstream_actions: 600, downstream_action_rate: 66.7 }],
+		};
+		fs.writeFileSync(path.join(snapshotsDir, 'm-2026-06-10.json'), JSON.stringify(prev));
+		fs.writeFileSync(path.join(snapshotsDir, 'm-2026-06-17.json'), JSON.stringify(curr));
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+		// Files-scanned row present (both have it).
+		expect(text).toContain('| Files scanned | 50 | 80');
+		// No schema-drift note.
+		expect(text).not.toContain('older schema');
+	});
+});
+

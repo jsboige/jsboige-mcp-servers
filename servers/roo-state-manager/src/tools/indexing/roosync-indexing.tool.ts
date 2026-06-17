@@ -1193,6 +1193,9 @@ export async function handleRooSyncIndexing(
 
                 const latest = snapshots[snapshots.length - 1];
                 const previous = snapshots.length > 1 ? snapshots[snapshots.length - 2] : null;
+                // #2623: older snapshots (pre per-tool shape) may lack `.tools`/`.weekly_trend`/`.files_scanned`.
+                // Defend against schema drift instead of crashing on undefined.map().
+                const previousHasTools = !!(previous && Array.isArray(previous.tools));
 
                 // Build trend report as markdown
                 const lines: string[] = [];
@@ -1213,7 +1216,14 @@ export async function handleRooSyncIndexing(
                     lines.push(`|--------|----------|--------|--------|`);
                     lines.push(`| Total calls | ${previous.total_tool_calls} | ${latest.total_tool_calls} | ${arrow(callsDiff)} |`);
                     lines.push(`| Unique tools | ${previous.unique_tools} | ${latest.unique_tools} | ${arrow(toolsDiff)} |`);
-                    lines.push(`| Files scanned | ${previous.files_scanned} | ${latest.files_scanned} | ${arrow(latest.files_scanned - previous.files_scanned)} |`);
+                    // #2623: files_scanned may be absent on older snapshots — show only when both present.
+                    if (typeof previous.files_scanned === 'number' && typeof latest.files_scanned === 'number') {
+                        lines.push(`| Files scanned | ${previous.files_scanned} | ${latest.files_scanned} | ${arrow(latest.files_scanned - previous.files_scanned)} |`);
+                    }
+                    if (!previousHasTools) {
+                        lines.push(``);
+                        lines.push(`> Note: previous snapshot has no per-tool breakdown (older schema). Per-tool trend shows latest only.`);
+                    }
                 } else {
                     lines.push(`Baseline snapshot only — no comparison available yet.`);
                     lines.push(`- Total calls: ${latest.total_tool_calls}`);
@@ -1222,10 +1232,10 @@ export async function handleRooSyncIndexing(
                 }
                 lines.push(``);
 
-                // Per-tool trend (top 20)
+                // Per-tool trend (top 20) — requires both snapshots to have a `.tools` array (#2623 schema drift guard).
                 lines.push(`## Per-Tool Trend (Top 20)`);
                 lines.push(``);
-                if (previous) {
+                if (previousHasTools) {
                     const prevMap: Map<string, any> = new Map(previous.tools.map((t: any) => [t.tool_name, t]));
                     const rows = latest.tools.slice(0, 20).map((t: any) => {
                         const p: any = prevMap.get(t.tool_name);
