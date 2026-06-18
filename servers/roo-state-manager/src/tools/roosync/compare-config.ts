@@ -237,7 +237,8 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
 
     // Settings comparison: uses RooSettingsService + GDrive published settings
     if (args.granularity === 'settings') {
-      return await compareSettings(sourceMachineId, targetMachineId, service, args.filter);
+      const settingsResult = await compareSettings(sourceMachineId, targetMachineId, service, args.filter);
+      return withRosterCheck(settingsResult, config, service);
     }
 
     // Si granularity est fourni, utiliser GranularDiffDetector
@@ -370,7 +371,11 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       }
 
       // Convertir au format CompareConfigResult (avec comparaison model profiles #498)
-      return formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, args.granularity, sourceInventory, targetInventory);
+      return withRosterCheck(
+        formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, args.granularity, sourceInventory, targetInventory),
+        config,
+        service
+      );
     }
 
     // Comparaison standard (sans granularité)
@@ -388,7 +393,7 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
     }
 
     // Formatter le rapport pour l'affichage
-    return formatComparisonReport(report, 'full');
+    return withRosterCheck(formatComparisonReport(report, 'full'), config, service);
     
   } catch (error) {
     if (error instanceof RooSyncServiceError) {
@@ -772,6 +777,147 @@ function formatGranularReport(
     differences: allDifferences,
     summary
   };
+}
+
+/**
+ * Merge les diffs de cohérence roster (#2570) dans un CompareConfigResult déjà construit,
+ * puis recalcule le summary. Garde les formatters synchrones — l'appelant (async) await ce helper.
+ */
+async function withRosterCheck(
+  result: CompareConfigResult,
+  config: any,
+  service: any
+): Promise<CompareConfigResult> {
+  try {
+    const rosterDiffs = await checkRosterConsistency(config, service);
+    if (rosterDiffs.length === 0) return result;
+
+    // Éviter le doublon si un diff roster existe déjà (path env.ROO_FLEET_ROSTER)
+    const existingPaths = new Set(result.differences.map(d => d.path));
+    const newDiffs = rosterDiffs.filter(d => !existingPaths.has(d.path));
+
+    const allDifferences = [...result.differences, ...newDiffs];
+    return {
+      ...result,
+      differences: allDifferences,
+      summary: {
+        total: allDifferences.length,
+        critical: allDifferences.filter(d => d.severity === 'CRITICAL').length,
+        important: allDifferences.filter(d => d.severity === 'IMPORTANT').length,
+        warning: allDifferences.filter(d => d.severity === 'WARNING').length,
+        info: allDifferences.filter(d => d.severity === 'INFO').length
+      }
+    };
+  } catch {
+    // Le check roster ne doit JAMAIS casser compare_config — c'est un diagnostic additionnel
+    return result;
+  }
+}
+
+/**
+ * Check la cohérence du ROO_FLEET_ROSTER local contre les machines connues du dashboard (#2570).
+ *
+ * Le roster (env var) drive le hash-based task-space partitioning (task-partition.ts).
+ * Il n'a aucune source-of-truth dans le repo ni dans les inventory snapshots GDrive,
+ * donc le drift entre machines passe silencieusement (certaines 5-machine, d'autres unset).
+ * Le dashboard partagé est la seule source canonique des machines vivantes de la flotte.
+ *
+ * @param config Config RooSync (contient fleetRoster parsé + machineId)
+ * @param service RooSyncService (pour loadDashboard)
+ * @returns Diff(s) si le roster local diverge des machines du dashboard, [] sinon
+ */
+async function checkRosterConsistency(
+  config: any,
+  service: any
+): Promise<Array<{
+  category: string;
+  severity: string;
+  path: string;
+  description: string;
+  action?: string;
+}>> {
+  const diffs: Array<{
+    category: string;
+    severity: string;
+    path: string;
+    description: string;
+    action?: string;
+  }> = [];
+
+  const localRoster: string[] | null = config?.fleetRoster ?? null;
+
+  // Charger les machines connues du dashboard (source canonique flotte)
+  let dashboardMachines: string[] = [];
+  try {
+    const dashboard = await service.loadDashboard();
+    dashboardMachines = Object.keys(dashboard.machines || {}).sort();
+  } catch {
+    // Dashboard injoignable (GDrive offline) — on ne peut pas comparer, skip silencieux
+    return diffs;
+  }
+
+  if (dashboardMachines.length === 0) {
+    return diffs; // Pas de machines de référence → rien à comparer
+  }
+
+  const dashSet = new Set(dashboardMachines);
+
+  if (!localRoster) {
+    // Roster unset → partitioning DISABLED (cette machine indexe tout l'espace)
+    diffs.push({
+      category: 'environment',
+      severity: 'WARNING',
+      path: 'env.ROO_FLEET_ROSTER',
+      description: `ROO_FLEET_ROSTER non défini — partitioning DÉSACTIVÉ. Cette machine indexe la totalité du task-space (pas de shard filtering), tandis que le dashboard voit ${dashboardMachines.length} machines (${dashboardMachines.join(', ')}). Contributeur de redondance d'indexation silencieuse (#2570).`,
+      action: `Définir ROO_FLEET_ROSTER="${dashboardMachines.join(',')}" dans ~/.claude.json mcpServers.roo-state-manager.env, puis restart MCP + roosync_indexing(rebuild)`
+    });
+    return diffs;
+  }
+
+  const rosterSet = new Set(localRoster);
+  const rosterSorted = [...localRoster].sort();
+
+  // Mismatch de taille (5 vs 6 décale ~tous les buckets — hash % size)
+  if (rosterSorted.length !== dashboardMachines.length) {
+    const missingFromRoster = dashboardMachines.filter(m => !rosterSet.has(m));
+    const extraInRoster = rosterSorted.filter(m => !dashSet.has(m));
+    const detail: string[] = [`roster=${rosterSorted.length} (${rosterSorted.join(', ')})`, `dashboard=${dashboardMachines.length} (${dashboardMachines.join(', ')})`];
+    if (missingFromRoster.length) detail.push(`manquantes du roster: ${missingFromRoster.join(', ')}`);
+    if (extraInRoster.length) detail.push(`absentes du dashboard: ${extraInRoster.join(', ')}`);
+    diffs.push({
+      category: 'environment',
+      severity: 'CRITICAL',
+      path: 'env.ROO_FLEET_ROSTER',
+      description: `Mismatch taille ROO_FLEET_ROSTER — partition drift. ${detail.join(' | ')}. Un écart de taille (hash % roster.length) décale ~TOUS les buckets, pas seulement le shard de la machine manquante → recall/precision dégradés silencieusement (#2570).`,
+      action: `Aligner sur le roster canonique "${dashboardMachines.join(',')}" sur TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts)`
+    });
+    return diffs;
+  }
+
+  // Même taille mais contenu diffère
+  const sameContent = rosterSorted.every((m, i) => m === dashboardMachines[i]);
+  if (!sameContent) {
+    const missingFromRoster = dashboardMachines.filter(m => !rosterSet.has(m));
+    const extraInRoster = rosterSorted.filter(m => !dashSet.has(m));
+    diffs.push({
+      category: 'environment',
+      severity: 'CRITICAL',
+      path: 'env.ROO_FLEET_ROSTER',
+      description: `Mismatch contenu ROO_FLEET_ROSTER (même taille, membres différents). roster=${rosterSorted.join(', ')} vs dashboard=${dashboardMachines.join(', ')}. Manquantes du roster: ${missingFromRoster.join(',') || 'none'}. Absentes du dashboard: ${extraInRoster.join(',') || 'none'}. → partition drift (#2570).`,
+      action: `Aligner sur le roster canonique "${dashboardMachines.join(',')}"`
+    });
+    return diffs;
+  }
+
+  // Roster consistant — signal positif INFO (utile pour l'audit flotte)
+  diffs.push({
+    category: 'environment',
+    severity: 'INFO',
+    path: 'env.ROO_FLEET_ROSTER',
+    description: `ROO_FLEET_ROSTER consistant avec le dashboard flotte (${rosterSorted.length} machines: ${rosterSorted.join(', ')}). Partitioning sain.`
+  });
+
+  return diffs;
 }
 
 /**

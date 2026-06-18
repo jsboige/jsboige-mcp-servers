@@ -656,4 +656,95 @@ describe('compare-config', () => {
 			expect(result.summary.critical).toBe(1);
 		});
 	});
+
+	// ============================================================
+	// #2570 — ROO_FLEET_ROSTER consistency check
+	// ============================================================
+	describe('roosyncCompareConfig — fleet roster consistency (#2570)', () => {
+		const FLEET_6 = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
+		const FLEET_5_MISSING_2024 = ['myia-ai-01', 'myia-po-2023', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
+
+		function mockDashboard6() {
+			const machines: Record<string, { status: string }> = {};
+			for (const m of FLEET_6) machines[m] = { status: 'online' };
+			mockLoadDashboard.mockResolvedValue({ machines });
+		}
+
+		test('WARNING when ROO_FLEET_ROSTER unset (partitioning disabled)', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2024', sharedPath: '/shared', fleetRoster: null });
+			mockDashboard6();
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-po-2024', targetMachine: 'myia-ai-01', hostId: 'myia-po-2024', differences: []
+			});
+
+			const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+
+			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+			expect(rosterDiff).toBeDefined();
+			expect(rosterDiff!.severity).toBe('WARNING');
+			expect(rosterDiff!.description).toContain('partitioning DÉSACTIVÉ');
+		});
+
+		test('CRITICAL when roster size mismatches dashboard (5 vs 6 → partition drift)', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2026', sharedPath: '/shared', fleetRoster: FLEET_5_MISSING_2024 });
+			mockDashboard6();
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-po-2026', targetMachine: 'myia-ai-01', hostId: 'myia-po-2026', differences: []
+			});
+
+			const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+
+			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+			expect(rosterDiff).toBeDefined();
+			expect(rosterDiff!.severity).toBe('CRITICAL');
+			expect(rosterDiff!.description).toContain('Mismatch taille');
+			expect(rosterDiff!.description).toContain('myia-po-2024');
+		});
+
+		test('CRITICAL when roster content differs from dashboard (same size, different members)', async () => {
+			// Same size 6 but one member swapped
+			const swapped = [...FLEET_6];
+			swapped[swapped.indexOf('myia-po-2024')] = 'myia-phantom';
+			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2024', sharedPath: '/shared', fleetRoster: swapped });
+			mockDashboard6();
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-po-2024', targetMachine: 'myia-ai-01', hostId: 'myia-po-2024', differences: []
+			});
+
+			const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+
+			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+			expect(rosterDiff).toBeDefined();
+			expect(rosterDiff!.severity).toBe('CRITICAL');
+			expect(rosterDiff!.description).toContain('Mismatch contenu');
+		});
+
+		test('INFO when roster consistent with dashboard (6/6 canonical)', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2024', sharedPath: '/shared', fleetRoster: FLEET_6 });
+			mockDashboard6();
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-po-2024', targetMachine: 'myia-ai-01', hostId: 'myia-po-2024', differences: []
+			});
+
+			const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+
+			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+			expect(rosterDiff).toBeDefined();
+			expect(rosterDiff!.severity).toBe('INFO');
+			expect(rosterDiff!.description).toContain('consistant');
+		});
+
+		test('no roster diff when dashboard load fails (never breaks compare_config)', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2024', sharedPath: '/shared', fleetRoster: null });
+			mockLoadDashboard.mockRejectedValue(new Error('GDrive offline'));
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-po-2024', targetMachine: 'myia-ai-01', hostId: 'myia-po-2024', differences: []
+			});
+
+			const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+
+			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+			expect(rosterDiff).toBeUndefined(); // check silently skipped, compare_config still returns
+		});
+	});
 });
