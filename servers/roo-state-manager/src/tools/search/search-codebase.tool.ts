@@ -13,6 +13,29 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
+import { existsSync } from 'fs';
+import { isAbsolute, join } from 'path';
+
+/**
+ * #2609/#2554 (rename-GC gap): the Roo/Zoo Code indexer (reference-only submodule
+ * roo-code) lacks reliable garbage-collection of vectors whose source file was
+ * renamed/moved/deleted. Surviving orphans make codebase_search return dead paths
+ * (e.g. docs archived via `git mv`). Since the MCP only reads the ws-* collections,
+ * we post-filter hits whose resolved filePath no longer exists on disk.
+ *
+ * Returns true if the file is reachable (keep the hit), false if it is a dead path
+ * (filter out). Resolves relative payloads against the workspace root; absolute
+ * payloads are checked as-is.
+ */
+function isFilePathReachable(filePath: string, workspaceRoot: string): boolean {
+	try {
+		const resolved = isAbsolute(filePath) ? filePath : join(workspaceRoot, filePath);
+		return existsSync(resolved);
+	} catch {
+		// On any FS error, be permissive (don't nuke legitimate hits on edge cases).
+		return true;
+	}
+}
 
 /**
  * Génère le nom de collection Qdrant pour un workspace (même convention que Roo)
@@ -407,19 +430,43 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		});
 
 		// 6. Formater les résultats
-		const results = searchResults.points
-			.filter((p: any) => p.payload?.filePath && p.payload?.codeChunk)
-			.map((point: any) => ({
-				file_path: point.payload.filePath,
-				score: point.score,
-				relevance: interpretScore(point.score),
-				snippet: extractSnippet(point.payload.codeChunk || '', query),
-				start_line: point.payload.startLine,
-				end_line: point.payload.endLine,
-				lines: point.payload.startLine && point.payload.endLine
-					? `${point.payload.startLine}-${point.payload.endLine}`
-					: undefined
-			}));
+		// #2609/#2554: post-filter dead paths (orphans from rename/delete that the
+		// roo-code indexer failed to GC). Filter only AFTER building the full candidate
+		// list so we can detect the degenerate case where every hit is dead (e.g. wrong
+		// workspace root, unmounted drive) and avoid silently returning 0 results.
+		const rawHits: any[] = (searchResults.points || [])
+			.filter((p: any) => p.payload?.filePath && p.payload?.codeChunk);
+
+		const liveHits: any[] = [];
+		let deadPathsFiltered = 0;
+		for (const point of rawHits) {
+			if (isFilePathReachable(point.payload.filePath, workspace)) {
+				liveHits.push(point);
+			} else {
+				deadPathsFiltered++;
+			}
+		}
+
+		// Safety: if filtering killed ALL hits, the workspace root is likely wrong or
+		// the drive is unmounted — return the raw hits with a warning instead of an
+		// empty list, so the caller gets a signal rather than a silent zero.
+		const allDead = rawHits.length > 0 && liveHits.length === 0;
+		const finalHits = allDead ? rawHits : liveHits;
+		if (allDead) {
+			deadPathsFiltered = 0; // rawHits returned as-is, nothing actually filtered out
+		}
+
+		const results = finalHits.map((point: any) => ({
+			file_path: point.payload.filePath,
+			score: point.score,
+			relevance: interpretScore(point.score),
+			snippet: extractSnippet(point.payload.codeChunk || '', query),
+			start_line: point.payload.startLine,
+			end_line: point.payload.endLine,
+			lines: point.payload.startLine && point.payload.endLine
+				? `${point.payload.startLine}-${point.payload.endLine}`
+				: undefined
+		}));
 
 		// 7. Construire la réponse
 		const response = {
@@ -430,6 +477,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			collection: collectionName,
 			results_count: results.length,
 			min_score_used: effectiveMinScore,
+			// #2609/#2554: dead-path filtering observability
+			...(deadPathsFiltered > 0 ? { dead_paths_filtered: deadPathsFiltered } : {}),
+			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			results: results
 		};
 
