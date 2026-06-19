@@ -468,6 +468,15 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				: undefined
 		}));
 
+		// #2609/#2554: warn when the dead-path filter shrank recall below the requested
+		// limit in the PARTIAL case (some hits live, some dead). Without this, a caller
+		// asking for `limit: 5` could silently receive 3 results with no signal that 2
+		// candidates were unreachable orphan vectors. Mutually exclusive with the allDead
+		// warning (allDead resets deadPathsFiltered to 0, so this guard never fires then).
+		const recallShrankBelowLimit = !allDead
+			&& deadPathsFiltered > 0
+			&& results.length < effectiveLimit;
+
 		// 7. Construire la réponse
 		const response = {
 			status: 'success',
@@ -480,6 +489,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// #2609/#2554: dead-path filtering observability
 			...(deadPathsFiltered > 0 ? { dead_paths_filtered: deadPathsFiltered } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
+			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results
 		};
 

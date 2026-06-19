@@ -416,7 +416,10 @@ describe('search-codebase.tool', () => {
 			});
 
 			test('filters out hits whose filePath no longer exists on disk', async () => {
-				// Simulate a renamed/archived doc: live hit + dead orphan (old path)
+				// Simulate a renamed/archived doc: live hit + dead orphan (old path).
+				// limit: 2 with 1 live + 1 dead → results_count=1 < limit=2 → the dead-path
+				// filter shrank recall below the requested limit, so a partial-shrink warning
+				// MUST be emitted (otherwise the caller gets no signal that recall was reduced).
 				mockExistsSync.mockImplementation((p: string) =>
 					String(p).endsWith('live-doc.ts')
 				);
@@ -427,10 +430,32 @@ describe('search-codebase.tool', () => {
 					]
 				});
 
-				const result = await handleCodebaseSearch({ query: 'doc', workspace: '/ws' });
+				const result = await handleCodebaseSearch({ query: 'doc', workspace: '/ws', limit: 2 });
 				const parsed = JSON.parse(result.content[0].text);
 				expect(parsed.results_count).toBe(1);
 				expect(parsed.results[0].file_path).toBe('src/live-doc.ts');
+				expect(parsed.dead_paths_filtered).toBe(1);
+				expect(parsed.warning).toMatch(/dead-path filter reduced recall/);
+			});
+
+			test('does NOT warn when dead paths exist but recall did not shrink below limit', async () => {
+				// Distinguishing test (anti-faux-positif): limit: 1 with 1 live + 1 dead →
+				// results_count=1 === limit=1 → recall was NOT shrunk below the limit, so no
+				// warning must be emitted. Proves the warning is gated on the recall shrink,
+				// not on the mere presence of dead paths.
+				mockExistsSync.mockImplementation((p: string) =>
+					String(p).endsWith('live-doc.ts')
+				);
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.82, payload: { filePath: 'src/live-doc.ts', codeChunk: 'live code', startLine: 1, endLine: 5 } },
+						{ score: 0.78, payload: { filePath: 'docs/archive/dead-doc.ts', codeChunk: 'orphan', startLine: 1, endLine: 2 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'doc', workspace: '/ws', limit: 1 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results_count).toBe(1);
 				expect(parsed.dead_paths_filtered).toBe(1);
 				expect(parsed.warning).toBeUndefined();
 			});
