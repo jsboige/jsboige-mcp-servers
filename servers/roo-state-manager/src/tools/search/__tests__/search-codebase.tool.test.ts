@@ -7,18 +7,21 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync } = vi.hoisted(() => ({
+const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync, mockReaddirSync } = vi.hoisted(() => ({
 	mockGetQdrantClient: vi.fn(),
-	mockQdrant: { getCollection: vi.fn(), query: vi.fn(), getCollections: vi.fn() },
+	mockQdrant: { getCollection: vi.fn(), query: vi.fn(), getCollections: vi.fn(), scroll: vi.fn() },
 	mockEmbeddingCreate: vi.fn(),
 	// #2609/#2554: mock existsSync so dead-path filtering is deterministic.
 	// Default true = all files reachable (preserves existing test expectations).
-	mockExistsSync: vi.fn(() => true)
+	mockExistsSync: vi.fn(() => true),
+	// #2609/#2554 L1: mock readdirSync so content-based collection matching is deterministic.
+	// Default: empty array = no workspace dirs = content-match skipped. Individual tests override.
+	mockReaddirSync: vi.fn(() => [])
 }));
 
 vi.mock('fs', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('fs')>();
-	return { ...actual, existsSync: mockExistsSync };
+	return { ...actual, existsSync: mockExistsSync, readdirSync: mockReaddirSync };
 });
 
 vi.mock('../../../services/qdrant.js', () => ({
@@ -467,6 +470,191 @@ describe('search-codebase.tool', () => {
 				await handleCodebaseSearch({ query: 'foo', workspace: '/my/ws' });
 				// The joined path must contain both the workspace root and the relative filePath.
 				expect(seen.some((p) => p.includes('my') && p.includes('foo.ts'))).toBe(true);
+			});
+		});
+
+		// ============================================================
+		// #2609/#2554 L1 — content-based collection matching (hash-mismatch fallback)
+		// Root cause: the workspace path hash is fragile cross-agent; when no hash variant
+		// matches, the right ws-* collection is identified by its indexed top-level dirs vs
+		// the workspace's actual directory structure on disk.
+		// ============================================================
+
+		describe('handleCodebaseSearch - content-based collection matching (#2609/#2554 L1)', () => {
+			beforeEach(() => {
+				process.env.EMBEDDING_API_KEY = 'test-key';
+				mockEmbeddingCreate.mockResolvedValue({
+					data: [{ embedding: new Array(8).fill(0.1) }]
+				});
+			});
+
+			afterEach(() => {
+				delete process.env.EMBEDDING_API_KEY;
+			});
+
+			test('hash miss + strict content-match found → serves results with collection_resolved_by=content-match', async () => {
+				// Workspace signature: real dirs on disk, incl. discriminant 'roo-code' + 'mcps'.
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'roo-config', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true },
+					{ name: 'a-file.txt', isDirectory: () => false }
+				]);
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-contentmatched' }, { name: 'ws-unrelated' }]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-contentmatched') return { points_count: 9000, status: 'green' };
+					if (name === 'ws-unrelated') return { points_count: 100, status: 'green' };
+					throw new Error('not found');
+				});
+				mockQdrant.scroll.mockImplementation(async (name: string) => {
+					if (name === 'ws-contentmatched') {
+						// A real collection indexes many top-level dirs. Signature should overlap
+						// strongly with the workspace dirs (roo-code, mcps, roo-config, docs).
+						return { points: [
+							{ payload: { pathSegments: { '0': 'mcps' } } },
+							{ payload: { pathSegments: { '0': 'roo-code' } } },
+							{ payload: { pathSegments: { '0': 'roo-config' } } },
+							{ payload: { pathSegments: { '0': 'docs' } } },
+							{ payload: { pathSegments: { '0': 'mcps' } } }
+						] };
+					}
+					return { points: Array.from({ length: 5 }, () => ({
+						payload: { pathSegments: { '0': 'src', '1': 'lib' } }
+					})) };
+				});
+				mockQdrant.query.mockResolvedValue({
+					points: [{
+						score: 0.82,
+						payload: { filePath: 'mcps/internal/foo.ts', codeChunk: 'export const foo = 1', startLine: 1, endLine: 2 }
+					}]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'foo', workspace: '/roo-ext' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-contentmatched');
+				expect(parsed.collection_resolved_by).toBe('content-match');
+				expect(parsed.content_match.jaccard).toBeGreaterThanOrEqual(0.6);
+				expect(parsed.results[0].file_path).toBe('mcps/internal/foo.ts');
+			});
+
+			test('hash miss + 0 strict content-match → honest diagnostic with collection_signatures', async () => {
+				// Workspace dirs all generic → no discriminant possible → strict gate fails.
+				mockReaddirSync.mockReturnValue([
+					{ name: 'src', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true },
+					{ name: 'tests', isDirectory: () => true }
+				]);
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-someone' }]
+				});
+				// Force hash miss: getCollection throws for hash variants, succeeds only for the real candidate.
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-someone') return { points_count: 500, status: 'green' };
+					throw new Error('not found');
+				});
+				mockQdrant.scroll.mockResolvedValue({
+					points: [{ payload: { pathSegments: { '0': 'src' } } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/generic-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('collection_not_found');
+				expect(parsed.content_match_attempted).toBe(true);
+				expect(parsed.collection_signatures).toBeDefined();
+				// Discriminant gate: src/docs/tests all generic → must NOT serve a query.
+				expect(mockQdrant.query).not.toHaveBeenCalled();
+			});
+
+			test('hash miss + readdir fails (workspace unmounted) → skip content-match, no crash', async () => {
+				mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-anything' }]
+				});
+				// Force hash miss: getCollection throws for hash variants, succeeds only for the real candidate.
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-anything') return { points_count: 50, status: 'green' };
+					throw new Error('not found');
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/unmounted' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('collection_not_found');
+				expect(parsed.workspace_signature).toBeNull();
+				expect(mockQdrant.scroll).not.toHaveBeenCalled();
+			});
+
+			test('hash miss + multiple candidates → strict match picks highest Jaccard, rejects low-overlap', async () => {
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true }
+				]);
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-high' }, { name: 'ws-low' }]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-high') return { points_count: 8000, status: 'green' };
+					if (name === 'ws-low') return { points_count: 200, status: 'green' };
+					throw new Error('not found');
+				});
+				mockQdrant.scroll.mockImplementation(async (name: string) => {
+					if (name === 'ws-high') {
+						return { points: [
+							{ payload: { pathSegments: { '0': 'roo-code' } } },
+							{ payload: { pathSegments: { '0': 'mcps' } } }
+						] };
+					}
+					return { points: [{ payload: { pathSegments: { '0': 'docs' } } }] };
+				});
+				mockQdrant.query.mockResolvedValue({
+					points: [{ score: 0.7, payload: { filePath: 'roo-code/x.ts', codeChunk: 'x', startLine: 1, endLine: 1 } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/multi-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-high');
+				expect(parsed.collection_resolved_by).toBe('content-match');
+				expect(parsed.collection).not.toBe('ws-low');
+			});
+
+			test('hash miss + discriminant dir is a minority in the sample → still matches (large-sample hardening)', async () => {
+				// web1 observation: scroll is insertion-ordered; a small biased sample could
+				// hide a discriminant dir. The 200-pt sample + Set union must capture the
+				// discriminant dir even if it appears rarely among the sampled points.
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true }
+				]);
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-biased' }]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-biased') return { points_count: 50000, status: 'green' };
+					throw new Error('not found');
+				});
+				// The sample is heavily dominated by 'docs' (generic) but contains a few
+				// 'mcps' + 'roo-code' (discriminant) points. The signature must include them.
+				const biasedSample = [
+					...Array.from({ length: 40 }, () => ({ payload: { pathSegments: { '0': 'docs' } } })),
+					{ payload: { pathSegments: { '0': 'mcps' } } },
+					{ payload: { pathSegments: { '0': 'roo-code' } } }
+				];
+				mockQdrant.scroll.mockResolvedValue({ points: biasedSample });
+				mockQdrant.query.mockResolvedValue({
+					points: [{ score: 0.75, payload: { filePath: 'roo-code/y.ts', codeChunk: 'y', startLine: 1, endLine: 1 } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'y', workspace: '/biased-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-biased');
+				expect(parsed.collection_resolved_by).toBe('content-match');
 			});
 		});
 	});

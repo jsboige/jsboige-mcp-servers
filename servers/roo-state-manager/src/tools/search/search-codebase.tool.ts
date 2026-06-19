@@ -13,7 +13,7 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { isAbsolute, join } from 'path';
 
 /**
@@ -108,6 +108,147 @@ export async function listWorkspaceCollections(): Promise<string[]> {
 	} catch {
 		return [];
 	}
+}
+
+// ─── Content-based collection matching (L1 fix for #2609/#2554) ───────────────
+// Root cause (convergent po-2023 c.32 + po-2024 c.34, 2026-06-19): the workspace
+// path hash `ws-{sha256(path)[0:16]}` is fundamentally fragile cross-agent — the
+// exact path format the Roo/Zoo indexer hashed is not always reproducible by the
+// MCP (backslash vs forward slash, case, file:// vs raw, resolved vs raw). When no
+// hash variant matches, the MCP served an empty diagnostic even though the code IS
+// indexed (just under a different hash). This content-based fallback identifies the
+// right ws-* collection by matching its top-level pathSegments against the actual
+// directory structure of the workspace on disk — robust where the hash is not.
+
+/** Strict similarity threshold (Jaccard) below which we refuse to serve a content-matched collection. */
+const CONTENT_MATCH_MIN_JACCARD = 0.6;
+/** Generic directory names that are NOT discriminant — excluded from the "discriminant dir" requirement. */
+const GENERIC_DIRS = new Set([
+	'src', 'docs', 'tests', 'test', 'scripts', 'node_modules', '.git', 'config',
+	'examples', 'lib', 'libs', 'build', 'dist', 'out', 'public', 'static', 'resources',
+	'assets', 'data', 'utils', 'tools', 'vendor', '.vscode', '.idea'
+]);
+/** Max ws-* collections scanned by the content fallback (cost cap). */
+const CONTENT_MATCH_MAX_CANDIDATES = 10;
+
+/**
+ * Build the "signature" of a workspace = the set of top-level directory names on disk.
+ * Used to match against a ws-* collection's indexed pathSegments.0.
+ * Best-effort: returns null on any FS error (e.g. workspace not mounted) so the caller
+ * can skip content-matching rather than crash.
+ */
+function getWorkspaceRootSignature(workspaceRoot: string): Set<string> | null {
+	try {
+		const entries = readdirSync(workspaceRoot, { withFileTypes: true });
+		const dirs = new Set<string>();
+		for (const e of entries) {
+			// dirent.isDirectory() excludes files, symlinks-to-files. Symlinked dirs
+			// (e.g. submodule checkouts on some setups) are included if isDirectory().
+			if (e.isDirectory()) dirs.add(e.name);
+		}
+		return dirs;
+	} catch {
+		// Workspace root unreadable / unmounted / ENOENT — skip content-matching.
+		return null;
+	}
+}
+
+/**
+ * Query a ws-* collection for a sample of points and extract the set of
+ * top-level pathSegments.0 observed = the collection's signature.
+ *
+ * Uses Qdrant's `scroll` API (no vector / no embedding needed) to cheaply sample
+ * points — the same approach used in indexing/cleanup-orphans.ts and diagnose-index.
+ * We only request the `pathSegments` payload field, keeping the response tiny.
+ *
+ * Sample size is deliberately larger than minimal (200 vs 50) to mitigate the
+ * insertion-order bias of `scroll`: on a large heterogeneous collection the first
+ * N points may cluster in one sub-directory, under-representing other top-level dirs
+ * and producing a false-negative match. A 200-pt sample captures a much broader
+ * signature. Cost stays negligible (payload-only, and only on the hash-miss path).
+ * If false-negatives still appear in the wild, consider a second scroll from a
+ * hash-derived offset. (Hardening per web1 review observation.)
+ *
+ * Returns the set of pathSegments.0 values, or null if the collection is unreadable.
+ */
+async function getCollectionSignature(qdrant: any, collectionName: string): Promise<Set<string> | null> {
+	try {
+		// Sample 200 points: payload-only (no vector). pathSegments is always present
+		// on indexed points (qdrant-client.ts:315-331). Robust to scroll's response
+		// shape variants (.points or .result.points).
+		const result = await qdrant.scroll(collectionName, {
+			limit: 200,
+			with_payload: { include: ['pathSegments'] },
+			with_vector: false,
+		});
+		const points = result?.points || result?.result?.points || [];
+		const sig = new Set<string>();
+		for (const p of points) {
+			const ps = p?.payload?.pathSegments;
+			if (ps && typeof ps === 'object') {
+				// pathSegments is keyed by index: { "0": "mcps", "1": "internal", ... }
+				const seg0 = ps['0'];
+				if (seg0) sig.add(String(seg0));
+			} else if (p?.payload?.filePath) {
+				// Fallback: derive from filePath (relative path, first segment).
+				const seg0 = String(p.payload.filePath).split(/[\\/]/)[0];
+				if (seg0) sig.add(seg0);
+			}
+		}
+		return sig;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Find the ws-* collection whose indexed top-level directories best match the workspace's
+ * actual directory structure. Content-based fallback when hash resolution fails.
+ *
+ * Returns the best-matching collection if it passes the STRICT threshold (Jaccard ≥ 0.6
+ * AND at least one discriminant / non-generic dir shared), else null. On null the caller
+ * keeps the honest diagnostic — we never serve a low-confidence guess.
+ *
+ * @param qdrant - Qdrant client
+ * @param candidates - ws-* collection names to probe (pre-sorted by points_count desc)
+ * @param workspaceSignature - top-level dirs of the workspace on disk (null = skip)
+ * @returns { name, jaccard } of the best strict match, or null
+ */
+export async function findCollectionByContent(
+	qdrant: any,
+	candidates: string[],
+	workspaceSignature: Set<string> | null
+): Promise<{ name: string; jaccard: number } | null> {
+	if (!workspaceSignature || workspaceSignature.size === 0 || candidates.length === 0) {
+		return null;
+	}
+
+	// Discriminant dirs = workspace dirs minus generic ones. At least one must be shared.
+	const discriminantDirs = new Set([...workspaceSignature].filter(d => !GENERIC_DIRS.has(d)));
+
+	let best: { name: string; jaccard: number } | null = null;
+	const scanned = Math.min(candidates.length, CONTENT_MATCH_MAX_CANDIDATES);
+
+	for (let i = 0; i < scanned; i++) {
+		const name = candidates[i];
+		const collSig = await getCollectionSignature(qdrant, name);
+		if (!collSig || collSig.size === 0) continue;
+
+		// Jaccard similarity between workspace dirs and collection's indexed dirs.
+		const intersection = [...workspaceSignature].filter(d => collSig.has(d)).length;
+		const union = new Set([...workspaceSignature, ...collSig]).size;
+		if (union === 0) continue;
+		const jaccard = intersection / union;
+
+		// STRICT gate (user choice): require both threshold AND a discriminant dir match.
+		const sharedDiscriminant = [...discriminantDirs].some(d => collSig.has(d));
+		if (jaccard >= CONTENT_MATCH_MIN_JACCARD && sharedDiscriminant) {
+			if (!best || jaccard > best.jaccard) {
+				best = { name, jaccard };
+			}
+		}
+	}
+	return best;
 }
 
 /**
@@ -304,6 +445,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// 2. Trouver la collection existante (essayer toutes les variantes)
 		const qdrant = getQdrantClient();
 		let collectionName = '';
+		// Tracks how the collection was resolved — 'hash' (normal) or 'content-match' (L1 fallback).
+		let collectionResolvedBy: 'hash' | 'content-match' = 'hash';
+		let contentMatchDetails: { jaccard: number; jaccard_threshold: number } | undefined;
 
 		for (const variant of collectionVariants) {
 			try {
@@ -318,55 +462,91 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		}
 
 
-		// Phase B: Diagnostic fallback — no blind collection selection (#2455)
-		// #1085: Hash mismatches between Roo (Windows fsPath backslashes) and
-		// Claude Code (Git Bash forward slashes) produce different hashes.
-		// #2455: Previously, Phase B blindly took the first ws-* collection with
-		// points_count > 0, serving results from unrelated workspaces. Now it
-		// returns enriched diagnostic info to help the caller take action.
+		// Phase B: Content-based fallback, then diagnostic (#2609/#2554 L1 fix)
+		// #1085/#2455: Hash mismatches (backslash vs forward slash, case, file:// vs raw)
+		// make the hash resolution miss the real collection even though the code IS indexed.
+		// Convergent root-cause (po-2023 c.32 + po-2024 c.34): the hash is fundamentally
+		// fragile cross-agent. Before returning an empty diagnostic, try matching the right
+		// ws-* collection by CONTENT (its indexed top-level pathSegments vs the workspace's
+		// actual directory structure on disk). If a strict match is found, serve it.
 		if (!collectionName) {
-			// Collect diagnostic info about existing ws-* collections
 			const allWsCollections = await listWorkspaceCollections();
-			const collectionDiagnostics = [];
-			for (const wsCol of allWsCollections.slice(0, 10)) {
+
+			// Pre-sort candidates by points_count desc (heuristic: the indexed workspace is
+			// usually a large collection; also caps cost by probing the biggest first).
+			const ranked: { name: string; points: number }[] = [];
+			for (const wsCol of allWsCollections) {
 				try {
 					const info = await qdrant.getCollection(wsCol);
-					collectionDiagnostics.push({
-						collection: wsCol,
-						points_count: (info as any)?.points_count ?? 0,
-						status: info?.status ?? 'unknown'
-					});
+					ranked.push({ name: wsCol, points: (info as any)?.points_count ?? 0 });
 				} catch {
-					collectionDiagnostics.push({
-						collection: wsCol,
-						points_count: -1,
-						status: 'error'
-					});
+					ranked.push({ name: wsCol, points: -1 });
 				}
 			}
+			ranked.sort((a, b) => b.points - a.points);
+			const candidates = ranked.map(r => r.name);
 
-			return {
-				isError: false,
-				content: [{
-					type: 'text',
-					text: JSON.stringify({
-						status: 'collection_not_found',
-						message: `No Qdrant collection matching workspace "${workspace}" (primary hash: ${primaryCollectionName}). ${collectionVariants.length} hash variants tried, none matched.`,
-						hint: 'The workspace must be indexed by Roo Code before searching. If already indexed, the path format may differ from what the indexer used. Check the diagnostic info below for existing collections.',
-						tried_variants: collectionVariants,
-						primary_hash: primaryCollectionName,
-						workspace: workspace,
-						workspace_source: workspaceSource,
-						existing_collections: collectionDiagnostics,
-						fallback_list_tried: true,
-						troubleshooting: {
-							ripgrep_vscode_1122: 'VS Code 1.122+ renamed ripgrep package to @vscode/ripgrep-universal. Roo Code 3.54 cannot find rg.exe → indexing never starts → collection stays empty. Workaround: copy rg.exe from new path to old path.',
-							hash_mismatch: 'Path format differs between indexing (Roo Code fsPath) and search (Claude Code). Common on Windows: backslash vs forward slash, case differences, UNC prefixes.',
-							action: 'Re-index the workspace from this machine via Roo Code, or verify the ripgrep binary is accessible.'
-						}
-					}, null, 2)
-				}]
-			};
+			// Try content-based matching (STRICT threshold — never serve a low-confidence guess).
+			const workspaceSignature = getWorkspaceRootSignature(workspace);
+			const contentMatch = workspaceSignature
+				? await findCollectionByContent(qdrant, candidates, workspaceSignature)
+				: null;
+
+			if (contentMatch) {
+				// Strict content-match found — serve results from this collection.
+				collectionName = contentMatch.name;
+				collectionResolvedBy = 'content-match';
+				contentMatchDetails = { jaccard: contentMatch.jaccard, jaccard_threshold: CONTENT_MATCH_MIN_JACCARD };
+			} else {
+				// No strict content-match → honest diagnostic. Enrich with the collection
+				// signatures we probed so the caller can identify theirs visually.
+				const collectionDiagnostics = [];
+				for (const r of ranked.slice(0, 10)) {
+					collectionDiagnostics.push({
+						collection: r.name,
+						points_count: r.points,
+						status: r.points >= 0 ? 'green' : 'error'
+					});
+				}
+
+				// Build signature samples for the top candidates (helps the caller self-identify).
+				// Only when we could read the workspace dirs — otherwise signatures are moot
+				// (we can't compare them to anything) and we avoid the extra scroll calls.
+				const signatureSamples: Record<string, string[]> = {};
+				if (workspaceSignature) {
+					for (const r of ranked.slice(0, 5)) {
+						const sig = await getCollectionSignature(qdrant, r.name);
+						if (sig && sig.size > 0) signatureSamples[r.name] = [...sig].slice(0, 8);
+					}
+				}
+
+				return {
+					isError: false,
+					content: [{
+						type: 'text',
+						text: JSON.stringify({
+							status: 'collection_not_found',
+							message: `No Qdrant collection matching workspace "${workspace}" (primary hash: ${primaryCollectionName}). ${collectionVariants.length} hash variants tried + content-based fallback over ${candidates.length} ws-* collections, no strict match (Jaccard ≥ ${CONTENT_MATCH_MIN_JACCARD} with a discriminant dir required).`,
+							hint: 'The workspace hash differs from what the indexer used AND no collection\'s indexed top-level dirs match yours strictly. Inspect the collection signatures below to identify yours, then re-index the workspace from Roo Code / Zoo Code on this machine, or report the path-format mismatch.',
+							tried_variants: collectionVariants,
+							primary_hash: primaryCollectionName,
+							workspace: workspace,
+							workspace_source: workspaceSource,
+							workspace_signature: workspaceSignature ? [...workspaceSignature] : null,
+							content_match_attempted: true,
+							content_match_threshold: CONTENT_MATCH_MIN_JACCARD,
+							collection_signatures: signatureSamples,
+							existing_collections: collectionDiagnostics,
+							fallback_list_tried: true,
+							troubleshooting: {
+								ripgrep_vscode_1122: 'VS Code 1.122+ renamed ripgrep package to @vscode/ripgrep-universal. Roo Code 3.54 cannot find rg.exe → indexing never starts → collection stays empty. Workaround: copy rg.exe from new path to old path.',
+								hash_mismatch: 'Path format differs between indexing (Roo Code fsPath) and search (Claude Code). Common on Windows: backslash vs forward slash, case differences, UNC prefixes.',
+								action: 'Re-index the workspace from this machine via Roo Code, or verify the ripgrep binary is accessible.'
+							}
+						}, null, 2)
+					}]
+				};
+			}
 		}
 
 		// 3. Générer l'embedding de la requête (uses dedicated codebase embedding client)
@@ -475,6 +655,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			workspace: workspace,
 			workspace_source: workspaceSource,
 			collection: collectionName,
+			// #2609/#2554 L1: how the collection was resolved. 'content-match' means the
+			// hash missed and we identified the right ws-* collection by its indexed
+			// top-level dirs vs the workspace's actual directory structure.
+			collection_resolved_by: collectionResolvedBy,
+			...(contentMatchDetails ? { content_match: contentMatchDetails } : {}),
 			results_count: results.length,
 			min_score_used: effectiveMinScore,
 			// #2609/#2554: dead-path filtering observability
