@@ -7,11 +7,19 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate } = vi.hoisted(() => ({
+const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync } = vi.hoisted(() => ({
 	mockGetQdrantClient: vi.fn(),
 	mockQdrant: { getCollection: vi.fn(), query: vi.fn(), getCollections: vi.fn() },
-	mockEmbeddingCreate: vi.fn()
+	mockEmbeddingCreate: vi.fn(),
+	// #2609/#2554: mock existsSync so dead-path filtering is deterministic.
+	// Default true = all files reachable (preserves existing test expectations).
+	mockExistsSync: vi.fn(() => true)
 }));
+
+vi.mock('fs', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('fs')>();
+	return { ...actual, existsSync: mockExistsSync };
+});
 
 vi.mock('../../../services/qdrant.js', () => ({
 	getQdrantClient: mockGetQdrantClient
@@ -35,6 +43,8 @@ describe('search-codebase.tool', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockGetQdrantClient.mockReturnValue(mockQdrant);
+		// Default: all files reachable. Individual tests override to simulate dead paths.
+		mockExistsSync.mockReturnValue(true);
 	});
 
 	// ============================================================
@@ -386,6 +396,78 @@ describe('search-codebase.tool', () => {
 					filter: expect.objectContaining({ must: expect.any(Array) })
 				})
 			);
+		});
+
+		// ============================================================
+		// #2609/#2554 — dead-path post-filter (rename-GC gap mitigation)
+		// ============================================================
+
+		describe('handleCodebaseSearch - dead-path filtering (#2609/#2554)', () => {
+			beforeEach(() => {
+				process.env.EMBEDDING_API_KEY = 'test-key';
+				mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+				mockEmbeddingCreate.mockResolvedValue({
+					data: [{ embedding: new Array(8).fill(0.1) }]
+				});
+			});
+
+			afterEach(() => {
+				delete process.env.EMBEDDING_API_KEY;
+			});
+
+			test('filters out hits whose filePath no longer exists on disk', async () => {
+				// Simulate a renamed/archived doc: live hit + dead orphan (old path)
+				mockExistsSync.mockImplementation((p: string) =>
+					String(p).endsWith('live-doc.ts')
+				);
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.82, payload: { filePath: 'src/live-doc.ts', codeChunk: 'live code', startLine: 1, endLine: 5 } },
+						{ score: 0.78, payload: { filePath: 'docs/archive/dead-doc.ts', codeChunk: 'orphan', startLine: 1, endLine: 2 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'doc', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results_count).toBe(1);
+				expect(parsed.results[0].file_path).toBe('src/live-doc.ts');
+				expect(parsed.dead_paths_filtered).toBe(1);
+				expect(parsed.warning).toBeUndefined();
+			});
+
+			test('returns raw hits with warning when ALL paths are dead (degenerate workspace root)', async () => {
+				// Every filePath unreachable → likely wrong workspace root or unmounted drive.
+				// Don't silently return 0; surface the raw hits + warning instead.
+				mockExistsSync.mockReturnValue(false);
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.8, payload: { filePath: 'src/a.ts', codeChunk: 'a', startLine: 1, endLine: 1 } },
+						{ score: 0.7, payload: { filePath: 'src/b.ts', codeChunk: 'b', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/wrong-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results_count).toBe(2);
+				expect(parsed.dead_paths_filtered).toBeUndefined();
+				expect(parsed.warning).toMatch(/all hits resolved to dead paths/);
+			});
+
+			test('resolves relative filePath against the workspace root', async () => {
+				// existsSync receives the joined absolute path: workspaceRoot + relative filePath.
+				const seen: string[] = [];
+				mockExistsSync.mockImplementation((p: string) => {
+					seen.push(String(p));
+					return true;
+				});
+				mockQdrant.query.mockResolvedValue({
+					points: [{ score: 0.8, payload: { filePath: 'src/foo.ts', codeChunk: 'foo', startLine: 1, endLine: 1 } }]
+				});
+
+				await handleCodebaseSearch({ query: 'foo', workspace: '/my/ws' });
+				// The joined path must contain both the workspace root and the relative filePath.
+				expect(seen.some((p) => p.includes('my') && p.includes('foo.ts'))).toBe(true);
+			});
 		});
 	});
 
