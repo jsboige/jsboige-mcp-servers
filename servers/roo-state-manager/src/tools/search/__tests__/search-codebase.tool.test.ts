@@ -621,6 +621,41 @@ describe('search-codebase.tool', () => {
 				expect(parsed.collection_resolved_by).toBe('content-match');
 				expect(parsed.collection).not.toBe('ws-low');
 			});
+
+			test('hash miss + discriminant dir is a minority in the sample → still matches (large-sample hardening)', async () => {
+				// web1 observation: scroll is insertion-ordered; a small biased sample could
+				// hide a discriminant dir. The 200-pt sample + Set union must capture the
+				// discriminant dir even if it appears rarely among the sampled points.
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true }
+				]);
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-biased' }]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-biased') return { points_count: 50000, status: 'green' };
+					throw new Error('not found');
+				});
+				// The sample is heavily dominated by 'docs' (generic) but contains a few
+				// 'mcps' + 'roo-code' (discriminant) points. The signature must include them.
+				const biasedSample = [
+					...Array.from({ length: 40 }, () => ({ payload: { pathSegments: { '0': 'docs' } } })),
+					{ payload: { pathSegments: { '0': 'mcps' } } },
+					{ payload: { pathSegments: { '0': 'roo-code' } } }
+				];
+				mockQdrant.scroll.mockResolvedValue({ points: biasedSample });
+				mockQdrant.query.mockResolvedValue({
+					points: [{ score: 0.75, payload: { filePath: 'roo-code/y.ts', codeChunk: 'y', startLine: 1, endLine: 1 } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'y', workspace: '/biased-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-biased');
+				expect(parsed.collection_resolved_by).toBe('content-match');
+			});
 		});
 	});
 

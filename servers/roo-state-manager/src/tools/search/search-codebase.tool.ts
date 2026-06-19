@@ -154,22 +154,30 @@ function getWorkspaceRootSignature(workspaceRoot: string): Set<string> | null {
 }
 
 /**
- * Query a ws-* collection for a small sample of points and extract the set of
+ * Query a ws-* collection for a sample of points and extract the set of
  * top-level pathSegments.0 observed = the collection's signature.
  *
  * Uses Qdrant's `scroll` API (no vector / no embedding needed) to cheaply sample
  * points — the same approach used in indexing/cleanup-orphans.ts and diagnose-index.
  * We only request the `pathSegments` payload field, keeping the response tiny.
  *
+ * Sample size is deliberately larger than minimal (200 vs 50) to mitigate the
+ * insertion-order bias of `scroll`: on a large heterogeneous collection the first
+ * N points may cluster in one sub-directory, under-representing other top-level dirs
+ * and producing a false-negative match. A 200-pt sample captures a much broader
+ * signature. Cost stays negligible (payload-only, and only on the hash-miss path).
+ * If false-negatives still appear in the wild, consider a second scroll from a
+ * hash-derived offset. (Hardening per web1 review observation.)
+ *
  * Returns the set of pathSegments.0 values, or null if the collection is unreadable.
  */
 async function getCollectionSignature(qdrant: any, collectionName: string): Promise<Set<string> | null> {
 	try {
-		// Sample 50 points: payload-only (no vector). pathSegments is always present
+		// Sample 200 points: payload-only (no vector). pathSegments is always present
 		// on indexed points (qdrant-client.ts:315-331). Robust to scroll's response
 		// shape variants (.points or .result.points).
 		const result = await qdrant.scroll(collectionName, {
-			limit: 50,
+			limit: 200,
 			with_payload: { include: ['pathSegments'] },
 			with_vector: false,
 		});
