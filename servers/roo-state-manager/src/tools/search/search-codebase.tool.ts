@@ -448,12 +448,20 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// Tracks how the collection was resolved — 'hash' (normal) or 'content-match' (L1 fallback).
 		let collectionResolvedBy: 'hash' | 'content-match' = 'hash';
 		let contentMatchDetails: { jaccard: number; jaccard_threshold: number } | undefined;
+		// points_count of the hash-matched collection (if any). Used to detect the
+		// "collection exists but is empty" blind-spot: the hash resolves to a real
+		// collection that was never populated (e.g. the indexer hashed a different path
+		// format → points went into another ws-* collection). (#2609/#2554 follow-up,
+		// convergent finding web1 c.N+4 + po-2026 c.46: po-2023 sees 15 results from a
+		// populated collection; web1/po-2026 get 0 from an empty one matched by hash.)
+		let hashMatchedPointsCount: number | null = null;
 
 		for (const variant of collectionVariants) {
 			try {
 				const collectionInfo = await qdrant.getCollection(variant);
 				if (collectionInfo.status !== undefined) {
 					collectionName = variant;
+					hashMatchedPointsCount = (collectionInfo as any)?.points_count ?? null;
 					break;
 				}
 			} catch {
@@ -469,6 +477,19 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// fragile cross-agent. Before returning an empty diagnostic, try matching the right
 		// ws-* collection by CONTENT (its indexed top-level pathSegments vs the workspace's
 		// actual directory structure on disk). If a strict match is found, serve it.
+		//
+		// TWO trigger conditions (follow-up to #644, finding web1 c.N+4 + po-2026 c.46):
+		//  (1) No hash variant matched at all (`!collectionName`) — original case.
+		//  (2) A hash variant matched a collection that EXISTS but is EMPTY
+		//      (`hashMatchedPointsCount === 0`). The points went into another ws-* collection
+		//      under a different hash; serving this empty one would return 0 results. Fall
+		//      back to content-matching to find the populated one. The matched-but-empty
+		//      collection is reset so the content-match can re-select the best candidate
+		//      (including itself, if it turns out non-empty under a re-read — rare).
+		const hashMatchedEmpty = collectionName !== '' && hashMatchedPointsCount === 0;
+		if (hashMatchedEmpty) {
+			collectionName = '';
+		}
 		if (!collectionName) {
 			const allWsCollections = await listWorkspaceCollections();
 
@@ -530,6 +551,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 							hint: 'The workspace hash differs from what the indexer used AND no collection\'s indexed top-level dirs match yours strictly. Inspect the collection signatures below to identify yours, then re-index the workspace from Roo Code / Zoo Code on this machine, or report the path-format mismatch.',
 							tried_variants: collectionVariants,
 							primary_hash: primaryCollectionName,
+							hash_matched_empty: hashMatchedEmpty,
 							workspace: workspace,
 							workspace_source: workspaceSource,
 							workspace_signature: workspaceSignature ? [...workspaceSignature] : null,

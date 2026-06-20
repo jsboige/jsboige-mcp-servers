@@ -681,6 +681,90 @@ describe('search-codebase.tool', () => {
 				expect(parsed.collection).toBe('ws-biased');
 				expect(parsed.collection_resolved_by).toBe('content-match');
 			});
+
+			// ─── Follow-up to #644: blind-spot "collection exists but is EMPTY" ─────────
+			// Convergent finding (web1 c.N+4 + po-2026 c.46): the hash resolves to a real
+			// collection that was never populated (points_count == 0). Phase B must trigger
+			// in this sub-case too, not only when no hash variant matches at all.
+			test('hash matches an EMPTY collection (points_count=0) → content-match fallback finds the populated one', async () => {
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'roo-config', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true }
+				]);
+				// Compute the REAL hash variant for this workspace so the hash loop actually
+				// matches it — this is what reproduces the blind-spot (a hash that resolves
+				// to an existing-but-empty collection). Without this, the test would only
+				// exercise the generic hash-miss path, not the empty-collection sub-case.
+				const emptyCollectionName = getWorkspaceCollectionVariants('/empty-hash-ws')[0];
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [
+						{ name: emptyCollectionName },
+						{ name: 'ws-populated' }
+					]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === emptyCollectionName) return { points_count: 0, status: 'green' };
+					if (name === 'ws-populated') return { points_count: 446000, status: 'green' };
+					throw new Error('not found');
+				});
+				mockQdrant.scroll.mockImplementation(async (name: string) => {
+					if (name === 'ws-populated') {
+						return { points: [
+							{ payload: { pathSegments: { '0': 'mcps' } } },
+							{ payload: { pathSegments: { '0': 'roo-code' } } },
+							{ payload: { pathSegments: { '0': 'roo-config' } } },
+							{ payload: { pathSegments: { '0': 'docs' } } }
+						] };
+					}
+					// Empty collection → scroll returns no points.
+					return { points: [] };
+				});
+				mockQdrant.query.mockResolvedValue({
+					points: [{ score: 0.8, payload: { filePath: 'mcps/internal/bar.ts', codeChunk: 'export const bar = 2', startLine: 1, endLine: 2 } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'bar', workspace: '/empty-hash-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				// Must serve the populated collection, NOT return 0 results on the empty one.
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-populated');
+				expect(parsed.collection_resolved_by).toBe('content-match');
+				expect(parsed.results[0].file_path).toBe('mcps/internal/bar.ts');
+			});
+
+			test('hash matches an EMPTY collection + no strict content-match → diagnostic with hash_matched_empty=true', async () => {
+				// Same blind-spot trigger, but no candidate collection matches by content
+				// → honest diagnostic must report hash_matched_empty=true so the caller
+				// understands the empty-collection nuance (not just "collection not found").
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true }
+				]);
+				const emptyCollectionName = getWorkspaceCollectionVariants('/empty-hash-ws2')[0];
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [
+						{ name: emptyCollectionName },
+						{ name: 'ws-unrelated' }
+					]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === emptyCollectionName) return { points_count: 0, status: 'green' };
+					if (name === 'ws-unrelated') return { points_count: 100, status: 'green' };
+					throw new Error('not found');
+				});
+				// The only non-empty candidate has unrelated dirs → strict gate fails.
+				mockQdrant.scroll.mockResolvedValue({
+					points: [{ payload: { pathSegments: { '0': 'wp-content' } } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/empty-hash-ws2' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('collection_not_found');
+				expect(parsed.hash_matched_empty).toBe(true);
+				expect(parsed.content_match_attempted).toBe(true);
+			});
 		});
 	});
 
