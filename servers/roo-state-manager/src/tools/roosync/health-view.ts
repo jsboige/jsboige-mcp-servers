@@ -69,6 +69,12 @@ export interface HealthViewResult {
      * `embeddings` above checks env-var presence only; this field reflects actual backend health.
      */
     embeddingsReachable?: boolean;
+    /**
+     * #2628: Same distinction for Qdrant. `qdrant` above checks env-var presence only;
+     * this field reflects an actual bounded authenticated GET /collections round-trip.
+     * Without it, a live 503/timeout was masked as "Qdrant: OK" (regression of #2547).
+     */
+    qdrantReachable?: boolean;
   };
   drift: {
     checked: boolean;
@@ -190,13 +196,14 @@ function collectCapabilities(): {
   qdrant: boolean;
   embeddings: boolean;
   embeddingsReachable?: boolean;
+  qdrantReachable?: boolean;
 } {
   const caps = getServerCapabilities();
   const embeddingsConfigured = caps.isAvailable('embeddings');
 
-  // #2547: embeddingsReachable is intentionally omitted here (undefined).
-  // It is populated asynchronously in roosyncHealthView() via probeEmbeddingBackend()
-  // to avoid blocking the synchronous capability check.
+  // #2547/#2628: *Reachable fields are intentionally omitted here (undefined).
+  // They are populated asynchronously in roosyncHealthView() via probeEmbeddingBackend()
+  // and probeQdrantBackend() to avoid blocking the synchronous capability check.
   return {
     sharedPath: caps.isAvailable('sharedPath'),
     qdrant: caps.isAvailable('qdrant'),
@@ -221,6 +228,42 @@ async function probeEmbeddingBackend(): Promise<boolean> {
     return result?.data?.[0]?.embedding?.length > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * #2628: Async live probe of the Qdrant backend.
+ * Distinguishes "configured" (env vars present) from "reachable" (backend responds 2xx).
+ *
+ * Performs a bounded, authenticated `GET /collections`. ANY of the following → `false`:
+ * non-2xx (503/500/404), auth failure (401/403), timeout (AbortController), or a
+ * thrown network error (ECONNRESET / ENOTFOUND / CERT_HAS_EXPIRED / "fetch failed").
+ * This is precisely what makes a live outage flip the verdict to FAIL instead of being
+ * masked as `Qdrant: OK` because the env vars happen to be present (regression of #2547).
+ *
+ * Exported for unit testing (the regression suite asserts 503/401/timeout → false).
+ */
+export async function probeQdrantBackend(): Promise<boolean> {
+  const qdrantUrl = process.env.QDRANT_URL;
+  if (!qdrantUrl) return false;
+  const apiKey = process.env.QDRANT_API_KEY;
+  const timeoutMs = parseInt(process.env.QDRANT_HEALTH_PROBE_TIMEOUT_MS || '8000', 10);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['api-key'] = apiKey;
+    const resp = await fetch(`${qdrantUrl.replace(/\/+$/, '')}/collections`, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    return resp.ok; // 2xx only — 503/500/404/401/403 all resolve to false
+  } catch {
+    // AbortError (timeout) + TCP reset / DNS / TLS / "fetch failed" all land here → unreachable
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -293,7 +336,7 @@ function collectEnvCheck(): {
 function computeScore(
   onlineCount: number,
   totalCount: number,
-  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean },
+  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean },
   drift: { critical: number; important: number; warning: number },
   criticalEnvMissing: number
 ): number {
@@ -307,7 +350,10 @@ function computeScore(
 
   // Capabilities (0-30 points)
   if (!capabilities.sharedPath) score -= 15;
-  if (!capabilities.qdrant) score -= 10;
+  // #2628: a configured-but-unreachable Qdrant is as bad as a missing one for scoring.
+  // Otherwise a live 503/timeout stays masked as HEALTHY (env vars present → qdrant=true,
+  // no deduction) — the exact false positive this fix removes.
+  if (!capabilities.qdrant || capabilities.qdrantReachable === false) score -= 10;
   if (!capabilities.embeddings) score -= 5;
 
   // Drift (0-30 points)
@@ -329,7 +375,7 @@ function determineStatus(score: number): 'HEALTHY' | 'WARNING' | 'CRITICAL' {
 function generateRecommendations(
   onlineCount: number,
   totalCount: number,
-  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean },
+  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean },
   drift: { checked: boolean; critical: number; important: number; items: DriftItem[] },
   envMissing: Array<{ name: string; severity: string }>
 ): string[] {
@@ -339,7 +385,10 @@ function generateRecommendations(
     recs.push('ROOSYNC_SHARED_PATH not configured — RooSync features unavailable');
   }
   if (!capabilities.qdrant) {
-    recs.push('Qdrant not reachable — semantic search disabled');
+    recs.push('Qdrant not configured (QDRANT_URL / QDRANT_API_KEY / QDRANT_COLLECTION_NAME) — semantic search disabled');
+  } else if (capabilities.qdrantReachable === false) {
+    // #2628: configured but the live probe failed — a real outage, not a config gap.
+    recs.push('Qdrant configured but UNREACHABLE (live GET /collections failed) — semantic search degraded to text mode; check qdrant.myia.io / container / reverse proxy');
   }
   if (!capabilities.embeddings) {
     recs.push('Embedding service not configured — codebase_search disabled');
@@ -382,7 +431,12 @@ export function formatMarkdown(result: HealthViewResult): string {
 
   lines.push('## Capabilities');
   lines.push(`- SharedPath: ${result.capabilities.sharedPath ? 'OK' : 'MISSING'}`);
-  lines.push(`- Qdrant: ${result.capabilities.qdrant ? 'OK' : 'MISSING'}`);
+  // #2628: report FAIL (not OK) when configured but the live probe failed.
+  const qdrantStatus = !result.capabilities.qdrant ? 'MISSING (not configured)'
+    : result.capabilities.qdrantReachable === true ? 'OK (configured + reachable)'
+    : result.capabilities.qdrantReachable === false ? 'FAIL (configured but unreachable)'
+    : 'OK (configured)';
+  lines.push(`- Qdrant: ${qdrantStatus}`);
   const embStatus = !result.capabilities.embeddings ? 'MISSING (not configured)'
     : result.capabilities.embeddingsReachable === true ? 'OK (configured + reachable)'
     : result.capabilities.embeddingsReachable === false ? 'DEGRADED (configured but unreachable)'
@@ -435,8 +489,8 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   // #2547: Collect sync capabilities first to decide whether to probe embeddings
   const capabilities = collectCapabilities();
 
-  // Collect all data sources in parallel (including optional embedding probe)
-  const [systemHealth, drift, envCheck, embeddingsReachable] = await Promise.all([
+  // Collect all data sources in parallel (including optional backend probes)
+  const [systemHealth, drift, envCheck, embeddingsReachable, qdrantReachable] = await Promise.all([
     collectSystemHealth(),
     collectDrift(targetMachine),
     args.includeEnvCheck !== false ? Promise.resolve(collectEnvCheck()) : Promise.resolve({
@@ -444,13 +498,23 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
     }),
     // #2547: Async live probe of embedding backend (only if configured)
     capabilities.embeddings ? probeEmbeddingBackend() : Promise.resolve(false as boolean),
+    // #2628: Async live probe of Qdrant backend (only if configured)
+    capabilities.qdrant ? probeQdrantBackend() : Promise.resolve(false as boolean),
   ]);
+
+  // #2547/#2628: Merge the async probe results into capabilities BEFORE scoring,
+  // so a configured-but-unreachable backend actually moves the score/verdict.
+  const enrichedCapabilities = {
+    ...capabilities,
+    embeddingsReachable: capabilities.embeddings ? embeddingsReachable : false,
+    qdrantReachable: capabilities.qdrant ? qdrantReachable : false,
+  };
 
   const criticalEnvMissing = envCheck.missing.filter(e => e.severity === 'critical').length;
   const score = computeScore(
     systemHealth.onlineCount,
     systemHealth.totalCount,
-    capabilities,
+    enrichedCapabilities,
     drift,
     criticalEnvMissing
   );
@@ -458,16 +522,10 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   const recommendations = generateRecommendations(
     systemHealth.onlineCount,
     systemHealth.totalCount,
-    capabilities,
+    enrichedCapabilities,
     drift,
     envCheck.missing
   );
-
-  // #2547: Merge the async embedding probe result into capabilities
-  const enrichedCapabilities = {
-    ...capabilities,
-    embeddingsReachable: capabilities.embeddings ? embeddingsReachable : false,
-  };
 
   const result: HealthViewResult = {
     status,
