@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "prebuild": "npm install",
-    "build": "tsc",
+    "clean:build": "node scripts/clean-build.mjs",
+    "build": "npm run clean:build && tsc",
+    "build:noclean": "tsc",
     "build:tests": "tsc -p tests/tsconfig.json",
     "start": "npm run build && node --env-file=.env build/index.js",
     "dev": "tsc -w",
