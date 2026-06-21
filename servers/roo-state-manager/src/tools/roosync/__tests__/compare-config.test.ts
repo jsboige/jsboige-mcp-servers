@@ -5,7 +5,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 // Fix #636 timeout: Use static import instead of dynamic imports
-import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig } from '../compare-config.js';
+import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig, compareModelProfiles } from '../compare-config.js';
 
 // Mock dependencies
 const { mockGetConfig, mockCompareRealConfigurations, mockLoadDashboard, mockGetInventory } = vi.hoisted(() => ({
@@ -745,6 +745,58 @@ describe('compare-config', () => {
 
 			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
 			expect(rosterDiff).toBeUndefined(); // check silently skipped, compare_config still returns
+		});
+	});
+
+	// ============================================================
+	// Non-array .profiles robustness (fleet crash 2026-06-21)
+	// ============================================================
+	describe('compareModelProfiles — non-array .profiles robustness', () => {
+		test('does not throw when modelProfile.profiles is a truthy non-array (degraded config sync)', () => {
+			// During a config-sync outage (reverse proxy down), the inventory can return
+			// modelProfile.profiles as a truthy non-array (keyed object / partial shape).
+			// The old `|| []` guard only caught falsy, so `.filter` threw
+			// `sourceProfiles.filter is not a function` — fleet-wide crash reproduced
+			// 2026-06-21 during the po-203 reverse-proxy outage (po-2024/web1/po-2026).
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: { production: { id: 'production' } } } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: { production: { id: 'production' } } } }
+			};
+
+			// Must not throw, and must not emit a false "missing profiles" diff from
+			// the degraded (non-array) read.
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+			const profilesDiff = diffs.find(d => d.path === 'roo.modelProfile.profiles');
+			expect(profilesDiff).toBeUndefined();
+		});
+
+		test('still detects missing profiles when .profiles are proper arrays', () => {
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: ['production', 'dev'] } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: ['production'] } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+			const profilesDiff = diffs.find(d => d.path === 'roo.modelProfile.profiles');
+			expect(profilesDiff).toBeDefined();
+			expect(profilesDiff!.severity).toBe('WARNING');
+			expect(profilesDiff!.description).toContain('dev');
+		});
+
+		test('does not throw when one side has a non-array .profiles and the other an array', () => {
+			// Mixed degraded/healthy reads across the two machines must not crash either.
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: { production: {} } } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: ['production'] } }
+			};
+
+			expect(() => compareModelProfiles(sourceInventory, targetInventory)).not.toThrow();
 		});
 	});
 });

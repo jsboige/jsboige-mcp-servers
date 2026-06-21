@@ -924,7 +924,7 @@ async function checkRosterConsistency(
  * Compare les profils de modèle entre deux machines (#498)
  * Détecte les différences dans model-configs.json
  */
-function compareModelProfiles(
+export function compareModelProfiles(
   sourceInventory: any,
   targetInventory: any
 ): Array<{
@@ -997,8 +997,14 @@ function compareModelProfiles(
   }
 
   // Comparer les profils disponibles
-  const sourceProfiles = sourceProfile.profiles || [];
-  const targetProfiles = targetProfile.profiles || [];
+  // Robustness: `.profiles` can be a truthy non-array (keyed object / partial
+  // shape) when config sync is degraded (e.g. reverse-proxy outage). The `|| []`
+  // fallback only guards against falsy, which made `.filter` below throw
+  // `sourceProfiles.filter is not a function`. Array.isArray guards both falsy
+  // and non-array shapes. (Crash reproduced fleet-wide 2026-06-21 during the
+  // po-203 reverse-proxy outage on po-2024 / web1 / po-2026.)
+  const sourceProfiles = Array.isArray(sourceProfile.profiles) ? sourceProfile.profiles : [];
+  const targetProfiles = Array.isArray(targetProfile.profiles) ? targetProfile.profiles : [];
   const missingProfiles = sourceProfiles.filter((p: string) => !targetProfiles.includes(p));
 
   if (missingProfiles.length > 0) {
