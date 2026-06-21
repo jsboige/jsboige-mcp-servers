@@ -997,8 +997,8 @@ function compareModelProfiles(
   }
 
   // Comparer les profils disponibles
-  const sourceProfiles = sourceProfile.profiles || [];
-  const targetProfiles = targetProfile.profiles || [];
+  const sourceProfiles = Array.isArray(sourceProfile.profiles) ? sourceProfile.profiles : [];
+  const targetProfiles = Array.isArray(targetProfile.profiles) ? targetProfile.profiles : [];
   const missingProfiles = sourceProfiles.filter((p: string) => !targetProfiles.includes(p));
 
   if (missingProfiles.length > 0) {
