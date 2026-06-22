@@ -168,6 +168,8 @@ export interface SearchTasksByContentArgs {
     // than returning `searchType: "text"` without warning. Default: false
     // (legacy behavior preserved for direct `searchTasks` callers).
     strict_mode?: boolean;
+    // #2634: Reset the embedding circuit breaker and force a fresh connection test
+    reset_circuit_breaker?: boolean;
 }
 
 /**
@@ -417,7 +419,28 @@ export const searchTasksByContentTool = {
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
         const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
-                chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results } = args;
+                chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results, reset_circuit_breaker } = args;
+
+        // #2634: Reset circuit breaker on explicit request (runtime reset without VS Code restart)
+        if (reset_circuit_breaker) {
+            const wasArmed = lastEmbeddingFailureTime > 0 && (Date.now() - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS;
+            _resetEmbeddingCircuitBreaker();
+            console.log(`[INFO] #2634: Embedding circuit breaker reset (was_armed: ${wasArmed}). Cache cleared, ready for fresh connection test.`);
+
+            // Return diagnostic result showing the reset succeeded
+            return {
+                isError: false,
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        circuit_breaker_reset: true,
+                        was_armed: wasArmed,
+                        message: 'Embedding circuit breaker has been reset. Semantic search is now enabled.',
+                        timestamp: new Date().toISOString()
+                    }, null, 2)
+                }]
+            };
+        }
 
         // #636 Phase 3: resolve effective chunk_type (exclude_tool_results is a convenience alias)
         const effectiveChunkType = chunk_type ?? (exclude_tool_results ? 'message_exchange' : undefined);
