@@ -1590,6 +1590,161 @@ describe('helper functions (indirect via handler)', () => {
 				expect(parsed).not.toHaveProperty('fallback_reason');
 			});
 		});
+
+		// ============================================================
+		// #2634: Circuit breaker reset mechanism
+		// ============================================================
+
+		describe('#2634: circuit breaker reset', () => {
+			test('reset_circuit_breaker=true resets the breaker and returns success', async () => {
+				// First, arm the circuit breaker by simulating a failure
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(
+					new Error('Service Unavailable')
+				);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(
+					new Error('Service Unavailable')
+				);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(
+					new Error('Service Unavailable')
+				);
+
+				// Normal search should hit the breaker (exhausts retries)
+				await searchTasksByContentTool.handler(
+					{ search_query: 'test', workspace: 'test' },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				// Now reset the breaker
+				const resetResult = await searchTasksByContentTool.handler(
+					{ search_query: 'test', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				expect(resetResult.isError).toBe(false);
+				const parsed = JSON.parse(getTextContent(resetResult));
+				expect(parsed.circuit_breaker_reset).toBe(true);
+				expect(parsed.was_armed).toBe(true);
+				expect(parsed.message).toContain('reset');
+			});
+
+			test('reset_circuit_breaker=true when breaker is not armed returns was_armed=false', async () => {
+				_resetEmbeddingCircuitBreaker();
+
+				const resetResult = await searchTasksByContentTool.handler(
+					{ search_query: 'test', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				expect(resetResult.isError).toBe(false);
+				const parsed = JSON.parse(getTextContent(resetResult));
+				expect(parsed.circuit_breaker_reset).toBe(true);
+				expect(parsed.was_armed).toBe(false);
+				expect(parsed.message).toContain('reset');
+			});
+
+			test('reset_circuit_breaker=true clears query embedding cache', async () => {
+				// Populate the cache with an embedding
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: [0.1, 0.2] }]
+				});
+
+				// Make a normal search to populate the cache
+				mockQdrantClient.search.mockResolvedValueOnce([]);
+				await searchTasksByContentTool.handler(
+					{ search_query: 'cached query' },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				// Cache should be used on next call with same query
+				mockQdrantClient.search.mockResolvedValueOnce([]);
+				mockOpenAIClient.embeddings.create.mockClear();
+				await searchTasksByContentTool.handler(
+					{ search_query: 'cached query' },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				// Embedding API should not be called (cache hit)
+				expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
+
+				// Reset the breaker (and cache)
+				await searchTasksByContentTool.handler(
+					{ search_query: 'test', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				// Now the cache should be cleared, so next search should re-embed
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: [0.1, 0.2] }]
+				});
+				mockQdrantClient.search.mockResolvedValueOnce([]);
+				await searchTasksByContentTool.handler(
+					{ search_query: 'cached query' },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				// Embedding API should be called (cache was cleared)
+				expect(mockOpenAIClient.embeddings.create).toHaveBeenCalled();
+			});
+
+			test('reset_circuit_breaker=true returns response without attempting search', async () => {
+				// Set up mocks for a normal search
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: [0.1, 0.2] }]
+				});
+
+				// Call with reset_circuit_breaker=true
+				const resetResult = await searchTasksByContentTool.handler(
+					{ search_query: 'test query', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				// Should return reset response
+				const parsed = JSON.parse(getTextContent(resetResult));
+				expect(parsed.circuit_breaker_reset).toBe(true);
+
+				// Should NOT attempt to embed or search
+				expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
+				expect(mockQdrantClient.search).not.toHaveBeenCalled();
+			});
+
+			test('reset_circuit_breaker=true also resets the Qdrant write breaker (dual recovery surface)', async () => {
+				_resetEmbeddingCircuitBreaker();
+
+				const resetResult = await searchTasksByContentTool.handler(
+					{ search_query: 'test', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				expect(resetResult.isError).toBe(false);
+				const parsed = JSON.parse(getTextContent(resetResult));
+				// #2634: the response reports BOTH recovery surfaces — the embedding-API breaker
+				// (search) and the VectorIndexer write breaker (indexing). This proves the second
+				// surface is actually wired (not just the search breaker from the original PR).
+				expect(parsed.embedding_api_breaker).toBeDefined();
+				expect(typeof parsed.embedding_api_breaker.was_armed).toBe('boolean');
+				expect(parsed.write_breaker).toBeDefined();
+				expect(typeof parsed.write_breaker.was_armed).toBe('boolean');
+				expect(parsed.write_breaker.previous_state).toBeDefined();
+			});
+		});
 	});
 });
 });

@@ -79,6 +79,27 @@ export function resetCircuitBreakerForTest(): void {
     lastFailureTime = 0;
 }
 
+/**
+ * #2634: Runtime reset mechanism for embeddings circuit breaker.
+ *
+ * Call this to immediately reset the breaker state without requiring a VS Code restart.
+ * Used by diagnostic tools and recovery procedures when Qdrant becomes available again
+ * after an outage.
+ *
+ * Returns the previous state for logging/audit purposes.
+ */
+export function resetEmbeddingCircuitBreaker(): CircuitBreakerSnapshot {
+    const previousState = getCircuitBreakerState();
+
+    circuitBreakerState = 'CLOSED';
+    failureCount = 0;
+    lastFailureTime = 0;
+
+    console.log(`✅ [#2634] Embedding circuit breaker reset by diagnostic tool. Previous state: ${previousState.state} (${previousState.failureCount} failures, ${previousState.msUntilHalfOpen}ms until half-open)`);
+
+    return previousState;
+}
+
 // #2195: Per-cycle embedding metrics — in-process counters since MCP boot
 export interface EmbeddingMetrics {
     embeddings_called_total: number;

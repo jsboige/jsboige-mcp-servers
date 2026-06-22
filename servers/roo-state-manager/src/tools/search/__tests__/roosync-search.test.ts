@@ -135,6 +135,41 @@ describe('roosync_search', () => {
 	});
 
 	// ============================================================
+	// #2634: circuit breaker reset forwarding (end-to-end wiring)
+	// ============================================================
+
+	describe('#2634: reset_circuit_breaker forwarding', () => {
+		// These tests guard the wiring gap: reset_circuit_breaker must reach the
+		// underlying search-semantic handler (where the actual reset lives) from the
+		// agent-facing roosync_search tool. Without forwarding, the param was silently
+		// dropped and the feature never fired for agents (unit tests on the inner handler
+		// alone could not catch this).
+		test('action=semantic forwards reset_circuit_breaker to the semantic handler', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'x', reset_circuit_breaker: true },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			expect(mockSemanticHandler.mock.calls[0][0].reset_circuit_breaker).toBe(true);
+		});
+
+		test('action=diagnose forwards reset_circuit_breaker to the semantic handler', async () => {
+			await handleRooSyncSearch(
+				{ action: 'diagnose', reset_circuit_breaker: true },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+			expect(mockSemanticHandler).toHaveBeenCalled();
+			expect(mockSemanticHandler.mock.calls[0][0].reset_circuit_breaker).toBe(true);
+		});
+	});
+
+	// ============================================================
 	// Action: semantic
 	// ============================================================
 

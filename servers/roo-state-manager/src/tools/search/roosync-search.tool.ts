@@ -65,6 +65,9 @@ export interface RooSyncSearchArgs {
     // #636 Phase 3: Convenience filter
     /** Exclude tool_interaction chunks, returning only message_exchange chunks */
     exclude_tool_results?: boolean;
+
+    /** #2634: Reset the embeddings circuit breaker if armed (diagnose action only) */
+    reset_circuit_breaker?: boolean;
 }
 
 /**
@@ -135,6 +138,10 @@ export const roosyncSearchTool: Tool = {
             exclude_tool_results: {
                 type: 'boolean',
                 description: 'Exclude tool_interaction chunks'
+            },
+            reset_circuit_breaker: {
+                type: 'boolean',
+                description: '#2634: Reset embeddings circuit breaker if armed (diagnose action only)'
             }
         },
         required: ['action']
@@ -211,6 +218,8 @@ export async function handleRooSyncSearch(
                 end_date: args.end_date,
                 // #636 Phase 3: Convenience filter
                 exclude_tool_results: args.exclude_tool_results,
+                // #2634: Forward circuit-breaker reset so the agent-facing tool can trigger it
+                reset_circuit_breaker: args.reset_circuit_breaker,
             };
             const semanticResult = await searchTasksByContentTool.handler(
                 semanticArgs,
@@ -295,7 +304,9 @@ export async function handleRooSyncSearch(
             // Déléguer au handler sémantique en mode diagnostic
             const diagnoseArgs: SearchTasksByContentArgs = {
                 search_query: 'diagnose',
-                diagnose_index: true
+                diagnose_index: true,
+                // #2634: Forward circuit-breaker reset (action: "diagnose" path)
+                reset_circuit_breaker: args.reset_circuit_breaker,
             };
             return await searchTasksByContentTool.handler(
                 diagnoseArgs,
