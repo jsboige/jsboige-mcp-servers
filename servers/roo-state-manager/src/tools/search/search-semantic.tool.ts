@@ -9,6 +9,7 @@ import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
+import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
 import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
@@ -398,6 +399,10 @@ export const searchTasksByContentTool = {
                     type: 'boolean',
                     description: 'Mode diagnostic : retourne des informations sur l\'état de l\'indexation sémantique.'
                 },
+                reset_circuit_breaker: {
+                    type: 'boolean',
+                    description: '#2634: Reset the embeddings circuit breaker(s) if armed, then return early (no search). Recovers semantic search + indexing after a Qdrant/embedding outage without a VS Code restart.'
+                },
                 source: {
                     type: 'string',
                     enum: ['roo', 'claude-code'],
@@ -421,11 +426,17 @@ export const searchTasksByContentTool = {
         const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
                 chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results, reset_circuit_breaker } = args;
 
-        // #2634: Reset circuit breaker on explicit request (runtime reset without VS Code restart)
+        // #2634: Reset circuit breaker(s) on explicit request (runtime reset without VS Code restart).
+        // Two recovery surfaces are reset together so a single call restores BOTH the semantic
+        // SEARCH path and the INDEXING path after a Qdrant/embedding outage:
+        //   1. the embedding-API breaker in THIS module (gates query embedding for search)
+        //   2. the Qdrant write breaker in VectorIndexer (gates upserts during indexing)
         if (reset_circuit_breaker) {
-            const wasArmed = lastEmbeddingFailureTime > 0 && (Date.now() - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS;
+            const apiWasArmed = lastEmbeddingFailureTime > 0 && (Date.now() - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS;
             _resetEmbeddingCircuitBreaker();
-            console.log(`[INFO] #2634: Embedding circuit breaker reset (was_armed: ${wasArmed}). Cache cleared, ready for fresh connection test.`);
+            const writePrevious = resetWriteCircuitBreaker();
+            const writeWasArmed = writePrevious.state === 'OPEN';
+            console.log(`[INFO] #2634: Circuit breakers reset (embedding_api_armed: ${apiWasArmed}, write_breaker_armed: ${writeWasArmed}). Caches cleared, ready for fresh connection test.`);
 
             // Return diagnostic result showing the reset succeeded
             return {
@@ -434,8 +445,14 @@ export const searchTasksByContentTool = {
                     type: 'text',
                     text: JSON.stringify({
                         circuit_breaker_reset: true,
-                        was_armed: wasArmed,
-                        message: 'Embedding circuit breaker has been reset. Semantic search is now enabled.',
+                        was_armed: apiWasArmed || writeWasArmed,
+                        embedding_api_breaker: { was_armed: apiWasArmed },
+                        write_breaker: {
+                            was_armed: writeWasArmed,
+                            previous_state: writePrevious.state,
+                            previous_failure_count: writePrevious.failureCount
+                        },
+                        message: 'Embedding circuit breakers (search + indexing) have been reset. Semantic search is now enabled.',
                         timestamp: new Date().toISOString()
                     }, null, 2)
                 }]

@@ -1722,6 +1722,28 @@ describe('helper functions (indirect via handler)', () => {
 				expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
 				expect(mockQdrantClient.search).not.toHaveBeenCalled();
 			});
+
+			test('reset_circuit_breaker=true also resets the Qdrant write breaker (dual recovery surface)', async () => {
+				_resetEmbeddingCircuitBreaker();
+
+				const resetResult = await searchTasksByContentTool.handler(
+					{ search_query: 'test', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+
+				expect(resetResult.isError).toBe(false);
+				const parsed = JSON.parse(getTextContent(resetResult));
+				// #2634: the response reports BOTH recovery surfaces — the embedding-API breaker
+				// (search) and the VectorIndexer write breaker (indexing). This proves the second
+				// surface is actually wired (not just the search breaker from the original PR).
+				expect(parsed.embedding_api_breaker).toBeDefined();
+				expect(typeof parsed.embedding_api_breaker.was_armed).toBe('boolean');
+				expect(parsed.write_breaker).toBeDefined();
+				expect(typeof parsed.write_breaker.was_armed).toBe('boolean');
+				expect(parsed.write_breaker.previous_state).toBeDefined();
+			});
 		});
 	});
 });
