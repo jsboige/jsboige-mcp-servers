@@ -44,6 +44,21 @@ function isNetworkError(errorCode: string, errorMsg: string): boolean {
 }
 
 /**
+ * #2636: Public predicate — true when an error looks like a backend connection
+ * failure (TCP/DNS/TLS reset, or a `fetch failed`), as opposed to a genuine 404.
+ * Lets callers (e.g. codebase_search's collection-listing swallow points) tell a
+ * Qdrant *outage* apart from a missing collection BEFORE they fold the error into
+ * an empty result — so the outage can still reach `classifySearchError` and surface
+ * as `qdrant_unreachable` instead of being masked as `collection_not_found`.
+ * Reuses NETWORK_ERROR_PATTERNS so the distinction is not reinvented.
+ */
+export function isNetworkErrorLike(error: unknown): boolean {
+	const errorMsg = error instanceof Error ? error.message : String(error);
+	const errorCode = (error as any)?.code || '';
+	return isNetworkError(errorCode, errorMsg) || errorMsg.includes('fetch failed');
+}
+
+/**
  * Quick health probe to distinguish proxy_drop from qdrant_unreachable.
  * Returns { ok, latencyMs, status } or throws.
  * Timeout: 5 seconds (short, for diagnostic only).

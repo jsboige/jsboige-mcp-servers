@@ -8,7 +8,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
+import { classifySearchError, formatClassifiedError, isNetworkErrorLike } from './search-error-classifier.js';
 import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
@@ -105,7 +105,12 @@ export async function listWorkspaceCollections(): Promise<string[]> {
 		return response.collections
 			.map((c: any) => c.name)
 			.filter((name: string) => name.startsWith('ws-'));
-	} catch {
+	} catch (err) {
+		// #2636: a Qdrant *outage* (network/TLS) must surface as qdrant_unreachable
+		// via the outer classifier, not be folded into an empty list — which the caller
+		// then reports as collection_not_found, masking the outage as a missing index.
+		// A genuinely empty / 404 listing is still swallowed → [].
+		if (isNetworkErrorLike(err)) throw err;
 		return [];
 	}
 }
@@ -464,7 +469,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 					hashMatchedPointsCount = (collectionInfo as any)?.points_count ?? null;
 					break;
 				}
-			} catch {
+			} catch (err) {
+				// #2636: a 404 means "this variant doesn't exist" → try the next one;
+				// a network/TLS error means the backend is down → stop and propagate so
+				// the outer catch classifies it as qdrant_unreachable (not collection_not_found).
+				if (isNetworkErrorLike(err)) throw err;
 				// Cette variante n'existe pas, essayer la suivante
 			}
 		}
