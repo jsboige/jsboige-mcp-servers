@@ -176,10 +176,20 @@ describe('search-codebase.tool', () => {
 				expect(collections).toEqual(['ws-abc123', 'ws-def456']);
 			});
 
-			test('returns empty array on error', async () => {
+			test('returns empty array on a non-network error', async () => {
 				mockQdrant.getCollections.mockRejectedValue(new Error('connection failed'));
 				const collections = await listWorkspaceCollections();
 				expect(collections).toEqual([]);
+			});
+
+			// #2636: a network/TLS failure (Qdrant outage) must propagate so the codebase_search
+			// outer catch classifies it as qdrant_unreachable, instead of being swallowed into []
+			// (which the caller reports as collection_not_found — masking the outage).
+			test('rethrows network errors so a Qdrant outage reaches the classifier (#2636)', async () => {
+				mockQdrant.getCollections.mockRejectedValue(
+					Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' })
+				);
+				await expect(listWorkspaceCollections()).rejects.toThrow();
 			});
 
 			test('returns empty array when no ws-* collections exist', async () => {
@@ -290,9 +300,13 @@ describe('search-codebase.tool', () => {
 			expect(parsed.workspace).toBe('/fake/workspace');
 		});
 
-		test('returns collection_not_found when getCollection rejects', async () => {
-			// All variant attempts reject, so it's treated as "not found"
-			mockQdrant.getCollection.mockRejectedValue(new Error('fetch failed'));
+		// #2636: a Qdrant *outage* in the variant loop must surface as qdrant_unreachable,
+		// NOT be folded into collection_not_found (which masks an outage as a missing index
+		// and steers callers toward a wrong "re-index" remediation).
+		test('returns qdrant_unreachable when getCollection fails with a network error (#2636)', async () => {
+			mockQdrant.getCollection.mockRejectedValue(
+				Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' })
+			);
 
 			const result = await handleCodebaseSearch({
 				query: 'test',
@@ -300,8 +314,27 @@ describe('search-codebase.tool', () => {
 			});
 
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('collection_not_found');
-			expect(parsed.tried_variants.length).toBeGreaterThan(0);
+			expect(parsed.status).toBe('qdrant_unreachable');
+			expect((result as any).isError).toBe(true);
+		});
+
+		// #2636: a Qdrant outage reached via the listWorkspaceCollections() fallback
+		// (variant loop sees genuine 404s, then getCollections() is down) must also
+		// surface as qdrant_unreachable rather than collection_not_found.
+		test('returns qdrant_unreachable when getCollections fails with a network error (#2636)', async () => {
+			mockQdrant.getCollection.mockRejectedValue(new Error('Not found')); // genuine 404 per variant
+			mockQdrant.getCollections.mockRejectedValue(
+				Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6333'), { code: 'ECONNREFUSED' })
+			);
+
+			const result = await handleCodebaseSearch({
+				query: 'test',
+				workspace: '/ws'
+			});
+
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('qdrant_unreachable');
+			expect((result as any).isError).toBe(true);
 		});
 	});
 
