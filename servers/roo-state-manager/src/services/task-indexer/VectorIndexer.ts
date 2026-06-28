@@ -274,6 +274,27 @@ function recordFailure(): void {
 }
 
 /**
+ * Crée l'index de charge utile `task_id` (keyword) sur la collection.
+ *
+ * Sans cet index, les requêtes filtrées par task_id (dedup par tâche,
+ * roosync_search, countPointsByHostOs…) déclenchent un full-scan des
+ * payloads — mesuré 3-50s sur ~900k points on_disk_payload — qui fait
+ * timeout/stall le MCP. L'index porte le filtrage en O(log n).
+ * Voir issue #2700 / Gate #4.
+ *
+ * Idempotent côté Qdrant : PUT /collections/{c}/index est un no-op si
+ * l'index existe déjà.
+ */
+async function createTaskIdPayloadIndex(
+    qdrant: ReturnType<typeof getQdrantClient>,
+): Promise<void> {
+    await qdrant.createPayloadIndex(COLLECTION_NAME, {
+        field_name: 'task_id',
+        field_schema: 'keyword',
+    });
+}
+
+/**
  * Assure que la collection Qdrant existe. Si non, la crée.
  */
 export async function ensureCollectionExists() {
@@ -295,6 +316,7 @@ export async function ensureCollectionExists() {
                     max_indexing_threads: 2  // ✅ DOIT être > 0 pour éviter deadlock avec wait=true
                 }
             });
+            await createTaskIdPayloadIndex(qdrant);
             console.log(`Collection "${COLLECTION_NAME}" created successfully (size=${vectorSize}, max_indexing_threads=2)`);
         }
     } catch (error) {
@@ -1159,6 +1181,7 @@ export async function resetCollection(): Promise<void> {
                 max_indexing_threads: 2
             }
         });
+        await createTaskIdPayloadIndex(qdrant);
 
         console.log(`Collection ${COLLECTION_NAME} recréée avec succès (size=${vectorSize})`);
     } catch (error) {

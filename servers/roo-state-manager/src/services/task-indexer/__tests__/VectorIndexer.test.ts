@@ -9,9 +9,10 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as crypto from 'crypto';
 
 // Hoisted mock declarations (accessible in vi.mock factories)
-const { mockGetCollections, mockCreateCollection, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
+const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
 	mockGetCollections: vi.fn(),
 	mockCreateCollection: vi.fn(),
+	mockCreatePayloadIndex: vi.fn(),
 	mockUpsert: vi.fn(),
 	mockDeleteCollection: vi.fn(),
 	mockCount: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock('../../qdrant.js', () => ({
 	getQdrantClient: vi.fn(() => ({
 		getCollections: mockGetCollections,
 		createCollection: mockCreateCollection,
+		createPayloadIndex: mockCreatePayloadIndex,
 		upsert: mockUpsert,
 		deleteCollection: mockDeleteCollection,
 		count: mockCount,
@@ -208,6 +210,14 @@ describe('VectorIndexer', () => {
 					})
 				})
 			);
+			// #2700: payload index on task_id must be created alongside the collection
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expectedCollection,
+				expect.objectContaining({
+					field_name: 'task_id',
+					field_schema: 'keyword'
+				})
+			);
 		});
 
 		test('creates collection with correct hnsw config', async () => {
@@ -300,6 +310,14 @@ describe('VectorIndexer', () => {
 						size: 1536,
 						distance: 'Cosine'
 					})
+				})
+			);
+			// #2700: recreated collection must also get the task_id payload index
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expectedCollection,
+				expect.objectContaining({
+					field_name: 'task_id',
+					field_schema: 'keyword'
 				})
 			);
 		});
