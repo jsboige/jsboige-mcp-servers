@@ -9,9 +9,10 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as crypto from 'crypto';
 
 // Hoisted mock declarations (accessible in vi.mock factories)
-const { mockGetCollections, mockCreateCollection, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
+const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
 	mockGetCollections: vi.fn(),
 	mockCreateCollection: vi.fn(),
+	mockCreatePayloadIndex: vi.fn(),
 	mockUpsert: vi.fn(),
 	mockDeleteCollection: vi.fn(),
 	mockCount: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock('../../qdrant.js', () => ({
 	getQdrantClient: vi.fn(() => ({
 		getCollections: mockGetCollections,
 		createCollection: mockCreateCollection,
+		createPayloadIndex: mockCreatePayloadIndex,
 		upsert: mockUpsert,
 		deleteCollection: mockDeleteCollection,
 		count: mockCount,
@@ -230,6 +232,56 @@ describe('VectorIndexer', () => {
 			mockGetCollections.mockRejectedValue(new Error('Connection refused'));
 
 			await expect(ensureCollectionExists()).rejects.toThrow('Connection refused');
+		});
+
+		// #2699/#2700: payload index on task_id must be ensured (idempotent, every boot)
+		test('ensures a task_id payload index when collection already exists', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await ensureCollectionExists();
+
+			// Index creation runs regardless of whether the collection was just created
+			expect(mockCreateCollection).not.toHaveBeenCalled();
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expectedCollection,
+				expect.objectContaining({
+					field_name: 'task_id',
+					field_schema: 'keyword',
+					wait: false,  // non-blocking: index builds in background
+				})
+			);
+		});
+
+		test('ensures a task_id payload index after creating a new collection', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+
+			mockGetCollections.mockResolvedValue({ collections: [] });
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await ensureCollectionExists();
+
+			expect(mockCreateCollection).toHaveBeenCalled();
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({ field_name: 'task_id' })
+			);
+		});
+
+		test('does not throw if task_id payload index creation fails (non-fatal)', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+
+			mockGetCollections.mockResolvedValue({ collections: [] });
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockRejectedValue(new Error('Index conflict'));
+
+			// Index failure must not block startup — the collection existing is enough
+			await expect(ensureCollectionExists()).resolves.not.toThrow();
+			expect(mockCreatePayloadIndex).toHaveBeenCalled();
 		});
 	});
 
