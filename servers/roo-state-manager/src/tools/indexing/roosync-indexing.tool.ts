@@ -703,9 +703,14 @@ export async function handleRooSyncIndexing(
                     const batch = candidatesNeedingCount.slice(i, i + BATCH_CONCURRENCY);
                     const results = await Promise.all(batch.map(async (candidate) => {
                         try {
+                            // #2699/#2700: exact:false (cardinality estimate) instead of exact:true.
+                            // Gap-detection only tests `pointsCount === 0` below; an estimate cannot
+                            // turn a real 0 into >0 (or vice-versa), so presence/absence is reliable.
+                            // Measured 5ms vs 20-30s for exact:true on ~889k points without a payload
+                            // index (the index build is itself blocked behind the write queue).
                             const countResult = await qdrant.count(collectionName, {
                                 filter: { must: [{ key: 'task_id', match: { value: candidate.taskId } }] },
-                                exact: true
+                                exact: false
                             });
                             const pointsCount = (countResult as any).count ?? 0;
                             return { ...candidate, pointsCount, error: null as string | null };
