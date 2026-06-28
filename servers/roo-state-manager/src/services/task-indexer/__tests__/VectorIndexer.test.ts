@@ -9,9 +9,11 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as crypto from 'crypto';
 
 // Hoisted mock declarations (accessible in vi.mock factories)
-const { mockGetCollections, mockCreateCollection, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
+const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockGetCollection, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
 	mockGetCollections: vi.fn(),
 	mockCreateCollection: vi.fn(),
+	mockCreatePayloadIndex: vi.fn(),
+	mockGetCollection: vi.fn(),
 	mockUpsert: vi.fn(),
 	mockDeleteCollection: vi.fn(),
 	mockCount: vi.fn(),
@@ -42,6 +44,8 @@ vi.mock('../../qdrant.js', () => ({
 	getQdrantClient: vi.fn(() => ({
 		getCollections: mockGetCollections,
 		createCollection: mockCreateCollection,
+		createPayloadIndex: mockCreatePayloadIndex,
+		getCollection: mockGetCollection,
 		upsert: mockUpsert,
 		deleteCollection: mockDeleteCollection,
 		count: mockCount,
@@ -178,6 +182,14 @@ describe('VectorIndexer', () => {
 	// ============================================================
 
 	describe('ensureCollectionExists', () => {
+		beforeEach(() => {
+			// Default: collection has task_id index already → ensurePayloadIndexes is no-op
+			mockGetCollection.mockResolvedValue({
+				payload_schema: { task_id: { data_type: 'keyword', points_count: 1000 } }
+			});
+			mockCreatePayloadIndex.mockResolvedValue(undefined);
+		});
+
 		test('does nothing if collection already exists', async () => {
 			const { ensureCollectionExists } = await import('../VectorIndexer.js');
 			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
@@ -230,6 +242,94 @@ describe('VectorIndexer', () => {
 			mockGetCollections.mockRejectedValue(new Error('Connection refused'));
 
 			await expect(ensureCollectionExists()).rejects.toThrow('Connection refused');
+		});
+
+		// ============================================================
+		// #2700 — payload index on task_id (idempotent)
+		// ============================================================
+
+		test('[#2700] creates task_id payload index when missing on existing collection', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			mockGetCollections.mockResolvedValue({
+				collections: [{ name: expectedCollection }]
+			});
+			// payload_schema vide = index manquant
+			mockGetCollection.mockResolvedValue({ payload_schema: {} });
+
+			await ensureCollectionExists();
+
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expectedCollection,
+				expect.objectContaining({
+					field_name: 'task_id',
+					field_schema: 'keyword',
+					wait: false
+				})
+			);
+		});
+
+		test('[#2700] does NOT create task_id payload index when already present', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			mockGetCollections.mockResolvedValue({
+				collections: [{ name: expectedCollection }]
+			});
+			mockGetCollection.mockResolvedValue({
+				payload_schema: { task_id: { data_type: 'keyword', points_count: 50000 } }
+			});
+
+			await ensureCollectionExists();
+
+			expect(mockCreatePayloadIndex).not.toHaveBeenCalled();
+		});
+
+		test('[#2700] creates task_id payload index after creating new collection', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			mockGetCollections.mockResolvedValue({ collections: [] });
+			// After fresh createCollection, getCollection returns empty schema (no index yet)
+			mockGetCollection.mockResolvedValue({ payload_schema: {} });
+
+			await ensureCollectionExists();
+
+			// Both collection AND payload index created
+			expect(mockCreateCollection).toHaveBeenCalled();
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expectedCollection,
+				expect.objectContaining({
+					field_name: 'task_id',
+					field_schema: 'keyword'
+				})
+			);
+		});
+
+		test('[#2700] does not throw if createPayloadIndex fails (non-fatal)', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+
+			mockGetCollections.mockResolvedValue({
+				collections: [{ name: process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index' }]
+			});
+			mockGetCollection.mockResolvedValue({ payload_schema: {} });
+			mockCreatePayloadIndex.mockRejectedValue(new Error('Qdrant internal error'));
+
+			// Should NOT throw — payload-index failure is non-fatal
+			await expect(ensureCollectionExists()).resolves.not.toThrow();
+		});
+
+		test('[#2700] treats "already exists" conflict as success (idempotent)', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+
+			mockGetCollections.mockResolvedValue({
+				collections: [{ name: process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index' }]
+			});
+			mockGetCollection.mockResolvedValue({ payload_schema: {} });
+			mockCreatePayloadIndex.mockRejectedValue(new Error('Conflict: index already exists'));
+
+			await expect(ensureCollectionExists()).resolves.not.toThrow();
 		});
 	});
 

@@ -274,7 +274,64 @@ function recordFailure(): void {
 }
 
 /**
+ * Champs de payload qui doivent porter un index Qdrant.
+ * Sans index, les requêtes filtrées font un full-scan des 889k+ payloads
+ * (3-19s à charge pointe) → timeout MCP ~15s → stall intermittent (issue #2700).
+ *
+ * `task_id` = priorité #1 (5 sites de filtrage dans RSM).
+ */
+const REQUIRED_PAYLOAD_INDEXES: Array<{ field_name: string; field_schema: 'keyword' }> = [
+    { field_name: 'task_id', field_schema: 'keyword' },
+];
+
+/**
+ * Vérifie idempotent que les payload indexes requis existent sur la collection.
+ * Crée ceux qui manquent (wait=false → build async, non-bloquant pour le boot).
+ *
+ * Tolérant: si l'info payload_schema est inaccessible, on tente quand même createPayloadIndex
+ * (Qdrant rejette les doublons sans erreur fatale). Ne throw jamais — ne doit pas casser l'indexing.
+ */
+async function ensurePayloadIndexes(qdrant: ReturnType<typeof getQdrantClient>): Promise<void> {
+    try {
+        let existingSchema: Record<string, unknown> | undefined;
+        try {
+            const collectionInfo = await qdrant.getCollection(COLLECTION_NAME);
+            existingSchema = (collectionInfo as { payload_schema?: Record<string, unknown> }).payload_schema;
+        } catch (schemaError) {
+            console.warn(`⚠️ [#2700] Could not read payload_schema for "${COLLECTION_NAME}" — will attempt createPayloadIndex anyway:`, schemaError);
+        }
+
+        for (const idx of REQUIRED_PAYLOAD_INDEXES) {
+            const hasIndex = existingSchema && existingSchema[idx.field_name];
+            if (hasIndex) {
+                continue;
+            }
+
+            console.log(`📊 [#2700] Creating payload index on "${idx.field_name}" (keyword) for collection "${COLLECTION_NAME}"...`);
+            try {
+                await qdrant.createPayloadIndex(COLLECTION_NAME, {
+                    field_name: idx.field_name,
+                    field_schema: idx.field_schema,
+                    wait: false,
+                });
+                console.log(`✅ [#2700] Payload index on "${idx.field_name}" created (async build in background).`);
+            } catch (createError) {
+                const msg = createError instanceof Error ? createError.message : String(createError);
+                if (/already exists|conflict|409/i.test(msg)) {
+                    console.log(`✅ [#2700] Payload index on "${idx.field_name}" already exists (race or schema-read miss).`);
+                } else {
+                    console.warn(`⚠️ [#2700] Failed to create payload index on "${idx.field_name}": ${msg}`);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error ensuring payload indexes (non-fatal):', error);
+    }
+}
+
+/**
  * Assure que la collection Qdrant existe. Si non, la crée.
+ * Idempotent: crée aussi les payload indexes requis (task_id keyword — issue #2700).
  */
 export async function ensureCollectionExists() {
     try {
@@ -297,6 +354,10 @@ export async function ensureCollectionExists() {
             });
             console.log(`Collection "${COLLECTION_NAME}" created successfully (size=${vectorSize}, max_indexing_threads=2)`);
         }
+
+        // #2700: Toujours s'assurer que les payload indexes requis existent
+        // (idempotent — instant sur collection vide, async sur collection peuplée).
+        await ensurePayloadIndexes(qdrant);
     } catch (error) {
         console.error('Error ensuring Qdrant collection exists:', error);
         throw error;
