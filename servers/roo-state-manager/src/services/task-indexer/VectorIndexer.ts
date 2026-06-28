@@ -297,9 +297,39 @@ export async function ensureCollectionExists() {
             });
             console.log(`Collection "${COLLECTION_NAME}" created successfully (size=${vectorSize}, max_indexing_threads=2)`);
         }
+
+        // #2699/#2700: Ensure the payload index on `task_id` exists (idempotent, every boot).
+        await ensureTaskIdPayloadIndex();
     } catch (error) {
         console.error('Error ensuring Qdrant collection exists:', error);
         throw error;
+    }
+}
+
+/**
+ * #2699/#2700: Ensure a payload index exists on `task_id`.
+ *
+ * RSM filters by `task_id` at multiple sites (count, search, scroll, delete).
+ * Without an index, every filtered query does a full on-disk payload scan of the
+ * whole collection (3-19s at peak load on ~889k points) → exceeds the MCP ~15s
+ * timeout → intermittent indexing/search stall (gate #4).
+ *
+ * Idempotent: Qdrant re-creating an existing index is a no-op (returns acknowledged).
+ * Non-blocking: `wait: false` so the index builds in the background without stalling
+ * MCP startup on large existing collections.
+ */
+async function ensureTaskIdPayloadIndex(): Promise<void> {
+    const qdrant = getQdrantClient();
+    try {
+        await qdrant.createPayloadIndex(COLLECTION_NAME, {
+            field_name: 'task_id',
+            field_schema: 'keyword',
+            wait: false,
+        });
+    } catch (error: any) {
+        // Non-fatal: index creation failure must not block startup. The collection
+        // existing is more important than the index; the scan still works (slowly).
+        console.warn(`Could not ensure payload index on "task_id":`, error?.message ?? error);
     }
 }
 
