@@ -298,8 +298,8 @@ export async function ensureCollectionExists() {
             console.log(`Collection "${COLLECTION_NAME}" created successfully (size=${vectorSize}, max_indexing_threads=2)`);
         }
 
-        // #2699/#2700: Ensure the payload index on `task_id` exists (idempotent, every boot).
-        await ensureTaskIdPayloadIndex();
+        // #2699/#2700/#2712: Ensure payload indexes on every filtered field (idempotent, every boot).
+        await ensureFilteredPayloadIndexes();
     } catch (error) {
         console.error('Error ensuring Qdrant collection exists:', error);
         throw error;
@@ -307,29 +307,55 @@ export async function ensureCollectionExists() {
 }
 
 /**
- * #2699/#2700: Ensure a payload index exists on `task_id`.
+ * #2699/#2700/#2712: Payload fields RSM filters on. Each MUST carry a payload
+ * index, otherwise filtered queries degenerate to a full on-disk scan of the
+ * whole collection (3-50s on ~1M points at peak load) → exceeds the MCP ~15s
+ * timeout. The `contentHash` entry is the loop-killer: the #1985 dedup path
+ * scrolls with a `must:contentHash` filter, and an unindexed filter there is
+ * what turned github-2699 into a CPU-1190% doom-loop.
  *
- * RSM filters by `task_id` at multiple sites (count, search, scroll, delete).
- * Without an index, every filtered query does a full on-disk payload scan of the
- * whole collection (3-19s at peak load on ~889k points) → exceeds the MCP ~15s
- * timeout → intermittent indexing/search stall (gate #4).
+ * Field types verified against the live collection `payload_schema` (2026-06-29)
+ * and the `ChunkExtractor` payload shapes they mirror.
+ */
+const FILTERED_PAYLOAD_INDEXES: ReadonlyArray<{ field: string; schema: 'keyword' | 'bool' | 'datetime' }> = [
+    { field: 'task_id', schema: 'keyword' },
+    { field: 'contentHash', schema: 'keyword' },   // #1985 dedup filter — doom-loop source if unindexed
+    { field: 'workspace', schema: 'keyword' },
+    { field: 'workspace_name', schema: 'keyword' },
+    { field: 'model', schema: 'keyword' },
+    { field: 'role', schema: 'keyword' },
+    { field: 'source', schema: 'keyword' },
+    { field: 'tool_name', schema: 'keyword' },
+    { field: 'chunk_type', schema: 'keyword' },
+    { field: 'has_error', schema: 'bool' },
+    { field: 'timestamp', schema: 'datetime' },
+];
+
+/**
+ * #2699/#2700/#2712: Ensure a payload index exists on every filtered field.
+ *
+ * Called from both `ensureCollectionExists` (idempotent, every boot — heals an
+ * existing collection) and `resetCollection` (fresh collection, instant build on
+ * 0 points). Without this, a reset/recreate starts with zero indexes and the
+ * next filtered query reintroduces the github-2699 storm (gap #2700).
  *
  * Idempotent: Qdrant re-creating an existing index is a no-op (returns acknowledged).
- * Non-blocking: `wait: false` so the index builds in the background without stalling
+ * Non-blocking: `wait: false` so indexes build in the background without stalling
  * MCP startup on large existing collections.
+ * Non-fatal per field: one bad index must not block the others or collection use.
  */
-async function ensureTaskIdPayloadIndex(): Promise<void> {
+async function ensureFilteredPayloadIndexes(): Promise<void> {
     const qdrant = getQdrantClient();
-    try {
-        await qdrant.createPayloadIndex(COLLECTION_NAME, {
-            field_name: 'task_id',
-            field_schema: 'keyword',
-            wait: false,
-        });
-    } catch (error: any) {
-        // Non-fatal: index creation failure must not block startup. The collection
-        // existing is more important than the index; the scan still works (slowly).
-        console.warn(`Could not ensure payload index on "task_id":`, error?.message ?? error);
+    for (const { field, schema } of FILTERED_PAYLOAD_INDEXES) {
+        try {
+            await qdrant.createPayloadIndex(COLLECTION_NAME, {
+                field_name: field,
+                field_schema: schema,
+                wait: false,
+            });
+        } catch (error: any) {
+            console.warn(`Could not ensure payload index on "${field}":`, error?.message ?? error);
+        }
     }
 }
 
@@ -1191,6 +1217,11 @@ export async function resetCollection(): Promise<void> {
         });
 
         console.log(`Collection ${COLLECTION_NAME} recréée avec succès (size=${vectorSize})`);
+
+        // #2712: A freshly recreated collection starts with zero payload indexes. Recreate
+        // every filtered-field index so a reset never reintroduces the github-2699 doom-loop
+        // (gap #2700 — resetCollection previously created none). Build is instant on 0 points.
+        await ensureFilteredPayloadIndexes();
     } catch (error) {
         console.error('Erreur lors de la réinitialisation de la collection Qdrant:', error);
         throw error;
