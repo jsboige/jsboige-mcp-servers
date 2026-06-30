@@ -282,7 +282,7 @@ class KernelService:
                             ),
                         }
 
-                        total_execution_time += cell_result.execution_time
+                        total_execution_time += getattr(cell_result, "execution_time", 0.0)
                         results.append(cell_dict)
 
                         # Stop on error if configured to do so

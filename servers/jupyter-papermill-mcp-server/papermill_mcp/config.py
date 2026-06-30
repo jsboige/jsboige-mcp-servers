@@ -40,8 +40,11 @@ class PapermillConfig(BaseModel):
     )
     kernel_name: Optional[str] = Field(default=None, description="Default kernel name")
     transport_default_timeout: int = Field(
-        default=30,
-        description="Hard transport timeout in seconds for MCP tool calls (env: MCP_JUPYTER_DEFAULT_TIMEOUT)",
+        default=120,
+        description="Hard transport timeout in seconds for MCP tool calls (env: MCP_JUPYTER_DEFAULT_TIMEOUT). "
+        "Raised from 30: a cold kernel first-cell (e.g. .NET Interactive #r + class defs + JSON load) "
+        "legitimately takes 60-120s; 30s caused repeated false timeouts that, before the interrupt-on-"
+        "timeout fix, bricked the kernel indefinitely.",
     )
     transport_max_timeout: int = Field(
         default=3600,
