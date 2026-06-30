@@ -283,6 +283,39 @@ describe('VectorIndexer', () => {
 			await expect(ensureCollectionExists()).resolves.not.toThrow();
 			expect(mockCreatePayloadIndex).toHaveBeenCalled();
 		});
+
+		// #2712: every filtered field must get a payload index — a missing index
+		// degenerates filtered queries to a full scan (github-2699 doom-loop source).
+		test('#2712: ensures ALL 11 filtered payload indexes (github-2699 resilience)', async () => {
+			const { ensureCollectionExists } = await import('../VectorIndexer.js');
+
+			mockGetCollections.mockResolvedValue({ collections: [] });
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await ensureCollectionExists();
+
+			const expectedIndexes: Record<string, string> = {
+				task_id: 'keyword',
+				contentHash: 'keyword',   // #1985 dedup filter — the loop-killer
+				workspace: 'keyword',
+				workspace_name: 'keyword',
+				model: 'keyword',
+				role: 'keyword',
+				source: 'keyword',
+				tool_name: 'keyword',
+				chunk_type: 'keyword',
+				has_error: 'bool',
+				timestamp: 'datetime',
+			};
+			expect(mockCreatePayloadIndex).toHaveBeenCalledTimes(11);
+			for (const [field, schema] of Object.entries(expectedIndexes)) {
+				expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+					expect.any(String),
+					expect.objectContaining({ field_name: field, field_schema: schema, wait: false })
+				);
+			}
+		});
 	});
 
 	// ============================================================
@@ -373,6 +406,29 @@ describe('VectorIndexer', () => {
 			mockCreateCollection.mockRejectedValue(new Error('Create failed'));
 
 			await expect(resetCollection()).rejects.toThrow('Create failed');
+		});
+
+		// #2712/#2700: a reset must recreate every filtered-field index — otherwise a future
+		// reset reintroduces the github-2699 doom-loop (resetCollection previously created none).
+		test('#2712: recreates all filtered payload indexes after reset (#2700 gap)', async () => {
+			const { resetCollection } = await import('../VectorIndexer.js');
+
+			mockDeleteCollection.mockResolvedValue(undefined);
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await resetCollection();
+
+			// Fresh collection starts with 0 indexes; all 11 filtered fields must be re-indexed.
+			expect(mockCreatePayloadIndex).toHaveBeenCalledTimes(11);
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({ field_name: 'contentHash', field_schema: 'keyword', wait: false })
+			);
+			expect(mockCreatePayloadIndex).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({ field_name: 'timestamp', field_schema: 'datetime', wait: false })
+			);
 		});
 	});
 
