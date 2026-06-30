@@ -197,6 +197,23 @@ class JupyterManager:
             self.logger.error(f"Failed to list available kernels: {e}")
             return {}
 
+    def list_active_kernels(self) -> List[Dict[str, Any]]:
+        """
+        List currently active (running) kernels with their metadata.
+
+        Returns:
+            List of kernel info dicts (kernel_id, kernel_name, status,
+            started_at, last_activity, connection_file).
+        """
+        try:
+            return [
+                info.to_dict()
+                for info in self._kernel_info.values()
+            ]
+        except Exception as e:
+            self.logger.error(f"Failed to list active kernels: {e}")
+            return []
+
     async def start_kernel(self, kernel_name: str = "python3") -> str:
         """
         Start a new kernel instance.
@@ -466,6 +483,15 @@ class JupyterManager:
             if asyncio.get_event_loop().time() >= deadline:
                 status = "timeout"
                 self.logger.warning(f"Code execution timed out after {timeout}s")
+                # Interrupt the kernel to actually free it. Without this the kernel keeps
+                # running the (still-compiling) code, every subsequent call re-queues on a
+                # busy kernel and appears to hang indefinitely (the "stuck for hours" bug).
+                try:
+                    await self.interrupt_kernel(kernel_id)
+                except Exception as ie:
+                    self.logger.error(
+                        f"Failed to interrupt kernel {kernel_id} after timeout: {ie}"
+                    )
 
             # Update kernel info
             kernel_info.status = "idle"
@@ -632,6 +658,14 @@ class JupyterManager:
 
             if asyncio.get_event_loop().time() >= deadline:
                 stream_exec.status = "timeout"
+                # Interrupt the kernel to actually free it (same root cause as execute_code:
+                # without this the kernel stays busy and subsequent calls hang indefinitely).
+                try:
+                    await self.interrupt_kernel(kernel_id)
+                except Exception as ie:
+                    self.logger.error(
+                        f"Failed to interrupt kernel {kernel_id} after streaming timeout: {ie}"
+                    )
 
         except Exception as e:
             stream_exec.status = "error"
