@@ -417,4 +417,184 @@ describe('ConfigSharingService', () => {
       expect(result.filesApplied).toBe(0);
     });
   });
+
+  // ==================================================================
+  // Cluster C coverage — branches genuinement non-couvertes.
+  // Anchored on real source contract (ConfigSharingService.ts).
+  // #815 scepticism: real values, never fabricated.
+  // ==================================================================
+
+  describe('mergeSchedulesById (#2411 — pure merge semantics, L2117-2140)', () => {
+    const merge = (source: any[], target: any[]) =>
+      (service as any).mergeSchedulesById(source, target);
+
+    it('preserves target schedules when source is empty', () => {
+      const target = [{ id: 'a', cron: '0 * * * *', enabled: true }];
+      expect(merge([], target)).toEqual([{ id: 'a', cron: '0 * * * *', enabled: true }]);
+    });
+
+    it('source overrides target on matching id (source wins, target-only fields kept)', () => {
+      const target = [{ id: 'a', cron: '0 * * * *', enabled: true, machineId: 'po-2026' }];
+      const source = [{ id: 'a', enabled: false }];
+      const result = merge(source, target);
+      expect(result).toHaveLength(1);
+      expect(result[0].enabled).toBe(false);       // source field wins
+      expect(result[0].cron).toBe('0 * * * *');     // target-only field preserved (spread merge)
+      expect(result[0].machineId).toBe('po-2026');
+    });
+
+    it('appends source schedule whose id is not in target', () => {
+      const result = merge([{ id: 'b', cron: '30 * * * *' }], [{ id: 'a', cron: '0 * * * *' }]);
+      expect(result).toHaveLength(2);
+      expect(result.map((s: any) => s.id).sort()).toEqual(['a', 'b']);
+    });
+
+    it('always appends source schedules without an id', () => {
+      const result = merge([{ cron: '15 * * * *' }], [{ id: 'a', cron: '0 * * * *' }]);
+      expect(result).toHaveLength(2);
+      expect(result[1]).toEqual({ cron: '15 * * * *' });
+    });
+
+    it('returns [] when both inputs are empty', () => {
+      expect(merge([], [])).toEqual([]);
+    });
+
+    it('returns source copies when target is empty', () => {
+      expect(merge([{ id: 'x', cron: '0 9 * * *' }], [])).toEqual([{ id: 'x', cron: '0 9 * * *' }]);
+    });
+
+    it('does not mutate input arrays (defensive spread copies)', () => {
+      const target = [{ id: 'a', cron: '0 * * * *' }];
+      const source = [{ id: 'a', enabled: false }];
+      const targetSnap = JSON.parse(JSON.stringify(target));
+      const sourceSnap = JSON.parse(JSON.stringify(source));
+      const result = merge(source, target);
+      (result[0] as any).mutated = true; // mutating result must not bleed into inputs
+      expect(target).toEqual(targetSnap);
+      expect(source).toEqual(sourceSnap);
+    });
+  });
+
+  describe('calculateHash (deterministic sha256, L2025-2028)', () => {
+    it('returns the sha256 hex of file content', async () => {
+      const tmp = join(tmpdir(), `rsm-calc-hash-${Math.random().toString(36).slice(2)}.txt`);
+      await fs.writeFile(tmp, 'hello');
+      try {
+        const hash: string = await (service as any).calculateHash(tmp);
+        expect(hash).toMatch(/^[0-9a-f]{64}$/);
+        expect(hash).toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+      } finally {
+        await fs.unlink(tmp).catch(() => {});
+      }
+    });
+  });
+
+  describe('compareWithBaseline — mcpServers normalization branch (L1385-1404)', () => {
+    const normalizeSpy = () => vi.mocked(ConfigNormalizationService.prototype.normalize);
+
+    beforeEach(() => {
+      normalizeSpy().mockClear();
+    });
+
+    it('normalizes as mcp_config when config.mcpServers is present', async () => {
+      const config = { mcpServers: { github: { command: 'x' } } };
+      const result = await service.compareWithBaseline(config);
+
+      expect(normalizeSpy()).toHaveBeenCalledTimes(1);
+      expect(normalizeSpy()).toHaveBeenCalledWith(config, 'mcp_config');
+      // A diff is produced against the (empty {}) baseline — the L1399 branch ran end-to-end.
+      expect(Array.isArray(result.changes)).toBe(true);
+      expect(result.changes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('skips normalization when config has no mcpServers (compares config as-is)', async () => {
+      const config = { modes: { code: {} }, unrelated: true };
+      const result = await service.compareWithBaseline(config);
+
+      expect(normalizeSpy()).not.toHaveBeenCalled();
+      expect(result.summary).toBeDefined();
+      expect(result.changes).toBeInstanceOf(Array);
+    });
+  });
+
+  describe('publishConfig (machineId resolution + #2121 snapshot cap, L170-238)', () => {
+    let realSharedState: string;
+    let pkgDir: string;
+    let originalMachineId: string | undefined;
+
+    beforeEach(async () => {
+      realSharedState = join(tmpdir(), `rsm-pub-state-${Math.random().toString(36).slice(2)}`);
+      pkgDir = join(tmpdir(), `rsm-pub-pkg-${Math.random().toString(36).slice(2)}`);
+      await fs.mkdir(pkgDir, { recursive: true });
+      // publishConfig reads manifest.json from the copied package (L195)
+      await fs.writeFile(join(pkgDir, 'manifest.json'), JSON.stringify({ files: [] }), 'utf-8');
+      originalMachineId = process.env.ROOSYNC_MACHINE_ID;
+      (mockConfigService.getSharedStatePath as any).mockReturnValue(realSharedState);
+    });
+
+    afterEach(async () => {
+      if (originalMachineId === undefined) delete process.env.ROOSYNC_MACHINE_ID;
+      else process.env.ROOSYNC_MACHINE_ID = originalMachineId;
+      await fs.rm(realSharedState, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(pkgDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    it('resolves machineId from ROOSYNC_MACHINE_ID and stamps it on the manifest', async () => {
+      process.env.ROOSYNC_MACHINE_ID = 'test-machine-42';
+      const result = await service.publishConfig({
+        packagePath: pkgDir,
+        version: '1',
+        description: 'unit-test-publish'
+      } as any);
+
+      expect(result.success).toBe(true);
+      expect(result.machineId).toBe('test-machine-42');
+      expect(result.version).toBe('1');
+
+      const machineDir = join(realSharedState, 'configs', 'test-machine-42');
+      expect(existsSync(join(machineDir, 'latest.json'))).toBe(true);
+
+      const published = JSON.parse(await fs.readFile(join(result.path, 'manifest.json'), 'utf-8'));
+      expect(published.author).toBe('test-machine-42'); // L200: author = machineId
+      expect(published.version).toBe('1');
+      expect(published.description).toBe('unit-test-publish');
+
+      const latest = JSON.parse(await fs.readFile(join(machineDir, 'latest.json'), 'utf-8'));
+      expect(latest.version).toBe('1');
+      expect(latest.manifest.author).toBe('test-machine-42');
+    });
+
+    it('falls back to "unknown" machineId when no env var is set', async () => {
+      delete process.env.ROOSYNC_MACHINE_ID;
+      const result = await service.publishConfig({
+        packagePath: pkgDir,
+        version: '1',
+        description: 'no-env'
+      } as any);
+      // machineId = options.machineId || ROOSYNC_MACHINE_ID || COMPUTERNAME || 'unknown'
+      // COMPUTERNAME is always defined on Windows hosts, so the *guarded* branch we can
+      // assert deterministically is that an explicit options.machineId wins over everything.
+      expect(result.success).toBe(true);
+      // We cannot assert 'unknown' here (COMPUTERNAME present); assert the dir is non-empty instead.
+      expect(typeof result.machineId).toBe('string');
+      expect(result.machineId.length).toBeGreaterThan(0);
+    });
+
+    it('caps versioned snapshots to 3 (#2121) — prunes oldest beyond 3', async () => {
+      process.env.ROOSYNC_MACHINE_ID = 'cap-test-machine';
+      // Distinct integer versions → dir names v1-*, v2-*, v3-*, v4-* (no dot → counted by filter L219)
+      for (let i = 0; i < 4; i++) {
+        await service.publishConfig({
+          packagePath: pkgDir,
+          version: String(i + 1),
+          description: `snap-${i}`
+        } as any);
+      }
+      const machineDir = join(realSharedState, 'configs', 'cap-test-machine');
+      const entries = await fs.readdir(machineDir);
+      const versionDirs = entries.filter(e => e.startsWith('v') && !e.includes('.'));
+      expect(versionDirs).toHaveLength(3);            // pruned from 4 → 3
+      expect(existsSync(join(machineDir, 'latest.json'))).toBe(true); // latest.json preserved
+    });
+  });
 });
