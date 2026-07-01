@@ -41,7 +41,7 @@ import * as yaml from 'js-yaml';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { getChatOpenAIClient, getLLMModelId } from '../../services/openai.js';
+import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
 import {
   sendMentionNotificationsAsync,
   sendStructuredMentionNotificationsAsync,
@@ -194,6 +194,84 @@ function buildThinkingControl(isVllm: boolean): {
   }
   // z.ai / remote: use /no_think prefix (same as LLMService.ts #954)
   return { chatTemplateKwargs: undefined, promptPrefix: '/no_think\n' };
+}
+
+// #2719: Cloud fallback for condensation when the primary (local vLLM) LLM is down.
+// When the primary condensation LLM has exhausted its retries and returned null, we
+// make ONE attempt against a cloud provider (z.ai / OpenAI-compatible) so the dashboard
+// still gets condensed instead of wedging.
+//
+// Inert-safe: getFallbackChatOpenAIClient() returns null when no fallback key
+// (ZAI_API_KEY / FALLBACK_API_KEY) is configured, so cloudCondenseOnce() is a no-op and
+// behaviour is identical to pre-#2719 until the fleet secrets are provisioned.
+
+/**
+ * One cloud-fallback condensation attempt. Returns the condensed content (+ timing and
+ * model) on success, or null when the fallback is unconfigured, returns empty, or throws.
+ * Never throws — the caller keeps its existing primary-failure handling.
+ *
+ * The cloud fallback is a lightweight flash model with no thinking mode, so the user
+ * prompt is always prefixed with `/no_think` and no chat_template_kwargs is set.
+ */
+async function cloudCondenseOnce(
+  systemPrompt: string,
+  userPrompt: string,
+  opts: { maxTokens: number; temperature: number },
+): Promise<{ content: string; elapsedMs: number; model: string } | null> {
+  const fallbackClient = getFallbackChatOpenAIClient();
+  if (!fallbackClient) return null; // no fallback key configured → inert no-op
+  const fbModel = getFallbackLLMModelId();
+  const fbStart = Date.now();
+  try {
+    const response = await fallbackClient.chat.completions.create({
+      model: fbModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: '/no_think\n' + userPrompt },
+      ],
+      max_tokens: opts.maxTokens,
+      temperature: opts.temperature,
+    });
+    const content = response.choices[0]?.message?.content;
+    const elapsedMs = Date.now() - fbStart;
+    if (!content) {
+      logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
+      return null;
+    }
+    logger.info('#2719 cloud fallback condensation succeeded', {
+      fbModel,
+      elapsed: `${elapsedMs}ms`,
+      sizeKB: `${(Buffer.byteLength(content, 'utf8') / 1024).toFixed(1)}KB`,
+    });
+    return { content, elapsedMs, model: fbModel };
+  } catch (error: unknown) {
+    const errStr = error instanceof Error ? error.message : String(error);
+    logger.error('#2719 cloud fallback condensation failed', { fbModel, error: truncateError(errStr) });
+    return null;
+  }
+}
+
+/**
+ * Stats-aware wrapper around cloudCondenseOnce for the LLMCallResult condensers
+ * (generateLLMSummary / generateStatusUpdate). On fallback success, stamps the fallback
+ * fields + 'ok-with-fallback' outcome and returns the result; otherwise returns null so
+ * the caller returns its original primary-failure result (and its diagnostic stats) unchanged.
+ */
+async function tryCloudCondenseFallback(
+  systemPrompt: string,
+  userPrompt: string,
+  opts: { maxTokens: number; temperature: number },
+  stats: LLMCallStats,
+  callStart: number,
+): Promise<LLMCallResult | null> {
+  const fb = await cloudCondenseOnce(systemPrompt, userPrompt, opts);
+  if (!fb) return null;
+  stats.fallbackUsed = true;
+  stats.fallbackModel = fb.model;
+  stats.fallbackElapsedMs = fb.elapsedMs;
+  stats.finalOutcome = 'ok-with-fallback';
+  stats.elapsedMs = Date.now() - callStart;
+  return { content: fb.content, stats };
 }
 
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
@@ -876,7 +954,14 @@ export interface LLMCallStats {
   /** Truncated last error message (first 240 chars). Only set when final outcome is error/timeout. */
   lastError?: string;
   /** Final outcome. */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed';
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'ok-with-fallback';
+  // #2719: Cloud fallback fields
+  /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
+  fallbackUsed?: boolean;
+  /** Model name used for the fallback attempt (e.g. "glm-4.7-flash"). */
+  fallbackModel?: string;
+  /** Wall-clock time for the successful fallback attempt (ms). */
+  fallbackElapsedMs?: number;
 }
 
 /**
@@ -1034,6 +1119,9 @@ FORMAT :
         stats.finalOutcome = 'null';
         stats.elapsedMs = Date.now() - callStart;
         stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
+        // #2719: primary exhausted with null content (likely thinking-loop) → cloud fallback
+        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+        if (fbNull) return fbNull;
         return { content: null, stats };
       }
 
@@ -1067,6 +1155,9 @@ FORMAT :
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
       stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
+      // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
+      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+      if (fbErr) return fbErr;
       return { content: null, stats };
     }
   }
@@ -1234,6 +1325,9 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         stats.finalOutcome = 'null';
         stats.elapsedMs = Date.now() - callStart;
         stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
+        // #2719: primary exhausted with null content (likely thinking-loop) → cloud fallback
+        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+        if (fbNull) return fbNull;
         return { content: null, stats };
       }
 
@@ -1265,6 +1359,9 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
       stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
+      // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
+      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+      if (fbErr) return fbErr;
       return { content: null, stats };
     }
   }
@@ -1381,6 +1478,24 @@ RÈGLES :
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  // #2719: primary LLM never converged (down / empty / still oversized) → one cloud
+  // fallback attempt before falling to lossy truncation. The cloud result must still
+  // respect the HARD cap (#2598): use it only if under cap, else keep it as the best
+  // candidate for the deterministic backstop below.
+  const fbCloud = await cloudCondenseOnce(
+    `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.`,
+    text,
+    { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 },
+  );
+  if (fbCloud) {
+    const fbSize = Buffer.byteLength(fbCloud.content, 'utf8');
+    if (fbSize <= maxSizeBytes) {
+      logger.info(`#2719 cloud fallback condensed ${label} under cap`, { afterKB: `${(fbSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB` });
+      return fbCloud.content;
+    }
+    if (fbSize < bestSize) { bestCandidate = fbCloud.content; bestSize = fbSize; }
   }
 
   // LLM never converged under the cap (down, empty, or still oversized) → deterministic
