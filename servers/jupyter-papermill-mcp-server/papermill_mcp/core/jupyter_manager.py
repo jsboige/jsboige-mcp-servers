@@ -380,6 +380,18 @@ class JupyterManager:
         km = self._active_kernels[kernel_id]
         kernel_info = self._kernel_info[kernel_id]
 
+        # #2718: refuse to re-queue on a kernel marked "unresponsive" after a prior
+        # non-cooperative timeout (e.g. .NET nuget restore). Executing on a kernel
+        # that is still busy at the native layer would block past the deadline again.
+        # The caller must restart the kernel to recover -- restart_kernel() resets
+        # status to "idle".
+        if kernel_info.status == "unresponsive":
+            raise RuntimeError(
+                f"Kernel {kernel_id} is marked 'unresponsive' after a prior "
+                f"non-cooperative timeout. Restart it with "
+                f"manage_kernel(action='restart') before executing new code."
+            )
+
         try:
             # Update status
             kernel_info.status = "busy"
@@ -515,8 +527,10 @@ class JupyterManager:
 
             # Update kernel info
             # If we timed out AND the interrupt didn't succeed, mark the kernel
-            # "unresponsive" rather than "idle" so subsequent calls don't re-queue
-            # on a still-busy kernel (root cause of the original "stuck for hours" bug).
+            # "unresponsive" rather than "idle". The entry-point gate (top of
+            # execute_code) then refuses to re-queue on this still-busy kernel,
+            # breaking the original "stuck for hours" re-queue loop. Recovery is
+            # via restart_kernel() which resets status to "idle".
             if status == "timeout" and not interrupt_succeeded:
                 kernel_info.status = "unresponsive"
             else:
@@ -601,6 +615,19 @@ class JupyterManager:
             return
 
         kernel_info = self._kernel_info[kernel_id]
+
+        # #2718: refuse to re-queue on a kernel marked "unresponsive" (see
+        # execute_code entry gate). Streaming is a background task and cannot
+        # raise to the caller, so surface the refusal as an error result instead.
+        if kernel_info.status == "unresponsive":
+            stream_exec.status = "error"
+            stream_exec.error_value = (
+                f"Kernel {kernel_id} is marked 'unresponsive' after a prior "
+                f"non-cooperative timeout. Restart it with "
+                f"manage_kernel(action='restart')."
+            )
+            stream_exec.completed_at = datetime.now()
+            return
 
         try:
             kernel_info.status = "busy"

@@ -116,3 +116,20 @@ async def test_execute_code_normal_completion_marks_idle(manager_with_busy_kerne
 
     assert result.status == "ok"
     assert mgr._kernel_info[kernel_id].status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_execute_code_refuses_unresponsive_kernel(manager_with_busy_kernel):
+    """#2718: an 'unresponsive' kernel (prior non-cooperative timeout) must NOT be
+    re-queued. The entry-point gate raises RuntimeError instead of executing again
+    on a still-busy kernel. Recovery is via restart_kernel() (resets status to 'idle').
+    """
+    mgr, kernel_id, km_mock = manager_with_busy_kernel
+    # Simulate a prior call that left the kernel unresponsive.
+    mgr._kernel_info[kernel_id].status = "unresponsive"
+
+    with pytest.raises(RuntimeError, match="unresponsive"):
+        await mgr.execute_code(kernel_id, "#r \"nuget: System.Text.Json\"", timeout=5)
+
+    # Kernel status must stay 'unresponsive' (not flipped to 'busy' by a re-queue).
+    assert mgr._kernel_info[kernel_id].status == "unresponsive"
