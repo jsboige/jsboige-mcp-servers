@@ -4,6 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { basename } from 'path';
 
 // Unmock os module (globally mocked in vitest setup for other tests)
 vi.unmock('os');
@@ -41,7 +42,10 @@ describe('message-helpers', () => {
     test('should fallback to hostname when env not set', () => {
       delete process.env.ROOSYNC_MACHINE_ID;
       const id = getLocalMachineId();
-      expect(id).toBeTruthy();
+      // #815: Verify the sanitization contract — the hostname is lowercased and
+      // every non-[a-z0-9-] char is replaced. A stub returning e.g. "STUB_MACHINE"
+      // (underscore) or "MyMachine" (uppercase) would fail here.
+      expect(id).toMatch(/^[a-z0-9-]+$/);
       expect(typeof id).toBe('string');
     });
   });
@@ -90,8 +94,9 @@ describe('message-helpers', () => {
       delete process.env.ROOSYNC_WORKSPACE_ID;
       delete process.env.WORKSPACE_PATH;
       const id = getLocalWorkspaceId();
-      // Should return the current directory name (not undefined anymore)
-      expect(id).toBeTruthy();
+      // #815: Verify it returns the actual cwd basename (deterministic — same
+      // computation the function performs), not a stub/'default'/undefined.
+      expect(id).toBe(basename(process.cwd()));
       expect(typeof id).toBe('string');
       expect(id).not.toBe('undefined');
     });
@@ -101,7 +106,8 @@ describe('message-helpers', () => {
       delete process.env.WORKSPACE_PATH;
       const id = getLocalWorkspaceId();
       // Empty string should trigger auto-detection
-      expect(id).toBeTruthy();
+      // #815: deterministic content check — must equal the cwd basename
+      expect(id).toBe(basename(process.cwd()));
       expect(typeof id).toBe('string');
     });
   });
@@ -244,25 +250,32 @@ describe('message-helpers', () => {
   describe('formatDate', () => {
     test('should format ISO date to French format', () => {
       const result = formatDate('2026-01-29T15:30:00Z');
-      expect(result).toBeTruthy();
+      // #815: Verify real fr-FR date formatting (DD/MM/YYYY with the actual year),
+      // not a stub. A function returning e.g. "formatted" or "" would fail here.
+      expect(result).toMatch(/\d{2}\/\d{2}\/\d{4}/);
+      expect(result).toContain('2026');
       expect(typeof result).toBe('string');
     });
   });
 
   describe('getPriorityIcon', () => {
     test('should return correct icons', () => {
-      expect(getPriorityIcon('URGENT')).toBeTruthy();
-      expect(getPriorityIcon('HIGH')).toBeTruthy();
-      expect(getPriorityIcon('MEDIUM')).toBeTruthy();
-      expect(getPriorityIcon('LOW')).toBeTruthy();
+      // #815: Verify the exact distinct emoji per priority. A stub that hardcodes
+      // the same icon for every input would pass toBeTruthy() but fails here.
+      expect(getPriorityIcon('URGENT')).toBe('🔥');
+      expect(getPriorityIcon('HIGH')).toBe('⚠️');
+      expect(getPriorityIcon('MEDIUM')).toBe('📝');
+      expect(getPriorityIcon('LOW')).toBe('📋');
     });
   });
 
   describe('getStatusIcon', () => {
     test('should return correct icons', () => {
-      expect(getStatusIcon('unread')).toBeTruthy();
-      expect(getStatusIcon('read')).toBeTruthy();
-      expect(getStatusIcon('archived')).toBeTruthy();
+      // #815: Verify the exact distinct emoji per status. A stub that hardcodes
+      // the same icon for every input would pass toBeTruthy() but fails here.
+      expect(getStatusIcon('unread')).toBe('🆕');
+      expect(getStatusIcon('read')).toBe('✅');
+      expect(getStatusIcon('archived')).toBe('📦');
     });
   });
 
