@@ -46,8 +46,11 @@ describe('diagnose_conversation_bom (integration)', () => {
 
       const text = result.content[0].text;
 
-      // Le résultat doit être du texte valide (peut être un message d'absence de stockage)
-      expect(text).toBeTruthy();
+      // #815: Verify the text carries one of the two known contract markers from the
+      // source (diagnose-conversation-bom.tool.ts): either the no-storage path (L37
+      // 'Aucun emplacement de stockage Roo trouvé.') or the report path (L93 header
+      // '# Diagnostic BOM des conversations'). A stub returning e.g. "X" would fail.
+      expect(text).toMatch(/^(Aucun emplacement de stockage Roo trouvé\.|# Diagnostic BOM des conversations)/);
       expect(text.length).toBeGreaterThan(0);
 
       // Si le stockage Roo est détecté, vérifier la structure markdown
@@ -64,8 +67,9 @@ describe('diagnose_conversation_bom (integration)', () => {
 
       const text = result.content[0].text;
 
-      // Vérifier que le texte contient des statistiques ou un message d'absence
-      expect(text).toBeTruthy();
+      // #815: Verify the text carries one of the two known contract markers (see
+      // 'valid markdown report' test). A stub returning "X" would fail.
+      expect(text).toMatch(/^(Aucun emplacement de stockage Roo trouvé\.|# Diagnostic BOM des conversations)/);
 
       if (!text.includes('Aucun emplacement de stockage Roo trouvé')) {
         // Le rapport doit contenir des statistiques
@@ -108,13 +112,15 @@ describe('diagnose_conversation_bom (integration)', () => {
       const resultWithoutFix = await diagnoseConversationBomTool.handler({
         fix_found: false
       });
-      expect(resultWithoutFix.content[0].text).toBeTruthy();
+      // #815: Verify the known contract marker (no-storage or report header).
+      expect(resultWithoutFix.content[0].text).toMatch(/^(Aucun emplacement de stockage Roo trouvé\.|# Diagnostic BOM des conversations)/);
 
       // Test avec fix_found=true (diagnostic mode)
       const resultWithFix = await diagnoseConversationBomTool.handler({
         fix_found: true
       });
-      expect(resultWithFix.content[0].text).toBeTruthy();
+      // #815: same contract marker.
+      expect(resultWithFix.content[0].text).toMatch(/^(Aucun emplacement de stockage Roo trouvé\.|# Diagnostic BOM des conversations)/);
     });
   });
 
@@ -129,8 +135,10 @@ describe('diagnose_conversation_bom (integration)', () => {
 
       const text = result.content[0].text;
 
-      // Même sans stockage Roo, l'outil doit retourner un rapport valide
-      expect(text).toBeTruthy();
+      // #815: Verify the known contract marker. Even without Roo storage the tool
+      // must return one of the two documented contract outputs (no-storage msg or
+      // report header), not an empty/garbage string.
+      expect(text).toMatch(/^(Aucun emplacement de stockage Roo trouvé\.|# Diagnostic BOM des conversations)/);
       expect(text.length).toBeGreaterThan(0);
     });
   });
