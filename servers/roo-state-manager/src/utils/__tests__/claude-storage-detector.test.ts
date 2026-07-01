@@ -304,4 +304,160 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
             });
         });
     });
+
+    // ============================================================
+    // NEW coverage (deep-queue COVERAGE Cluster D): branches & edge
+    // cases genuinely non-covered. Anchored on real source contract
+    // (claude-storage-detector.ts): parseJsonlLine L145-163,
+    // buildSequenceFromEntries L303-383, detectWorkspace L475-522,
+    // findConversationById L552-584, analyzeConversation L191-194.
+    // ============================================================
+    describe('NEW coverage — branches & edge cases', () => {
+        // --- parseJsonlLine: empty / missing-field branches (L145-163) ---
+        it('DEVRAIT retourner null pour une ligne vide ou whitespace', async () => {
+            expect(await ClaudeStorageDetector.parseJsonlLine('')).toBeNull();
+            expect(await ClaudeStorageDetector.parseJsonlLine('   ')).toBeNull();
+            expect(await ClaudeStorageDetector.parseJsonlLine('\t\n')).toBeNull();
+        });
+
+        it('DEVRAIT retourner null pour un JSON valide sans champ type', async () => {
+            const noType = JSON.stringify({ timestamp: new Date().toISOString(), message: { role: 'user', content: 'x' } });
+            expect(await ClaudeStorageDetector.parseJsonlLine(noType)).toBeNull();
+        });
+
+        it('DEVRAIT retourner null pour un JSON valide sans champ timestamp', async () => {
+            const noTimestamp = JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' } });
+            expect(await ClaudeStorageDetector.parseJsonlLine(noTimestamp)).toBeNull();
+        });
+
+        // --- buildSequenceFromEntries branches (L303-383) ---
+        it('DEVRAIT marquer status=failure pour command_result avec exitCode != 0', async () => {
+            const jsonlContent = JSON.stringify({
+                type: 'command_result',
+                command: { command: 'failing-cmd', exitCode: 1, output: 'error output' },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'cmd-fail',
+            });
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            const cmdAction = skeleton!.sequence.find((s: any) => s.type === 'command') as any;
+            expect(cmdAction).toBeDefined();
+            expect(cmdAction.status).toBe('failure');
+            expect(cmdAction.name).toBe('failing-cmd');
+        });
+
+        it('DEVRAIT extraire une action tool depuis un tool_use assistant (#253, L326-338)', async () => {
+            const jsonlContent = JSON.stringify({
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{
+                        type: 'tool_use',
+                        toolUse: { name: 'write_file', id: 'tu-1', input: { filePath: '/x/y.ts' } },
+                    }],
+                },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'tu-uuid',
+            });
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            // sequence = [assistant message, tool action]
+            const toolActions = skeleton!.sequence.filter((s: any) => s.type === 'tool') as any[];
+            expect(toolActions).toHaveLength(1);
+            expect(toolActions[0].name).toBe('write_file');
+            expect(toolActions[0].status).toBe('success');
+        });
+
+        it('DEVRAIT ignorer les tool_result quand includeToolResults=false (L367)', async () => {
+            const entry = {
+                type: 'tool_result',
+                toolResult: { name: 'bash', result: 'some result' },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'tr-1',
+            };
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), JSON.stringify(entry));
+
+            const excluded = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir, { includeToolResults: false });
+            expect(excluded!.sequence).toHaveLength(0);
+
+            const included = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir, { includeToolResults: true });
+            expect(included!.sequence.filter((s: any) => s.type === 'tool')).toHaveLength(1);
+        });
+
+        it('DEVRAIT mapper read_result vers une action read_file (L354-365)', async () => {
+            const jsonlContent = JSON.stringify({
+                type: 'read_result',
+                readResult: { filePath: '/abs/src/index.ts', content: 'line1\nline2', lineCount: 2 },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'rr-1',
+            });
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            const readAction = skeleton!.sequence.find((s: any) => s.name === 'read_file') as any;
+            expect(readAction).toBeDefined();
+            expect(readAction.file_path).toBe('/abs/src/index.ts');
+            expect(readAction.line_count).toBe(2);
+        });
+
+        it('DEVRAIT trier la séquence par timestamp (L380-382)', async () => {
+            const jsonlContent = [
+                JSON.stringify({ type: 'user', message: { role: 'user', content: 'late' }, timestamp: '2024-01-01T10:05:00.000Z', uuid: 'late' }),
+                JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'early' }, timestamp: '2024-01-01T10:00:00.000Z', uuid: 'early' }),
+            ].join('\n');
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            const msgs = skeleton!.sequence.filter((s: any) => s.role) as any[];
+            expect(msgs[0].content).toBe('early');   // earlier timestamp first
+            expect(msgs[1].content).toBe('late');
+        });
+
+        // --- detectWorkspace branches (L475-522) ---
+        it('DEVRAIT détecter le workspace depuis le champ cwd (priorité 1) avec normalisation backslash', async () => {
+            const jsonlContent = JSON.stringify({
+                type: 'user',
+                message: { role: 'user', content: 'hi' },
+                cwd: 'C:\\Users\\dev\\my-project',
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'cwd-1',
+            });
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            expect(skeleton?.metadata.workspace).toBe('C:/Users/dev/my-project'); // \ → /
+        });
+
+        it('DEVRAIT fallback sur le nom de projet c-- quand aucun cwd/fichier (L516-519)', async () => {
+            // testProjectDir = 'c--test-project', plain user msg with no cwd/files
+            const jsonlContent = JSON.stringify({
+                type: 'user',
+                message: { role: 'user', content: 'plain message' },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'fb-1',
+            });
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            // c--test-project → strip 'c--' → 'test-project' → '-' → '/' → 'test/project'
+            expect(skeleton?.metadata.workspace).toBe('test/project');
+        });
+
+        // --- findConversationById: non-claude guard (L557-559) ---
+        it('DEVRAIT retourner null pour un taskId ne commençant pas par claude-', async () => {
+            const skeleton = await ClaudeStorageDetector.findConversationById('roo-abc123');
+            expect(skeleton).toBeNull();
+        });
+
+        // --- analyzeConversation: dir without .jsonl → minimal skeleton (L191-194) ---
+        it('DEVRAIT créer un squelette minimal pour un répertoire sans fichier .jsonl', async () => {
+            // testProjectDir exists but has no .jsonl file (only whatever beforeEach left)
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            expect(skeleton).toBeDefined();
+            expect(skeleton?.metadata.messageCount).toBe(0);
+            expect(skeleton?.sequence).toEqual([]);
+        });
+    });
 });
