@@ -516,4 +516,222 @@ describe('garbage-scanner', () => {
 			expect(result.space_freed_bytes).toBeGreaterThanOrEqual(2000);
 		});
 	});
+	describe('garbage-scanner — additional coverage (#815 Cluster B)', () => {
+		// Helpers
+		function makeSkeleton(taskId: string, sequence: any[] = [], overrides: any = {}) {
+			return {
+				taskId,
+				metadata: {
+					messageCount: 20,
+					actionCount: 10,
+					totalSize: 5000,
+					machineId: 'test-machine',
+					createdAt: '2024-01-01T00:00:00Z',
+					...overrides,
+				},
+				sequence,
+			} as ConversationSkeleton;
+		}
+		function makeCandidate(taskId: string, messageCount = 10) {
+			return {
+				task_id: taskId,
+				category: 'low_value' as const,
+				score: 0.8,
+				details: {
+					message_count: messageCount,
+					action_count: 5,
+					assistant_message_count: 2,
+					error_message_count: 5,
+					assistant_ratio: 0.2,
+					error_ratio: 0.5,
+					total_size: 1000,
+				},
+			};
+		}
+
+		// ─── cleanupGarbage: vector removal path (source L385-405, never exercised before) ───
+		describe('cleanupGarbage — vector removal', () => {
+			test('deletes Qdrant vectors and counts them when remove_vectors=true', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set('vec-task', makeSkeleton('vec-task'));
+				const deleteSpy = vi.fn().mockResolvedValue({ status: 'completed' });
+				const { getQdrantClient } = await import('../../../services/qdrant.js');
+				vi.mocked(getQdrantClient).mockReturnValue({ delete: deleteSpy } as any);
+
+				const result = await cleanupGarbage(cache, [makeCandidate('vec-task', 10)], {
+					remove_skeletons: false,
+					remove_vectors: true,
+				});
+
+				expect(deleteSpy).toHaveBeenCalledWith(
+					'test_collection',
+					expect.objectContaining({
+						filter: { must: [{ key: 'task_id', match: { value: 'vec-task' } }] },
+					}),
+				);
+				expect(result.vectors_deleted).toBe(200); // 10 messages * 20 vectors (source L401)
+				expect(result.errors).toHaveLength(0);
+			});
+
+			test('records an error when Qdrant delete rejects', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set('vec-fail', makeSkeleton('vec-fail'));
+				const deleteSpy = vi.fn().mockRejectedValue(new Error('Qdrant unreachable'));
+				const { getQdrantClient } = await import('../../../services/qdrant.js');
+				vi.mocked(getQdrantClient).mockReturnValue({ delete: deleteSpy } as any);
+
+				const result = await cleanupGarbage(cache, [makeCandidate('vec-fail', 10)], {
+					remove_skeletons: false,
+				remove_vectors: true,
+				});
+
+				expect(result.vectors_deleted).toBe(0);
+			expect(result.errors.length).toBeGreaterThan(0);
+				expect(result.errors[0]).toContain('vec-fail');
+			});
+		});
+
+		// ─── cleanupGarbage: defaults + edge cases ───
+		describe('cleanupGarbage — defaults & edges', () => {
+			test('defaults to removing both skeletons and vectors when options are unset (source L341-342)', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set('def-task', makeSkeleton('def-task', [], { totalSize: 1000 }));
+			// Module-level mock returns objects, but the real contract is string[] (L72) —
+			// override so path.join(locations[0]) works and the file-removal path is exercised.
+			mockDetectStorageLocations.mockResolvedValue(['/test/storage']);
+				const deleteSpy = vi.fn().mockResolvedValue({ status: 'completed' });
+				const { getQdrantClient } = await import('../../../services/qdrant.js');
+				vi.mocked(getQdrantClient).mockReturnValue({ delete: deleteSpy } as any);
+
+				const result = await cleanupGarbage(cache, [makeCandidate('def-task', 5)], {}); // no remove_* flags
+
+				expect(cache.has('def-task')).toBe(false); // skeleton removed from cache
+				expect(vi.mocked(fs.unlink)).toHaveBeenCalled(); // skeleton file unlinked
+				expect(deleteSpy).toHaveBeenCalled(); // vectors removed
+				expect(result.vectors_deleted).toBe(100); // 5 * 20
+				expect(result.skeletons_removed).toBe(1);
+			});
+
+			test('skips a missing skeleton file gracefully (ENOENT) but still clears the cache entry', async () => {
+				vi.mocked(fs.stat).mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set('missing', makeSkeleton('missing', [], { totalSize: 750 }));
+
+				const result = await cleanupGarbage(cache, [makeCandidate('missing', 10)], {
+					remove_skeletons: true,
+					remove_vectors: false,
+				});
+
+				expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled(); // stat threw first 	 unlink skipped
+				expect(result.skeletons_removed).toBe(0); // file did not exist
+				expect(cache.has('missing')).toBe(false); // cache still cleared (source L377-381)
+				expect(result.space_freed_bytes).toBeGreaterThanOrEqual(750); // cache totalSize counted
+			});
+
+			test('returns an empty result for an empty candidate list', async () => {
+				const result = await cleanupGarbage(new Map(), [], {
+					remove_skeletons: true,
+					remove_vectors: true,
+				});
+
+				expect(result.skeletons_removed).toBe(0);
+				expect(result.vectors_deleted).toBe(0);
+				expect(result.space_freed_bytes).toBe(0);
+				expect(result.errors).toHaveLength(0);
+			});
+		});
+
+		// ─── detectDeathSpiral: normalization + threshold boundary + streak reset ───
+		describe('scanForGarbage — death spiral deep branches', () => {
+			test('detects a spiral despite differing timestamps (normalization strips them, source L105-110)', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set(
+				'ts-spiral',
+				makeSkeleton(
+				'ts-spiral',
+				[
+					{ role: 'assistant', content: 'Error 502 at 2024-01-01T10:00:00 after 500ms' },
+					{ role: 'assistant', content: 'Error 502 at 2024-01-01T10:00:05 after 600ms' },
+					{ role: 'assistant', content: 'Error 502 at 2024-01-01T10:00:10 after 700ms' },
+					{ role: 'assistant', content: 'Error 502 at 2024-01-01T10:00:15 after 800ms' },
+					{ role: 'assistant', content: 'Error 502 at 2024-01-01T10:00:20 after 900ms' },
+				],
+				{ messageCount: 20 },
+				),
+				);
+
+				const result = await scanForGarbage(cache, { category: 'death_spiral', min_messages: 10 });
+
+				expect(result.flagged).toHaveLength(1);
+				expect(result.flagged[0].category).toBe('death_spiral');
+				expect(result.flagged[0].details.death_spiral_count).toBeGreaterThanOrEqual(5);
+			});
+
+			test('does NOT flag at 4 consecutive identical errors (threshold is 5, source L67/L131)', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set('border', makeSkeleton('border', Array(4).fill({ role: 'assistant', content: 'Error 502 bad gateway' })));
+
+				const result = await scanForGarbage(cache, { category: 'death_spiral', min_messages: 10 });
+
+				expect(result.flagged).toHaveLength(0); // streak 4 < 5
+			});
+
+			test('an intervening non-error message resets the streak (source L123-126)', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set(
+				'reset',
+				makeSkeleton('reset', [
+					...Array(3).fill({ role: 'assistant', content: 'Error 502' }),
+					{ role: 'assistant', content: 'Success: operation completed' },
+					...Array(3).fill({ role: 'assistant', content: 'Error 502' }),
+				]),
+				);
+
+				const result = await scanForGarbage(cache, { category: 'death_spiral', min_messages: 10 });
+
+				expect(result.flagged).toHaveLength(0); // max streak 3 < 5 after reset
+			});
+		});
+
+		// ─── duplicate score cap ───
+		describe('scanForGarbage — duplicate score cap', () => {
+			test('caps duplicate score at 1.0 for large groups (source L285)', async () => {
+				const cache = new Map<string, ConversationSkeleton>();
+				for (let i = 0; i < 10; i++) {
+				cache.set(`d-${i}`, makeSkeleton(`d-${i}`, [], { messageCount: 15, totalSize: 3000 }));
+				}
+
+				const result = await scanForGarbage(cache, { category: 'duplicate' });
+
+				const dups = result.flagged.filter(f => f.category === 'duplicate');
+				expect(dups.length).toBeGreaterThan(0);
+				// score = min(0.5 + group.length(10) * 0.1, 1) = min(1.5, 1) = 1.0
+				expect(dups[0].score).toBe(1.0);
+				expect(dups.every(f => f.score <= 1.0)).toBe(true);
+			});
+		});
+
+		// ─── low_value characterization (LATENT BUG — see PR description) ───
+		describe('scanForGarbage — low_value characterization', () => {
+			test('low_value is currently unreachable: errorRatio <= assistantRatio makes the condition self-contradictory', async () => {
+				// Suspected latent bug (#1786 follow-up): low_value requires
+				//   assistantRatio < 0.05  AND  errorRatio > 0.5   (source L240-241)
+				// but errorCount is incremented ONLY on assistant messages (computeRatios L155-162),
+				// so errorCount <= assistantCount, hence errorRatio <= assistantRatio always.
+				// The conjunction is unsatisfiable. Even an all-error task has assistantRatio = 1.0.
+				// This test locks the CURRENT behavior so any future fix is a deliberate change.
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set(
+				'lv',
+				makeSkeleton('lv', Array(20).fill({ role: 'assistant', content: 'Error 502 bad gateway' })),
+				);
+
+				const result = await scanForGarbage(cache, { category: 'low_value', min_messages: 10 });
+
+				expect(result.flagged).toHaveLength(0);
+				expect(result.by_category.low_value).toBe(0);
+			});
+		});
+	});
+
 });
