@@ -9,7 +9,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as crypto from 'crypto';
 
 // Hoisted mock declarations (accessible in vi.mock factories)
-const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll } = vi.hoisted(() => ({
+const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll, mockDelete } = vi.hoisted(() => ({
 	mockGetCollections: vi.fn(),
 	mockCreateCollection: vi.fn(),
 	mockCreatePayloadIndex: vi.fn(),
@@ -17,7 +17,8 @@ const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUp
 	mockDeleteCollection: vi.fn(),
 	mockCount: vi.fn(),
 	mockRetrieve: vi.fn(),
-	mockScroll: vi.fn()
+	mockScroll: vi.fn(),
+	mockDelete: vi.fn()
 }));
 
 const { mockEmbeddingsCreate } = vi.hoisted(() => ({
@@ -48,7 +49,8 @@ vi.mock('../../qdrant.js', () => ({
 		deleteCollection: mockDeleteCollection,
 		count: mockCount,
 		retrieve: mockRetrieve,
-		scroll: mockScroll
+		scroll: mockScroll,
+		delete: mockDelete
 	}))
 }));
 
@@ -733,4 +735,233 @@ describe('VectorIndexer', () => {
 			expect(extractChunksFromTask).not.toHaveBeenCalled();
 		}, 30000);
 	});
+	describe('VectorIndexer — additional coverage (#815 Cluster B)', () => {
+		function makePoint(id: string, dim = 1536): { id: string; vector: number[]; payload: any } {
+			return { id, vector: new Array(dim).fill(0.1), payload: { task_id: id, content: 'x' } };
+		}
+		function httpStatusError(status: number, message = 'err') {
+			return Object.assign(new Error(message), { response: { status, statusText: message, data: {} } });
+		}
+
+		// ─── updateSkeletonIndexTimestamp (L1172-1192) — only typeof-checked before ───
+		describe('updateSkeletonIndexTimestamp — behavior', () => {
+			test('writes metadata.qdrantIndexedAt (ISO) and preserves existing metadata', async () => {
+				vi.useRealTimers();
+				const { updateSkeletonIndexTimestamp } = await import('../VectorIndexer.js');
+				const os = await import('os');
+				const fsp = await import('fs/promises');
+				const pathMod = await import('path');
+				const dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'vi-sk-'));
+				try {
+					const skelDir = pathMod.join(dir, '.skeletons');
+					await fsp.mkdir(skelDir);
+					const skelPath = pathMod.join(skelDir, 'task-x.json');
+					await fsp.writeFile(skelPath, JSON.stringify({ metadata: { messageCount: 5 }, sequence: [] }), 'utf8');
+
+					await updateSkeletonIndexTimestamp('task-x', dir);
+
+					const after = JSON.parse(await fsp.readFile(skelPath, 'utf8'));
+					expect(after.metadata.messageCount).toBe(5); // preserved
+					expect(typeof after.metadata.qdrantIndexedAt).toBe('string');
+					expect(after.metadata.qdrantIndexedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/); // ISO 8601
+					// sanity: the stamp is recent (within the last 5 seconds)
+					expect(Date.now() - new Date(after.metadata.qdrantIndexedAt).getTime()).toBeLessThan(5000);
+				} finally {
+					await fsp.rm(dir, { recursive: true, force: true });
+				}
+			});
+
+			test('creates metadata when absent before stamping (L1181 `|| {}`)', async () => {
+				vi.useRealTimers();
+				const { updateSkeletonIndexTimestamp } = await import('../VectorIndexer.js');
+				const os = await import('os');
+				const fsp = await import('fs/promises');
+				const pathMod = await import('path');
+				const dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'vi-sk2-'));
+				try {
+					const skelDir = pathMod.join(dir, '.skeletons');
+					await fsp.mkdir(skelDir);
+					const skelPath = pathMod.join(skelDir, 'no-meta.json');
+					await fsp.writeFile(skelPath, JSON.stringify({ sequence: [{ role: 'user' }] }), 'utf8'); // no metadata key
+
+					await updateSkeletonIndexTimestamp('no-meta', dir);
+
+					const after = JSON.parse(await fsp.readFile(skelPath, 'utf8'));
+					expect(after.metadata).toBeDefined();
+					expect(after.metadata.qdrantIndexedAt).toMatch(/^\d{4}-/);
+				} finally {
+					await fsp.rm(dir, { recursive: true, force: true });
+				}
+			});
+
+			test('swallows the error (no throw) when the skeleton file is missing (L1188-1191)', async () => {
+				vi.useRealTimers();
+				const { updateSkeletonIndexTimestamp } = await import('../VectorIndexer.js');
+				// Non-existent storage location 	 fs.readFile throws ENOENT 	 caught 	 resolves undefined.
+				await expect(
+					updateSkeletonIndexTimestamp('ghost', '/definitely/not/a/real/storage/path'),
+				).resolves.toBeUndefined();
+			});
+		});
+
+		// ─── resetEmbeddingCircuitBreaker (L91-101) — #2634 runtime reset, returns previous ───
+		describe('resetEmbeddingCircuitBreaker (#2634)', () => {
+			test('returns the previous OPEN snapshot and resets the breaker to CLOSED', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { safeQdrantUpsert, resetEmbeddingCircuitBreaker, getCircuitBreakerState, resetCircuitBreakerForTest } =
+					await import('../VectorIndexer.js');
+				resetCircuitBreakerForTest();
+
+				// Trip the breaker: 3 failed upserts with a retryable (503) error 	 recordFailure ×3 	 OPEN.
+				mockUpsert.mockRejectedValue(httpStatusError(503, 'ECONNREFUSED'));
+				const pts = [makePoint('cb-a')];
+				await safeQdrantUpsert(pts);
+				await safeQdrantUpsert(pts);
+					await safeQdrantUpsert(pts);
+				expect(getCircuitBreakerState().state).toBe('OPEN');
+
+				const prev = resetEmbeddingCircuitBreaker();
+
+				expect(prev.state).toBe('OPEN'); // previous snapshot returned for audit (#2634)
+				expect(prev.failureCount).toBeGreaterThanOrEqual(3);
+				expect(getCircuitBreakerState().state).toBe('CLOSED'); // reset took effect
+				expect(getCircuitBreakerState().failureCount).toBe(0);
+			}, 30000);
+		});
+
+		// ─── Embedding metrics (L132-140) ───
+		describe('embedding metrics', () => {
+			test('getEmbeddingMetrics returns a defensive copy — mutation does not leak (L133 `{ ..._metrics }`)', async () => {
+				const { getEmbeddingMetrics, resetEmbeddingMetricsForTest } = await import('../VectorIndexer.js');
+				resetEmbeddingMetricsForTest();
+				const m1 = getEmbeddingMetrics();
+				expect(m1.embeddings_called_total).toBe(0);
+				(m1 as any).embeddings_called_total = 999; // mutate the returned snapshot
+				const m2 = getEmbeddingMetrics();
+				expect(m2.embeddings_called_total).toBe(0); // internal state unaffected
+			});
+
+			test('resetEmbeddingMetricsForTest zeroes all 11 counters', async () => {
+				const { getEmbeddingMetrics, resetEmbeddingMetricsForTest } = await import('../VectorIndexer.js');
+				resetEmbeddingMetricsForTest();
+				const m = getEmbeddingMetrics();
+				expect(Object.keys(m)).toHaveLength(11);
+				for (const k of Object.keys(m)) {
+					expect((m as any)[k]).toBe(0);
+				}
+			});
+		});
+
+		// ─── upsertPointsBatch (L1267-1346) — batched upsert w/ retry + 400 short-circuit ───
+		describe('upsertPointsBatch', () => {
+			test('upserts a single batch with wait=true on last batch (default options)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { upsertPointsBatch } = await import('../VectorIndexer.js');
+				mockUpsert.mockResolvedValue(undefined);
+				const points = [makePoint('a'), makePoint('b')]; // 2 points < default batchSize 100
+				await upsertPointsBatch(points);
+				expect(mockUpsert).toHaveBeenCalledTimes(1);
+				expect(mockUpsert).toHaveBeenCalledWith(
+					expect.any(String),
+					expect.objectContaining({ wait: true, points: expect.arrayContaining([expect.objectContaining({ id: 'a' })]) }),
+				);
+			});
+
+			test('splits into multiple batches per batchSize (wait=true only on last, L1284-1287)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { upsertPointsBatch } = await import('../VectorIndexer.js');
+				mockUpsert.mockResolvedValue(undefined);
+				const points = [makePoint('a'), makePoint('b')];
+				await upsertPointsBatch(points, { batchSize: 1 });
+				expect(mockUpsert).toHaveBeenCalledTimes(2);
+				const calls = mockUpsert.mock.calls;
+				expect(calls[0][1]).toEqual(expect.objectContaining({ wait: false })); // first batch
+				expect(calls[1][1]).toEqual(expect.objectContaining({ wait: true })); // last batch
+			});
+
+			test('does NOT retry on HTTP 400 — throws immediately (L1323-1326)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { upsertPointsBatch } = await import('../VectorIndexer.js');
+				mockUpsert.mockRejectedValue(httpStatusError(400, 'Bad Request'));
+				await expect(upsertPointsBatch([makePoint('a')], { maxRetries: 3 })).rejects.toThrow('Bad Request');
+				expect(mockUpsert).toHaveBeenCalledTimes(1); // permanent error — no retry
+			});
+
+			test('retries a transient error then gives up after maxRetries (L1329-1337)', async () => {
+			vi.useRealTimers();
+				vi.resetModules();
+				const { upsertPointsBatch } = await import('../VectorIndexer.js');
+				mockUpsert.mockRejectedValue(new Error('timeout')); // transient (no .response.status)
+				await expect(upsertPointsBatch([makePoint('a')], { maxRetries: 2 })).rejects.toThrow('timeout');
+				expect(mockUpsert).toHaveBeenCalledTimes(2); // initial attempt + 1 retry
+			}, 15000);
+		});
+
+		// ─── cleanupOldVectors (L1355-1450) — age-based vector cleanup ───
+		describe('cleanupOldVectors', () => {
+			test('returns deletedCount:0 and skips scroll/delete when count is 0 (L1392-1394)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { cleanupOldVectors } = await import('../VectorIndexer.js');
+				mockCount.mockResolvedValue({ count: 0 });
+				const result = await cleanupOldVectors(90);
+				expect(result.deletedCount).toBe(0);
+				expect(result.cutoffDate).toMatch(/^\d{4}-/); // ISO
+				expect(result.workspaceFilter).toBeUndefined();
+				expect(mockScroll).not.toHaveBeenCalled();
+				expect(mockDelete).not.toHaveBeenCalled();
+			});
+
+			test('dryRun counts candidates without deleting (L1396-1399)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { cleanupOldVectors } = await import('../VectorIndexer.js');
+				mockCount.mockResolvedValue({ count: 7 });
+				const result = await cleanupOldVectors(90, true);
+				expect(result.deletedCount).toBe(7);
+				expect(mockDelete).not.toHaveBeenCalled(); // dry run — no deletion
+				expect(mockScroll).not.toHaveBeenCalled();
+			});
+
+			test('live delete: scrolls + deletes the batch, stops when next_page_offset is null (L1406-1446)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { cleanupOldVectors } = await import('../VectorIndexer.js');
+				mockCount.mockResolvedValue({ count: 2 });
+				mockScroll.mockResolvedValue({ points: [{ id: 'p1' }, { id: 'p2' }], next_page_offset: null });
+				mockDelete.mockResolvedValue(undefined);
+				const result = await cleanupOldVectors(90, false);
+				expect(result.deletedCount).toBe(2);
+				expect(mockDelete).toHaveBeenCalledWith(
+					expect.any(String),
+					expect.objectContaining({ points: ['p1', 'p2'], wait: true }),
+				);
+				expect(mockScroll).toHaveBeenCalledTimes(1); // loop terminated after one batch
+			});
+
+			test('applies workspaceFilter as an additional must condition (L1371-1376)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { cleanupOldVectors } = await import('../VectorIndexer.js');
+				mockCount.mockResolvedValue({ count: 0 });
+				await cleanupOldVectors(90, false, 'my-workspace');
+				// count filter must contain BOTH the timestamp range AND the workspace_name match
+				expect(mockCount).toHaveBeenCalledWith(
+					expect.any(String),
+					expect.objectContaining({
+						filter: expect.objectContaining({
+							must: expect.arrayContaining([
+								expect.objectContaining({ key: 'workspace_name', match: { value: 'my-workspace' } }),
+							]),
+						}),
+					}),
+				);
+			});
+		});
+	});
+
 });
