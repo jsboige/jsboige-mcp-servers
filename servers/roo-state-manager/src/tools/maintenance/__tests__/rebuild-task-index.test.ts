@@ -399,4 +399,104 @@ describe('rebuild-task-index', () => {
 			expect(text2).toContain('No orphaned tasks found');
 		});
 	});
+
+	// ============================================================
+	// Cluster C coverage — branches genuinement non-couvertes.
+	// The existing suite covers dry-run thoroughly; these target the
+	// untested LIVE write path (#814 core) + readRooState edge cases.
+	// #815 scepticism: assertions anchored on real source behavior.
+	// ============================================================
+
+	describe('LIVE write mode (dry_run: false) — #814 core path', () => {
+		test('writes orphans back to SQLite, sorted desc by ts, and reports INDEX UPDATED', async () => {
+			// 1 indexed (old ts=1000) + 1 orphan on disk (newer mtime)
+			mockDb.get.mockImplementation((_sql: string, _params: unknown[], cb: Function) => {
+				cb(null, { value: JSON.stringify({ taskHistory: [
+					{ ts: 1000, task: 'old-indexed', workspace: 'ws', id: 'old-id' }
+				] }) });
+			});
+			mockReaddir
+				.mockResolvedValueOnce(['old-id', 'orphan-id'])
+				.mockResolvedValueOnce(['api_conversation_history.json'])
+				.mockResolvedValueOnce(['api_conversation_history.json']);
+			mockStat.mockResolvedValue({
+				isDirectory: () => true,
+				mtime: new Date('2026-06-01T00:00:00Z'),
+				birthtime: new Date('2026-06-01T00:00:00Z')
+			});
+			mockAnalyzeConversation.mockResolvedValue({
+				metadata: { title: 'Orphan Task', workspace: 'D:\\Dev\\test' }
+			});
+
+			const result = await handleRebuildTaskIndex({ dry_run: false });
+			const text = (result.content[0] as any).text;
+
+			// SQLite UPDATE issued exactly once (read uses get, not run)
+			expect(mockDb.run).toHaveBeenCalledTimes(1);
+			const writeCall = mockDb.run.mock.calls[0];
+			expect(writeCall[0]).toContain('UPDATE ItemTable');
+			// Written value = merged taskHistory sorted DESC by ts (orphan newer → first)
+			const written = JSON.parse(writeCall[1][0]);
+			expect(written.taskHistory).toHaveLength(2);
+			expect(written.taskHistory[0].id).toBe('orphan-id');
+			expect(written.taskHistory[1].id).toBe('old-id');
+			// Report (L301-311)
+			expect(text).toContain('INDEX UPDATED');
+			expect(text).toContain('**Tasks added:** 1');
+			expect(text).toContain('**Total after update:** 2');
+			expect(text).toContain('Restart VS Code');
+		});
+	});
+
+	describe('readRooState edge cases', () => {
+		test('strips UTF-8 BOM from the SQLite value before parsing (L118-120)', async () => {
+			const stateJson = JSON.stringify({ taskHistory: [
+				{ ts: 1000, task: 'bom-task', workspace: 'ws', id: 'bom-id' }
+			] });
+			mockDb.get.mockImplementation((_sql: string, _params: unknown[], cb: Function) => {
+				cb(null, { value: '﻿' + stateJson }); // BOM-prefixed
+			});
+			mockReaddir.mockResolvedValueOnce([]); // no tasks on disk
+
+			const result = await handleRebuildTaskIndex({ dry_run: true });
+			// Without BOM strip, JSON.parse would throw → outer catch → isError
+			expect(result.isError).toBeFalsy();
+			expect((result.content[0] as any).text).toContain('**Tasks in SQLite index:** 1');
+		});
+
+		test('handles a Buffer value from SQLite via toString(utf-8) (L116)', async () => {
+			const stateJson = JSON.stringify({ taskHistory: [
+				{ ts: 1000, task: 'buf-task', workspace: 'ws', id: 'buf-id' }
+			] });
+			mockDb.get.mockImplementation((_sql: string, _params: unknown[], cb: Function) => {
+				cb(null, { value: Buffer.from(stateJson, 'utf-8') }); // Buffer, not string
+			});
+			mockReaddir.mockResolvedValueOnce([]);
+
+			const result = await handleRebuildTaskIndex({ dry_run: true });
+			expect(result.isError).toBeFalsy();
+			expect((result.content[0] as any).text).toContain('**Tasks in SQLite index:** 1');
+		});
+
+		test('skips non-directory entries in the tasks directory (L178)', async () => {
+			mockReaddir
+				.mockResolvedValueOnce(['stray-file.txt', 'real-task'])
+				.mockResolvedValueOnce(['file.json']);
+			mockStat
+				.mockResolvedValueOnce({
+					isDirectory: () => false, // stray-file.txt skipped
+					mtime: new Date('2026-01-01'),
+					birthtime: new Date('2026-01-01')
+				})
+				.mockResolvedValueOnce({
+					isDirectory: () => true, // real-task processed
+					mtime: new Date('2026-01-01'),
+					birthtime: new Date('2026-01-01')
+				});
+			mockAnalyzeConversation.mockResolvedValue(null);
+
+			const result = await handleRebuildTaskIndex({ dry_run: true });
+			expect((result.content[0] as any).text).toContain('**Tasks on disk:** 1');
+		});
+	});
 });
