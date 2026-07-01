@@ -69,7 +69,7 @@ class KernelInfo:
     connection_file: str
     started_at: datetime
     last_activity: datetime
-    status: str = "idle"  # idle, busy, starting, dead
+    status: str = "idle"  # idle, busy, starting, dead, unresponsive
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -486,15 +486,41 @@ class JupyterManager:
                 # Interrupt the kernel to actually free it. Without this the kernel keeps
                 # running the (still-compiling) code, every subsequent call re-queues on a
                 # busy kernel and appears to hang indefinitely (the "stuck for hours" bug).
+                #
+                # #2718: km.interrupt_kernel() can itself block on Windows for
+                # dotnet-interactive kernels (interrupt_mode=signal) in the middle of a
+                # non-cooperative nuget restore -- the await never returns and the tool
+                # hangs past the deadline. Time-box the interrupt so we always return a
+                # bounded answer; if it times out, mark the kernel "unresponsive" so the
+                # next call doesn't re-queue on a (still) busy kernel.
+                interrupt_deadline_start = asyncio.get_event_loop().time()
+                interrupt_succeeded = False
                 try:
-                    await self.interrupt_kernel(kernel_id)
+                    await asyncio.wait_for(
+                        self.interrupt_kernel(kernel_id),
+                        timeout=5.0,
+                    )
+                    interrupt_succeeded = True
+                except asyncio.TimeoutError:
+                    elapsed = asyncio.get_event_loop().time() - interrupt_deadline_start
+                    self.logger.error(
+                        f"Interrupt kernel {kernel_id} timed out after {elapsed:.1f}s "
+                        f"-- kernel likely stuck in non-cooperative code path (e.g. .NET "
+                        f"nuget restore). Marking as 'unresponsive'."
+                    )
                 except Exception as ie:
                     self.logger.error(
                         f"Failed to interrupt kernel {kernel_id} after timeout: {ie}"
                     )
 
             # Update kernel info
-            kernel_info.status = "idle"
+            # If we timed out AND the interrupt didn't succeed, mark the kernel
+            # "unresponsive" rather than "idle" so subsequent calls don't re-queue
+            # on a still-busy kernel (root cause of the original "stuck for hours" bug).
+            if status == "timeout" and not interrupt_succeeded:
+                kernel_info.status = "unresponsive"
+            else:
+                kernel_info.status = "idle"
             kernel_info.last_activity = datetime.now()
 
             return ExecutionResult(
@@ -660,19 +686,43 @@ class JupyterManager:
                 stream_exec.status = "timeout"
                 # Interrupt the kernel to actually free it (same root cause as execute_code:
                 # without this the kernel stays busy and subsequent calls hang indefinitely).
+                #
+                # #2718: time-box the interrupt itself -- km.interrupt_kernel() can block
+                # indefinitely for non-cooperative code paths (e.g. .NET nuget restore).
+                # If the interrupt doesn't return in 5s, mark the kernel "unresponsive".
+                interrupt_succeeded = False
                 try:
-                    await self.interrupt_kernel(kernel_id)
+                    await asyncio.wait_for(
+                        self.interrupt_kernel(kernel_id),
+                        timeout=5.0,
+                    )
+                    interrupt_succeeded = True
+                except asyncio.TimeoutError:
+                    self.logger.error(
+                        f"Interrupt kernel {kernel_id} timed out (streaming) -- "
+                        f"kernel likely stuck in non-cooperative code path. "
+                        f"Marking as 'unresponsive'."
+                    )
                 except Exception as ie:
                     self.logger.error(
                         f"Failed to interrupt kernel {kernel_id} after streaming timeout: {ie}"
                     )
+                # Stash for finally block (streaming can't easily thread status through)
+                stream_exec._interrupt_succeeded = interrupt_succeeded
 
         except Exception as e:
             stream_exec.status = "error"
             stream_exec.error_name = "ExecutionError"
             stream_exec.error_value = str(e)
         finally:
-            kernel_info.status = "idle"
+            # If timeout occurred and interrupt failed/timed out, kernel is still busy:
+            # mark "unresponsive" to prevent next call from re-queueing on busy kernel.
+            if stream_exec.status == "timeout" and not getattr(
+                stream_exec, "_interrupt_succeeded", False
+            ):
+                kernel_info.status = "unresponsive"
+            else:
+                kernel_info.status = "idle"
             kernel_info.last_activity = datetime.now()
             stream_exec.completed_at = datetime.now()
 
