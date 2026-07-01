@@ -794,32 +794,43 @@ describe('background-services', () => {
     });
 
     it('should skip claude-code sessions (#1985 sanctuary protection)', async () => {
-      const state = createMockState();
-      const skeleton = createMockSkeleton('task-001');
-      skeleton.metadata = {
-        ...skeleton.metadata,
-        indexingState: { indexStatus: 'pending' as const },
-        dataSource: 'claude',
-      };
-      state.conversationCache.set('task-001', skeleton);
+      // Explicitly clear the env var (may be set in process env, e.g. ROO_INDEX_CLAUDE_SESSIONS=true)
+      const prevEnv = process.env.ROO_INDEX_CLAUDE_SESSIONS;
+      delete process.env.ROO_INDEX_CLAUDE_SESSIONS;
 
-      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
-        shouldIndex: true,
-        reason: 'new task',
-        action: 'index',
-        requiresSave: false,
-      });
+      try {
+        const state = createMockState();
+        const skeleton = createMockSkeleton('task-001');
+        skeleton.metadata = {
+          ...skeleton.metadata,
+          indexingState: { indexStatus: 'pending' as const },
+          dataSource: 'claude',
+        };
+        state.conversationCache.set('task-001', skeleton);
 
-      const mockIndexTask = TaskIndexerSpies.indexTask;
-      mockIndexTask.mockResolvedValue(undefined);
-      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
-      mockFs.mkdir.mockResolvedValue(undefined);
-      mockFs.writeFile.mockResolvedValue(undefined);
+        (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+          shouldIndex: true,
+          reason: 'new task',
+          action: 'index',
+          requiresSave: false,
+        });
 
-      await indexTaskInQdrant('task-001', state);
+        const mockIndexTask = TaskIndexerSpies.indexTask;
+        mockIndexTask.mockResolvedValue(undefined);
+        mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+        mockFs.mkdir.mockResolvedValue(undefined);
+        mockFs.writeFile.mockResolvedValue(undefined);
 
-      // #1985: Claude Code sessions must NOT be indexed via background path
-      expect(mockIndexTask).not.toHaveBeenCalled();
+        await indexTaskInQdrant('task-001', state);
+
+        // #1985: Claude Code sessions must NOT be indexed via background path
+        expect(mockIndexTask).not.toHaveBeenCalled();
+      } finally {
+        // Restore env var
+        if (prevEnv !== undefined) {
+          process.env.ROO_INDEX_CLAUDE_SESSIONS = prevEnv;
+        }
+      }
     });
 
     it('should update metrics on success', async () => {
