@@ -107,7 +107,12 @@ describe('storage_info (integration)', () => {
       expect(result).toBeDefined();
       expect(result.content).toHaveLength(1);
       expect((result.content[0] as any).type).toBe('text');
-      expect((result.content[0] as any).text).toBeTruthy();
+      // Verified contract (storage-info.ts:86): text is always JSON.stringify(result).
+      // Harden beyond non-emptiness — a stub returning "X" must fail. JSON.parse
+      // also covers the sibling detect tests (L80/L89) that consume the same output.
+      const text = (result.content[0] as any).text;
+      expect(() => JSON.parse(text)).not.toThrow();
+      expect(JSON.parse(text)).toHaveProperty('locations');
     });
   });
 
@@ -179,7 +184,11 @@ describe('storage_info (integration)', () => {
       expect(result).toBeDefined();
       expect(result.content).toHaveLength(1);
       expect((result.content[0] as any).type).toBe('text');
-      expect((result.content[0] as any).text).toBeTruthy();
+      // Verified contract (storage-info.ts:116): text is always JSON.stringify(enhancedStats).
+      // Harden beyond non-emptiness — a stub returning "X" must fail.
+      const text = (result.content[0] as any).text;
+      expect(() => JSON.parse(text)).not.toThrow();
+      expect(JSON.parse(text)).toHaveProperty('totalConversations');
     });
   });
 
