@@ -68,12 +68,14 @@ class TestKernelServiceRefactored:
 
     @pytest.mark.asyncio
     async def test_restart_kernel(self, kernel_service):
-        kernel_service.jupyter_manager.restart_kernel.return_value = "kernel-456"
+        # restart_kernel() returns a bool (real contract), and a jupyter kernel
+        # restart keeps the SAME kernel_id (#667 — not a new id like start_kernel).
+        kernel_service.jupyter_manager.restart_kernel.return_value = True
 
         result = await kernel_service.restart_kernel(kernel_id="kernel-123")
 
         assert result["old_kernel_id"] == "kernel-123"
-        assert result["kernel_id"] == "kernel-456"
+        assert result["kernel_id"] == "kernel-123"
         assert result["status"] == "restarted"
         kernel_service.jupyter_manager.restart_kernel.assert_called_with("kernel-123")
 

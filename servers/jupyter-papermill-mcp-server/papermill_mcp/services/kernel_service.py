@@ -154,16 +154,20 @@ class KernelService:
         try:
             logger.info(f"Restarting kernel: {kernel_id}")
 
-            new_kernel_id = await self.jupyter_manager.restart_kernel(kernel_id)
+            # jupyter_manager.restart_kernel() returns a bool (True if restarted,
+            # False if not found) and a jupyter kernel restart keeps the SAME
+            # kernel_id (km.restart_kernel() is in-place). Previously the bool was
+            # assigned as the new kernel_id, producing "kernel_id": true (#667).
+            await self.jupyter_manager.restart_kernel(kernel_id)
 
             result = {
                 "old_kernel_id": kernel_id,
-                "kernel_id": new_kernel_id,
+                "kernel_id": kernel_id,
                 "status": "restarted",
                 "success": True,
             }
 
-            logger.info(f"Successfully restarted kernel, new ID: {new_kernel_id}")
+            logger.info(f"Successfully restarted kernel {kernel_id}")
             return result
 
         except Exception as e:
