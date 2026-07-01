@@ -122,13 +122,20 @@ describe('IdentityManager', () => {
     test('returns valid timestamps', () => {
       const identity = manager.getPrimaryIdentity();
       expect(identity.firstSeen).toBeTruthy();
-      expect(identity.lastSeen).toBeTruthy();
+      // #815: lastSeen had NO content check (only firstSeen did on the next line).
+      // A stub setting lastSeen:"x" passed toBeTruthy. Now mirrors the firstSeen date
+      // check — source sets lastSeen = new Date().toISOString() (IdentityManager.ts L82).
+      expect(new Date(identity.lastSeen).getTime()).not.toBeNaN();
       expect(new Date(identity.firstSeen).getTime()).not.toBeNaN();
     });
 
     test('includes configPath metadata', () => {
       const identity = manager.getPrimaryIdentity();
-      expect(identity.metadata?.configPath).toBeDefined();
+      // #815: was toBeDefined() — passes even on empty string. Now verifies the exact
+      // source contract: configPath = process.env.ROOSYNC_CONFIG_PATH || 'environment'
+      // (IdentityManager.ts L84). Deterministic — matches the source's own computation
+      // whether or not the env var is set (like basename(cwd) in #665). A stub fails.
+      expect(identity.metadata?.configPath).toBe(process.env.ROOSYNC_CONFIG_PATH || 'environment');
     });
   });
 
