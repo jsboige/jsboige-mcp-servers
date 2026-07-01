@@ -125,7 +125,10 @@ describe('read_vscode_logs (integration)', () => {
       // Avec 5 lignes par log et limit=2, on devrait avoir 2 lignes par log
       // (la dernière ligne est vide, donc on voit "Starting" et pas "Ready")
       // Le format exact dépend de la logique readLastLines
-      expect(text).toBeTruthy();
+      // #815: Verify the handler emitted a real log section (source read-vscode-logs.ts
+      // L158 '--- LOG: <title> ---'). A stub returning "X" would pass toBeTruthy but
+      // fails here. (Exact line-count assertions are infeasible per the note above.)
+      expect(text).toContain('--- LOG:');
       expect(text.length).toBeGreaterThan(0);
     });
   });
@@ -220,7 +223,14 @@ describe('read_vscode_logs (integration)', () => {
       const text = result.content[0].text;
 
       // Les deux sessions devraient être traitées
-      expect(text).toBeTruthy();
+      // #815: Verify BOTH sessions appear in the output. The debug log (source L89,
+      // appended when no filter is set per L162) includes the session path for each
+      // session processed, so both '20260309' and '20260308' must be present. The
+      // previous toBeTruthy would pass even if only one session (or none) was
+      // processed — a stub returning "X" passed. This encodes the test's actual
+      // contract ("multiple sessions treated").
+      expect(text).toContain('20260309');
+      expect(text).toContain('20260308');
 
       // Nettoyer
       rmSync(codeDir, { recursive: true, force: true });
@@ -281,7 +291,10 @@ describe('read_vscode_logs (integration)', () => {
 
       // Devrait traiter la session principale (qui a des logs)
       // Et ignorer celle sans logs
-      expect(result.content[0].text).toBeTruthy();
+      // #815: Verify the main session's logs (renderer/exthost/main, all emit the
+      // '--- LOG:' header per source L158) were processed despite the empty session.
+      // A stub returning "X" would pass toBeTruthy but fails here.
+      expect(result.content[0].text).toContain('--- LOG:');
 
       // Nettoyer
       rmSync(codeDir, { recursive: true, force: true });
