@@ -78,16 +78,27 @@ beforeEach(() => {
     summary: { critical: 0, important: 0, warning: 0, info: 0 },
     differences: [],
   });
-  // Default clean env: both critical env vars present (so criticalEnvMissing=0
-  // and generateRecommendations can reach its "All systems nominal" branch).
-  // The "missing env" test deletes these explicitly.
+  // Default clean env: ALL 6 CRITICAL_ENV_VARS present (4× EMBEDDING_* warning +
+  // QDRANT_URL + QDRANT_API_KEY critical). Without this, collectEnvCheck returns
+  // missing EMBEDDING_* on runners where those vars are absent (CI) → "Set ..."
+  // recommendations → generateRecommendations never reaches its "All systems
+  // nominal" empty-recs branch (the HEALTHY-baseline test would flake).
+  // Locally these leak in via .env; CI has no .env → must be set explicitly.
+  // The "missing env" test deletes QDRANT_URL/QDRANT_API_KEY explicitly.
   process.env.QDRANT_URL = 'https://qdrant.example.com';
   process.env.QDRANT_API_KEY = 'test-key';
+  process.env.EMBEDDING_MODEL = 'test-model';
+  process.env.EMBEDDING_DIMENSIONS = '1536';
+  process.env.EMBEDDING_API_BASE_URL = 'https://embed.example.com';
+  process.env.EMBEDDING_API_KEY = 'test-embed-key';
 });
 
 afterEach(() => {
   // Restore env vars we may have stubbed.
-  const envKeys = ['QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_HEALTH_PROBE_TIMEOUT_MS'];
+  const envKeys = [
+    'QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_HEALTH_PROBE_TIMEOUT_MS',
+    'EMBEDDING_MODEL', 'EMBEDDING_DIMENSIONS', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_API_KEY',
+  ];
   for (const k of envKeys) delete process.env[k];
 });
 
