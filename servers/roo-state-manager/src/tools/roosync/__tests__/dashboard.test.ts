@@ -20,6 +20,10 @@ vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetChatClient(),
   resetChatOpenAIClient: vi.fn(),
   getLLMModelId: () => 'test-model',
+  // #2719: cloud fallback inert (null) in this suite — the existing LLM
+  // condensation assertions hold unchanged when the primary path is exercised.
+  getFallbackChatOpenAIClient: () => null,
+  getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-test-');

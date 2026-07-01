@@ -26,6 +26,10 @@ vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => { throw new Error('No chat API key configured'); },
   resetChatOpenAIClient: vi.fn(),
   getLLMModelId: () => 'test-model',
+  // #2719: no fallback key here either — condensation degrades to the
+  // deterministic path exactly as before, keeping these assertions valid.
+  getFallbackChatOpenAIClient: () => null,
+  getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
 // Mock heartbeat-activity

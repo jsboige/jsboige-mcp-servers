@@ -3,6 +3,7 @@ import { StateManagerError } from '../types/errors.js';
 
 let openai: OpenAI | null = null;
 let chatOpenai: OpenAI | null = null;
+let fallbackChatOpenai: OpenAI | null = null;
 
 /**
  * Returns the embedding model name from env or default.
@@ -91,6 +92,53 @@ export function getChatOpenAIClient(): OpenAI {
  */
 export function getLLMModelId(): string {
   return process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
+}
+
+/**
+ * #2719: Cloud fallback LLM model ID for condensation when vLLM is down.
+ * Defaults to a fast, lightweight model on z.ai (GLM-4.7-flash).
+ */
+export function getFallbackLLMModelId(): string {
+  return process.env.FALLBACK_LLM_MODEL_ID || 'glm-4.7-flash';
+}
+
+/**
+ * #2719: Get OpenAI-compatible client for cloud fallback (z.ai or OpenAI cloud),
+ * used by dashboard condensation when the primary (local vLLM) LLM is down.
+ * Uses ZAI_API_KEY (or FALLBACK_API_KEY) + ZAI_BASE_URL (or FALLBACK_BASE_URL,
+ * default the z.ai paas endpoint).
+ *
+ * Inert-safe: returns null when no fallback key is configured, so callers treat
+ * the fallback as a no-op and behaviour is identical to pre-#2719 until the fleet
+ * secrets are provisioned.
+ */
+export function getFallbackChatOpenAIClient(): OpenAI | null {
+  if (!fallbackChatOpenai) {
+    const apiKey = process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY;
+    if (!apiKey) {
+      return null;
+    }
+    const baseUrl = process.env.ZAI_BASE_URL || process.env.FALLBACK_BASE_URL || 'https://api.z.ai/api/paas/v4';
+    const timeout = parseInt(process.env.FALLBACK_TIMEOUT_MS || '30000', 10);
+
+    fallbackChatOpenai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      // Fallback is lightweight (flash model) — short timeout, no SDK retries
+      // The per-function retry loop handles re-attempts.
+      timeout: Math.min(timeout, 60000),
+      maxRetries: 0,
+    });
+  }
+  return fallbackChatOpenai;
+}
+
+/**
+ * #2719: Reset the fallback chat OpenAI client singleton.
+ * Used for testing to simulate fallback (un)availability.
+ */
+export function resetFallbackChatOpenAIClient(): void {
+  fallbackChatOpenai = null;
 }
 
 /**

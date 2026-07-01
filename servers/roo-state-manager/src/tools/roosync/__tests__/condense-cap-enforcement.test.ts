@@ -23,6 +23,10 @@ vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetChatClient(),
   resetChatOpenAIClient: vi.fn(),
   getLLMModelId: () => 'test-model',
+  // #2719: cloud fallback is inert in this suite (returns null) so the
+  // deterministic HARD-cap behavior these tests guard remains unchanged.
+  getFallbackChatOpenAIClient: () => null,
+  getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
 const CAP = 2 * 1024; // small cap keeps fixtures tiny; the function takes the cap as a param
