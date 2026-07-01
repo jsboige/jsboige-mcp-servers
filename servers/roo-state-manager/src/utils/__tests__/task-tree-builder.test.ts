@@ -461,4 +461,198 @@ describe('TaskTreeBuilder', () => {
       }
     });
   });
+
+  // ============================================================
+  // NEW coverage (deep-queue COVERAGE Cluster D): decision branches
+  // & utility methods genuinely non-covered before. Anchored on real
+  // source contract (task-tree-builder.ts): complexity L535-542,
+  // status L544-551, outcome L629-636, tags L649-660, dominantTech
+  // L569-594, summary L622-627, fileRefs L638-647, cache L308-322,
+  // byPath index L383-385.
+  // ============================================================
+  describe('decision branches & utility coverage', () => {
+    async function buildTree(conversations: ConversationSummary[]) {
+      mockWorkspaceAnalyzer.analyzeWorkspaces.mockResolvedValue(
+        createMockWorkspaceAnalysis(conversations)
+      );
+      mockRelationshipAnalyzer.analyzeRelationships.mockResolvedValue([]);
+      return builder.buildCompleteTree(conversations);
+    }
+
+    // --- calculateComplexity: 3 branches (L535-542) ---
+    it('should classify complexity as COMPLEX when size > 100000 or messages > 50', async () => {
+      const conversations = [
+        createMockConversation({ size: 150000, messageCount: 60 }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const projectNodes = tree.index.byType.get(TaskType.PROJECT);
+      expect(projectNodes).toBeDefined();
+      expect((projectNodes![0] as any).metadata.complexity).toBe(ComplexityLevel.COMPLEX);
+    });
+
+    it('should classify complexity as MEDIUM when size > 50000 or messages > 20', async () => {
+      const conversations = [
+        createMockConversation({ size: 60000, messageCount: 25 }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const projectNodes = tree.index.byType.get(TaskType.PROJECT);
+      expect((projectNodes![0] as any).metadata.complexity).toBe(ComplexityLevel.MEDIUM);
+    });
+
+    it('should classify complexity as SIMPLE for small conversations', async () => {
+      const conversations = [
+        createMockConversation({ size: 5000, messageCount: 10 }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const projectNodes = tree.index.byType.get(TaskType.PROJECT);
+      expect((projectNodes![0] as any).metadata.complexity).toBe(ComplexityLevel.SIMPLE);
+    });
+
+    // --- determineProjectStatus: UNKNOWN + ARCHIVED branches (L544-551) ---
+    it('should set UNKNOWN project status when last activity 7-30 days ago', async () => {
+      const d = new Date(); d.setDate(d.getDate() - 15);
+      const conversations = [createMockConversation({ lastActivity: d.toISOString() })];
+      const tree = await buildTree(conversations);
+
+      const projectNodes = tree.index.byType.get(TaskType.PROJECT);
+      expect((projectNodes![0] as any).metadata.status).toBe(ProjectStatus.UNKNOWN);
+    });
+
+    it('should set ARCHIVED project status when last activity > 30 days ago', async () => {
+      const d = new Date(); d.setDate(d.getDate() - 40);
+      const conversations = [createMockConversation({ lastActivity: d.toISOString() })];
+      const tree = await buildTree(conversations);
+
+      const projectNodes = tree.index.byType.get(TaskType.PROJECT);
+      expect((projectNodes![0] as any).metadata.status).toBe(ProjectStatus.ARCHIVED);
+    });
+
+    // --- determineOutcome: 3 branches, 0 covered before (L629-636) ---
+    it('should determine ONGOING outcome when last activity < 1 day ago', async () => {
+      const d = new Date(); d.setHours(d.getHours() - 2);
+      const conversations = [createMockConversation({ lastActivity: d.toISOString() })];
+      const tree = await buildTree(conversations);
+
+      const convNodes = tree.index.byType.get(TaskType.CONVERSATION);
+      expect((convNodes![0] as any).metadata.outcome).toBe(ConversationOutcome.ONGOING);
+    });
+
+    it('should determine COMPLETED outcome when last activity 1-7 days ago', async () => {
+      const d = new Date(); d.setDate(d.getDate() - 3);
+      const conversations = [createMockConversation({ lastActivity: d.toISOString() })];
+      const tree = await buildTree(conversations);
+
+      const convNodes = tree.index.byType.get(TaskType.CONVERSATION);
+      expect((convNodes![0] as any).metadata.outcome).toBe(ConversationOutcome.COMPLETED);
+    });
+
+    it('should determine ABANDONED outcome when last activity > 7 days ago', async () => {
+      const d = new Date(); d.setDate(d.getDate() - 10);
+      const conversations = [createMockConversation({ lastActivity: d.toISOString() })];
+      const tree = await buildTree(conversations);
+
+      const convNodes = tree.index.byType.get(TaskType.CONVERSATION);
+      expect((convNodes![0] as any).metadata.outcome).toBe(ConversationOutcome.ABANDONED);
+    });
+
+    // --- extractConversationTags (L649-660) ---
+    it('should extract conversation tags [mode, api, ui]', async () => {
+      const conversations = [
+        createMockConversation({ hasApiHistory: true, hasUiMessages: true }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const convNodes = tree.index.byType.get(TaskType.CONVERSATION);
+      const tags = (convNodes![0] as any).metadata.tags;
+      expect(tags).toContain('code-simple'); // mode (default mock)
+      expect(tags).toContain('api');
+      expect(tags).toContain('ui');
+    });
+
+    // --- findDominantTechnology (L569-594) ---
+    it('should find dominant technology by extension count', async () => {
+      const conversations = [
+        createMockConversation({
+          metadata: {
+            files_in_context: [
+              { path: '/workspace/a.ts', content: '', lineCount: 1 },
+              { path: '/workspace/b.ts', content: '', lineCount: 1 },
+              { path: '/workspace/c.py', content: '', lineCount: 1 },
+            ],
+          },
+        }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const clusterNodes = tree.index.byType.get(TaskType.TASK_CLUSTER);
+      expect((clusterNodes![0] as any).metadata.dominantTechnology).toBe('ts');
+    });
+
+    // --- generateSummary (L622-627) ---
+    it('should generate summary with message count and size in KB', async () => {
+      const conversations = [
+        createMockConversation({ messageCount: 10, size: 5120 }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const convNodes = tree.index.byType.get(TaskType.CONVERSATION);
+      const summary = (convNodes![0] as any).metadata.summary;
+      expect(summary).toContain('10 messages');
+      expect(summary).toContain('5 KB'); // Math.round(5120/1024) = 5
+    });
+
+    // --- convertFileReferences content truncation (L638-647) ---
+    it('should truncate file reference content to 200 chars', async () => {
+      const longContent = 'x'.repeat(500);
+      const conversations = [
+        createMockConversation({
+          metadata: {
+            files_in_context: [{ path: '/workspace/big.ts', content: longContent, lineCount: 1 }],
+          },
+        }),
+      ];
+      const tree = await buildTree(conversations);
+
+      const convNodes = tree.index.byType.get(TaskType.CONVERSATION);
+      const fileRefs = (convNodes![0] as any).metadata.fileReferences;
+      expect(fileRefs).toHaveLength(1);
+      expect(fileRefs[0].content.length).toBeLessThanOrEqual(200);
+    });
+
+    // --- relationship cache (L308-322, second cache path) ---
+    it('should use cache for repeated relationship analysis', async () => {
+      const conversations = [createMockConversation({ taskId: 'task-rc' })];
+      mockWorkspaceAnalyzer.analyzeWorkspaces.mockResolvedValue(
+        createMockWorkspaceAnalysis(conversations)
+      );
+      mockRelationshipAnalyzer.analyzeRelationships.mockResolvedValue([]);
+
+      await builder.buildCompleteTree(conversations);
+      await builder.buildCompleteTree(conversations);
+
+      expect(mockRelationshipAnalyzer.analyzeRelationships).toHaveBeenCalledTimes(1);
+    });
+
+    // --- second error path: relationship analyzer failure (L67, caught L92) ---
+    it('should throw TreeBuildError on relationship analysis failure', async () => {
+      const conversations = [createMockConversation()];
+      mockWorkspaceAnalyzer.analyzeWorkspaces.mockResolvedValue(
+        createMockWorkspaceAnalysis(conversations)
+      );
+      mockRelationshipAnalyzer.analyzeRelationships.mockRejectedValue(new Error('Rel fail'));
+
+      await expect(builder.buildCompleteTree(conversations)).rejects.toThrow(TreeBuildError);
+    });
+
+    // --- byPath index branch (L383-385) ---
+    it('should build tree index with byPath for workspace nodes', async () => {
+      const conversations = [createMockConversation()];
+      const tree = await buildTree(conversations);
+
+      expect(tree.index.byPath.has('/workspace')).toBe(true);
+    });
+  });
 });
