@@ -912,18 +912,24 @@ describe('RelationshipAnalyzer', () => {
 
       const result = await RelationshipAnalyzer.analyzeRelationships([parent, conv1, conv2]);
 
+      // #815: source/target must reference real input taskIds (a stub returning
+      // junk identifiers would pass toBeTruthy but fails here), and id must embed
+      // both endpoints (structural contract: "<prefix>_<source>_<target>").
+      const validTaskIds = ['meta-parent', 'meta-1', 'meta-2'];
       for (const rel of result) {
-        expect(rel.id).toBeTruthy();
+        expect(validTaskIds).toContain(rel.source);
+        expect(validTaskIds).toContain(rel.target);
+        expect(rel.id).toContain(rel.source);
+        expect(rel.id).toContain(rel.target);
         expect(rel.type).toBeDefined();
-        expect(rel.source).toBeTruthy();
-        expect(rel.target).toBeTruthy();
         expect(typeof rel.weight).toBe('number');
         expect(rel.weight).toBeGreaterThan(0);
         expect(rel.weight).toBeLessThanOrEqual(1);
         expect(rel.metadata).toBeDefined();
         expect(typeof rel.metadata.confidence).toBe('number');
         expect(rel.metadata.evidence).toBeInstanceOf(Array);
-        expect(rel.createdAt).toBeTruthy();
+        // #815: valid ISO date (catches a stub returning a non-date string)
+        expect(new Date(rel.createdAt).toISOString()).toBe(rel.createdAt);
       }
     });
 
