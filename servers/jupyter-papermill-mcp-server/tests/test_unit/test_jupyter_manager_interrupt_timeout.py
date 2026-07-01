@@ -15,6 +15,7 @@ from papermill_mcp.core.jupyter_manager import (
     JupyterManager,
     KernelInfo,
     ExecutionResult,
+    StreamExecution,
 )
 
 
@@ -132,4 +133,41 @@ async def test_execute_code_refuses_unresponsive_kernel(manager_with_busy_kernel
         await mgr.execute_code(kernel_id, "#r \"nuget: System.Text.Json\"", timeout=5)
 
     # Kernel status must stay 'unresponsive' (not flipped to 'busy' by a re-queue).
+    assert mgr._kernel_info[kernel_id].status == "unresponsive"
+
+
+@pytest.mark.asyncio
+async def test_streaming_refuses_unresponsive_kernel(manager_with_busy_kernel):
+    """#2718 (mirror, streaming path): an 'unresponsive' kernel must NOT be
+    re-queued on the background streaming path either. _run_streaming_execution
+    cannot raise to the caller, so the entry-point gate surfaces the refusal as
+    an error result (mirrors the existing 'Kernel not found' path). Symmetric
+    coverage to test_execute_code_refuses_unresponsive_kernel (sync path).
+    """
+    mgr, kernel_id, km_mock = manager_with_busy_kernel
+    # Simulate a prior call that left the kernel unresponsive.
+    mgr._kernel_info[kernel_id].status = "unresponsive"
+
+    # Register a streaming execution the way execute_code_streaming does.
+    execution_id = "stream-2718"
+    stream_exec = StreamExecution(
+        execution_id=execution_id,
+        kernel_id=kernel_id,
+        code='#r "nuget: System.Text.Json"',
+        started_at=datetime.now(),
+    )
+    mgr._stream_executions[execution_id] = stream_exec
+
+    # The gate fires BEFORE kc.execute(); background task surfaces an error, no raise.
+    await mgr._run_streaming_execution(
+        execution_id, kernel_id, stream_exec.code, timeout=5
+    )
+
+    # Background task surfaced the refusal as an error result.
+    assert stream_exec.status == "error"
+    assert "unresponsive" in stream_exec.error_value
+    assert stream_exec.completed_at is not None
+    # The kernel client must never have been asked to execute (gate fired first).
+    km_mock.client.return_value.execute.assert_not_called()
+    # Kernel status stays 'unresponsive' (not flipped to 'busy' by a re-queue).
     assert mgr._kernel_info[kernel_id].status == "unresponsive"
