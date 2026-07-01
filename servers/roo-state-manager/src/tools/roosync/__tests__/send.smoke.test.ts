@@ -76,7 +76,10 @@ describe('SMOKE: roosync_send', () => {
 
     // Extract message ID from response
     const messageId1Match = response1Text.match(/ID\s*:[*\s]*`?([\w-]+)/);
-    expect(messageId1Match).toBeTruthy();
+    // #815: was toBeTruthy() on the match — any token after "ID:" passed (e.g. a stub
+    // returning "ID: foo"). Now verifies the extracted ID matches the real MessageManager
+    // contract: msg-<YYYYMMDDTHHMMSS>-<base36 random> (MessageManager.ts L376-383).
+    expect(messageId1Match?.[1]).toMatch(/^msg-\d{8}T\d{6}-[0-9a-z]+$/);
     const messageId1 = messageId1Match![1];
 
     // Step 2: Verify first message was written to sent directory
@@ -99,7 +102,9 @@ describe('SMOKE: roosync_send', () => {
 
     // Extract second message ID
     const messageId2Match = response2Text.match(/ID\s*:[*\s]*`?([\w-]+)/);
-    expect(messageId2Match).toBeTruthy();
+    // #815: was toBeTruthy() — any token passed. Now verifies the real ID format
+    // (MessageManager.ts L376-383). See messageId1 above for the contract.
+    expect(messageId2Match?.[1]).toMatch(/^msg-\d{8}T\d{6}-[0-9a-z]+$/);
     const messageId2 = messageId2Match![1];
 
     // Step 4: Verify second message has unique ID
@@ -139,7 +144,9 @@ describe('SMOKE: roosync_send', () => {
 
     // Extract message ID
     const messageIdMatch = responseText.match(/ID\s*:[*\s]*`?([\w-]+)/);
-    expect(messageIdMatch).toBeTruthy();
+    // #815: was toBeTruthy() — any token passed. Now verifies the real ID format
+    // (MessageManager.ts L376-383). See messageId1 above for the contract.
+    expect(messageIdMatch?.[1]).toMatch(/^msg-\d{8}T\d{6}-[0-9a-z]+$/);
     const messageId = messageIdMatch![1];
 
     // Step 2: Verify message in sent directory
