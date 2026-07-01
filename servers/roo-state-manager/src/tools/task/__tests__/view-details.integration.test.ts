@@ -61,22 +61,22 @@ describe('view_task_details (integration)', () => {
   // ============================================================
 
   describe('response format', () => {
+    // NOTE: viewTaskDetailsTool.handler requires a conversationCache Map (2nd arg).
+    // Passing new Map() exercises the real "task not found" contract instead of the
+    // exception path (handler throws when conversationCache is undefined).
     test('should return valid text response for any input', async () => {
       const { viewTaskDetailsTool } = await import('../../conversation/view-details.tool.js');
       const result = await viewTaskDetailsTool.handler({
         task_id: 'test-task-id'
-      });
+      }, new Map());
 
       const text = result.content[0].text;
 
-      // Le format doit contenir soit les détails techniques, soit un message d'erreur
-      expect(text).toBeTruthy();
-      expect(text.length).toBeGreaterThan(0);
-
-      // Peut être un message d'erreur si la tâche n'existe pas
-      if (!text.includes('❌ Erreur')) {
-        expect(text).toContain('## Détails Techniques');
-      }
+      // Verified contract (view-details.tool.ts:146): non-existent task_id →
+      // "❌ Aucune tâche trouvée avec l'ID: <task_id>". A stub returning "X" fails.
+      expect(text).toContain('Aucune tâche trouvée');
+      expect(text).toContain('test-task-id');
+      expect(text).toMatch(/^❌/);
     });
 
     test('should support truncate parameter', async () => {
@@ -86,14 +86,14 @@ describe('view_task_details (integration)', () => {
       const resultWithTruncate = await viewTaskDetailsTool.handler({
         task_id: 'test-task-id',
         truncate: 100
-      });
-      expect(resultWithTruncate.content[0].text).toBeTruthy();
+      }, new Map());
+      expect(resultWithTruncate.content[0].text).toContain('Aucune tâche trouvée');
 
       // Test sans truncate
       const resultWithoutTruncate = await viewTaskDetailsTool.handler({
         task_id: 'test-task-id'
-      });
-      expect(resultWithoutTruncate.content[0].text).toBeTruthy();
+      }, new Map());
+      expect(resultWithoutTruncate.content[0].text).toContain('Aucune tâche trouvée');
     });
 
     test('should support action_index parameter', async () => {
@@ -102,9 +102,9 @@ describe('view_task_details (integration)', () => {
       const result = await viewTaskDetailsTool.handler({
         task_id: 'test-task-id',
         action_index: 0
-      });
+      }, new Map());
 
-      expect(result.content[0].text).toBeTruthy();
+      expect(result.content[0].text).toContain('Aucune tâche trouvée');
     });
   });
 
