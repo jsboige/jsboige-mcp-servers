@@ -99,19 +99,25 @@ describe('build_skeleton_cache (integration)', () => {
       const resultWithForce = await handleBuildSkeletonCache({
         force_rebuild: true
       }, conversationCache);
-      expect(resultWithForce.content[0].text).toBeTruthy();
+      // #815: was toBeTruthy() with no content check (a stub returning "X" passed).
+      // Verifies the cache-report contract — every legitimate output mentions "cache"
+      // (success: "Skeleton cache build complete", timeout: "...cache build TIMEOUT",
+      // no-storage: "Cache not built"). Verified against all 3 return paths in tool source.
+      expect(resultWithForce.content[0].text).toMatch(/cache/i);
 
       // Test avec workspace_filter
       const resultWithFilter = await handleBuildSkeletonCache({
         workspace_filter: 'test-workspace'
       }, conversationCache);
-      expect(resultWithFilter.content[0].text).toBeTruthy();
+      // #815: same cache-contract check (see force_rebuild above)
+      expect(resultWithFilter.content[0].text).toMatch(/cache/i);
 
       // Test avec task_ids
       const resultWithIds = await handleBuildSkeletonCache({
         task_ids: ['task-1', 'task-2']
       }, conversationCache);
-      expect(resultWithIds.content[0].text).toBeTruthy();
+      // #815: same cache-contract check (see force_rebuild above)
+      expect(resultWithIds.content[0].text).toMatch(/cache/i);
     });
   });
 
@@ -144,7 +150,10 @@ describe('build_skeleton_cache (integration)', () => {
       const text = result.content[0].text;
 
       // L'outil doit gérer les IDs invalides gracieusement
-      expect(text).toBeTruthy();
+      // #815: was toBeTruthy() with no content check (a stub returning "X" passed).
+      // Verifies the cache-report contract — output mentions "cache" regardless of
+      // whether the invalid IDs hit the success or no-storage path.
+      expect(text).toMatch(/cache/i);
     });
   });
 
