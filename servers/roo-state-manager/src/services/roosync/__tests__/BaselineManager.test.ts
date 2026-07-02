@@ -78,9 +78,14 @@ describe('BaselineManager - Système de Rollback', () => {
       const clearCacheCallback = vi.fn();
       const result = await baselineManager.restoreFromRollbackPoint(decisionId, clearCacheCallback);
 
-      expect(result.success).toBeDefined();
-      expect(result.restoredFiles).toBeDefined();
-      expect(result.logs).toBeDefined();
+      // With the mocked shared path, no rollback source files ever exist to restore,
+      // so the contract is a well-typed failure (BaselineManager.ts:682-708/835):
+      // success false, nothing restored, and every log carries the [ROLLBACK] prefix.
+      expect(result.success).toBe(false);
+      expect(result.restoredFiles).toEqual([]);
+      expect(Array.isArray(result.logs)).toBe(true);
+      expect(result.logs.length).toBeGreaterThan(0);
+      expect(result.logs.every(log => log.includes('[ROLLBACK]'))).toBe(true);
 
       consoleSpy.mockRestore();
     });
@@ -95,9 +100,10 @@ describe('BaselineManager - Système de Rollback', () => {
 
       // Vérifier que les logs sont présents dans le résultat
       // L'implémentation utilise [ROLLBACK] comme préfixe
-      expect(result.logs).toBeDefined();
+      expect(Array.isArray(result.logs)).toBe(true);
       expect(result.logs.length).toBeGreaterThan(0);
-      expect(result.logs.some(log => log.includes('[ROLLBACK]'))).toBe(true);
+      // Every rollback log line carries the [ROLLBACK] prefix (BaselineManager.ts:678-843).
+      expect(result.logs.every(log => log.includes('[ROLLBACK]'))).toBe(true);
     });
   });
 
@@ -108,10 +114,13 @@ describe('BaselineManager - Système de Rollback', () => {
       const result = await baselineManager.listRollbackPoints();
 
       expect(Array.isArray(result)).toBe(true);
-      // Chaque élément doit avoir decisionId, timestamp, machine, files
+      // When rollback points exist, each element matches the shape pushed at
+      // BaselineManager.ts:956-961 (decisionId/timestamp/machine strings, files array).
       if (result.length > 0) {
-        expect(result[0].decisionId).toBeDefined();
-        expect(result[0].timestamp).toBeDefined();
+        expect(typeof result[0].decisionId).toBe('string');
+        expect(typeof result[0].timestamp).toBe('string');
+        expect(typeof result[0].machine).toBe('string');
+        expect(Array.isArray(result[0].files)).toBe(true);
       }
 
       consoleSpy.mockRestore();
@@ -128,9 +137,11 @@ describe('BaselineManager - Système de Rollback', () => {
         dryRun: false
       });
 
-      expect(result.deleted).toBeDefined();
-      expect(result.kept).toBeDefined();
-      expect(result.errors).toBeDefined();
+      // Every return path yields the {deleted, kept, errors} array triple
+      // (BaselineManager.ts:982-986/1065-1069/1072-1076).
+      expect(Array.isArray(result.deleted)).toBe(true);
+      expect(Array.isArray(result.kept)).toBe(true);
+      expect(Array.isArray(result.errors)).toBe(true);
 
       consoleSpy.mockRestore();
     });
@@ -156,9 +167,11 @@ describe('BaselineManager - Système de Rollback', () => {
 
       const result = await baselineManager.validateRollbackPoint(decisionId);
 
-      expect(result.isValid).toBeDefined();
-      expect(result.errors).toBeDefined();
-      expect(result.files).toBeDefined();
+      // Structural contract of validateRollbackPoint (BaselineManager.ts:1083-1088):
+      // a boolean verdict plus files/errors arrays, on every return path.
+      expect(typeof result.isValid).toBe('boolean');
+      expect(Array.isArray(result.errors)).toBe(true);
+      expect(Array.isArray(result.files)).toBe(true);
 
       consoleSpy.mockRestore();
     });
@@ -169,8 +182,12 @@ describe('BaselineManager - Système de Rollback', () => {
 
       const result = await baselineManager.validateRollbackPoint(decisionId);
 
-      expect(result.isValid).toBeDefined();
-      expect(result.errors).toBeDefined();
+      // A rollback whose backed-up files are absent is invalid with recorded errors:
+      // both the missing-dir path (BaselineManager.ts:1093-1099) and the
+      // present-but-fileless path (L1156-1175) converge to isValid=false + non-empty errors.
+      expect(result.isValid).toBe(false);
+      expect(Array.isArray(result.errors)).toBe(true);
+      expect(result.errors.length).toBeGreaterThan(0);
 
       consoleSpy.mockRestore();
     });
