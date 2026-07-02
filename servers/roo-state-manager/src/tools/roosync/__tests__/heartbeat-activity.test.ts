@@ -8,15 +8,17 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 // Use vi.hoisted for mock variables used in vi.mock factories (ESM hoisting)
-const { mockHostname, mockRegisterHeartbeat, mockGetHeartbeatService, mockGetRooSyncService } = vi.hoisted(() => ({
+const { mockHostname, mockRegisterHeartbeat, mockRecordSchedulerRun, mockGetHeartbeatService, mockGetRooSyncService } = vi.hoisted(() => ({
 	mockHostname: vi.fn().mockReturnValue('myia-po-2023'),
 	mockRegisterHeartbeat: vi.fn().mockResolvedValue(undefined),
+	// #833 C3: mock for recordSchedulerRunAsync (heartbeat-activity.ts L96)
+	mockRecordSchedulerRun: vi.fn(),
 	mockGetHeartbeatService: vi.fn(),
 	mockGetRooSyncService: vi.fn()
 }));
 
 // Wire up mock chain
-mockGetHeartbeatService.mockReturnValue({ registerHeartbeat: mockRegisterHeartbeat });
+mockGetHeartbeatService.mockReturnValue({ registerHeartbeat: mockRegisterHeartbeat, recordSchedulerRun: mockRecordSchedulerRun });
 mockGetRooSyncService.mockReturnValue({ getHeartbeatService: mockGetHeartbeatService });
 
 // Mock os
@@ -46,14 +48,14 @@ vi.mock('../../../utils/message-helpers.js', () => ({
 }));
 
 // NOW import the module under test
-import { recordRooSyncActivity, recordRooSyncActivityAsync } from '../heartbeat-activity.js';
+import { recordRooSyncActivity, recordRooSyncActivityAsync, recordSchedulerRunAsync } from '../heartbeat-activity.js';
 
 describe('heartbeat-activity', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockHostname.mockReturnValue('myia-po-2023');
 		mockRegisterHeartbeat.mockResolvedValue(undefined);
-		mockGetHeartbeatService.mockReturnValue({ registerHeartbeat: mockRegisterHeartbeat });
+		mockGetHeartbeatService.mockReturnValue({ registerHeartbeat: mockRegisterHeartbeat, recordSchedulerRun: mockRecordSchedulerRun });
 		mockGetRooSyncService.mockReturnValue({ getHeartbeatService: mockGetHeartbeatService });
 	});
 
@@ -188,6 +190,74 @@ describe('heartbeat-activity', () => {
 			mockHostname.mockReturnValue('localhost');
 			await recordRooSyncActivity('send');
 			expect(mockRegisterHeartbeat.mock.calls[0][0]).toBe('localhost');
+		});
+	});
+
+	// ============================================================
+	// #833 C3 (po-2024): recordSchedulerRunAsync (#1442)
+	// Source: heartbeat-activity.ts L87-105 — fire-and-forget IIFE that calls
+	// heartbeatService.recordSchedulerRun(machineId, {success, durationMs, error}).
+	// Was entirely untested (not imported, no recordSchedulerRun mock).
+	// ============================================================
+
+	describe('recordSchedulerRunAsync (#1442)', () => {
+		test('should call heartbeatService.recordSchedulerRun with machineId + success', async () => {
+			// Source L92-100: the IIFE awaits getRooSyncService, gets heartbeatService,
+			// calls recordSchedulerRun(machineId, {success, durationMs, error}).
+			recordSchedulerRunAsync('myia-po-2024', true);
+
+			// Fire-and-forget IIFE needs a microtask/tick to resolve
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			expect(mockRecordSchedulerRun).toHaveBeenCalledTimes(1);
+			expect(mockRecordSchedulerRun).toHaveBeenCalledWith('myia-po-2024', expect.objectContaining({
+				success: true
+			}));
+		});
+
+		test('should forward failure result with error message', async () => {
+			// Source L96-100: error option mapped from options.error (L99).
+			recordSchedulerRunAsync('myia-web1', false, { error: 'scheduler crashed', durationMs: 5000 });
+
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			expect(mockRecordSchedulerRun).toHaveBeenCalledWith('myia-web1', expect.objectContaining({
+				success: false,
+				error: 'scheduler crashed',
+				durationMs: 5000
+			}));
+		});
+
+		test('should default durationMs + error to undefined when options omitted', async () => {
+			// Source L98-99: options?.durationMs / options?.error → undefined when no options.
+			recordSchedulerRunAsync('myia-po-2023', true);
+
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			const [, metrics] = mockRecordSchedulerRun.mock.calls[0];
+			expect(metrics).toEqual({ success: true, durationMs: undefined, error: undefined });
+		});
+
+		test('should not throw when getRooSyncService rejects (fire-and-forget catch)', async () => {
+			// Source L92-104: the inner try/catch swallows the error → logger.debug.
+			// The sync wrapper must NOT throw even when the async IIFE fails.
+			mockGetRooSyncService.mockRejectedValue(new Error('RooSync not initialized'));
+
+			expect(() => recordSchedulerRunAsync('myia-po-2024', true)).not.toThrow();
+
+			// Let the rejected IIFE settle — the catch must swallow it (no unhandled rejection)
+			await new Promise(resolve => setTimeout(resolve, 10));
+		});
+
+		test('should not throw when recordSchedulerRun throws synchronously', async () => {
+			// Source L101-103: recordSchedulerRun throwing is caught by the inner catch.
+			mockRecordSchedulerRun.mockImplementation(() => {
+				throw new Error('HeartbeatService GDrive write failed');
+			});
+
+			expect(() => recordSchedulerRunAsync('myia-po-2024', false, { error: 'x' })).not.toThrow();
+
+			await new Promise(resolve => setTimeout(resolve, 10));
 		});
 	});
 });
