@@ -17,6 +17,7 @@ import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics }
 import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT } from '../types/indexing.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { shouldIndexTask } from './task-partition.js';
+import { dualWriteConversationToStore } from './unified-store/dual-write.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
@@ -154,6 +155,9 @@ export async function loadFullSkeleton(
 
         // Update cache with header only — sequence stays on disk
         conversationCache.set(taskId, toHeader(skeleton));
+        // #692: dual-write the FULL skeleton (not the cached header) to the unified store.
+        // loadFullSkeleton has the complete skeleton in scope; the header is cache-only.
+        dualWriteConversationToStore(taskId, skeleton).catch(() => {});
         return skeleton;
     } catch {
         return null;
@@ -375,6 +379,8 @@ export async function loadClaudeCodeSessions(conversationCache: Map<string, Skel
                             skeleton.metadata.source = 'claude-code'; // Qdrant filtering
                             skeleton.metadata.dataSource = 'claude';  // indexTaskInQdrant() source detection
                             conversationCache.set(taskId, toHeader(skeleton));
+                            // #692: dual-write the FULL skeleton (not the cached header) to the unified store
+                            dualWriteConversationToStore(taskId, skeleton).catch(() => {});
                             loaded++;
                         }
                     } catch (error) {
@@ -484,6 +490,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         newHeader.metadata.indexingState = existingSkeleton.metadata.indexingState;
                                     }
                                     state.conversationCache.set(entry.name, newHeader);
+                                    // #692: dual-write the FULL skeleton (in scope above) to the unified store.
+                                    // The cache holds a toHeader() partial; the dual-write needs the complete skeleton.
+                                    dualWriteConversationToStore(entry.name, skeleton).catch(() => {});
                                     // Queue for Qdrant indexation if lastActivity > lastIndexedAt
                                     // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                     const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
@@ -554,6 +563,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                             newHeader.metadata.indexingState = existingSkeleton.metadata.indexingState;
                                         }
                                         state.conversationCache.set(taskId, newHeader);
+                                        // #692: dual-write the FULL Claude skeleton (in scope above) to the unified store.
+                                        // The cache holds a toHeader() partial; the dual-write needs the complete skeleton.
+                                        dualWriteConversationToStore(taskId, skeleton).catch(() => {});
                                         // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                         const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
                                         const indexStatus = newHeader.metadata?.indexingState?.indexStatus;
