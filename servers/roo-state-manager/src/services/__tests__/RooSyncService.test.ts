@@ -26,6 +26,17 @@ vi.unmock('../ConfigSharingService.js');
 import { RooSyncService, RooSyncServiceError } from '../RooSyncService.js';
 import type { CacheOptions } from '../RooSyncService.js';
 
+// Real fs/path/os for the cache + path-helper tests below (#833 coverage).
+// Not mocked: these tests exercise getFileHash/checkFileExists against real temp files.
+import { statSync, writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+/** Unique temp path under the OS tmp dir (avoids cross-test / cross-file collisions). */
+function tmpPath(prefix: string): string {
+    return join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+}
+
 // ─────────────────── Mocks ───────────────────
 
 const mockLoadConfig = vi.fn();
@@ -270,6 +281,149 @@ describe('RooSyncService', () => {
             const service = await RooSyncService.getInstance();
 
             expect(service).toBeDefined();
+        });
+    });
+
+    // ============================================================
+    // Cache subsystem (source-grounded, #833 coverage deep-queue)
+    // Real branch coverage of getFileHash / isCacheValid / getOrCache /
+    // clearCache — none of which the pre-existing "toBeDefined" tests touch.
+    // ============================================================
+
+    describe('Cache subsystem (#833)', () => {
+        let svc: RooSyncService;
+
+        beforeEach(async () => {
+            // Fresh singleton so cache/cacheOptions mutations never leak between tests.
+            (RooSyncService as any).instance = null;
+            svc = await RooSyncService.getInstance();
+            (svc as any).cache.clear();
+        });
+
+        test('getFileHash returns `${mtimeMs}-${size}` for an existing file (L485-488)', () => {
+            const f = tmpPath('roosync-fh');
+            writeFileSync(f, 'hash-me');
+            try {
+                const st = statSync(f);
+                const hash = (svc as any).getFileHash(f);
+                expect(hash).toBe(`${st.mtimeMs}-${st.size}`);
+            } finally {
+                unlinkSync(f);
+            }
+        });
+
+        test('getFileHash returns null when statSync throws (missing file, L490-491)', () => {
+            expect((svc as any).getFileHash(tmpPath('roosync-missing'))).toBeNull();
+        });
+
+        test('isCacheValid is false when the key is absent (L501-502)', () => {
+            expect((svc as any).isCacheValid('never-set')).toBe(false);
+        });
+
+        test('isCacheValid is false once age reaches the TTL (L506-508)', () => {
+            (svc as any).cacheOptions.ttl = 1000;
+            (svc as any).cache.set('k', { data: 1, timestamp: Date.now() - 2000 });
+            expect((svc as any).isCacheValid('k')).toBe(false);
+        });
+
+        test('isCacheValid is false when the source-file hash changed (L512-514)', () => {
+            (svc as any).cacheOptions.ttl = 60_000;
+            (svc as any).cache.set('k', { data: 1, timestamp: Date.now(), fileHash: 'old-hash' });
+            // Fresh timestamp (TTL ok) but a different current hash → smart invalidation.
+            expect((svc as any).isCacheValid('k', 'new-hash')).toBe(false);
+        });
+
+        test('isCacheValid is true within TTL when the hash matches (L517)', () => {
+            (svc as any).cacheOptions.ttl = 60_000;
+            (svc as any).cache.set('k', { data: 1, timestamp: Date.now(), fileHash: 'same' });
+            expect((svc as any).isCacheValid('k', 'same')).toBe(true);
+        });
+
+        test('getOrCache bypasses the cache entirely when disabled (L529-531)', async () => {
+            (svc as any).cacheOptions.enabled = false;
+            const fetchFn = vi.fn().mockResolvedValue('fresh');
+
+            const a = await (svc as any).getOrCache('k', fetchFn);
+            const b = await (svc as any).getOrCache('k', fetchFn);
+
+            expect(a).toBe('fresh');
+            expect(b).toBe('fresh');
+            // Disabled → fetched every call, nothing stored.
+            expect(fetchFn).toHaveBeenCalledTimes(2);
+            expect((svc as any).cache.has('k')).toBe(false);
+        });
+
+        test('getOrCache fetches once then serves the cached value (L537-552)', async () => {
+            (svc as any).cacheOptions.enabled = true;
+            (svc as any).cacheOptions.ttl = 60_000;
+            const fetchFn = vi.fn().mockResolvedValue('computed');
+
+            const first = await (svc as any).getOrCache('k', fetchFn);
+            const second = await (svc as any).getOrCache('k', fetchFn);
+
+            expect(first).toBe('computed');
+            expect(second).toBe('computed');
+            // Second call must be served from cache (fetchFn not re-invoked).
+            expect(fetchFn).toHaveBeenCalledTimes(1);
+            expect((svc as any).cache.get('k').data).toBe('computed');
+        });
+
+        test('clearCache empties the internal cache map (L452-454)', () => {
+            (svc as any).cache.set('k', { data: 1, timestamp: Date.now() });
+            expect((svc as any).cache.size).toBe(1);
+
+            svc.clearCache();
+
+            expect((svc as any).cache.size).toBe(0);
+        });
+    });
+
+    // ============================================================
+    // Path & config helpers (source-grounded, #833)
+    // ============================================================
+
+    describe('Path & config helpers (#833)', () => {
+        let svc: RooSyncService;
+
+        beforeEach(async () => {
+            (RooSyncService as any).instance = null;
+            svc = await RooSyncService.getInstance();
+        });
+
+        test('getRooSyncFilePath joins config.sharedPath with the filename (L558-559)', () => {
+            const base = join(tmpdir(), 'roosync-base');
+            (svc as any).config.sharedPath = base;
+            expect((svc as any).getRooSyncFilePath('dashboard.json')).toBe(join(base, 'dashboard.json'));
+        });
+
+        test('checkFileExists throws RooSyncServiceError FILE_NOT_FOUND for a missing file (L565-572)', () => {
+            (svc as any).config.sharedPath = tmpdir();
+            let thrown: any;
+            try {
+                (svc as any).checkFileExists(`roosync-absent-${Date.now()}.json`);
+            } catch (e) {
+                thrown = e;
+            }
+            expect(thrown).toBeInstanceOf(RooSyncServiceError);
+            expect(thrown.code).toBe('FILE_NOT_FOUND');
+        });
+
+        test('checkFileExists returns without throwing for an existing file (L565-567)', () => {
+            (svc as any).config.sharedPath = tmpdir();
+            const f = tmpPath('roosync-exists');
+            const name = f.slice(tmpdir().length + 1); // filename relative to sharedPath
+            writeFileSync(f, 'x');
+            try {
+                expect(() => (svc as any).checkFileExists(name)).not.toThrow();
+            } finally {
+                unlinkSync(f);
+            }
+        });
+
+        test('getConfig returns the loaded config object (L424-425)', () => {
+            const cfg = svc.getConfig();
+            expect(cfg).toBeDefined();
+            expect(cfg).toBe((svc as any).config);
         });
     });
 
