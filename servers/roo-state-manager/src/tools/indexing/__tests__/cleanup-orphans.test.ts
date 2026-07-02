@@ -159,40 +159,52 @@ describe('cleanup-orphans', () => {
 
 	describe('detectAndCleanupOrphans — deletion', () => {
 		test('deletes orphans when dryRun=false and confirm=true', async () => {
-			mockScroll.mockResolvedValueOnce(mockScrollResponse(['orphan-1', 'orphan-2']));
+			// #694: keep orphans a MINORITY (< 50%) so the fleet-safety guard does not abort.
+			// 4 total task_ids, 2 in cache → 2 orphans = exactly 50% (not strictly > 50%) → deletion proceeds.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['keep-1', 'keep-2', 'orphan-1', 'orphan-2']));
 			mockFindConversationById.mockResolvedValue(null);
 			mockDelete.mockResolvedValue({ status: 'completed' });
 
 			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			cache.set('keep-2', makeSkeleton('keep-2'));
 			const result = await detectAndCleanupOrphans(cache, false, true);
 
 			expect(result.orphans).toEqual(['orphan-1', 'orphan-2']);
+			expect(result.fleet_safety_abort).toBeUndefined();
 			expect(result.vectors_deleted).toBe(2);
 			expect(mockDelete).toHaveBeenCalledTimes(2);
 		});
 
 		test('refuses deletion without confirmation', async () => {
-			mockScroll.mockResolvedValueOnce(mockScrollResponse(['orphan-1']));
+			// #694: 2 total task_ids, 1 in cache → 1 orphan = 50% (not > 50%) → reaches confirm gate.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['keep-1', 'orphan-1']));
 			mockFindConversationById.mockResolvedValue(null);
 
 			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
 			const result = await detectAndCleanupOrphans(cache, false, false);
 
 			expect(result.orphans).toEqual(['orphan-1']);
+			expect(result.fleet_safety_abort).toBeUndefined();
 			expect(result.vectors_deleted).toBe(0);
 			expect(result.errors).toContain('Confirmation required for deletion. Set confirm=true to proceed.');
 		});
 
 		test('continues on individual delete errors', async () => {
-			mockScroll.mockResolvedValueOnce(mockScrollResponse(['orphan-1', 'orphan-2']));
+			// #694: 4 total task_ids, 2 in cache → 2 orphans = 50% → deletion proceeds past the guard.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['keep-1', 'keep-2', 'orphan-1', 'orphan-2']));
 			mockFindConversationById.mockResolvedValue(null);
 			mockDelete
 				.mockRejectedValueOnce(new Error('Qdrant timeout'))
 				.mockResolvedValueOnce({ status: 'completed' });
 
 			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			cache.set('keep-2', makeSkeleton('keep-2'));
 			const result = await detectAndCleanupOrphans(cache, false, true);
 
+			expect(result.fleet_safety_abort).toBeUndefined();
 			expect(result.vectors_deleted).toBe(1);
 			expect(result.errors.length).toBe(1);
 			expect(result.errors[0]).toContain('orphan-1');
@@ -275,6 +287,82 @@ describe('cleanup-orphans', () => {
 			// Only the point with valid task_id should be counted
 			expect(result.total_task_ids_in_qdrant).toBe(1);
 			expect(result.orphans).toEqual(['valid-task']);
+		});
+	});
+
+	// ─── #694 fleet-safety abort (mono-machine artifact on fleet-shared collection) ───
+	describe('detectAndCleanupOrphans — fleet-safety threshold abort (#694)', () => {
+		test('ABORTS deletion when orphans > 50% of total, even with confirm=true (mono-machine artifact)', async () => {
+			// Fleet-shared collection: 100 task_ids, this machine only knows 1 → 99 orphans.
+			// 99 > 50 (50% of 100) → must abort to avoid destroying the fleet's index.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(
+				Array.from({ length: 100 }, (_, i) => `fleet-task-${i}`),
+			));
+			mockFindConversationById.mockResolvedValue(null);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('fleet-task-0', makeSkeleton('fleet-task-0')); // only 1 known locally
+
+			const result = await detectAndCleanupOrphans(cache, false, true); // confirm=true!
+
+			expect(result.total_task_ids_in_qdrant).toBe(100);
+			expect(result.orphans.length).toBe(99); // still reported for visibility
+			expect(result.fleet_safety_abort).toBe(true);
+			expect(result.abort_reason).toContain('FLEET-SAFETY ABORT');
+			expect(result.abort_reason).toContain('99 of 100');
+			// CRITICAL: no deletion happened despite confirm=true
+			expect(result.vectors_deleted).toBe(0);
+			expect(mockDelete).not.toHaveBeenCalled();
+		});
+
+		test('does NOT abort when orphans are a minority of total (legit single-machine cleanup)', async () => {
+			// 100 task_ids, 90 known locally, 10 orphans → 10% < 50% → legit cleanup, no abort.
+			const allIds = Array.from({ length: 100 }, (_, i) => `task-${i}`);
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(allIds));
+			mockFindConversationById.mockResolvedValue(null);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			for (let i = 0; i < 90; i++) {
+				cache.set(`task-${i}`, makeSkeleton(`task-${i}`));
+			}
+
+			const result = await detectAndCleanupOrphans(cache, false, true);
+
+			expect(result.total_task_ids_in_qdrant).toBe(100);
+			expect(result.orphans.length).toBe(10);
+			expect(result.fleet_safety_abort).toBeUndefined();
+			expect(result.abort_reason).toBeUndefined();
+			expect(result.vectors_deleted).toBe(10);
+			expect(mockDelete).toHaveBeenCalledTimes(10);
+		});
+
+		test('surfaces fleet-safety abort in dry-run mode too (early warning before confirm)', async () => {
+			// 4 task_ids, 0 known locally → 4 orphans = 100% > 50% → abort flagged even in dry-run.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['t1', 't2', 't3', 't4']));
+			mockFindConversationById.mockResolvedValue(null);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true); // dry-run
+
+			expect(result.fleet_safety_abort).toBe(true);
+			expect(result.abort_reason).toContain('4 of 4');
+			expect(result.vectors_deleted).toBe(0);
+			expect(mockDelete).not.toHaveBeenCalled();
+		});
+
+		test('does not abort at exactly 50% boundary (orphan count must STRICTLY exceed threshold)', async () => {
+			// 4 task_ids, 2 known → 2 orphans = exactly 50%. 2 > 2.0 is false → no abort.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['t1', 't2', 't3', 't4']));
+			mockFindConversationById.mockResolvedValue(null);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('t1', makeSkeleton('t1'));
+			cache.set('t2', makeSkeleton('t2'));
+
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.orphans.length).toBe(2);
+			expect(result.fleet_safety_abort).toBeUndefined();
 		});
 	});
 });
