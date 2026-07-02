@@ -1229,6 +1229,53 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('bulkOperation (#2730 — bulk mark_read workspace regression)', () => {
+    test('bulk mark_read succeeds on messages targeting a specific workspace', async () => {
+      // Bug #2730: bulkOperation forwarded machineId (no workspace) to markAsRead,
+      // so the #2287 access-control guard rejected any message whose `to` targeted a
+      // specific workspace (matchesRecipient returns false when localWorkspaceId is
+      // undefined). The unitary mark_read path passed getLocalFullId() and succeeded
+      // on the same message — bulk silently logged "mark_read returned false".
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a:ws-1', 'Bulk target', 'Body', 'MEDIUM'
+      );
+      // bulkOperationHandler passes getLocalMachineId() + effective workspace.
+      const result = await messageManager.bulkOperation(
+        'machine-a', 'mark_read', { status: 'unread' }, 'ws-1'
+      );
+      expect(result.matched).toBe(1);
+      expect(result.processed).toBe(1);
+      expect(result.failed_ids).toHaveLength(0);
+      // Confirm the message is actually mutated to read.
+      const after = await messageManager.getMessage(msg.id, 'machine-a:ws-1');
+      expect(after!.status === 'read' || after!.read_by?.includes('machine-a')).toBe(true);
+    });
+
+    test('bulk mark_read still succeeds on machine-wide messages (no workspace)', async () => {
+      // Regression guard: messages targeting the whole machine must still work.
+      await messageManager.sendMessage(
+        'sender', 'machine-a', 'Machine-wide', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.bulkOperation(
+        'machine-a', 'mark_read', { status: 'unread' }, 'ws-1'
+      );
+      expect(result.processed).toBe(1);
+      expect(result.failed_ids).toHaveLength(0);
+    });
+
+    test('bulk mark_read still succeeds on broadcast messages', async () => {
+      // Regression guard: broadcasts (to: "all") were never affected.
+      await messageManager.sendMessage(
+        'sender', 'all', 'Broadcast', 'Body', 'MEDIUM'
+      );
+      const result = await messageManager.bulkOperation(
+        'machine-a', 'mark_read', { status: 'unread' }, 'ws-1'
+      );
+      expect(result.processed).toBe(1);
+      expect(result.failed_ids).toHaveLength(0);
+    });
+  });
+
   describe('phantom message fix (#2307 Phase 4)', () => {
     test('markAsRead returns true when message already archived (idempotent)', async () => {
       const msg = await messageManager.sendMessage(

@@ -1324,10 +1324,17 @@ export class MessageManager {
     // Apply the operation to matched messages
     let processed = 0;
     const failedReasons: Record<string, string> = {};
+    // #2730: pass the full readerId (machine:workspace) to markAsRead so the #2287
+    // access-control guard (matchesRecipient) sees the workspace. bulkOperationHandler
+    // forwards getLocalMachineId() (machine only), so without this, markAsRead received
+    // a readerId with workspaceId=undefined → matchesRecipient rejected every message
+    // targeting a specific workspace → "mark_read returned false" (unitary mark_read,
+    // which passes getLocalFullId(), succeeded on the same messages).
+    const readerId = `${machineId}:${effectiveWorkspaceId}`;
     for (const id of matchedIds) {
       try {
         if (operation === 'mark_read') {
-          const success = await this.markAsRead(id, machineId);
+          const success = await this.markAsRead(id, readerId);
           if (success) processed++;
           else { errors++; failedIds.push(id); failedReasons[id] = 'mark_read returned false'; }
         } else if (operation === 'archive') {
