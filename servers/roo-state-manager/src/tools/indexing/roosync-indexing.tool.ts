@@ -603,12 +603,16 @@ export async function handleRooSyncIndexing(
                     isConfirmed
                 );
 
-                const mode = isDryRun ? '[DRY RUN]' : (isConfirmed ? '[EXECUTED]' : '[NEEDS CONFIRM]');
-                const summary = isDryRun
-                    ? `${mode} ${result.orphans.length} orphelins détectés sur ${result.total_task_ids_in_qdrant} task_ids Qdrant (aucune suppression)`
-                    : (isConfirmed
-                        ? `${mode} ${result.vectors_deleted} vecteurs supprimés pour ${result.orphans.length} task_ids orphelins`
-                        : `${mode} ${result.orphans.length} orphelins détectés — confirmation requise (confirm_orphan_cleanup=true)`);
+                const mode = result.fleet_safety_abort
+                    ? '[FLEET-SAFETY ABORT]'
+                    : (isDryRun ? '[DRY RUN]' : (isConfirmed ? '[EXECUTED]' : '[NEEDS CONFIRM]'));
+                const summary = result.fleet_safety_abort
+                    ? `${mode} ${result.orphans.length} orphelins détectés sur ${result.total_task_ids_in_qdrant} task_ids — SUPPRESSION REFUSÉE (>50%, artefact mono-machine probable sur collection fleet-shared)`
+                    : (isDryRun
+                        ? `${mode} ${result.orphans.length} orphelins détectés sur ${result.total_task_ids_in_qdrant} task_ids Qdrant (aucune suppression)`
+                        : (isConfirmed
+                            ? `${mode} ${result.vectors_deleted} vecteurs supprimés pour ${result.orphans.length} task_ids orphelins`
+                            : `${mode} ${result.orphans.length} orphelins détectés — confirmation requise (confirm_orphan_cleanup=true)`));
 
                 return {
                     isError: false,
@@ -616,14 +620,16 @@ export async function handleRooSyncIndexing(
                         type: 'text',
                         text: JSON.stringify({
                             action: 'cleanup_orphans',
-                            mode: isDryRun ? 'dry_run' : (isConfirmed ? 'executed' : 'needs_confirm'),
+                            mode: result.fleet_safety_abort ? 'fleet_safety_abort' : (isDryRun ? 'dry_run' : (isConfirmed ? 'executed' : 'needs_confirm')),
+                            fleet_safety_abort: result.fleet_safety_abort || undefined,
+                            abort_reason: result.abort_reason,
                             scan: {
                                 total_task_ids_in_qdrant: result.total_task_ids_in_qdrant,
                                 in_cache: result.in_cache,
                                 on_disk: result.on_disk,
                                 orphans_detected: result.orphans.length,
                             },
-                            cleanup: !isDryRun && isConfirmed ? {
+                            cleanup: !isDryRun && isConfirmed && !result.fleet_safety_abort ? {
                                 vectors_deleted: result.vectors_deleted,
                             } : null,
                             orphan_task_ids: result.orphans.slice(0, 50),

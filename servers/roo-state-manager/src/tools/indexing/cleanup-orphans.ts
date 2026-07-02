@@ -23,6 +23,15 @@ import * as os from 'os';
 const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 const SCROLL_BATCH_SIZE = 1000;
 
+/**
+ * #694 fleet-safety threshold. On a fleet-shared collection (multiple machines writing
+ * to one Qdrant collection), a single machine sees every OTHER machine's task_ids as
+ * orphans — they're absent from ITS local cache and disk. If orphans exceed this fraction
+ * of total task_ids, we treat it as a mono-machine artifact and refuse to delete, to avoid
+ * destroying the fleet's index. 0.5 = majority of the collection would be flagged.
+ */
+const FLEET_SAFETY_ORPHAN_RATIO = 0.5;
+
 export interface OrphanCleanupResult {
     total_task_ids_in_qdrant: number;
     in_cache: number;
@@ -30,6 +39,10 @@ export interface OrphanCleanupResult {
     orphans: string[];
     vectors_deleted: number;
     errors: string[];
+    /** #694: true when deletion was aborted because orphans > 50% of total (mono-machine artifact on a fleet-shared collection). */
+    fleet_safety_abort?: boolean;
+    /** #694: human-readable reason for a fleet-safety abort. */
+    abort_reason?: string;
 }
 
 /**
@@ -179,6 +192,28 @@ export async function detectAndCleanupOrphans(
 
     result.orphans = orphans;
     console.log(`[cleanup-orphans] ${result.on_disk} found on disk, ${orphans.length} orphans detected`);
+
+    // Phase 3.5: Fleet-safety guard (#694). On a fleet-shared collection, a single machine
+    // sees other machines' task_ids as orphans (absent from its local cache/disk). If orphans
+    // exceed half the total task_ids, this is almost certainly a mono-machine artifact —
+    // ABORT deletion (even with confirm=true) to avoid destroying the fleet's index.
+    if (
+        result.total_task_ids_in_qdrant > 0 &&
+        orphans.length > result.total_task_ids_in_qdrant * FLEET_SAFETY_ORPHAN_RATIO
+    ) {
+        const pct = ((orphans.length / result.total_task_ids_in_qdrant) * 100).toFixed(1);
+        result.abort_reason =
+            `FLEET-SAFETY ABORT: ${orphans.length} of ${result.total_task_ids_in_qdrant} task_ids (${pct}%) ` +
+            `would be deleted — exceeds the ${FLEET_SAFETY_ORPHAN_RATIO * 100}% fleet-safety threshold. On a fleet-shared ` +
+            `Qdrant collection this is almost certainly a mono-machine artifact (the other machines' task_ids are ` +
+            `absent from this machine's local cache/disk). Run cleanup_orphans from a coordinator with full inventory ` +
+            `visibility, or delete specific task_ids individually.`;
+        result.fleet_safety_abort = true;
+        result.errors.push(result.abort_reason);
+        console.warn(`[cleanup-orphans] ${result.abort_reason}`);
+        // Do NOT proceed to deletion — return early. orphans[] stays populated for visibility.
+        return result;
+    }
 
     // Phase 4: Delete orphans (only if not dry-run and confirmed)
     if (!dryRun && confirm && orphans.length > 0) {
