@@ -4,6 +4,11 @@
  *
  * Issue #656 - Phase 2.4 : Couverture Tests
  * Priorité HAUTE - Diagnostic Qdrant (indexation)
+ *
+ * Issue #833 Sprint C3 - deep diagnostics coverage (web1 lane `src/tools/indexing/`)
+ * Le bloc `if (deep && diagnostics.status === 'healthy') { ... }` (L231-323) + ses
+ * recommandations (L356-370) n'étaient couverts par aucun des 3 fichiers de test
+ * (32 + 19 + 9 = 60 tests existants), ouvrant un gap de ~65 lignes sur le fichier.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -13,7 +18,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { mockQdrantClient, mockOpenAIClient } = vi.hoisted(() => ({
 	mockQdrantClient: {
 		getCollections: vi.fn(),
-		getCollection: vi.fn()
+		getCollection: vi.fn(),
+		scroll: vi.fn()
 	},
 	mockOpenAIClient: {
 		embeddings: {
@@ -619,6 +625,225 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.details.openai_connection).toBe('failed');
+		});
+	});
+
+	// ============================================================
+	// Deep diagnostics (src L231-323) + recommendations L356-370
+	// #833 Sprint C3: complete coverage of the `if (deep && healthy)`
+	// branch (sourced from #1244 fields-coverage improvements).
+	// ============================================================
+
+	describe('deep diagnostics', () => {
+		beforeEach(() => {
+			// Healthy baseline Qdrant + OpenAI responses (re-assert for each test)
+			mockQdrantClient.getCollections.mockResolvedValue({
+				collections: [{ name: 'test-roo-state-manager' }]
+			});
+			mockQdrantClient.getCollection.mockResolvedValue({
+				vectors_count: 1000,
+				points_count: 100,
+				config: {
+					params: {
+						vectors: {
+							distance: 'Cosine',
+							size: 1536
+						}
+					}
+				}
+			});
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+		});
+
+		it('skips deep diagnostics when status is not healthy', async () => {
+			// Source: L231 — `if (deep && diagnostics.status === 'healthy')`.
+			// When Qdrant collection is missing → status='missing_collection' → skip.
+			mockQdrantClient.getCollections.mockResolvedValue({ collections: [] });
+			mockQdrantClient.scroll.mockResolvedValue([]);
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			// scroll MUST NOT be called when status is not healthy (L231 guard).
+			expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+			expect(parsed.details.deep_diagnostics).toBeUndefined();
+		});
+
+		it('aggregates source distribution, workspace distribution, and field coverage', async () => {
+			// Source: L245-303 — source_counts, workspace_counts, field_presence aggregation
+			// + sorted top-workspaces + samples.
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [
+					{
+						id: 'p1',
+						payload: {
+							source: 'roo',
+							workspace_name: 'roo-extensions',
+							task_id: 'a',
+							workspace: 'w',
+							timestamp: '2026-07-01',
+							chunk_type: 'msg',
+							role: 'assistant',
+							host_os: 'win',
+							task_title: 'T1',
+							model: 'opus'
+						}
+					},
+					{
+						id: 'p2',
+						payload: {
+							source: 'claude-code',
+							workspace_name: 'roo-extensions',
+							task_id: 'b',
+							workspace: 'w',
+							timestamp: '2026-07-02',
+							chunk_type: 'msg',
+							role: 'user',
+							host_os: 'win',
+							task_title: 'T2',
+							model: 'haiku'
+						}
+					},
+					{
+						id: 'p3',
+						payload: {} // Missing everything → '__unknown__' / '__missing__'
+					}
+				]
+			});
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true, sample_size: 100 }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			const dd = parsed.details.deep_diagnostics;
+			expect(dd.sample_size_actual).toBe(3);
+			expect(dd.sample_size_requested).toBe(100);
+			// source distribution (L254-255)
+			expect(dd.source_distribution.roo).toBe(1);
+			expect(dd.source_distribution['claude-code']).toBe(1);
+			expect(dd.source_distribution.__unknown__).toBe(1);
+			// workspace_name distribution (L259-262)
+			expect(dd.workspace_distribution_top[0]).toMatchObject({
+				name: 'roo-extensions',
+				count: 2,
+				pct: 66.7
+			});
+			expect(dd.workspace_distribution_distinct).toBe(1); // roo-extensions (missing excluded)
+			// field coverage (L266-270 + L291-294)
+			expect(dd.field_coverage_pct.task_id).toBeCloseTo(66.7, 1);
+			expect(dd.field_coverage_pct.workspace_name).toBeCloseTo(66.7, 1);
+			// payload samples (L273-282, capped at 5)
+			expect(dd.payload_samples.length).toBe(3);
+			expect(dd.payload_samples[0].id).toBe('p1');
+		});
+
+		it('emits workspace_name error below 50% coverage', async () => {
+			// Source: L307-312 — `if (fieldCoveragePct.workspace_name ?? 0 < 50)` → error
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [
+					{ id: 'p1', payload: { source: 'roo', workspace_name: '', timestamp: '2026-07-01', task_id: 'a' } },
+					{ id: 'p2', payload: { source: 'roo', timestamp: '2026-07-01', task_id: 'b' } }
+				]
+			});
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			// workspace_name populated in 0% (both empty/missing)
+			const wsErr = parsed.errors.find((e: string) => e.includes('workspace_name populated in'));
+			expect(wsErr).toBeDefined();
+			expect(wsErr).toContain('0%');
+		});
+
+		it('emits timestamp error below 50% coverage', async () => {
+			// Source: L313-318 — `if (fieldCoveragePct.timestamp ?? 0 < 50)` → error
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [
+					{ id: 'p1', payload: { source: 'roo', workspace_name: 'w1', task_id: 'a' } },
+					{ id: 'p2', payload: { source: 'roo', workspace_name: 'w2', task_id: 'b' } }
+				]
+			});
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			const tsErr = parsed.errors.find((e: string) => e.includes('timestamp populated in'));
+			expect(tsErr).toBeDefined();
+		});
+
+		it('surfaces deep diagnostics failure as soft error without throwing', async () => {
+			// Source: L319-322 — catch wraps the deep diagnostics block; never throws.
+			mockQdrantClient.scroll.mockRejectedValue(new Error('scroll timeout'));
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.details.deep_diagnostics.error).toBe('scroll timeout');
+			expect(parsed.errors.some((e: string) => e.includes('Deep diagnostics failed'))).toBe(true);
+			// Top-level status stays healthy (Qdrant collection still OK).
+			expect(parsed.status).toBe('healthy');
+		});
+
+		it('adds workspace_name recommendation when field coverage < 50%', async () => {
+			// Source: L356-363 — recommendation emitted only when deep ran successfully
+			// (no error on dd) AND field_coverage_pct.workspace_name < 50%.
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [
+					{ id: 'p1', payload: { source: 'roo', workspace_name: '', timestamp: '2026-07-01', task_id: 'a' } },
+					{ id: 'p2', payload: { source: 'roo', workspace_name: '', timestamp: '2026-07-01', task_id: 'b' } }
+				]
+			});
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			const rec = parsed.recommendations.find((r: string) => r.includes('workspace_name peu populé'));
+			expect(rec).toBeDefined();
+			expect(rec).toContain('ChunkExtractor.ts');
+		});
+
+		it('adds source recommendation when __unknown__ exceeds sampleSize * 0.5', async () => {
+			// Source: L364-369 — recommendation emitted when
+			// (source_distribution['__unknown__'] ?? 0) > sampleSize * 0.5.
+			// With 4/5 points having no source and sample_size=5 → 4 > 2.5 = true.
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [
+					{ id: 'p1', payload: { workspace_name: 'w', timestamp: '2026-07-01' } },
+					{ id: 'p2', payload: { workspace_name: 'w', timestamp: '2026-07-02' } },
+					{ id: 'p3', payload: { workspace_name: 'w', timestamp: '2026-07-03' } },
+					{ id: 'p4', payload: { workspace_name: 'w', timestamp: '2026-07-04' } },
+					{ id: 'p5', payload: { source: 'roo', workspace_name: 'w', timestamp: '2026-07-05' } }
+				]
+			});
+
+			const result = await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true, sample_size: 5 }
+			);
+
+			const parsed = JSON.parse(result.content[0].text);
+			const rec = parsed.recommendations.find((r: string) => r.includes('points sans champ `source`'));
+			expect(rec).toBeDefined();
+			expect(rec).toContain('ChunkExtractor Roo');
 		});
 	});
 });
