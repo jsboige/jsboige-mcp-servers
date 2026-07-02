@@ -12,6 +12,7 @@ import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { ServerState } from '../../services/state-manager.service.js';
 import { saveSkeletonIndex, toHeader } from '../../services/background-services.js';
+import { dualWriteConversationToStore } from '../../services/unified-store/dual-write.js';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
 
@@ -385,6 +386,8 @@ export async function handleBuildSkeletonCache(
                                         const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
                                         if (skeleton && skeleton.taskId) {
                                             conversationCache.set(skeleton.taskId, skeleton);
+                                            // #692: dual-write the full skeleton to the unified Postgres store (fire-and-forget, env-gated)
+                                            dualWriteConversationToStore(skeleton.taskId, skeleton).catch(() => {});
 
                                             // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible OU si reindex force (#1244 Couche 1.4)
                                             enqueueForReindex(skeleton.taskId);
@@ -420,6 +423,8 @@ export async function handleBuildSkeletonCache(
                                     await fs.writeFile(skeletonPath, JSON.stringify(skeleton, null, 2));
                                     // BUG FIX: Utiliser skeleton.taskId et non conversationId
                                     conversationCache.set(skeleton.taskId, skeleton);
+                                    // #692: dual-write the freshly-built full skeleton to the unified store (fire-and-forget, env-gated)
+                                    dualWriteConversationToStore(skeleton.taskId, skeleton).catch(() => {});
 
                                     // 🚀 INDEXATION QDRANT: Ajouter à la queue si le state est disponible OU si reindex force (#1244 Couche 1.4)
                                     enqueueForReindex(skeleton.taskId);
@@ -508,6 +513,8 @@ export async function handleBuildSkeletonCache(
                             (skeleton.metadata as any).source = 'claude-code';
                             (skeleton.metadata as any).dataSource = 'claude';
                             conversationCache.set(taskId, skeleton);
+                            // #692: dual-write the full Claude Code skeleton to the unified store (fire-and-forget, env-gated)
+                            dualWriteConversationToStore(taskId, skeleton).catch(() => {});
                             enqueueForReindex(taskId);
                             tier2Loaded++;
                         }
@@ -549,6 +556,8 @@ export async function handleBuildSkeletonCache(
                         }
                         const skeleton = archiveToSkeleton(archive);
                         conversationCache.set(skeleton.taskId, skeleton);
+                        // #692: dual-write the full archive skeleton to the unified store (fire-and-forget, env-gated)
+                        dualWriteConversationToStore(skeleton.taskId, skeleton).catch(() => {});
                         enqueueForReindex(skeleton.taskId);
                         tier3Loaded++;
                     } catch (archiveErr) {

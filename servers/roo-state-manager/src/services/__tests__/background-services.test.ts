@@ -70,6 +70,22 @@ vi.mock('../task-indexer.js', () => {
   };
 });
 
+// #692: Mock unified-store writer-factory so dual-write calls a spy we can assert on.
+// The upsertConversationOnly spy is defined inside the factory closure so it survives
+// across getUnifiedStoreWriter() calls (singleton-like stable reference). Tests access
+// it via getUnifiedStoreWriter().upsertConversationOnly.
+vi.mock('../unified-store/writer-factory.js', () => {
+  const upsertConversationOnly = vi.fn().mockResolvedValue(undefined);
+  return {
+    getUnifiedStoreWriter: () => ({
+      upsertConversationOnly,
+      upsertMessages: vi.fn().mockResolvedValue(undefined),
+      ping: vi.fn().mockResolvedValue(true),
+    }),
+    resetWriterInstance: vi.fn(),
+  };
+});
+
 import {
   loadSkeletonsFromDisk,
   startProactiveMetadataRepair,
@@ -77,8 +93,10 @@ import {
   saveSkeletonToDisk,
   startQdrantIndexingBackgroundProcess,
   indexTaskInQdrant,
+  loadFullSkeleton,
 } from '../background-services.js';
 import { classifyIndexingError } from '../background-services.js';
+import { getUnifiedStoreWriter } from '../unified-store/writer-factory.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 import type { ServerState } from '../state-manager.service.js';
@@ -1032,6 +1050,78 @@ describe('background-services', () => {
     it('should be case-insensitive', () => {
       expect(classifyIndexingError(new Error('FILE NOT FOUND'))).toBe(true);
       expect(classifyIndexingError(new Error('Network Error'))).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // #692: dual-write anti-dead-branch guard.
+  // The unified-store dual-write was originally wired to SkeletonCacheService.addOrUpdate(),
+  // which has ZERO call sites → 0 rows after 11 days of flag-active. The fix hooks
+  // dualWriteConversationToStore onto the real production paths. These tests FAIL if the
+  // hook is removed from loadFullSkeleton (the guard against the dead-branch recurring).
+  // See jsboige/jsboige-mcp-servers#692.
+  // ============================================================
+  describe('loadFullSkeleton — #692 dual-write anti-dead-branch', () => {
+    it('dual-writes the FULL skeleton loaded from disk to the unified store', async () => {
+      // loadFullSkeleton rejects skeletons with an empty sequence (L152), so override.
+      const fullSkeleton = createMockSkeleton('disk-task', {
+        sequence: [{ role: 'user', content: 'hello' }] as any,
+        metadata: {
+          title: 'Disk Task',
+          lastActivity: '2026-07-02T00:00:00Z',
+          createdAt: '2026-06-01T00:00:00Z',
+          messageCount: 5,
+          machineId: 'myia-po-2024',
+          source: 'claude-code',
+        } as any,
+      });
+
+      vi.mocked(RooStorageDetector.detectStorageLocations).mockResolvedValue(['/fake/storage']);
+      mockFs.readFile.mockResolvedValue(JSON.stringify(fullSkeleton));
+
+      const writer: any = getUnifiedStoreWriter();
+      const cache = new Map<string, ConversationSkeleton>();
+
+      const result = await loadFullSkeleton('disk-task', cache as any);
+
+      // loadFullSkeleton returned the full skeleton (not null)
+      expect(result).not.toBeNull();
+      expect(result?.taskId).toBe('disk-task');
+      // CRITICAL (#692): the production path invoked the unified-store writer.
+      // If this assertion fails, the dual-write hook has been removed → dead branch.
+      expect(writer.upsertConversationOnly).toHaveBeenCalledTimes(1);
+      const upsertedRow = writer.upsertConversationOnly.mock.calls[0][0];
+      expect(upsertedRow.task_id).toBe('disk-task');
+      // The dual-write must receive the FULL skeleton's data, not the toHeader() partial.
+      expect(upsertedRow.msg_count).toBe(5);
+      expect(upsertedRow.machine_id).toBe('myia-po-2024');
+      expect(upsertedRow.harness).toBe('claude');
+    });
+
+    it('caches only the toHeader() partial but dual-writes the full skeleton (not the header)', async () => {
+      // The cache must still hold a SkeletonHeader (sequence dropped), while the
+      // dual-write receives the full ConversationSkeleton data. This is the #692 caveat:
+      // toHeader() partials must not be dual-written; the in-scope full skeleton is.
+      const fullSkeleton = createMockSkeleton('caveat-task', {
+        sequence: [{ role: 'user', content: 'msg' }, { role: 'assistant', content: 'reply' }] as any,
+        metadata: { messageCount: 2, lastActivity: '2026-07-02T00:00:00Z' } as any,
+      });
+
+      vi.mocked(RooStorageDetector.detectStorageLocations).mockResolvedValue(['/fake/storage']);
+      mockFs.readFile.mockResolvedValue(JSON.stringify(fullSkeleton));
+
+      const writer: any = getUnifiedStoreWriter();
+      const cache = new Map<string, ConversationSkeleton>();
+
+      await loadFullSkeleton('caveat-task', cache as any);
+
+      // Cache holds the header (no sequence array on a SkeletonHeader)
+      const cached = cache.get('caveat-task') as any;
+      expect(cached).toBeDefined();
+      expect(Array.isArray(cached.sequence)).toBe(false);
+      // But the dual-write got the full skeleton's message count
+      expect(writer.upsertConversationOnly).toHaveBeenCalledTimes(1);
+      expect(writer.upsertConversationOnly.mock.calls[0][0].msg_count).toBe(2);
     });
   });
 });
