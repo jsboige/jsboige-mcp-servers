@@ -711,19 +711,45 @@ describe('garbage-scanner', () => {
 			});
 		});
 
-		// ─── low_value characterization (LATENT BUG — see PR description) ───
-		describe('scanForGarbage — low_value characterization', () => {
-			test('low_value is currently unreachable: errorRatio <= assistantRatio makes the condition self-contradictory', async () => {
-				// Suspected latent bug (#1786 follow-up): low_value requires
-				//   assistantRatio < 0.05  AND  errorRatio > 0.5   (source L240-241)
-				// but errorCount is incremented ONLY on assistant messages (computeRatios L155-162),
-				// so errorCount <= assistantCount, hence errorRatio <= assistantRatio always.
-				// The conjunction is unsatisfiable. Even an all-error task has assistantRatio = 1.0.
-				// This test locks the CURRENT behavior so any future fix is a deliberate change.
+		// ─── low_value — FIXED #689 (errorRatio is now errorCount/assistantCount, was /totalMessages) ───
+		describe('scanForGarbage — low_value (#689 fix: reachable + no over-flag)', () => {
+			test('flags a dead-error-loop task: few assistant msgs, mostly errors (source L239-259, acceptance #1)', async () => {
+				// #689 FIX: errorRatio now = errorCount/assistantCount. The old /totalMessages denominator was
+				// unsatisfiable (errorCount<=assistantCount always 	 errorRatio<=assistantRatio). Realistic low_value:
+				// task mostly user retries; assistant barely responds & errors when it does.
+				// 100 msgs = 3 assistant-error + 97 user 	 assistantRatio=0.03<0.05 ∧ errorRatio=3/3=1.0>0.5 	 flagged.
 				const cache = new Map<string, ConversationSkeleton>();
 				cache.set(
-				'lv',
-				makeSkeleton('lv', Array(20).fill({ role: 'assistant', content: 'Error 502 bad gateway' })),
+				'lv-flag',
+				makeSkeleton(
+				'lv-flag',
+				[...Array(3).fill({ role: 'assistant', content: 'Error 502 bad gateway' }), ...Array(97).fill({ role: 'user', content: 'retry please' })],
+				{ messageCount: 100 },
+				),
+				);
+
+				const result = await scanForGarbage(cache, { category: 'low_value', min_messages: 10 });
+
+				expect(result.flagged).toHaveLength(1);
+				expect(result.flagged[0].category).toBe('low_value');
+				expect(result.flagged[0].score).toBeCloseTo(1.0); // Math.max(1 - 0.03, 1.0) = 1.0
+				expect(result.by_category.low_value).toBe(1);
+			});
+
+			test('does NOT flag a healthy task with a normal assistantRatio (acceptance #3 — no over-flagging)', async () => {
+				// 100 msgs = 60 assistant (5 errors) + 40 user 	 assistantRatio=0.6 ≥ 0.05 	 first gate fails.
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set(
+				'lv-healthy',
+				makeSkeleton(
+				'lv-healthy',
+				[
+				...Array(5).fill({ role: 'assistant', content: 'Error 502' }),
+				...Array(55).fill({ role: 'assistant', content: 'Done, here is the result' }),
+				...Array(40).fill({ role: 'user', content: 'thanks' }),
+				],
+				{ messageCount: 100 },
+				),
 				);
 
 				const result = await scanForGarbage(cache, { category: 'low_value', min_messages: 10 });
@@ -731,7 +757,20 @@ describe('garbage-scanner', () => {
 				expect(result.flagged).toHaveLength(0);
 				expect(result.by_category.low_value).toBe(0);
 			});
+
+			test('does NOT flag an all-assistant-error task: assistantRatio=1.0 ≥ 0.05 (preserves original #686 spirit, correct reasoning)', async () => {
+				// Was the #686 characterization (locked the buggy unreachable behavior). Under #689 this task is
+				// STILL not flagged, but for the right reason: assistantRatio=20/20=1.0 fails the <0.05 gate.
+				const cache = new Map<string, ConversationSkeleton>();
+				cache.set('lv-allassist', makeSkeleton('lv-allassist', Array(20).fill({ role: 'assistant', content: 'Error 502 bad gateway' })));
+
+				const result = await scanForGarbage(cache, { category: 'low_value', min_messages: 10 });
+
+				expect(result.flagged).toHaveLength(0);
+				expect(result.by_category.low_value).toBe(0);
+			});
 		});
+
 	});
 
 });

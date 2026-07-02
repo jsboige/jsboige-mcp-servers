@@ -169,7 +169,13 @@ function computeRatios(skeleton: ConversationSkeleton): {
         errorCount,
         totalMessages,
         assistantRatio: totalMessages > 0 ? assistantCount / totalMessages : 0,
-        errorRatio: totalMessages > 0 ? errorCount / totalMessages : 0
+        // #689: errorRatio is the fraction of ASSISTANT responses that are errors
+        // (errorCount/assistantCount), NOT errors/totalMessages. errorCount is only
+        // incremented on assistant messages (L161), so the old totalMessages
+        // denominator made low_value unreachable: errorCount<=assistantCount always →
+        // errorRatio<=assistantRatio, so the conjunction
+        // `assistantRatio<0.05 && errorRatio>0.5` (#689) was unsatisfiable.
+        errorRatio: assistantCount > 0 ? errorCount / assistantCount : 0
     };
 }
 
