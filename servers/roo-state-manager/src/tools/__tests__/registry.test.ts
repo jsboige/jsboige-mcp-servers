@@ -7,7 +7,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
     registerListToolsHandler,
     registerCallToolHandler,
-    TOOL_CAPABILITIES
+    TOOL_CAPABILITIES,
+    getToolTimeoutMs
 } from '../registry.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -1068,6 +1069,191 @@ describe('registry.ts - Tool Registration', () => {
 
             // Verify handler was set up
             expect(mockServer.setRequestHandler).toHaveBeenCalled();
+        });
+    });
+
+    // ====================================================================
+    // #833 C3 (po-2024): registry.ts source-grounded contract coverage.
+    // Targets 3 previously-untested contracts (file was 64.49% L / 37.5% F):
+    //   (1) getToolTimeoutMs — the #2267 per-tool anti-hang timeout config
+    //   (2) Deprecated-tool deprecation contract (roosync_list_diffs/init/decision/claim)
+    //   (3) TOOL_CAPABILITIES — the REAL exported map (the existing
+    //       'TOOL_CAPABILITIES Configuration' block shadows the import with a
+    //       stale hardcoded copy listing removed tools → false confidence).
+    // ====================================================================
+
+    describe('#833 C3: getToolTimeoutMs — #2267 per-tool timeout contract', () => {
+        // Source: registry.ts L54-83. Locks the anti-hang config (22h observed →
+        // per-tool ceiling). Every assertion cites the source value it mirrors.
+
+        it('heavy indexing/rebuild tools get the 5-min / 3-min ceilings', () => {
+            // L57: roosync_indexing: 300_000 (5 min)
+            expect(getToolTimeoutMs('roosync_indexing')).toBe(300_000);
+            // L58-62: storage_management + search family + export = 180_000 (3 min)
+            expect(getToolTimeoutMs('roosync_storage_management')).toBe(180_000);
+            expect(getToolTimeoutMs('codebase_search')).toBe(180_000);
+            expect(getToolTimeoutMs('roosync_search')).toBe(180_000);
+            expect(getToolTimeoutMs('conversation_browser')).toBe(180_000);
+            expect(getToolTimeoutMs('export_data')).toBe(180_000);
+        });
+
+        it('roosync_dashboard gets the 12-min ceiling aligned to CONDENSE_LLM_TIMEOUT_MS', () => {
+            // L76: 720_000 (12 min) — reduced from 30 min (#2267). Two parallel
+            // LLM condensation calls (status + summary) need this ceiling.
+            expect(getToolTimeoutMs('roosync_dashboard')).toBe(720_000);
+        });
+
+        it('fast read-only tools get the 1-min ceiling', () => {
+            // L77-78: compare_config + inventory = 60_000 (1 min)
+            expect(getToolTimeoutMs('roosync_compare_config')).toBe(60_000);
+            expect(getToolTimeoutMs('roosync_inventory')).toBe(60_000);
+        });
+
+        it('unknown / unmapped tools fall back to the 120s default', () => {
+            // L54: DEFAULT_TOOL_TIMEOUT_MS = 120_000. The nullish-coalescing at
+            // L82 returns it for any tool not in TOOL_TIMEOUTS.
+            expect(getToolTimeoutMs('touch_mcp_settings')).toBe(120_000);
+            expect(getToolTimeoutMs('some_unmapped_future_tool')).toBe(120_000);
+            expect(getToolTimeoutMs('')).toBe(120_000);
+        });
+    });
+
+    describe('#833 C3: deprecated-tool deprecation contract', () => {
+        // Source: registry.ts L546-590 (roosync_list_diffs/init/decision) and
+        // L773-784 (roosync_claim). These CONS-8 #603 dead-tool cases return a
+        // deterministic deprecated JSON with a redirection `alternative` pointer
+        // that agents rely on — the contract must be locked, not just "not throw".
+        let mockServer: any;
+        let mockState: ServerState;
+
+        beforeEach(() => {
+            // auto-heartbeat (registry.ts L823-825) fires after the deprecated
+            // result is returned; provide a shared path so it no-ops cleanly.
+            if (!process.env.ROOSYNC_SHARED_PATH) {
+                process.env.ROOSYNC_SHARED_PATH = '/tmp/test-shared-state';
+            }
+            mockServer = { setRequestHandler: vi.fn() };
+            mockState = {
+                conversationCache: new Map<string, ConversationSkeleton>(),
+                qdrantIndexQueue: new Set<string>(),
+                isQdrantIndexingEnabled: false,
+                xmlExporterService: {},
+                exportConfigManager: {}
+            } as any;
+
+            registerCallToolHandler(
+                mockServer,
+                mockState,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+        });
+
+        async function callTool(name: string): Promise<any> {
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            return handler({ params: { name, arguments: {} } });
+        }
+
+        it('roosync_list_diffs returns deprecated status redirecting to compare_config', async () => {
+            // Source L546-555
+            const result = await callTool('roosync_list_diffs');
+            expect(result.isError).toBe(false);
+            const payload = JSON.parse(result.content[0].text);
+            expect(payload.status).toBe('deprecated');
+            expect(payload.alternative).toContain('roosync_compare_config');
+        });
+
+        it('roosync_init returns deprecated status redirecting to diagnose env', async () => {
+            // Source L557-568
+            const result = await callTool('roosync_init');
+            expect(result.isError).toBe(false);
+            const payload = JSON.parse(result.content[0].text);
+            expect(payload.status).toBe('deprecated');
+            expect(payload.alternative).toContain('roosync_diagnose');
+            expect(payload.alternative).toContain('env');
+        });
+
+        it('roosync_decision returns deprecated status redirecting to dashboard', async () => {
+            // Source L579-590
+            const result = await callTool('roosync_decision');
+            expect(result.isError).toBe(false);
+            const payload = JSON.parse(result.content[0].text);
+            expect(payload.status).toBe('deprecated');
+            expect(payload.alternative).toContain('roosync_dashboard');
+            expect(payload.alternative).toContain('roosync_compare_config');
+        });
+
+        it('roosync_claim returns deprecated status redirecting to dashboard CLAIMED tags', async () => {
+            // Source L773-784
+            const result = await callTool('roosync_claim');
+            expect(result.isError).toBe(false);
+            const payload = JSON.parse(result.content[0].text);
+            expect(payload.status).toBe('deprecated');
+            expect(payload.alternative).toContain('[CLAIMED]');
+            expect(payload.alternative).toContain('agent-claim-discipline');
+        });
+
+        it('every deprecated payload carries a non-empty message + alternative', async () => {
+            // Structural invariant for all 4 CONS-8 #603 dead tools.
+            for (const name of ['roosync_list_diffs', 'roosync_init', 'roosync_decision', 'roosync_claim']) {
+                const result = await callTool(name);
+                const payload = JSON.parse(result.content[0].text);
+                expect(payload.status).toBe('deprecated');
+                expect(typeof payload.message).toBe('string');
+                expect(payload.message.length).toBeGreaterThan(0);
+                expect(typeof payload.alternative).toBe('string');
+                expect(payload.alternative.length).toBeGreaterThan(0);
+            }
+        });
+    });
+
+    describe('#833 C3: TOOL_CAPABILITIES — real exported map validation', () => {
+        // Source: registry.ts L90-118. Validates the ACTUAL exported map (the
+        // sibling 'TOOL_CAPABILITIES Configuration' block shadows the import at
+        // L821 with a stale hardcoded copy that still lists removed tools like
+        // roosync_machines/decision_info/cleanup_messages → false confidence).
+        // Here TOOL_CAPABILITIES resolves to the real import (L10), NOT the
+        // shadow, because this describe is a sibling outside its scope.
+
+        it('includes the current consolidated / backward-compat tools the stale copy missed', () => {
+            // L96: roosync_messages (Cluster G consolidated messaging, #1841)
+            expect(TOOL_CAPABILITIES.roosync_messages).toContain('sharedPath');
+            // L102: roosync_health_view (#2224 redirect → inventory type:health)
+            expect(TOOL_CAPABILITIES.roosync_health_view).toContain('sharedPath');
+        });
+
+        it('maps the two Qdrant+embeddings-dependent search tools', () => {
+            // L116-117
+            expect(TOOL_CAPABILITIES.roosync_search).toEqual(['qdrant', 'embeddings']);
+            expect(TOOL_CAPABILITIES.codebase_search).toEqual(['qdrant', 'embeddings']);
+        });
+
+        it('no longer carries removed / deprecated tools (stale-copy regression guard)', () => {
+            // These were removed by FUSION A2 (#1863 roosync_machines) and
+            // CONS-8 #603 (list_diffs/decision/decision_info/init/cleanup_messages).
+            // The stale shadowed copy still asserted their presence — guard that
+            // the real export has dropped them.
+            const removed = [
+                'roosync_machines',
+                'roosync_decision_info',
+                'roosync_cleanup_messages'
+            ];
+            for (const tool of removed) {
+                expect(TOOL_CAPABILITIES[tool]).toBeUndefined();
+            }
+        });
+
+        it('every entry is a non-empty array of capability strings', () => {
+            // Structural invariant for the whole map (L90-118).
+            for (const [tool, caps] of Object.entries(TOOL_CAPABILITIES)) {
+                expect(Array.isArray(caps)).toBe(true);
+                expect((caps as string[]).length).toBeGreaterThan(0);
+                for (const c of caps as string[]) {
+                    expect(typeof c).toBe('string');
+                    expect(c.length).toBeGreaterThan(0);
+                }
+            }
         });
     });
 });
