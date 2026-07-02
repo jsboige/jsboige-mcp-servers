@@ -467,11 +467,27 @@ describe('Tests de performance des utilitaires', () => {
         return await jinaClient.convertUrlToMarkdown(url);
       });
       
-      // Les performances devraient être similaires
-      const performanceRatio = Math.max(defaultMetrics.duration, customMetrics.duration) /
-                              Math.min(defaultMetrics.duration, customMetrics.duration);
-      
-      expect(performanceRatio).toBeLessThan(2.0); // Pas plus de 100% de différence (tolérance augmentée pour les tests mockés)
+      // Les deux appels sont mockés (résolution de promesse sub-ms) et la
+      // "configuration personnalisée" n'est pas appliquée (convertUrlToMarkdown
+      // ne la supporte pas — voir commentaire ci-dessus) : les deux code paths
+      // sont donc identiques. Un ratio sur des durées sub-ms est dominé par le
+      // bruit de timer et l'échauffement (1er appel = cold path), d'où les faux
+      // rouges récurrents sur CI (ratio 2-10x observé sur des appels identiques,
+      // bloquait les PRs submod #688/#690). On asserte donc en absolu (convention
+      // des tests frères L70/L91) + on ne vérifie le ratio que si les durées
+      // dépassent le bruit de timer (garde-fou identique à L508/L534).
+      expect(defaultMetrics.success).toBe(true);
+      expect(customMetrics.success).toBe(true);
+      expect(Math.max(defaultMetrics.duration, customMetrics.duration))
+        .toBeLessThan(PERFORMANCE_THRESHOLDS.SINGLE_REQUEST);
+
+      const maxDuration = Math.max(defaultMetrics.duration, customMetrics.duration);
+      const minDuration = Math.min(defaultMetrics.duration, customMetrics.duration);
+      // Ratio significatif uniquement au-delà du bruit de timer (>5ms) ;
+      // en dessous, deux appels mockés identiques peuvent diverger d'un facteur 10.
+      if (minDuration > 5) {
+        expect(maxDuration / minDuration).toBeLessThan(2.0);
+      }
     });
 
     test('devrait évoluer linéairement avec la complexité du contenu', async () => {
