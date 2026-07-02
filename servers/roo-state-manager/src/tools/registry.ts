@@ -78,7 +78,10 @@ const TOOL_TIMEOUTS: Record<string, number> = {
     roosync_inventory: 60_000,      // 1 min
 };
 
-function getToolTimeoutMs(toolName: string): number {
+// #833 C3: exported to lock the #2267 per-tool timeout contract under test
+// (matches the existing test-hook precedent at L86 `registryLogger` global
+// and L90 exported `TOOL_CAPABILITIES`).
+export function getToolTimeoutMs(toolName: string): number {
     return TOOL_TIMEOUTS[toolName] ?? DEFAULT_TOOL_TIMEOUT_MS;
 }
 
