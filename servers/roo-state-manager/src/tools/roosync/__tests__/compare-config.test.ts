@@ -799,4 +799,154 @@ describe('compare-config', () => {
 			expect(() => compareModelProfiles(sourceInventory, targetInventory)).not.toThrow();
 		});
 	});
+
+	// ============================================================
+	// #833 C3 (po-2024): compareModelProfiles core branching (source L927-1037)
+	// The sibling describe only covers the non-array `.profiles` robustness
+	// edge (the 2026-06-21 fleet crash). The 5 core branches — source/target
+	// missing, hash-differ (CRITICAL vs IMPORTANT), happy-path empty, and
+	// profileThresholds drift — were untested. Pure function, no mocks.
+	// ============================================================
+	describe('compareModelProfiles — core branching (#833 C3)', () => {
+		test('source missing + target present → WARNING recommending model-configs.json collection', () => {
+			// Source L948-960: sourceProfile falsy, targetProfile present → early
+			// return with a single WARNING whose action nudges toward collecting
+			// model-configs.json, description names the target machine.
+			const sourceInventory = { roo: {} }; // no modelProfile
+			const targetInventory = {
+				machineId: 'myia-po-2025',
+				roo: { modelProfile: { hash: 'abc', profiles: [], modeApiConfigs: {} } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+
+			expect(diffs).toHaveLength(1);
+			expect(diffs[0].severity).toBe('WARNING');
+			expect(diffs[0].path).toBe('roo.modelProfile');
+			expect(diffs[0].description).toContain('myia-po-2025');
+			expect(diffs[0].action).toContain('model-configs.json');
+		});
+
+		test('target missing → WARNING recommending Get-MachineInventory.ps1 on target', () => {
+			// Source L962-972: source present, target falsy → early return WARNING
+			// whose action tells the operator to run inventory on the target machine.
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'abc', profiles: [], modeApiConfigs: {} } }
+			};
+			const targetInventory = { machineId: 'myia-web1', roo: {} };
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+
+			expect(diffs).toHaveLength(1);
+			expect(diffs[0].severity).toBe('WARNING');
+			expect(diffs[0].description).toContain('myia-web1');
+			expect(diffs[0].action).toContain('Get-MachineInventory.ps1');
+		});
+
+		test('both missing → no diff (silent early return, no false positive)', () => {
+			// Source L949/L959: sourceProfile falsy AND targetProfile falsy → the
+			// `if (targetProfile)` guard is false → return [] without pushing.
+			const diffs = compareModelProfiles(
+				{ roo: {} },
+				{ roo: {} }
+			);
+
+			expect(diffs).toEqual([]);
+		});
+
+		test('hash differ + modeApiConfigs differ → CRITICAL (sync required)', () => {
+			// Source L975-987: hashes differ AND the stringified modeApiConfigs
+			// differ → CRITICAL on path modeApiConfigs, counts both sides.
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'aaa', modeApiConfigs: { code: { model: 'a' } }, profiles: [] } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'bbb', modeApiConfigs: { code: { model: 'b' }, debug: {} }, profiles: [] } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+			const modeDiff = diffs.find(d => d.path === 'roo.modelProfile.modeApiConfigs');
+
+			expect(modeDiff).toBeDefined();
+			expect(modeDiff!.severity).toBe('CRITICAL');
+			expect(modeDiff!.action).toContain('Synchroniser');
+			// Description reports per-side mode counts (1 vs 2).
+			expect(modeDiff!.description).toMatch(/1 modes/);
+			expect(modeDiff!.description).toMatch(/2 modes/);
+		});
+
+		test('hash differ + modeApiConfigs identical → IMPORTANT (whitespace/formatting only)', () => {
+			// Source L988-996: hashes differ but modeApiConfigs stringify equal →
+			// IMPORTANT (not CRITICAL) on path hash, notes formatting/whitespace.
+			const modes = { code: { model: 'a' } };
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'aaa', modeApiConfigs: modes, profiles: [] } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'bbb', modeApiConfigs: { code: { model: 'a' } }, profiles: [] } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+			const hashDiff = diffs.find(d => d.path === 'roo.modelProfile.hash');
+
+			expect(hashDiff).toBeDefined();
+			expect(hashDiff!.severity).toBe('IMPORTANT');
+			expect(hashDiff!.description).toContain('formatage');
+			// CRITICAL modeApiConfigs diff must NOT also fire.
+			expect(diffs.find(d => d.path === 'roo.modelProfile.modeApiConfigs')).toBeUndefined();
+		});
+
+		test('identical hashes + identical profiles + identical thresholds → no diff', () => {
+			// Source: hash equal (L975 guard false), profiles arrays equal
+			// (missingProfiles empty), thresholds equal (L1025 false) → [].
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'same', modeApiConfigs: {}, profiles: ['production'], profileThresholds: { opus: 25 } } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'same', modeApiConfigs: {}, profiles: ['production'], profileThresholds: { opus: 25 } } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+
+			expect(diffs).toEqual([]);
+		});
+
+		test('profileThresholds drift → IMPORTANT per divergent profile', () => {
+			// Source L1020-1034: for each source threshold whose target value
+			// differs (including undefined on target), push an IMPORTANT diff on
+			// path `roo.modelProfile.profileThresholds.{profile}`.
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'same', modeApiConfigs: {}, profiles: [], profileThresholds: { opus: 25, haiku: 90 } } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'same', modeApiConfigs: {}, profiles: [], profileThresholds: { opus: 50 } } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+			const thresholdDiffs = diffs.filter(d => d.path.startsWith('roo.modelProfile.profileThresholds.'));
+
+			expect(thresholdDiffs).toHaveLength(2);
+			expect(thresholdDiffs.every(d => d.severity === 'IMPORTANT')).toBe(true);
+
+			const opusDiff = thresholdDiffs.find(d => d.path.endsWith('.opus'));
+			expect(opusDiff!.description).toContain('source=25%');
+			expect(opusDiff!.description).toContain('cible=50%');
+
+			// haiku missing on target → reported as "non défini".
+			const haikuDiff = thresholdDiffs.find(d => d.path.endsWith('.haiku'));
+			expect(haikuDiff!.description).toContain('non défini');
+		});
+
+		test('reads modelProfile from the inventory.rooConfig fallback path too', () => {
+			// Source L945-946: the optional-chain reads `roo.modelProfile` FIRST,
+			// then falls back to `inventory.rooConfig.modelProfile`. When only the
+			// fallback path is populated, comparison must still work.
+			const sourceInventory = { inventory: { rooConfig: { modelProfile: { hash: 'aaa', modeApiConfigs: {}, profiles: [] } } } };
+			const targetInventory = { inventory: { rooConfig: { modelProfile: { hash: 'bbb', modeApiConfigs: {}, profiles: [] } } } };
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+			// hash differ + identical modes → IMPORTANT (proves the fallback read resolved).
+			expect(diffs.find(d => d.path === 'roo.modelProfile.hash')).toBeDefined();
+		});
+	});
 });
