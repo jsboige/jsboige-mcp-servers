@@ -53,7 +53,11 @@ export default mergeConfig(unitConfig, defineConfig({
       // ===== CI-excluded: PRE-ADR 008 HeartbeatService tests (stale API) =====
       // Tests use getOfflineMachines/getWarningMachines/file-based heartbeats removed by ADR 008.
       // Track: #1143 follow-up — these tests need rewrite for in-memory HeartbeatService.
-      'tests/unit/services/RooSyncService.test.ts',
+      // RE-AUDIT 2026-07-02 (po-2025): test file was rewritten for the in-memory
+      // HeartbeatService — it now asserts getUnknownMachines/getIdleMachines (ADR 008
+      // replacements), not the removed file-based API. Verified firsthand: 20/20 pass
+      // in BOTH unit and CI config. Exclusion is STALE → re-enabled.
+      // 'tests/unit/services/RooSyncService.test.ts',
       // #1244 Couche 2.5/2.6/2.7 — Re-enabled in CI after repair: legacy test was
       // fixed to accommodate the new hard-cap and smart_truncation default, and the
       // file now contains regression guards for the pipeline repair (#1244).
@@ -88,7 +92,9 @@ export default mergeConfig(unitConfig, defineConfig({
       'tests/unit/tools/roosync/baseline.test.ts',
 
       // ===== CI-excluded: Export baseline (schema mismatch) =====
-      'tests/unit/tools/roosync/export-baseline.test.ts',
+      // RE-AUDIT 2026-07-02 (po-2025): file `tests/unit/tools/roosync/export-baseline.test.ts`
+      // no longer exists (ghost entry, file deleted). Exclusion was a no-op → removed.
+      // 'tests/unit/tools/roosync/export-baseline.test.ts',
 
       // ===== NOTE: Stale entries removed (2026-03-14, #699 audit) =====
       // The following files no longer exist and were removed from exclusion list:
