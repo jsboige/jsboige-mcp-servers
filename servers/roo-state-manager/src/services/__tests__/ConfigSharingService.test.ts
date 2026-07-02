@@ -30,6 +30,58 @@ vi.mock('../roosync/InventoryService', () => {
   };
 });
 
+// ---------------------------------------------------------------------------
+// #833 R3 — assertion-strengthening helpers (audit Phase 4, po-2026 2026-06-13).
+// Replace bare `toBeDefined()` checks with the real CollectConfigResult /
+// ApplyConfigResult contracts so a test actually fails when the shape or an
+// invariant regresses. Anchored on source (ConfigSharingService.ts):
+//   - collectConfig manifest defaults  L62-68  (version '0.0.0', ISO timestamp, author, description)
+//   - collectConfig return             L158-163 (filesCount === manifest.files.length; totalSize = Σ file.size)
+//   - applyConfig version lookup       L298-303 (throws "Configuration non trouvée" for the mock path)
+//   - applyConfig catch + dryRun ret   L783/L804-809 (error recorded → success:false, filesApplied:0)
+// #815 scepticism: real values, never fabricated.
+// ---------------------------------------------------------------------------
+
+/** ISO-8601 string that round-trips through Date (as produced by `new Date().toISOString()`). */
+function expectIsoTimestamp(value: string) {
+  expect(typeof value).toBe('string');
+  expect(new Date(value).toISOString()).toBe(value);
+}
+
+/**
+ * Full contract of a collectConfig() call whose targets resolve to no files
+ * (the mock inventory path `/mock/roo-extensions` does not exist on disk, so
+ * every collector short-circuits to an empty file list).
+ */
+function expectEmptyCollectResult(result: any, description: string) {
+  expect(typeof result.packagePath).toBe('string');
+  expect(result.packagePath).toContain('config-collect');   // temp dir naming, L59
+  // Manifest defaults before publication (L62-68)
+  expect(result.manifest.version).toBe('0.0.0');
+  expect(result.manifest.description).toBe(description);
+  expect(typeof result.manifest.author).toBe('string');
+  expect(result.manifest.author.length).toBeGreaterThan(0);
+  expectIsoTimestamp(result.manifest.timestamp);
+  // No files at the mock path → empty collection, count/size invariants hold (L149-163)
+  expect(result.manifest.files).toEqual([]);
+  expect(result.filesCount).toBe(0);
+  expect(result.filesCount).toBe(result.manifest.files.length);
+  expect(result.totalSize).toBe(0);
+}
+
+/**
+ * Contract of applyConfig({dryRun:true}) against the mock shared-state path
+ * (which never resolves to a published config): the version lookup throws
+ * "Configuration non trouvée" (L298), the outer catch records it (L783), and
+ * the dryRun branch returns nothing-written with success=false (L804-809).
+ */
+function expectDryRunConfigNotFound(result: any) {
+  expect(result.success).toBe(false);              // an error was recorded → not success
+  expect(result.filesApplied).toBe(0);             // dryRun writes nothing (L806)
+  expect(Array.isArray(result.errors)).toBe(true);
+  expect(result.errors!.length).toBeGreaterThanOrEqual(1); // the version-not-found error
+}
+
 describe('ConfigSharingService', () => {
   let service: ConfigSharingService;
   let mockConfigService: IConfigService;
@@ -53,7 +105,7 @@ describe('ConfigSharingService', () => {
   });
 
   it('should initialize correctly', () => {
-    expect(service).toBeDefined();
+    expect(service).toBeInstanceOf(ConfigSharingService);
   });
 
   describe('compareWithBaseline', () => {
@@ -61,9 +113,11 @@ describe('ConfigSharingService', () => {
       const config = { test: 'value' };
       const result = await service.compareWithBaseline(config);
 
-      expect(result).toBeDefined();
-      expect(result.changes).toBeDefined();
-      expect(result.summary).toBeDefined();
+      // {test:'value'} vs the empty baseline {} → exactly one 'add' change
+      // (ConfigDiffService.deepCompare: key present in current, absent in baseline).
+      expect(result.changes).toHaveLength(1);
+      expect(result.changes[0].type).toBe('add');
+      expect(result.summary).toEqual({ added: 1, modified: 0, deleted: 0, conflicts: 0 });
     });
   });
 
@@ -82,12 +136,7 @@ describe('ConfigSharingService', () => {
         description: 'Test collect profiles from non-existent path'
       });
 
-      // Le service doit retourner un résultat valide même sans fichiers
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
-      // filesCount peut être 0 car les fichiers n'existent pas dans le mock path
-      expect(result.filesCount).toBe(0);
+      expectEmptyCollectResult(result, 'Test collect profiles from non-existent path');
     });
 
     it('should include profiles directory path in manifest', async () => {
@@ -96,9 +145,7 @@ describe('ConfigSharingService', () => {
         description: 'Test profiles path'
       });
 
-      // Vérifier que le manifest est bien structuré
-      expect(result.manifest.description).toBe('Test profiles path');
-      expect(result.manifest.timestamp).toBeDefined();
+      expectEmptyCollectResult(result, 'Test profiles path');
     });
   });
 
@@ -110,11 +157,7 @@ describe('ConfigSharingService', () => {
         description: 'Test collect roomodes from non-existent path'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
-      // filesCount = 0 car le fichier .roomodes n'existe pas au mock path
-      expect(result.filesCount).toBe(0);
+      expectEmptyCollectResult(result, 'Test collect roomodes from non-existent path');
     });
 
     it('should return valid manifest structure for roomodes', async () => {
@@ -123,9 +166,7 @@ describe('ConfigSharingService', () => {
         description: 'Test roomodes manifest'
       });
 
-      expect(result.manifest.description).toBe('Test roomodes manifest');
-      expect(result.manifest.timestamp).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
+      expectEmptyCollectResult(result, 'Test roomodes manifest');
     });
   });
 
@@ -136,10 +177,7 @@ describe('ConfigSharingService', () => {
         description: 'Test collect model-configs from non-existent path'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
-      expect(result.filesCount).toBe(0);
+      expectEmptyCollectResult(result, 'Test collect model-configs from non-existent path');
     });
   });
 
@@ -150,10 +188,7 @@ describe('ConfigSharingService', () => {
         description: 'Test collect rules from non-existent path'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
-      expect(result.filesCount).toBe(0);
+      expectEmptyCollectResult(result, 'Test collect rules from non-existent path');
     });
   });
 
@@ -164,10 +199,7 @@ describe('ConfigSharingService', () => {
         description: 'Test all new targets combined'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
-      expect(result.filesCount).toBe(0);
+      expectEmptyCollectResult(result, 'Test all new targets combined');
     });
 
     it('should handle mix of old and new targets', async () => {
@@ -176,8 +208,8 @@ describe('ConfigSharingService', () => {
         description: 'Test mixed old and new targets'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
+      // All targets resolve against the non-existent mock path → still an empty collection.
+      expectEmptyCollectResult(result, 'Test mixed old and new targets');
     });
   });
 
@@ -185,19 +217,15 @@ describe('ConfigSharingService', () => {
   describe('applyConfig with granular targets', () => {
 
     it('should apply all files when no targets specified', async () => {
-      // Ce test nécessite un setup plus complexe avec des fichiers temporaires
-      // Pour l'instant, on vérifie que le service accepte l'appel sans targets
-      // Note: success peut être false si aucun fichier source n'existe dans le mock path
+      // No published config exists at the mock shared-state path, so the version
+      // lookup fails and the dryRun result reports the recorded error (success:false).
       const result = await service.applyConfig({
         version: 'latest',
         targets: undefined,
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      // Le résultat peut être success=false si les configs n'existent pas (mock path)
-      // On vérifie seulement que la structure de résultat est valide
-      expect(typeof result.success).toBe('boolean');
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on modes target', async () => {
@@ -207,8 +235,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      // Le filtrage est implémenté, le test vérifie que l'appel fonctionne
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on mcp target', async () => {
@@ -218,7 +245,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on profiles target', async () => {
@@ -228,7 +255,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on granular mcp:xxx targets', async () => {
@@ -238,7 +265,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expectDryRunConfigNotFound(result);
     });
 
     it('should handle mixed targets (modes and mcp:xxx)', async () => {
@@ -248,7 +275,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on roomodes target', async () => {
@@ -258,8 +285,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      expect(typeof result.success).toBe('boolean');
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on model-configs target', async () => {
@@ -269,8 +295,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      expect(typeof result.success).toBe('boolean');
+      expectDryRunConfigNotFound(result);
     });
 
     it('should filter files based on rules target', async () => {
@@ -280,8 +305,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      expect(typeof result.success).toBe('boolean');
+      expectDryRunConfigNotFound(result);
     });
 
     it('should handle all new targets combined in apply', async () => {
@@ -291,24 +315,19 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      expect(typeof result.success).toBe('boolean');
+      expectDryRunConfigNotFound(result);
     });
   });
 
   // Issue #349: Tests pour collectConfig avec targets granulaires mcp:xxx
   describe('collectConfig with granular mcp targets', () => {
     it('should collect specific MCP servers when mcp:xxx targets are provided', async () => {
-      // Ce test nécessite un setup avec des fichiers MCP temporaires
-      // Pour l'instant, on vérifie que le service accepte les targets mcp:xxx
       const result = await service.collectConfig({
         targets: ['mcp:github', 'mcp:win-cli'],
         description: 'Test granular MCP collection'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
-      expect(result.manifest.files).toBeInstanceOf(Array);
+      expectEmptyCollectResult(result, 'Test granular MCP collection');
     });
 
     it('should collect all MCPs when mcp target is provided', async () => {
@@ -317,39 +336,38 @@ describe('ConfigSharingService', () => {
         description: 'Test all MCPs collection'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
+      expectEmptyCollectResult(result, 'Test all MCPs collection');
     });
 
     it('should handle empty mcp:xxx target gracefully', async () => {
-      // Le parsing dans apply-config.ts devrait rejeter les targets mcp: vides
-      // Ce test vérifie le comportement côté service
+      // Le parsing dans apply-config.ts devrait rejeter les targets mcp: vides.
+      // Côté service, un target 'mcp:' sans nom ne collecte rien → collection vide.
       const result = await service.collectConfig({
         targets: ['mcp:'],
         description: 'Test empty MCP target'
       });
 
-      // Le service devrait retourner un résultat valide même si aucun MCP n'est collecté
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
+      expectEmptyCollectResult(result, 'Test empty MCP target');
     });
   });
 
   // Issue #547 Phase 2: Tests d'intégration pour les settings Roo
   describe('collectConfig with settings target', () => {
     it('should accept settings target without errors', async () => {
-      // Test que le service accepte la target 'settings'
-      // L'implémentation réelle de collectSettings gère les cas où state.vscdb n'existe pas
+      // collectSettings reads the local Roo state.vscdb, which may or may not exist
+      // on the host — so the file list can be 0..N. The count/size invariants and the
+      // manifest defaults hold regardless.
       const result = await service.collectConfig({
         targets: ['settings'],
         description: 'Test collect Roo settings'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
+      expect(result.manifest.version).toBe('0.0.0');
+      expect(result.manifest.description).toBe('Test collect Roo settings');
+      expectIsoTimestamp(result.manifest.timestamp);
       expect(result.manifest.files).toBeInstanceOf(Array);
-      // Les settings peuvent être vides (0) ou collectées (>0) selon si state.vscdb existe
-      expect(result.manifest.files.length).toBeGreaterThanOrEqual(0);
+      expect(result.filesCount).toBe(result.manifest.files.length); // invariant, any count
+      expect(result.totalSize).toBeGreaterThanOrEqual(0);
     });
 
     it('should handle settings alongside other targets', async () => {
@@ -358,11 +376,10 @@ describe('ConfigSharingService', () => {
         description: 'Test mixed targets with settings'
       });
 
-      expect(result).toBeDefined();
-      expect(result.manifest).toBeDefined();
+      expect(result.manifest.description).toBe('Test mixed targets with settings');
       expect(result.manifest.files).toBeInstanceOf(Array);
-      // Vérifier que le manifest est valide même si aucun fichier n'est collecté
-      expect(Array.isArray(result.manifest.files)).toBe(true);
+      expect(result.filesCount).toBe(result.manifest.files.length);
+      expect(result.totalSize).toBeGreaterThanOrEqual(0);
     });
 
     it('should return valid manifest structure for settings', async () => {
@@ -371,26 +388,24 @@ describe('ConfigSharingService', () => {
         description: 'Test settings manifest structure'
       });
 
-      // Vérifier la structure du manifest
+      expect(result.manifest.version).toBe('0.0.0');
       expect(result.manifest.description).toBe('Test settings manifest structure');
-      expect(result.manifest.timestamp).toBeDefined();
+      expectIsoTimestamp(result.manifest.timestamp);
       expect(result.manifest.files).toBeInstanceOf(Array);
+      expect(result.filesCount).toBe(result.manifest.files.length);
     });
   });
 
   describe('applyConfig with settings target', () => {
     it('should handle missing settings gracefully when applying', async () => {
-      // Ce test vérifie que applyConfig peut gérer le cas où la version n'existe pas
-      // sans se bloquer sur les settings manquants
+      // La version 'latest' n'existe pas au mock path → erreur enregistrée, rien écrit.
       const result = await service.applyConfig({
         version: 'latest',
         targets: ['settings'],
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      // filesApplied doit être 0 en dryRun
-      expect(result.filesApplied).toBe(0);
+      expectDryRunConfigNotFound(result);
     });
 
     it('should skip settings when not in targets', async () => {
@@ -400,10 +415,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      // Si aucune config ne correspond aux targets (fichiers n'existent pas),
-      // le résultat doit toujours être valide
-      expect(result.success).toBeDefined();
+      expectDryRunConfigNotFound(result);
     });
 
     it('should support dryRun for settings', async () => {
@@ -413,8 +425,7 @@ describe('ConfigSharingService', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      expect(result.filesApplied).toBe(0);
+      expectDryRunConfigNotFound(result);
     });
   });
 
