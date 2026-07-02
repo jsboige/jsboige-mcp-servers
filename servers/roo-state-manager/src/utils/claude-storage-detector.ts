@@ -186,11 +186,28 @@ export class ClaudeStorageDetector {
 
             // Lister les fichiers JSONL dans le répertoire
             const entries = await fs.readdir(projectPath);
-            const jsonlFiles = entries.filter(e => e.endsWith('.jsonl'));
+            let jsonlFiles = entries.filter(e => e.endsWith('.jsonl'));
 
             if (jsonlFiles.length === 0) {
                 // Aucun fichier JSONL trouvé
                 return this.createMinimalSkeleton(taskId, projectPath);
+            }
+
+            // #2734: per-session taskId (`claude-{project}--{sessionUuid}`) must analyze
+            // ONLY that session's `.jsonl`, not aggregate the whole project directory.
+            // Callers build per-session taskIds since #937 (background-services
+            // loadClaudeCodeSessions → the `list` cache, and findConversationById → `view`)
+            // but pass the project dir here, so every session inherited the project-level
+            // cumulative `totalSize`/`messageCount` → byte-identical inflated metadata
+            // across distinct task_ids. Resolve the session file from the taskId suffix
+            // after the last `--`; scope analysis to it only when that file actually exists
+            // (per-project taskIds like `claude-{project}` fall through unchanged).
+            const sessionSepIndex = taskId.lastIndexOf('--');
+            if (sessionSepIndex !== -1) {
+                const sessionFile = `${taskId.substring(sessionSepIndex + 2)}.jsonl`;
+                if (jsonlFiles.includes(sessionFile)) {
+                    jsonlFiles = [sessionFile];
+                }
             }
 
             // Parser tous les fichiers JSONL

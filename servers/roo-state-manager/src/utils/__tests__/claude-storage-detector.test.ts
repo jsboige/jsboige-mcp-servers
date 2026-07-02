@@ -460,4 +460,95 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
             expect(skeleton?.sequence).toEqual([]);
         });
     });
+
+    // ============================================================
+    // #2734 — per-session metadata (no project-level aggregation).
+    // Before the fix, analyzeConversation ALWAYS aggregated every .jsonl
+    // in the project dir (totalSize = sum L204, messageCount across all
+    // files L430). Callers build per-session taskIds `claude-{project}--{uuid}`
+    // since #937 (background-services loadClaudeCodeSessions → `list` cache,
+    // findConversationById → `view`) but pass the project dir → every session
+    // inherited the identical project-level cumulative → byte-identical inflated
+    // metadata across distinct task_ids. The fix scopes analysis to the session
+    // file named by the taskId suffix after the last `--`.
+    // ============================================================
+    describe('#2734 — per-session metadata (no project-level aggregation)', () => {
+        // Note: testProjectDir basename is 'c--test-project' — it already contains
+        // '--', which proves the suffix is resolved via lastIndexOf('--') (robust to
+        // project names with '--' like the real 'd--dev-roo-extensions'), not a split.
+        const sessA = 'aaaaaaaa-1111-2222-3333-444444444444';
+        const sessB = 'bbbbbbbb-5555-6666-7777-888888888888';
+
+        async function writeSession(uuid: string, messageCount: number, pad: number): Promise<void> {
+            const lines: string[] = [];
+            for (let i = 0; i < messageCount; i++) {
+                const role = i % 2 === 0 ? 'user' : 'assistant';
+                lines.push(JSON.stringify({
+                    type: role,
+                    message: { role, content: `${uuid} msg ${i} ${'x'.repeat(pad)}` },
+                    timestamp: `2024-01-0${(i % 9) + 1}T10:0${i % 10}:00.000Z`,
+                    uuid: `${uuid}-${i}`,
+                }));
+            }
+            await fs.writeFile(path.join(testProjectDir, `${uuid}.jsonl`), lines.join('\n'));
+        }
+
+        it('DEVRAIT produire des metadata par-session distinctes (task_ids distincts → PAS d\'agrégat byte-identique)', async () => {
+            await writeSession(sessA, 2, 10);    // 2 messages, small file
+            await writeSession(sessB, 6, 200);   // 6 messages, much larger file
+
+            const projectBasename = path.basename(testProjectDir); // 'c--test-project'
+            const skA = await ClaudeStorageDetector.analyzeConversation(`claude-${projectBasename}--${sessA}`, testProjectDir);
+            const skB = await ClaudeStorageDetector.analyzeConversation(`claude-${projectBasename}--${sessB}`, testProjectDir);
+
+            const sizeA = (await fs.stat(path.join(testProjectDir, `${sessA}.jsonl`))).size;
+            const sizeB = (await fs.stat(path.join(testProjectDir, `${sessB}.jsonl`))).size;
+
+            // messageCount is per-session, NOT the 8-message project total
+            expect(skA?.metadata.messageCount).toBe(2);
+            expect(skB?.metadata.messageCount).toBe(6);
+
+            // totalSize is the individual file's real bytes, NOT the sum
+            expect(skA?.metadata.totalSize).toBe(sizeA);
+            expect(skB?.metadata.totalSize).toBe(sizeB);
+
+            // The smoking gun this bug produced: distinct task_ids MUST NOT share
+            // byte-identical metadata.
+            expect(skA?.metadata.totalSize).not.toBe(skB?.metadata.totalSize);
+            expect(skA?.metadata.messageCount).not.toBe(skB?.metadata.messageCount);
+
+            // And neither equals the project aggregate (sizeA + sizeB) that the bug
+            // previously mis-attributed to every session.
+            expect(skA?.metadata.totalSize).not.toBe(sizeA + sizeB);
+            expect(skB?.metadata.totalSize).not.toBe(sizeA + sizeB);
+        });
+
+        it('DEVRAIT conserver l\'agrégat projet pour un taskId per-project (rétro-compat)', async () => {
+            await writeSession(sessA, 2, 10);
+            await writeSession(sessB, 6, 200);
+
+            const projectBasename = path.basename(testProjectDir);
+            const sizeA = (await fs.stat(path.join(testProjectDir, `${sessA}.jsonl`))).size;
+            const sizeB = (await fs.stat(path.join(testProjectDir, `${sessB}.jsonl`))).size;
+
+            // per-project taskId: suffix after last '--' ('test-project') matches no
+            // .jsonl → falls through to the existing project-aggregate behavior.
+            const skProj = await ClaudeStorageDetector.analyzeConversation(`claude-${projectBasename}`, testProjectDir);
+            expect(skProj?.metadata.messageCount).toBe(8);              // 2 + 6
+            expect(skProj?.metadata.totalSize).toBe(sizeA + sizeB);     // sum of both files
+        });
+
+        it('DEVRAIT fallback sur l\'agrégat si le suffixe de session ne correspond à aucun fichier', async () => {
+            await writeSession(sessA, 2, 10);
+            await writeSession(sessB, 6, 200);
+
+            const projectBasename = path.basename(testProjectDir);
+            const skUnknown = await ClaudeStorageDetector.analyzeConversation(
+                `claude-${projectBasename}--deadbeef-0000-0000-0000-000000000000`,
+                testProjectDir,
+            );
+            // No matching file → safe fallback to aggregate (never throws / never null).
+            expect(skUnknown?.metadata.messageCount).toBe(8);
+        });
+    });
 });
