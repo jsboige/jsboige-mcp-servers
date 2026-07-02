@@ -42,12 +42,25 @@ vi.mock('../../../services/task-indexer/QdrantHealthMonitor.js', () => ({
 	networkMetrics: { qdrantCalls: 0 },
 }));
 
+// Mock TaskArchiver — #698 fleet-archive cross-check.
+// NOTE: vi.mock factories are hoisted ABOVE const declarations, so we cannot reference an
+// outer mockListArchivedTasks variable. We declare the spy INSIDE the factory and attach it
+// to the module object (TaskArchiver.listArchivedTasks is the spy). Per-test overrides use
+// vi.mocked(TaskArchiver.listArchivedTasks).mockResolvedValue(...).
+vi.mock('../../../services/task-archiver/index.js', () => ({
+	TaskArchiver: {
+		listArchivedTasks: vi.fn().mockResolvedValue([]),
+	},
+}));
+
 import { detectAndCleanupOrphans } from '../cleanup-orphans.js';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
+import { TaskArchiver } from '../../../services/task-archiver/index.js';
 
 const mockFindConversationById = vi.mocked(RooStorageDetector.findConversationById);
+const mockListArchivedTasks = vi.mocked(TaskArchiver.listArchivedTasks);
 
 function makeSkeleton(taskId: string): ConversationSkeleton {
 	return {
@@ -75,6 +88,8 @@ describe('cleanup-orphans', () => {
 		mockDelete.mockResolvedValue({ status: 'completed' });
 		vi.mocked(fs.access).mockRejectedValue(new Error('not found'));
 		vi.mocked(os.homedir).mockReturnValue('/home/testuser');
+		// #698: default to empty archive set (existing tests assert no archive reclassification)
+		mockListArchivedTasks.mockResolvedValue([]);
 	});
 
 	describe('detectAndCleanupOrphans — dry run', () => {
@@ -363,6 +378,75 @@ describe('cleanup-orphans', () => {
 
 			expect(result.orphans.length).toBe(2);
 			expect(result.fleet_safety_abort).toBeUndefined();
+		});
+	});
+
+	// ─── #698 fleet-archive cross-check (option B — reclassify cross-machine orphans) ───
+	describe('detectAndCleanupOrphans — fleet-archive cross-check (#698)', () => {
+		test('re-classifies a local orphan that has a shared-state archive as non-orphan', async () => {
+			// 3 task_ids in Qdrant, none in cache, none on local disk → all 3 orphans BEFORE archive check.
+			// task 'owned-by-other' has an archive → re-classified non-orphan. True orphans = 2.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['owned-by-other', 'real-orphan-1', 'real-orphan-2']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockListArchivedTasks.mockResolvedValue(['owned-by-other']);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.in_archive).toBe(1);
+			expect(result.orphans).toEqual(['real-orphan-1', 'real-orphan-2']);
+			expect(result.orphans).not.toContain('owned-by-other');
+			expect(mockListArchivedTasks).toHaveBeenCalledTimes(1);
+		});
+
+		test('re-classified orphans count toward the #694 threshold as NON-orphans (reduces false abort)', async () => {
+			// 4 task_ids, 0 in cache/disk → 4 orphans before archive. 2 have archives → true orphans = 2.
+			// 2/4 = 50%, NOT strictly > 50% → no fleet-safety abort (would abort without the archive reclassification).
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['a1', 'a2', 'o1', 'o2']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockListArchivedTasks.mockResolvedValue(['a1', 'a2']);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.in_archive).toBe(2);
+			expect(result.orphans).toEqual(['o1', 'o2']);
+			expect(result.fleet_safety_abort).toBeUndefined();
+		});
+
+		test('archive unavailable (empty set) → orphans stay as-is, no regression', async () => {
+			// No shared path / empty archive → listArchivedTasks returns [] → all local orphans kept.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['o-1', 'o-2']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockListArchivedTasks.mockResolvedValue([]);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.in_archive).toBe(0);
+			expect(result.orphans).toEqual(['o-1', 'o-2']);
+		});
+
+		test('listArchivedTasks rejection → swallowed, orphans kept as-is (non-blocking)', async () => {
+			// GDrive offline / shared path unset → archive check throws → skip, no block.
+			// 4 task_ids in Qdrant, 2 in cache → 2 orphans = exactly 50% (NOT strictly > 50%)
+			// so the #694 guard does NOT fire. This isolates the archive-skip behavior.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['c-1', 'c-2', 'o-1', 'o-2']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockListArchivedTasks.mockRejectedValue(new Error('shared path unset'));
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('c-1', makeSkeleton('c-1'));
+			cache.set('c-2', makeSkeleton('c-2'));
+
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.in_archive).toBe(0);
+			expect(result.orphans).toEqual(['o-1', 'o-2']);
+			// The thrown archive error is swallowed (warned), NOT pushed to result.errors,
+			// and the #694 safety guard is independent (did not fire at the 50% boundary).
+			expect(result.fleet_safety_abort).toBeUndefined();
+			expect(result.errors).toEqual([]);
 		});
 	});
 });
