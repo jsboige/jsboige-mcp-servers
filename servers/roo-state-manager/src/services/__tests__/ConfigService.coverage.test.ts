@@ -79,7 +79,7 @@ vi.unmock('../../services/ConfigService.js');
 
 import { ConfigService } from '../../services/ConfigService.js';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
-import { promises as fs, existsSync } from 'fs';
+import { promises as fs } from 'fs';
 import { ConfigServiceErrorCode } from '../../types/errors.js';
 
 const readMock = vi.mocked(readJSONFileWithoutBOM);
@@ -233,9 +233,12 @@ describe('ConfigService — error-path & fallback branches (coverage #833)', () 
 			const resolved = (svc as unknown as { configPath: string }).configPath;
 			expect(typeof resolved).toBe('string');
 			expect(resolved.endsWith('settings.json')).toBe(true);
-			// The in-repo roo-config/ (via possiblePaths[2]) exists, so existsSync
-			// returns a real path at L173 — proving the loop body's happy arm too.
-			expect(existsSync(resolved.replace(/settings\.json$/, ''))).toBe(true);
+			// NB: do NOT assert the resolved dir exists on disk. findConfigPath may
+			// resolve via the in-repo roo-config/ (possiblePaths[2]) which lives at the
+			// PARENT repo root — present on a full local checkout but ABSENT in the
+			// submod-only CI job (env-coupled, same class as a date-bomb). The falsy-env
+			// arms (L164 `|| ''`, L167 alternate) are exercised by construction: the ctor
+			// ran findConfigPath() and produced a settings.json path (asserted above).
 		});
 	});
 
