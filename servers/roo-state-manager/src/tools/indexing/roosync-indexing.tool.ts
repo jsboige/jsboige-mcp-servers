@@ -627,6 +627,7 @@ export async function handleRooSyncIndexing(
                                 total_task_ids_in_qdrant: result.total_task_ids_in_qdrant,
                                 in_cache: result.in_cache,
                                 on_disk: result.on_disk,
+                                in_archive: result.in_archive,
                                 orphans_detected: result.orphans.length,
                             },
                             cleanup: !isDryRun && isConfirmed && !result.fleet_safety_abort ? {

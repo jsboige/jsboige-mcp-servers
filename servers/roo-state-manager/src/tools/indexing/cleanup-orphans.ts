@@ -16,6 +16,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { networkMetrics } from '../../services/task-indexer/QdrantHealthMonitor.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { TaskArchiver } from '../../services/task-archiver/index.js';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -36,6 +37,8 @@ export interface OrphanCleanupResult {
     total_task_ids_in_qdrant: number;
     in_cache: number;
     on_disk: number;
+    /** #698: task_ids found in the cross-machine shared-state archive (another machine's task — NOT an orphan). */
+    in_archive: number;
     orphans: string[];
     vectors_deleted: number;
     errors: string[];
@@ -133,6 +136,7 @@ export async function detectAndCleanupOrphans(
         total_task_ids_in_qdrant: 0,
         in_cache: 0,
         on_disk: 0,
+        in_archive: 0,
         orphans: [],
         vectors_deleted: 0,
         errors: [],
@@ -192,6 +196,32 @@ export async function detectAndCleanupOrphans(
 
     result.orphans = orphans;
     console.log(`[cleanup-orphans] ${result.on_disk} found on disk, ${orphans.length} orphans detected`);
+
+    // Phase 3.4: Fleet-archive cross-check (#698 — option B follow-up to #694).
+    // On a fleet-shared collection, a task_id absent from THIS machine's cache+disk may still
+    // belong to another machine — its source was archived to the shared-state GDrive archive.
+    // Re-classify such task_ids as non-orphans BEFORE the fleet-safety threshold check, so the
+    // threshold is computed against true orphans (reduces false positives on legit cleanups).
+    // Non-blocking: ROOSYNC_SHARED_PATH unset / readdir failure → skip (no false orphans, no block).
+    if (orphans.length > 0) {
+        try {
+            const archivedTaskIds = new Set(await TaskArchiver.listArchivedTasks());
+            if (archivedTaskIds.size > 0) {
+                const trueOrphans = orphans.filter(id => !archivedTaskIds.has(id));
+                result.in_archive = orphans.length - trueOrphans.length;
+                if (result.in_archive > 0) {
+                    console.log(`[cleanup-orphans] ${result.in_archive} orphans re-classified as archived (cross-machine)`);
+                    orphans.length = 0;
+                    orphans.push(...trueOrphans);
+                    result.orphans = orphans;
+                }
+            }
+        } catch (archiveError: any) {
+            // Archive unavailable (no shared path, GDrive offline) — keep orphans as-is.
+            // Not an error condition: the fleet-safety threshold still guards deletion.
+            console.warn(`[cleanup-orphans] Fleet-archive cross-check skipped: ${archiveError?.message || archiveError}`);
+        }
+    }
 
     // Phase 3.5: Fleet-safety guard (#694). On a fleet-shared collection, a single machine
     // sees other machines' task_ids as orphans (absent from its local cache/disk). If orphans
