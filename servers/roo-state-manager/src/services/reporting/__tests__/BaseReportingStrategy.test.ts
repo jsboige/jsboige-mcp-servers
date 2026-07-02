@@ -311,3 +311,210 @@ describe('BaseReportingStrategy', () => {
         });
     });
 });
+
+/**
+ * Coverage C3 (#833, myia-po-2023) — public report-generation contract.
+ *
+ * The block above exercises the protected helpers; the three PUBLIC methods
+ * (generateTableOfContents / generateOverview / generateReport) plus
+ * shouldUseAdvancedCSS and estimateLineNumber were previously untested.
+ * Every assertion is anchored to a line of IReportingStrategy.ts.
+ */
+class TocOnlyStrategy extends BaseReportingStrategy {
+    readonly detailLevel = 'Summary';
+    readonly description = 'TOC-only test strategy';
+    // src L118-120 overridden: only the Summary strategy is TOC-only
+    public isTocOnlyMode(): boolean {
+        return true;
+    }
+    formatMessageContent(
+        content: ClassifiedContent,
+        _messageIndex: number,
+        _options: EnhancedSummaryOptions
+    ): FormattedMessage {
+        return { content: content.content, cssClass: '', shouldRender: true, messageType: '' };
+    }
+}
+
+class NonRenderingStrategy extends BaseReportingStrategy {
+    readonly detailLevel = 'Hidden';
+    readonly description = 'strategy that renders nothing';
+    formatMessageContent(
+        _content: ClassifiedContent,
+        _messageIndex: number,
+        _options: EnhancedSummaryOptions
+    ): FormattedMessage {
+        // shouldRender:false → generateReport must skip this message (src L240)
+        return { content: 'SHOULD_NOT_APPEAR', cssClass: '', shouldRender: false, messageType: '' };
+    }
+}
+
+describe('BaseReportingStrategy - public report generation (coverage C3 #833)', () => {
+    const strategy = new TestableStrategy();
+    const noCssOptions = {} as EnhancedSummaryOptions;
+
+    describe('generateTableOfContents', () => {
+        it('should start with the TOC header (src L131-132)', () => {
+            const toc = strategy.generateTableOfContents([], noCssOptions);
+            expect(toc.startsWith('## TABLE DES MATIÈRES')).toBe(true);
+        });
+
+        it('should render a UserMessage as an internal anchor with user class (src L147-148)', () => {
+            const toc = strategy.generateTableOfContents(
+                [makeContent({ type: 'User', subType: 'UserMessage', content: 'Do the thing', index: 0 })],
+                noCssOptions
+            );
+            expect(toc).toContain('class="toc-user"');
+            expect(toc).toContain('MESSAGE UTILISATEUR #1');
+            expect(toc).toContain('href="#UserMessage-1"');
+            expect(toc).toContain('Do the thing');
+        });
+
+        it('should render a ToolResult as an internal anchor with tool class (src L154-155)', () => {
+            const toc = strategy.generateTableOfContents(
+                [makeContent({ type: 'User', subType: 'ToolResult', content: 'result body', index: 0 })],
+                noCssOptions
+            );
+            expect(toc).toContain('class="toc-tool"');
+            expect(toc).toContain('RÉSULTAT OUTIL #1');
+            expect(toc).toContain('href="#ToolResult-1"');
+        });
+
+        it('should label an assistant message carrying XML as "+ OUTILS" (src L159-160)', () => {
+            const toc = strategy.generateTableOfContents(
+                [makeContent({ type: 'Assistant', subType: 'Completion', content: '<read_file>x</read_file>', index: 0 })],
+                noCssOptions
+            );
+            expect(toc).toContain('MESSAGE ASSISTANT + OUTILS #1');
+            expect(toc).toContain('class="toc-assistant"');
+        });
+
+        it('should label a plain assistant message without "+ OUTILS" (src L160)', () => {
+            const toc = strategy.generateTableOfContents(
+                [makeContent({ type: 'Assistant', subType: 'Completion', content: 'plain answer', index: 0 })],
+                noCssOptions
+            );
+            expect(toc).toContain('MESSAGE ASSISTANT #1');
+            expect(toc).not.toContain('+ OUTILS');
+        });
+
+        it('should increment counters independently per category (src L134-136,141-157)', () => {
+            const toc = strategy.generateTableOfContents([
+                makeContent({ type: 'User', subType: 'UserMessage', content: 'u1', index: 0 }),
+                makeContent({ type: 'User', subType: 'UserMessage', content: 'u2', index: 1 }),
+                makeContent({ type: 'User', subType: 'ToolResult', content: 't1', index: 2 }),
+            ], noCssOptions);
+            expect(toc).toContain('MESSAGE UTILISATEUR #1');
+            expect(toc).toContain('MESSAGE UTILISATEUR #2');
+            expect(toc).toContain('RÉSULTAT OUTIL #1');
+        });
+
+        it('should emit external source links (not internal anchors) in TOC-only mode (src L143-145)', () => {
+            const tocOnly = new TocOnlyStrategy();
+            const toc = tocOnly.generateTableOfContents(
+                [makeContent({ type: 'User', subType: 'UserMessage', content: 'hi', index: 4 })],
+                noCssOptions,
+                'trace.html'
+            );
+            // estimateLineNumber = (index || 0) + 1 = 5  (src L443)
+            expect(toc).toContain('href="trace.html#L5"');
+            expect(toc).not.toContain('href="#UserMessage');
+        });
+    });
+
+    describe('generateOverview', () => {
+        const contents = [
+            makeContent({ type: 'User', subType: 'UserMessage', content: 'the question', index: 0 }),
+            makeContent({ type: 'Assistant', subType: 'Completion', content: 'the answer', index: 1 }),
+        ];
+
+        it('should include the detail-level title uppercased and the description (src L189-191)', () => {
+            const overview = strategy.generateOverview(contents, noCssOptions);
+            expect(overview).toContain('# RÉSUMÉ DE TRACE - TEST');
+            expect(overview).toContain('**Stratégie:** Test strategy for unit testing');
+        });
+
+        it('should embed statistics and the table of contents (src L195,199)', () => {
+            const overview = strategy.generateOverview(contents, noCssOptions);
+            expect(overview).toContain('## STATISTIQUES');
+            expect(overview).toContain('## TABLE DES MATIÈRES');
+        });
+
+        it('should NOT emit an initial instruction in non-TOC-only mode (src L203 guard)', () => {
+            const overview = strategy.generateOverview(contents, noCssOptions);
+            expect(overview).not.toContain('## INSTRUCTION INITIALE');
+        });
+
+        it('should emit the initial instruction (first user message, cleaned) in TOC-only mode (src L203-211)', () => {
+            const tocOnly = new TocOnlyStrategy();
+            const overview = tocOnly.generateOverview(contents, noCssOptions);
+            expect(overview).toContain('## INSTRUCTION INITIALE');
+            expect(overview).toContain('the question');
+        });
+    });
+
+    describe('generateReport', () => {
+        const contents = [
+            makeContent({ type: 'User', subType: 'UserMessage', content: 'USER_BODY', index: 0 }),
+        ];
+
+        it('should start with the overview when advanced CSS is off (src L223 false → L229)', () => {
+            const report = strategy.generateReport(contents, noCssOptions);
+            expect(report.startsWith('# RÉSUMÉ DE TRACE')).toBe(true);
+        });
+
+        it('should append the MESSAGES section with rendered content in non-TOC-only mode (src L232-244)', () => {
+            const report = strategy.generateReport(contents, noCssOptions);
+            expect(report).toContain('## MESSAGES');
+            expect(report).toContain('USER_BODY');
+        });
+
+        it('should prepend a CSS block before the overview when advanced CSS is enabled (src L222-226)', () => {
+            const cssOn = { enhancementFlags: { enableAdvancedCSS: true } } as EnhancedSummaryOptions;
+            const reportOff = strategy.generateReport(contents, noCssOptions);
+            const reportOn = strategy.generateReport(contents, cssOn);
+            expect(reportOn.length).toBeGreaterThan(reportOff.length);
+            expect(reportOn).toContain('# RÉSUMÉ DE TRACE');
+            expect(reportOn.startsWith('# RÉSUMÉ DE TRACE')).toBe(false);
+        });
+
+        it('should omit the MESSAGES section entirely in TOC-only mode (src L232 guard)', () => {
+            const tocOnly = new TocOnlyStrategy();
+            const report = tocOnly.generateReport(contents, noCssOptions);
+            expect(report).not.toContain('## MESSAGES');
+        });
+
+        it('should skip messages whose formatted result has shouldRender=false (src L240)', () => {
+            const hidden = new NonRenderingStrategy();
+            const report = hidden.generateReport(contents, noCssOptions);
+            expect(report).toContain('## MESSAGES');
+            expect(report).not.toContain('SHOULD_NOT_APPEAR');
+        });
+    });
+
+    describe('shouldUseAdvancedCSS', () => {
+        it('should return true when the enableAdvancedCSS flag is set (src L253-254)', () => {
+            const opts = { enhancementFlags: { enableAdvancedCSS: true } } as EnhancedSummaryOptions;
+            expect((strategy as any).shouldUseAdvancedCSS(opts)).toBe(true);
+        });
+        it('should return false when the flag is explicitly false (src L254)', () => {
+            const opts = { enhancementFlags: { enableAdvancedCSS: false } } as EnhancedSummaryOptions;
+            expect((strategy as any).shouldUseAdvancedCSS(opts)).toBe(false);
+        });
+        it('should return false when enhancementFlags is absent (optional chaining, src L254)', () => {
+            expect((strategy as any).shouldUseAdvancedCSS({} as EnhancedSummaryOptions)).toBe(false);
+        });
+    });
+
+    describe('estimateLineNumber', () => {
+        it('should return index + 1 (src L443)', () => {
+            expect((strategy as any).estimateLineNumber(makeContent({ index: 5 }))).toBe(6);
+        });
+        it('should return 1 for index 0 (src L443)', () => {
+            expect((strategy as any).estimateLineNumber(makeContent({ index: 0 }))).toBe(1);
+        });
+        it('should default a missing index to 0 → 1 (src L443 `|| 0`)', () => {
+            expect((strategy as any).estimateLineNumber(makeContent({ index: undefined as any }))).toBe(1);
+        });
+    });
+});
