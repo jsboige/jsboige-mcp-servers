@@ -210,8 +210,10 @@ function buildThinkingControl(isVllm: boolean): {
  * model) on success, or null when the fallback is unconfigured, returns empty, or throws.
  * Never throws — the caller keeps its existing primary-failure handling.
  *
- * The cloud fallback is a lightweight flash model with no thinking mode, so the user
- * prompt is always prefixed with `/no_think` and no chat_template_kwargs is set.
+ * For non-reasoning fallbacks (GLM / Qwen flash) the user prompt is prefixed with
+ * `/no_think` and the call uses `max_tokens` + `temperature`. gpt-5 / o-series
+ * reasoning models reject both (`max_completion_tokens` only, temperature must be
+ * the default 1), so the params are branched on the configured model.
  */
 async function cloudCondenseOnce(
   systemPrompt: string,
@@ -223,15 +225,30 @@ async function cloudCondenseOnce(
   const fbModel = getFallbackLLMModelId();
   const fbStart = Date.now();
   try {
-    const response = await fallbackClient.chat.completions.create({
-      model: fbModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: '/no_think\n' + userPrompt },
-      ],
-      max_tokens: opts.maxTokens,
-      temperature: opts.temperature,
-    });
+    // gpt-5 / o-series reasoning models reject `max_tokens` (require
+    // `max_completion_tokens`) and any `temperature` != 1. Classic OpenAI-compat /
+    // GLM / Qwen models use `max_tokens` + `temperature` and honour `/no_think`.
+    const isReasoningModel = /^(gpt-5|o[1-9])/i.test(fbModel);
+    const response = await fallbackClient.chat.completions.create(
+      isReasoningModel
+        ? {
+            model: fbModel,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            max_completion_tokens: opts.maxTokens,
+          }
+        : {
+            model: fbModel,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: '/no_think\n' + userPrompt },
+            ],
+            max_tokens: opts.maxTokens,
+            temperature: opts.temperature,
+          },
+    );
     const content = response.choices[0]?.message?.content;
     const elapsedMs = Date.now() - fbStart;
     if (!content) {
