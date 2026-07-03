@@ -398,7 +398,10 @@ export class CacheManager {
 
     if (this.config.persistToDisk && this.config.cacheDir) {
       try {
-        await fs.rmdir(this.config.cacheDir, { recursive: true });
+        // fs.rm (not deprecated fs.rmdir recursive, removed in Node 22+). No
+        // `force` → ENOENT still throws when cacheDir was never created, so the
+        // catch below stays exercised (see cache-manager.coverage.test L221).
+        await fs.rm(this.config.cacheDir, { recursive: true });
       } catch (error) {
         // Ignore si le répertoire n'existe pas
       }
