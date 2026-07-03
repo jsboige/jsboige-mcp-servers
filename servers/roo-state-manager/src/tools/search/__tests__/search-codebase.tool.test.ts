@@ -38,6 +38,7 @@ import {
 	getWorkspaceCollectionName,
 	getWorkspaceCollectionVariants,
 	listWorkspaceCollections,
+	findCollectionByContent,
 	codebaseSearchTool,
 	handleCodebaseSearch
 } from '../search-codebase.tool.js';
@@ -798,6 +799,62 @@ describe('search-codebase.tool', () => {
 				expect(parsed.hash_matched_empty).toBe(true);
 				expect(parsed.content_match_attempted).toBe(true);
 			});
+		});
+	});
+
+	// ============================================================
+	// findCollectionByContent — overlap-coefficient fallback (#2554 / Epic #2766)
+	// Regression: symmetric Jaccard collapses on "inflated" workspaces that accumulated
+	// many top-level dirs the indexer never touched. The indexed dirs are still a clean
+	// SUBSET of the workspace, so the overlap coefficient (containment) must accept the
+	// match that Jaccard-0.226 rejected. Encodes the exact live ai-01 case.
+	// ============================================================
+
+	describe('findCollectionByContent - overlap-coefficient fallback (#2554)', () => {
+		test('accepts the real roo-extensions collection that symmetric Jaccard (0.226) rejects', async () => {
+			// Live ai-01 workspace signature: 30 top-level dirs, most never indexed
+			// (build/temp/logs/node_modules/exports/outputs/profiles/backups/.tmp/...).
+			const workspaceSignature = new Set([
+				'.claude', '.git', '.github', '.playwright-mcp', '.roo', '.shared-state',
+				'.temp', '.tmp', '.vscode', 'archive', 'backups', 'demo-roo-code', 'docker',
+				'docs', 'exports', 'logs', 'mcps', 'modules', 'node_modules', 'outputs',
+				'profiles', 'roo-code', 'roo-code-customization', 'roo-config',
+				'scheduled-tasks', 'scripts', 'temp', 'tests', 'zoo-code', '_archives'
+			]);
+
+			// The real index ws-59e7574de63c6e62 (446531 pts) indexed only 8 top-level dirs.
+			//   intersection = 7 (mcps, docs, archive, roo-code, demo-roo-code, roo-config, scripts)
+			//   union = 31 → Jaccard = 7/31 = 0.226 < 0.6 (would be REJECTED by the old gate)
+			//   overlap = 7 / min(30, 8) = 0.875 ≥ 0.6 (ACCEPTED via the containment path)
+			//   shared discriminant dirs = mcps, archive, roo-code, demo-roo-code, roo-config = 5 (≥2)
+			mockQdrant.scroll.mockImplementation(async (name: string) => {
+				if (name === 'ws-59e7574de63c6e62') {
+					return { points: [
+						{ payload: { pathSegments: { '0': 'mcps' } } },
+						{ payload: { pathSegments: { '0': 'docs' } } },
+						{ payload: { pathSegments: { '0': 'archive' } } },
+						{ payload: { pathSegments: { '0': 'roo-code' } } },
+						{ payload: { pathSegments: { '0': 'demo-roo-code' } } },
+						{ payload: { pathSegments: { '0': 'roo-config' } } },
+						{ payload: { pathSegments: { '0': 'scripts' } } },
+						{ payload: { pathSegments: { '0': 'demo-quickfiles' } } }
+					] };
+				}
+				return { points: [] };
+			});
+
+			const match = await findCollectionByContent(
+				mockQdrant,
+				['ws-59e7574de63c6e62'],
+				workspaceSignature
+			);
+
+			expect(match).not.toBeNull();
+			expect(match!.name).toBe('ws-59e7574de63c6e62');
+			// Jaccard is below the strict threshold (0.6) — proves the overlap path, not
+			// Jaccard, served the collection. (7/31 ≈ 0.226.)
+			expect(match!.jaccard).toBeLessThan(0.6);
+			expect(match!.overlap).toBeGreaterThanOrEqual(0.6);
 		});
 	});
 

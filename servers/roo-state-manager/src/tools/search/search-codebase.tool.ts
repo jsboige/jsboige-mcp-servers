@@ -127,6 +127,17 @@ export async function listWorkspaceCollections(): Promise<string[]> {
 
 /** Strict similarity threshold (Jaccard) below which we refuse to serve a content-matched collection. */
 const CONTENT_MATCH_MIN_JACCARD = 0.6;
+/**
+ * Overlap-coefficient (containment) threshold — #2554/#2766 (inflated-workspace fix).
+ * Symmetric Jaccard collapses on real workspaces that accumulated many top-level dirs
+ * the indexer never touched (build, temp, logs, node_modules, exports, outputs, profiles,
+ * backups, .tmp, ...): the huge union drives Jaccard below CONTENT_MATCH_MIN_JACCARD even
+ * though the collection's indexed dirs are a CLEAN SUBSET of the workspace. Live ai-01 case:
+ * 30-dir workspace vs 8-dir index, intersection 7 → Jaccard 7/31 = 0.226 (rejected), but
+ * overlap = 7 / min(30,8) = 0.875 (accepted). Overlap measures "are the indexed dirs
+ * contained in the workspace?" rather than "are the two dir sets the same size?".
+ */
+const CONTENT_MATCH_MIN_OVERLAP = 0.6;
 /** Generic directory names that are NOT discriminant — excluded from the "discriminant dir" requirement. */
 const GENERIC_DIRS = new Set([
 	'src', 'docs', 'tests', 'test', 'scripts', 'node_modules', '.git', 'config',
@@ -210,20 +221,22 @@ async function getCollectionSignature(qdrant: any, collectionName: string): Prom
  * Find the ws-* collection whose indexed top-level directories best match the workspace's
  * actual directory structure. Content-based fallback when hash resolution fails.
  *
- * Returns the best-matching collection if it passes the STRICT threshold (Jaccard ≥ 0.6
- * AND at least one discriminant / non-generic dir shared), else null. On null the caller
- * keeps the honest diagnostic — we never serve a low-confidence guess.
+ * Returns the best-matching collection if it passes the STRICT threshold via EITHER
+ * (a) Jaccard ≥ 0.6, OR (b) overlap coefficient ≥ 0.6 with ≥2 shared discriminant dirs
+ * (#2554/#2766 inflated-workspace path) — and in both cases at least one discriminant /
+ * non-generic dir shared. Else null. On null the caller keeps the honest diagnostic —
+ * we never serve a low-confidence guess.
  *
  * @param qdrant - Qdrant client
  * @param candidates - ws-* collection names to probe (pre-sorted by points_count desc)
  * @param workspaceSignature - top-level dirs of the workspace on disk (null = skip)
- * @returns { name, jaccard } of the best strict match, or null
+ * @returns { name, jaccard, overlap } of the best strict match, or null
  */
 export async function findCollectionByContent(
 	qdrant: any,
 	candidates: string[],
 	workspaceSignature: Set<string> | null
-): Promise<{ name: string; jaccard: number } | null> {
+): Promise<{ name: string; jaccard: number; overlap: number } | null> {
 	if (!workspaceSignature || workspaceSignature.size === 0 || candidates.length === 0) {
 		return null;
 	}
@@ -231,7 +244,10 @@ export async function findCollectionByContent(
 	// Discriminant dirs = workspace dirs minus generic ones. At least one must be shared.
 	const discriminantDirs = new Set([...workspaceSignature].filter(d => !GENERIC_DIRS.has(d)));
 
-	let best: { name: string; jaccard: number } | null = null;
+	let best: { name: string; jaccard: number; overlap: number } | null = null;
+	// Rank by the stronger of the two metrics so the overlap path can win the tie-break
+	// on inflated workspaces where Jaccard is uniformly low across candidates.
+	let bestScore = -1;
 	const scanned = Math.min(candidates.length, CONTENT_MATCH_MAX_CANDIDATES);
 
 	for (let i = 0; i < scanned; i++) {
@@ -245,11 +261,25 @@ export async function findCollectionByContent(
 		if (union === 0) continue;
 		const jaccard = intersection / union;
 
-		// STRICT gate (user choice): require both threshold AND a discriminant dir match.
-		const sharedDiscriminant = [...discriminantDirs].some(d => collSig.has(d));
-		if (jaccard >= CONTENT_MATCH_MIN_JACCARD && sharedDiscriminant) {
-			if (!best || jaccard > best.jaccard) {
-				best = { name, jaccard };
+		// #2554/#2766: overlap coefficient (containment) = intersection / min(sizes).
+		// Robust to an inflated workspace: measures whether the indexed dirs are a subset
+		// of the workspace, independent of how many extra non-indexed dirs the workspace has.
+		const overlap = intersection / Math.min(workspaceSignature.size, collSig.size);
+		const sharedDiscriminantCount = [...discriminantDirs].filter(d => collSig.has(d)).length;
+
+		// STRICT gate: at least one shared discriminant dir, AND either the original
+		// Jaccard threshold OR the overlap threshold. The overlap path additionally
+		// requires ≥2 shared discriminant (non-generic) dirs so a tiny unrelated
+		// collection can't slip through on a single shared dir via the min-size trick.
+		const accept = sharedDiscriminantCount >= 1 && (
+			jaccard >= CONTENT_MATCH_MIN_JACCARD
+			|| (overlap >= CONTENT_MATCH_MIN_OVERLAP && sharedDiscriminantCount >= 2)
+		);
+		if (accept) {
+			const score = Math.max(jaccard, overlap);
+			if (!best || score > bestScore) {
+				best = { name, jaccard, overlap };
+				bestScore = score;
 			}
 		}
 	}
@@ -452,7 +482,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let collectionName = '';
 		// Tracks how the collection was resolved — 'hash' (normal) or 'content-match' (L1 fallback).
 		let collectionResolvedBy: 'hash' | 'content-match' = 'hash';
-		let contentMatchDetails: { jaccard: number; jaccard_threshold: number } | undefined;
+		let contentMatchDetails: { jaccard: number; jaccard_threshold: number; overlap?: number; overlap_threshold?: number } | undefined;
 		// points_count of the hash-matched collection (if any). Used to detect the
 		// "collection exists but is empty" blind-spot: the hash resolves to a real
 		// collection that was never populated (e.g. the indexer hashed a different path
@@ -526,7 +556,14 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				// Strict content-match found — serve results from this collection.
 				collectionName = contentMatch.name;
 				collectionResolvedBy = 'content-match';
-				contentMatchDetails = { jaccard: contentMatch.jaccard, jaccard_threshold: CONTENT_MATCH_MIN_JACCARD };
+				// #2554/#2766: report BOTH metrics so observability shows how the match was
+				// made — Jaccard alone would hide that an inflated workspace matched via overlap.
+				contentMatchDetails = {
+					jaccard: contentMatch.jaccard,
+					jaccard_threshold: CONTENT_MATCH_MIN_JACCARD,
+					overlap: contentMatch.overlap,
+					overlap_threshold: CONTENT_MATCH_MIN_OVERLAP,
+				};
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
 				// signatures we probed so the caller can identify theirs visually.
