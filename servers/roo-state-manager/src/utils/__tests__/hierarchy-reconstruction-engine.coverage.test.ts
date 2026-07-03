@@ -137,11 +137,11 @@ describe('HierarchyReconstructionEngine — coverage complement', () => {
     // ============================================================
 
     describe('extractSubtaskInstructions — alternative input shapes', () => {
-        test.skip('toolData from message.text as object (L692) — SKIP: source bug at L751 crashes on object text', async () => {
-            // Source has a bug: when message.text is an object, the truthy check at
-            // L751 `if (message.text || message.content)` passes, then L753 calls
-            // `content?.match()` on the object → TypeError.
-            // Per no-deletion-without-proof, source cannot be modified in this PR.
+        test('toolData from message.text as object (L692) — extracted; non-string content no longer throws (#833 fix)', async () => {
+            // Fixed: message.text as an object is extracted by PATTERN principal (L691),
+            // and the downstream truthy fallbacks (L751/779/806/827) now type-guard `.match`
+            // (typeof content === 'string' ? content.match(...) : null) so a non-string
+            // (object/array) content is skipped gracefully instead of throwing TypeError.
             const engine = new HierarchyReconstructionEngine({ debugMode: false });
             mockExistsSync.mockReturnValue(true);
             const newTaskContent = 'Build the deployment pipeline for production';
@@ -165,7 +165,7 @@ describe('HierarchyReconstructionEngine — coverage complement', () => {
             expect(instructions.length).toBeGreaterThan(0);
         });
 
-        test.skip('toolData from message.content as object (L697) — SKIP: same source bug as L692', async () => {
+        test('toolData from message.content as object (L697) — extracted; non-string content no longer throws (#833 fix)', async () => {
             const engine = new HierarchyReconstructionEngine({ debugMode: false });
             mockExistsSync.mockReturnValue(true);
             mockReadFileSync.mockReturnValue(JSON.stringify([
@@ -186,6 +186,31 @@ describe('HierarchyReconstructionEngine — coverage complement', () => {
 
             expect(instructions.length).toBeGreaterThan(0);
             expect(instructions[0].mode).toBe('debug');
+        });
+
+        test('non-string array content does not abort the loop (#833 regression L751/779/806/827)', async () => {
+            // Anthropic block format stores `content` as an array of blocks (non-string, truthy).
+            // Before the fix, the truthy fallback guards entered and called `.match()` on the
+            // array → TypeError → re-thrown at L889 → the ENTIRE message loop aborted, so any
+            // valid newTask AFTER the poisoned message was lost. After the fix, the array-content
+            // message is skipped gracefully and the subsequent newTask is still extracted.
+            const engine = new HierarchyReconstructionEngine({ debugMode: false });
+            mockExistsSync.mockReturnValue(true);
+            mockReadFileSync.mockReturnValue(JSON.stringify([
+                { type: 'say', role: 'assistant', content: [{ type: 'text', text: 'streamed assistant block' }] },
+                {
+                    type: 'ask',
+                    ask: 'tool',
+                    ts: 1700000001,
+                    text: JSON.stringify({ tool: 'newTask', mode: 'code', content: 'Real instruction after the array-content message' }),
+                },
+            ]));
+
+            const skeleton = createMockSkeleton('parent-array-content');
+            const instructions = await (engine as any).extractSubtaskInstructions(skeleton);
+
+            expect(Array.isArray(instructions)).toBe(true);
+            expect(instructions.some((i: any) => i.message.includes('Real instruction after'))).toBe(true);
         });
 
         test('toolData from message.content as JSON string (L698)', async () => {
