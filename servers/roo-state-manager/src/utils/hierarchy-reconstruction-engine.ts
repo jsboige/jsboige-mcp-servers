@@ -750,7 +750,7 @@ export class HierarchyReconstructionEngine {
                     // Pattern de fallback : XML <new_task> pour compatibilité (robuste, tolère attributs/espaces, insensible à la casse)
                     if (message.text || message.content) {
                         const content = message.text || message.content;
-                        const xmlMatches = content?.match(/<\s*new_task\b[\s\S]*?<\/\s*new_task\s*>/gi);
+                        const xmlMatches = typeof content === 'string' ? content.match(/<\s*new_task\b[\s\S]*?<\/\s*new_task\s*>/gi) : null;
                         if (xmlMatches) {
                             for (const match of xmlMatches) {
                                 const modeMatch = match.match(/<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>/i);
@@ -778,7 +778,7 @@ export class HierarchyReconstructionEngine {
                     // Exemple: <orchestrator_complex><mode>debug</mode><message>...</message></orchestrator_complex>
                     if (message.text || message.content) {
                         const contentAny = message.text || message.content;
-                        const genericXmlMatches = contentAny?.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/gi);
+                        const genericXmlMatches = typeof contentAny === 'string' ? contentAny.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/gi) : null;
                         if (genericXmlMatches) {
                             for (const block of genericXmlMatches) {
                                 const m = block.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/i);
@@ -805,7 +805,7 @@ export class HierarchyReconstructionEngine {
                     // Pattern 2: Balises <task> simples (assistant/user/say) — tolérant aux espaces/casse
                     if (message.text || message.content) {
                         const contentSimple = message.text || message.content;
-                        const taskTagMatches = contentSimple?.match(/<\s*task\s*>([\s\S]*?)<\/\s*task\s*>/gi);
+                        const taskTagMatches = typeof contentSimple === 'string' ? contentSimple.match(/<\s*task\s*>([\s\S]*?)<\/\s*task\s*>/gi) : null;
                         if (taskTagMatches) {
                             for (const t of taskTagMatches) {
                                 const m = t.match(/<\s*task\s*>([\s\S]*?)<\/\s*task\s*>/i);
@@ -827,7 +827,7 @@ export class HierarchyReconstructionEngine {
                     if ((message.type === 'say' || message.role === 'assistant') && (message.text || message.content)) {
                         const content = message.text || message.content;
                         const delegationPattern = /je (?:te passe|délègue|confie|transfère).*?(?:en|au) mode?\s+(\w+)/i;
-                        const delegationMatch = content?.match(delegationPattern);
+                        const delegationMatch = typeof content === 'string' ? content.match(delegationPattern) : null;
 
                         if (delegationMatch) {
                             delegationCount++;
