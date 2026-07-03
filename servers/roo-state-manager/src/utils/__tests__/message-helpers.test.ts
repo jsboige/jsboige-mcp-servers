@@ -94,9 +94,14 @@ describe('message-helpers', () => {
       delete process.env.ROOSYNC_WORKSPACE_ID;
       delete process.env.WORKSPACE_PATH;
       const id = getLocalWorkspaceId();
-      // #815: Verify it returns the actual cwd basename (deterministic — same
+      // #815: Verify it returns the deterministic auto-detected id (same
       // computation the function performs), not a stub/'default'/undefined.
-      expect(id).toBe(basename(process.cwd()));
+      // #1364: mirror the function's FULL contract — when cwd is inside a
+      // .claude/worktrees/wt-* path, step 3a resolves to the PARENT workspace,
+      // not basename(cwd). Comparing against basename alone false-negatives when
+      // the suite is run from a parent-repo worktree (green on GitHub Actions,
+      // red only there).
+      expect(id).toBe(resolveWorkspaceFromWorktree(process.cwd()) ?? basename(process.cwd()));
       expect(typeof id).toBe('string');
       expect(id).not.toBe('undefined');
     });
@@ -106,8 +111,9 @@ describe('message-helpers', () => {
       delete process.env.WORKSPACE_PATH;
       const id = getLocalWorkspaceId();
       // Empty string should trigger auto-detection
-      // #815: deterministic content check — must equal the cwd basename
-      expect(id).toBe(basename(process.cwd()));
+      // #815/#1364: deterministic content check mirroring the function's full
+      // contract (worktree cwd resolves to parent, else basename).
+      expect(id).toBe(resolveWorkspaceFromWorktree(process.cwd()) ?? basename(process.cwd()));
       expect(typeof id).toBe('string');
     });
   });
