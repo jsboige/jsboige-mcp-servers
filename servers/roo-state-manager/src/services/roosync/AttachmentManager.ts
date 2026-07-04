@@ -113,6 +113,11 @@ function withReadTimeout<T>(promise: Promise<T>, ms: number, label: string): Pro
       logger.warn('⏱️ Attachment read timed out (cloud-only file?)', { label, ms });
       resolve(null);
     }, ms);
+    // `.unref()` so a hung read (timer the only pending work) doesn't keep a
+    // short-lived process alive for `ms` — the timer still fires as long as the
+    // event loop is alive (it just doesn't *keep* it alive). The `.finally`
+    // clearTimeout below covers the resolved-before-timeout path.
+    timer.unref?.();
   });
   return Promise.race([promise, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
