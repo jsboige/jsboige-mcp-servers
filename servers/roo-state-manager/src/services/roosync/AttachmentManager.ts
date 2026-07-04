@@ -25,6 +25,17 @@ const logger = createLogger('AttachmentManager');
 const DEFAULT_MAX_AGE_DAYS = 30;
 
 /**
+ * Per-read timeout for attachment metadata/files.
+ *
+ * On GDrive Files On-Demand (the RooSync shared-state backing store), a file
+ * whose content is "cloud-only" makes `fs.readFile`/`fs.copyFile` block while
+ * GDrive tries to fetch it — observed hanging past the 120s MCP tool timeout,
+ * wedging `attachments_list` (#2267 residual). This cap lets `listAttachments`
+ * skip a hung entry and return a partial result instead of blocking forever.
+ */
+const ATTACHMENT_READ_TIMEOUT_MS = 10_000;
+
+/**
  * Métadonnées d'une pièce jointe stockée
  */
 export interface AttachmentMetadata {
@@ -90,13 +101,34 @@ function getMimeType(filename: string): string {
 }
 
 /**
+ * Race a promise against a timeout. Resolves to `null` on timeout (caller
+ * decides whether to skip or throw), never rejects from the timeout side.
+ * Used to defend `listAttachments` against GDrive cloud-only files that hang
+ * `fs.readFile` indefinitely (#2267 residual).
+ */
+function withReadTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      logger.warn('⏱️ Attachment read timed out (cloud-only file?)', { label, ms });
+      resolve(null);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
  * Service de gestion des pièces jointes RooSync
  */
 export class AttachmentManager {
   private attachmentsPath: string;
+  private readonly readTimeoutMs: number;
 
-  constructor(sharedStatePath: string) {
+  constructor(sharedStatePath: string, readTimeoutMs: number = ATTACHMENT_READ_TIMEOUT_MS) {
     this.attachmentsPath = join(sharedStatePath, 'attachments');
+    this.readTimeoutMs = readTimeoutMs;
   }
 
   /**
@@ -185,7 +217,15 @@ export class AttachmentManager {
       if (!existsSync(metadataPath)) continue;
 
       try {
-        const raw = await fs.readFile(metadataPath, 'utf-8');
+        const raw = await withReadTimeout(
+          fs.readFile(metadataPath, 'utf-8'),
+          this.readTimeoutMs,
+          `metadata:${entry.name}`,
+        );
+        // Skip entries whose metadata read timed out (GDrive cloud-only hang, #2267 residual).
+        // Keeps `attachments_list` responsive by returning a partial result.
+        if (raw === null) continue;
+
         const meta: AttachmentMetadata = JSON.parse(raw);
 
         if (!messageId || meta.messageId === messageId) {
