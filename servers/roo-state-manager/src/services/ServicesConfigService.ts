@@ -132,7 +132,11 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     owner: 'myia-ai-01',
     processName: 'python',
     ports: [5002],
-    healthEndpoint: 'http://localhost:5002/v1/models',
+    // /health is the UNAUTHENTICATED liveness endpoint (returns 200 when up).
+    // Do NOT use /v1/models here: it requires the API key, so an unauthenticated
+    // probeHealth() GET always returns 401 → false "vLLM DOWN" even when the
+    // engine is perfectly healthy (reproduced 2026-07-04 on ai-01).
+    healthEndpoint: 'http://localhost:5002/health',
     startCommand: 'python',
     startArgs: ['-m', 'vllm.entrypoints.openai.api_server', '--port', '5002', '--model', 'qwen3.6-35b-a3b'],
   },
@@ -277,6 +281,23 @@ export class ServicesConfigService {
           name: regEntry.name,
           kind: regEntry.kind,
           status: 'dry-run',
+          owner: regEntry.owner,
+        });
+        continue;
+      }
+
+      // Owner-scoping (vLLM-workspace interpellation 2026-07-04): only the
+      // designated owner probes a service locally. On every other machine the
+      // local process/service/health probe finds nothing (the service runs
+      // elsewhere) and wrongly reports it 'NotFound' → the false fleet-wide
+      // "vLLM DOWN". Non-owners report 'not-owned' without probing; apply()
+      // already refuses non-owned targets (ownership gate), and reconciliation
+      // (ConfigSharingService) never acts on a 'not-owned' entry.
+      if (regEntry.owner !== this.machineId) {
+        entries.push({
+          name: regEntry.name,
+          kind: regEntry.kind,
+          status: 'not-owned',
           owner: regEntry.owner,
         });
         continue;
