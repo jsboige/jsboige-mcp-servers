@@ -66,17 +66,22 @@ describe('ServicesConfigService — coverage complement (#833)', () => {
   // ── collect() ──────────────────────────────────────────────────────────
 
   it('collects service, process, and container kinds with a healthy probe', async () => {
+    // Owner-scoping: qdrant/vllm/sk-agent are owned by myia-ai-01, so run as ai-01
+    // to exercise the real probe machinery (iis, owned by po-2023, → 'not-owned').
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+    const svc = new ServicesConfigService(mockExecutor);
     mockExecutor.executeScript.mockResolvedValue(psResult(RUNNING));
     global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 } as any);
 
-    const result = await service.collect(['qdrant', 'iis', 'vllm', 'sk-agent']);
+    const result = await svc.collect(['qdrant', 'iis', 'vllm', 'sk-agent']);
 
     expect(result.services).toHaveLength(4);
     expect(result.services.map(s => s.kind)).toEqual(['service', 'service', 'process', 'container']);
     // qdrant/vllm/sk-agent have a healthEndpoint and status !== Stopped → probed healthy.
     expect(result.services.find(s => s.name === 'qdrant')!.health?.healthy).toBe(true);
     expect(result.services.find(s => s.name === 'sk-agent')!.status).toBe('Running');
-    // iis has no healthEndpoint → no probe.
+    // iis is owned by po-2023 → not-owned here → no probe, no health.
+    expect(result.services.find(s => s.name === 'iis')!.status).toBe('not-owned');
     expect(result.services.find(s => s.name === 'iis')!.health).toBeUndefined();
     // The container-kind script was built (docker inspect) — proves buildCollectContainerScript ran.
     const scripts = mockExecutor.executeScript.mock.calls.map((c: any) => c[1][1]);
@@ -84,10 +89,12 @@ describe('ServicesConfigService — coverage complement (#833)', () => {
   });
 
   it('skips the health probe when a service is Stopped (L367 guard)', async () => {
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01'; // owns qdrant
+    const svc = new ServicesConfigService(mockExecutor);
     mockExecutor.executeScript.mockResolvedValue(psResult('{"Status":"Stopped"}'));
     global.fetch = vi.fn();
 
-    const result = await service.collect(['qdrant']);
+    const result = await svc.collect(['qdrant']);
 
     expect(result.services[0].status).toBe('Stopped');
     expect(result.services[0].health).toBeUndefined();
@@ -95,32 +102,54 @@ describe('ServicesConfigService — coverage complement (#833)', () => {
   });
 
   it('records a collect failure as an error entry (L288-296)', async () => {
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01'; // owns qdrant
+    const svc = new ServicesConfigService(mockExecutor);
     mockExecutor.executeScript.mockRejectedValue(new Error('powershell died'));
 
-    const result = await service.collect(['qdrant']);
+    const result = await svc.collect(['qdrant']);
 
     expect(result.services[0].status).toBe('error');
     expect(result.services[0].health?.healthy).toBe(false);
     expect(result.services[0].health?.error).toContain('powershell died');
   });
 
+  // ── owner-scoping (vLLM-workspace interpellation 2026-07-04) ────────────
+
+  it('reports a non-owned service as not-owned without probing', async () => {
+    // machineId is po-2023 (beforeEach); vllm is owned by myia-ai-01.
+    global.fetch = vi.fn();
+
+    const result = await service.collect(['vllm']);
+
+    expect(result.services).toHaveLength(1);
+    expect(result.services[0].status).toBe('not-owned');
+    expect(result.services[0].owner).toBe('myia-ai-01');
+    // No local probe: neither the PowerShell collector nor the health endpoint ran.
+    expect(mockExecutor.executeScript).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   // ── probeHealth() arms (driven via collect) ────────────────────────────
 
   it('reports unhealthy with the HTTP status on a non-2xx probe (L627-628)', async () => {
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01'; // owns qdrant
+    const svc = new ServicesConfigService(mockExecutor);
     mockExecutor.executeScript.mockResolvedValue(psResult('{"Status":"Running"}'));
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 } as any);
 
-    const result = await service.collect(['qdrant']);
+    const result = await svc.collect(['qdrant']);
 
     expect(result.services[0].health?.healthy).toBe(false);
     expect(result.services[0].health?.error).toBe('HTTP 503');
   });
 
   it('reports unhealthy with the error message when the probe throws (L630)', async () => {
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01'; // owns qdrant
+    const svc = new ServicesConfigService(mockExecutor);
     mockExecutor.executeScript.mockResolvedValue(psResult('{"Status":"Running"}'));
     global.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
 
-    const result = await service.collect(['qdrant']);
+    const result = await svc.collect(['qdrant']);
 
     expect(result.services[0].health?.healthy).toBe(false);
     expect(result.services[0].health?.error).toContain('ECONNREFUSED');

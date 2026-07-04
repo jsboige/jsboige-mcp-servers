@@ -160,6 +160,20 @@ describe('ServicesConfigService', () => {
       expect(entry.health!.healthy).toBe(false);
       expect(entry.health!.error).toContain('PowerShell boom');
     });
+
+    it('reports a non-owned target as not-owned without probing (owner-scoping)', async () => {
+      // vllm is owned by 'myia-ai-01'; current machine is 'myia-po-2023'.
+      // A non-owner must NOT probe locally — the local process/health probe would
+      // find nothing and wrongly report the service DOWN (false fleet-wide "vLLM DOWN").
+      const result = await service.collect(['vllm']);
+
+      expect(result.services).toHaveLength(1);
+      expect(result.services[0].name).toBe('vllm');
+      expect(result.services[0].status).toBe('not-owned');
+      expect(result.services[0].owner).toBe('myia-ai-01');
+      // Gate fired before collectSingle → no executor call.
+      expect(mockExecutor.executeScript).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================================

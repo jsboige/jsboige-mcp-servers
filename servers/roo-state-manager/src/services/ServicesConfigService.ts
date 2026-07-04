@@ -286,6 +286,23 @@ export class ServicesConfigService {
         continue;
       }
 
+      // Owner-scoping (vLLM-workspace interpellation 2026-07-04): only the
+      // designated owner probes a service locally. On every other machine the
+      // local process/service/health probe finds nothing (the service runs
+      // elsewhere) and wrongly reports it 'NotFound' → the false fleet-wide
+      // "vLLM DOWN". Non-owners report 'not-owned' without probing; apply()
+      // already refuses non-owned targets (ownership gate), and reconciliation
+      // (ConfigSharingService) never acts on a 'not-owned' entry.
+      if (regEntry.owner !== this.machineId) {
+        entries.push({
+          name: regEntry.name,
+          kind: regEntry.kind,
+          status: 'not-owned',
+          owner: regEntry.owner,
+        });
+        continue;
+      }
+
       try {
         const entry = await this.collectSingle(regEntry);
         entries.push(entry);
