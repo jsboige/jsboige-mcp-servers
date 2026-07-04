@@ -45,7 +45,13 @@ describe('WorkspaceAnalyzer — coverage gap-complement (cold branches)', () => 
 
     it('areSimilarPrefixes: neither nested → returns false (both arms false)', () => {
         // Sanity: confirms the fall-through past the `||` (distinct from same-root true).
-        expect(WA.areSimilarPrefixes('/alpha', '/beta/gamma')).toBe(false);
+        // Inputs must (a) have DIFFERENT parts[0] AND (b) not be nested, on BOTH
+        // platforms. Slash-LEADING paths break the Linux CI: `split('/')` yields
+        // parts[0]='' for every absolute path → L311 same-root short-circuit →
+        // returns true. Relative multi-segment inputs with distinct first
+        // segments give different parts[0] on both sep='\\' (single-element
+        // split) and sep='/' (multi-element split), and are not nested → L320.
+        expect(WA.areSimilarPrefixes('alpha/sub', 'beta/other')).toBe(false);
     });
 
     // ─── generateWorkspaceName L420-421: empty parts → 'Root Workspace' ───
