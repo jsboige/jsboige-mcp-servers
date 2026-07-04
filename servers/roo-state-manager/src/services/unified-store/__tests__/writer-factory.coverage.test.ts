@@ -21,10 +21,23 @@ import {
 import { NullUnifiedStoreWriter } from '../UnifiedStoreWriter.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 
+// #2656: vi.unstubAllEnvs() restores process.env to its ORIGINAL (OS-inherited)
+// state, not a clean slate. On machines where UNIFIED_STORE_DUAL_WRITE=1 is set
+// at the OS level (e.g. ai-01 production PG dual-write runtime), tests that
+// assume "env unset" would hit the Pg branch instead of Null → drift CI fails.
+// Explicitly delete the unified-store env vars so every test starts clean.
+function clearUnifiedStoreEnv(): void {
+  delete process.env.UNIFIED_STORE_DUAL_WRITE;
+  delete process.env.UNIFIED_STORE_PG_URL;
+  delete process.env.UNIFIED_STORE_POOL_MAX;
+  delete process.env.UNIFIED_STORE_TIMEOUT_MS;
+}
+
 describe('writer-factory — env-gate branches', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
   });
 
   afterEach(() => {
@@ -96,6 +109,7 @@ describe('writer-factory — singleton behavior', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
   });
 
   afterEach(() => {
@@ -151,6 +165,7 @@ describe('writer-factory — console.info emission with credential masking', () 
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
 
@@ -231,6 +246,7 @@ describe('writer-factory — env-var edge cases', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     vi.spyOn(console, 'info').mockImplementation(() => {});
   });
 
