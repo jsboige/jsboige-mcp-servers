@@ -132,7 +132,11 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     owner: 'myia-ai-01',
     processName: 'python',
     ports: [5002],
-    healthEndpoint: 'http://localhost:5002/v1/models',
+    // /health is the UNAUTHENTICATED liveness endpoint (returns 200 when up).
+    // Do NOT use /v1/models here: it requires the API key, so an unauthenticated
+    // probeHealth() GET always returns 401 → false "vLLM DOWN" even when the
+    // engine is perfectly healthy (reproduced 2026-07-04 on ai-01).
+    healthEndpoint: 'http://localhost:5002/health',
     startCommand: 'python',
     startArgs: ['-m', 'vllm.entrypoints.openai.api_server', '--port', '5002', '--model', 'qwen3.6-35b-a3b'],
   },
