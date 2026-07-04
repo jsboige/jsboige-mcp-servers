@@ -153,10 +153,19 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // below). Per user mandate "passe la condensation en non thinking, vue la situation
 // catastrophique du cluster ce sera un moindre mal" — Qwen3.6 thinking-loop hang
 // was bringing the whole dashboard channel down during the orphan-leak crisis.
-// With thinking off, generation is direct markdown output (~4000 tokens), well
-// under the gateway; the 12000 cap (sized to the 600s IIS → vLLM gateway at
-// ~37 tok/s) is retained as a runaway-guard if the model ever flips back into
-// a long output.
+// With thinking off, generation is direct markdown output (~700-1500 tokens for a
+// status/summary; ~4000 only for a very large condense), so 7200 is ample headroom.
+//
+// 2026-07-04: lowered 12000 → 7200 (#2557) — a conservative 40% first cut. The
+// 12000 cap was a runaway-guard, not a normal budget (real non-thinking summaries
+// are ~700-1500 tokens; the cap is only reached in the known Qwen3.6 thinking-loop
+// repetition failure). Two effects: (1) the runaway guard tightens ~325s → ~195s
+// (7200 × ~37 tok/s), still well under the ~600s IIS→vLLM gateway; (2) a lower
+// max_tokens reduces per-sequence KV reservation, giving more concurrency headroom
+// — plausible help for the prefill-burst-starves-decode wedge (project-engine-wedge
+// onset 07:10:03Z: prompt_rate 419.7 tok/s, gen 0.12). Conservative on purpose:
+// measure the effect on condensation success rate + wedge frequency before cutting
+// further. No truncation risk: thinking is off and real summaries are << 7200.
 //
 // History (kept for context — apply *with* enable_thinking=false now):
 // 2026-05-23: regression fix. Commit 9beb7e93 (2026-04-20) bumped this 10000 →
@@ -164,8 +173,8 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // n'aboutit plus d'elle-même quand on poste": qwen3.6 has a known thinking-loop
 // repetition failure mode (vLLM+Qwen) where a runaway generation walks all the way
 // to max_tokens. 30000 tokens × ~37 tok/s = ~810s, > 600s gateway = HTTP 502.
-// Bounding at 12000 caps a runaway at ~325s, comfortably under the gateway.
-const CONDENSE_LLM_MAX_TOKENS = 12000;
+// Bounding at 12000 capped a runaway at ~325s; 7200 caps it at ~195s (2026-07-04).
+const CONDENSE_LLM_MAX_TOKENS = 7200;
 
 // #2426 Phase C+ follow-up: Detect LLM provider for thinking-mode control.
 // vLLM (local) supports chat_template_kwargs; z.ai and other remote APIs reject it (400).
