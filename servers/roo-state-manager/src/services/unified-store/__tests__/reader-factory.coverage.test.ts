@@ -20,10 +20,25 @@ import {
 import { NullUnifiedStoreReader } from '../UnifiedStoreReader.js';
 import { PgUnifiedStoreReader } from '../PgUnifiedStoreReader.js';
 
+// #2656: vi.unstubAllEnvs() restores process.env to its ORIGINAL (OS-inherited)
+// state, not a clean slate. On machines where UNIFIED_STORE_DUAL_WRITE=1 is set
+// at the OS level (e.g. ai-01 production PG dual-write runtime), tests that
+// assume "env unset" would hit the Pg branch instead of Null → drift CI fails.
+// Explicitly delete the unified-store env vars so every test starts clean
+// regardless of the host OS env. Each test then stubs exactly the values it
+// needs via vi.stubEnv.
+function clearUnifiedStoreEnv(): void {
+  delete process.env.UNIFIED_STORE_DUAL_WRITE;
+  delete process.env.UNIFIED_STORE_PG_URL;
+  delete process.env.UNIFIED_STORE_POOL_MAX;
+  delete process.env.UNIFIED_STORE_TIMEOUT_MS;
+}
+
 describe('reader-factory — env-gate branches', () => {
   beforeEach(() => {
     resetReaderInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
   });
 
   afterEach(() => {
@@ -105,6 +120,7 @@ describe('reader-factory — singleton behavior', () => {
   beforeEach(() => {
     resetReaderInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
   });
 
   afterEach(() => {
@@ -161,6 +177,7 @@ describe('reader-factory — env-var edge cases', () => {
   beforeEach(() => {
     resetReaderInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
   });
 
   afterEach(() => {

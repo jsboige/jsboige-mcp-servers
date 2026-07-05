@@ -19,6 +19,20 @@ import { resetWriterInstance } from '../writer-factory.js';
 import { NullUnifiedStoreWriter } from '../UnifiedStoreWriter.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
+// #2656: vi.unstubAllEnvs() restores process.env to its ORIGINAL (OS-inherited)
+// state, not a clean slate. On machines where UNIFIED_STORE_DUAL_WRITE=1 is set
+// at the OS level (e.g. ai-01 production PG dual-write runtime), the writer
+// factory returns PgUnifiedStoreWriter instead of Null → the
+// NullUnifiedStoreWriter.prototype spy never fires → drift CI fails.
+// Explicitly delete the unified-store env vars so every test starts with the
+// env-gate OFF (Null writer) regardless of the host OS env.
+function clearUnifiedStoreEnv(): void {
+  delete process.env.UNIFIED_STORE_DUAL_WRITE;
+  delete process.env.UNIFIED_STORE_PG_URL;
+  delete process.env.UNIFIED_STORE_POOL_MAX;
+  delete process.env.UNIFIED_STORE_TIMEOUT_MS;
+}
+
 type SkelOverrides = {
   source?: string;
   machineId?: string;
@@ -71,6 +85,7 @@ describe('dual-write — env-gate off (Null writer, silent no-op)', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
 
@@ -106,6 +121,7 @@ describe('dual-write — harness mapping', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     spy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertConversationOnly');
   });
@@ -165,6 +181,7 @@ describe('dual-write — machine_id fallback chain', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     spy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertConversationOnly');
   });
@@ -233,6 +250,7 @@ describe('dual-write — row field mapping', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
     spy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertConversationOnly');
   });
@@ -373,6 +391,7 @@ describe('dual-write — error swallowing (never throws)', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
 
