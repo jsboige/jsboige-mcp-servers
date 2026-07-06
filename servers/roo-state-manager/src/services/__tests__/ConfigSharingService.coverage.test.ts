@@ -487,4 +487,64 @@ describe('ConfigSharingService — #833 C3 coverage complement', () => {
       expect(files).toEqual([]);
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // collectRules (L1804-1850) — TIER A priority 1
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('collectRules', () => {
+    beforeEach(() => {
+      fsMock.readFile.mockReset();
+      fsMock.copyFile.mockReset();
+      fsMock.stat.mockReset();
+      fsMock.mkdir.mockResolvedValue(undefined);
+      fsMock.copyFile.mockResolvedValue(undefined);
+      fsMock.stat.mockResolvedValue({ size: 256 } as any);
+      fsMock.readFile.mockResolvedValue('rule content');
+      inventoryMock.getMachineInventory.mockReset();
+    });
+
+    it('throws INVENTORY_INCOMPLETE when rooExtensions path is missing (L1812-1818)', async () => {
+      inventoryMock.getMachineInventory.mockResolvedValue({ paths: {} });
+      await expect((service as any).collectRules('/tmp/rules'))
+        .rejects.toMatchObject({ code: 'INVENTORY_INCOMPLETE' });
+    });
+
+    it('returns [] and warns when rules-global directory does not exist (L1823 false + L1845-1847)', async () => {
+      inventoryMock.getMachineInventory.mockResolvedValue({ paths: { rooExtensions: '/roo-ext' } });
+      fsMock.existsSync.mockReturnValue(false);
+      const files = await (service as any).collectRules('/tmp/rules');
+      expect(files).toEqual([]);
+    });
+
+    it('returns [] when rules-global exists but contains no .md files (L1823-1826)', async () => {
+      inventoryMock.getMachineInventory.mockResolvedValue({ paths: { rooExtensions: '/roo-ext' } });
+      fsMock.existsSync.mockReturnValue(true);
+      const fsPromises = await import('fs');
+      const spy = vi.spyOn(fsPromises.promises, 'readdir').mockResolvedValue(['README.txt', 'config.yaml'] as any);
+      try {
+        const files = await (service as any).collectRules('/tmp/rules');
+        expect(files).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('copies only .md entries and returns ConfigManifestFile[] with hash+stat (L1823-1844)', async () => {
+      inventoryMock.getMachineInventory.mockResolvedValue({ paths: { rooExtensions: '/roo-ext' } });
+      fsMock.existsSync.mockReturnValue(true);
+      const fsPromises = await import('fs');
+      const spy = vi.spyOn(fsPromises.promises, 'readdir').mockResolvedValue(['rule1.md', 'rule2.md', 'ignore.txt', 'rule3.md'] as any);
+      try {
+        const files = await (service as any).collectRules('/tmp/rules');
+        expect(files).toHaveLength(3);
+        expect(files.every((f: any) => f.type === 'rules_config')).toBe(true);
+        expect(files.every((f: any) => f.path.startsWith('rules/') && f.path.endsWith('.md'))).toBe(true);
+        expect(files.every((f: any) => typeof f.hash === 'string' && f.hash.length === 64)).toBe(true);
+        expect(files.every((f: any) => f.size === 256)).toBe(true);
+        expect(fsMock.copyFile).toHaveBeenCalledTimes(3);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });
