@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateVectorGlobal, sanitizePayload } from '../EmbeddingValidator.js';
+import { validateVectorGlobal, sanitizePayload, redactSecrets } from '../EmbeddingValidator.js';
 import { StateManagerError } from '../../../types/errors.js';
 
 // Mock the openai module
@@ -221,6 +221,88 @@ describe('EmbeddingValidator', () => {
         number: 42,
         boolean: true
       });
+    });
+  });
+
+  // Secret scrubbing before Qdrant upsert (security #2783).
+  // NOTE: every "secret" below is an obviously-fake placeholder whose SHAPE matches a
+  // pattern — never a real credential (avoids re-leaking a live value into the index).
+  describe('redactSecrets — secret scrubbing (#2783)', () => {
+    it('should mask a NAME=VALUE env-dump form, preserving the key name', () => {
+      const out = redactSecrets('QDRANT__SERVICE__API_KEY=abcdef0123456789deadbeef');
+      expect(out).toContain('QDRANT__SERVICE__API_KEY=');
+      expect(out).toContain('<redacted>');
+      expect(out).not.toContain('abcdef0123456789deadbeef');
+    });
+
+    it('should mask an HTTP header form (api-key: value)', () => {
+      const out = redactSecrets('curl -H "api-key: abcdef0123456789deadbeef" http://localhost:6333');
+      expect(out).toContain('api-key:');
+      expect(out).toContain('<redacted>');
+      expect(out).not.toContain('abcdef0123456789deadbeef');
+    });
+
+    it('should mask an sk-proj- OpenAI key anywhere in text', () => {
+      const out = redactSecrets('leaked OPENAI: sk-proj-AAAA1111bbbb2222cccc3333dddd4444 in the log');
+      expect(out).toContain('<redacted');
+      expect(out).not.toContain('sk-proj-AAAA1111bbbb2222cccc3333dddd4444');
+    });
+
+    it('should mask a GitHub PAT (ghp_)', () => {
+      const out = redactSecrets('token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 here');
+      expect(out).toContain('<redacted-gh>');
+      expect(out).not.toContain('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789');
+    });
+
+    it('should mask a Bearer token', () => {
+      const out = redactSecrets('Authorization: Bearer abc123.def456.ghi789');
+      expect(out).toContain('Bearer <redacted>');
+      expect(out).not.toContain('abc123.def456.ghi789');
+    });
+
+    it('should leave non-secret prose untouched', () => {
+      const prose = 'the function validates the API and returns a token count of 42';
+      expect(redactSecrets(prose)).toBe(prose);
+    });
+
+    it('should not mask short values under the length threshold', () => {
+      const short = 'TOKEN: abc';
+      expect(redactSecrets(short)).toBe(short);
+    });
+  });
+
+  describe('sanitizePayload — secret scrubbing integration (#2783)', () => {
+    it('should scrub a secret embedded in a content field', () => {
+      const payload = {
+        task_id: 'test-123',
+        content: 'output of cat .env:\nQDRANT__SERVICE__API_KEY=abcdef0123456789deadbeef\ndone'
+      };
+      const result = sanitizePayload(payload);
+      expect(result.task_id).toBe('test-123');
+      expect(result.content).toContain('<redacted>');
+      expect(result.content).not.toContain('abcdef0123456789deadbeef');
+    });
+
+    it('should preserve existing undefined/null/empty behavior alongside scrubbing', () => {
+      const payload = {
+        content: 'sk-proj-AAAA1111bbbb2222cccc3333dddd4444',
+        parent_task_id: null,   // kept
+        emptyString: '',        // removed
+        undefinedValue: undefined, // removed
+        validValue: 'test'
+      };
+      const result = sanitizePayload(payload);
+      expect(result).toHaveProperty('parent_task_id', null);
+      expect(result).not.toHaveProperty('emptyString');
+      expect(result).not.toHaveProperty('undefinedValue');
+      expect(result.validValue).toBe('test');
+      expect(result.content).not.toContain('sk-proj-AAAA1111bbbb2222cccc3333dddd4444');
+    });
+
+    it('should not alter non-secret string payloads', () => {
+      const payload = { content: 'a normal message with spaces', key: 'value' };
+      const result = sanitizePayload(payload);
+      expect(result).toEqual({ content: 'a normal message with spaces', key: 'value' });
     });
   });
 });
