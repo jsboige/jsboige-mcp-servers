@@ -35,6 +35,10 @@ export interface UnifiedStoreWriterConfig {
   poolMax?: number;
   /** Per-query timeout in ms. Default 5000. */
   statementTimeoutMs?: number;
+  /** Max retry attempts on transient failure. Default 2. */
+  maxRetries?: number;
+  /** Base backoff delay (ms) between retries; actual delay = baseDelayMs × 2^attempt. Default 500. */
+  baseDelayMs?: number;
 }
 
 export interface IUnifiedStoreWriter {
