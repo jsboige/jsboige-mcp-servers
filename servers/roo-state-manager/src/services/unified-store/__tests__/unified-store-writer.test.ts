@@ -38,11 +38,16 @@ vi.mock('pg', () => ({
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-function createWriter(): PgUnifiedStoreWriter {
+function createWriter(overrides?: {
+  maxRetries?: number;
+  baseDelayMs?: number;
+}): PgUnifiedStoreWriter {
   return new PgUnifiedStoreWriter({
     connectionString: 'postgres://test:test@localhost:5432/unified_store',
     poolMax: 2,
     statementTimeoutMs: 3000,
+    maxRetries: overrides?.maxRetries,
+    baseDelayMs: overrides?.baseDelayMs,
   });
 }
 
@@ -333,7 +338,9 @@ describe('PgUnifiedStoreWriter', () => {
     });
 
     test('opens circuit breaker after consecutive failures', async () => {
-      const writer = createWriter();
+      // baseDelayMs: 0 — eliminates real setTimeout backoff so the test is
+      // deterministic under --coverage instrumentation (cf. flaky 301s hang).
+      const writer = createWriter({ baseDelayMs: 0 });
       await writer.init();
 
       // Make all conversation inserts fail
@@ -354,7 +361,9 @@ describe('PgUnifiedStoreWriter', () => {
     });
 
     test('circuit breaker skips calls when OPEN', async () => {
-      const writer = createWriter();
+      // baseDelayMs: 0 — eliminates real setTimeout backoff so the test is
+      // deterministic under --coverage instrumentation (cf. flaky 301s hang).
+      const writer = createWriter({ baseDelayMs: 0 });
       await writer.init();
 
       // Force breaker OPEN by failing repeatedly

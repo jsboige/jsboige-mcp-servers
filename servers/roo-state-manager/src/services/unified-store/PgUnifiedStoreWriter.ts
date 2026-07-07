@@ -108,8 +108,8 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       upsertsRetried: 0,
       breakerOpens: 0,
     };
-    this.maxRetries = 2;
-    this.baseDelayMs = 500;
+    this.maxRetries = config.maxRetries ?? 2;
+    this.baseDelayMs = config.baseDelayMs ?? 500;
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────
