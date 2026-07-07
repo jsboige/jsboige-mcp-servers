@@ -257,7 +257,16 @@ export class AttachmentManager {
     }
 
     try {
-      const raw = await fs.readFile(metadataPath, 'utf-8');
+      const raw = await withReadTimeout(
+        fs.readFile(metadataPath, 'utf-8'),
+        this.readTimeoutMs,
+        `metadata:${uuid}`,
+      );
+      // Cloud-only hang timed out (#2267 residual, #818 follow-up): treat as
+      // unavailable rather than blocking the caller. Null propagates to
+      // getAttachment() which throws "introuvable"; the warn log surfaces the
+      // real cause (cloud-only) above the generic not-found semantics.
+      if (raw === null) return null;
       return JSON.parse(raw) as AttachmentMetadata;
     } catch (err) {
       logger.warn('Failed to read attachment metadata', { uuid, error: String(err) });
@@ -282,7 +291,17 @@ export class AttachmentManager {
       throw new Error(`Fichier attachment introuvable: ${uuid}/${meta.originalName}`);
     }
 
-    await fs.copyFile(sourceFile, targetPath);
+    // copyFile of a cloud-only source hangs the same way readFile does (#818
+    // follow-up). copyFile can't yield a partial file — surface a fast, explicit
+    // error instead of leaving a half-written target or blocking past 120s.
+    const copied = await withReadTimeout(
+      fs.copyFile(sourceFile, targetPath),
+      this.readTimeoutMs,
+      `content:${uuid}`,
+    );
+    if (copied === null) {
+      throw new Error(`Attachment content indisponible (cloud-only?): ${uuid}/${meta.originalName}`);
+    }
     logger.info('📥 Attachment downloaded', { uuid, targetPath });
 
     return meta;
@@ -327,7 +346,14 @@ export class AttachmentManager {
       if (!existsSync(metadataPath)) continue;
 
       try {
-        const raw = await fs.readFile(metadataPath, 'utf-8');
+        const raw = await withReadTimeout(
+          fs.readFile(metadataPath, 'utf-8'),
+          this.readTimeoutMs,
+          `metadata:${entry.name}`,
+        );
+        // Cloud-only hang timed out: skip this entry (cf. listAttachments #818)
+        // so cleanup stays responsive instead of blocking on one cloud-only dir.
+        if (raw === null) continue;
         const meta: AttachmentMetadata = JSON.parse(raw);
         const uploadedAt = new Date(meta.uploadedAt);
 
