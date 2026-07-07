@@ -11,6 +11,7 @@
 import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
+import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId } from '../utils/message-helpers.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
@@ -154,6 +155,20 @@ export class MessageManager {
   private static readonly CACHE_TTL_MS = 300_000;
   /** Max concurrent file reads during cache rebuild (GDrive-safe) */
   private static readonly READ_CONCURRENCY = 50;
+  /**
+   * Per-file read timeout during inbox cache build (ms).
+   *
+   * `Promise.allSettled` waits for every file in a chunk; a single cloud-only
+   * GDrive file that hangs `fs.readFile` would otherwise wedge the whole chunk
+   * until the 120s MCP tool timeout — wedging inbox listing + the 3 cleanup ops
+   * (autoArchiveOld/cleanupExpiredMessages/sendExpiryReminders) that all
+   * transit `ensureInboxCache`. Bounding each read lets the chunk skip a hung
+   * file (rejected → existing allSettled handler) and return a partial result.
+   * Cf. #818 (AttachmentManager) + #2267.
+   */
+  private static readonly INBOX_READ_TIMEOUT_MS = 10_000;
+  /** Per-file read timeout (overridable for tests; production = INBOX_READ_TIMEOUT_MS) */
+  private readonly readTimeoutMs: number;
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
 
@@ -164,9 +179,12 @@ export class MessageManager {
    * Constructeur du MessageManager
    *
    * @param sharedStatePath Chemin vers le répertoire .shared-state
+   * @param readTimeoutMs Per-file read timeout for inbox cache build (tests).
+   *   Defaults to INBOX_READ_TIMEOUT_MS (10s).
    */
-  constructor(sharedStatePath: string) {
+  constructor(sharedStatePath: string, readTimeoutMs: number = MessageManager.INBOX_READ_TIMEOUT_MS) {
     this.sharedStatePath = sharedStatePath;
+    this.readTimeoutMs = readTimeoutMs;
     this.messagesPath = join(sharedStatePath, 'messages');
     this.inboxPath = join(this.messagesPath, 'inbox');
     this.sentPath = join(this.messagesPath, 'sent');
@@ -317,7 +335,19 @@ export class MessageManager {
       const chunk = files.slice(i, i + MessageManager.READ_CONCURRENCY);
       const results = await Promise.allSettled(
         chunk.map(async file => {
-          const content = await fs.readFile(join(this.inboxPath, file), 'utf-8');
+          // Bound each read against GDrive cloud-only hangs: allSettled waits
+          // for every file in the chunk, so one hung read would wedge the whole
+          // chunk (and thus inbox listing + the 3 cleanup ops) until the 120s
+          // MCP tool timeout. On timeout, throw → this becomes a rejected
+          // settled result → the existing rejected-handler below logs + skips
+          // the file, so the inbox returns a partial result (#818 / #2267).
+          const content = await withReadTimeout(
+            fs.readFile(join(this.inboxPath, file), 'utf-8'),
+            this.readTimeoutMs,
+          );
+          if (content === null) {
+            throw new Error(`Inbox file read timed out (cloud-only?): ${file}`);
+          }
           const message: Message = JSON.parse(content);
           return message;
         })
