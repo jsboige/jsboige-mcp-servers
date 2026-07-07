@@ -364,3 +364,351 @@ describe('RooSyncService TIER B — try/catch delegations (coverage #833 C3)', (
         cacheSpy.mockRestore();
     });
 });
+
+// ─────────────────── TIER C — compareConfig (heavy branching) ───────────────────
+
+describe('RooSyncService TIER C — compareConfig branches (coverage #833 C3)', () => {
+    test('falls back to configComparator when no active baseline (L635/L675)', async () => {
+        const service = await freshService();
+        const fake = { localMachine: 'test-machine', targetMachine: 'm2', differences: [] };
+        vi.spyOn((service as any).nonNominativeBaselineService, 'getActiveBaseline').mockReturnValue(null);
+        const spy = vi.spyOn((service as any).configComparator, 'compareConfig').mockResolvedValue(fake as any);
+
+        const result = await service.compareConfig();
+
+        expect(result).toBe(fake);
+        expect(spy).toHaveBeenCalledWith(expect.any(Function), undefined);
+    });
+
+    test('profile mode + existing mapping → differences from deviations (L637-670)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const nn = (service as any).nonNominativeBaselineService;
+        vi.spyOn(nn, 'getActiveBaseline').mockReturnValue({ name: 'b1' });
+        vi.spyOn(nn, 'generateMachineHash').mockReturnValue('hash-x');
+        vi.spyOn(nn, 'getMachineMappings').mockReturnValue([
+            { machineHash: 'hash-x', deviations: [
+                { category: 'mcp', actualValue: 'a', expectedValue: 'e', severity: 'WARN' },
+            ] },
+        ]);
+
+        const result = await service.compareConfig();
+
+        expect(result.localMachine).toBe((service as any).config.machineId);
+        expect(result.targetMachine).toBe('Baseline (Profils)');
+        expect(result.differences).toEqual([
+            { field: 'mcp', localValue: 'a', targetValue: 'e', description: 'Déviation détectée pour mcp (Sévérité: WARN)' },
+        ]);
+        logSpy.mockRestore();
+    });
+
+    test('profile mode + no mapping + inventory collected → maps then returns differences (L645-670)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const nn = (service as any).nonNominativeBaselineService;
+        vi.spyOn(nn, 'getActiveBaseline').mockReturnValue({ name: 'b1' });
+        vi.spyOn(nn, 'generateMachineHash').mockReturnValue('hash-y');
+        vi.spyOn(nn, 'getMachineMappings').mockReturnValue([]);
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue({ machineId: 'test-machine' } as any);
+        const mapSpy = vi.spyOn(nn, 'mapMachineToBaseline').mockResolvedValue({
+            machineHash: 'hash-y', deviations: [{ category: 'hw', actualValue: 1, expectedValue: 2, severity: 'INFO' }],
+        } as any);
+
+        const result = await service.compareConfig();
+
+        expect(mapSpy).toHaveBeenCalledWith((service as any).config.machineId, expect.anything());
+        expect(result.differences).toHaveLength(1);
+        expect(result.differences[0].field).toBe('hw');
+        logSpy.mockRestore();
+    });
+
+    test('profile mode + no mapping + inventory null → falls through to legacy fallback (L648-675)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const nn = (service as any).nonNominativeBaselineService;
+        vi.spyOn(nn, 'getActiveBaseline').mockReturnValue({ name: 'b1' });
+        vi.spyOn(nn, 'generateMachineHash').mockReturnValue('hash-z');
+        vi.spyOn(nn, 'getMachineMappings').mockReturnValue([]);
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue(null);
+        const fallbackSpy = vi.spyOn((service as any).configComparator, 'compareConfig').mockResolvedValue({ differences: [] } as any);
+
+        const result = await service.compareConfig();
+
+        expect(fallbackSpy).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({ differences: [] });
+        logSpy.mockRestore();
+    });
+});
+
+// ─────────────────── TIER C — non-nominative baseline delegations ───────────────────
+
+describe('RooSyncService TIER C — non-nominative baseline delegations (coverage #833 C3)', () => {
+    test('createNonNominativeBaseline delegates + refreshes state (L800-809)', async () => {
+        const service = await freshService();
+        const fake = { id: 'b1' };
+        const nn = (service as any).nonNominativeBaselineService;
+        const createSpy = vi.spyOn(nn, 'createBaseline').mockResolvedValue(fake);
+        const stateSpy = vi.spyOn(nn, 'getState').mockReturnValue({});
+
+        const result = await service.createNonNominativeBaseline('name', 'desc', { aggreg: true });
+
+        expect(createSpy).toHaveBeenCalledWith('name', 'desc', { aggreg: true });
+        expect(stateSpy).toHaveBeenCalledTimes(1);
+        expect(result).toBe(fake);
+    });
+
+    test('mapMachineToNonNominativeBaseline delegates to baselineManager + refreshes state (L814-819)', async () => {
+        const service = await freshService();
+        const fake = { machineHash: 'h' };
+        const mapSpy = vi.spyOn((service as any).baselineManager, 'mapMachineToNonNominativeBaseline').mockResolvedValue(fake);
+        const stateSpy = vi.spyOn((service as any).nonNominativeBaselineService, 'getState').mockReturnValue({});
+
+        const result = await service.mapMachineToNonNominativeBaseline('m1');
+
+        expect(mapSpy).toHaveBeenCalledWith('m1');
+        expect(stateSpy).toHaveBeenCalledTimes(1);
+        expect(result).toBe(fake);
+    });
+
+    test('compareMachinesNonNominative delegates machineIds to nonNominativeBaselineService (L898-900)', async () => {
+        const service = await freshService();
+        const fake = { report: true };
+        const spy = vi.spyOn((service as any).nonNominativeBaselineService, 'compareMachines').mockResolvedValue(fake);
+
+        const result = await service.compareMachinesNonNominative(['m1', 'm2']);
+
+        expect(spy).toHaveBeenCalledWith(['m1', 'm2']);
+        expect(result).toBe(fake);
+    });
+
+    test('migrateToNonNominative delegates to baselineManager + refreshes state (L905-910)', async () => {
+        const service = await freshService();
+        const fake = { migrated: true };
+        const migSpy = vi.spyOn((service as any).baselineManager, 'migrateToNonNominative').mockResolvedValue(fake);
+        const stateSpy = vi.spyOn((service as any).nonNominativeBaselineService, 'getState').mockReturnValue({});
+
+        const result = await service.migrateToNonNominative({ dry: true });
+
+        expect(migSpy).toHaveBeenCalledWith({ dry: true });
+        expect(stateSpy).toHaveBeenCalledTimes(1);
+        expect(result).toBe(fake);
+    });
+});
+
+// ─────────────────── TIER C — updateBaseline (profile/legacy modes) ───────────────────
+
+describe('RooSyncService TIER C — updateBaseline profile/legacy (coverage #833 C3)', () => {
+    test('profile mode throws INVENTORY_FAILED when inventory is null (L836-843)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue(null);
+
+        await expect(service.updateBaseline('m1', { mode: 'profile' })).rejects.toMatchObject({ code: 'INVENTORY_FAILED' });
+        logSpy.mockRestore();
+    });
+
+    test('profile mode creates baseline and returns true when inventory collected (L836-860)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue({ machineId: 'm1' } as any);
+        const createSpy = vi.spyOn((service as any).nonNominativeBaselineService, 'createBaseline').mockResolvedValue({});
+
+        const result = await service.updateBaseline('m1', { mode: 'profile', version: '2.0', updateReason: 'r' });
+
+        expect(createSpy).toHaveBeenCalledWith('Baseline 2.0', 'r', []);
+        expect(result).toBe(true);
+        logSpy.mockRestore();
+    });
+
+    test('legacy mode throws INVENTORY_FAILED when inventory is null (L861-869)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue(null);
+
+        await expect(service.updateBaseline('m1', { mode: 'legacy' })).rejects.toMatchObject({ code: 'INVENTORY_FAILED' });
+        logSpy.mockRestore();
+    });
+
+    test('legacy mode builds baseline and delegates to baselineService.updateBaseline (L861-892)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue({
+            roo: { x: 1 }, hardware: { cpu: 8 }, software: { node: '20' }, system: { os: 'win' },
+        } as any);
+        const updSpy = vi.spyOn((service as any).baselineService, 'updateBaseline').mockResolvedValue(true);
+
+        const result = await service.updateBaseline('m1', {
+            mode: 'legacy', version: '1.0.0', createBackup: true, updateReason: 'r', updatedBy: 'u',
+        });
+
+        expect(result).toBe(true);
+        expect(updSpy).toHaveBeenCalledTimes(1);
+        const [newBaseline, opts] = updSpy.mock.calls[0];
+        expect(newBaseline.machineId).toBe('m1');
+        expect(newBaseline.version).toBe('1.0.0');
+        expect(newBaseline.config).toEqual({ roo: { x: 1 }, hardware: { cpu: 8 }, software: { node: '20' }, system: { os: 'win' } });
+        expect(opts).toEqual({ createBackup: true, updateReason: 'r', updatedBy: 'u' });
+        logSpy.mockRestore();
+    });
+});
+
+// ─────────────────── TIER C — heartbeat service + sync callbacks ───────────────────
+
+describe('RooSyncService TIER C — heartbeat + sync callbacks (coverage #833 C3)', () => {
+    test('startHeartbeatService forwards machineId + callbacks to heartbeatService (L983-1018)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const spy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+
+        await service.startHeartbeatService();
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][0]).toBe((service as any).config.machineId);
+        expect(typeof spy.mock.calls[0][1]).toBe('function'); // unknownCallback
+        expect(typeof spy.mock.calls[0][2]).toBe('function'); // onlineCallback
+        logSpy.mockRestore();
+    });
+
+    test('unknownCallback invokes user cb + syncOnMachineOffline active path (L990-1000/L1039-1054)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const startSpy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+        const onUnknown = vi.fn();
+        const nn = (service as any).nonNominativeBaselineService;
+        vi.spyOn(nn, 'getActiveBaseline').mockReturnValue({ name: 'b1' }); // active path
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue({ machineId: 'test-machine' } as any);
+        const createSpy = vi.spyOn(nn, 'createBaseline').mockResolvedValue({});
+        const cacheSpy = vi.spyOn(service, 'clearCache').mockImplementation(() => {});
+
+        await service.startHeartbeatService(onUnknown);
+        const unknownCallback = startSpy.mock.calls[0][1];
+        await unknownCallback('m-offline');
+
+        expect(onUnknown).toHaveBeenCalledWith('m-offline');
+        expect(createSpy).toHaveBeenCalledTimes(1); // active path re-aggregated baseline
+        expect(cacheSpy).toHaveBeenCalledTimes(1);
+        logSpy.mockRestore();
+    });
+
+    test('onlineCallback invokes user cb + syncOnMachineOnline legacy path (L1002-1012/L1099-1106)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const startSpy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+        const onOnline = vi.fn();
+        vi.spyOn((service as any).nonNominativeBaselineService, 'getActiveBaseline').mockReturnValue(null); // legacy path
+        const updSpy = vi.spyOn(service, 'updateBaseline').mockResolvedValue(true); // short-circuit recursion
+        const cacheSpy = vi.spyOn(service, 'clearCache').mockImplementation(() => {});
+
+        await service.startHeartbeatService(undefined, onOnline);
+        const onlineCallback = startSpy.mock.calls[0][2];
+        await onlineCallback('m-online');
+
+        expect(onOnline).toHaveBeenCalledWith('m-online');
+        expect(updSpy).toHaveBeenCalledWith((service as any).config.machineId, { mode: 'legacy', updateReason: 'Machine redevenue online: m-online' });
+        expect(cacheSpy).toHaveBeenCalledTimes(1);
+        logSpy.mockRestore();
+    });
+
+    test('syncOnMachineOffline swallows internal errors (catch path L1067-1070)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const startSpy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+        vi.spyOn((service as any).nonNominativeBaselineService, 'getActiveBaseline').mockImplementation(() => { throw new Error('boom'); });
+
+        await service.startHeartbeatService();
+        const unknownCallback = startSpy.mock.calls[0][1];
+        await expect(unknownCallback('m-x')).resolves.toBeUndefined(); // try/catch → no rejection
+        expect(errSpy).toHaveBeenCalled();
+        logSpy.mockRestore();
+        errSpy.mockRestore();
+    });
+
+    test('stopHeartbeatService delegates to heartbeatService (L1024-1027)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const spy = vi.spyOn((service as any).heartbeatService, 'stopHeartbeatService').mockResolvedValue(undefined);
+
+        const result = await service.stopHeartbeatService();
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(result).toBeUndefined();
+        logSpy.mockRestore();
+    });
+
+    test('checkHeartbeats delegates to heartbeatService (L1120-1122)', async () => {
+        const service = await freshService();
+        const fake = { offline: [] } as any;
+        const spy = vi.spyOn((service as any).heartbeatService, 'checkHeartbeats').mockResolvedValue(fake);
+
+        const result = await service.checkHeartbeats();
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(result).toBe(fake);
+    });
+
+    test('unknownCallback legacy path → updateBaseline legacy (L1055-1062)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const startSpy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+        vi.spyOn((service as any).nonNominativeBaselineService, 'getActiveBaseline').mockReturnValue(null); // legacy path
+        const updSpy = vi.spyOn(service, 'updateBaseline').mockResolvedValue(true); // short-circuit recursion
+        const cacheSpy = vi.spyOn(service, 'clearCache').mockImplementation(() => {});
+
+        await service.startHeartbeatService();
+        const unknownCallback = startSpy.mock.calls[0][1];
+        await unknownCallback('m-off');
+
+        expect(updSpy).toHaveBeenCalledWith((service as any).config.machineId, { mode: 'legacy', updateReason: 'Machine offline détectée: m-off' });
+        expect(cacheSpy).toHaveBeenCalledTimes(1);
+        logSpy.mockRestore();
+    });
+
+    test('onlineCallback active path → re-aggregates non-nominative baseline (L1083-1098)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const startSpy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+        const onOnline = vi.fn();
+        const nn = (service as any).nonNominativeBaselineService;
+        vi.spyOn(nn, 'getActiveBaseline').mockReturnValue({ name: 'b1' }); // active path
+        vi.spyOn((service as any).inventoryCollector, 'collectInventory').mockResolvedValue({ machineId: 'test-machine' } as any);
+        const createSpy = vi.spyOn(nn, 'createBaseline').mockResolvedValue({});
+        const cacheSpy = vi.spyOn(service, 'clearCache').mockImplementation(() => {});
+
+        await service.startHeartbeatService(undefined, onOnline);
+        const onlineCallback = startSpy.mock.calls[0][2];
+        await onlineCallback('m-on');
+
+        expect(onOnline).toHaveBeenCalledWith('m-on');
+        expect(createSpy).toHaveBeenCalledTimes(1); // active path re-aggregated baseline
+        expect(cacheSpy).toHaveBeenCalledTimes(1);
+        logSpy.mockRestore();
+    });
+
+    test('syncOnMachineOnline swallows internal errors (catch path L1111-1114)', async () => {
+        const service = await freshService();
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const startSpy = vi.spyOn((service as any).heartbeatService, 'startHeartbeatService').mockResolvedValue(undefined);
+        vi.spyOn((service as any).nonNominativeBaselineService, 'getActiveBaseline').mockImplementation(() => { throw new Error('boom'); });
+
+        await service.startHeartbeatService();
+        const onlineCallback = startSpy.mock.calls[0][2];
+        await expect(onlineCallback('m-x')).resolves.toBeUndefined(); // try/catch → no rejection
+        expect(errSpy).toHaveBeenCalled();
+        logSpy.mockRestore();
+        errSpy.mockRestore();
+    });
+
+    test('registerHeartbeat derives machineId from os.hostname and forwards (L952-955)', async () => {
+        const service = await freshService();
+        const spy = vi.spyOn((service as any).heartbeatService, 'registerHeartbeat').mockResolvedValue(undefined);
+
+        await service.registerHeartbeat({ meta: 1 });
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(typeof spy.mock.calls[0][0]).toBe('string');
+        expect(spy.mock.calls[0][0].length).toBeGreaterThan(0);
+        expect(spy.mock.calls[0][1]).toEqual({ meta: 1 });
+    });
+});
