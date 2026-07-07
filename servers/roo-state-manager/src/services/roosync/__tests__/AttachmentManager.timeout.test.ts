@@ -15,6 +15,10 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
+// Namespace import resolves to the MOCKED module (vi.mock below) — used to spy on
+// `promises.copyFile` for the getAttachment content-hang test without extending
+// the hoisted readFile factory (cf. web1 c.51 spyOn-over-factory lesson).
+import * as mockedFs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -141,5 +145,70 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
     expect(result).toEqual([]);
     // Both hung entries warned.
     expect(mocks.warn.mock.calls.length).toBeGreaterThanOrEqual(2);
+  }, 10_000);
+
+  test('getAttachmentMetadata returns null on a cloud-only (hung) read', async () => {
+    const uuid = 'eeeeeeee-0000-0000-0000-000000000005';
+    seedAttachment(sharedState, uuid);
+
+    mocks.readFile.mockImplementation(async () => new Promise<string>(() => {}));
+
+    const manager = new AttachmentManager(sharedState, TEST_TIMEOUT_MS);
+    const result = await manager.getAttachmentMetadata(uuid);
+
+    // Hung read → null (treated as unavailable), NOT a thrown hang past 120s.
+    expect(result).toBeNull();
+    expect(mocks.warn).toHaveBeenCalled();
+    const warnArg = mocks.warn.mock.calls.find((c) => {
+      const ctx = c[1] as { label?: string } | undefined;
+      return ctx?.label === `metadata:${uuid}`;
+    });
+    expect(warnArg).toBeTruthy();
+  }, 10_000);
+
+  test('getAttachment throws a clear error when content copyFile hangs (cloud-only)', async () => {
+    const uuid = 'ffffffff-0000-0000-0000-000000000006';
+    seedAttachment(sharedState, uuid);
+    // Seeded metadata points at originalName `${uuid}.txt`; materialize it so
+    // existsSync passes and execution reaches the (hung) copyFile.
+    writeFileSync(join(sharedState, 'attachments', uuid, `${uuid}.txt`), 'hello', 'utf-8');
+
+    const manager = new AttachmentManager(sharedState, TEST_TIMEOUT_MS);
+
+    // Hang copyFile only (readFile stays real via beforeEach default). The spy
+    // mutates the mocked module's promises.copyFile — the same object the SUT
+    // resolves `fs.promises.copyFile` against — so it intercepts cleanly without
+    // touching the hoisted readFile factory. Restore in finally.
+    const spy = vi.spyOn(mockedFs.promises, 'copyFile').mockImplementation(
+      () => new Promise<void>(() => {}),
+    );
+    try {
+      await expect(
+        manager.getAttachment(uuid, join(sharedState, 'out.txt')),
+      ).rejects.toThrow(/content indisponible/i);
+      expect(mocks.warn).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  }, 10_000);
+
+  test('cleanupOldAttachments skips cloud-only entries and cleans the rest', async () => {
+    const goodUuid = '11111111-0000-0000-0000-000000000011';
+    const hungUuid = '22222222-0000-0000-0000-000000000022';
+    seedAttachment(sharedState, goodUuid);
+    seedAttachment(sharedState, hungUuid);
+
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(hungUuid)) return new Promise<string>(() => {});
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, TEST_TIMEOUT_MS);
+    // maxAgeDays = 0 → cutoff = now → both seeded (uploadedAt 2026-07-04) qualify
+    // for deletion; only the readable one is deleted, the hung one is skipped.
+    const deleted = await manager.cleanupOldAttachments(0);
+
+    expect(deleted).toBe(1);
+    expect(mocks.warn).toHaveBeenCalled();
   }, 10_000);
 });
