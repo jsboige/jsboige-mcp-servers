@@ -15,9 +15,8 @@ describe('ExportRenderer', () => {
             expect(escapeHtml('hello world')).toBe('hello world');
         });
 
-        it('should return input unchanged for text with special chars', () => {
-            const input = '<div class="x">A & B</div>';
-            expect(escapeHtml(input)).toBe(input);
+        it('should encode special characters to HTML entities', () => {
+            expect(escapeHtml('<div class="x">A & B</div>')).toBe('&lt;div class=&quot;x&quot;&gt;A &amp; B&lt;/div&gt;');
         });
 
         it('should handle empty string', () => {
@@ -30,15 +29,15 @@ describe('ExportRenderer', () => {
             expect(unescapeHtml('plain text')).toBe('plain text');
         });
 
-        it('should return input unchanged for HTML entities', () => {
-            expect(unescapeHtml('&lt;div&gt;')).toBe('&lt;div&gt;');
+        it('should decode HTML entities to characters', () => {
+            expect(unescapeHtml('&lt;div&gt;')).toBe('<div>');
         });
 
         it('should handle empty string', () => {
             expect(unescapeHtml('')).toBe('');
         });
 
-        it('should be inverse of escapeHtml (identity round-trip)', () => {
+        it('should be inverse of escapeHtml (round-trip)', () => {
             const original = '<div class="test">A & B</div>';
             expect(unescapeHtml(escapeHtml(original))).toBe(original);
         });

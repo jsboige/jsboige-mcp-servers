@@ -28,17 +28,17 @@ interface TechnicalBlock {
 
 export function escapeHtml(s: string): string {
     return (s ?? '')
-        .replace(/&/g, '&')
-        .replace(/</g, '<').replace(/>/g, '>')
-        .replace(/"/g, '"');
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 export function unescapeHtml(s: string): string {
     return (s ?? '')
-        .replace(/</g, '<')
-        .replace(/>/g, '>')
-        .replace(/"/g, '"')
-        .replace(/&/g, '&'); // DOIT être fait en dernier pour éviter double-décodage
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&'); // DOIT être fait en dernier pour éviter double-décodage
 }
 
 function baseSectionId(i: RenderItem): string {
