@@ -118,6 +118,9 @@ export const getRawConversationTool = {
                 // #252: Apply pagination and filtering to api_conversation_history
                 let apiHistory = apiResult.data;
                 const totalMessages = Array.isArray(apiHistory) ? apiHistory.length : 0;
+                // #2805: messages removed by the tool-result filter. Captured post-filter,
+                // PRE-slice so it does not conflate filter-removal with pagination slice.
+                let filteredMessages = 0;
 
                 if (Array.isArray(apiHistory)) {
                     // Filter out tool_result blocks if requested
@@ -133,6 +136,7 @@ export const getRawConversationTool = {
                             }
                             return true;
                         });
+                        filteredMessages = totalMessages - apiHistory.length;
                     }
 
                     // Apply message range (1-based, inclusive)
@@ -154,7 +158,7 @@ export const getRawConversationTool = {
                     // #252: Pagination metadata
                     pagination: {
                         totalMessages,
-                        filteredMessages: totalMessages - (Array.isArray(apiResult.data) ? apiResult.data.length : totalMessages),
+                        filteredMessages,
                         note: 'Pagination is post-filter: indices apply to the filtered message list (tool results excluded when includeToolResults=false)',
                         requestedRange: {
                             start: startMessage ?? 1,
