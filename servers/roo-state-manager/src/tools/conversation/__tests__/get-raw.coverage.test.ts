@@ -140,16 +140,12 @@ describe('get_raw_conversation — coverage branche includeToolResults=false', (
   });
 
   // ============================================================
-  // Pagination post-filter — returnedMessages correct, filteredMessages=0 (BUG L157)
+  // Pagination post-filter — returnedMessages + filteredMessages (FIX #2805)
   // ============================================================
-  it('returnedMessages reflète le compte post-filter ; filteredMessages est BUGGY (toujours 0)', async () => {
-    // NOTE — BUG source (L157, NON corrigé, TESTS-ONLY) :
-    //   filteredMessages: totalMessages - apiResult.data.length
-    // L157 soustrait `apiResult.data.length` (tableau NON filtré) de `totalMessages`
-    // (qui = aussi apiResult.data.length, L120) → filteredMessages === 0 TOUJOURS,
-    // quel que soit le nombre de messages réellement filtrés. Le dev visait
-    // probablement `apiHistory.length` (tableau filtré). Finding reporté pour
-    // arbitrage user — on n'altère pas la source (coverage task).
+  it('returnedMessages + filteredMessages reflètent les comptes post-filter', async () => {
+    // #2805 FIX : filteredMessages était toujours 0 (L157 soustrayait
+    // `apiResult.data.length` non-filtré de `totalMessages`, qui sont égaux par
+    // construction L120). Fixé en capturant le compte post-filter / pre-slice.
     setupMocks([
       { role: 'user', content: 'a' },
       { role: 'tool', content: 't1' }, // filtré
@@ -164,9 +160,38 @@ describe('get_raw_conversation — coverage branche includeToolResults=false', (
 
     const data = JSON.parse((result.content[0] as any).text as string);
     expect(data.pagination.totalMessages).toBe(4);
-    expect(data.pagination.returnedMessages).toBe(2); // CORRECT : apiHistory.length post-filter
-    expect(data.pagination.filteredMessages).toBe(0); // BUGGY : toujours 0 (voir note)
+    expect(data.pagination.returnedMessages).toBe(2); // apiHistory.length post-filter (puis no-slice)
+    expect(data.pagination.filteredMessages).toBe(2); // FIX #2805 : 2 messages tool filtrés
     expect(data.pagination.includeToolResults).toBe(false);
+  });
+
+  // ============================================================
+  // #2805 regression guard — filteredMessages reste 0 quand includeToolResults=true
+  // MEME avec slicing de pagination. La fix naïve (totalMessages - apiHistory.length
+  // post-slice) aurait violé ce critère en conflatant filter-removal et slice-removal.
+  // La fix retenue capture le compte pre-slice → isolé du slice.
+  // ============================================================
+  it('includeToolResults=true + range : filteredMessages reste 0 (pas de conflit filter/slice)', async () => {
+    setupMocks([
+      { role: 'user', content: 'm1' },
+      { role: 'assistant', content: 'm2' },
+      { role: 'user', content: 'm3' },
+      { role: 'assistant', content: 'm4' },
+    ]);
+
+    const result = await getRawConversationTool.handler({
+      taskId: TASK_UUID,
+      includeToolResults: true, // aucun filtrage tool
+      startMessage: 1,
+      endMessage: 2, // slice garde 2/4 → mais AUCUN filtrage
+    });
+
+    const data = JSON.parse((result.content[0] as any).text as string);
+    expect(data.api_conversation_history).toHaveLength(2); // slicé
+    expect(data.pagination.totalMessages).toBe(4);
+    expect(data.pagination.returnedMessages).toBe(2); // post-slice
+    expect(data.pagination.filteredMessages).toBe(0); // FIX #2805 : 0 filter, slice n'affecte pas ce compte
+    expect(data.pagination.includeToolResults).toBe(true);
   });
 
   // ============================================================
