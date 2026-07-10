@@ -608,4 +608,76 @@ describe('ConfigSharingService', () => {
       expect(existsSync(join(machineDir, 'latest.json'))).toBe(true); // latest.json preserved
     });
   });
+
+  // ==================================================================
+  // #2810 — collectRoomodes must parse .roomodes as YAML-or-JSON.
+  // The on-disk .roomodes is YAML canonical fleet-wide (generate-modes.js
+  // --format yaml, post-#596). collectRoomodes previously hardcoded a JSON
+  // parse (readJSONFileWithoutBOM) → JSON.parse threw on YAML → tool crash.
+  // These tests point the (mocked) inventory at a real temp rooExtensions
+  // dir holding a real .roomodes file, then invoke the private collector.
+  // ==================================================================
+  describe('collectRoomodes (#2810 — YAML-or-JSON parse, L1707-1750)', () => {
+    let rooExtDir: string;   // fake paths.rooExtensions holding .roomodes
+    let outDir: string;      // tempDir passed to collectRoomodes (roomodes/ dest)
+
+    beforeEach(async () => {
+      rooExtDir = join(tmpdir(), `rsm-roomodes-src-${Math.random().toString(36).slice(2)}`);
+      outDir = join(tmpdir(), `rsm-roomodes-out-${Math.random().toString(36).slice(2)}`);
+      await fs.mkdir(rooExtDir, { recursive: true });
+      await fs.mkdir(outDir, { recursive: true });
+      // Override the (mocked singleton) inventory to point at our real temp dir.
+      (service as any).inventoryService = {
+        getMachineInventory: vi.fn().mockResolvedValue({ paths: { rooExtensions: rooExtDir } }),
+      };
+      // mockReset:true wipes the module-level normalize impl before each test →
+      // re-install an identity normalizer so the write-back receives real content.
+      (service as any).normalizationService = {
+        normalize: vi.fn().mockImplementation((c: any) => Promise.resolve(c)),
+      };
+    });
+
+    afterEach(async () => {
+      await fs.rm(rooExtDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    it('collects a YAML .roomodes without throwing and writes normalized output', async () => {
+      await fs.writeFile(
+        join(rooExtDir, '.roomodes'),
+        'customModes:\n  - slug: code-simple\n    name: Code Simple\n',
+        'utf-8'
+      );
+
+      const files = await (service as any).collectRoomodes(outDir);
+
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe('roomodes/.roomodes');
+      expect(files[0].type).toBe('roomodes_config');
+      expect(files[0].size).toBeGreaterThan(0);
+
+      // The YAML was parsed (not thrown on) and written back as JSON (apply reads both).
+      const written = JSON.parse(await fs.readFile(join(outDir, 'roomodes', '.roomodes'), 'utf-8'));
+      expect(Array.isArray(written.customModes)).toBe(true);
+      expect(written.customModes[0].slug).toBe('code-simple');
+      expect(written.customModes[0].name).toBe('Code Simple');
+    });
+
+    it('still collects a JSON .roomodes (retrocompat)', async () => {
+      await fs.writeFile(
+        join(rooExtDir, '.roomodes'),
+        JSON.stringify({ customModes: [{ slug: 'code-complex', name: 'Code Complex' }] }, null, 2),
+        'utf-8'
+      );
+
+      const files = await (service as any).collectRoomodes(outDir);
+
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe('roomodes/.roomodes');
+
+      const written = JSON.parse(await fs.readFile(join(outDir, 'roomodes', '.roomodes'), 'utf-8'));
+      expect(written.customModes[0].slug).toBe('code-complex');
+      expect(written.customModes[0].name).toBe('Code Complex');
+    });
+  });
 });
