@@ -3181,7 +3181,7 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
           key,
           type: args.type ?? '',
           request: requestEcho,
-          message: `⛔ REFUSÉ: Dashboard '${key}' modifié il y a ${ageDays.toFixed(1)} jours (seuil: ${DASHBOARD_PROTECTION_DAYS}j). ${messageCount} messages seraient perdus. Utilisez 'condense' pour archiver les anciens messages sans supprimer le dashboard.`
+          message: `⛔ REFUSÉ: Dashboard '${key}' modifié il y a ${ageDays.toFixed(1)} jours (seuil: ${DASHBOARD_PROTECTION_DAYS}j). ${messageCount} messages seraient perdus. Attendez que le dashboard soit inactif depuis plus de ${DASHBOARD_PROTECTION_DAYS}j : l'archivage automatique se fera alors avant suppression (l'action 'condense' manuelle n'existe plus, remplacée par l'auto-condensation préemptive à 92%).`
         };
       }
 
