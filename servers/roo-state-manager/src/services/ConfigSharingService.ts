@@ -27,7 +27,7 @@ import { IInventoryCollector, IConfigService } from '../types/baseline.js';
 import { createLogger, Logger } from '../utils/logger.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../types/errors.js';
 import { InventoryService } from './roosync/InventoryService.js';
-import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
+import { readJSONFileWithoutBOM, readFileWithoutBOM } from '../utils/encoding-helpers.js';
 import { RollbackManager } from './RollbackManager.js';
 import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
 import { ServicesConfigService } from './ServicesConfigService.js';
@@ -1726,8 +1726,15 @@ export class ConfigSharingService implements IConfigSharingService {
     if (existsSync(roomodesPath)) {
       const destPath = join(roomodesDir, '.roomodes');
 
-      // .roomodes est un fichier JSON - lecture BOM-safe #664
-      const content = await readJSONFileWithoutBOM<any>(roomodesPath);
+      // .roomodes peut être YAML (generate-modes.js --format yaml, canonical fleet post-#596)
+      // ou JSON - parser défensivement, comme validateProfileApplication (#2810). BOM-safe #664.
+      const raw = await readFileWithoutBOM(roomodesPath);
+      let content: any;
+      try {
+        content = JSON.parse(raw); // JSON d'abord (format par défaut de generate-modes.js)
+      } catch {
+        content = yaml.load(raw); // Fallback YAML (format canonique flotte)
+      }
       const normalized = await this.normalizationService.normalize(content, 'roomodes_config');
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
 
