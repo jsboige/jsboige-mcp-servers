@@ -224,13 +224,27 @@ function buildThinkingControl(isVllm: boolean): {
  * reasoning models reject both (`max_completion_tokens` only, temperature must be
  * the default 1), so the params are branched on the configured model.
  */
+let cloudFallbackDisabledLogged = false;
+
 async function cloudCondenseOnce(
   systemPrompt: string,
   userPrompt: string,
   opts: { maxTokens: number; temperature: number },
 ): Promise<{ content: string; elapsedMs: number; model: string } | null> {
   const fallbackClient = getFallbackChatOpenAIClient();
-  if (!fallbackClient) return null; // no fallback key configured → inert no-op
+  if (!fallbackClient) {
+    // #2719 visibility: a missing FALLBACK_API_KEY (or ZAI_API_KEY) makes the
+    // cloud fallback a SILENT no-op — every primary LLM failure then falls
+    // straight to lossy truncation with no log. Emit one WARN per process so
+    // "fallback never runs" is diagnosable instead of invisible.
+    if (!cloudFallbackDisabledLogged) {
+      cloudFallbackDisabledLogged = true;
+      logger.warn('Cloud condensation fallback DISABLED — FALLBACK_API_KEY (or ZAI_API_KEY) not set in env; primary LLM failures will truncate instead of falling back to cloud', {
+        fbModel: getFallbackLLMModelId(),
+      });
+    }
+    return null;
+  }
   const fbModel = getFallbackLLMModelId();
   const fbStart = Date.now();
   try {
@@ -271,7 +285,7 @@ async function cloudCondenseOnce(
     });
     return { content, elapsedMs, model: fbModel };
   } catch (error: unknown) {
-    const errStr = error instanceof Error ? error.message : String(error);
+    const errStr = safeErrorString(error);
     logger.error('#2719 cloud fallback condensation failed', { fbModel, error: truncateError(errStr) });
     return null;
   }
@@ -1006,6 +1020,27 @@ function truncateError(msg: string): string {
   return msg.length > 240 ? `${msg.slice(0, 237)}...` : msg;
 }
 
+/**
+ * Robust error → string. The OpenAI SDK can throw non-`Error` objects on
+ * connection-level failures (fetch/socket), which `String()` renders as the
+ * useless "[object Object]" — hiding the real cause of a condensation failure.
+ * This surfaces .message / .error.message / .status / .code, falling back to
+ * JSON so the operator actually sees what failed. See describeLLMError for the
+ * fuller treatment used in stats.lastError.
+ */
+function safeErrorString(error: unknown): string {
+  if (error instanceof Error) return error.message || error.toString();
+  if (typeof error === 'string') return error;
+  const e = error as { message?: string; error?: { message?: string }; status?: number; code?: string };
+  const direct = e?.error?.message || e?.message;
+  if (direct) {
+    const prefix = [typeof e?.status === 'number' ? `HTTP ${e.status}` : null, e?.code ? `code=${e.code}` : null]
+      .filter(Boolean).join(' ');
+    return prefix ? `${prefix}: ${direct}` : direct;
+  }
+  try { return JSON.stringify(error) || String(error); } catch { return String(error); }
+}
+
 /** Host[:port] of the condensation LLM endpoint — for explicit error context (host only, no secret). */
 export function condenseEndpointHost(): string {
   const raw = process.env.OPENAI_BASE_URL || '';
@@ -1097,12 +1132,17 @@ FORMAT :
   try {
     openai = getChatOpenAIClient();
   } catch (error) {
-    const errStr = error instanceof Error ? error.message : String(error);
+    const errStr = safeErrorString(error);
     logger.error('LLM client init failed for summary', { error: errStr });
-    return {
-      content: null,
-      stats: { ...emptyLLMStats('client-init-failed'), lastError: truncateError(errStr), elapsedMs: Date.now() - callStart }
-    };
+    // #2719: primary chat client can't init (missing/bad OPENAI_API_KEY) — the
+    // cloud fallback has its OWN key (FALLBACK_API_KEY), so it may still succeed.
+    // Try it before resigning to lossy truncation. Previously this returned null
+    // immediately → guaranteed truncation even when the fallback was fully armed.
+    stats.finalOutcome = 'client-init-failed';
+    stats.lastError = truncateError(errStr);
+    stats.elapsedMs = Date.now() - callStart;
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    return fb ?? { content: null, stats };
   }
   const modelId = getLLMModelId();
 
@@ -1160,7 +1200,7 @@ FORMAT :
 
     } catch (error: unknown) {
       const elapsed = Date.now() - startTime;
-      const errStr = error instanceof Error ? error.message : String(error);
+      const errStr = safeErrorString(error);
       stats.errorCount += 1;
       const isTimeout = error instanceof Error && error.name === 'AbortError';
       if (isTimeout) {
@@ -1308,12 +1348,16 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
   try {
     openai = getChatOpenAIClient();
   } catch (error) {
-    const errStr = error instanceof Error ? error.message : String(error);
+    const errStr = safeErrorString(error);
     logger.error('LLM client init failed for status update', { error: errStr });
-    return {
-      content: null,
-      stats: { ...emptyLLMStats('client-init-failed'), lastError: truncateError(errStr), elapsedMs: Date.now() - callStart }
-    };
+    // #2719: primary chat client can't init (missing/bad OPENAI_API_KEY) — the
+    // cloud fallback has its OWN key (FALLBACK_API_KEY), so it may still succeed.
+    // Try it before resigning to lossy truncation.
+    stats.finalOutcome = 'client-init-failed';
+    stats.lastError = truncateError(errStr);
+    stats.elapsedMs = Date.now() - callStart;
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    return fb ?? { content: null, stats };
   }
   const modelId = getLLMModelId();
 
@@ -1366,7 +1410,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
 
     } catch (error: unknown) {
       const elapsed = Date.now() - startTime;
-      const errStr = error instanceof Error ? error.message : String(error);
+      const errStr = safeErrorString(error);
       stats.errorCount += 1;
       const isTimeout = error instanceof Error && error.name === 'AbortError';
       if (isTimeout) {
