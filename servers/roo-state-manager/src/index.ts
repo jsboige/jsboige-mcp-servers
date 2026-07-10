@@ -87,6 +87,27 @@ if (!hasEmbeddingKey) {
     console.error('   Définir EMBEDDING_API_KEY (préféré) ou OPENAI_API_KEY dans le .env.');
 }
 
+// Condensation reliability banner (#2719 / #2557 visibility): report whether the
+// primary + cloud-fallback LLM keys are loaded for THIS process. Condensation
+// failures are dominated by "LLM client init failed" (missing OPENAI_API_KEY);
+// this makes a key-less process obvious at boot instead of surfacing later as
+// silent truncation + circuit-breaker trips in the logs.
+{
+    const primaryModel = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
+    const primaryEndpoint = process.env.OPENAI_BASE_URL || '(OpenAI cloud default)';
+    const hasPrimaryKey = !!(process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY);
+    const fbModel = process.env.FALLBACK_LLM_MODEL_ID || 'glm-4.7-flash';
+    const hasFallbackKey = !!(process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY);
+    console.error(`🧊 Condensation LLM config: primary=${primaryModel} @ ${primaryEndpoint} key=${hasPrimaryKey ? 'OK' : 'MISSING'} | cloud-fallback=${fbModel} key=${hasFallbackKey ? 'OK' : 'MISSING'}`);
+    if (!hasPrimaryKey && !hasFallbackKey) {
+        console.error('   ⚠️ NI clé primaire NI fallback configurées → la condensation échouera systématiquement (truncation-only).');
+    } else if (!hasPrimaryKey) {
+        console.error('   ⚠️ Clé primaire (OPENAI_API_KEY) MANQUANTE → chaque condensation passera par la fallback cloud.');
+    } else if (!hasFallbackKey) {
+        console.error('   ⚠️ Clé fallback (FALLBACK_API_KEY) MANQUANTE → pas de filet si le LLM primaire (vLLM) tombe; échec primaire = truncation.');
+    }
+}
+
 if (problems.length > 0) {
     console.error('');
     console.error('═══════════════════════════════════════════════════════════════');
