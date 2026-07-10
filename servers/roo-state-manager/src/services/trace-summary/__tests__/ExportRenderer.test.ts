@@ -2,8 +2,8 @@
  * Tests unitaires pour ExportRenderer
  *
  * Couvre :
- * - escapeHtml : comportement actuel (identity function - remplacement caractere par lui-meme)
- * - unescapeHtml : comportement actuel (identity function)
+ * - escapeHtml : encodage des caracteres speciaux HTML (&, <, >, ")
+ * - unescapeHtml : decodage des entites HTML (&amp;, &lt;, &gt;, &quot;)
  * - sanitizeSectionHtml : equilibrage fences/details, dedup lignes, protection indentation
  * - ExportRenderer class : instanciation, methodes publiques
  * - shouldIncludeMessageType : filtrage selon le detailLevel
@@ -13,12 +13,6 @@
  * - generateEmbeddedCss : contenu CSS valide
  * - ensureSingleCss : dedup CSS, insertion si absent
  * - renderConversationContent : rendu TOC + sections (HTML et Markdown)
- *
- * NOTE : escapeHtml et unescapeHtml dans le fichier source contiennent des replacements
- * ou les regex et la chaine de remplacement sont identiques (ex: /&/g -> '&').
- * Les entites HTML affichees par l'outil Read sont un artefact de rendu -- le fichier
- * source contient des caracteres litteraux. Ces fonctions agissent donc comme des
- * identity functions a l'execution.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { escapeHtml, unescapeHtml, sanitizeSectionHtml, ExportRenderer } from '../ExportRenderer.js';
@@ -103,29 +97,26 @@ function makeConversation(overrides: Partial<ConversationSkeleton> = {}): Conver
 // =============================================
 
 describe('ExportRenderer - escapeHtml', () => {
-    // NOTE: At runtime, escapeHtml replaces characters with themselves (identity).
-    // The source file's replacement strings look like HTML entities in the Read tool,
-    // but the actual bytes are literal &, <, >, " characters.
+    // escapeHtml encodes special characters to HTML entities to prevent injection.
 
-    it('should return input unchanged for ampersand (identity function)', () => {
-        expect(escapeHtml('foo & bar')).toBe('foo & bar');
+    it('should encode ampersand to &amp;', () => {
+        expect(escapeHtml('foo & bar')).toBe('foo &amp; bar');
     });
 
-    it('should return input unchanged for less-than (identity function)', () => {
-        expect(escapeHtml('a < b')).toBe('a < b');
+    it('should encode less-than to &lt;', () => {
+        expect(escapeHtml('a < b')).toBe('a &lt; b');
     });
 
-    it('should return input unchanged for greater-than (identity function)', () => {
-        expect(escapeHtml('a > b')).toBe('a > b');
+    it('should encode greater-than to &gt;', () => {
+        expect(escapeHtml('a > b')).toBe('a &gt; b');
     });
 
-    it('should return input unchanged for double quotes (identity function)', () => {
-        expect(escapeHtml('say "hello"')).toBe('say "hello"');
+    it('should encode double quotes to &quot;', () => {
+        expect(escapeHtml('say "hello"')).toBe('say &quot;hello&quot;');
     });
 
-    it('should return complex HTML unchanged (identity function)', () => {
-        const input = '<div class="x">&</div>';
-        expect(escapeHtml(input)).toBe(input);
+    it('should encode all special characters in complex HTML', () => {
+        expect(escapeHtml('<div class="x">&</div>')).toBe('&lt;div class=&quot;x&quot;&gt;&amp;&lt;/div&gt;');
     });
 
     it('should handle empty string', () => {
@@ -145,42 +136,35 @@ describe('ExportRenderer - escapeHtml', () => {
         expect(escapeHtml(plain)).toBe(plain);
     });
 
-    it('should handle multiline strings without modification', () => {
-        const input = 'line1 <br>\nline2 & "quoted"';
-        expect(escapeHtml(input)).toBe(input);
+    it('should handle multiline strings with special characters', () => {
+        expect(escapeHtml('line1 <br>\nline2 & "quoted"')).toBe('line1 &lt;br&gt;\nline2 &amp; &quot;quoted&quot;');
     });
 
-    it('should be an identity function for any string', () => {
-        const cases = [
-            'simple text',
-            '<html>&amp;</html>',
-            'a < b > c & d "e"',
-            ''
-        ];
-        for (const s of cases) {
-            expect(escapeHtml(s)).toBe(s);
-        }
+    it('should encode ampersand first to avoid double-encoding', () => {
+        expect(escapeHtml('<script>')).toBe('&lt;script&gt;');
+        expect(escapeHtml('a < b > c & d "e"')).toBe('a &lt; b &gt; c &amp; d &quot;e&quot;');
     });
 });
 
 describe('ExportRenderer - unescapeHtml', () => {
-    // NOTE: At runtime, unescapeHtml also replaces characters with themselves (identity).
-    // Same source artifact as escapeHtml.
+    // unescapeHtml decodes HTML entities back to literal characters.
 
-    it('should return input unchanged for HTML entity strings (identity function)', () => {
-        expect(unescapeHtml('a &lt; b')).toBe('a &lt; b');
+    it('should decode &lt; to less-than', () => {
+        expect(unescapeHtml('a &lt; b')).toBe('a < b');
     });
 
-    it('should return input unchanged for gt entity (identity function)', () => {
-        expect(unescapeHtml('a &gt; b')).toBe('a &gt; b');
+    it('should decode &gt; to greater-than', () => {
+        expect(unescapeHtml('a &gt; b')).toBe('a > b');
     });
 
-    it('should return input unchanged for quot entity (identity function)', () => {
-        expect(unescapeHtml('say &quot;hello&quot;')).toBe('say &quot;hello&quot;');
+    it('should decode &quot; to double quotes', () => {
+        expect(unescapeHtml('say &quot;hello&quot;')).toBe('say "hello"');
     });
 
-    it('should return input unchanged for amp entity (identity function)', () => {
-        expect(unescapeHtml('&amp;lt;')).toBe('&amp;lt;');
+    it('should decode &amp; to ampersand (last to avoid double-decode)', () => {
+        expect(unescapeHtml('&amp;')).toBe('&');
+        // &amp;lt; is double-encoded: single pass decodes to &lt; (correct)
+        expect(unescapeHtml('&amp;lt;')).toBe('&lt;');
     });
 
     it('should handle empty string', () => {
@@ -200,21 +184,14 @@ describe('ExportRenderer - unescapeHtml', () => {
         expect(unescapeHtml(plain)).toBe(plain);
     });
 
-    it('should be the inverse of escapeHtml (both are identity)', () => {
+    it('should be the inverse of escapeHtml', () => {
         const original = '<div class="test">&value</div>';
         expect(unescapeHtml(escapeHtml(original))).toBe(original);
     });
 
-    it('should be an identity function for any string', () => {
-        const cases = [
-            'simple',
-            '&amp;amp;',
-            '<tag attr="val">',
-            'a < b && c > d'
-        ];
-        for (const s of cases) {
-            expect(unescapeHtml(s)).toBe(s);
-        }
+    it('should decode mixed entities correctly', () => {
+        expect(unescapeHtml('&lt;tag attr=&quot;val&quot;&gt;')).toBe('<tag attr="val">');
+        expect(unescapeHtml('a &lt; b &amp;&amp; c &gt; d')).toBe('a < b && c > d');
     });
 });
 
@@ -1359,7 +1336,7 @@ describe('ExportRenderer - edge cases and robustness', () => {
         expect(typeof result).toBe('string');
     });
 
-    it('escapeHtml then unescapeHtml is identity for any string (both are identity)', () => {
+    it('escapeHtml then unescapeHtml is roundtrip identity for any string', () => {
         const cases = [
             'Hello World',
             'a < b && c > d',
