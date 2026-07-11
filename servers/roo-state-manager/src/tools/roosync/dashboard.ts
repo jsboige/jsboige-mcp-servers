@@ -147,6 +147,15 @@ const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 // Env-overridable (raise to tolerate slower GPUs).
 const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 720000;
 
+// #2818: TTL for the cross-process condensation file-lock. A live holder always
+// releases in its `finally`; this TTL only recovers a lock left behind by a
+// CRASHED holder (process killed mid-condense). Set comfortably above one full
+// LLM timeout (720s) so a legitimately slow-but-completing condensation is never
+// mistaken for a crash and stolen out from under. A false steal costs only a
+// redundant condense (never correctness — applyCondensedWithMerge/#2328 remains
+// the merge backstop), so we err on the generous side. Env-overridable.
+const CONDENSE_LOCK_TTL_MS = Number(process.env.CONDENSE_LOCK_TTL_MS) || (CONDENSE_LLM_TIMEOUT_MS + 180000); // ~15 min
+
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
 // 2026-05-26: thinking mode disabled at every call site (see chat_template_kwargs
@@ -496,6 +505,137 @@ function getDashboardPath(key: string): string {
  */
 function getArchiveDir(): string {
   return path.join(getDashboardsDir(), 'archive');
+}
+
+// === Cross-process condensation file-lock (#2818) ===
+//
+// The in-process `withKeyLock` above serializes condensations WITHIN one MCP
+// process. But each Claude session runs its own roo-state-manager process, and
+// the dashboards live on GDrive-shared `.shared-state/` written by 6 machines.
+// Without a shared lock, N agents that all hit the 92% threshold each run the
+// full multi-minute LLM condense concurrently; N−1 results are then discarded by
+// the applyCondensedWithMerge/#2328 `lastCondensedAt` guard — AFTER the tokens
+// and wall-clock are already spent. This lock is the "file-based lock with stale
+// detection" the perKeyLocks comment (above) said was "tracked separately".
+//
+// Contract:
+//   - First appender to reach condense wins the lock and condenses.
+//   - Losers SKIP the condense entirely. Their message is already persisted
+//     (append-first, before this point), and the winner's condensation re-reads
+//     disk and stitches it back in via applyCondensedWithMerge (#2328). So a skip
+//     is not a loss — it just declines to run a redundant LLM pass.
+//   - A crashed holder (never released) is recovered after CONDENSE_LOCK_TTL_MS.
+//
+// Guarantees: `fs.open(path, 'wx')` (O_CREAT|O_EXCL) is atomic on a single
+// machine → fully solves the common multi-session/multi-cron-worker case. Across
+// machines it is best-effort (GDrive replication lag can briefly hide a peer's
+// lock); there, the #2328 merge guard remains the correctness backstop. Strict
+// improvement, zero regression: worst case is the pre-existing behavior (a
+// redundant condense that #2328 discards).
+
+// Exported (with tryAcquire/release below) for unit tests — the cross-process
+// contract is pure filesystem and is verified directly rather than by driving
+// the full append+LLM path.
+export interface CondenseLockInfo {
+  machineId: string;
+  workspace: string;
+  pid: number;
+  acquiredAt: string; // ISO 8601
+}
+
+/**
+ * Lock file path for a dashboard key. Uses `.condense.lock` (not `.md`) so
+ * handleList / archive scans — which match `*.md` — never pick it up.
+ */
+export function getCondenseLockPath(key: string): string {
+  return path.join(getDashboardsDir(), `${key}.condense.lock`);
+}
+
+/**
+ * Try to acquire the cross-process condensation lock for `key`.
+ * Returns true if this caller now holds the lock (and MUST release it), false if
+ * a fresh holder already owns it (caller should skip condensing).
+ *
+ * Fail-OPEN: on any unexpected filesystem error we return true (proceed to
+ * condense). A bug in the locking layer must never be able to wedge condensation
+ * for a saturated dashboard — the pre-lock behavior (everyone condenses) is the
+ * safe fallback.
+ */
+export async function tryAcquireCondenseLock(key: string, holder: CondenseLockInfo): Promise<boolean> {
+  const lockPath = getCondenseLockPath(key);
+  const payload = JSON.stringify(holder);
+  try {
+    // Atomic exclusive-create: fails with EEXIST if a lock file already exists.
+    await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'wx' });
+    return true;
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'EEXIST') {
+      // Unexpected FS error (permissions, GDrive hiccup) — fail open.
+      logger.debug('Condense lock acquire errored, failing open (will condense)', {
+        key, error: err instanceof Error ? err.message : String(err)
+      });
+      return true;
+    }
+    // Lock exists — inspect its age.
+    try {
+      const raw = await fs.readFile(lockPath, 'utf8');
+      const existing = JSON.parse(raw) as CondenseLockInfo;
+      const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
+      if (Number.isFinite(ageMs) && ageMs < CONDENSE_LOCK_TTL_MS) {
+        // Fresh holder — respect it, skip condensing.
+        logger.info('Condense lock held by fresh holder — skipping redundant condense (#2818)', {
+          key,
+          heldBy: `${existing.machineId}:${existing.workspace}#${existing.pid}`,
+          ageSeconds: Math.round(ageMs / 1000)
+        });
+        return false;
+      }
+      // Stale (holder likely crashed) — steal by overwriting, then proceed.
+      logger.warn('Condense lock is stale — stealing (previous holder likely crashed) (#2818)', {
+        key,
+        stolenFrom: `${existing.machineId}:${existing.workspace}#${existing.pid}`,
+        ageSeconds: Number.isFinite(ageMs) ? Math.round(ageMs / 1000) : 'unparseable',
+        ttlSeconds: Math.round(CONDENSE_LOCK_TTL_MS / 1000)
+      });
+      await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'w' });
+      return true;
+    } catch (inner: unknown) {
+      // Could not read/parse the existing lock (corrupt or vanished mid-check).
+      // Reclaim it so a garbage lock can't wedge condensation forever.
+      logger.warn('Condense lock unreadable — reclaiming (#2818)', {
+        key, error: inner instanceof Error ? inner.message : String(inner)
+      });
+      try {
+        await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'w' });
+      } catch { /* best-effort */ }
+      return true;
+    }
+  }
+}
+
+/**
+ * Release the condensation lock for `key`, but ONLY if we still own it (same
+ * machineId + pid + acquiredAt). This avoids deleting a lock that a stealer legitimately
+ * took over after our TTL expired. Best-effort: a failed unlink is harmless
+ * (the next holder's TTL check recovers it).
+ */
+export async function releaseCondenseLock(key: string, holder: CondenseLockInfo): Promise<void> {
+  const lockPath = getCondenseLockPath(key);
+  try {
+    const raw = await fs.readFile(lockPath, 'utf8');
+    const existing = JSON.parse(raw) as CondenseLockInfo;
+    if (existing.machineId === holder.machineId && existing.pid === holder.pid && existing.acquiredAt === holder.acquiredAt) {
+      await fs.unlink(lockPath);
+    } else {
+      logger.debug('Condense lock not released — owned by another holder now (#2818)', {
+        key,
+        currentHolder: `${existing.machineId}:${existing.workspace}#${existing.pid}`
+      });
+    }
+  } catch {
+    // Lock already gone or unreadable — nothing to release.
+  }
 }
 
 /**
@@ -957,10 +1097,14 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  *                            CANCELLED system message appended
  *   - `fallback-truncated`  : #1792 circuit breaker open or LLM failed → simple
  *                            truncation without LLM (keep last N, template summary)
+ *   - `skipped-lock-held`   : #2818 another process holds the condense file-lock
+ *                            → skipped the redundant LLM pass; this message is
+ *                            already persisted (append-first) and will be merged
+ *                            into the holder's condensed result by #2328.
  */
 export interface CondenseAttemptInfo {
   phase: 'preemptive' | 'reactive' | 'manual' | 'post-append';
-  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated';
+  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated' | 'skipped-lock-held';
   elapsedMs: number;
   archivedMessageCount: number;
   llm?: {
@@ -2720,36 +2864,61 @@ async function handleAppend(
         payloadHash,
         lastHash: lastHash || '(none)'
       });
-      try {
-        const beforeCount = updatedDashboard.intercom.messages.length;
-        const condenseDiag = newDiagnostic('post-append');
-        const tCondense = Date.now();
-        finalDashboard = await condenseIntercom(key, updatedDashboard, effectiveKeep, condenseDiag);
-        preemptiveCondenseMs = Date.now() - tCondense;
-        condenseDiagnostics.push(condenseDiag);
-        const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
-        archivedCount = newlyArchived;
-        condensed = newlyArchived > 0;
+      // #2818: Cross-process lock — only ONE agent condenses this saturated
+      // dashboard. Losers skip the redundant multi-minute LLM pass; their message
+      // is already persisted (append-first) and the winner stitches it back in
+      // via applyCondensedWithMerge (#2328). The in-process withKeyLock guards the
+      // same-process case; this guards across sessions/machines on GDrive.
+      const lockHolder: CondenseLockInfo = {
+        machineId: author.machineId,
+        workspace: author.workspace,
+        pid: process.pid,
+        acquiredAt: new Date().toISOString()
+      };
+      const gotCondenseLock = await tryAcquireCondenseLock(key, lockHolder);
+      if (!gotCondenseLock) {
+        // Another agent holds the condense lock. Skip — message is already on disk
+        // and will be merged into the holder's condensed result (#2328).
+        condensed = false;
+        archivedCount = 0;
+        const skippedDiag = newDiagnostic('post-append');
+        skippedDiag.outcome = 'skipped-lock-held';
+        condenseDiagnostics.push(skippedDiag);
+      } else {
+        try {
+          const beforeCount = updatedDashboard.intercom.messages.length;
+          const condenseDiag = newDiagnostic('post-append');
+          const tCondense = Date.now();
+          finalDashboard = await condenseIntercom(key, updatedDashboard, effectiveKeep, condenseDiag);
+          preemptiveCondenseMs = Date.now() - tCondense;
+          condenseDiagnostics.push(condenseDiag);
+          const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
+          archivedCount = newlyArchived;
+          condensed = newlyArchived > 0;
 
-        // #2464: Update hash cache after successful condensation
-        if (condensed) {
-          lastCondenseHash.set(key, payloadHash);
-        }
+          // #2464: Update hash cache after successful condensation
+          if (condensed) {
+            lastCondenseHash.set(key, payloadHash);
+          }
 
-        // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
-        if (condensed) {
-          await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
+          // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
+          if (condensed) {
+            await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
+          }
+        } catch (condenseErr) {
+          // Condensation failed — message is already persisted, log and continue
+          logger.warn('Post-append condensation failed (message already persisted, no data loss)', {
+            key,
+            error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
+          });
+          const failedDiag = newDiagnostic('post-append');
+          failedDiag.outcome = 'llm-failed-injected';
+          failedDiag.elapsedMs = 0;
+          condenseDiagnostics.push(failedDiag);
+        } finally {
+          // Release only if we still own it (releaseCondenseLock verifies pid+acquiredAt).
+          await releaseCondenseLock(key, lockHolder);
         }
-      } catch (condenseErr) {
-        // Condensation failed — message is already persisted, log and continue
-        logger.warn('Post-append condensation failed (message already persisted, no data loss)', {
-          key,
-          error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
-        });
-        const failedDiag = newDiagnostic('post-append');
-        failedDiag.outcome = 'llm-failed-injected';
-        failedDiag.elapsedMs = 0;
-        condenseDiagnostics.push(failedDiag);
       }
     } // else (hash mismatch → condensation attempted)
   } // if (needsCondense)
