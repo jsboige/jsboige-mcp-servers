@@ -164,6 +164,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
 
   async upsertConversation(bundle: ConversationBundle): Promise<void> {
     await this.withRetry('upsertConversation', async () => {
+      if (!this.pool) await this.init(); // #2816: no path calls init() explicitly — self-init on first use
       if (!this.pool) throw new Error('Pool not initialized');
       const client = await this.pool.connect();
       try {
@@ -184,6 +185,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
 
   async upsertConversationOnly(row: ConversationRow): Promise<void> {
     await this.withRetry('upsertConversationOnly', async () => {
+      if (!this.pool) await this.init(); // #2816: no path calls init() explicitly — self-init on first use
       if (!this.pool) throw new Error('Pool not initialized');
       const client = await this.pool.connect();
       try {
@@ -198,6 +200,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     if (rows.length === 0) return;
 
     await this.withRetry('upsertMessages', async () => {
+      if (!this.pool) await this.init(); // #2816: no path calls init() explicitly — self-init on first use
       if (!this.pool) throw new Error('Pool not initialized');
       const client = await this.pool.connect();
       try {

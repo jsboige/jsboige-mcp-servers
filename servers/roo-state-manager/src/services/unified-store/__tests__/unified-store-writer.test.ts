@@ -209,6 +209,44 @@ describe('PgUnifiedStoreWriter', () => {
     });
   });
 
+  // ─── Lazy self-init (regression #2816) ──────────────────────────
+
+  describe('lazy self-init (regression #2816)', () => {
+    // #2816: no production path (dual-write hooks, backfill CLI) ever calls
+    // writer.init(). Before the fix, a bare upsert threw "Pool not initialized"
+    // on every call → circuit breaker opened → the store silently stayed at 0.
+    // The upsert methods must self-initialize the pool on first use.
+    test('upsertConversationOnly self-initializes when init() was never called', async () => {
+      const writer = createWriter();
+      // NOTE: deliberately NO writer.init() — mimics the production dual-write path.
+      await writer.upsertConversationOnly(createConversationRow());
+
+      // init()'s SELECT 1 ran AND the row was actually inserted (not skipped/thrown).
+      expect(mockQuery).toHaveBeenCalledWith('SELECT 1');
+      const insertCalls = mockQuery.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('INSERT INTO conversations')
+      );
+      expect(insertCalls.length).toBe(1);
+      // Counted as a real success, not a swallowed failure.
+      expect(writer.getMetrics().upsertsSuccess).toBe(1);
+      expect(writer.getMetrics().upsertsFailed).toBe(0);
+      expect(writer.getBreakerState()).toBe('CLOSED');
+    });
+
+    test('upsertMessages self-initializes when init() was never called', async () => {
+      const writer = createWriter();
+      // No init() — bare batch write.
+      await writer.upsertMessages([createMessageRow({ seq: 0 })]);
+
+      expect(mockQuery).toHaveBeenCalledWith('SELECT 1');
+      const unnestCalls = mockQuery.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('UNNEST')
+      );
+      expect(unnestCalls.length).toBe(1);
+      expect(writer.getMetrics().upsertsFailed).toBe(0);
+    });
+  });
+
   // ─── Upsert Conversation Only ───────────────────────────────────
 
   describe('upsertConversationOnly', () => {
