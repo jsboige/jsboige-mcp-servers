@@ -616,7 +616,7 @@ export async function tryAcquireCondenseLock(key: string, holder: CondenseLockIn
 
 /**
  * Release the condensation lock for `key`, but ONLY if we still own it (same
- * pid + acquiredAt). This avoids deleting a lock that a stealer legitimately
+ * machineId + pid + acquiredAt). This avoids deleting a lock that a stealer legitimately
  * took over after our TTL expired. Best-effort: a failed unlink is harmless
  * (the next holder's TTL check recovers it).
  */
@@ -625,7 +625,7 @@ export async function releaseCondenseLock(key: string, holder: CondenseLockInfo)
   try {
     const raw = await fs.readFile(lockPath, 'utf8');
     const existing = JSON.parse(raw) as CondenseLockInfo;
-    if (existing.pid === holder.pid && existing.acquiredAt === holder.acquiredAt) {
+    if (existing.machineId === holder.machineId && existing.pid === holder.pid && existing.acquiredAt === holder.acquiredAt) {
       await fs.unlink(lockPath);
     } else {
       logger.debug('Condense lock not released — owned by another holder now (#2818)', {

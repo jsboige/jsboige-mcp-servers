@@ -132,6 +132,24 @@ describe('condense file-lock #2818', () => {
     expect(still.pid).toBe(2222);
   });
 
+  it('release is a no-op when pid+acquiredAt collide but machineId differs (cross-machine)', async () => {
+    // Belt-and-suspenders: two machines could in theory produce the same pid at
+    // the same acquiredAt millisecond. The owner-check must also match machineId
+    // so machine-A's late release cannot delete machine-B's live lock.
+    const same = { pid: 1234, acquiredAt: new Date().toISOString() };
+    const machineB = holder({ machineId: 'machine-B', ...same });
+    const lockPath = getCondenseLockPath(KEY);
+    await writeFile(lockPath, JSON.stringify(machineB), 'utf8');
+
+    const machineA = holder({ machineId: 'machine-A', ...same });
+    await releaseCondenseLock(KEY, machineA);
+
+    // machine-B's lock must survive.
+    expect(await exists(lockPath)).toBe(true);
+    const still = JSON.parse(await readFile(lockPath, 'utf8')) as CondenseLockInfo;
+    expect(still.machineId).toBe('machine-B');
+  });
+
   it('a full acquire→release cycle leaves the key re-acquirable', async () => {
     const a = holder({ machineId: 'machine-A', pid: 1111 });
     expect(await tryAcquireCondenseLock(KEY, a)).toBe(true);
