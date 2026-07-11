@@ -1735,6 +1735,18 @@ export class ConfigSharingService implements IConfigSharingService {
       } catch {
         content = yaml.load(raw); // Fallback YAML (format canonique flotte)
       }
+      // #2810 follow-up: yaml.load est permissif — un .roomodes corrompu (ex. 'not valid json {{{')
+      // résout vers un scalar (string/number/null/array) au lieu de throw, et serait collecté
+      // silencieusement comme garbage dans le package shared-state (puis appliqué cassé sur les
+      // autres machines). Un .roomodes valide (JSON ou YAML) doit résoudre vers un plain object.
+      if (content === null || typeof content !== 'object' || Array.isArray(content)) {
+        const contentType = Array.isArray(content) ? 'array' : (content === null ? 'null' : typeof content);
+        throw new ConfigSharingServiceError(
+          `.roomodes invalide à ${roomodesPath}: le contenu n'est pas un objet roomodes valide (type=${contentType}).`,
+          ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
+          { roomodesPath, contentType }
+        );
+      }
       const normalized = await this.normalizationService.normalize(content, 'roomodes_config');
       await fs.writeFile(destPath, JSON.stringify(normalized, null, 2));
 
