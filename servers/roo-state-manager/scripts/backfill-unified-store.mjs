@@ -60,7 +60,10 @@ const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const HELP = args.includes('--help') || args.includes('-h');
 const limitIdx = args.indexOf('--limit');
-const LIMIT = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : undefined;
+const PARSED_LIMIT = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : undefined;
+// parseInt(undefined) → NaN; `NaN ?? undefined` stays NaN, `slice(0, NaN)` silently no-ops.
+// Treat NaN/Infinity/negative as "no limit" explicitly.
+const LIMIT = Number.isFinite(PARSED_LIMIT) ? PARSED_LIMIT : undefined;
 
 if (HELP) {
   console.log(`Usage: node scripts/backfill-unified-store.mjs [--dry-run] [--limit N] [--help]
@@ -74,15 +77,18 @@ Requires build/ (run "npm run build" first). Loads .env automatically.`);
   process.exit(0);
 }
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const RSM_ROOT = path.resolve(__dirname, '..'); // servers/roo-state-manager/
+const envLoaded = loadEnv(path.join(RSM_ROOT, '.env'));
+
 // Force the env-gate off when --dry-run is explicitly requested.
+// MUST run after loadEnv() — loadEnv only sets keys that are ABSENT, so deleting
+// before loadEnv lets the .env re-populate UNIFIED_STORE_* and silently re-arms
+// the gate (#2815: --dry-run was connecting LIVE on machines with .env-configured DB).
 if (DRY_RUN) {
   delete process.env.UNIFIED_STORE_DUAL_WRITE;
   delete process.env.UNIFIED_STORE_PG_URL;
 }
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RSM_ROOT = path.resolve(__dirname, '..'); // servers/roo-state-manager/
-const envLoaded = loadEnv(path.join(RSM_ROOT, '.env'));
 
 // Dynamic imports against the compiled build (its internal bare-specifier imports
 // resolve from servers/roo-state-manager/node_modules).
