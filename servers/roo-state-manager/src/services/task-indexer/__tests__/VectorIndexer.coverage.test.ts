@@ -448,18 +448,22 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(result.length).toBe(1);
 		});
 
-		test('truncates chunks exceeding MAX_CHUNKS_PER_TASK (L986-989)', async () => {
+		test('#2825 (G2): indexer does NOT silently truncate chunks past MAX_CHUNKS_PER_TASK (was L986-989)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
-			// MAX_CHUNKS_PER_TASK mocked to 3 → 5 chunks truncated to 3.
+			// MAX_CHUNKS_PER_TASK mocked to 3 → 5 chunks would have been silently
+			// truncated to 3 under the old behavior. After #2825 (G2), all 5 are
+			// processed (no silent drop); only a warning is emitted.
 			mockExtractTask.mockResolvedValue([
 				chunk('t1', 'c1'), chunk('t2', 'c2'), chunk('t3', 'c3'), chunk('t4', 'c4'), chunk('t5', 'c5'),
 			]);
 
 			const result = await indexTask('t-truncate', '/p');
 
-			expect(result.length).toBe(3); // only the first 3 chunks were indexed
+			// All 5 chunks flow through (dedup + embedding handle scale downstream).
+			expect(result.length).toBe(5);
+			expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('#2825/G2'));
 		});
 
 		test('skips sub-chunks with empty/whitespace content (L998)', async () => {

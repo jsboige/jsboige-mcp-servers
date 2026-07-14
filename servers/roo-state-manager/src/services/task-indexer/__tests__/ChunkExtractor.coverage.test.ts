@@ -172,14 +172,26 @@ describe('ChunkExtractor coverage — extractChunksFromTask', () => {
     await expect(extractChunksFromTask('t5', '/task')).rejects.toMatchObject({ code: 'CHUNK_EXTRACTION_FAILED' });
   });
 
-  it('warns and caps at MAX_MESSAGES_PER_TASK for an oversized api history (L191-195)', async () => {
+  it('#2825 (G2): oversized api history is NOT truncated — child units carry the overflow (was L191-195)', async () => {
     const many = Array.from({ length: MAX_MESSAGES_PER_TASK + 5 }, (_, i) => ({
       role: 'user', content: 'm' + i, timestamp: 't',
     }));
     setupTaskFiles({ metadata: JSON.stringify({}), api: JSON.stringify(many) });
     const chunks = await extractChunksFromTask('t6', '/task');
-    expect(chunks.length).toBe(MAX_MESSAGES_PER_TASK);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('#1758'));
+    // #2825 (G2): NO DROP — all messages emitted. Overflow lands in child units
+    // (taskId#unit-2). Total chunk count = message count (one chunk per non-system message).
+    expect(chunks.length).toBe(MAX_MESSAGES_PER_TASK + 5);
+    // Head unit retains the original task_id (backward compat with existing filters).
+    expect(chunks[0].task_id).toBe('t6');
+    expect(chunks[0].child_unit_index).toBe(1);
+    // Overflow unit is tagged with the synthetic child id + parent lineage.
+    const overflowChunk = chunks.find(c => c.task_id === 't6#unit-2');
+    expect(overflowChunk).toBeDefined();
+    expect(overflowChunk!.parent_task_id).toBe('t6');
+    expect(overflowChunk!.child_unit_index).toBe(2);
+    expect(overflowChunk!.child_unit_total).toBe(2);
+    // The warn fires under the new tag (#2825/G2) instead of the old #1758.
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('#2825/G2'));
   });
 });
 
@@ -202,13 +214,86 @@ describe('ChunkExtractor coverage — extractChunksFromClaudeSession', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('file error'));
   });
 
-  it('warns when a Claude session exceeds MAX_MESSAGES_PER_TASK lines (L491-493)', async () => {
+  it('#2825 (G2): oversized Claude session is NOT truncated — child units carry the overflow (was L491-493)', async () => {
     mockStat.mockResolvedValue({ isDirectory: () => false } as any); // direct-file path
     const lines = Array.from({ length: MAX_MESSAGES_PER_TASK + 3 }, (_, i) =>
       JSON.stringify({ type: 'user', message: { content: 'c' + i } })).join('\n');
     pushStream(lines);
     const chunks = await extractChunksFromClaudeSession('claude-z', '/proj/session.jsonl');
-    expect(chunks.length).toBe(MAX_MESSAGES_PER_TASK);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('#1758'));
+    // #2825 (G2): NO DROP — every JSONL line emits a chunk. Overflow lands in child units.
+    expect(chunks.length).toBe(MAX_MESSAGES_PER_TASK + 3);
+    expect(chunks[0].task_id).toBe('claude-z');
+    expect(chunks[0].child_unit_index).toBe(1);
+    const overflowChunk = chunks.find(c => c.task_id === 'claude-z#unit-2');
+    expect(overflowChunk).toBeDefined();
+    expect(overflowChunk!.parent_task_id).toBe('claude-z');
+    expect(overflowChunk!.child_unit_index).toBe(2);
+    // The warn fires under the new tag (#2825/G2).
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('#2825/G2'));
+  });
+});
+
+describe('ChunkExtractor coverage — #2825 (G5) condensation-fallback chunk_type', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockReadFile.mockReset();
+    mockAccess.mockReset();
+    mockStat.mockReset();
+    mockReaddir.mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockAccess.mockResolvedValue(undefined);
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('emits chunk_type="task_summary" when metadata.source === "condensation-fallback"', async () => {
+    // #2825 (G5): synthetic condensation tasks (written by dashboard.ts G6) carry
+    // a metadata.source='condensation-fallback' marker. The extractor must switch
+    // chunk_type to 'task_summary' (instead of 'message_exchange') so search
+    // consumers can filter condensation outputs.
+    const messages = [
+      { role: 'user', content: '[CONDENSATION ARCHIVE] 42 messages archived', timestamp: 't0' },
+      { role: 'assistant', content: 'archived body — verbatim, lossless', timestamp: 't0' },
+    ];
+    mockReadFile.mockImplementation(async (p: string) => {
+      if (p.endsWith('task_metadata.json')) {
+        return JSON.stringify({
+          taskId: '_cond-test-2026-07-14',
+          title: '[Condensation summary] test',
+          workspace: 'system',
+          source: 'condensation-fallback',
+          condensation: { originalDashboardKey: 'test', messageCount: 42 },
+        });
+      }
+      if (p.endsWith('api_conversation_history.json')) {
+        return JSON.stringify(messages);
+      }
+      return '{}';
+    });
+
+    const chunks = await extractChunksFromTask('_cond-test-2026-07-14', '/task');
+    expect(chunks.length).toBe(2);
+    for (const c of chunks) {
+      expect(c.chunk_type).toBe('task_summary');
+      expect(c.task_id).toBe('_cond-test-2026-07-14');
+      expect(c.child_unit_index).toBe(1);
+      expect(c.child_unit_total).toBe(1);
+    }
+  });
+
+  it('keeps chunk_type="message_exchange" when metadata.source is absent (regression guard)', async () => {
+    // Existing tasks without a `source` field must continue to emit the original
+    // chunk_type — this test guards against an over-eager G5 defaulting.
+    mockReadFile.mockImplementation(async (p: string) => {
+      if (p.endsWith('task_metadata.json')) return JSON.stringify({ taskId: 'plain' });
+      if (p.endsWith('api_conversation_history.json')) {
+        return JSON.stringify([{ role: 'user', content: 'hi', timestamp: 't' }]);
+      }
+      return '{}';
+    });
+    const chunks = await extractChunksFromTask('plain', '/task');
+    expect(chunks.length).toBe(1);
+    expect(chunks[0].chunk_type).toBe('message_exchange');
   });
 });
