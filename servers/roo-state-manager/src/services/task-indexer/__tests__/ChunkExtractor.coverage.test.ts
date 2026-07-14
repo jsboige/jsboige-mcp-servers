@@ -297,3 +297,94 @@ describe('ChunkExtractor coverage — #2825 (G5) condensation-fallback chunk_typ
     expect(chunks[0].chunk_type).toBe('message_exchange');
   });
 });
+
+describe('ChunkExtractor coverage — #2828 lineage metadata nits', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStream();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  // ============================================================
+  // #2828 nit 1: child_unit_total must include api + ui messages
+  // ============================================================
+
+  it('#2828 nit 1: child_unit_total accounts for api + ui messages combined (no undercount)', async () => {
+    // api messages alone don't exceed MAX_MESSAGES_PER_TASK, but api + ui do.
+    // Old code computed childUnitCount from apiMessages.length only, so ui
+    // messages that pushed messageIndex past the boundary got child_unit_index
+    // values exceeding child_unit_total.
+    const apiCount = MAX_MESSAGES_PER_TASK - 2;  // Just under the limit
+    const uiCount = 5;                            // Pushes combined over the limit
+    const apiMsgs = Array.from({ length: apiCount }, (_, i) => ({
+      role: 'user', content: 'api-' + i, timestamp: 't',
+    }));
+    const uiMsgs = Array.from({ length: uiCount }, (_, i) => ({
+      author: 'user', text: 'ui-' + i, timestamp: 't',
+    }));
+    setupTaskFiles({
+      metadata: JSON.stringify({}),
+      api: JSON.stringify(apiMsgs),
+      ui: JSON.stringify(uiMsgs),
+    });
+
+    const chunks = await extractChunksFromTask('t-nit1', '/task');
+    // All api + ui messages emitted
+    expect(chunks.length).toBe(apiCount + uiCount);
+
+    // The last ui messages cross the MAX_MESSAGES_PER_TASK boundary → child unit 2
+    const overflowChunks = chunks.filter(c => c.child_unit_index === 2);
+    expect(overflowChunks.length).toBeGreaterThan(0);
+
+    // KEY ASSERTION: child_unit_total >= max child_unit_index across ALL chunks
+    const maxIdx = Math.max(...chunks.map(c => c.child_unit_index || 1));
+    const total = chunks[0].child_unit_total;
+    expect(total).toBeGreaterThanOrEqual(maxIdx);
+    expect(total).toBe(2);
+    // Every chunk must have child_unit_total == 2 (no undercount)
+    for (const c of chunks) {
+      expect(c.child_unit_total).toBe(2);
+    }
+  });
+
+  // ============================================================
+  // #2828 nit 2: Claude path paging on emitted messages, not raw lines
+  // ============================================================
+
+  it('#2828 nit 2: Claude child-unit paging based on emitted messages (no phantom units from skipped lines)', async () => {
+    mockStat.mockResolvedValue({ isDirectory: () => false } as any);
+    // Build a JSONL with M+2 emitted messages followed by M skipped lines
+    // (system entries without content → `continue` in the extractor).
+    // Old code paged on totalLines (2M+2), producing a phantom unit 3.
+    // New code pages on fileMessageCount (M+2), correctly producing 2 units.
+    const emitted = MAX_MESSAGES_PER_TASK + 2;
+    const skipped = MAX_MESSAGES_PER_TASK;
+    const lines: string[] = [];
+    for (let i = 0; i < emitted; i++) {
+      lines.push(JSON.stringify({ type: 'user', message: { content: 'msg-' + i } }));
+    }
+    for (let i = 0; i < skipped; i++) {
+      // System entries are filtered out by the extractor (not user/assistant)
+      lines.push(JSON.stringify({ type: 'system', message: { role: 'system', content: 'skip' } }));
+    }
+    pushStream(lines.join('\n'));
+
+    const chunks = await extractChunksFromClaudeSession('claude-nit2', '/proj/session.jsonl');
+
+    // Only emitted messages become chunks (skipped lines produce nothing)
+    expect(chunks.length).toBe(emitted);
+
+    // No chunk should reference child_unit_index > 2 (the correct total)
+    const maxIdx = Math.max(...chunks.map(c => c.child_unit_index || 1));
+    expect(maxIdx).toBe(2);
+
+    // child_unit_total should be at most 2 (based on emitted count),
+    // NOT 3 (which would result from raw line count 2M+2).
+    for (const c of chunks) {
+      expect(c.child_unit_total).toBeLessThanOrEqual(2);
+    }
+  });
+});
