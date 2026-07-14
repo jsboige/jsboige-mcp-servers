@@ -196,6 +196,21 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         // Continuer sans métadonnées - ne pas faire planter l'indexation
     }
 
+    // #2828 nit 1: Pre-read ui_messages to compute an accurate childUnitCount.
+    // Previously, childUnitCount was derived from apiMessages.length only, but
+    // messageIndex is incremented in both the api and ui loops — ui messages can
+    // push the index past childUnitCount * MESSAGES_PER_CHILD_UNIT, producing
+    // child_unit_index values that exceed child_unit_total.
+    const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
+    let uiMessages: UiMessage[] = [];
+    try {
+        const uiMessagesContent = await fs.readFile(uiMessagesPath, 'utf-8');
+        const parsed = JSON.parse(uiMessagesContent);
+        if (Array.isArray(parsed)) uiMessages = parsed;
+    } catch {
+        // File may not exist or be malformed — no ui messages
+    }
+
     try {
         await fs.access(apiHistoryPath);
         const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8');
@@ -210,12 +225,15 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         // The #1758 anti-runaway intent is preserved as a *budget per child unit*,
         // not as a hard ceiling on indexed content.
         const totalMessagesCount = apiMessages.length;
-        if (totalMessagesCount > MAX_MESSAGES_PER_TASK) {
-            console.warn(`⚠️ [#2825/G2] Task ${taskId} has ${totalMessagesCount} messages — exceeds MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}; splitting into child units (NO DROP, all messages will be indexed).`);
+        // #2828 nit 1: include ui_messages in the count so child_unit_total reflects
+        // the true number of child units across api + ui combined.
+        const combinedCount = totalMessagesCount + uiMessages.length;
+        if (combinedCount > MAX_MESSAGES_PER_TASK) {
+            console.warn(`⚠️ [#2825/G2] Task ${taskId} has ${combinedCount} messages (api=${totalMessagesCount}, ui=${uiMessages.length}) — exceeds MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}; splitting into child units (NO DROP, all messages will be indexed).`);
         }
         // Reassign the outer-scope paging constants (declared at function top).
         MESSAGES_PER_CHILD_UNIT = MAX_MESSAGES_PER_TASK;
-        childUnitCount = Math.max(1, Math.ceil(totalMessagesCount / MESSAGES_PER_CHILD_UNIT));
+        childUnitCount = Math.max(1, Math.ceil(combinedCount / MESSAGES_PER_CHILD_UNIT));
 
         for (const msg of apiMessages) {
             if (msg.role === 'system') continue;
@@ -382,12 +400,9 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         );
     }
 
-    const uiMessagesPath = path.join(taskPath, 'ui_messages.json');
-    try {
-        await fs.access(uiMessagesPath);
-        const uiMessagesContent = await fs.readFile(uiMessagesPath, 'utf-8');
-        const uiMessages: UiMessage[] = JSON.parse(uiMessagesContent);
-
+    // #2828 nit 1: ui_messages were pre-read above (before the api loop) to compute
+    // an accurate childUnitCount. Iterate the in-memory array here — no second read.
+    {
         for (const msg of uiMessages) {
             // #636: Detect error patterns
             const uiLower = (msg.text || '').toLowerCase();
@@ -431,8 +446,6 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 child_unit_total: childUnitCount,
             });
         }
-    } catch (error) {
-        console.warn(`Could not read or parse ${uiMessagesPath}. Error: ${error}`);
     }
 
     return chunks.sort((a, b) => a.sequence_order - b.sequence_order);
@@ -592,13 +605,15 @@ export async function extractChunksFromClaudeSession(
                         const ccLower = contentText.toLowerCase();
                         const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
 
-                        // #2825 (G2/G3): child-unit paging. The first MAX_MESSAGES_PER_TASK
-                        // lines stay on the original taskId; overflow lines get synthetic
-                        // child ids with the original taskId as parent_task_id.
-                        const claudeUnitIndex0 = Math.floor((totalLines - 1) / MAX_MESSAGES_PER_TASK);
+                        // #2828 nit 2: page on emitted-message count (fileMessageCount),
+                        // NOT raw line count (totalLines). Lines skipped by `continue` (no
+                        // content, parse errors, non-user/assistant types) inflate totalLines
+                        // and create phantom child units that hold zero chunks.
+                        const claudeUnitIndex0 = Math.floor((fileMessageCount - 1) / MAX_MESSAGES_PER_TASK);
                         const claudeChildUnitIdx = claudeUnitIndex0 + 1;
                         const claudeIsOverflow = claudeChildUnitIdx > 1;
-                        const claudeChildUnitTotal = Math.max(1, Math.ceil(totalLines / MAX_MESSAGES_PER_TASK));
+                        // Running estimate — patched post-stream with the final total below.
+                        const claudeChildUnitTotal = Math.max(1, claudeChildUnitIdx);
                         const claudeEffectiveTaskId = claudeIsOverflow
                             ? `${taskId}#unit-${claudeChildUnitIdx}`
                             : taskId;
@@ -620,7 +635,7 @@ export async function extractChunksFromClaudeSession(
                             workspace: metadata?.workspace,
                             workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
                             task_title: metadata?.title,
-                            message_index: totalLines,
+                            message_index: messageIndex,
                             role,
                             host_os: getHostIdentifier(),
                             source: 'claude-code',
@@ -683,9 +698,17 @@ export async function extractChunksFromClaudeSession(
                 rl.close();
                 fileStream.destroy();
 
-                if (totalLines > MAX_MESSAGES_PER_TASK) {
-                    const claudeChildUnitCount = Math.max(1, Math.ceil(totalLines / MAX_MESSAGES_PER_TASK));
-                    console.warn(`⚠️ [#2825/G2] Claude session ${taskId} has ${totalLines} lines — exceeds MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}; splitting into ${claudeChildUnitCount} child units (NO DROP, all messages indexed).`);
+                if (fileMessageCount > MAX_MESSAGES_PER_TASK) {
+                    const claudeChildUnitCount = Math.max(1, Math.ceil(fileMessageCount / MAX_MESSAGES_PER_TASK));
+                    console.warn(`⚠️ [#2825/G2] Claude session ${taskId} has ${fileMessageCount} emitted messages (from ${totalLines} raw lines) — exceeds MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}; splitting into ${claudeChildUnitCount} child units (NO DROP, all messages indexed).`);
+                    // #2828 nit 2: patch all chunks from this file with the accurate
+                    // child_unit_total (the running estimate during streaming is a lower
+                    // bound — only after the full file is read do we know the real total).
+                    for (const chunk of chunks) {
+                        if (chunk.source === 'claude-code') {
+                            chunk.child_unit_total = claudeChildUnitCount;
+                        }
+                    }
                 }
 
                 console.log(`[Claude] Extracted ${fileMessageCount} chunks from ${path.basename(jsonlFile)}`);

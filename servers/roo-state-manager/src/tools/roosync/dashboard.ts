@@ -1882,6 +1882,14 @@ ${archiveMessages}
     const locations = await RooStorageDetector.detectStorageLocations();
     if (locations.length > 0) {
       const syntheticDir = path.join(locations[0], 'tasks', syntheticTaskId);
+      // #2828 nit 3: log the resolved path BEFORE writing so a stale/read-only
+      // location is debuggable even if mkdir/writeFile silently fail.
+      logger.info('Condensation synthetic task resolving', {
+        key,
+        syntheticTaskId,
+        syntheticDir,
+        storageLocation: locations[0],
+      });
       await fs.mkdir(syntheticDir, { recursive: true });
       // task_metadata.json — mirrors the contract expected by RooStorageDetector.analyzeConversation
       const metadata = {
