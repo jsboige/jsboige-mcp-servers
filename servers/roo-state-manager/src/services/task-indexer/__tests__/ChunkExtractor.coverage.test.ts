@@ -6,7 +6,7 @@
  *   - tests/unit/services/task-indexer/ChunkExtractor.test.ts (extractChunksFromTask happy path)
  *   - tests/unit/services/task-indexer/ChunkExtractor.claude-session.test.ts (Claude happy path)
  * leave the following branch arms cold; this file reaches them:
- *   - truncateForIndexing truncation path (L61-70) via oversized content
+ *   - #2825 (G1): oversized content preserved in full (lossless — no mid-content amputation)
  *   - metadata BOM strip (L160-162)
  *   - tool_use string-input arm (L228-229) + tool-call bad-JSON-args catch (L283-287)
  *   - non-string / non-array truthy content fallback (L235-238)
@@ -116,7 +116,7 @@ afterEach(() => {
 });
 
 describe('ChunkExtractor coverage — extractChunksFromTask', () => {
-  it('truncates oversized message content (L61-70)', async () => {
+  it('#2825 (G1): preserves oversized message content in FULL — no mid-content amputation', async () => {
     const big = 'x'.repeat(25000);
     setupTaskFiles({
       metadata: JSON.stringify({ workspace: 'd:/ws', title: 'T' }),
@@ -124,8 +124,10 @@ describe('ChunkExtractor coverage — extractChunksFromTask', () => {
     });
     const chunks = await extractChunksFromTask('t1', '/task');
     expect(chunks.length).toBe(1);
-    expect(chunks[0].content).toContain('[TRUNCATED for indexing');
-    expect(chunks[0].content.length).toBeLessThan(25000);
+    // Content is carried in full at extraction; lossless splitting happens downstream in VectorIndexer.
+    expect(chunks[0].content).toBe(big);
+    expect(chunks[0].content.length).toBe(25000);
+    expect(chunks[0].content).not.toContain('[TRUNCATED for indexing');
   });
 
   it('strips a BOM prefix from task_metadata.json (L160-162)', async () => {

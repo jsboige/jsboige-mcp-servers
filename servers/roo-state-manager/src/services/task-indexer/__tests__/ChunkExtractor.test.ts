@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { splitChunk, getHostIdentifier, computeChunkId, Chunk } from '../ChunkExtractor.js';
+import { splitChunk, getHostIdentifier, computeChunkId, MAX_SUBCHUNKS_PER_CHUNK, Chunk } from '../ChunkExtractor.js';
 
 // Reset uuid mock and use real implementation
 vi.mock('uuid', () => vi.importActual('uuid'));
@@ -191,6 +191,33 @@ describe('ChunkExtractor', () => {
 
       expect(result).toHaveLength(3);
       expect(result.every(c => c.content?.length === 100)).toBe(true);
+    });
+
+    it('#2825 (G1): caps sub-chunks at MAX_SUBCHUNKS_PER_CHUNK and warns on residual (no silent drop)', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        // maxSize=1 → one sub-chunk per char; content just over the budget forces the cap.
+        const content = 'x'.repeat(MAX_SUBCHUNKS_PER_CHUNK + 5);
+        const chunk = createChunk(content);
+        const result = splitChunk(chunk, 1);
+
+        expect(result).toHaveLength(MAX_SUBCHUNKS_PER_CHUNK);
+        expect(result.every(c => c.total_chunks === MAX_SUBCHUNKS_PER_CHUNK)).toBe(true);
+        // Residual is surfaced, never dropped silently.
+        expect(warnSpy).toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('#2825 (G1): content within budget is still split losslessly (full reassembly)', () => {
+      const content = 'y'.repeat(4096);
+      const chunk = createChunk(content);
+      const result = splitChunk(chunk, 800);
+
+      const reassembled = result.map(c => c.content).join('');
+      expect(reassembled).toBe(content);
+      expect(result.length).toBe(Math.ceil(4096 / 800));
     });
 
     it('should generate different UUIDs for different chunks', () => {
