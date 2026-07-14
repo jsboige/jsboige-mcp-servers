@@ -1379,4 +1379,72 @@ describe('MessageManager', () => {
       expect(counts.total).toBe(0);
     });
   });
+
+  // ─── Coverage: cache/path + broadcast-filter + send-error clusters (#833 deep-queue, c.35) ───
+  // Targets uncovered lines (firsthand scoped coverage 77.27%S): L305-306, L323-327, L528-530,
+  // L625-628. Explicitly AVOIDS the attachment/timeout path (L1413-1566) behind #818/#2823.
+  describe('coverage — cache TTL + missing-path + broadcast filter + send-error (#833 c.35)', () => {
+    test('readInbox returns empty list when inboxPath does not exist (L305-306)', async () => {
+      // Remove the inbox dir after construction so ensureInboxCache hits the missing-path branch.
+      const inboxDir = join(testSharedStatePath, 'messages', 'inbox');
+      rmSync(inboxDir, { recursive: true, force: true });
+      expect(existsSync(inboxDir)).toBe(false);
+
+      messageManager.invalidateCache();
+      const inbox = await messageManager.readInbox('machine-a', 'all');
+      expect(inbox).toEqual([]);
+    });
+
+    test('ensureInboxCache refreshes TTL when file count unchanged after TTL expiry (L323-327)', async () => {
+      // First readInbox builds the cache from disk (lastInboxFileCount=1, cacheBuiltAt=now).
+      await messageManager.sendMessage('machine-x', 'machine-a', 'build', 'body');
+      const first = await messageManager.readInbox('machine-a', 'all');
+      expect(first).toHaveLength(1);
+      expect((messageManager as any).inboxCache).not.toBeNull();
+
+      // Force TTL expiry while keeping the populated cache + stable file count, so the next
+      // readInbox skips the fast-path (TTL expired) but hits the count-unchanged refresh branch.
+      (messageManager as any).cacheBuiltAt = 0;
+
+      const second = await messageManager.readInbox('machine-a', 'all');
+      expect(second).toHaveLength(1);
+      // TTL was refreshed (cacheBuiltAt reset to a fresh timestamp > 0).
+      expect((messageManager as any).cacheBuiltAt).toBeGreaterThan(0);
+    });
+
+    test('readInbox broadcast status filter excludes read broadcasts per-machine (#629 L625-628)', async () => {
+      // Broadcast message to 'all', then markAsRead by machine-a → read_by populated.
+      const broadcast = await messageManager.sendMessage('machine-x', 'all', 'broadcast', 'hi all');
+      expect(broadcast.to).toBe('all');
+
+      const marked = await messageManager.markAsRead(broadcast.id, 'machine-a');
+      expect(marked).toBe(true);
+
+      messageManager.invalidateCache();
+      // status='unread' → machine-a has read it → excluded.
+      const unread = await messageManager.readInbox('machine-a', 'unread');
+      expect(unread.find(m => m.id === broadcast.id)).toBeUndefined();
+      // status='read' → machine-a has read it → included.
+      const read = await messageManager.readInbox('machine-a', 'read');
+      expect(read.find(m => m.id === broadcast.id)).toBeDefined();
+      // A machine that has NOT read it still sees it as unread.
+      const unreadOther = await messageManager.readInbox('machine-b', 'unread');
+      expect(unreadOther.find(m => m.id === broadcast.id)).toBeDefined();
+    });
+
+    test('sendMessage catch wraps + rethrows when the inbox write fails (L528-530)', async () => {
+      // Spy on fs.writeFile (same `promises` binding MessageManager uses) to reject once,
+      // forcing the sendMessage try/catch error path.
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const writeSpy = vi.spyOn(fs, 'writeFile').mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(
+        messageManager.sendMessage('machine-x', 'machine-a', 'fail', 'body')
+      ).rejects.toThrow('disk full');
+
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      errSpy.mockRestore();
+      writeSpy.mockRestore();
+    });
+  });
 });
