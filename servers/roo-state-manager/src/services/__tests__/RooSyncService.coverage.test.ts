@@ -712,3 +712,105 @@ describe('RooSyncService TIER C — heartbeat + sync callbacks (coverage #833 C3
         expect(spy.mock.calls[0][1]).toEqual({ meta: 1 });
     });
 });
+
+// ─────────────────── TIER D — getInstance retry/backoff (#2017) + heartbeat getters ───────────────────
+// Gap-data (firsthand scoped coverage): RooSyncService.ts sat at 86.95%S / 82.53%B.
+// Uncovered clusters: getInstance backoff (L363-375), constructor-failure catch (L385-394),
+// resetInstance (L401-404), heartbeat delegation getters (L937-978). This block covers them.
+
+describe('RooSyncService TIER D — getInstance retry/backoff state machine (#2017)', () => {
+    const RS = RooSyncService as any;
+
+    afterEach(() => {
+        // Never leak degraded-state across tests: a lingering _initError would make every
+        // downstream freshService()/getInstance() in OTHER describes throw or skip.
+        RooSyncService.resetInstance();
+    });
+
+    test('getInstance throws ROOSYNC_PATH_UNAVAILABLE when backoff NOT elapsed (L363-372)', () => {
+        RS.instance = null;
+        RS._initError = new Error('shared path unreachable');
+        RS._lastInitAttempt = Date.now(); // elapsed ≈ 0 < 30_000ms backoff
+        mockLoadConfig.mockResolvedValue({ rooSyncPath: '/mock/roosync', machineId: 'test-machine', storagePaths: [] });
+
+        let caught: any;
+        try { RooSyncService.getInstance(); } catch (e) { caught = e; }
+        expect(caught).toBeDefined();
+        expect(caught.code).toBe('ROOSYNC_PATH_UNAVAILABLE');
+        expect(String(caught.message)).toMatch(/réessai automatique dans/i);
+        // Backoff must short-circuit BEFORE attempting construction:
+        expect(mockLoadConfig).not.toHaveBeenCalled();
+    });
+
+    test('getInstance retries after backoff elapsed and clears _initError (L373-383)', async () => {
+        RS.instance = null;
+        RS._initError = new Error('prev failure');
+        RS._lastInitAttempt = Date.now() - RooSyncService.INIT_RETRY_INTERVAL_MS - 1000; // elapsed > 30s
+        mockLoadConfig.mockResolvedValue({ rooSyncPath: '/mock/roosync', machineId: 'test-machine', storagePaths: [] });
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+        const inst = await RooSyncService.getInstance();
+
+        expect(inst).toBeInstanceOf(RooSyncService);
+        expect(RS._initError).toBeNull();
+        expect(RS._lastInitAttempt).toBe(0);
+        expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/Retrying initialization/i));
+        logSpy.mockRestore();
+    });
+
+    test('getInstance catch wraps constructor error, records state, marks degraded (L384-394)', () => {
+        RS.instance = null;
+        RS._initError = null;
+        RS._lastInitAttempt = 0;
+        // Force the constructor body to throw deterministically. The config-loader mock in
+        // this file is a no-op (it targets src/services/config/... but RooSyncService imports
+        // from src/config/...), so we inject the failure via the injected config object itself:
+        // any property access on the Proxy throws, the constructor's try/catch (L178-190)
+        // rethrows, and getInstance's catch (L384-394) wraps it into a RooSyncServiceError.
+        const trapConfig = new Proxy({}, { get: () => { throw new Error('GDrive not mounted'); } }) as any;
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+        let caught: any;
+        try { RooSyncService.getInstance(undefined, trapConfig); } catch (e) { caught = e; }
+        expect(caught).toBeDefined();
+        expect(caught.code).toBe('ROOSYNC_PATH_UNAVAILABLE');
+        expect(String(caught.message)).toMatch(/GDrive not mounted/i);
+        expect(RS.instance).toBeNull();
+        expect(RS._initError).toBeInstanceOf(Error);
+        expect(String(RS._initError.message)).toMatch(/GDrive not mounted/i);
+        expect(RS._lastInitAttempt).toBeGreaterThan(0);
+        expect(RooSyncService.isDegraded()).toBe(true);
+        logSpy.mockRestore();
+    });
+
+    test('resetInstance clears instance, _initError and _lastInitAttempt (L400-404)', () => {
+        RS.instance = null;
+        RS._initError = new Error('stale');
+        RS._lastInitAttempt = 12345;
+        expect(RooSyncService.isDegraded()).toBe(true); // instance null + error set
+        RooSyncService.resetInstance();
+        expect(RS.instance).toBeNull();
+        expect(RS._initError).toBeNull();
+        expect(RS._lastInitAttempt).toBe(0);
+        expect(RooSyncService.isDegraded()).toBe(false);
+    });
+});
+
+describe('RooSyncService TIER D — heartbeat delegation getters (L936-978)', () => {
+    test('getHeartbeatService returns the heartbeat service instance (L936-938)', async () => {
+        const service = await freshService();
+        expect(service.getHeartbeatService()).toBe((service as any).heartbeatService);
+    });
+
+    test('getUnknownMachines / getIdleMachines / getHeartbeatState delegate to heartbeatService (L961-978)', async () => {
+        const service = await freshService();
+        const hb = (service as any).heartbeatService;
+        vi.spyOn(hb, 'getUnknownMachines').mockReturnValue(['m-u']);
+        vi.spyOn(hb, 'getIdleMachines').mockReturnValue(['m-i']);
+        vi.spyOn(hb, 'getState').mockReturnValue({ machines: {} } as any);
+
+        expect(service.getUnknownMachines()).toEqual(['m-u']);
+        expect(service.getIdleMachines()).toEqual(['m-i']);
+        expect(service.getHeartbeatState()).toEqual({ machines: {} });
+    });
+});
