@@ -32,14 +32,6 @@ export function computeChunkId(
 }
 
 /**
- * Maximum content size (in chars) before truncation for indexing.
- * Prevents explosion: a 30M char tool result at 800 chars/chunk = 37,500 embeddings.
- * 20,000 chars ≈ 25 chunks max, capturing the essential context without waste.
- * Configurable via env var for tuning.
- */
-const MAX_INDEXABLE_CONTENT_SIZE = parseInt(process.env.MAX_INDEXABLE_CONTENT_SIZE || '20000', 10);
-
-/**
  * #1758: Maximum chunks per task_id before hard truncation.
  * Prevents runaway indexing of worker sessions with 200K+ messages.
  * Default: 50,000 chunks ≈ ~2000 messages (25 chunks/msg average).
@@ -55,20 +47,18 @@ export const MAX_CHUNKS_PER_TASK = parseInt(process.env.MAX_CHUNKS_PER_TASK || '
 export const MAX_MESSAGES_PER_TASK = parseInt(process.env.MAX_MESSAGES_PER_TASK || '10000', 10);
 
 /**
- * Truncate content to MAX_INDEXABLE_CONTENT_SIZE, preserving start and end.
- * Keeps first 70% and last 30% to capture both the beginning context and final results.
+ * #2825 (volet A / G1): Maximum sub-chunks a single message/tool chunk may split into.
+ *
+ * Replaces the former mid-content truncation (`truncateForIndexing`, which dropped the
+ * MIDDLE of any content > 20k chars — silently losing the reasoning inside long assistant
+ * messages). Content is now carried in FULL into chunks and split losslessly downstream by
+ * `splitChunk`. This budget preserves the #1758 anti-explosion intent as a *bounded, logged*
+ * backstop for pathological single values (e.g. multi-MB tool dumps) instead of a silent
+ * amputation: 2,000 sub-chunks × 800 chars (MAX_CHUNK_SIZE) ≈ 1.6 MB fully indexed per message.
+ * Any residual beyond the budget is `console.warn`-ed, never dropped silently.
+ * Configurable via MAX_SUBCHUNKS_PER_CHUNK env var (raise it to index even larger single values).
  */
-function truncateForIndexing(content: string, source?: string): string {
-    if (content.length <= MAX_INDEXABLE_CONTENT_SIZE) return content;
-
-    const headSize = Math.floor(MAX_INDEXABLE_CONTENT_SIZE * 0.7);
-    const tailSize = MAX_INDEXABLE_CONTENT_SIZE - headSize - 80; // 80 chars for truncation marker
-    const truncationMarker = `\n\n[TRUNCATED for indexing: ${content.length} chars → ${MAX_INDEXABLE_CONTENT_SIZE}. Source: ${source || 'unknown'}]\n\n`;
-
-    console.log(`✂️ [ChunkExtractor] Truncating ${content.length} chars → ${MAX_INDEXABLE_CONTENT_SIZE} (source: ${source || 'unknown'})`);
-
-    return content.substring(0, headSize) + truncationMarker + content.substring(content.length - tailSize);
-}
+export const MAX_SUBCHUNKS_PER_CHUNK = parseInt(process.env.MAX_SUBCHUNKS_PER_CHUNK || '2000', 10);
 
 export interface ToolDetails {
   tool_name: string;
@@ -238,9 +228,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 }
 
                 if (contentText.trim()) {
-                    // Truncate oversized content (e.g., large tool results) to prevent embedding explosion
-                    contentText = truncateForIndexing(contentText, `${msg.role}:msg#${messageIndex}`);
-
+                    // #2825 (G1): content carried in FULL — split losslessly downstream by splitChunk (no mid-content amputation).
                     // #636: Detect error patterns in content
                     const lowerContent = contentText.toLowerCase();
                     const hasError = lowerContent.includes('error') ||
@@ -286,10 +274,8 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         parsedArgs = { raw: toolCall.function.arguments };
                     }
 
-                    const toolContent = truncateForIndexing(
-                        `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`,
-                        `tool_call:${toolCall.function.name}`
-                    );
+                    // #2825 (G1): full args carried — split losslessly downstream by splitChunk.
+                    const toolContent = `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`;
 
                     const seq = sequenceOrder++;
                     chunks.push({
@@ -349,7 +335,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
             const uiLower = (msg.text || '').toLowerCase();
             const uiHasError = uiLower.includes('error') || uiLower.includes('failed') || uiLower.includes('❌');
 
-            const uiContent = truncateForIndexing(msg.text || '', `ui_message:${msg.author}`);
+            const uiContent = msg.text || ''; // #2825 (G1): full content — split losslessly downstream by splitChunk.
 
             const seq = sequenceOrder++;
             chunks.push({
@@ -392,12 +378,15 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
     }
 
     // Calcul du nombre total de chunks nécessaires
-    const totalChunks = Math.ceil(chunk.content.length / maxSize);
+    const fullTotal = Math.ceil(chunk.content.length / maxSize);
+    // #2825 (G1): bound runaway embedding for pathological single values (preserves #1758 intent),
+    // but do it as a *bounded, logged* cap here instead of a silent mid-content amputation upstream.
+    const totalChunks = Math.min(fullTotal, MAX_SUBCHUNKS_PER_CHUNK);
     const subChunks: Chunk[] = [];
     let content = chunk.content;
     let chunkIndex = 1;
 
-    while (content.length > 0) {
+    while (content.length > 0 && chunkIndex <= totalChunks) {
         const contentPart = content.substring(0, maxSize);
         content = content.substring(maxSize);
 
@@ -419,7 +408,12 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
         chunkIndex++;
     }
 
-    console.log(`🔪 Split large chunk into ${totalChunks} parts (original size: ${chunk.content.length} chars)`);
+    // #2825 (G1): never a silent drop — surface any residual per the "no silent caps" principle.
+    if (content.length > 0) {
+        console.warn(`⚠️ [splitChunk] chunk ${chunk.chunk_id} exceeded MAX_SUBCHUNKS_PER_CHUNK=${MAX_SUBCHUNKS_PER_CHUNK} (content ${chunk.content.length} chars, maxSize=${maxSize}, full split would be ${fullTotal} parts); ${content.length} residual chars NOT indexed. Raise MAX_SUBCHUNKS_PER_CHUNK to index the whole value.`);
+    }
+
+    console.log(`🔪 Split large chunk into ${subChunks.length} parts (original size: ${chunk.content.length} chars${fullTotal > totalChunks ? `, capped from ${fullTotal}` : ''})`);
     return subChunks;
 }
 
@@ -528,9 +522,7 @@ export async function extractChunksFromClaudeSession(
 
                         if (!contentText.trim() && claudeToolUseBlocks.length === 0) continue;
 
-                        // Truncate oversized content to prevent embedding explosion
-                        contentText = truncateForIndexing(contentText, `claude-${role}:msg#${messageIndex + 1}`);
-
+                        // #2825 (G1): content carried in FULL — split losslessly downstream by splitChunk (no mid-content amputation).
                         messageIndex++;
                         fileMessageCount++;
                         // #636: Detect error patterns and extract model
@@ -573,10 +565,8 @@ export async function extractChunksFromClaudeSession(
                                     : (toolBlock.input || {});
                             } catch { parsedInput = { raw: toolBlock.input }; }
 
-                            const toolContent = truncateForIndexing(
-                                `Tool call: ${toolName} with args ${JSON.stringify(parsedInput)}`,
-                                `claude-tool:${toolName}`
-                            );
+                            // #2825 (G1): full args carried — split losslessly downstream by splitChunk.
+                            const toolContent = `Tool call: ${toolName} with args ${JSON.stringify(parsedInput)}`;
 
                             const toolSeq = sequenceOrder++;
                             chunks.push({
