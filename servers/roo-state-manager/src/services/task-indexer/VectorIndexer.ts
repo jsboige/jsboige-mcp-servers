@@ -982,10 +982,16 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             return [];
         }
 
-        // #1758: Hard limit on chunks per task to prevent runaway indexing
+        // #2825 (volet A / G2): no silent drop at the indexer stage. The old behavior
+        // truncated `chunks.length = MAX_CHUNKS_PER_TASK` after extracting — meaning
+        // messages past the cap were silently dropped from the index. With the lossless
+        // extractor (G1) each message survives in full, and per-child-unit paging (G3)
+        // caps the message count to MAX_MESSAGES_PER_TASK=10k *before* it reaches this
+        // layer, so MAX_CHUNKS_PER_TASK=50k is only hit when MAX_SUBCHUNKS_PER_CHUNK is
+        // bumped very high. We keep the warning (preserves #1758 visibility) but no
+        // longer mutate the array — downstream phases (dedup + embedding) handle scale.
         if (chunks.length > MAX_CHUNKS_PER_TASK) {
-            console.warn(`⚠️ [#1758] Task ${taskId} has ${chunks.length} chunks — exceeding MAX_CHUNKS_PER_TASK=${MAX_CHUNKS_PER_TASK}. Truncating to first ${MAX_CHUNKS_PER_TASK} chunks.`);
-            chunks.length = MAX_CHUNKS_PER_TASK;
+            console.warn(`⚠️ [#2825/G2] Task ${taskId} has ${chunks.length} chunks — exceeds MAX_CHUNKS_PER_TASK=${MAX_CHUNKS_PER_TASK}. NO DROP — all chunks will be processed (de-duplication + child-unit paging handle scale).`);
         }
 
         // Phase A: Extract all subChunks with contentHashes (cheap — no API calls)

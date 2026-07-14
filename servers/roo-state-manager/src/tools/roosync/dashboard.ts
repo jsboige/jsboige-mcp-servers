@@ -1869,6 +1869,86 @@ ${archiveMessages}
   await fs.writeFile(archivePath, archiveContent, 'utf8');
   logger.info('Fallback truncation archive written', { key, count: toArchive.length, archivePath });
 
+  // #2825 (volet A / G5+G6): write a synthetic "task" mirroring the archive content
+  // into the first detected Roo storage location, so the existing background indexer
+  // (startSkeletonRefreshWorker, see background-services.ts ~L460) picks it up on its
+  // next scan and emits a `chunk_type: 'task_summary'` chunk in Qdrant. The archive
+  // .md stays as a human-readable artifact; the synthetic task is what makes the
+  // summary searchable. Best-effort: any failure here is logged but does not abort
+  // the condensation flow (the archive file is the source of truth for humans).
+  try {
+    const syntheticTaskId = `_cond-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${now.replace(/[:.]/g, '-').substring(0, 19)}`;
+    const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
+    const locations = await RooStorageDetector.detectStorageLocations();
+    if (locations.length > 0) {
+      const syntheticDir = path.join(locations[0], 'tasks', syntheticTaskId);
+      await fs.mkdir(syntheticDir, { recursive: true });
+      // task_metadata.json — mirrors the contract expected by RooStorageDetector.analyzeConversation
+      const metadata = {
+        taskId: syntheticTaskId,
+        title: `[Condensation summary] ${key}`,
+        workspace: 'system',
+        parent_task_id: null,
+        root_task_id: null,
+        source: 'condensation-fallback',
+        condensation: {
+          originalDashboardKey: key,
+          messageCount: toArchive.length,
+          fallbackTruncation: true,
+          circuitBreakerOpen: condenseCB.isOpen,
+          archivePath: archivePath,
+        },
+        // Synthetic message count = 1 (the summary itself).
+        messageCount: 1,
+        actionCount: 0,
+        createdAt: now,
+        lastActivity: now,
+      };
+      await fs.writeFile(
+        path.join(syntheticDir, 'task_metadata.json'),
+        JSON.stringify(metadata, null, 2),
+        'utf8'
+      );
+      // api_conversation_history.json — single user/assistant exchange carrying the
+      // archive content. The user message is "[ARCHIVED CONTENT]" + summary metadata;
+      // the assistant message is the full archived body so ChunkExtractor indexes
+      // every archived message verbatim (no truncation, no summary lossy transform).
+      const apiHistory = [
+        {
+          role: 'user',
+          content: `[CONDENSATION ARCHIVE] ${toArchive.length} messages from dashboard '${key}' archived via fallback (circuit breaker ${condenseCB.isOpen ? 'OPEN' : 'CLOSED'}). See archive path for full text.`,
+          timestamp: now,
+        },
+        {
+          role: 'assistant',
+          // #2825 (G5): the assistant message is the FULL fallback summary + the
+          // archive body verbatim — the indexer will split this into multiple chunks
+          // (splitChunk, MAX_CHUNK_SIZE=800) but never truncate it.
+          content: `${fallbackSummary}\n\n---\n\n${archiveMessages}`,
+          timestamp: now,
+        },
+      ];
+      await fs.writeFile(
+        path.join(syntheticDir, 'api_conversation_history.json'),
+        JSON.stringify(apiHistory, null, 2),
+        'utf8'
+      );
+      logger.info('Condensation synthetic task written', {
+        key,
+        syntheticTaskId,
+        syntheticDir,
+        archivedMessageCount: toArchive.length,
+      });
+    } else {
+      logger.warn('No Roo storage location detected — condensation synthetic task skipped', { key });
+    }
+  } catch (syntheticErr) {
+    logger.warn('Failed to write condensation synthetic task (non-fatal)', {
+      key,
+      error: syntheticErr instanceof Error ? syntheticErr.message : String(syntheticErr),
+    });
+  }
+
   // Build system notice message
   const totalElapsed = Date.now() - condensationStart;
   let errorDetail = '';

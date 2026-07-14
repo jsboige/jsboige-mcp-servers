@@ -98,6 +98,17 @@ export interface Chunk {
   chunk_index?: number;  // Index de ce chunk (commence à 1)
   total_chunks?: number; // Nombre total de chunks pour ce message
   original_chunk_id?: string; // ID original avant split (pour traçabilité)
+  // #2825 (volet A / G3): pagination metadata for lossless splitting of oversized
+  // conversations. When a task exceeds MAX_MESSAGES_PER_TASK, the extractor emits
+  // the overflow as additional "child units" with synthetic task_ids
+  // (`${taskId}#unit-${N}`); `child_unit_index` is the 1-based page number and
+  // `child_unit_total` is the total page count. (root_task_id is declared above
+  // as `string | null`; pagination lineage is conveyed via parent_task_id chain.)
+  child_unit_index?: number;
+  child_unit_total?: number;
+  // #2825 (volet A / G5): chunk_type 'task_summary' is the first-class type for
+  // condensation outputs — already declared in the union above; this comment is
+  // the marker for downstream consumers (search filters, dashboards).
 }
 
 // Fichiers de conversation bruts
@@ -141,6 +152,15 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
     let taskTitle : string | undefined;
     let totalMessages : number | undefined;
     let taskModel : string | undefined; // #636: Model from task metadata
+    // #2825 (volet A / G5): when a task's metadata.source === 'condensation-fallback',
+    // the chunks we emit carry chunk_type='task_summary' (instead of 'message_exchange')
+    // so search consumers can filter condensation outputs. Set after metadata read below.
+    let sourceKind: 'roo' | 'claude-code' | 'condensation-fallback' | null = null;
+    // #2825 (volet A / G2): child-unit paging constants. Declared in outer scope so the
+    // ui_messages loop below (separate try block) shares the same paging — both loops
+    // count toward the same child-unit boundary, preserving lineage across message sources.
+    let MESSAGES_PER_CHILD_UNIT = MAX_MESSAGES_PER_TASK;
+    let childUnitCount = 1;
 
     // 🎯 CORRECTION CRITIQUE - Extraction des métadonnées hiérarchiques
     // Utilisation de la même logique que roo-storage-detector.ts pour cohérence
@@ -165,6 +185,10 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         taskTitle = rawMetadata.title;
         // #636: Extract model info from metadata if available
         taskModel = rawMetadata.model || rawMetadata.apiConfiguration?.apiModelId;
+        // #2825 (G5): detect synthetic condensation tasks so we emit chunk_type='task_summary'
+        if (rawMetadata.source === 'condensation-fallback') {
+            sourceKind = 'condensation-fallback';
+        }
 
         console.log(`📊 [extractChunksFromTask] Extracted metadata for ${taskId}: parentTaskId=${parentTaskId}, workspace=${workspace}`);
     } catch (error) {
@@ -177,14 +201,23 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8');
         const apiMessages: ApiMessage[] = JSON.parse(apiHistoryContent);
 
-        // #1758: Early warning for abnormally large sessions
-        if (apiMessages.length > MAX_MESSAGES_PER_TASK) {
-            console.warn(`⚠️ [#1758] Task ${taskId} has ${apiMessages.length} messages — exceeding MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}. Processing first ${MAX_MESSAGES_PER_TASK} only.`);
+        // #2825 (volet A / G2): page through ALL messages — no silent drop.
+        // The previous `slice(0, MAX_MESSAGES_PER_TASK)` amputated 90%+ of runaway
+        // worker sessions with no recovery. We now iterate over every message and
+        // emit child unit IDs (${taskId}#unit-N) when crossing the budget boundary,
+        // so the entire conversation stays searchable in Qdrant. The split is
+        // LOGGED (not silently truncated) per the "no silent caps" principle.
+        // The #1758 anti-runaway intent is preserved as a *budget per child unit*,
+        // not as a hard ceiling on indexed content.
+        const totalMessagesCount = apiMessages.length;
+        if (totalMessagesCount > MAX_MESSAGES_PER_TASK) {
+            console.warn(`⚠️ [#2825/G2] Task ${taskId} has ${totalMessagesCount} messages — exceeds MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}; splitting into child units (NO DROP, all messages will be indexed).`);
         }
+        // Reassign the outer-scope paging constants (declared at function top).
+        MESSAGES_PER_CHILD_UNIT = MAX_MESSAGES_PER_TASK;
+        childUnitCount = Math.max(1, Math.ceil(totalMessagesCount / MESSAGES_PER_CHILD_UNIT));
 
-        const messagesToProcess = apiMessages.slice(0, MAX_MESSAGES_PER_TASK);
-
-        for (const msg of messagesToProcess) {
+        for (const msg of apiMessages) {
             if (msg.role === 'system') continue;
             if (msg.content) {
                 messageIndex++;
@@ -238,12 +271,23 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         lowerContent.includes('erreur');
 
                     const seq = sequenceOrder++;
+                    // #2825 (G2/G3): assign to a child unit when crossing the page boundary.
+                    // Unit #1 keeps the original task_id so existing task_id filters still
+                    // find the head of the conversation; overflow pages get synthetic child ids.
+                    const unitIndex0 = Math.floor((messageIndex - 1) / MESSAGES_PER_CHILD_UNIT);
+                    const childUnitIdx = unitIndex0 + 1;
+                    const isOverflowUnit = childUnitIdx > 1;
+                    const effectiveTaskId = isOverflowUnit
+                        ? `${taskId}#unit-${childUnitIdx}`
+                        : taskId;
+                    // #2825 (G5): chunk_type 'task_summary' for condensation outputs
+                    const chunkType = sourceKind === 'condensation-fallback' ? 'task_summary' : 'message_exchange';
                     chunks.push({
-                        chunk_id: computeChunkId(taskId, 'message_exchange', seq, contentText),
-                        task_id: taskId,
-                        parent_task_id: parentTaskId || null,
-                        root_task_id: null,
-                        chunk_type: 'message_exchange',
+                        chunk_id: computeChunkId(effectiveTaskId, chunkType, seq, contentText),
+                        task_id: effectiveTaskId,
+                        parent_task_id: isOverflowUnit ? taskId : (parentTaskId || null),
+                        root_task_id: parentTaskId || (isOverflowUnit ? taskId : null),
+                        chunk_type: chunkType,
                         sequence_order: seq,
                         timestamp: msg.timestamp || new Date().toISOString(),
                         indexed: true,
@@ -261,6 +305,9 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         // #636: Enriched metadata
                         model: taskModel,
                         has_error: hasError || undefined,
+                        // #2825 (G2/G3): pagination metadata so search can reassemble siblings
+                        child_unit_index: childUnitIdx,
+                        child_unit_total: childUnitCount,
                     });
                 }
             }
@@ -278,11 +325,19 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                     const toolContent = `Tool call: ${toolCall.function.name} with args ${toolCall.function.arguments}`;
 
                     const seq = sequenceOrder++;
+                    // #2825 (G2/G3): tool calls belong to the same child unit as their
+                    // parent message (use messageIndex as the paging anchor).
+                    const toolUnitIndex0 = Math.floor((messageIndex - 1) / MESSAGES_PER_CHILD_UNIT);
+                    const toolChildUnitIdx = toolUnitIndex0 + 1;
+                    const toolIsOverflow = toolChildUnitIdx > 1;
+                    const toolEffectiveTaskId = toolIsOverflow
+                        ? `${taskId}#unit-${toolChildUnitIdx}`
+                        : taskId;
                     chunks.push({
-                        chunk_id: computeChunkId(taskId, 'tool_interaction', seq, toolContent),
-                        task_id: taskId,
-                        parent_task_id: parentTaskId || null,
-                        root_task_id: null,
+                        chunk_id: computeChunkId(toolEffectiveTaskId, 'tool_interaction', seq, toolContent),
+                        task_id: toolEffectiveTaskId,
+                        parent_task_id: toolIsOverflow ? taskId : (parentTaskId || null),
+                        root_task_id: parentTaskId || (toolIsOverflow ? taskId : null),
                         chunk_type: 'tool_interaction',
                         sequence_order: seq,
                         timestamp: msg.timestamp || new Date().toISOString(),
@@ -300,6 +355,9 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         workspace_name: workspace ? path.basename(workspace) : undefined,
                         task_title: taskTitle,
                         host_os: getHostIdentifier(),
+                        // #2825 (G2/G3): pagination metadata
+                        child_unit_index: toolChildUnitIdx,
+                        child_unit_total: childUnitCount,
                     });
                 }
             }
@@ -338,12 +396,22 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
             const uiContent = msg.text || ''; // #2825 (G1): full content — split losslessly downstream by splitChunk.
 
             const seq = sequenceOrder++;
+            // #2825 (G2/G3): UI messages count toward the same child-unit paging as api messages.
+            const uiMessageIndex = ++messageIndex;
+            const uiUnitIndex0 = Math.floor((uiMessageIndex - 1) / MESSAGES_PER_CHILD_UNIT);
+            const uiChildUnitIdx = uiUnitIndex0 + 1;
+            const uiIsOverflow = uiChildUnitIdx > 1;
+            const uiEffectiveTaskId = uiIsOverflow
+                ? `${taskId}#unit-${uiChildUnitIdx}`
+                : taskId;
+            // #2825 (G5): chunk_type 'task_summary' for condensation outputs
+            const uiChunkType = sourceKind === 'condensation-fallback' ? 'task_summary' : 'message_exchange';
             chunks.push({
-                chunk_id: computeChunkId(taskId, 'ui_message', seq, uiContent),
-                task_id: taskId,
-                parent_task_id: parentTaskId || null,
-                root_task_id: null,
-                chunk_type: 'message_exchange',
+                chunk_id: computeChunkId(uiEffectiveTaskId, uiChunkType, seq, uiContent),
+                task_id: uiEffectiveTaskId,
+                parent_task_id: uiIsOverflow ? taskId : (parentTaskId || null),
+                root_task_id: parentTaskId || (uiIsOverflow ? taskId : null),
+                chunk_type: uiChunkType,
                 sequence_order: seq,
                 timestamp: msg.timestamp || new Date().toISOString(),
                 indexed: true,
@@ -358,6 +426,9 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 // #636: Enriched metadata
                 model: taskModel,
                 has_error: uiHasError || undefined,
+                // #2825 (G2/G3): pagination metadata
+                child_unit_index: uiChildUnitIdx,
+                child_unit_total: childUnitCount,
             });
         }
     } catch (error) {
@@ -467,28 +538,20 @@ export async function extractChunksFromClaudeSession(
             try {
                 // Stream JSONL instead of loading entire file into memory.
                 // 112 MB files cause 300s+ timeout when read+split all at once.
+                // #2825 (G2): process every line inline — do NOT cap the in-memory
+                // buffer at MAX_MESSAGES_PER_TASK. Each line is emitted as a chunk
+                // tagged with `child_unit_index` (its page number) so the full
+                // conversation stays searchable in Qdrant. Memory stays bounded
+                // because chunks are pushed (not accumulated as strings).
                 const fileStream = createReadStream(jsonlFile, 'utf-8');
                 const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
-                const linesToProcess: string[] = [];
                 let totalLines = 0;
+                let fileMessageCount = 0;
+
                 for await (const line of rl) {
                     if (!line.trim()) continue;
                     totalLines++;
-                    if (linesToProcess.length < MAX_MESSAGES_PER_TASK) {
-                        linesToProcess.push(line);
-                    }
-                }
-                rl.close();
-                fileStream.destroy();
-
-                if (totalLines > MAX_MESSAGES_PER_TASK) {
-                    console.warn(`⚠️ [#1758] Claude session ${taskId} has ${totalLines} lines — processing first ${MAX_MESSAGES_PER_TASK} only.`);
-                }
-
-                let fileMessageCount = 0;
-
-                for (const line of linesToProcess) {
                     try {
                         const entry = JSON.parse(line);
 
@@ -529,12 +592,23 @@ export async function extractChunksFromClaudeSession(
                         const ccLower = contentText.toLowerCase();
                         const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
 
+                        // #2825 (G2/G3): child-unit paging. The first MAX_MESSAGES_PER_TASK
+                        // lines stay on the original taskId; overflow lines get synthetic
+                        // child ids with the original taskId as parent_task_id.
+                        const claudeUnitIndex0 = Math.floor((totalLines - 1) / MAX_MESSAGES_PER_TASK);
+                        const claudeChildUnitIdx = claudeUnitIndex0 + 1;
+                        const claudeIsOverflow = claudeChildUnitIdx > 1;
+                        const claudeChildUnitTotal = Math.max(1, Math.ceil(totalLines / MAX_MESSAGES_PER_TASK));
+                        const claudeEffectiveTaskId = claudeIsOverflow
+                            ? `${taskId}#unit-${claudeChildUnitIdx}`
+                            : taskId;
+
                         const seq = sequenceOrder++;
                         chunks.push({
-                            chunk_id: computeChunkId(taskId, 'claude_message', seq, contentText),
-                            task_id: taskId,
-                            parent_task_id: null,
-                            root_task_id: null,
+                            chunk_id: computeChunkId(claudeEffectiveTaskId, 'claude_message', seq, contentText),
+                            task_id: claudeEffectiveTaskId,
+                            parent_task_id: claudeIsOverflow ? taskId : null,
+                            root_task_id: claudeIsOverflow ? taskId : null,
                             chunk_type: 'message_exchange',
                             sequence_order: seq,
                             timestamp: entry.timestamp || new Date().toISOString(),
@@ -546,13 +620,16 @@ export async function extractChunksFromClaudeSession(
                             workspace: metadata?.workspace,
                             workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
                             task_title: metadata?.title,
-                            message_index: messageIndex,
+                            message_index: totalLines,
                             role,
                             host_os: getHostIdentifier(),
                             source: 'claude-code',
                             // #636: Enriched metadata
                             model: entry.model || message?.model,
                             has_error: ccHasError || undefined,
+                            // #2825 (G2/G3): pagination metadata
+                            child_unit_index: claudeChildUnitIdx,
+                            child_unit_total: claudeChildUnitTotal,
                         });
 
                         // #2336 D2 étape B: Emit tool_interaction chunks for Claude Code tool_use blocks
@@ -568,12 +645,13 @@ export async function extractChunksFromClaudeSession(
                             // #2825 (G1): full args carried — split losslessly downstream by splitChunk.
                             const toolContent = `Tool call: ${toolName} with args ${JSON.stringify(parsedInput)}`;
 
+                            // #2825 (G2/G3): tool chunks follow the same child-unit paging as their message
                             const toolSeq = sequenceOrder++;
                             chunks.push({
-                                chunk_id: computeChunkId(taskId, 'tool_interaction', toolSeq, toolContent),
-                                task_id: taskId,
-                                parent_task_id: null,
-                                root_task_id: null,
+                                chunk_id: computeChunkId(claudeEffectiveTaskId, 'tool_interaction', toolSeq, toolContent),
+                                task_id: claudeEffectiveTaskId,
+                                parent_task_id: claudeIsOverflow ? taskId : null,
+                                root_task_id: claudeIsOverflow ? taskId : null,
                                 chunk_type: 'tool_interaction',
                                 sequence_order: toolSeq,
                                 timestamp: entry.timestamp || new Date().toISOString(),
@@ -591,6 +669,9 @@ export async function extractChunksFromClaudeSession(
                                 task_title: metadata?.title,
                                 host_os: getHostIdentifier(),
                                 source: 'claude-code',
+                                // #2825 (G2/G3): pagination metadata
+                                child_unit_index: claudeChildUnitIdx,
+                                child_unit_total: claudeChildUnitTotal,
                             });
                         }
                     } catch (parseError) {
@@ -598,6 +679,13 @@ export async function extractChunksFromClaudeSession(
                         console.warn(`[Claude] Skipping malformed line in ${jsonlFile}: ${parseError}`);
                         continue;
                     }
+                }
+                rl.close();
+                fileStream.destroy();
+
+                if (totalLines > MAX_MESSAGES_PER_TASK) {
+                    const claudeChildUnitCount = Math.max(1, Math.ceil(totalLines / MAX_MESSAGES_PER_TASK));
+                    console.warn(`⚠️ [#2825/G2] Claude session ${taskId} has ${totalLines} lines — exceeds MAX_MESSAGES_PER_TASK=${MAX_MESSAGES_PER_TASK}; splitting into ${claudeChildUnitCount} child units (NO DROP, all messages indexed).`);
                 }
 
                 console.log(`[Claude] Extracted ${fileMessageCount} chunks from ${path.basename(jsonlFile)}`);
