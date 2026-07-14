@@ -409,7 +409,7 @@ describe('NarrativeContextBuilderService', () => {
 	// ============================================================
 
 	describe('findExistingCondensedBatch', () => {
-		test('returns null (Phase 1 stub)', async () => {
+		test('returns null when no batch covers the taskIds (Strategy A)', async () => {
 			const service = new NarrativeContextBuilderService(defaultOptions, cache);
 			const result = await service.findExistingCondensedBatch(['task-1', 'task-2']);
 			expect(result).toBeNull();
@@ -421,10 +421,10 @@ describe('NarrativeContextBuilderService', () => {
 	// ============================================================
 
 	describe('createCondensedBatch', () => {
-		test('throws not implemented error', async () => {
+		test('throws NO_ANALYSIS_TO_CONDENSE when called with empty analyses (Strategy A)', async () => {
 			const service = new NarrativeContextBuilderService(defaultOptions, cache);
 			await expect(service.createCondensedBatch([], 'model-1'))
-				.rejects.toThrow('Pas encore implémenté');
+				.rejects.toMatchObject({ code: 'NO_ANALYSIS_TO_CONDENSE' });
 		});
 	});
 

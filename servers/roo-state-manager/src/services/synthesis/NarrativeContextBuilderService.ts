@@ -194,6 +194,14 @@ export class NarrativeContextBuilderService {
     private analysisCache: Map<string, ConversationAnalysis> = new Map();
 
     /**
+     * Index en mémoire des lots condensés : taskId -> batchId (O(1) lookup).
+     * Chargé paresseusement depuis le disque au premier appel à findExistingCondensedBatch.
+     * Strategy A (#1315) — déterministe, pas de LLM.
+     * `null` = pas encore chargé ; `Map` vide = chargé mais aucun lot sur disque.
+     */
+    private condensedBatchIndex: Map<string, string> | null = null;
+
+    /**
      * Constructeur avec injection de dépendances.
      *
      * @param options Options de configuration du service
@@ -943,8 +951,31 @@ export class NarrativeContextBuilderService {
      * @returns Promise du lot condensé trouvé ou null
      */
     async findExistingCondensedBatch(taskIds: string[]): Promise<CondensedSynthesisBatch | null> {
-        // TODO Phase 3: Implémenter la recherche de lots condensés
-        return null; // Placeholder Phase 1
+        // Strategy A (#1315) — déterministe, pas de LLM.
+        if (taskIds.length === 0) {
+            return null;
+        }
+
+        // Index en mémoire chargé paresseusement au 1er appel (taskId -> batchId).
+        await this.ensureCondensedBatchIndexLoaded();
+
+        // Tous les taskIds doivent mapper vers le MÊME batchId (lot couvrant).
+        // Si un taskId n'est pas couvert, ou si les taskIds étalent sur plusieurs lots,
+        // il faut re-condenser → retourne null.
+        let commonBatchId: string | undefined;
+        for (const taskId of taskIds) {
+            const batchId = this.condensedBatchIndex!.get(taskId);
+            if (batchId === undefined) {
+                return null;
+            }
+            if (commonBatchId === undefined) {
+                commonBatchId = batchId;
+            } else if (batchId !== commonBatchId) {
+                return null;
+            }
+        }
+
+        return await this.loadCondensedBatch(commonBatchId!);
     }
 
     /**
@@ -963,12 +994,56 @@ export class NarrativeContextBuilderService {
         analyses: ConversationAnalysis[],
         llmModelId: string
     ): Promise<CondensedSynthesisBatch> {
-        // TODO Phase 3: Implémenter la création de lots condensés
-        throw new SynthesisServiceError(
-            'NarrativeContextBuilderService.createCondensedBatch() - Pas encore implémenté (Phase 1: Squelette)',
-            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
-            { method: 'createCondensedBatch', phase: 1, llmModelId, analysesCount: analyses.length }
+        // Strategy A (#1315) — déterministe, pas de LLM.
+        // Strategy B (LLM via SynthesisOrchestratorService) = futur, non requis ici.
+        if (analyses.length === 0) {
+            throw new SynthesisServiceError(
+                'NarrativeContextBuilderService.createCondensedBatch() - aucune analyse à condenser',
+                SynthesisServiceErrorCode.NO_ANALYSIS_TO_CONDENSE,
+                { method: 'createCondensedBatch', llmModelId, analysesCount: 0 }
+            );
+        }
+
+        const path = await import('path');
+        const fs = await import('fs/promises');
+        const crypto = await import('crypto');
+
+        const batchId = crypto.randomUUID();
+        const seedTaskId = analyses[0].taskId;
+        const creationTimestamp = new Date().toISOString();
+
+        // batchSummary = concaténation déterministe des finalTaskSummary, tronquée au seuil.
+        const maxLen = this.options.maxContextSizeBeforeCondensation;
+        const summaries = analyses.map(a => a.synthesis?.finalTaskSummary ?? '');
+        let batchSummary = summaries.filter(s => s.length > 0).join('\n\n---\n\n');
+        if (batchSummary.length > maxLen) {
+            batchSummary = batchSummary.slice(0, maxLen);
+        }
+
+        const batch: CondensedSynthesisBatch = {
+            batchId,
+            creationTimestamp,
+            llmModelId,
+            batchSummary,
+            sourceTaskIds: analyses.map(a => a.taskId),
+        };
+
+        // Écriture disque (naming établi par generateCondensedBatchPath L1380).
+        const batchPath = path.join(
+            this.options.condensedBatchesDir,
+            `batch-${seedTaskId}-${Date.now()}.json`
         );
+        await fs.mkdir(path.dirname(batchPath), { recursive: true });
+        await fs.writeFile(batchPath, JSON.stringify(batch, null, 2), 'utf-8');
+
+        // Mise à jour de l'index en mémoire si déjà chargé.
+        if (this.condensedBatchIndex) {
+            for (const a of analyses) {
+                this.condensedBatchIndex.set(a.taskId, batchId);
+            }
+        }
+
+        return batch;
     }
 
     // =========================================================================
@@ -1373,6 +1448,70 @@ export class NarrativeContextBuilderService {
     }
 
     /**
+     * Charge paresseusement l'index en mémoire taskId -> batchId depuis le disque.
+     * Parcourt condensedBatchesDir une seule fois ; tolère un répertoire absent ou
+     * des fichiers corrompus (ignorés silencieusement). Strategy A (#1315).
+     */
+    private async ensureCondensedBatchIndexLoaded(): Promise<void> {
+        if (this.condensedBatchIndex !== null) {
+            return;
+        }
+        const index = new Map<string, string>();
+        try {
+            const path = await import('path');
+            const fs = await import('fs/promises');
+            const entries = await fs.readdir(this.options.condensedBatchesDir);
+            for (const entry of entries) {
+                if (!entry.endsWith('.json')) {
+                    continue;
+                }
+                try {
+                    const full = path.join(this.options.condensedBatchesDir, entry);
+                    const content = await fs.readFile(full, 'utf-8');
+                    const batch = JSON.parse(content) as CondensedSynthesisBatch;
+                    if (batch && batch.batchId && Array.isArray(batch.sourceTaskIds)) {
+                        for (const tid of batch.sourceTaskIds) {
+                            index.set(tid, batch.batchId);
+                        }
+                    }
+                } catch {
+                    // Fichier illisible/corrompu — on l'ignore.
+                }
+            }
+        } catch {
+            // Répertoire absent ou inaccessible — index vide (aucun lot existant).
+        }
+        this.condensedBatchIndex = index;
+    }
+
+    /**
+     * Recharge un lot condensé depuis le disque par son batchId.
+     * Retourne null si le lot n'est plus présent (supprimé entre l'indexation et la lecture).
+     * Strategy A (#1315).
+     */
+    private async loadCondensedBatch(batchId: string): Promise<CondensedSynthesisBatch | null> {
+        try {
+            const path = await import('path');
+            const fs = await import('fs/promises');
+            const entries = await fs.readdir(this.options.condensedBatchesDir);
+            for (const entry of entries) {
+                if (!entry.endsWith('.json')) {
+                    continue;
+                }
+                const full = path.join(this.options.condensedBatchesDir, entry);
+                const content = await fs.readFile(full, 'utf-8');
+                const batch = JSON.parse(content) as CondensedSynthesisBatch;
+                if (batch && batch.batchId === batchId) {
+                    return batch;
+                }
+            }
+        } catch {
+            // Répertoire absent — aucun lot.
+        }
+        return null;
+    }
+
+    /**
      * Génère le chemin d'un lot condensé
      */
     private generateCondensedBatchPath(taskId: string): string {
@@ -1642,10 +1781,17 @@ export class NarrativeContextBuilderService {
         contextSummaries: string[],
         triggerTaskId: string
     ): Promise<string> {
-        // TODO Phase 3: Implémenter la vraie condensation avec orchestrateur
+        // Strategy A (#1315) : réutiliser un lot condensé existant s'il couvre la tâche,
+        // avant de tomber sur la troncature deterministe. Le caller createCondensedBatch
+        // (qui nécessite les ConversationAnalysis, pas encore threadées ici) est un
+        // follow-up documenté — voir #1315.
+        const existingBatch = await this.findExistingCondensedBatch([triggerTaskId]);
+        if (existingBatch) {
+            return `[CONTEXTE CONDENSÉ — lot ${existingBatch.batchId}]\n${existingBatch.batchSummary}`;
+        }
+
+        // Fallback deterministe : troncature des éléments les plus anciens.
         console.log(`Condensation déclenchée pour ${triggerTaskId}, ${contextSummaries.length} éléments`);
-        
-        // Pour l'instant, on tronque simplement les éléments les plus anciens
         const truncatedContext = contextSummaries.slice(-10).join('\n');
         return `[CONTEXTE CONDENSÉ - ${contextSummaries.length} éléments]\n${truncatedContext}`;
     }
