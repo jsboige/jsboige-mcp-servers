@@ -170,16 +170,22 @@ describe('RooSyncService', () => {
             expect(configService).toBeDefined();
         });
 
-        test.skip('getBaselineService retourne une instance - SKIP: méthode non exposée publiquement', async () => {
+        // KEPT SKIPPED (#2642 follow-on): getBaselineService() n'est pas exposé publiquement.
+        // RooSyncService n'expose que getConfigService() (RooSyncService.ts:431) ; baselineService est un
+        // champ privé (L83). Un-skipper exigerait d'ajouter une API publique non consommée = code spéculatif (#1936).
+        test.skip('getBaselineService retourne une instance - SKIP: getBaselineService() non exposé (seul getConfigService public)', async () => {
             const service = await RooSyncService.getInstance();
-            const baselineService = service.getBaselineService();
+            const baselineService = (service as any).getBaselineService();
 
             expect(baselineService).toBeDefined();
         });
 
-        test.skip('getMessageHandler retourne une instance - SKIP: méthode non exposée publiquement', async () => {
+        // KEPT SKIPPED (#2642 follow-on): ni la méthode getMessageHandler() ni un champ messageHandler
+        // n'existent dans RooSyncService (aucun import MessageHandler). Le test référence un concept absent —
+        // un-skipper exigerait de créer du code production non demandé (#1936).
+        test.skip('getMessageHandler retourne une instance - SKIP: getMessageHandler()/messageHandler inexistants', async () => {
             const service = await RooSyncService.getInstance();
-            const messageHandler = service.getMessageHandler();
+            const messageHandler = (service as any).getMessageHandler();
 
             expect(messageHandler).toBeDefined();
         });
@@ -190,18 +196,35 @@ describe('RooSyncService', () => {
     // ============================================================
 
     describe('Configuration', () => {
-        test.skip('charge la configuration au démarrage - SKIP: dépend du mock loadRooSyncConfig', async () => {
-            await RooSyncService.getInstance();
+        // KEPT SKIPPED (#2642 follow-on) — mock loadRooSyncConfig MIS-CÂBLÉ (bug de test vérifié).
+        // vi.mock('../config/roosync-config.js') (L46) est résolu depuis src/services/__tests__/ → cible
+        // src/services/config/roosync-config.js (INEXISTANT), alors que RooSyncService.ts:14 importe
+        // src/config/roosync-config.js. Le mock n'intercepte donc JAMAIS : tout ce fichier tourne sur le VRAI
+        // loadRooSyncConfig (synchrone, config/roosync-config.ts:61). Recâbler en '../../config/...' ferait
+        // intercepter le mock mais le beforeEach (mockResolvedValue, objet sans sharedPath) casserait en cascade
+        // les tests #833 (getConfig/path-helpers) qui dépendent du vrai config → refonte du mocking hors scope
+        // test-only-low-risk (#1936). À traiter comme bug de test dédié.
+        test.skip('charge la configuration au démarrage - SKIP: vi.mock path mis-câblé (../config vs ../../config), le mock no-op', () => {
+            (RooSyncService as any).instance = null;
+            (RooSyncService as any)._initError = null;
+            (RooSyncService as any)._lastInitAttempt = 0;
+
+            RooSyncService.getInstance();
 
             expect(mockLoadConfig).toHaveBeenCalled();
         });
 
-        test.skip('gère les erreurs de chargement de configuration - SKIP: dépend du mock loadRooSyncConfig', async () => {
-            mockLoadConfig.mockRejectedValue(new Error('Config load failed'));
+        test.skip('gère les erreurs de chargement de configuration - SKIP: idem mock mis-câblé + load sync ne throw pas en env sain', () => {
+            (RooSyncService as any).instance = null;
+            (RooSyncService as any)._initError = null;
+            (RooSyncService as any)._lastInitAttempt = 0;
+            mockLoadConfig.mockImplementation(() => { throw new Error('Config load failed'); });
 
-            // Le service devrait gérer l'erreur gracieusement
-            // ou propager une RooSyncServiceError
-            await expect(RooSyncService.getInstance()).rejects.toThrow();
+            expect(() => RooSyncService.getInstance()).toThrow();
+
+            (RooSyncService as any).instance = null;
+            (RooSyncService as any)._initError = null;
+            (RooSyncService as any)._lastInitAttempt = 0;
         });
     });
 
