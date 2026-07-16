@@ -43,7 +43,7 @@ const mockLoadConfig = vi.fn();
 const mockValidateMachineId = vi.fn();
 const mockRegisterMachineId = vi.fn();
 
-vi.mock('../config/roosync-config.js', () => ({
+vi.mock('../../config/roosync-config.js', () => ({
     loadRooSyncConfig: (...args: any[]) => mockLoadConfig(...args),
     validateMachineIdUniqueness: (...args: any[]) => mockValidateMachineId(...args),
     registerMachineId: (...args: any[]) => mockRegisterMachineId(...args),
@@ -53,7 +53,12 @@ vi.mock('../config/roosync-config.js', () => ({
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockLoadConfig.mockResolvedValue({
+    // NOTE (#2642): loadRooSyncConfig is SYNCHRONOUS (roosync-config.ts:61) → mockReturnValue,
+    // NOT mockResolvedValue (a Promise would make `this.config.sharedPath` undefined in the ctor).
+    // sharedPath is REQUIRED: the ctor does `new ConfigService(this.config.sharedPath)` (RooSyncService.ts:138)
+    // — undefined throws "path must be of type string". Path-helper tests override it post-init anyway.
+    mockLoadConfig.mockReturnValue({
+        sharedPath: join(tmpdir(), 'roosync-mock-shared'),
         rooSyncPath: '/mock/roosync',
         machineId: 'test-machine',
         storagePaths: [],
@@ -196,15 +201,11 @@ describe('RooSyncService', () => {
     // ============================================================
 
     describe('Configuration', () => {
-        // KEPT SKIPPED (#2642 follow-on) — mock loadRooSyncConfig MIS-CÂBLÉ (bug de test vérifié).
-        // vi.mock('../config/roosync-config.js') (L46) est résolu depuis src/services/__tests__/ → cible
-        // src/services/config/roosync-config.js (INEXISTANT), alors que RooSyncService.ts:14 importe
-        // src/config/roosync-config.js. Le mock n'intercepte donc JAMAIS : tout ce fichier tourne sur le VRAI
-        // loadRooSyncConfig (synchrone, config/roosync-config.ts:61). Recâbler en '../../config/...' ferait
-        // intercepter le mock mais le beforeEach (mockResolvedValue, objet sans sharedPath) casserait en cascade
-        // les tests #833 (getConfig/path-helpers) qui dépendent du vrai config → refonte du mocking hors scope
-        // test-only-low-risk (#1936). À traiter comme bug de test dédié.
-        test.skip('charge la configuration au démarrage - SKIP: vi.mock path mis-câblé (../config vs ../../config), le mock no-op', () => {
+        // UN-SKIPPED (#2642): mock loadRooSyncConfig recâblé — vi.mock path corrigé (../../config depuis
+        // __tests__/) + retour sync (mockReturnValue, pas mockResolvedValue) + sharedPath ajouté (ctor L138).
+        // resetInstance avant l'appel : un singleton caché ferait que getInstance skip le ctor → loadRooSyncConfig
+        // non rappelé après le clearAllMocks du beforeEach.
+        test('charge la configuration au démarrage (#2642: mock loadRooSyncConfig recâblé — path + sync + sharedPath)', () => {
             (RooSyncService as any).instance = null;
             (RooSyncService as any)._initError = null;
             (RooSyncService as any)._lastInitAttempt = 0;
@@ -214,7 +215,10 @@ describe('RooSyncService', () => {
             expect(mockLoadConfig).toHaveBeenCalled();
         });
 
-        test.skip('gère les erreurs de chargement de configuration - SKIP: idem mock mis-câblé + load sync ne throw pas en env sain', () => {
+        // UN-SKIPPED (#2642): loadRooSyncConfig est sync → le mock doit thrower (mockImplementation), pas rejecter
+        // (mockRejectedValue = Promise rejetée que le ctor n'await pas → getInstance réussit silencieusement).
+        // getInstance catche le throw du ctor (L384) → wrap en RooSyncServiceError. reset après = pas de leak _initError.
+        test('gère les erreurs de chargement de configuration (#2642: mock throw sync, pas reject)', () => {
             (RooSyncService as any).instance = null;
             (RooSyncService as any)._initError = null;
             (RooSyncService as any)._lastInitAttempt = 0;
