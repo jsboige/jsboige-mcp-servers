@@ -333,7 +333,14 @@ describe('HierarchyReconstructionEngine', () => {
     // ============================================================
 
     describe('gestion des erreurs', () => {
-        test.skip('gère les skeletons invalides - SKIP: nécessite plus de mocks', async () => {
+        // KEPT SKIPPED (#2642 follow-on) — raison corrigée après vérification firsthand.
+        // Le vrai blocage n'est PAS "plus de mocks" : executePhase2 (hierarchy-reconstruction-engine.ts:270)
+        // fait `skeletons.map(s => [s.taskId, s])` → déréférence `s.taskId` sur chaque élément → throw
+        // TypeError sur `[null, undefined, {}]` AVANT de retourner. Le test attend un `result.errors`
+        // gracieux, ce qui exigerait un null-guard non demandé dans le SUT (pipeline reconstruction
+        // sensible, #1936). Les branches error-handling pour skeletons bien-formés sont déjà vertes
+        // (« gère les erreurs dans Phase 1/2 » L346/L357).
+        test.skip('gère les skeletons invalides - SKIP: executePhase2 throw sur null-deref (L270), graceful-error exige un null-guard non demandé (#1936)', async () => {
             const engine = new HierarchyReconstructionEngine();
             const invalidSkeletons = [null, undefined, {}] as any;
 
