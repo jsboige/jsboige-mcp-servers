@@ -136,6 +136,40 @@ describe('ConfigValidator', () => {
   });
 
   // ============================================================
+  // validateBaselineConfig — format v2.x (machines[]) — régression fleet-wide
+  // Bug révélé par web1 (régénération baseline 0-byte) : createBaselineFromInventory
+  // produit un format v2.x (machines[], sans `config`), que le validateur v1.x
+  // rejetait systématiquement → toute mise à jour standard échouait.
+  // ============================================================
+
+  describe('validateBaselineConfig — format v2.x (machines[])', () => {
+    test('retourne true pour une baseline v2.x (machines[] non vide, sans config)', () => {
+      // makeBaselineFileConfig() = forme réelle produite par createBaselineFromInventory
+      const v2 = makeBaselineFileConfig();
+      expect((v2 as any).config).toBeUndefined();
+      expect(validator.validateBaselineConfig(v2 as any)).toBe(true);
+    });
+
+    test('ensureValidBaselineConfig ne lève pas pour une baseline v2.x', () => {
+      expect(() => validator.ensureValidBaselineConfig(makeBaselineFileConfig() as any)).not.toThrow();
+    });
+
+    test('retourne false si v2.x mais machineId manquant (gate commun)', () => {
+      expect(validator.validateBaselineConfig(makeBaselineFileConfig({ machineId: '' }) as any)).toBe(false);
+    });
+
+    test('retourne false si v2.x mais version manquante (gate commun)', () => {
+      expect(validator.validateBaselineConfig(makeBaselineFileConfig({ version: '' }) as any)).toBe(false);
+    });
+
+    test('retourne false si ni config v1.x ni machines[] (machines vide)', () => {
+      // machineId + version présents mais aucune section exploitable → invalide
+      const neither = { machineId: 'm', version: '1.0.0', machines: [] } as any;
+      expect(validator.validateBaselineConfig(neither)).toBe(false);
+    });
+  });
+
+  // ============================================================
   // validateBaselineFileConfig
   // ============================================================
 
