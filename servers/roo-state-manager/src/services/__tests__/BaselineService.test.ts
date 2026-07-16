@@ -64,6 +64,8 @@ vi.mock('fs', () => {
     },
     existsSync: vi.fn(),
     copyFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    statSync: vi.fn(() => ({ size: 100 })),
   };
 });
 
@@ -86,7 +88,7 @@ vi.mock('../baseline/ConfigValidator.js', () => ({
 // --- Imports apres les mocks ---
 
 import { promises as fs } from 'fs';
-import { existsSync, copyFileSync } from 'fs';
+import { existsSync, copyFileSync, statSync } from 'fs';
 import { BaselineService } from '../BaselineService.js';
 import { BaselineLoader } from '../baseline/BaselineLoader.js';
 import { DifferenceDetector } from '../baseline/DifferenceDetector.js';
@@ -248,6 +250,9 @@ function reinitMocks(): void {
   });
 
   vi.mocked(existsSync).mockReturnValue(false);
+  // #2381: par défaut les fichiers baseline existants sont non-vides (size>0).
+  // Les tests du cas 0-byte overrident explicitement statSync → { size: 0 }.
+  vi.mocked(statSync).mockReturnValue({ size: 100 } as any);
 }
 
 // --- Tests ---
@@ -269,6 +274,7 @@ describe('BaselineService', () => {
     vi.mocked(fs.stat).mockClear();
     vi.mocked(existsSync).mockClear();
     vi.mocked(copyFileSync).mockClear();
+    vi.mocked(statSync).mockClear().mockReturnValue({ size: 100 } as any);
     // NOTE: ROOSYNC_SHARED_PATH, SHARED_STATE_PATH, and ROOSYNC_MACHINE_ID are now loaded from .env.test
     // Do NOT delete them - BaselineService constructor requires ROOSYNC_SHARED_PATH
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -391,6 +397,20 @@ describe('BaselineService', () => {
       expect(service.getState().isBaselineLoaded).toBe(false);
     });
 
+    it('devrait self-heal si le fichier baseline existe mais est vide (0-byte) — #2381', async () => {
+      // Régression: un baseline 0-byte (update crashé) passe existsSync=true mais
+      // faisait throw JSON.parse("") au lieu de régénérer (chicken-and-egg sur update).
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(statSync).mockReturnValue({ size: 0 } as any);
+      vi.mocked(fs.writeFile).mockResolvedValue();
+      mockBaselineLoaderInstance.loadBaseline.mockResolvedValue(null);
+      await service.loadBaseline();
+      // Le 0-byte est traité comme absent → self-heal écrit une baseline par défaut, pas de throw.
+      expect(fs.writeFile).toHaveBeenCalled();
+      const writtenJson = JSON.parse(vi.mocked(fs.writeFile).mock.calls[0][1] as string);
+      expect(writtenJson.version).toBe('2.1.0');
+    });
+
     it('devrait propager les erreurs du BaselineLoader', async () => {
       vi.mocked(existsSync).mockReturnValue(true);
       mockBaselineLoaderInstance.loadBaseline.mockRejectedValue(new Error('Erreur de lecture'));
@@ -430,6 +450,19 @@ describe('BaselineService', () => {
       expect(result!.version).toBe('2.1.0');
       expect(result!.autoSync).toBe(false);
       expect(fs.writeFile).toHaveBeenCalled();
+    });
+
+    it('devrait self-heal si le fichier baseline existe mais est vide (0-byte) — #2381', async () => {
+      // Régression: readBaselineFile sur un 0-byte doit régénérer au lieu de throw.
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(statSync).mockReturnValue({ size: 0 } as any);
+      vi.mocked(fs.writeFile).mockResolvedValue();
+      const result = await service.readBaselineFile();
+      expect(result).toBeDefined();
+      expect(result!.version).toBe('2.1.0');
+      expect(fs.writeFile).toHaveBeenCalled();
+      // Le loader ne doit PAS être appelé pour parser le 0-byte (self-heal en amont).
+      expect(mockBaselineLoaderInstance.readBaselineFile).not.toHaveBeenCalled();
     });
 
     it('devrait propager les erreurs du BaselineLoader', async () => {

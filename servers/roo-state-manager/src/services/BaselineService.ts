@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'fs';
 import { join, resolve, dirname } from 'path';
-import { existsSync, copyFileSync, mkdirSync } from 'fs';
+import { existsSync, copyFileSync, mkdirSync, statSync } from 'fs';
 import {
   BaselineConfig,
   BaselineFileConfig,
@@ -129,9 +129,12 @@ export class BaselineService {
 
       this.logInfo('Chargement de la baseline', { path: targetPath });
 
-      // Vérifier si le fichier existe, sinon créer une baseline par défaut
-      if (!existsSync(targetPath)) {
-        this.logWarn('Fichier baseline non trouvé, création d\'une baseline par défaut', {
+      // Vérifier si le fichier existe (et n'est pas vide), sinon créer une baseline par défaut.
+      // #2381: un fichier baseline 0-byte (créé par un update crashé) passe existsSync=true mais
+      // fait échouer le parse JSON ("Unexpected end of JSON input") — on le traite comme absent
+      // pour que le self-heal le régénère au lieu de propager l'erreur (chicken-and-egg sur update).
+      if (!existsSync(targetPath) || this.isEmptyFile(targetPath)) {
+        this.logWarn('Fichier baseline non trouvé ou vide, création d\'une baseline par défaut', {
           path: targetPath
         });
 
@@ -207,9 +210,10 @@ export class BaselineService {
         }
       }
 
-      // Vérifier si le fichier existe
-      if (!existsSync(targetPath)) {
-        this.logWarn('Fichier baseline non trouvé, création d\'une baseline par défaut', {
+      // Vérifier si le fichier existe (et n'est pas vide)
+      // #2381: idem loadBaseline — un baseline 0-byte est traité comme absent pour déclencher le self-heal.
+      if (!existsSync(targetPath) || this.isEmptyFile(targetPath)) {
+        this.logWarn('Fichier baseline non trouvé ou vide, création d\'une baseline par défaut', {
           path: targetPath
         });
 
@@ -251,6 +255,22 @@ export class BaselineService {
     } catch (error) {
       this.logError('Erreur lors de la lecture du fichier baseline', error);
       throw error;
+    }
+  }
+
+  /**
+   * #2381: Détermine si un fichier existant est vide (0 byte).
+   *
+   * Un fichier baseline 0-byte est un placeholder laissé par un `update` crashé : il passe
+   * `existsSync` mais fait échouer `JSON.parse("")`. On le traite comme absent afin que le
+   * self-heal le régénère. En cas d'erreur `stat` (course, permission), on retourne false
+   * pour préserver le comportement historique (le load classique gérera/propagera comme avant).
+   */
+  private isEmptyFile(path: string): boolean {
+    try {
+      return statSync(path).size === 0;
+    } catch {
+      return false;
     }
   }
 
