@@ -218,17 +218,16 @@ describe('ConfigValidator.coverage', () => {
   });
 
   // ============================================================
-  // validateBaselineConfig — catch L31 side-effect pinné
+  // validateBaselineConfig — garde null/vide (plus de catch sur input trivial)
   // ============================================================
-  describe('validateBaselineConfig — catch (L30-33) console.error pinné', () => {
-    test('null → catch → console.error("Erreur lors de... baseline", error)', () => {
-      // La base hit le catch via null mais n'asserte jamais le console.error.
+  describe('validateBaselineConfig — garde null/vide (L20-23)', () => {
+    test('null → false via garde commun, SANS console.error', () => {
+      // Depuis le fix dual-shape (bug fleet-wide révélé par web1), le garde
+      // `!baseline` traite null en amont → false direct, sans throw ni
+      // console.error. Le catch reste une sécurité défensive mais n'est plus
+      // atteint par un input trivialement invalide.
       expect(validator.validateBaselineConfig(null as any)).toBe(false);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      expect(errorSpy.mock.calls[0][0]).toBe(
-        'Erreur lors de la validation de la baseline'
-      );
-      expect(errorSpy.mock.calls[0][1]).toBeInstanceOf(Error);
+      expect(errorSpy).not.toHaveBeenCalled();
     });
 
     test('objet vide {} → false SANS console.error (pas de throw, juste falsy)', () => {

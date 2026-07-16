@@ -18,10 +18,27 @@ export class ConfigValidator {
    */
   public validateBaselineConfig(baseline: BaselineConfig): boolean {
     try {
+      // Champs communs requis quel que soit le format
+      if (!baseline || !baseline.machineId || !baseline.version) {
+        return false;
+      }
+
+      const b = baseline as any;
+
+      // Format v2.x (post-#570/#571) : les sections roo/hardware/software sont
+      // portées par machines[] et il n'y a pas de `config` de haut niveau.
+      // C'est le format produit par createBaselineFromInventory (update standard)
+      // et par le mode profile. Un tableau machines non vide suffit.
+      // Sans cette branche, toute mise à jour standard échouait (bug fleet-wide,
+      // révélé par web1 sur la régénération d'une baseline 0-byte).
+      if (Array.isArray(b.machines) && b.machines.length > 0) {
+        return true;
+      }
+
+      // Format v1.x (legacy) : sections sous config.* (RooSyncService mode legacy,
+      // anciens fichiers sync-config.ref.json).
       return !!(
-        baseline.machineId &&
         baseline.config &&
-        baseline.version &&
         baseline.config.roo &&
         baseline.config.hardware &&
         baseline.config.software &&
