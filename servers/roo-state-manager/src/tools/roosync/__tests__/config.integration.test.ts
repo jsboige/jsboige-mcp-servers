@@ -331,7 +331,7 @@ describe('roosyncConfig (integration)', () => {
       expect(result).toBeDefined();
     });
 
-    test.skip('should throw on incompatible major version', async () => {
+    test.skip('should throw on incompatible major version - SKIP: ConfigService cache sharedStatePath à la construction (ConfigService.ts:41), pas de resetInstance → currentVersion null (vérifié #2642, ref #609)', async () => {
       // NOTE: Test skipped due to ConfigService path caching issue.
       //
       // The ConfigService determines its sharedStatePath at construction time.

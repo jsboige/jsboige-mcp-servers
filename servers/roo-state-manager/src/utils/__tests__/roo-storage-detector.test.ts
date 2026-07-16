@@ -85,7 +85,11 @@ describe('RooStorageDetector', () => {
             expect(stats.conversationCount).toBe(2);
         });
 
-        test.skip('findConversationById - SKIP: complex dependencies', async () => {
+        // KEPT SKIPPED (#2642 follow-on): findConversationById (roo-storage-detector.ts:212) enchaîne
+        // detectStorageLocations() → fs.stat → analyzeConversation() (L480+, lecture multi-fichiers). Un happy-path
+        // vert exigerait de mocker analyzeConversation lui-même → test creux (#1936). Les branches testables sont
+        // déjà couvertes vert : null-path (« retourne null si non trouvé », L102) + file-error-path (L280).
+        test.skip('findConversationById - SKIP: happy-path exige de mocker analyzeConversation (test creux, #1936)', async () => {
             const taskId = 'test-task-id';
             mockReaddir.mockResolvedValue([{ name: taskId, isDirectory: () => true }]);
             mockReadFile.mockResolvedValue(JSON.stringify({
@@ -287,15 +291,16 @@ describe('RooStorageDetector', () => {
             expect(result).toBeDefined();
         });
 
-        test.skip('gère les erreurs de parsing JSON - SKIP: retourne undefined', async () => {
+        test('gère les erreurs de parsing JSON', async () => {
             mockReadFile.mockResolvedValue('invalid json {{}');
             mockReaddir.mockResolvedValue([{ name: 'task1', isDirectory: () => true }]);
             mockExistsSync.mockReturnValue(true);
 
             const instruction = await RooStorageDetector.extractMainInstructionFromUI('/mock/ui_messages.json');
 
-            // Ne doit pas lancer d'exception
-            expect(instruction).toBeDefined();
+            // Contrat (roo-storage-detector.ts:1376-1381) : JSON.parse throw est catché → retour undefined gracieux,
+            // sans exception. L'ancienne assertion toBeDefined() était fausse (d'où le skip « retourne undefined »).
+            expect(instruction).toBeUndefined();
         });
 
         test('gère les erreurs d\'accès au système de fichiers', async () => {

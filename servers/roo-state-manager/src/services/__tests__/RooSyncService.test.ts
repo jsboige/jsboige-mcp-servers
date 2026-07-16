@@ -43,7 +43,7 @@ const mockLoadConfig = vi.fn();
 const mockValidateMachineId = vi.fn();
 const mockRegisterMachineId = vi.fn();
 
-vi.mock('../config/roosync-config.js', () => ({
+vi.mock('../../config/roosync-config.js', () => ({
     loadRooSyncConfig: (...args: any[]) => mockLoadConfig(...args),
     validateMachineIdUniqueness: (...args: any[]) => mockValidateMachineId(...args),
     registerMachineId: (...args: any[]) => mockRegisterMachineId(...args),
@@ -53,7 +53,12 @@ vi.mock('../config/roosync-config.js', () => ({
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockLoadConfig.mockResolvedValue({
+    // NOTE (#2642): loadRooSyncConfig is SYNCHRONOUS (roosync-config.ts:61) → mockReturnValue,
+    // NOT mockResolvedValue (a Promise would make `this.config.sharedPath` undefined in the ctor).
+    // sharedPath is REQUIRED: the ctor does `new ConfigService(this.config.sharedPath)` (RooSyncService.ts:138)
+    // — undefined throws "path must be of type string". Path-helper tests override it post-init anyway.
+    mockLoadConfig.mockReturnValue({
+        sharedPath: join(tmpdir(), 'roosync-mock-shared'),
         rooSyncPath: '/mock/roosync',
         machineId: 'test-machine',
         storagePaths: [],
@@ -170,16 +175,22 @@ describe('RooSyncService', () => {
             expect(configService).toBeDefined();
         });
 
-        test.skip('getBaselineService retourne une instance - SKIP: méthode non exposée publiquement', async () => {
+        // KEPT SKIPPED (#2642 follow-on): getBaselineService() n'est pas exposé publiquement.
+        // RooSyncService n'expose que getConfigService() (RooSyncService.ts:431) ; baselineService est un
+        // champ privé (L83). Un-skipper exigerait d'ajouter une API publique non consommée = code spéculatif (#1936).
+        test.skip('getBaselineService retourne une instance - SKIP: getBaselineService() non exposé (seul getConfigService public)', async () => {
             const service = await RooSyncService.getInstance();
-            const baselineService = service.getBaselineService();
+            const baselineService = (service as any).getBaselineService();
 
             expect(baselineService).toBeDefined();
         });
 
-        test.skip('getMessageHandler retourne une instance - SKIP: méthode non exposée publiquement', async () => {
+        // KEPT SKIPPED (#2642 follow-on): ni la méthode getMessageHandler() ni un champ messageHandler
+        // n'existent dans RooSyncService (aucun import MessageHandler). Le test référence un concept absent —
+        // un-skipper exigerait de créer du code production non demandé (#1936).
+        test.skip('getMessageHandler retourne une instance - SKIP: getMessageHandler()/messageHandler inexistants', async () => {
             const service = await RooSyncService.getInstance();
-            const messageHandler = service.getMessageHandler();
+            const messageHandler = (service as any).getMessageHandler();
 
             expect(messageHandler).toBeDefined();
         });
@@ -190,18 +201,34 @@ describe('RooSyncService', () => {
     // ============================================================
 
     describe('Configuration', () => {
-        test.skip('charge la configuration au démarrage - SKIP: dépend du mock loadRooSyncConfig', async () => {
-            await RooSyncService.getInstance();
+        // UN-SKIPPED (#2642): mock loadRooSyncConfig recâblé — vi.mock path corrigé (../../config depuis
+        // __tests__/) + retour sync (mockReturnValue, pas mockResolvedValue) + sharedPath ajouté (ctor L138).
+        // resetInstance avant l'appel : un singleton caché ferait que getInstance skip le ctor → loadRooSyncConfig
+        // non rappelé après le clearAllMocks du beforeEach.
+        test('charge la configuration au démarrage (#2642: mock loadRooSyncConfig recâblé — path + sync + sharedPath)', () => {
+            (RooSyncService as any).instance = null;
+            (RooSyncService as any)._initError = null;
+            (RooSyncService as any)._lastInitAttempt = 0;
+
+            RooSyncService.getInstance();
 
             expect(mockLoadConfig).toHaveBeenCalled();
         });
 
-        test.skip('gère les erreurs de chargement de configuration - SKIP: dépend du mock loadRooSyncConfig', async () => {
-            mockLoadConfig.mockRejectedValue(new Error('Config load failed'));
+        // UN-SKIPPED (#2642): loadRooSyncConfig est sync → le mock doit thrower (mockImplementation), pas rejecter
+        // (mockRejectedValue = Promise rejetée que le ctor n'await pas → getInstance réussit silencieusement).
+        // getInstance catche le throw du ctor (L384) → wrap en RooSyncServiceError. reset après = pas de leak _initError.
+        test('gère les erreurs de chargement de configuration (#2642: mock throw sync, pas reject)', () => {
+            (RooSyncService as any).instance = null;
+            (RooSyncService as any)._initError = null;
+            (RooSyncService as any)._lastInitAttempt = 0;
+            mockLoadConfig.mockImplementation(() => { throw new Error('Config load failed'); });
 
-            // Le service devrait gérer l'erreur gracieusement
-            // ou propager une RooSyncServiceError
-            await expect(RooSyncService.getInstance()).rejects.toThrow();
+            expect(() => RooSyncService.getInstance()).toThrow();
+
+            (RooSyncService as any).instance = null;
+            (RooSyncService as any)._initError = null;
+            (RooSyncService as any)._lastInitAttempt = 0;
         });
     });
 
