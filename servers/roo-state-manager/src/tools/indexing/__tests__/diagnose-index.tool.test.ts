@@ -37,19 +37,20 @@ vi.mock('openai', () => ({
 }));
 
 // Mock the service modules
-vi.mock('../../services/qdrant.js', () => ({
+vi.mock('../../../services/qdrant.js', () => ({
   getQdrantClient: vi.fn(() => mockQdrantClient),
   resetQdrantClient: vi.fn()
 }));
 
-vi.mock('../../services/openai.js', () => ({
+vi.mock('../../../services/openai.js', () => ({
+  default: vi.fn(() => mockOpenAIClient),
   getOpenAIClient: vi.fn(() => mockOpenAIClient),
   getEmbeddingModel: vi.fn(() => 'text-embedding-3-small')
 }));
 
 import { handleDiagnoseSemanticIndex, _resetConnectivityCache } from '../diagnose-index.tool.js';
-import * as qdrantService from '../../services/qdrant.js';
-import * as openaiService from '../../services/openai.js';
+import * as qdrantService from '../../../services/qdrant.js';
+import * as openaiService from '../../../services/openai.js';
 
 const mockedGetQdrantClient = vi.mocked(qdrantService.getQdrantClient);
 const mockedGetOpenAIClient = vi.mocked(openaiService.getOpenAIClient);
