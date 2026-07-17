@@ -37,12 +37,17 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 // Mock disk-scanner to avoid scanning actual disk
-vi.mock('../task/disk-scanner.js', () => ({
+// NOTE (#2642): the SUT list-conversations.tool.ts (in src/tools/conversation/) imports these via
+// '../task/disk-scanner.js' and '../../utils/*-storage-detector.js' — resolved from ITS dir. From this
+// test's dir (src/tools/conversation/__tests__/) the same absolute modules are one level deeper:
+// '../../task/disk-scanner.js' and '../../../utils/*-storage-detector.js'. The previous same-literal
+// mocks resolved to src/tools/conversation/{task,utils}/ (non-existent) → no-op silently.
+vi.mock('../../task/disk-scanner.js', () => ({
 	scanDiskForNewTasks: vi.fn(() => Promise.resolve([]))
 }));
 
 // Mock claude-storage-detector
-vi.mock('../../utils/claude-storage-detector.js', () => ({
+vi.mock('../../../utils/claude-storage-detector.js', () => ({
 	ClaudeStorageDetector: {
 		detectStorageLocations: vi.fn(() => Promise.resolve([])),
 		analyzeConversation: vi.fn()
@@ -50,7 +55,7 @@ vi.mock('../../utils/claude-storage-detector.js', () => ({
 }));
 
 // Mock roo-storage-detector
-vi.mock('../../utils/roo-storage-detector.js', () => ({
+vi.mock('../../../utils/roo-storage-detector.js', () => ({
 	RooStorageDetector: {
 		detectStorageLocations: vi.fn(() => Promise.resolve([]))
 	}
