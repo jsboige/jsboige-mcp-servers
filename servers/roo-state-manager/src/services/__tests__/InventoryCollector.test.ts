@@ -24,7 +24,11 @@ vi.mock('os', async (importOriginal) => {
     homedir: vi.fn(() => '/mock/home')
   };
 });
-vi.mock('../utils/logger.js', () => ({
+// NOTE (#2642): these mocks must target src/utils/* — from src/services/__tests__/ that's ../../utils/*
+// (the previous '../utils/*' resolved to src/services/utils/* which doesn't exist → no-op silently).
+// Also corrected the module name: SUT imports getSharedStatePath from 'shared-state-path.js'
+// (InventoryCollector.ts:20), not from 'server-helpers.js'.
+vi.mock('../../utils/logger.js', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),
@@ -32,12 +36,12 @@ vi.mock('../utils/logger.js', () => ({
     debug: vi.fn()
   })
 }));
-vi.mock('../utils/git-helpers.js', () => ({
+vi.mock('../../utils/git-helpers.js', () => ({
   getGitHelpers: () => ({
     verifyGitAvailable: vi.fn().mockResolvedValue({ available: true, version: 'git version 2.40.0' })
   })
 }));
-vi.mock('../utils/server-helpers.js', () => ({
+vi.mock('../../utils/shared-state-path.js', () => ({
   getSharedStatePath: () => '/mock/shared-state'
 }));
 

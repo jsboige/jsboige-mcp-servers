@@ -39,7 +39,7 @@ const mockLoadConfig = vi.fn();
 const mockValidateMachineId = vi.fn();
 const mockRegisterMachineId = vi.fn();
 
-vi.mock('../config/roosync-config.js', () => ({
+vi.mock('../../config/roosync-config.js', () => ({
     loadRooSyncConfig: (...args: any[]) => mockLoadConfig(...args),
     validateMachineIdUniqueness: (...args: any[]) => mockValidateMachineId(...args),
     registerMachineId: (...args: any[]) => mockRegisterMachineId(...args),
@@ -47,7 +47,11 @@ vi.mock('../config/roosync-config.js', () => ({
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockLoadConfig.mockResolvedValue({
+    // NOTE (#2642): loadRooSyncConfig is SYNCHRONOUS (roosync-config.ts:61) → mockReturnValue,
+    // NOT mockResolvedValue. sharedPath is REQUIRED (ctor does new ConfigService(this.config.sharedPath)
+    // at RooSyncService.ts:138). Same fix as RooSyncService.test.ts c.70.
+    mockLoadConfig.mockReturnValue({
+        sharedPath: '/mock/roosync/shared',
         rooSyncPath: '/mock/roosync',
         machineId: 'test-machine',
         storagePaths: [],
@@ -746,7 +750,7 @@ describe('RooSyncService TIER D — getInstance retry/backoff state machine (#20
         RS.instance = null;
         RS._initError = new Error('prev failure');
         RS._lastInitAttempt = Date.now() - RooSyncService.INIT_RETRY_INTERVAL_MS - 1000; // elapsed > 30s
-        mockLoadConfig.mockResolvedValue({ rooSyncPath: '/mock/roosync', machineId: 'test-machine', storagePaths: [] });
+        mockLoadConfig.mockReturnValue({ sharedPath: '/mock/roosync/shared', rooSyncPath: '/mock/roosync', machineId: 'test-machine', storagePaths: [] });
         const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
         const inst = await RooSyncService.getInstance();

@@ -91,8 +91,12 @@ vi.mock('../../../services/ConfigService.js', () => ({
   }
 }));
 
-// Mock getSharedStatePath utility function
-vi.mock('../../utils/server-helpers.js', () => ({
+// Mock getSharedStatePath utility function.
+// NOTE (#2642): the SUT imports getSharedStatePath from '../../utils/shared-state-path.js'
+// (baseline.ts:15), NOT server-helpers.js. From src/tools/roosync/__tests__/ the absolute module is
+// '../../../utils/shared-state-path.js'. The previous '../../utils/server-helpers.js' targeted a module
+// the SUT never imports, at a path that doesn't exist (src/tools/utils/) → no-op silently.
+vi.mock('../../../utils/shared-state-path.js', () => ({
   getSharedStatePath: vi.fn(() => testSharedStatePath)
 }));
 

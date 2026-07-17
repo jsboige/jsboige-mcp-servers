@@ -81,7 +81,10 @@ vi.mock('../../../utils/roosync-parsers.js', () => ({
   findDecisionById: (...args: any[]) => mockFindById(...args),
 }));
 
-vi.mock('../PowerShellExecutor.js', () => ({
+// NOTE (#2642): PowerShellExecutor lives in src/services/ (NOT src/services/roosync/). The SUT
+// imports '../PowerShellExecutor.js' from src/services/roosync/ → src/services/PowerShellExecutor.js;
+// from src/services/roosync/__tests__/ that absolute module is '../../PowerShellExecutor.js'.
+vi.mock('../../PowerShellExecutor.js', () => ({
   PowerShellExecutor: MockPsExecutor,
 }));
 
