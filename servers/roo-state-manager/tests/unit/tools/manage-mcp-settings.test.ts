@@ -4,11 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const mockReadFile = vi.fn();
 const mockWriteFile = vi.fn();
 
-// Mocks pour protéger la configuration réelle
-vi.mock('../../src/managers/McpSettingsManager');
-vi.mock('fs');
-
-// Mock fs/promises avec le bon format pour import * as fs
+// Mock fs/promises with the correct shape for import * as fs
 vi.mock('fs/promises', () => ({
     readFile: mockReadFile,
     writeFile: mockWriteFile,
@@ -25,21 +21,6 @@ vi.mock('fs', () => ({
   readdirSync: vi.fn(() => [])
 }));
 
-// Mock du MCP settings manager - version allégée
-vi.mock('../../src/managers/McpSettingsManager', () => ({
-  McpSettingsManager: vi.fn().mockImplementation(() => ({
-    readSettings: vi.fn().mockResolvedValue({
-      mcpServers: {
-        'test-server': {
-          command: 'node',
-          args: ['test.js']
-        }
-      }
-    }),
-    writeSettings: vi.fn().mockResolvedValue(true),
-    validateSettings: vi.fn().mockReturnValue(true)
-  }))
-}));
 describe('manage_mcp_settings Tool', () => {
     // Données de test optimisées - réduites pour limiter l'empreinte mémoire
     const mockSettings = {

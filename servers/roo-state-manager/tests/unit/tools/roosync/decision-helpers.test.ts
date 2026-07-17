@@ -41,7 +41,7 @@ vi.mock('fs', () => ({
   unlinkSync: mockFsFunctions.unlinkSync
 }));
 
-vi.mock('../../../src/utils/roosync-parsers.js', () => ({
+vi.mock('../../../../src/utils/roosync-parsers.js', () => ({
   parseRoadmapMarkdown: mockParserFunctions.parseRoadmapMarkdown,
   findDecisionById: mockParserFunctions.findDecisionById
 }));

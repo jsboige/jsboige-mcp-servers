@@ -152,24 +152,7 @@ function findPhantoms(): Phantom[] {
  * To remove an entry: fix the path in the listed file, confirm the test passes
  * (`npx vitest run <file> --config vitest.config.ci.ts`), then delete the entry.
  */
-const KNOWN_VIOLATIONS: ReadonlyArray<{ file: string; mockpath: string }> = [
-  {
-    file: 'src/tools/indexing/__tests__/diagnose-index.tool.test.ts',
-    mockpath: '../../services/qdrant.js',
-  },
-  {
-    file: 'src/tools/indexing/__tests__/diagnose-index.tool.test.ts',
-    mockpath: '../../services/openai.js',
-  },
-  {
-    file: 'tests/unit/tools/manage-mcp-settings.test.ts',
-    mockpath: '../../src/managers/McpSettingsManager',
-  },
-  {
-    file: 'tests/unit/tools/roosync/decision-helpers.test.ts',
-    mockpath: '../../../src/utils/roosync-parsers.js',
-  },
-];
+const KNOWN_VIOLATIONS: ReadonlyArray<{ file: string; mockpath: string }> = [];
 
 const phantomKey = (p: { file: string; mockpath: string }) => `${p.file}::${p.mockpath}`;
 
