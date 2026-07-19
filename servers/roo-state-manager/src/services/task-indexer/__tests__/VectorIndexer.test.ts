@@ -468,6 +468,35 @@ describe('VectorIndexer', () => {
 			await resetCollection();
 			expect(mockDeleteCollection).toHaveBeenCalled();
 		});
+
+		// #873 (fail-CLOSED): a transient count() error on a possibly-populated collection must
+		// REFUSE — the previous fail-open catch (count→0) was the silent-wipe path for a
+		// healthy 1.3M collection hit by a timeout / rate-limit / connection reset.
+		test('#873 fail-closed: refuses on a NON-not-found count error without force', async () => {
+			const { resetCollection } = await import('../VectorIndexer.js');
+
+			mockCount.mockRejectedValue(new Error('ETIMEDOUT: Qdrant connection timed out'));
+			mockDeleteCollection.mockResolvedValue(undefined);
+
+			await expect(resetCollection()).rejects.toThrow(/unable to determine point count/i);
+			expect(mockDeleteCollection).not.toHaveBeenCalled();
+		});
+
+		// #873 (fail-OPEN only when positively absent): a genuine not-found (404) means there is
+		// nothing to protect, so the reset must proceed and recreate the collection.
+		test('#873 fail-open: proceeds when count throws a not-found (404) error without force', async () => {
+			const { resetCollection } = await import('../VectorIndexer.js');
+
+			const notFound: any = new Error('Not Found');
+			notFound.status = 404;
+			mockCount.mockRejectedValue(notFound);
+			mockDeleteCollection.mockResolvedValue(undefined);
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await resetCollection();
+			expect(mockDeleteCollection).toHaveBeenCalled();
+		});
 	});
 
 	// ============================================================
