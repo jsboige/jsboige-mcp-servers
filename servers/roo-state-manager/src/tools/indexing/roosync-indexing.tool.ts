@@ -72,6 +72,9 @@ export interface RooSyncIndexingArgs {
     /** Confirmation pour reset (requis pour action=reset) */
     confirm?: boolean;
 
+    /** #873: force=true wipe même une collection PEUPLÉE (> RESET_SAFETY_FLOOR) ou un count indéterminé (pour action=reset). Défaut: false */
+    force?: boolean;
+
     /** Filtre par workspace (pour action=rebuild) */
     workspace_filter?: string;
 
@@ -157,6 +160,11 @@ export const roosyncIndexingTool: Tool = {
             confirm: {
                 type: 'boolean',
                 description: 'Required confirmation for action=reset',
+                default: false
+            },
+            force: {
+                type: 'boolean',
+                description: 'For action=reset. Force: wipe even a populated collection above the safety floor, or when the point count cannot be determined (transient Qdrant error). Default: false.',
                 default: false
             },
             workspace_filter: {
@@ -325,7 +333,7 @@ export async function handleRooSyncIndexing(
 
         case 'reset': {
             return await resetQdrantCollectionTool.handler(
-                { confirm: args.confirm },
+                { confirm: args.confirm, force: args.force },
                 conversationCache,
                 saveSkeletonCallback,
                 qdrantIndexQueue,

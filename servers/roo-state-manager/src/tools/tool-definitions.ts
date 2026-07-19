@@ -152,6 +152,7 @@ export const roosyncIndexingDefinition = {
             action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'tool_usage_stats', 'save_snapshot', 'trend_report'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
+            force: { type: 'boolean', description: 'For action=reset. Wipe even a populated collection above the safety floor, or when the point count cannot be determined (transient Qdrant error). Default: false.', default: false },
             workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
             max_tasks: { type: 'number', description: '0 = all', default: 0 },
             dry_run: { type: 'boolean', description: 'Simulation mode (rebuild, garbage_scan, cleanup_orphans)', default: false },

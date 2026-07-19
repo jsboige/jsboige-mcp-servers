@@ -1198,11 +1198,78 @@ export async function updateSkeletonIndexTimestamp(taskId: string, storageLocati
 }
 
 /**
- * Réinitialise complètement la collection Qdrant
+ * Fleet-safety floor for {@link resetCollection}: it refuses to wipe a collection
+ * holding more than this many points unless `force=true` is passed. Prevents accidental
+ * production wipes. Recidivist P1 (2026-07-13 & 2026-07-18): a reset dropped
+ * `roo_tasks_semantic_index` from ~1.32M to ~13k points. The `confirm` flag on the reset
+ * tool was too weak a gate — it has no idea how many points are at stake. This mirrors the
+ * FLEET_SAFETY floor already used for orphan cleanup.
  */
-export async function resetCollection(): Promise<void> {
+export const RESET_SAFETY_FLOOR = 10_000;
+
+/**
+ * Réinitialise complètement la collection Qdrant.
+ *
+ * @param options.force - Required to wipe a *populated* collection (more than
+ *   {@link RESET_SAFETY_FLOOR} points) AND to override a refusal when the point count cannot
+ *   be determined. Routine callers must NOT pass `force`: a large populated collection — or
+ *   any indeterminate count (transient Qdrant error) — then triggers an explicit refusal
+ *   instead of a silent multi-million point drop. The guard fails OPEN only when the
+ *   collection is positively confirmed ABSENT (404 / not-found). Callers that legitimately
+ *   need a full wipe (e.g. embedding-dimension change) must opt in with `force: true`.
+ */
+export async function resetCollection(options?: { force?: boolean }): Promise<void> {
     try {
         const qdrant = getQdrantClient();
+
+        // Fleet-safety guard (recidivist P1 2026-07-13 & 2026-07-18): refuse to wipe a
+        // populated production collection unless the caller explicitly acknowledges via
+        // force=true. Fail-CLOSED on count errors: only treat the collection as safe to
+        // wipe when it is POSITIVELY confirmed absent (not-found). Any other count()
+        // failure (transient timeout / rate-limit / connection reset) on a possibly-
+        // populated production collection MUST refuse — otherwise a transient blip lands
+        // in the catch, sets count to 0, passes the floor check, and silently wipes
+        // ~1.3M points (the exact silent-wipe path this guard exists to prevent).
+        if (!options?.force) {
+            let currentCount = 0;
+            try {
+                const existing = await qdrant.count(COLLECTION_NAME, { exact: true });
+                currentCount = existing?.count ?? 0;
+            } catch (countError: any) {
+                // Qdrant surfaces a missing collection as a 404. The REST client either
+                // re-throws an ApiError (`.status === 404`) or wraps it in a
+                // QdrantClientUnexpectedResponseError whose message embeds
+                // "Unexpected Response: 404 (Not Found)". Match both shapes; anything else
+                // is an indeterminate error on a possibly-populated collection → REFUSE.
+                const status = countError?.status ?? countError?.response?.status;
+                const message = String(countError?.message ?? countError ?? '');
+                const isNotFound =
+                    status === 404 ||
+                    /\b404\b/.test(message) ||
+                    /not.?found|doesn'?t exist|does not exist|no such/i.test(message);
+                if (isNotFound) {
+                    // Collection genuinely absent → nothing to protect; let the subsequent
+                    // deleteCollection no-op and recreation proceed.
+                    currentCount = 0;
+                } else {
+                    throw new GenericError(
+                        `resetCollection refused: unable to determine point count for ${COLLECTION_NAME} ` +
+                        `(possible transient Qdrant error: ${message}). Refusing to wipe a possibly-populated ` +
+                        `collection on an indeterminate count. Pass force=true to override.`,
+                        GenericErrorCode.INVALID_ARGUMENT,
+                        { collection: COLLECTION_NAME, countError: message, service: 'VectorIndexer.resetCollection' }
+                    );
+                }
+            }
+            if (currentCount > RESET_SAFETY_FLOOR) {
+                throw new GenericError(
+                    `resetCollection refused: ${COLLECTION_NAME} holds ${currentCount} points ` +
+                    `(> safety floor ${RESET_SAFETY_FLOOR}). Pass force=true to confirm an intentional full wipe.`,
+                    GenericErrorCode.INVALID_ARGUMENT,
+                    { collection: COLLECTION_NAME, currentCount, floor: RESET_SAFETY_FLOOR, service: 'VectorIndexer.resetCollection' }
+                );
+            }
+        }
 
         try {
             await qdrant.deleteCollection(COLLECTION_NAME);
