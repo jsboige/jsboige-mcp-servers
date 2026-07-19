@@ -174,10 +174,11 @@ export class TaskIndexer {
     }
 
     /**
-     * Réinitialise complètement la collection Qdrant
+     * Réinitialise complètement la collection Qdrant.
+     * @param options.force - Required to wipe a populated collection (fleet-safety floor).
      */
-    async resetCollection(): Promise<void> {
-        return resetCollectionVector();
+    async resetCollection(options?: { force?: boolean }): Promise<void> {
+        return resetCollectionVector(options);
     }
 
     /**

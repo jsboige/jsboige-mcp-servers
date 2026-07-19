@@ -125,7 +125,14 @@ describe('TaskIndexer façade — delegation wrappers (coverage #833)', () => {
     test('resetCollection delegates to VectorIndexer.resetCollection (L179-181)', async () => {
         await indexer.resetCollection();
         expect(resetCollectionVector).toHaveBeenCalledTimes(1);
-        expect(resetCollectionVector).toHaveBeenCalledWith();
+        // Wrapper forwards its options through (undefined when called bare) — fleet-safety
+        // floor guard lives in VectorIndexer.resetCollection.
+        expect(resetCollectionVector).toHaveBeenCalledWith(undefined);
+    });
+
+    test('resetCollection forwards the force option (fleet-safety floor)', async () => {
+        await indexer.resetCollection({ force: true });
+        expect(resetCollectionVector).toHaveBeenCalledWith({ force: true });
     });
 
     test('countPointsByHostOs forwards the hostOs argument (L193-195)', async () => {

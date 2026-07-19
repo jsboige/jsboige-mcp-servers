@@ -9,6 +9,7 @@ import { TaskIndexer } from '../../services/task-indexer.js';
 
 export interface ResetQdrantCollectionArgs {
     confirm?: boolean;
+    force?: boolean;
 }
 
 /**
@@ -17,14 +18,19 @@ export interface ResetQdrantCollectionArgs {
 export const resetQdrantCollectionTool = {
     definition: {
         name: 'reset_qdrant_collection',
-        description: 'Réinitialise complètement la collection Qdrant et supprime tous les timestamps d\'indexation des squelettes pour forcer une réindexation complète.',
+        description: 'Réinitialise complètement la collection Qdrant et supprime tous les timestamps d\'indexation des squelettes pour forcer une réindexation complète. Garde-fou flotte : si la collection contient plus de RESET_SAFETY_FLOOR points, la suppression est REFUSÉE sauf si force=true (évite les wipes accidentels de la collection de production — P1 récidiviste 2026-07-13/18).',
         inputSchema: {
             type: 'object' as const,
             properties: {
-                confirm: { 
-                    type: 'boolean', 
-                    description: 'Confirmation obligatoire pour supprimer la collection.', 
-                    default: false 
+                confirm: {
+                    type: 'boolean',
+                    description: 'Confirmation obligatoire pour supprimer la collection.',
+                    default: false
+                },
+                force: {
+                    type: 'boolean',
+                    description: 'Requis pour wiper une collection PEUPLÉE (> RESET_SAFETY_FLOOR points). Sans force=true, une grosse collection déclenche un refus explicite au lieu d\'un drop silencieux.',
+                    default: false
                 },
             },
             required: [],
@@ -56,9 +62,11 @@ export const resetQdrantCollectionTool = {
             }
 
             const taskIndexer = new TaskIndexer();
-            
-            // Supprimer et recréer la collection Qdrant
-            await taskIndexer.resetCollection();
+
+            // Supprimer et recréer la collection Qdrant.
+            // force est distinct de confirm : confirm autorise la tentative, force autorise
+            // le wipe d'une collection peuplée (garde-fou flotte contre le P1 récidiviste).
+            await taskIndexer.resetCollection({ force: args.force });
             
             // Marquer tous les squelettes comme non-indexés
             // Fix #2209: Reset BOTH legacy qdrantIndexedAt AND modern indexingState.

@@ -432,6 +432,42 @@ describe('VectorIndexer', () => {
 				expect.objectContaining({ field_name: 'timestamp', field_schema: 'datetime', wait: false })
 			);
 		});
+
+		// Fleet-safety floor guard (recidivist P1 2026-07-13 & 2026-07-18): a reset must
+		// refuse to wipe a populated production collection unless force=true is passed.
+		test('P1 guard: refuses to wipe a populated collection (> floor) without force', async () => {
+			const { resetCollection, RESET_SAFETY_FLOOR } = await import('../VectorIndexer.js');
+
+			mockCount.mockResolvedValue({ count: RESET_SAFETY_FLOOR + 1 });
+			mockDeleteCollection.mockResolvedValue(undefined);
+
+			await expect(resetCollection()).rejects.toThrow(/refused/i);
+			expect(mockDeleteCollection).not.toHaveBeenCalled();
+		});
+
+		test('P1 guard: wipes a populated collection when force=true', async () => {
+			const { resetCollection, RESET_SAFETY_FLOOR } = await import('../VectorIndexer.js');
+
+			mockCount.mockResolvedValue({ count: RESET_SAFETY_FLOOR + 1 });
+			mockDeleteCollection.mockResolvedValue(undefined);
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await resetCollection({ force: true });
+			expect(mockDeleteCollection).toHaveBeenCalled();
+		});
+
+		test('P1 guard: proceeds without force when below the safety floor', async () => {
+			const { resetCollection } = await import('../VectorIndexer.js');
+
+			mockCount.mockResolvedValue({ count: 5 });
+			mockDeleteCollection.mockResolvedValue(undefined);
+			mockCreateCollection.mockResolvedValue(undefined);
+			mockCreatePayloadIndex.mockResolvedValue({ result: { operation_id: 1, status: 'acknowledged' } });
+
+			await resetCollection();
+			expect(mockDeleteCollection).toHaveBeenCalled();
+		});
 	});
 
 	// ============================================================
