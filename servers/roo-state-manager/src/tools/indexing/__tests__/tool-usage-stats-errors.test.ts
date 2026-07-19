@@ -315,9 +315,9 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 		expect(bash.error_rate).toBe(33.3);
 	});
 
-	test('detects retry_rate from consecutive same-tool calls', async () => {
+	test('does NOT count legitimate sequential same-tool calls as retries (#753)', async () => {
 		const projDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
-		// 4 Edit calls: 3 consecutive retries (same tool repeated)
+		// 4 Edit calls, ALL successful — sequential use is NOT a retry (bug #753)
 		const entries = [
 			{
 				type: 'assistant',
@@ -329,7 +329,6 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 			{ type: 'user', message: { role: 'user', content: [
 				{ type: 'tool_result', tool_use_id: 'toolu_10', content: 'ok' },
 			] } },
-			// 3 consecutive Edit calls = 3 retries
 			{
 				type: 'assistant',
 				message: { role: 'assistant', content: [
@@ -350,7 +349,6 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 			{ type: 'user', message: { role: 'user', content: [
 				{ type: 'tool_result', tool_use_id: 'toolu_12', content: 'ok' },
 			] } },
-			// Intervening different tool resets retry counter
 			{
 				type: 'assistant',
 				message: { role: 'assistant', content: [
@@ -361,7 +359,6 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 			{ type: 'user', message: { role: 'user', content: [
 				{ type: 'tool_result', tool_use_id: 'toolu_13', content: 'ok' },
 			] } },
-			// Edit again — not a retry because Read was in between
 			{
 				type: 'assistant',
 				message: { role: 'assistant', content: [
@@ -385,9 +382,75 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 		const edit = parsed.tools.find((t: any) => t.tool_name === 'Edit');
 		expect(edit).toBeDefined();
 		expect(edit.calls).toBe(4);
-		// Edit→Edit→Edit (2 retries between 3 consecutive) + Read intervenes → last Edit not retry
-		expect(edit.retries).toBe(2);
-		expect(edit.retry_rate).toBe(50.0); // 2/4 * 100
+		// None of these Edits followed an errored Edit → 0 retries (regression guard #753)
+		expect(edit.retries).toBe(0);
+		expect(edit.retry_rate).toBe(0);
+	});
+
+	test('counts retry only when same tool is called again right after an error (#753)', async () => {
+		const projDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
+		// Edit(error) → Edit(retry) → Read → Edit(not a retry: prior Edit succeeded)
+		const entries = [
+			{
+				type: 'assistant',
+				message: { role: 'assistant', content: [
+					{ type: 'tool_use', id: 'toolu_50', name: 'Edit', input: {} },
+				] },
+				timestamp: '2026-05-20T14:00:00Z',
+			},
+			{ type: 'user', message: { role: 'user', content: [
+				{ type: 'tool_result', tool_use_id: 'toolu_50', is_error: true, content: 'old_string not found' },
+			] } },
+			// Same tool right after an error = genuine retry
+			{
+				type: 'assistant',
+				message: { role: 'assistant', content: [
+					{ type: 'tool_use', id: 'toolu_51', name: 'Edit', input: {} },
+				] },
+				timestamp: '2026-05-20T14:01:00Z',
+			},
+			{ type: 'user', message: { role: 'user', content: [
+				{ type: 'tool_result', tool_use_id: 'toolu_51', content: 'ok' },
+			] } },
+			// Different tool intervenes
+			{
+				type: 'assistant',
+				message: { role: 'assistant', content: [
+					{ type: 'tool_use', id: 'toolu_52', name: 'Read', input: {} },
+				] },
+				timestamp: '2026-05-20T14:02:00Z',
+			},
+			{ type: 'user', message: { role: 'user', content: [
+				{ type: 'tool_result', tool_use_id: 'toolu_52', content: 'ok' },
+			] } },
+			// Edit again — NOT a retry: the previous Edit succeeded (and Read was in between)
+			{
+				type: 'assistant',
+				message: { role: 'assistant', content: [
+					{ type: 'tool_use', id: 'toolu_53', name: 'Edit', input: {} },
+				] },
+				timestamp: '2026-05-20T14:03:00Z',
+			},
+			{ type: 'user', message: { role: 'user', content: [
+				{ type: 'tool_result', tool_use_id: 'toolu_53', content: 'ok' },
+			] } },
+		];
+
+		await createClaudeSessionFixture(projDir, 'session-005.jsonl', entries);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'tool_usage_stats', start_date: '2026-05-19', end_date: '2026-05-21' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, rebuildHandler,
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		const edit = parsed.tools.find((t: any) => t.tool_name === 'Edit');
+		expect(edit).toBeDefined();
+		expect(edit.calls).toBe(3);
+		expect(edit.errors).toBe(1);
+		// Exactly 1 retry: the Edit that followed the errored Edit
+		expect(edit.retries).toBe(1);
+		expect(edit.retry_rate).toBe(33.3); // 1/3 * 100
 	});
 
 	test('returns 0 error_rate and retry_rate when no errors or retries', async () => {

@@ -856,6 +856,7 @@ export async function handleRooSyncIndexing(
                         // Per-conversation tracking for error matching and retry detection
                         const localIdMap = new Map<string, string>();
                         let lastToolName = '';
+                        const lastCallErrored: Record<string, boolean> = {};
 
                         // #2336 D2: Track tool_use positions for downstream-action detection.
                         // downstream-action = tool_use followed by an assistant message with non-tool content
@@ -881,8 +882,9 @@ export async function handleRooSyncIndexing(
                                         // Track tool_use_id → tool_name for error matching
                                         if (block.id) localIdMap.set(block.id, toolName);
 
-                                        // Retry detection: consecutive same tool in same conversation
-                                        if (lastToolName === toolName) {
+                                        // Retry detection: same tool called again right after an ERRORED call
+                                        // of the same tool (#753 — previously counted any sequential use).
+                                        if (lastToolName === toolName && lastCallErrored[toolName]) {
                                             retryCounts[toolName] = (retryCounts[toolName] || 0) + 1;
                                         }
                                         lastToolName = toolName;
@@ -898,15 +900,19 @@ export async function handleRooSyncIndexing(
                                     }
                                 }
                             } else if (msg.role === 'user') {
-                                // Scan tool_result blocks for error detection
+                                // Scan tool_result blocks for error detection + retry-gating
                                 for (const block of msg.content) {
                                     if (block.type === 'tool_result') {
                                         const toolUseId = block.tool_use_id;
                                         const isError = block.is_error === true;
-                                        if (toolUseId && isError) {
+                                        if (toolUseId) {
                                             const toolName = localIdMap.get(toolUseId);
                                             if (toolName) {
-                                                errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                                                // Track latest result status per tool (gates retry detection #753)
+                                                lastCallErrored[toolName] = isError;
+                                                if (isError) {
+                                                    errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                                                }
                                             }
                                         }
                                     }
@@ -954,6 +960,7 @@ export async function handleRooSyncIndexing(
                         // Per-session tracking for error matching and retry detection
                         const localIdMap = new Map<string, string>();
                         let lastToolName = '';
+                        const lastCallErrored: Record<string, boolean> = {};
 
                         // #2336 D2: Track tool_use names from previous assistant message for downstream-action.
                         // When we see an assistant message with non-tool content, we attribute
@@ -1007,8 +1014,9 @@ export async function handleRooSyncIndexing(
                                         const toolUseId = block.id || block.toolUse?.id;
                                         if (toolUseId) localIdMap.set(toolUseId, toolName);
 
-                                        // Retry detection
-                                        if (lastToolName === toolName) {
+                                        // Retry detection: same tool called again right after an ERRORED call
+                                        // of the same tool (#753 — previously counted any sequential use).
+                                        if (lastToolName === toolName && lastCallErrored[toolName]) {
                                             retryCounts[toolName] = (retryCounts[toolName] || 0) + 1;
                                         }
                                         lastToolName = toolName;
@@ -1035,15 +1043,19 @@ export async function handleRooSyncIndexing(
                                     prevAssistantToolUses = [];
                                 }
                             } else if (message.role === 'user' && Array.isArray(message.content)) {
-                                // Scan tool_result blocks for error detection
+                                // Scan tool_result blocks for error detection + retry-gating
                                 for (const block of message.content) {
                                     if (block.type === 'tool_result') {
                                         const toolUseId = block.tool_use_id || block.toolResult?.tool_use_id;
                                         const isError = block.is_error === true || block.toolResult?.is_error === true;
-                                        if (toolUseId && isError) {
+                                        if (toolUseId) {
                                             const toolName = localIdMap.get(toolUseId);
                                             if (toolName) {
-                                                errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                                                // Track latest result status per tool (gates retry detection #753)
+                                                lastCallErrored[toolName] = isError;
+                                                if (isError) {
+                                                    errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
+                                                }
                                             }
                                         }
                                     }
