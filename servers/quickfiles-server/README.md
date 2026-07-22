@@ -1,5 +1,7 @@
 # QuickFiles MCP - Guide Rapide ⚡
 
+> ❌ **Serveur retiré** — présent pour l'historique, ne pas réinstaller. Remplacé par les capacités natives Claude Code (Read/Write/Edit/multi-fichiers) (voir [`INDEX.md`](../../INDEX.md) § Serveurs retirés).
+
 ## 💡 Quand l'utiliser ?
 
 ### ✅ Utilisez Quickfiles si :
