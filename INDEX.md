@@ -22,14 +22,27 @@ Agent-centric LLM proxy for multi-agent conversations.
 - **Features**: DeepSearch, DeepThink, vector memory, tool calling, vision
 - **Doc**: [servers/sk-agent/README.md](servers/sk-agent/README.md)
 
-## Retired Servers
+### jinavigator-server
+
+Web-to-Markdown conversion server (Jina API).
+
+- **Status**: ✅ Active — `enabled: true` in canonical `roo-config/settings/servers.json` (`node ./mcps/internal/servers/jinavigator-server/dist/index.js`)
+- **Doc**: [servers/jinavigator-server/README.md](servers/jinavigator-server/README.md)
+
+### jupyter-papermill-mcp-server
+
+Python Jupyter Notebook operations server (via Papermill).
+
+- **Status**: ✅ Active — this is the canonical `jupyter` server in `roo-config/settings/servers.json` (`python -m papermill_mcp.main`)
+- **Doc**: [servers/jupyter-papermill-mcp-server/README.md](servers/jupyter-papermill-mcp-server/README.md)
+
+## Retired / Disabled Servers
 
 These exist in `servers/` but are removed from active config:
 
-- `quickfiles-server` — replaced by Claude Code native capabilities
-- `jinavigator-server` — replaced by markitdown MCP
-- `github-projects-mcp` — replaced by `gh` CLI
-- `jupyter-mcp-server` / `jupyter-papermill-mcp-server` — not in active use
+- `quickfiles-server` — ❌ Retired (replaced by Claude Code native capabilities)
+- `github-projects-mcp` — ❌ Retired (replaced by `gh` CLI)
+- `jupyter-mcp-server` (legacy Node, 152 tools) — ⚠️ Disabled (caused scheduler crash; replaced by `jupyter-papermill-mcp-server`)
 
 ## General Docs
 
