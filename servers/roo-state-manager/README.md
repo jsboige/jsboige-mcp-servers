@@ -1,5 +1,7 @@
 # Roo State Manager MCP
 
+**Version:** 1.0.14 · **Tools:** 15 (post-CONS) · **Wrapper:** mcp-wrapper.cjs v2.5.0 · **CI:** `vitest.config.ci.ts`
+
 Serveur MCP (Model Context Protocol) unifié pour la gestion des conversations et configurations Roo.
 
 ## 🔒 CI & Branch Protection
