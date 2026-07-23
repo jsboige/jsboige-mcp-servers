@@ -1,5 +1,7 @@
 # GitHub Projects MCP Server
 
+> ❌ **Serveur retiré** — présent pour l'historique, ne pas réinstaller. Remplacé par la CLI `gh` native (voir [`INDEX.md`](../../INDEX.md) § Serveurs retirés).
+
 This MCP server provides tools to interact with GitHub Projects.
 
 ## Prerequisites
