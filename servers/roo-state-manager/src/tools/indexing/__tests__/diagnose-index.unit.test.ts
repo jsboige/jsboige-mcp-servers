@@ -46,7 +46,7 @@ vi.mock('../../../services/openai.js', () => ({
 }));
 
 // Import the module under test (static import, mocks are hoisted)
-import { handleDiagnoseSemanticIndex, _resetConnectivityCache } from '../diagnose-index.tool.js';
+import { handleDiagnoseSemanticIndex, _resetConnectivityCache, _classifyOpenAIError } from '../diagnose-index.tool.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 
 describe('diagnose-index.tool (unit tests)', () => {
@@ -844,6 +844,153 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const rec = parsed.recommendations.find((r: string) => r.includes('points sans champ `source`'));
 			expect(rec).toBeDefined();
 			expect(rec).toContain('ChunkExtractor Roo');
+		});
+	});
+
+	// ============================================================
+	// #2766 — OpenAI error type classification (typed status vs blanket 'failed')
+	// Goal: kill the false-positive key-rotation loop (network/service failures were
+	// indistinguishable from auth failures, triggering useless key rotations fleet-wide).
+	// ============================================================
+
+	describe('_classifyOpenAIError (unit)', () => {
+		it('classifies HTTP 401 as auth_401', () => {
+			expect(_classifyOpenAIError({ status: 401, message: 'Unauthorized' })).toBe('auth_401');
+		});
+
+		it('classifies SDK code invalid_api_key as auth_401', () => {
+			expect(_classifyOpenAIError({ code: 'invalid_api_key', message: 'Incorrect API key provided' })).toBe('auth_401');
+		});
+
+		it('classifies "Invalid API key" message (plain Error, no .status) as auth_401', () => {
+			// Real-world: vLLM proxies sometimes return a bare Error without a .status field.
+			expect(_classifyOpenAIError(new Error('Invalid API key'))).toBe('auth_401');
+		});
+
+		it('classifies HTTP 503 as service_503', () => {
+			expect(_classifyOpenAIError({ status: 503, message: 'Service Unavailable' })).toBe('service_503');
+		});
+
+		it('classifies HTTP 500 as service_503', () => {
+			expect(_classifyOpenAIError({ status: 500, message: 'Internal Server Error' })).toBe('service_503');
+		});
+
+		it('classifies ECONNREFUSED code as conn_refused', () => {
+			expect(_classifyOpenAIError({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:6333' })).toBe('conn_refused');
+		});
+
+		it('classifies cause.code ECONNREFUSED as conn_refused', () => {
+			// fetch() wraps the socket error in .cause — the real errno lives there.
+			expect(_classifyOpenAIError({ message: 'fetch failed', cause: { code: 'ECONNREFUSED' } })).toBe('conn_refused');
+		});
+
+		it('classifies ETIMEDOUT code as network_timeout', () => {
+			expect(_classifyOpenAIError({ code: 'ETIMEDOUT', message: 'connect ETIMEDOUT' })).toBe('network_timeout');
+		});
+
+		it('classifies "timed out" message as network_timeout', () => {
+			expect(_classifyOpenAIError(new Error('Request timed out after 30000ms'))).toBe('network_timeout');
+		});
+
+		it('classifies curl exit code 28 message as network_timeout', () => {
+			expect(_classifyOpenAIError(new Error('Command failed: curl ... exit code 28'))).toBe('network_timeout');
+		});
+
+		it('returns unknown for an unrecognized error', () => {
+			expect(_classifyOpenAIError(new Error('something weird happened'))).toBe('unknown');
+		});
+
+		it('returns unknown for undefined/null/empty shapes', () => {
+			expect(_classifyOpenAIError(undefined)).toBe('unknown');
+			expect(_classifyOpenAIError(null)).toBe('unknown');
+			expect(_classifyOpenAIError({})).toBe('unknown');
+		});
+
+		it('prefers auth_401 when status is the higher-signal 401', () => {
+			// A 401 with a 503-ish message → auth wins (HTTP status is more authoritative than substring).
+			expect(_classifyOpenAIError({ status: 401, message: 'service down maybe' })).toBe('auth_401');
+		});
+	});
+
+	describe('openai_error_type integration (diagnose output)', () => {
+		// Re-use the healthy Qdrant baseline; only the OpenAI rejection varies per test.
+		beforeEach(() => {
+			mockQdrantClient.getCollections.mockResolvedValue({
+				collections: [{ name: 'test-roo-state-manager' }]
+			});
+			mockQdrantClient.getCollection.mockResolvedValue({
+				vectors_count: 1000,
+				indexed_vectors_count: 1000,
+				points_count: 100,
+				config: { params: { vectors: { distance: 'Cosine', size: 1536 } } }
+			});
+		});
+
+		it('emits openai_error_type=auth_401 while keeping openai_connection=failed on 401', async () => {
+			mockOpenAIClient.embeddings.create.mockRejectedValue({ status: 401, message: 'Unauthorized' });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// openai_connection stays 'failed' (back-compat: downstream consumers at L328/L344 check === 'failed').
+			expect(parsed.details.openai_connection).toBe('failed');
+			expect(parsed.details.openai_error_type).toBe('auth_401');
+		});
+
+		it('emits openai_error_type=network_timeout on ETIMEDOUT and routes reco to network (NOT key)', async () => {
+			mockOpenAIClient.embeddings.create.mockRejectedValue({ code: 'ETIMEDOUT', message: 'connect ETIMEDOUT' });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.openai_error_type).toBe('network_timeout');
+			// The key-rotation reco MUST NOT fire for a network failure (this is the loop we're killing).
+			expect(parsed.recommendations).not.toContain(
+				'Vérifiez EMBEDDING_API_KEY et EMBEDDING_API_BASE_URL dans .env (self-hosted vLLM)'
+			);
+			expect(parsed.recommendations.some((r: string) => r.includes('Timeout atteint'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS rotater la clé'))).toBe(true);
+		});
+
+		it('emits openai_error_type=service_503 on HTTP 503 and routes reco to service', async () => {
+			mockOpenAIClient.embeddings.create.mockRejectedValue({ status: 503, message: 'Service Unavailable' });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.openai_error_type).toBe('service_503');
+			expect(parsed.recommendations.some((r: string) => r.includes('HTTP 503'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS rotater la clé'))).toBe(true);
+		});
+
+		it('emits openai_error_type=conn_refused on ECONNREFUSED and routes reco to port/service', async () => {
+			mockOpenAIClient.embeddings.create.mockRejectedValue({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:6333' });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.openai_error_type).toBe('conn_refused');
+			expect(parsed.recommendations.some((r: string) => r.includes('Connexion refusée'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS rotater la clé'))).toBe(true);
+		});
+
+		it('downgrades healthy→degraded even with a typed error (#2547 consumer intact)', async () => {
+			// Regression guard: the L328 downgrade checks openai_connection === 'failed' (NOT error_type),
+			// so a typed failure must still downgrade — otherwise status stays 'healthy' masking the outage.
+			mockOpenAIClient.embeddings.create.mockRejectedValue({ code: 'ETIMEDOUT', message: 'connect ETIMEDOUT' });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.errors.some((e: string) => e.includes('status downgraded from healthy to degraded'))).toBe(true);
+		});
+
+		it('does NOT emit openai_error_type on success', async () => {
+			// Success path must not pollute the output with an error_type field.
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.openai_connection).toBe('success');
+			expect(parsed.details.openai_error_type).toBeUndefined();
 		});
 	});
 });
