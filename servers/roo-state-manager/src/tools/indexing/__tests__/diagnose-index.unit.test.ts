@@ -910,6 +910,30 @@ describe('diagnose-index.tool (unit tests)', () => {
 			// A 401 with a 503-ish message → auth wins (HTTP status is more authoritative than substring).
 			expect(_classifyOpenAIError({ status: 401, message: 'service down maybe' })).toBe('auth_401');
 		});
+
+		// ============================================================
+		// Review-driven regression guards (Hermes + po-2026 review on PR #881).
+		// These pin the v2 phase-separation fix (structural status checked before
+		// any substring), which the v1 mixed-OR classifier got wrong.
+		// ============================================================
+
+		it('prefers service_503 when status is 503 even if message says unauthorized (po-2026 #1)', () => {
+			// The exact edge case the v1 mixed-OR misclassified: status 503 + "unauthorized"
+			// body → returned auth_401 (substring short-circuited before the service branch).
+			// Phase A structural-status check now wins → service_503.
+			expect(_classifyOpenAIError({ status: 503, message: 'upstream Unauthorized proxy error' })).toBe('service_503');
+		});
+
+		it('does not match bare numeric substrings like "4014ms" (Hermes non-blocking)', () => {
+			// v1 had msg.includes('401') which falsely caught "request took 4014ms".
+			// v2 dropped bare numeric substrings → no status/code/keyword → unknown.
+			expect(_classifyOpenAIError(new Error('request took 4014ms'))).toBe('unknown');
+		});
+
+		it('classifies HTTP 403 as auth_401', () => {
+			// 403 Forbidden is also a credential/permission signal → auth bucket.
+			expect(_classifyOpenAIError({ status: 403, message: 'Forbidden' })).toBe('auth_401');
+		});
 	});
 
 	describe('openai_error_type integration (diagnose output)', () => {
@@ -947,7 +971,7 @@ describe('diagnose-index.tool (unit tests)', () => {
 				'Vérifiez EMBEDDING_API_KEY et EMBEDDING_API_BASE_URL dans .env (self-hosted vLLM)'
 			);
 			expect(parsed.recommendations.some((r: string) => r.includes('Timeout atteint'))).toBe(true);
-			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS rotater la clé'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS faire de rotation de la clé'))).toBe(true);
 		});
 
 		it('emits openai_error_type=service_503 on HTTP 503 and routes reco to service', async () => {
@@ -957,7 +981,7 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			expect(parsed.details.openai_error_type).toBe('service_503');
 			expect(parsed.recommendations.some((r: string) => r.includes('HTTP 503'))).toBe(true);
-			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS rotater la clé'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS faire de rotation de la clé'))).toBe(true);
 		});
 
 		it('emits openai_error_type=conn_refused on ECONNREFUSED and routes reco to port/service', async () => {
@@ -967,7 +991,7 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			expect(parsed.details.openai_error_type).toBe('conn_refused');
 			expect(parsed.recommendations.some((r: string) => r.includes('Connexion refusée'))).toBe(true);
-			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS rotater la clé'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS faire de rotation de la clé'))).toBe(true);
 		});
 
 		it('downgrades healthy→degraded even with a typed error (#2547 consumer intact)', async () => {
