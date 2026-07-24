@@ -41,11 +41,17 @@ export function _resetConnectivityCache(): void {
  *
  * Typed statuses: `auth_401` | `network_timeout` | `service_503` | `conn_refused` | `unknown`.
  *
- * Strategy: structural properties FIRST (OpenAI SDK v4 APIError exposes `.status`;
- * Node network errors expose `.code`/`.cause.code`), message-substring LAST RESORT.
- * Message-substring is justified here because these are HTTP/network errors where
- * the message is frequently all a client has — NOT PowerShell-wrapped exceptions
- * (where InnerException typing is the reliable signal).
+ * Strategy: STRICT phases by descending signal reliability (Hermes/po-2026 review):
+ *   Phase A — structural HTTP `.status` (most reliable; OpenAI SDK v4 APIError).
+ *   Phase B — structural error `.code` / `.cause.code` (Node network errno).
+ *   Phase C — message-substring LAST RESORT (text keywords only — no bare numbers).
+ *
+ * Why separate phases (not one mixed OR): a 503 with "unauthorized" in its body must
+ * classify as service_503 (the status is authoritative), not auth_401. Mixing the
+ * structural status check with substring keywords in one `if` (v1) let the substring
+ * short-circuit before the service branch — fixed by checking ALL structural signals
+ * before ANY substring. Bare numeric substrings ('401'/'503') are excluded (v1 false
+ * positive: "request took 4014ms" → auth_401); only specific text keywords remain.
  *
  * @internal — exported only for unit tests.
  */
@@ -54,32 +60,43 @@ export function _classifyOpenAIError(err: any): 'auth_401' | 'network_timeout' |
     const code = err?.code ?? err?.cause?.code;
     const msg = String(err?.message ?? '').toLowerCase();
 
-    // Auth failure (401 / invalid_api_key / unauthorized)
-    if (status === 401 ||
-        code === 'invalid_api_key' ||
-        msg.includes('401') ||
-        msg.includes('incorrect api key') ||
+    // Phase A — structural HTTP status (authoritative; checked before any substring).
+    if (status === 401 || status === 403) {
+        return 'auth_401';
+    }
+    if (typeof status === 'number' && status >= 500) {
+        return 'service_503';
+    }
+
+    // Phase B — structural error code (Node network errno / SDK code).
+    if (code === 'invalid_api_key') {
+        return 'auth_401';
+    }
+    if (code === 'ECONNREFUSED') {
+        return 'conn_refused';
+    }
+    if (code === 'ETIMEDOUT') {
+        return 'network_timeout';
+    }
+
+    // Phase C — message-substring fallback (last resort, text keywords only — no bare numbers).
+    // Justified: HTTP/network errors where the message is frequently all a client has
+    // (NOT PowerShell-wrapped exceptions, where InnerException typing is the reliable signal).
+    if (msg.includes('incorrect api key') ||
         msg.includes('invalid api key') ||
         msg.includes('unauthorized') ||
         msg.includes('authentication failed') ||
         msg.includes('authentication error')) {
         return 'auth_401';
     }
-    // Service unavailable (5xx, especially 503 — proxy/vLLM down)
-    if (status === 503 || (typeof status === 'number' && status >= 500) ||
-        msg.includes('503') ||
-        msg.includes('service unavailable')) {
+    if (msg.includes('service unavailable')) {
         return 'service_503';
     }
-    // Connection refused (port closed / nothing listening)
-    if (code === 'ECONNREFUSED' ||
-        msg.includes('econnrefused') ||
+    if (msg.includes('econnrefused') ||
         msg.includes('connection refused')) {
         return 'conn_refused';
     }
-    // Network timeout (ETIMEDOUT / curl exit 28)
-    if (code === 'ETIMEDOUT' ||
-        msg.includes('etimedout') ||
+    if (msg.includes('etimedout') ||
         msg.includes('timed out') ||
         msg.includes('timeout') ||
         msg.includes('exit code 28')) {
@@ -416,19 +433,19 @@ export async function handleDiagnoseSemanticIndex(
             recommendations.push(
                 'Timeout atteint vers le backend d\'embedding (ETIMEDOUT / exit 28). ' +
                 'Vérifiez EMBEDDING_API_BASE_URL, la latence réseau et la disponibilité du service vLLM. ' +
-                'NE PAS rotater la clé (cause réseau, pas auth).'
+                'NE PAS faire de rotation de la clé (cause réseau, pas auth).'
             );
         } else if (errorType === 'service_503') {
             recommendations.push(
                 'Backend d\'embedding indisponible (HTTP 503). ' +
                 'Vérifiez le service vLLM/proxy (redémarrage, charge, health endpoint). ' +
-                'NE PAS rotater la clé (cause service, pas auth).'
+                'NE PAS faire de rotation de la clé (cause service, pas auth).'
             );
         } else if (errorType === 'conn_refused') {
             recommendations.push(
                 'Connexion refusée (ECONNREFUSED) vers le backend d\'embedding. ' +
                 'Vérifiez que le service écoute sur EMBEDDING_API_BASE_URL (hôte/port). ' +
-                'NE PAS rotater la clé (cause port fermé, pas auth).'
+                'NE PAS faire de rotation de la clé (cause port fermé, pas auth).'
             );
         } else {
             // auth_401 (genuine credential issue) OR unknown — check the key (pre-fix behaviour).
