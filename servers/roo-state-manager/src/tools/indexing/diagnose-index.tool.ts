@@ -19,7 +19,7 @@ import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 
 // #1275: Cache embedding connectivity check to avoid consuming API credits on every diagnose call.
 // TTL: 5 minutes (same as circuit breaker pattern).
-let lastConnectivityCheck = { time: 0, dimension: undefined as number | undefined, status: '' as string };
+let lastConnectivityCheck = { time: 0, dimension: undefined as number | undefined, status: '' as string, errorType: undefined as string | undefined };
 const CONNECTIVITY_CACHE_TTL_MS = parseInt(process.env.DIAGNOSE_CONNECTIVITY_TTL_MS || '300000');
 
 /**
@@ -27,7 +27,65 @@ const CONNECTIVITY_CACHE_TTL_MS = parseInt(process.env.DIAGNOSE_CONNECTIVITY_TTL
  * @internal
  */
 export function _resetConnectivityCache(): void {
-    lastConnectivityCheck = { time: 0, dimension: undefined, status: '' };
+    lastConnectivityCheck = { time: 0, dimension: undefined, status: '', errorType: undefined };
+}
+
+/**
+ * #2766 — Classify an embedding-backend error into a TYPED status.
+ *
+ * Previously diagnose-index collapsed EVERY embedding error to a blanket `failed`,
+ * which fed a false-positive key-rotation loop (coordinator could not tell
+ * auth_401 from network_timeout/service_503/conn_refused). This classifier keeps
+ * the raw error in `diagnostics.errors` (unchanged) AND emits a typed
+ * `openai_error_type` so consumers can branch on the root cause.
+ *
+ * Typed statuses: `auth_401` | `network_timeout` | `service_503` | `conn_refused` | `unknown`.
+ *
+ * Strategy: structural properties FIRST (OpenAI SDK v4 APIError exposes `.status`;
+ * Node network errors expose `.code`/`.cause.code`), message-substring LAST RESORT.
+ * Message-substring is justified here because these are HTTP/network errors where
+ * the message is frequently all a client has — NOT PowerShell-wrapped exceptions
+ * (where InnerException typing is the reliable signal).
+ *
+ * @internal — exported only for unit tests.
+ */
+export function _classifyOpenAIError(err: any): 'auth_401' | 'network_timeout' | 'service_503' | 'conn_refused' | 'unknown' {
+    const status = err?.status;
+    const code = err?.code ?? err?.cause?.code;
+    const msg = String(err?.message ?? '').toLowerCase();
+
+    // Auth failure (401 / invalid_api_key / unauthorized)
+    if (status === 401 ||
+        code === 'invalid_api_key' ||
+        msg.includes('401') ||
+        msg.includes('incorrect api key') ||
+        msg.includes('invalid api key') ||
+        msg.includes('unauthorized') ||
+        msg.includes('authentication failed') ||
+        msg.includes('authentication error')) {
+        return 'auth_401';
+    }
+    // Service unavailable (5xx, especially 503 — proxy/vLLM down)
+    if (status === 503 || (typeof status === 'number' && status >= 500) ||
+        msg.includes('503') ||
+        msg.includes('service unavailable')) {
+        return 'service_503';
+    }
+    // Connection refused (port closed / nothing listening)
+    if (code === 'ECONNREFUSED' ||
+        msg.includes('econnrefused') ||
+        msg.includes('connection refused')) {
+        return 'conn_refused';
+    }
+    // Network timeout (ETIMEDOUT / curl exit 28)
+    if (code === 'ETIMEDOUT' ||
+        msg.includes('etimedout') ||
+        msg.includes('timed out') ||
+        msg.includes('timeout') ||
+        msg.includes('exit code 28')) {
+        return 'network_timeout';
+    }
+    return 'unknown';
 }
 
 /**
@@ -155,6 +213,10 @@ export async function handleDiagnoseSemanticIndex(
         diagnostics.details.openai_connection = lastConnectivityCheck.status;
         diagnostics.details.embedding_live_dimension = embeddingLiveDimension;
         diagnostics.details.openai_connectivity_cached = true;
+        // #2766: replay the cached typed error so a cached failure still carries its root cause.
+        if (lastConnectivityCheck.errorType) {
+            diagnostics.details.openai_error_type = lastConnectivityCheck.errorType;
+        }
     } else {
         try {
             const openai = getOpenAIClient();
@@ -168,11 +230,15 @@ export async function handleDiagnoseSemanticIndex(
             diagnostics.details.openai_connection = status;
             diagnostics.details.embedding_live_dimension = embeddingLength;
             // Cache the result
-            lastConnectivityCheck = { time: now, dimension: embeddingLength, status };
+            lastConnectivityCheck = { time: now, dimension: embeddingLength, status, errorType: undefined };
         } catch (openaiError: any) {
+            // #2766: classify the root cause instead of collapsing every error to a blanket 'failed'.
+            // Raw error stays in diagnostics.errors (unchanged); the typed root cause is added below.
+            const errorType = _classifyOpenAIError(openaiError);
             diagnostics.errors.push(`Erreur OpenAI: ${openaiError.message}`);
             diagnostics.details.openai_connection = 'failed';
-            lastConnectivityCheck = { time: now, dimension: undefined, status: 'failed' };
+            diagnostics.details.openai_error_type = errorType;
+            lastConnectivityCheck = { time: now, dimension: undefined, status: 'failed', errorType };
         }
     }
 
@@ -342,7 +408,32 @@ export async function handleDiagnoseSemanticIndex(
         recommendations.push('La collection existe mais est vide. Lancez rebuild_task_index pour l\'indexer');
     }
     if (diagnostics.details.openai_connection === 'failed') {
-        recommendations.push('Vérifiez EMBEDDING_API_KEY et EMBEDDING_API_BASE_URL dans .env (self-hosted vLLM)');
+        // #2766: route the recommendation by root cause to kill the false-positive
+        // key-rotation loop. A typed status that nothing consumes is cosmetic — this
+        // routing is what stops an agent from rotating the key on a network/service failure.
+        const errorType = diagnostics.details.openai_error_type as string | undefined;
+        if (errorType === 'network_timeout') {
+            recommendations.push(
+                'Timeout atteint vers le backend d\'embedding (ETIMEDOUT / exit 28). ' +
+                'Vérifiez EMBEDDING_API_BASE_URL, la latence réseau et la disponibilité du service vLLM. ' +
+                'NE PAS rotater la clé (cause réseau, pas auth).'
+            );
+        } else if (errorType === 'service_503') {
+            recommendations.push(
+                'Backend d\'embedding indisponible (HTTP 503). ' +
+                'Vérifiez le service vLLM/proxy (redémarrage, charge, health endpoint). ' +
+                'NE PAS rotater la clé (cause service, pas auth).'
+            );
+        } else if (errorType === 'conn_refused') {
+            recommendations.push(
+                'Connexion refusée (ECONNREFUSED) vers le backend d\'embedding. ' +
+                'Vérifiez que le service écoute sur EMBEDDING_API_BASE_URL (hôte/port). ' +
+                'NE PAS rotater la clé (cause port fermé, pas auth).'
+            );
+        } else {
+            // auth_401 (genuine credential issue) OR unknown — check the key (pre-fix behaviour).
+            recommendations.push('Vérifiez EMBEDDING_API_KEY et EMBEDDING_API_BASE_URL dans .env (self-hosted vLLM)');
+        }
     }
     if (diagnostics.details.qdrant_connection === 'failed') {
         recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
