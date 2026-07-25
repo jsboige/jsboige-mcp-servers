@@ -408,11 +408,34 @@ export class ClaudeStorageDetector {
         if (typeof content === 'string') {
             text = content;
         } else if (Array.isArray(content)) {
-            // Extraire le texte des blocks
+            // Extraire le texte des blocks text
             const textBlocks = content
                 .filter((block: any) => block.type === 'text' && block.text)
                 .map((block: any) => block.text);
-            text = textBlocks.join('\n\n');
+
+            // #2946: tool_result blocks (Anthropic format — user messages that return
+            // tool output) carry type:'tool_result' with a `content` field (NOT type:'text').
+            // Previously these were silently dropped → skeleton stored content:'' →
+            // ContentClassifier.determineUserSubType fell back to 'UserMessage' →
+            // summarize(trace) reported "Résultats d'outils: 0" for every Claude session.
+            // Verified firsthand on session 0e4740f9: 483/483 tool_result blocks → ''.
+            // Serialize with a `[tool_result] Result:` marker so the existing classifier
+            // regex (^\[([^\]]+)\] Result:) detects them as ToolResult. Emitted FIRST so
+            // the leading anchor holds even when text blocks coexist in the same message.
+            const toolResultBlocks = content
+                .filter((block: any) => block.type === 'tool_result')
+                .map((block: any) => {
+                    const rc = typeof block.content === 'string'
+                        ? block.content
+                        : Array.isArray(block.content)
+                            ? block.content
+                                .map((b: any) => (b && typeof b.text === 'string') ? b.text : '')
+                                .join('')
+                            : '';
+                    return `[tool_result] Result: ${rc}`;
+                });
+
+            text = [...toolResultBlocks, ...textBlocks].join('\n\n');
         }
 
         if (text.length > maxLength) {
