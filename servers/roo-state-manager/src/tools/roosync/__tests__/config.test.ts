@@ -8,6 +8,10 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConfigArgsSchema, roosyncConfig, ConfigArgs } from '../config.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../../types/errors.js';
+import { promises as fs, existsSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
 
 // Mock RooSyncService
 const mockCollectConfig = vi.fn();
@@ -753,5 +757,91 @@ describe('roosyncConfig', () => {
       expect(result.errors).toContain('Profile not found');
       expect(result.errors).toContain('Invalid configuration');
     });
+  });
+});
+
+// ============================================================
+// #2766 S2+ — Temp-package teardown regression tests.
+// ConfigSharingService.collectConfig() creates temp/config-collect-* dirs that
+// were never cleaned up (2663 orphan dirs / 4.9 MB on po-2023). The tool layer
+// now tears them down after publish (success OR failure) and on empty collect.
+// These tests use REAL temp dirs (no fs mock) so the cleanup is verified end-to-end.
+// ============================================================
+describe('roosyncConfig — #2766 S2+ temp-package teardown', () => {
+  let seq = 0;
+
+  /** Create a real temp dir that matches isCollectTempPackage() (basename config-collect-*, under /temp/). */
+  async function makeCollectTempDir(): Promise<string> {
+    seq++;
+    const dir = join(tmpdir(), 'temp', `config-collect-test-${process.pid}-${seq}`);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'manifest.json'), '{}');
+    return dir;
+  }
+
+  /** Create a real temp dir that does NOT match isCollectTempPackage() (caller-owned external path). */
+  async function makeExternalTempDir(): Promise<string> {
+    seq++;
+    const dir = join(tmpdir(), `external-pkg-${process.pid}-${seq}`);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'manifest.json'), '{}');
+    return dir;
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+
+  test('publish with auto-collect (targets, no packagePath) tears down the temp dir', async () => {
+    const tempPkg = await makeCollectTempDir();
+    mockCollectConfig.mockResolvedValue({ packagePath: tempPkg, filesCount: 1, totalSize: 10, manifest: { files: [{}] } });
+    mockPublishConfig.mockResolvedValue({ success: true, version: '2.3.0', path: '/shared/cfg', machineId: 'm' });
+
+    expect(existsSync(tempPkg)).toBe(true);
+    const result = await roosyncConfig({ action: 'publish', targets: ['modes'], version: '2.3.0', description: 'd' } as ConfigArgs);
+    expect(result.status).toBe('success');
+    expect(existsSync(tempPkg)).toBe(false); // torn down after publish
+  });
+
+  test('publish tears down the temp dir even when publishConfig throws (finally)', async () => {
+    const tempPkg = await makeCollectTempDir();
+    mockCollectConfig.mockResolvedValue({ packagePath: tempPkg, filesCount: 1, totalSize: 10, manifest: { files: [{}] } });
+    mockPublishConfig.mockRejectedValue(new Error('shared state offline'));
+
+    expect(existsSync(tempPkg)).toBe(true);
+    await expect(
+      roosyncConfig({ action: 'publish', targets: ['modes'], version: '2.3.0', description: 'd' } as ConfigArgs),
+    ).rejects.toThrow('shared state offline');
+    expect(existsSync(tempPkg)).toBe(false); // finally still cleaned up — no leak on failure
+  });
+
+  test('publish with explicit external packagePath does NOT delete it (caller-owned)', async () => {
+    const externalPkg = await makeExternalTempDir();
+    mockPublishConfig.mockResolvedValue({ success: true, version: '2.3.0', path: '/shared/cfg', machineId: 'm' });
+
+    const result = await roosyncConfig({ action: 'publish', packagePath: externalPkg, version: '2.3.0', description: 'd' } as ConfigArgs);
+    expect(result.status).toBe('success');
+    expect(existsSync(externalPkg)).toBe(true); // NOT deleted — external path, caller owns it
+    await fs.rm(externalPkg, { recursive: true, force: true }); // test artifact cleanup
+  });
+
+  test('collect with filesCount===0 cleans up the empty temp dir and omits packagePath', async () => {
+    const tempPkg = await makeCollectTempDir();
+    mockCollectConfig.mockResolvedValue({ packagePath: tempPkg, filesCount: 0, totalSize: 0, manifest: { files: [] } });
+
+    expect(existsSync(tempPkg)).toBe(true);
+    const result = await roosyncConfig({ action: 'collect' } as ConfigArgs);
+    expect(result.status).toBe('warning');
+    expect((result as any).packagePath).toBeUndefined(); // no dangling path returned
+    expect(existsSync(tempPkg)).toBe(false); // empty dir cleaned up
+  });
+
+  test('collect with filesCount>0 keeps the temp dir (it is the deliverable)', async () => {
+    const tempPkg = await makeCollectTempDir();
+    mockCollectConfig.mockResolvedValue({ packagePath: tempPkg, filesCount: 3, totalSize: 512, manifest: { files: [{}, {}, {}] } });
+
+    const result = await roosyncConfig({ action: 'collect' } as ConfigArgs);
+    expect(result.status).toBe('success');
+    expect(result.packagePath).toBe(tempPkg);
+    expect(existsSync(tempPkg)).toBe(true); // kept — successful collect returns the package
+    await fs.rm(tempPkg, { recursive: true, force: true }); // test artifact cleanup
   });
 });

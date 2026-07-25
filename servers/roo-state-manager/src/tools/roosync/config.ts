@@ -3,6 +3,8 @@ import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
+import { promises as fs } from 'fs';
+import { basename } from 'path';
 
 /**
  * Claude Code scope pour les configurations MCP
@@ -160,6 +162,43 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'scht
   });
 }
 
+// ---------------------------------------------------------------------------
+// #2766 S2+ — Temp-package teardown helpers (prevent host degradation).
+//
+// ConfigSharingService.collectConfig() writes its package into
+// `join(process.cwd(), 'temp', 'config-collect-${Date.now()}')`
+// (ConfigSharingService.ts:59). Nothing tore that dir down after publish, so
+// 2663 orphan dirs (4.9 MB) accumulated under servers/roo-state-manager/temp/
+// on po-2023 alone. These helpers let the tool layer clean up only the dirs
+// WE produced — an explicit external packagePath passed by a caller is never
+// deleted.
+// ---------------------------------------------------------------------------
+
+/**
+ * True iff `packagePath` is a temp dir produced by our own collectConfig.
+ * Guards teardown so a caller-supplied path is never removed.
+ */
+function isCollectTempPackage(packagePath: string | undefined | null): boolean {
+  if (!packagePath || typeof packagePath !== 'string') return false;
+  if (!basename(packagePath).startsWith('config-collect-')) return false;
+  // Must live under a `temp` directory (collectConfig: join(cwd, 'temp', ...)).
+  // Normalize separators so the check is cross-platform.
+  const normalized = packagePath.replace(/\\/g, '/');
+  return /\/temp\//.test(normalized);
+}
+
+/**
+ * Best-effort recursive removal of a temp package dir. Never throws: a failed
+ * cleanup is preferable to failing the user's publish/collect result.
+ */
+async function safeCleanupTempPackage(packagePath: string): Promise<void> {
+  try {
+    await fs.rm(packagePath, { recursive: true, force: true });
+  } catch {
+    // Swallow: residual gitignored temp dir is harmless vs. breaking the call.
+  }
+}
+
 /**
  * Gestion de configuration RooSync (collect, publish, apply)
  *
@@ -248,10 +287,14 @@ export async function roosyncConfig(args: ConfigArgs) {
         });
 
         if (result.filesCount === 0) {
+          // #2766 S2+ — Empty collect: tear down the useless temp dir instead of
+          // leaving a dangling packagePath the caller can't use (and would leak).
+          if (isCollectTempPackage(result.packagePath)) {
+            await safeCleanupTempPackage(result.packagePath);
+          }
           return {
             status: 'warning',
             message: `Aucun fichier collecté pour les targets: ${targets.join(', ')}. Vérifiez que les répertoires sources existent.`,
-            packagePath: result.packagePath,
             totalSize: result.totalSize,
             manifest: result.manifest
           };
@@ -272,6 +315,7 @@ export async function roosyncConfig(args: ConfigArgs) {
 
         // Workflow atomique collect+publish si targets fourni sans packagePath
         let finalPackagePath = packagePath;
+        let autoCollected = false;
         if (!packagePath && targets) {
           // Collect automatique
           const collectResult = await configSharingService.collectConfig({
@@ -280,6 +324,7 @@ export async function roosyncConfig(args: ConfigArgs) {
             scope // Issue #601 - Pass scope to collect
           });
           finalPackagePath = collectResult.packagePath;
+          autoCollected = true; // #2766 S2+ — we created it, we own its teardown
         }
 
         if (!finalPackagePath) {
@@ -290,20 +335,33 @@ export async function roosyncConfig(args: ConfigArgs) {
           );
         }
 
-        const result = await configSharingService.publishConfig({
-          packagePath: finalPackagePath,
-          version: version!,
-          description: description!,
-          machineId
-        });
+        // #2766 S2+ — Teardown the temp package dir after publish (success OR
+        // failure). publishConfig has copied the package into shared state; the
+        // temp/ source is dead weight that accumulates indefinitely. Clean up
+        // dirs WE produced (auto-collected, or an explicit packagePath that
+        // matches our collect temp pattern = collect→publish flow). External
+        // caller paths are never deleted.
+        const shouldCleanup = autoCollected || isCollectTempPackage(finalPackagePath);
+        try {
+          const result = await configSharingService.publishConfig({
+            packagePath: finalPackagePath,
+            version: version!,
+            description: description!,
+            machineId
+          });
 
-        return {
-          status: 'success',
-          message: `Configuration publiée avec succès pour la machine ${result.machineId || 'locale'}`,
-          version: result.version,
-          targetPath: result.path,
-          machineId: result.machineId
-        };
+          return {
+            status: 'success',
+            message: `Configuration publiée avec succès pour la machine ${result.machineId || 'locale'}`,
+            version: result.version,
+            targetPath: result.path,
+            machineId: result.machineId
+          };
+        } finally {
+          if (shouldCleanup) {
+            await safeCleanupTempPackage(finalPackagePath);
+          }
+        }
       }
 
       case 'apply': {
