@@ -265,11 +265,15 @@ async function handleEnvAction(
     report.status = 'DEGRADED';
   }
 
+  // #2766 S2+ (P3): success reflects whether the diagnostic COMPLETED, not whether
+  // it found issues. WARNING/DEGRADED are diagnostic findings surfaced in the report
+  // body (status, directories, capabilities) — a warning is not a failure. A genuine
+  // inability to run surfaces as a thrown error (caught by the caller), not success:false.
   return {
-    success: report.status === 'OK',
+    success: true,
     action: 'env',
     timestamp,
-    message: `Diagnostic d'environnement ${report.status === 'OK' ? 'OK' : 'WARNING'}`,
+    message: `Diagnostic d'environnement ${report.status}`,
     data: report
   };
 }
@@ -420,11 +424,20 @@ async function handleHealthAction(
     `Tier2(Claude): ${stats.config.enableClaudeTier ? stats.tier2_claude : 'OFF'} | ` +
     `Tier3(Archives): ${stats.config.enableArchiveTier ? stats.tier3_archives : 'OFF'}`;
 
+  // #2766 S2+ (P2): surface cache freshness. Health no longer blocks on a refresh,
+  // so the counts reflect the current in-memory snapshot — the consumer sees how
+  // fresh that snapshot is (a warm cache returns fresh; a cold one returns total:0
+  // + stale:true, which itself is useful health info rather than a 2-minute hang).
+  const ageSec = stats.cacheAgeMs != null ? Math.round(stats.cacheAgeMs / 1000) : null;
+  const freshness = stats.stale
+    ? ` — STALE (age ${ageSec}s; refreshes on next read)`
+    : ` — fresh (age ${ageSec}s)`;
+
   return {
     success: true,
     action: 'health',
     timestamp,
-    message: `Skeleton cache health: ${tierSummary} — Total: ${stats.total}`,
+    message: `Skeleton cache health: ${tierSummary} — Total: ${stats.total}${freshness}`,
     data: {
       tiers: {
         tier1_roo: { enabled: true, count: stats.tier1_roo },
@@ -436,6 +449,8 @@ async function handleHealthAction(
         SKELETON_CLAUDE_TIER: stats.config.enableClaudeTier,
         SKELETON_ARCHIVE_TIER: stats.config.enableArchiveTier,
       },
+      cacheAgeMs: stats.cacheAgeMs,
+      stale: stats.stale,
     },
   };
 }

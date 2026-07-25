@@ -86,7 +86,10 @@ describe('roosync_diagnose', () => {
       expect(result.data.status).toBe('OK');
     });
 
-    it('should return WARNING status when directories are missing', async () => {
+    it('should surface WARNING in the body but keep success:true (warning is not a failure)', async () => {
+      // #2766 S2+ (P3) regression guard: a WARNING-level finding (missing dir) must
+      // NOT flip success to false. The diagnostic completed; the warning is surfaced
+      // in data.status + data.directories for the consumer.
       // Mock fs.access pour échouer sur certains répertoires
       vi.mocked(fs.access).mockRejectedValue({ code: 'ENOENT' });
 
@@ -96,13 +99,33 @@ describe('roosync_diagnose', () => {
 
       const result: DiagnoseResult = await roosyncDiagnose(args);
 
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
       expect(result.action).toBe('env');
       expect(result.message).toContain('WARNING');
       expect(result.data.status).toBe('WARNING');
       expect(result.data.directories['.']).toEqual(
         expect.objectContaining({ exists: false, error: 'ENOENT' })
       );
+    });
+
+    it('should keep success:true when only capabilities are DEGRADED', async () => {
+      // #2766 S2+ (P3) regression guard: a DEGRADED capability (e.g. embeddings down)
+      // is a diagnostic finding surfaced in data.capabilities, not a call failure.
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      const capsModule = await import('../../../utils/server-capabilities.js');
+      const capsSpy = vi.spyOn(capsModule, 'getServerCapabilities').mockReturnValue({
+        isDegraded: () => true,
+        getAllDegraded: () => [{ capability: 'embeddings', reason: 'provider 503', since: 'now' }],
+        getReport: () => ({ embeddings: 'down' }),
+      } as any);
+
+      const result: DiagnoseResult = await roosyncDiagnose({ action: 'env' });
+
+      expect(result.success).toBe(true);
+      expect(result.data.status).toBe('DEGRADED');
+      expect(result.data.capabilities.available).toBe(false);
+      expect(result.data.capabilities.degraded).toHaveLength(1);
+      capsSpy.mockRestore();
     });
 
     it('should check disk space when checkDiskSpace is true', async () => {
@@ -275,6 +298,8 @@ describe('roosync_diagnose', () => {
         tier3_archives: 11562,
         total: 12223,
         config: { enableClaudeTier: true, enableArchiveTier: true },
+        cacheAgeMs: 5000,
+        stale: false,
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
@@ -303,6 +328,8 @@ describe('roosync_diagnose', () => {
         tier3_archives: 0,
         total: 100,
         config: { enableClaudeTier: false, enableArchiveTier: false },
+        cacheAgeMs: 5000,
+        stale: false,
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
@@ -321,6 +348,7 @@ describe('roosync_diagnose', () => {
       const mockStats = {
         tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
         config: { enableClaudeTier: false, enableArchiveTier: false },
+        cacheAgeMs: 5000, stale: false,
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
