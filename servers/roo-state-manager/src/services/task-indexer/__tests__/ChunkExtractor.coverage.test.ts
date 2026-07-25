@@ -166,6 +166,21 @@ describe('ChunkExtractor coverage — extractChunksFromTask', () => {
     expect(chunks[0].content).toBe('42');
   });
 
+  it('#2949: folds a tool_result block (Anthropic format) into the user-message chunk content', async () => {
+    // Pre-fix the type:'text'-only array filter dropped tool_result → contentText='' → skipped.
+    setupTaskFiles({
+      metadata: JSON.stringify({}),
+      api: JSON.stringify([
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'Command executed: exit 0' }], timestamp: 't' },
+      ]),
+    });
+    const chunks = await extractChunksFromTask('t2949', '/task');
+    // Pre-fix: 0 chunks. Post-fix: the user message is indexed with the marker + output.
+    expect(chunks.length).toBe(1);
+    expect(chunks[0].content.startsWith('[tool_result] Result:')).toBe(true);
+    expect(chunks[0].content).toContain('Command executed: exit 0');
+  });
+
   it('throws StateManagerError on malformed api_conversation_history.json (L321-339)', async () => {
     setupTaskFiles({ metadata: JSON.stringify({}), api: '{ this is not json' });
     await expect(extractChunksFromTask('t5', '/task')).rejects.toThrow(StateManagerError);
@@ -230,6 +245,45 @@ describe('ChunkExtractor coverage — extractChunksFromClaudeSession', () => {
     expect(overflowChunk!.child_unit_index).toBe(2);
     // The warn fires under the new tag (#2825/G2).
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('#2825/G2'));
+  });
+
+  // #2949: tool_result blocks (Anthropic format) in user messages must be folded into the
+  // chunk content so tool output is indexed/searchable. Pre-fix the type:'text'-only filter
+  // dropped them → contentText='' → the user message was skipped → tool output never indexed.
+  it('#2949: indexes a tool_result-only user message with the marker + output (was skipped)', async () => {
+    mockStat.mockResolvedValue({ isDirectory: () => false } as any); // direct-file path
+    pushStream(JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'call_abc', content: 'error: cannot pull with rebase' },
+      ] },
+      timestamp: '2024-01-01T10:00:00.000Z',
+    }));
+    const chunks = await extractChunksFromClaudeSession('claude-tr', '/proj/session.jsonl');
+    // Pre-fix: 0 chunks (the user message was skipped because contentText was '').
+    expect(chunks.length).toBe(1);
+    expect(chunks[0].chunk_type).toBe('message_exchange');
+    expect(chunks[0].content.startsWith('[tool_result] Result:')).toBe(true);
+    expect(chunks[0].content).toContain('cannot pull with rebase');
+  });
+
+  it('#2949: flattens a tool_result whose content is an array of text blocks', async () => {
+    mockStat.mockResolvedValue({ isDirectory: () => false } as any);
+    pushStream(JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'call_def', content: [
+          { type: 'text', text: 'line A' },
+          { type: 'text', text: 'line B' },
+        ] },
+      ] },
+      timestamp: '2024-01-01T10:00:00.000Z',
+    }));
+    const chunks = await extractChunksFromClaudeSession('claude-tr2', '/proj/session.jsonl');
+    expect(chunks.length).toBe(1);
+    expect(chunks[0].content.startsWith('[tool_result] Result:')).toBe(true);
+    expect(chunks[0].content).toContain('line A');
+    expect(chunks[0].content).toContain('line B');
   });
 });
 

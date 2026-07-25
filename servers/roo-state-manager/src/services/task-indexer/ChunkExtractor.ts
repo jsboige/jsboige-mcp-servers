@@ -134,6 +134,34 @@ export function getHostIdentifier() {
 }
 
 /**
+ * #2949: Extract tool_result block text (Anthropic format) for indexing.
+ *
+ * Claude Code stores tool results as `{type:'tool_result', content:'...'}` content blocks
+ * inside user-role messages. The text extraction above only keeps `type:'text'` blocks, so
+ * tool outputs were dropped → `contentText=''` → the message chunk was skipped → tool output
+ * was never indexed in Qdrant and invisible to `roosync_search(semantic)`.
+ *
+ * Serializes each tool_result with a `[tool_result] Result:` marker (same shape as the fix
+ * in claude-storage-detector.extractContent, #894) so the content is both searchable and
+ * recognizable as a tool output. `content` may be a string or an array of `{type:'text'}` blocks.
+ */
+function extractToolResultText(content: any[]): string {
+    return content
+        .filter((block: any) => block && typeof block === 'object' && block.type === 'tool_result')
+        .map((block: any) => {
+            const rc = typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                    ? block.content
+                        .map((b: any) => (b && typeof b.text === 'string') ? b.text : '')
+                        .join('')
+                    : '';
+            return `[tool_result] Result: ${rc}`;
+        })
+        .join('\n\n');
+}
+
+/**
  * Extrait et structure les chunks d'une tâche selon la stratégie granulaire.
  * @param taskId L'ID de la tâche.
  * @param taskPath Le chemin vers le répertoire de la tâche.
@@ -255,6 +283,16 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         })
                         .join(' ')
                         .trim();
+
+                    // #2949: Fold tool_result blocks (Anthropic format — user messages returning
+                    // tool output) into contentText so the output is indexed/searchable. Without
+                    // this, a user message containing only a tool_result serializes to '' and is
+                    // skipped at the `if (contentText.trim())` guard below → tool output never
+                    // reaches Qdrant. Emitted FIRST so any downstream leading-anchor logic holds.
+                    const toolResultText = extractToolResultText(msg.content as any[]);
+                    if (toolResultText) {
+                        contentText = toolResultText + (contentText ? '\n\n' + contentText : '');
+                    }
 
                     // #2336 D2 étape B: Extract tool_use blocks (Anthropic format) → populate msg.tool_calls
                     // so the existing handler below (line ~260) can emit tool_interaction chunks.
@@ -589,6 +627,14 @@ export async function extractChunksFromClaudeSession(
                                 .map((block: any) => block.text)
                                 .join(' ')
                                 .trim();
+
+                            // #2949: Fold tool_result blocks (Anthropic format) into contentText
+                            // so tool output is indexed/searchable. Same fix as the API path above
+                            // and as claude-storage-detector.extractContent (#894).
+                            const toolResultText = extractToolResultText(message.content);
+                            if (toolResultText) {
+                                contentText = toolResultText + (contentText ? '\n\n' + contentText : '');
+                            }
 
                             // #2336 D2 étape B: Collect tool_use blocks for tool_interaction chunks
                             claudeToolUseBlocks = message.content.filter(
