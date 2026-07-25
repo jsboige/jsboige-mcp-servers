@@ -245,4 +245,40 @@ describe('ClusterSummaryService — statistics values', () => {
     );
     expect(result.statistics.clusterTimeSpan.totalDurationHours).toBe(3);
   });
+
+  // #2946 regression — single-task cluster must report actual session span,
+  // not 0. Pre-fix: min(createdAt)===max(createdAt) → 0 minutes.
+  it('#2946 single-task cluster duration uses lastActivity (not createdAt only)', async () => {
+    const service = new ClusterSummaryService();
+    const result = await service.generateClusterSummary(
+      task('solo', {
+        createdAt: '2026-07-01T10:00:00Z',
+        lastActivity: '2026-07-01T14:30:00Z', // 4.5h span
+      }),
+      [],
+      {}
+    );
+    expect(result.statistics.clusterTimeSpan.totalDurationHours).toBe(4.5);
+    expect(result.statistics.clusterTimeSpan.startTime).toBe('2026-07-01T10:00:00.000Z');
+    expect(result.statistics.clusterTimeSpan.endTime).toBe('2026-07-01T14:30:00.000Z');
+  });
+
+  // #2946 regression — multi-task cluster span = max(lastActivity) - min(createdAt)
+  it('#2946 multi-task cluster duration spans earliest start to latest activity', async () => {
+    const service = new ClusterSummaryService();
+    const result = await service.generateClusterSummary(
+      task('root', { createdAt: '2026-07-01T10:00:00Z', lastActivity: '2026-07-01T11:00:00Z' }),
+      [
+        // child starts later, but its lastActivity extends beyond root's
+        task('c1', {
+          parent: 'root',
+          createdAt: '2026-07-01T11:00:00Z',
+          lastActivity: '2026-07-01T15:00:00Z',
+        }),
+      ],
+      {}
+    );
+    // Span = 15:00 (max lastActivity) - 10:00 (min createdAt) = 5h
+    expect(result.statistics.clusterTimeSpan.totalDurationHours).toBe(5);
+  });
 });

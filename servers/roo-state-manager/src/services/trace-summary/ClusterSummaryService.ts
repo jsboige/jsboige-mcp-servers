@@ -407,11 +407,15 @@ export class ClusterSummaryService {
 
     /**
      * Calcule le span temporel de la grappe
+     *
+     * #2946: endTime uses `lastActivity` (not `createdAt`) so a single-task cluster
+     * reports the actual session span rather than 0 (min(createdAt)===max(createdAt)).
      */
     private calculateClusterTimeSpan(tasks: ConversationSkeleton[]) {
-        const dates = tasks.map(task => new Date(task.metadata.createdAt));
-        const startTime = new Date(Math.min(...dates.map(d => d.getTime())));
-        const endTime = new Date(Math.max(...dates.map(d => d.getTime())));
+        const startTimes = tasks.map(task => new Date(task.metadata.createdAt).getTime());
+        const endTimes = tasks.map(task => new Date(task.metadata.lastActivity).getTime());
+        const startTime = new Date(Math.min(...startTimes));
+        const endTime = new Date(Math.max(...endTimes));
         const totalDurationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
         return {
@@ -873,10 +877,11 @@ ${sortedByDate.map(task => {
         const toolsUsed = new Set<string>();
         const modesUsed = new Set<string>();
 
-        // Calcul de la durée totale
-        const allDates = organizedTasks.allTasks.map(task => new Date(task.metadata.createdAt));
-        const startTime = new Date(Math.min(...allDates.map(d => d.getTime())));
-        const endTime = new Date(Math.max(...allDates.map(d => d.getTime())));
+        // Calcul de la durée totale — #2946: span = max(lastActivity) - min(createdAt)
+        const startTimes = organizedTasks.allTasks.map(task => new Date(task.metadata.createdAt).getTime());
+        const endTimes = organizedTasks.allTasks.map(task => new Date(task.metadata.lastActivity).getTime());
+        const startTime = new Date(Math.min(...startTimes));
+        const endTime = new Date(Math.max(...endTimes));
         const totalDurationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
         for (const task of organizedTasks.allTasks) {
