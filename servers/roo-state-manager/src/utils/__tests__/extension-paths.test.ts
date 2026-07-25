@@ -13,6 +13,8 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
 import {
 	getExtensionId,
 	isZooCode,
@@ -23,6 +25,9 @@ import {
 	getTasksPath,
 	getSettingsPath,
 	detectSourceFromPath,
+	probeInstalledExtensionId,
+	resolveActiveExtensionId,
+	getActiveMcpSettingsPath,
 	DEFAULT_VSCDB_KEY,
 	ZOO_CODE_VSCDB_KEY,
 } from '../extension-paths.js';
@@ -171,5 +176,78 @@ describe('path helpers', () => {
 	test('paths reflect the Zoo-Code extension id when overridden', () => {
 		process.env.ROO_EXTENSION_ID = 'zoocodeorganization.zoo-code';
 		expect(getGlobalStoragePath().endsWith(path.join('globalStorage', 'zoocodeorganization.zoo-code'))).toBe(true);
+	});
+});
+
+// ============================================================
+// #2766 S2 — Filesystem-aware resolution (probe / resolveActive / getActiveMcpSettingsPath)
+// Covers the ENOENT regression on Zoo-only hosts (no Roo installed, no env override).
+// ============================================================
+describe('#2766 S2 — filesystem-aware resolution', () => {
+	const ROO = 'rooveterinaryinc.roo-cline';
+	const ZOO = 'zoocodeorganization.zoo-code';
+	let tmpAppData: string;
+	let globalStorageRoot: string;
+
+	beforeEach(() => {
+		delete process.env.ROO_EXTENSION_ID;
+		// Real temp APPDATA so the probe's fs.existsSync is exercised against
+		// controlled dir presence (not the host machine's real globalStorage).
+		tmpAppData = path.join(os.tmpdir(), `ext-paths-probe-${process.pid}`);
+		globalStorageRoot = path.join(tmpAppData, 'Code', 'User', 'globalStorage');
+		fs.rmSync(tmpAppData, { recursive: true, force: true });
+		fs.mkdirSync(globalStorageRoot, { recursive: true });
+		process.env.APPDATA = tmpAppData;
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpAppData, { recursive: true, force: true });
+	});
+
+	test('probeInstalledExtensionId returns null when neither is installed', () => {
+		expect(probeInstalledExtensionId()).toBeNull();
+	});
+
+	test('probeInstalledExtensionId returns roo-cline when only roo-cline exists', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ROO), { recursive: true });
+		expect(probeInstalledExtensionId()).toBe(ROO);
+	});
+
+	test('probeInstalledExtensionId returns zoo-code when only zoo-code exists (the ENOENT regression)', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		expect(probeInstalledExtensionId()).toBe(ZOO);
+	});
+
+	test('probeInstalledExtensionId prefers roo-cline when both exist (back-compat)', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ROO), { recursive: true });
+		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		expect(probeInstalledExtensionId()).toBe(ROO);
+	});
+
+	test('resolveActiveExtensionId: env override wins over filesystem probe', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		process.env.ROO_EXTENSION_ID = 'custom.override.ext';
+		expect(resolveActiveExtensionId()).toBe('custom.override.ext');
+	});
+
+	test('resolveActiveExtensionId: probe wins over default on a zoo-only host', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		expect(resolveActiveExtensionId()).toBe(ZOO);
+	});
+
+	test('resolveActiveExtensionId: falls back to default when neither installed', () => {
+		expect(resolveActiveExtensionId()).toBe(ROO);
+	});
+
+	test('getActiveMcpSettingsPath resolves to zoo-code on a zoo-only host', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		const resolved = getActiveMcpSettingsPath();
+		expect(resolved).toContain(ZOO);
+		expect(resolved.endsWith(path.join('settings', 'mcp_settings.json'))).toBe(true);
+	});
+
+	test('getActiveMcpSettingsPath does NOT resolve to roo-cline on a zoo-only host (regression guard)', () => {
+		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		expect(getActiveMcpSettingsPath()).not.toContain(ROO);
 	});
 });
