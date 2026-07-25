@@ -20,6 +20,22 @@ import { resetQdrantCollectionTool } from './reset-collection.tool.js';
 import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { classifyIndexingError } from '../../services/background-services.js';
+import { MAX_RETRY_ATTEMPTS } from '../../types/indexing.js';
+
+/**
+ * #2766 S2+ (po-2026 follow-up): A task is "stuck-retrying" when the indexer
+ * has retried it `MAX_RETRY_ATTEMPTS` times without transitioning to success
+ * or permanent failure. These tasks are queue-drained (shouldIndex() returns
+ * skip) but linger in cache as noise — surfacing them lets operators
+ * dead-letter or reset them via `cleanup_failed`.
+ *
+ * Single source of truth: `MAX_RETRY_ATTEMPTS` (#types/indexing). Drift
+ * between call sites was the lesson from ai-01 review (#887 nit #1).
+ */
+function isStuckRetry(idx: { indexStatus?: string; indexRetryCount?: number } | undefined): boolean {
+    return idx?.indexStatus === 'retry' && (idx.indexRetryCount ?? 0) >= MAX_RETRY_ATTEMPTS;
+}
 
 /** #2336 D1: Convert ISO timestamp to YYYY-WNN week key */
 function getISOWeek(timestamp: string): string {
@@ -64,7 +80,7 @@ export function normalizeToolName(rawName: string): string {
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -132,6 +148,12 @@ export interface RooSyncIndexingArgs {
     /** #2246: Max tasks to repair per call (pour action=repair_gaps). Défaut: 50 */
     max_repair_tasks?: number;
 
+    /** #2766 S2+ (po-2026): Filter cleanup_failed by typed error class (15-class from #886). Default: all classes. */
+    error_class?: string;
+
+    /** #2766 S2+ (po-2026): Max tasks to reset per cleanup_failed call. Défaut: 100 */
+    max_cleanup_tasks?: number;
+
     /** #2336 D1: Start date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago */
     start_date?: string;
 
@@ -150,8 +172,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics — with dead-letter by-class), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), cleanup_failed (reset skeletons of perm-failed/stuck-retry tasks by error class — dry-run default), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
             },
             task_id: {
                 type: 'string',
@@ -259,6 +281,15 @@ export const roosyncIndexingTool: Tool = {
                 description: 'For repair_gaps. Max tasks to scan per call. Default: 50.',
                 default: 50
             },
+            error_class: {
+                type: 'string',
+                description: 'For cleanup_failed. Filter by typed error class from #886 classifier (15-class: claude_session_not_found, file_not_found, access_denied, permission_denied, invalid_format, corrupted_data, quota_exceeded, auth_failed, network_timeout, service_503, rate_limit, connection_reset, dns_failure, embedding_timeout, unknown). Default: all classes (matches anything).'
+            },
+            max_cleanup_tasks: {
+                type: 'number',
+                description: 'For cleanup_failed. Max tasks to reset per call. Default: 100.',
+                default: 100
+            },
             start_date: {
                 type: 'string',
                 description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.'
@@ -322,10 +353,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, tool_usage_stats, save_snapshot, trend_report` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, cleanup_failed, tool_usage_stats, save_snapshot, trend_report` }]
         };
     }
 
@@ -460,17 +491,31 @@ export async function handleRooSyncIndexing(
                 hints.push('Queue non vide mais worker non démarré. Le serveur MCP peut ne pas avoir initialisé les services background.');
             }
 
-            // #2307: Collect per-task failure details from cache
+            // #2307: Collect per-task failure details from cache.
+            // #2766 S2+ (po-2026 follow-up): include stuck-retry tasks via the shared
+            // `isStuckRetry` helper (single source of truth: MAX_RETRY_ATTEMPTS), and
+            // apply the retroactive classifier fallback so legacy failures (those that
+            // were perm-failed BEFORE #886 shipped `idx.errorClass`) still get a
+            // fine-grained class instead of an opaque 'unknown'. The fallback consumes
+            // #886's `classifyIndexingError({message: idx.indexError})` (no inline
+            // re-classification).
             const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined }> = [];
             for (const [taskId, skeleton] of conversationCache) {
                 const idx = skeleton.metadata?.indexingState;
-                if (idx?.indexStatus === 'failed') {
+                if (!idx) continue;
+                const isFailed = idx.indexStatus === 'failed';
+                if (isFailed || isStuckRetry(idx)) {
+                    const errorMessage = idx.indexError || 'unknown error';
+                    // Retroactive fallback: legacy failures lack `idx.errorClass`.
+                    // Run the message through the 15-class classifier so the
+                    // by-class breakdown actually triages the 26 existing
+                    // perm-failed tasks (without this they all show 'unknown').
+                    const errorClass = idx.errorClass
+                        ?? classifyIndexingError({ message: errorMessage }).errorClass;
                     failedTasks.push({
                         task_id: taskId,
-                        error: idx.indexError || 'unknown error',
-                        // #2766 S2+: surface the fine-grained error class so
-                        // operators can triage without grepping log lines.
-                        error_class: idx.errorClass ?? 'unknown',
+                        error: errorMessage,
+                        error_class: errorClass,
                         retry_count: idx.indexRetryCount ?? 0,
                         last_attempt: idx.lastIndexAttempt,
                     });
@@ -506,6 +551,14 @@ export async function handleRooSyncIndexing(
 
             if (failedTasks.length > 0) {
                 hints.push(`${failedTasks.length} tâches en échec permanent (détails dans failed_task_details ci-dessous).`);
+                // #2766 S2+ (po-2026 follow-up): queue-drained stall hint — when the
+                // active queue is empty but failures linger in cache, operators
+                // need a nudge to discover `cleanup_failed`. Without this hint,
+                // the only signal is the failed-by-class count against a 0 queue,
+                // which is easy to miss in dashboards.
+                if (state.qdrantIndexQueue.size === 0) {
+                    hints.push(`Queue drainée (0 en cours) mais ${failedTasks.length} échecs persistent en cache. Utilisez action=cleanup_failed (dry-run par défaut) avec error_class= pour dead-letter/réinitialiser par classe d'erreur.`);
+                }
             }
             if (deadLetterSize > 0) {
                 // Distinct hint so operators can spot dead-letter growth vs
@@ -580,6 +633,111 @@ export async function handleRooSyncIndexing(
                     }]
                 };
             }
+        }
+
+        case 'cleanup_failed': {
+            // #2766 S2+ (po-2026 follow-up): reset skeletons of perm-failed
+            // and stuck-retry tasks so they re-enter the indexer queue on the
+            // next refresh. Consumes #886's `idx.errorClass` (no inline
+            // re-classification). The dead-letter bookkeeping is left alone —
+            // cleanup_failed only touches `indexingState`, mirroring the
+            // `resetIndexingState` contract (no fake success, no TTL).
+            //
+            // Dry-run is the default: operators see the by-class breakdown
+            // before any reset.
+            //
+            // Caveat (ai-01 review nit #2): when error_class=all and dry_run=false
+            // on a fleet with auth_failed failures, those reset tasks will
+            // re-enter the queue and re-fail until the key is fixed. The
+            // dry-run-first + per-class filter design mitigates this: operators
+            // reset network_timeout only, leaving auth_failed for the key-fix
+            // workflow.
+            const isDryRun = args.dry_run ?? true;
+            const errorClassFilter = args.error_class; // undefined = all
+            const maxTasks = args.max_cleanup_tasks ?? 100;
+
+            // Build the candidate set with the same logic as the status loop,
+            // so the by-class breakdown always agrees with what status shows.
+            const candidates: Array<{ task_id: string; error_class: string; status: string; retry_count: number }> = [];
+            for (const [taskId, skeleton] of conversationCache) {
+                const idx = skeleton.metadata?.indexingState;
+                if (!idx) continue;
+                const isFailed = idx.indexStatus === 'failed';
+                if (!isFailed && !isStuckRetry(idx)) continue;
+                const errorMessage = idx.indexError || 'unknown error';
+                const errorClass = idx.errorClass
+                    ?? classifyIndexingError({ message: errorMessage }).errorClass;
+                if (errorClassFilter && errorClass !== errorClassFilter) continue;
+                candidates.push({
+                    task_id: taskId,
+                    error_class: errorClass,
+                    status: idx.indexStatus ?? 'unknown',
+                    retry_count: idx.indexRetryCount ?? 0,
+                });
+                if (candidates.length >= maxTasks) break;
+            }
+
+            // Build the by-class breakdown (always — even on dry_run=false, so
+            // the response records what would have been touched).
+            const byClass: Record<string, number> = {};
+            for (const c of candidates) {
+                byClass[c.error_class] = (byClass[c.error_class] ?? 0) + 1;
+            }
+
+            if (isDryRun) {
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'cleanup_failed',
+                            mode: 'dry_run',
+                            filter: errorClassFilter ?? 'all',
+                            max_tasks: maxTasks,
+                            by_class: byClass,
+                            candidates: candidates.slice(0, 20), // preview cap; full set not echoed
+                            summary: `[DRY RUN] ${candidates.length} tâche(s) candidate(s) au reset (${Object.entries(byClass).map(([k, v]) => `${v}× ${k}`).join(', ') || 'aucune classe détectée'}). Passez dry_run=false pour exécuter.`
+                        }, null, 2)
+                    }]
+                };
+            }
+
+            // Executed path: reset each candidate's indexingState via
+            // saveSkeletonCallback (the canonical persistence path; same
+            // contract as `resetIndexingState` in indexing-decision.ts).
+            // Touching only `indexingState` honors #2165 (no fake success+TTL
+            // that froze reindex) and matches #886's `shouldRequeueForRefresh`
+            // path that picks the task up again on next refresh.
+            let resetCount = 0;
+            const resetIds: string[] = [];
+            for (const candidate of candidates) {
+                const skeleton = conversationCache.get(candidate.task_id);
+                if (!skeleton || !skeleton.metadata) continue;
+                skeleton.metadata.indexingState = { indexVersion: skeleton.metadata.indexingState?.indexVersion ?? '' };
+                if (skeleton.metadata.qdrantIndexedAt) {
+                    delete skeleton.metadata.qdrantIndexedAt;
+                }
+                await saveSkeletonCallback(skeleton);
+                resetIds.push(candidate.task_id);
+                resetCount++;
+            }
+
+            return {
+                isError: false,
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        action: 'cleanup_failed',
+                        mode: 'executed',
+                        filter: errorClassFilter ?? 'all',
+                        max_tasks: maxTasks,
+                        by_class: byClass,
+                        reset_count: resetCount,
+                        reset_task_ids: resetIds.slice(0, 20), // cap echoed ids
+                        summary: `[EXECUTED] ${resetCount} tâche(s) réinitialisée(s) (${Object.entries(byClass).map(([k, v]) => `${v}× ${k}`).join(', ') || 'aucune classe détectée'}). Elles réintégreront la queue au prochain refresh.`
+                    }, null, 2)
+                }]
+            };
         }
 
         case 'garbage_scan': {

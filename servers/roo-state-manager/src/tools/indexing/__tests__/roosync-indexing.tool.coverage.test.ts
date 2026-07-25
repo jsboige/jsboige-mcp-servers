@@ -192,7 +192,7 @@ describe('roosync_indexing default/unreachable-action contract', () => {
 		// Guards against drift between inputSchema enum and the switch validation list.
 		const schemaEnum = (roosyncIndexingTool.inputSchema.properties as any).action.enum as string[];
 		const dispatched = ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup',
-			'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'];
+			'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'];
 		expect(schemaEnum.sort()).toEqual([...dispatched].sort());
 	});
 });

@@ -111,9 +111,9 @@ describe('roosyncIndexingTool', () => {
 		expect(roosyncIndexingTool.inputSchema.required).toEqual(['action']);
 	});
 
-	test('has action enum with 13 values', () => {
+	test('has action enum with 14 values', () => {
 		const actionProp = (roosyncIndexingTool.inputSchema.properties as any).action;
-		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
+		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
 	});
 
 	// ============================================================
@@ -655,6 +655,232 @@ describe('roosync_indexing status hints (non-covered branches)', () => {
 		const parsed = JSON.parse(result.content[0].text);
 		expect(parsed.failed_task_details).toHaveLength(1);
 		expect(parsed.failed_task_details[0]).toMatchObject({ task_id: 'failed-1', error: 'timeout 300s', retry_count: 2 });
+	});
+
+	// #2766 S2+ (po-2026 follow-up): retroactive classifier fallback for legacy
+	// failures that predate #886's `idx.errorClass` field. Without the fallback
+	// the 26 existing perm-failed tasks all show 'unknown' and the by-class
+	// breakdown is useless for triage.
+	test('applies retroactive classifier fallback when idx.errorClass is unset (legacy failures)', async () => {
+		const cache = new Map();
+		// Legacy failure: no errorClass set, message says "file not found"
+		cache.set('legacy-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'file not found', indexRetryCount: 0 } }
+		} as any);
+		// Legacy auth failure: no errorClass set, message says "401 unauthorized"
+		cache.set('legacy-2', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'authorization failed 401', indexRetryCount: 0 } }
+		} as any);
+		// Post-#886 failure: has errorClass set explicitly
+		cache.set('new-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'mystery', indexRetryCount: 0, errorClass: 'service_503' } }
+		} as any);
+
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
+		};
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler, indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.failed_task_details).toHaveLength(3);
+		// The fallback uses classifyIndexingError() — "file not found" → file_not_found
+		expect(parsed.failed_task_details.find((t: any) => t.task_id === 'legacy-1').error_class).toBe('file_not_found');
+		// "authorization failed 401" → auth_failed (matches the "authentication failed" pattern)
+		expect(parsed.failed_task_details.find((t: any) => t.task_id === 'legacy-2').error_class).toBe('auth_failed');
+		// Post-#886 explicit errorClass is preserved (no fallback)
+		expect(parsed.failed_task_details.find((t: any) => t.task_id === 'new-1').error_class).toBe('service_503');
+	});
+
+	// #2766 S2+ (po-2026 follow-up): stuck-retry tasks (status='retry' with
+	// retry_count >= MAX_RETRY_ATTEMPTS) are queue-drained by shouldIndex() but
+	// linger in cache. The status loop must surface them so operators can
+	// dead-letter/reset them via cleanup_failed.
+	test('surfaces stuck-retry tasks (status=retry, retry_count >= MAX_RETRY_ATTEMPTS)', async () => {
+		const cache = new Map();
+		// Stuck-retry: post-#886 retry loop hit MAX_RETRY_ATTEMPTS but never transitioned
+		cache.set('stuck-1', {
+			metadata: { indexingState: { indexStatus: 'retry', indexError: 'indexing timeout 300000ms', indexRetryCount: 5 } }
+		} as any);
+		// Recent retry (below threshold) — should NOT be surfaced
+		cache.set('recent-1', {
+			metadata: { indexingState: { indexStatus: 'retry', indexError: 'transient network', indexRetryCount: 1 } }
+		} as any);
+
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
+		};
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler, indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.failed_task_details).toHaveLength(1);
+		expect(parsed.failed_task_details[0].task_id).toBe('stuck-1');
+		expect(parsed.failed_task_details[0].retry_count).toBe(5);
+		// "indexing timeout 300000ms" → embedding_timeout (matches "indexing timeout" pattern)
+		expect(parsed.failed_task_details[0].error_class).toBe('embedding_timeout');
+	});
+
+	// #2766 S2+ (po-2026 follow-up): when the active queue is drained but
+	// failures linger, surface a hint that nudges operators to cleanup_failed.
+	// Without this, the only signal is the failed-by-class count against a 0
+	// queue, which is easy to miss in dashboards.
+	test('emits queue-drained stall hint when queue=0 and failed_tasks>0', async () => {
+		const cache = new Map();
+		cache.set('failed-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'file not found', indexRetryCount: 0 } }
+		} as any);
+
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(), // drained
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
+		};
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler, indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.diagnostic_hints.some((h: string) => h.includes('Queue drainée') && h.includes('cleanup_failed'))).toBe(true);
+	});
+
+	test('does NOT emit queue-drained stall hint when queue is non-empty', async () => {
+		const cache = new Map();
+		cache.set('failed-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'file not found', indexRetryCount: 0 } }
+		} as any);
+
+		const indexingState = {
+			qdrantIndexQueue: new Set(['in-flight-1']), // queue still active
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
+		};
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler, indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.diagnostic_hints.some((h: string) => h.includes('Queue drainée'))).toBe(false);
+	});
+});
+
+// ============================================================
+// cleanup_failed action — #2766 S2+ (po-2026 follow-up)
+// Reset skeletons of perm-failed/stuck-retry tasks so they re-enter the
+// indexer queue. Dry-run by default.
+// ============================================================
+
+describe('roosync_indexing cleanup_failed action', () => {
+	const ensureFresh = vi.fn().mockResolvedValue(true);
+	const saveSkeleton = vi.fn().mockResolvedValue(undefined);
+	const setEnabled = vi.fn();
+	const mockRebuildHandler = vi.fn();
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	test('returns dry_run result by default (dry_run defaults to true)', async () => {
+		const cache = new Map();
+		cache.set('failed-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'file not found', indexRetryCount: 0 } }
+		} as any);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(result.isError).toBe(false);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.action).toBe('cleanup_failed');
+		expect(parsed.mode).toBe('dry_run');
+		expect(parsed.by_class).toEqual({ file_not_found: 1 });
+		// Dry-run never persists
+		expect(saveSkeleton).not.toHaveBeenCalled();
+	});
+
+	test('filters candidates by error_class', async () => {
+		const cache = new Map();
+		cache.set('auth-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'authentication failed 401', indexRetryCount: 0 } }
+		} as any);
+		cache.set('file-1', {
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'file not found', indexRetryCount: 0 } }
+		} as any);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', error_class: 'auth_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		// Only auth-1 matches the filter
+		expect(parsed.candidates).toHaveLength(1);
+		expect(parsed.candidates[0].task_id).toBe('auth-1');
+		expect(parsed.by_class).toEqual({ auth_failed: 1 });
+	});
+
+	test('includes stuck-retry tasks (status=retry, retry_count >= MAX_RETRY_ATTEMPTS)', async () => {
+		const cache = new Map();
+		cache.set('stuck-1', {
+			metadata: { indexingState: { indexStatus: 'retry', indexError: 'indexing timeout 300000ms', indexRetryCount: 5 } }
+		} as any);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.candidates).toHaveLength(1);
+		expect(parsed.candidates[0].task_id).toBe('stuck-1');
+		expect(parsed.candidates[0].status).toBe('retry');
+	});
+
+	test('executed path (dry_run=false) resets indexingState and saves skeleton', async () => {
+		const skel = {
+			metadata: {
+				indexingState: { indexStatus: 'failed', indexVersion: 'v1', indexError: 'file not found', indexRetryCount: 0 },
+				qdrantIndexedAt: '2026-07-01T10:00:00Z'
+			}
+		};
+		const cache = new Map();
+		cache.set('failed-1', skel as any);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('executed');
+		expect(parsed.reset_count).toBe(1);
+		expect(parsed.reset_task_ids).toEqual(['failed-1']);
+		expect(saveSkeleton).toHaveBeenCalledWith(skel);
+		// Skeleton was mutated: indexingState cleared to {indexVersion}, qdrantIndexedAt deleted
+		expect(skel.metadata.indexingState).toEqual({ indexVersion: 'v1' });
+		expect(skel.metadata.qdrantIndexedAt).toBeUndefined();
+	});
+
+	test('does NOT touch non-failed, non-stuck-retry tasks', async () => {
+		const cache = new Map();
+		cache.set('success-1', {
+			metadata: { indexingState: { indexStatus: 'success', indexError: undefined, indexRetryCount: 0 } }
+		} as any);
+		cache.set('recent-retry', {
+			metadata: { indexingState: { indexStatus: 'retry', indexError: 'transient', indexRetryCount: 1 } }
+		} as any);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.candidates).toHaveLength(0);
+		expect(parsed.by_class).toEqual({});
 	});
 });
 
