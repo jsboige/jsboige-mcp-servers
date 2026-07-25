@@ -1088,7 +1088,12 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  * to preserve the Dashboard return type consumed by legacy paths).
  *
  * Outcomes:
- *   - `condensed`         : LLM succeeded, archive written, status updated
+ *   - `condensed`         : LLM succeeded (primary), archive written, status updated
+ *   - `fallback-cloud`    : #2719 primary (local vLLM) failed but the cloud fallback
+ *                           (z.ai glm-4.7-flash) salvaged the condensation — the
+ *                           dashboard still got an LLM summary, just not from the
+ *                           primary. Distinguishable from `fallback-truncated` (which
+ *                           means even the cloud failed → lossy truncation).
  *   - `no-op`             : messages ≤ keepCount, nothing to do
  *   - `llm-failed-dedup`  : LLM failed but a recent CONDENSATION CANCELLED
  *                           already exists within CONDENSATION_ERROR_DEDUP_MS
@@ -1104,7 +1109,7 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  */
 export interface CondenseAttemptInfo {
   phase: 'preemptive' | 'reactive' | 'manual' | 'post-append';
-  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated' | 'skipped-lock-held';
+  outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated' | 'fallback-cloud' | 'skipped-lock-held';
   elapsedMs: number;
   archivedMessageCount: number;
   llm?: {
@@ -2231,7 +2236,12 @@ ${archiveMessages}
   logger.info('Condensation completed', { totalElapsed: `${totalElapsed}ms` });
 
   if (diagnostic) {
-    diagnostic.outcome = 'condensed';
+    // #2719: distinguish a condensation salvaged by the cloud fallback (primary
+    // vLLM down, z.ai glm-4.7-flash succeeded) from a clean primary success, so
+    // operators can see "cloud saved it" without drilling into llm.stats.fallbackUsed.
+    const usedFallback = statusCall.stats.fallbackUsed === true
+      || summaryCall.stats.fallbackUsed === true;
+    diagnostic.outcome = usedFallback ? 'fallback-cloud' : 'condensed';
     diagnostic.elapsedMs = totalElapsed;
     diagnostic.archivedMessageCount = toArchive.length;
   }
