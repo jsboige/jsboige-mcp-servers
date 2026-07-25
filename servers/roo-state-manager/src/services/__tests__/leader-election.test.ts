@@ -78,6 +78,19 @@ async function tryAcquireLeaderLock(staleMs = 15 * 60 * 1000): Promise<boolean> 
   }
 }
 
+// #2922: The "another process holds the lock" tests below must use a PID that is NEVER
+// equal to the current worker's process.pid. Under pool:'forks' (maxForks:4) the worker
+// PID is nondeterministic; the previously-hardcoded 99999 occasionally collided with the
+// real worker PID on high-PID-churn hosts (po-2025 Zoo scheduler bursts), flipping the
+// "fresh lock held by another process → return false" branch to "same PID → renew →
+// return true" and making the test flaky (~1/12974 frequency, po-2025-only). Deriving the
+// other PID as process.pid + 1 guarantees the inequality BY CONSTRUCTION on every host —
+// without mutating process.pid, which would break signal-exit's process.kill(process.pid)
+// teardown on Linux CI (the first attempt pinned process.pid=12345 via Object.defineProperty;
+// it passed locally on Windows but failed remote Linux CI with an uncaught ESRCH from
+// signal-exit/proper-lockfile at fork teardown).
+const OTHER_PROCESS_PID = process.pid + 1;
+
 describe('Leader-election (#2352)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -115,7 +128,7 @@ describe('Leader-election (#2352)', () => {
   });
 
   it('fails to acquire when another fresh lock exists', async () => {
-    const freshLock = JSON.stringify({ pid: 99999, timestamp: Date.now() - 1000 });
+    const freshLock = JSON.stringify({ pid: OTHER_PROCESS_PID, timestamp: Date.now() - 1000 });
 
     const wxError = new Error('EEXIST') as any;
     wxError.code = 'EEXIST';
@@ -127,7 +140,7 @@ describe('Leader-election (#2352)', () => {
   });
 
   it('steals stale lock when other process crashed', async () => {
-    const staleLock = JSON.stringify({ pid: 99999, timestamp: Date.now() - 20 * 60 * 1000 }); // 20 min old
+    const staleLock = JSON.stringify({ pid: OTHER_PROCESS_PID, timestamp: Date.now() - 20 * 60 * 1000 }); // 20 min old
 
     const wxError = new Error('EEXIST') as any;
     wxError.code = 'EEXIST';
@@ -162,7 +175,7 @@ describe('Leader-election (#2352)', () => {
 
   it('uses configurable stale threshold', async () => {
     // Lock is 5 min old — fresh for 15 min threshold, stale for 1 min threshold
-    const lock5Min = JSON.stringify({ pid: 99999, timestamp: Date.now() - 5 * 60 * 1000 });
+    const lock5Min = JSON.stringify({ pid: OTHER_PROCESS_PID, timestamp: Date.now() - 5 * 60 * 1000 });
 
     // With 15 min threshold → should fail (fresh)
     const wxError = new Error('EEXIST') as any;
