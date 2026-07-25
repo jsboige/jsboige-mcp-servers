@@ -17,7 +17,7 @@ import * as path from 'path';
 // Import des handlers existants
 import { indexTaskSemanticTool } from './index-task.tool.js';
 import { resetQdrantCollectionTool } from './reset-collection.tool.js';
-import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
+import { handleDiagnoseSemanticIndex, _classifyOpenAIError } from './diagnose-index.tool.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 
@@ -64,7 +64,7 @@ export function normalizeToolName(rawName: string): string {
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -132,6 +132,12 @@ export interface RooSyncIndexingArgs {
     /** #2246: Max tasks to repair per call (pour action=repair_gaps). Défaut: 50 */
     max_repair_tasks?: number;
 
+    /** #S2 P1 (po-2026): Filter cleanup_failed by typed error class from S1 classifier (#882). Default: all classes. */
+    error_class?: 'auth_401' | 'network_timeout' | 'service_503' | 'conn_refused' | 'unknown';
+
+    /** #S2 P1 (po-2026): Max tasks to reset per cleanup_failed call. Défaut: 100 */
+    max_cleanup_tasks?: number;
+
     /** #2336 D1: Start date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago */
     start_date?: string;
 
@@ -150,8 +156,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics — with typed failure classification), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), cleanup_failed (dead-letter indexed-failed tasks by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
             },
             task_id: {
                 type: 'string',
@@ -259,6 +265,16 @@ export const roosyncIndexingTool: Tool = {
                 description: 'For repair_gaps. Max tasks to scan per call. Default: 50.',
                 default: 50
             },
+            error_class: {
+                type: 'string',
+                description: 'For cleanup_failed. Filter by typed error class from S1 classifier (#882): auth_401 | network_timeout | service_503 | conn_refused | unknown. Default: all classes.',
+                enum: ['auth_401', 'network_timeout', 'service_503', 'conn_refused', 'unknown']
+            },
+            max_cleanup_tasks: {
+                type: 'number',
+                description: 'For cleanup_failed. Max tasks to reset per call. Default: 100.',
+                default: 100
+            },
             start_date: {
                 type: 'string',
                 description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.'
@@ -309,10 +325,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, tool_usage_stats, save_snapshot, trend_report` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, cleanup_failed, tool_usage_stats, save_snapshot, trend_report` }]
         };
     }
 
@@ -443,22 +459,42 @@ export async function handleRooSyncIndexing(
                 hints.push('Queue non vide mais worker non démarré. Le serveur MCP peut ne pas avoir initialisé les services background.');
             }
 
-            // #2307: Collect per-task failure details from cache
-            const failedTasks: Array<{ task_id: string; error: string; retry_count: number; last_attempt: string | undefined }> = [];
+            // #2307: Collect per-task failure details from cache.
+            // #S2 P1 (po-2026): Add typed classification (S1 #882 classifier) + summary
+            // aggregation so operators can see at a glance whether stuck failures are
+            // 401-key (escalate) vs network/timeout (transient) vs not_found (perm).
+            const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined }> = [];
+            const failedSummary: Record<string, number> = {};
             for (const [taskId, skeleton] of conversationCache) {
                 const idx = skeleton.metadata?.indexingState;
-                if (idx?.indexStatus === 'failed') {
+                // Include both perm-failed AND stuck-retry (retry_count >= MAX) so the
+                // orphan-from-bug case (timeout tasks stuck at count=5 in retry state)
+                // is visible too. shouldIndex() returns skip for both, so they're
+                // queue-drained but linger in cache as noise.
+                const isFailed = idx?.indexStatus === 'failed';
+                const isStuckRetry = idx?.indexStatus === 'retry' && (idx.indexRetryCount ?? 0) >= 3;
+                if (isFailed || isStuckRetry) {
+                    const errorMessage = idx.indexError || 'unknown error';
+                    const errorClass = _classifyOpenAIError({ message: errorMessage });
                     failedTasks.push({
                         task_id: taskId,
-                        error: idx.indexError || 'unknown error',
+                        error: errorMessage,
+                        error_class: errorClass,
                         retry_count: idx.indexRetryCount ?? 0,
                         last_attempt: idx.lastIndexAttempt,
                     });
+                    failedSummary[errorClass] = (failedSummary[errorClass] ?? 0) + 1;
                 }
             }
 
             if (failedTasks.length > 0) {
                 hints.push(`${failedTasks.length} tâches en échec permanent (détails dans failed_task_details ci-dessous).`);
+                // #S2 P1: When queue is healthy (drained) but failures linger, surface
+                // a repair hint so operators don't have to notice the failed count
+                // against a 0 queue.
+                if (state.qdrantIndexQueue.size === 0 && failedTasks.length > 0) {
+                    hints.push(`Queue drainée (0 en cours) mais ${failedTasks.length} échecs permanents en cache. Utilisez action=cleanup_failed (dry-run par défaut) pour dead-letter par classe d'erreur.`);
+                }
             }
 
             const status = {
@@ -477,6 +513,7 @@ export async function handleRooSyncIndexing(
                     }
                 },
                 failed_task_details: failedTasks.length > 0 ? failedTasks : undefined,
+                failed_summary: Object.keys(failedSummary).length > 0 ? failedSummary : undefined,
                 diagnostic_hints: hints.length > 0 ? hints : undefined
             };
             return {
@@ -800,6 +837,94 @@ export async function handleRooSyncIndexing(
                 return {
                     isError: true,
                     content: [{ type: 'text', text: `Error during repair_gaps: ${error.message}` }]
+                };
+            }
+        }
+
+        case 'cleanup_failed': {
+            // #S2 P1 (po-2026): Dead-letter indexed-failed tasks by typed error class.
+            // Operators see failed_task_details in `status` (with error_class); this
+            // action resets those tasks' indexingState so they are eligible for fresh
+            // reindex (via repair_gaps or next refresh cycle). Dry-run by default.
+            //
+            // Anti-churn (#1936): minimal scope — only touches `indexingState` on
+            // skeletons that match the error_class filter. No touch on queue, no
+            // touch on Qdrant vectors (those stay — operator decides via repair_gaps).
+            const isDryRun = args.dry_run !== false;
+            const errorClassFilter = args.error_class; // 'auth_401' | 'network_timeout' | 'service_503' | 'conn_refused' | 'unknown' | undefined (all)
+            const maxTasks = args.max_cleanup_tasks || 100;
+
+            const { IndexingDecisionService } = await import('../../services/indexing-decision.js');
+            const decisionService = new IndexingDecisionService();
+
+            try {
+                const candidates: Array<{ taskId: string; errorClass: string; retryCount: number; lastAttempt: string | undefined }> = [];
+                for (const [taskId, skeleton] of conversationCache) {
+                    const idx = skeleton.metadata?.indexingState;
+                    if (!idx) continue;
+                    const isFailed = idx.indexStatus === 'failed';
+                    const isStuckRetry = idx.indexStatus === 'retry' && (idx.indexRetryCount ?? 0) >= 3;
+                    if (!isFailed && !isStuckRetry) continue;
+
+                    const errorMessage = idx.indexError || 'unknown error';
+                    const errorClass = _classifyOpenAIError({ message: errorMessage });
+                    if (errorClassFilter && errorClass !== errorClassFilter) continue;
+                    candidates.push({
+                        taskId,
+                        errorClass,
+                        retryCount: idx.indexRetryCount ?? 0,
+                        lastAttempt: idx.lastIndexAttempt,
+                    });
+                    if (candidates.length >= maxTasks) break;
+                }
+
+                const byClass: Record<string, number> = {};
+                for (const c of candidates) {
+                    byClass[c.errorClass] = (byClass[c.errorClass] ?? 0) + 1;
+                }
+
+                const cleaned: string[] = [];
+                const errors: string[] = [];
+                if (!isDryRun && candidates.length > 0) {
+                    for (const c of candidates) {
+                        try {
+                            const skel = conversationCache.get(c.taskId);
+                            if (!skel) { errors.push(`${c.taskId}: not in cache`); continue; }
+                            decisionService.resetIndexingState(skel);
+                            await saveSkeletonCallback(skel);
+                            cleaned.push(c.taskId);
+                        } catch (err: any) {
+                            errors.push(`${c.taskId}: cleanup failed — ${err.message}`);
+                        }
+                    }
+                }
+
+                const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
+                const summary = isDryRun
+                    ? `${mode} ${candidates.length} tâches en échec matchant (scan only, no reset)`
+                    : `${mode} ${cleaned.length}/${candidates.length} tâches reset (indexingState effacé), ${errors.length} erreurs`;
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'cleanup_failed',
+                            mode: isDryRun ? 'dry_run' : 'executed',
+                            error_class_filter: errorClassFilter || 'all',
+                            max_cleanup_tasks: maxTasks,
+                            matched_count: candidates.length,
+                            by_class: byClass,
+                            cleaned: isDryRun ? undefined : (cleaned.length > 0 ? cleaned : undefined),
+                            errors: errors.length > 0 ? errors : undefined,
+                            summary
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Error during cleanup_failed: ${error.message}` }]
                 };
             }
         }
