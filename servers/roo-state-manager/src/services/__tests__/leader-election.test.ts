@@ -79,16 +79,19 @@ async function tryAcquireLeaderLock(staleMs = 15 * 60 * 1000): Promise<boolean> 
 }
 
 // #2922: The "another process holds the lock" tests below must use a PID that is NEVER
-// equal to the current worker's process.pid. Under pool:'forks' (maxForks:4) the worker
-// PID is nondeterministic; the previously-hardcoded 99999 occasionally collided with the
-// real worker PID on high-PID-churn hosts (po-2025 Zoo scheduler bursts), flipping the
-// "fresh lock held by another process → return false" branch to "same PID → renew →
-// return true" and making the test flaky (~1/12974 frequency, po-2025-only). Deriving the
-// other PID as process.pid + 1 guarantees the inequality BY CONSTRUCTION on every host —
-// without mutating process.pid, which would break signal-exit's process.kill(process.pid)
-// teardown on Linux CI (the first attempt pinned process.pid=12345 via Object.defineProperty;
-// it passed locally on Windows but failed remote Linux CI with an uncaught ESRCH from
-// signal-exit/proper-lockfile at fork teardown).
+// equal to the current worker's process.pid. Under pool:'forks' (maxForks:4) the worker PID
+// is nondeterministic, so the previously-hardcoded 99999 merely *assumed* that inequality.
+// Deriving the other PID as process.pid + 1 guarantees it BY CONSTRUCTION on every host.
+//
+// On the po-2025 flake this came from: it was NOT a 99999/worker-PID collision. Windows
+// allocates PIDs with 4-byte granularity — every PID is a multiple of 4 (2638/2638 sampled
+// on ai-01, max 93172) and 99999 % 4 == 3, so no Windows process can ever hold that PID.
+// The po-2025 mechanism remains unexplained; #2922 stays open. This constant is a hardening
+// (it removes an implicit assumption), not that fix.
+//
+// Do NOT mutate process.pid to get determinism here: signal-exit (via proper-lockfile) calls
+// process.kill(process.pid) at fork teardown, so a pinned fake PID throws ESRCH on Linux CI
+// while passing locally on Windows. A relative "not ours" PID sidesteps that entirely.
 const OTHER_PROCESS_PID = process.pid + 1;
 
 describe('Leader-election (#2352)', () => {
