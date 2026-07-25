@@ -24,7 +24,7 @@ export interface ServerState {
     synthesisOrchestratorService: SynthesisOrchestratorService;
     indexingDecisionService: IndexingDecisionService;
     indexingMetrics: IndexingMetrics;
-    
+
     // Services de background pour l'architecture à 2 niveaux
     // Worker A: Skeleton refresh
     skeletonRefreshInterval: NodeJS.Timeout | null;
@@ -42,6 +42,23 @@ export interface ServerState {
     // 🛡️ CACHE ANTI-FUITE - Protection contre 220GB de trafic réseau (LEGACY)
     qdrantIndexCache: Map<string, number>;
     lastQdrantConsistencyCheck: number;
+
+    // #2766 S2+ Dead-letter queue — permanent failures live here, separated
+    // from the active qdrantIndexQueue so they no longer livelock the active
+    // queue. The refresh worker skips perm-failed tasks; the index worker
+    // moves them here instead of silently dropping them. The status tool
+    // groups dead-letter entries by errorClass for triage.
+    deadLetterQueue: Set<string>;
+    deadLetterDetails: Map<string, DeadLetterEntry>;
+}
+
+export interface DeadLetterEntry {
+    taskId: string;
+    error: string;
+    errorClass: string;
+    retryCount: number;
+    lastAttempt: string; // ISO datetime
+    movedAt: string;     // ISO datetime when added to dead-letter
 }
 
 export class StateManager {
@@ -123,6 +140,8 @@ export class StateManager {
             machineId: rooSyncCfg?.machineId ?? (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),
             qdrantIndexCache: new Map(),
             lastQdrantConsistencyCheck: 0,
+            deadLetterQueue: new Set(),
+            deadLetterDetails: new Map(),
         };
     }
 

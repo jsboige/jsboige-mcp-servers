@@ -1005,51 +1005,59 @@ describe('background-services', () => {
   // === classifyIndexingError ===
 
   describe('classifyIndexingError', () => {
-    it('should return true for permanent errors', () => {
-      const permanentErrors = [
-        new Error('file not found'),
-        new Error('access denied'),
-        new Error('permission denied'),
-        new Error('invalid format'),
-        new Error('corrupted data'),
-        new Error('authentication failed'),
-        new Error('quota exceeded permanently'),
+    it('should return { isPermanent: true, errorClass: ... } for permanent errors', () => {
+      // #2766 S2+: signature changed from boolean to { isPermanent, errorClass }.
+      const permanentCases: Array<{ message: string; expectedClass: string }> = [
+        { message: 'file not found', expectedClass: 'file_not_found' },
+        { message: 'access denied', expectedClass: 'access_denied' },
+        { message: 'permission denied', expectedClass: 'permission_denied' },
+        { message: 'invalid format', expectedClass: 'invalid_format' },
+        { message: 'corrupted data', expectedClass: 'corrupted_data' },
+        { message: 'authentication failed', expectedClass: 'auth_failed' },
+        { message: 'quota exceeded permanently', expectedClass: 'quota_exceeded' },
       ];
 
-      for (const error of permanentErrors) {
-        expect(classifyIndexingError(error)).toBe(true);
+      for (const { message, expectedClass } of permanentCases) {
+        const result = classifyIndexingError(new Error(message));
+        expect(result.isPermanent).toBe(true);
+        expect(result.errorClass).toBe(expectedClass);
       }
     });
 
-    it('should return false for temporary errors', () => {
-      const temporaryErrors = [
-        new Error('network error'),
-        new Error('connection timeout'),
-        new Error('rate limit exceeded'),
-        new Error('service unavailable'),
-        new Error('timeout'),
-        new Error('ECONNRESET'),
-        new Error('ENOTFOUND'),
+    it('should return { isPermanent: false, errorClass: ... } for temporary errors', () => {
+      // #2766 S2+: signature changed from boolean to { isPermanent, errorClass }.
+      const temporaryCases: Array<{ message: string; expectedClass: string }> = [
+        { message: 'network error', expectedClass: 'network_timeout' },
+        { message: 'connection timeout', expectedClass: 'network_timeout' },
+        { message: 'rate limit exceeded', expectedClass: 'rate_limit' },
+        { message: 'service unavailable', expectedClass: 'service_503' },
+        // Bare 'timeout' is ambiguous → falls through to 'unknown' under strict
+        // classification. Operators see 'unknown' and can add a pattern if it spikes.
+        { message: 'timeout', expectedClass: 'unknown' },
+        { message: 'ECONNRESET', expectedClass: 'connection_reset' },
+        { message: 'ENOTFOUND', expectedClass: 'dns_failure' },
       ];
 
-      for (const error of temporaryErrors) {
-        expect(classifyIndexingError(error)).toBe(false);
+      for (const { message, expectedClass } of temporaryCases) {
+        const result = classifyIndexingError(new Error(message));
+        expect(result.isPermanent).toBe(false);
+        expect(result.errorClass).toBe(expectedClass);
       }
     });
 
-    it('should return false for unknown errors', () => {
-      expect(classifyIndexingError(new Error('unknown error'))).toBe(false);
-      expect(classifyIndexingError(new Error(''))).toBe(false);
+    it('should return false + unknown for unknown errors', () => {
+      expect(classifyIndexingError(new Error('unknown error'))).toEqual({ isPermanent: false, errorClass: 'unknown' });
+      expect(classifyIndexingError(new Error(''))).toEqual({ isPermanent: false, errorClass: 'unknown' });
     });
 
     it('should handle errors without message', () => {
-      expect(classifyIndexingError({})).toBe(false);
-      expect(classifyIndexingError({ message: null })).toBe(false);
+      expect(classifyIndexingError({})).toEqual({ isPermanent: false, errorClass: 'unknown' });
+      expect(classifyIndexingError({ message: null })).toEqual({ isPermanent: false, errorClass: 'unknown' });
     });
 
     it('should be case-insensitive', () => {
-      expect(classifyIndexingError(new Error('FILE NOT FOUND'))).toBe(true);
-      expect(classifyIndexingError(new Error('Network Error'))).toBe(false);
+      expect(classifyIndexingError(new Error('FILE NOT FOUND'))).toEqual({ isPermanent: true, errorClass: 'file_not_found' });
+      expect(classifyIndexingError(new Error('Network Error'))).toEqual({ isPermanent: false, errorClass: 'network_timeout' });
     });
   });
 
