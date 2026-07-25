@@ -13,7 +13,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
-import { getMcpSettingsPath as getExtensionMcpSettingsPath } from '../../utils/extension-paths.js';
+// #2766 S2: getActiveMcpSettingsPath probes the filesystem for the installed
+// extension (Roo vs Zoo-Code), so the tool finds the config on Zoo-only hosts
+// instead of ENOENTing on the hardcoded roo-cline default.
+import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 
 // Types pour les serveurs MCP
 interface McpServer {
@@ -39,6 +42,12 @@ interface McpSettings {
 /**
  * Returns the path to mcp_settings.json.
  *
+ * #2766 S2: resolves via filesystem probe (getActiveMcpSettingsPath) so the
+ * tool works on Zoo-only hosts where only `zoocodeorganization.zoo-code` is
+ * installed and no `ROO_EXTENSION_ID` override is set. Previously delegated to
+ * the env-only getExtensionMcpSettingsPath() which defaulted to roo-cline →
+ * ENOENT on Zoo/clean machines.
+ *
  * IMPORTANT: This is a function (not a constant) so that process.env.APPDATA
  * is read at CALL TIME, not at MODULE LOAD TIME. This is critical for test
  * isolation — vi.hoisted() sets APPDATA before import, but ESM module caching
@@ -48,7 +57,7 @@ interface McpSettings {
  * Roo MCP configs on ai-01 (753 backup files created).
  */
 export function getMcpSettingsPath(): string {
-    const resolved = getExtensionMcpSettingsPath();
+    const resolved = getActiveMcpSettingsPath();
     // SAFETY GUARD: In test environments, reject paths that point to the REAL
     // mcp_settings.json. This prevents tests from wiping production MCP configs.
     // Incidents: 2026-03-08 (ai-01, 753 backups), 2026-04-03 (po-2023).
