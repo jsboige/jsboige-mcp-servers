@@ -954,6 +954,7 @@ export async function handleRooSyncIndexing(
                     error_class: string;
                     error: string;
                     retry_count: number;
+                    is_permanent: boolean;
                 }> = [];
                 for (const [taskId, skeleton] of conversationCache) {
                     if (candidates.length >= maxCleanup) break;
@@ -963,8 +964,15 @@ export async function handleRooSyncIndexing(
                     if (!isFailed && !isStuck) continue;
 
                     const errorMessage = idx?.indexError || 'unknown error';
-                    const errorClass = idx?.errorClass
-                        ?? classifyIndexingError({ message: errorMessage }).errorClass;
+                    // #2766 S3: classify the message → { errorClass, isPermanent }. The stored
+                    // idx.errorClass is itself produced by this same classifier on this same
+                    // message (background-services.ts:1261), so the two are consistent by
+                    // construction; we keep the idx.errorClass ?? classify precedence to match
+                    // the status retrofit above (line ~506), and derive isPermanent from the
+                    // classification. isPermanent gates the dead-letter mirror below.
+                    const messageClassification = classifyIndexingError({ message: errorMessage });
+                    const errorClass = idx?.errorClass ?? messageClassification.errorClass;
+                    const isPermanent = messageClassification.isPermanent;
 
                     if (errorClassFilter !== 'all' && errorClass !== errorClassFilter) continue;
                     candidates.push({
@@ -972,6 +980,7 @@ export async function handleRooSyncIndexing(
                         error_class: errorClass,
                         error: errorMessage,
                         retry_count: idx?.indexRetryCount ?? 0,
+                        is_permanent: isPermanent,
                     });
                 }
 
@@ -981,15 +990,22 @@ export async function handleRooSyncIndexing(
                 }
 
                 let reset = 0;
+                let deadLettered = 0;
+                let resetForRetry = 0;
                 const resetIds: string[] = [];
                 if (!isDryRun && candidates.length > 0) {
                     for (const c of candidates) {
                         const skeleton = conversationCache.get(c.task_id);
                         if (!skeleton) continue;
                         decisionService.resetIndexingState(skeleton);
-                        // Mirror #886's dead-letter bookkeeping so the task leaves
-                        // the active queue and shows up in status.dead_letter_by_class.
-                        if (indexingState?.deadLetterQueue && indexingState.deadLetterDetails) {
+                        // #2766 S3: dead-letter mirror is now class-conditional. Permanent
+                        // errors (auth_failed, file_not_found, …) are parked so they leave
+                        // the active queue and show up in status.dead_letter_by_class —
+                        // operator action is required before they can index. Transient errors
+                        // (network_timeout, rate_limit, …) are reset-only: they stay out of
+                        // dead-letter and re-enter the queue on the next refresh cycle to
+                        // retry, matching the documented intent (comment above, L927-931).
+                        if (c.is_permanent && indexingState?.deadLetterQueue && indexingState.deadLetterDetails) {
                             indexingState.deadLetterQueue.add(c.task_id);
                             indexingState.deadLetterDetails.set(c.task_id, {
                                 taskId: c.task_id,
@@ -999,6 +1015,9 @@ export async function handleRooSyncIndexing(
                                 lastAttempt: new Date().toISOString(),
                                 movedAt: new Date().toISOString(),
                             });
+                            deadLettered++;
+                        } else {
+                            resetForRetry++;
                         }
                         // Persist the reset so the next MCP host restart still sees
                         // the dead-letter state. Save through the callback (the
@@ -1010,10 +1029,12 @@ export async function handleRooSyncIndexing(
                     }
                 }
 
+                const permanentCandidateCount = candidates.filter(c => c.is_permanent).length;
+                const transientCandidateCount = candidates.length - permanentCandidateCount;
                 const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
                 const summary = isDryRun
-                    ? `${mode} ${candidates.length} candidats détectés pour cleanup_failed (error_class=${errorClassFilter}, max=${maxCleanup}). Lancez avec dry_run=false pour exécuter.`
-                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés et dead-letterés (error_class=${errorClassFilter}).`;
+                    ? `${mode} ${candidates.length} candidats détectés pour cleanup_failed (error_class=${errorClassFilter}, max=${maxCleanup}, ${permanentCandidateCount} permanent / ${transientCandidateCount} transient). Lancez avec dry_run=false pour exécuter.`
+                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés (${deadLettered} dead-letterés permanent, ${resetForRetry} reset pour retry transient) (error_class=${errorClassFilter}).`;
 
                 return {
                     isError: false,
@@ -1026,7 +1047,11 @@ export async function handleRooSyncIndexing(
                             max_cleanup_tasks: maxCleanup,
                             candidates_count: candidates.length,
                             by_class: byClass,
+                            permanent_candidates: permanentCandidateCount,
+                            transient_candidates: transientCandidateCount,
                             reset_count: isDryRun ? 0 : reset,
+                            dead_lettered_count: isDryRun ? 0 : deadLettered,
+                            reset_for_retry_count: isDryRun ? 0 : resetForRetry,
                             reset_task_ids: isDryRun ? undefined : (resetIds.length > 0 ? resetIds : undefined),
                             note: errorClassFilter === 'auth_failed' && !isDryRun
                                 ? 'auth_failed tasks were reset. They will re-fail until the API key is fixed — rotate the key BEFORE running cleanup_failed error_class=auth_failed to avoid churn.'

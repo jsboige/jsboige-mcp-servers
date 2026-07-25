@@ -1091,5 +1091,88 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		expect(parsed.note).toContain('API key');
 		expect(parsed.reset_count).toBe(1);
 	});
+
+	// #2766 S3: dead-letter mirror is class-conditional. Transient errors must NOT be
+	// dead-lettered (they should re-enter the queue to retry), only permanent ones park.
+	test('cleanup_failed #2766 S3: transient error (rate_limit) is reset-only, NOT dead-lettered', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['t-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'rate limit exceeded',
+				indexRetryCount: 3,
+				errorClass: 'rate_limit',
+			})],
+		]);
+		const deadLetterQueue = new Set<string>();
+		const deadLetterDetails = new Map<string, any>();
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+			deadLetterQueue,
+			deadLetterDetails,
+		};
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('executed');
+		expect(parsed.reset_count).toBe(1);
+		// Transient candidate counts surfaced for operator visibility.
+		expect(parsed.transient_candidates).toBe(1);
+		expect(parsed.permanent_candidates).toBe(0);
+		expect(parsed.reset_for_retry_count).toBe(1);
+		expect(parsed.dead_lettered_count).toBe(0);
+		// #2766 S3: rate_limit is transient → NOT parked in dead-letter.
+		expect(deadLetterQueue.has('t-1')).toBe(false);
+		expect(deadLetterDetails.has('t-1')).toBe(false);
+	});
+
+	test('cleanup_failed #2766 S3: mixed permanent + transient splits dead-letter vs reset-for-retry', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['perm-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Claude Code session not found',
+				indexRetryCount: 3,
+				errorClass: 'claude_session_not_found',
+			})],
+			['trans-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'rate limit exceeded',
+				indexRetryCount: 3,
+				errorClass: 'rate_limit',
+			})],
+		]);
+		const deadLetterQueue = new Set<string>();
+		const deadLetterDetails = new Map<string, any>();
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+			deadLetterQueue,
+			deadLetterDetails,
+		};
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.candidates_count).toBe(2);
+		expect(parsed.permanent_candidates).toBe(1);
+		expect(parsed.transient_candidates).toBe(1);
+		expect(parsed.reset_count).toBe(2);
+		expect(parsed.dead_lettered_count).toBe(1);
+		expect(parsed.reset_for_retry_count).toBe(1);
+		// Permanent → dead-lettered; transient → reset-only.
+		expect(deadLetterQueue.has('perm-1')).toBe(true);
+		expect(deadLetterQueue.has('trans-1')).toBe(false);
+	});
 });
 
