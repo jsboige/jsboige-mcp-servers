@@ -170,6 +170,80 @@ describe('ClaudeStorageDetector — coverage (uncovered branches after #678)', (
             // Image and tool_use blocks are NOT joined into the text content
             expect(assistant.content).not.toContain('base64');
         });
+
+        // #2946: Claude tool_result blocks (Anthropic format) must be serialized with a
+        // recognizable marker so ContentClassifier detects them as ToolResult, not UserMessage.
+        // Pre-fix: type:'tool_result' blocks (content field, not text) were dropped → content:''.
+        it('DEVRAIT sérialiser les blocks tool_result avec un marqueur [tool_result] Result: (#2946)', async () => {
+            const toolResultContent = [
+                { type: 'tool_result', tool_use_id: 'call_abc', content: '---PULL---\nerror: cannot pull with rebase' },
+            ];
+            const entry: ClaudeJsonlEntry = {
+                type: 'user',
+                message: { role: 'user', content: toolResultContent as any },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'cov-tool-result',
+            };
+            await fs.writeFile(path.join(testProjectDir, 'conv.jsonl'), JSON.stringify(entry));
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('cov-id', testProjectDir);
+            expect(skeleton).toBeDefined();
+            const userMsg = skeleton!.sequence.find((s: any) => s.role === 'user') as any;
+            expect(userMsg).toBeDefined();
+            // Pre-fix this was '' (empty). Post-fix it carries the marker + the tool output.
+            expect(userMsg.content).not.toBe('');
+            expect(userMsg.content.startsWith('[tool_result] Result:')).toBe(true);
+            expect(userMsg.content).toContain('cannot pull with rebase');
+            // The marker must match the ContentClassifier ToolResult regex (^\[([^\]]+)\] Result:)
+            // so summarize(trace) counts it as a tool result, not a user message.
+            expect(/^\[([^\]]+)\] Result:/.test(userMsg.content.trim())).toBe(true);
+        });
+
+        // #2946: tool_result blocks whose `content` is itself an array of text blocks
+        // (Anthropic allows rich content) must also be flattened into the marker string.
+        it('DEVRAIT aplatir tool_result.content de type Array dans le marqueur (#2946)', async () => {
+            const toolResultContent = [
+                { type: 'tool_result', tool_use_id: 'call_def', content: [
+                    { type: 'text', text: 'line A' },
+                    { type: 'text', text: 'line B' },
+                ] },
+            ];
+            const entry: ClaudeJsonlEntry = {
+                type: 'user',
+                message: { role: 'user', content: toolResultContent as any },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'cov-tool-result-arr',
+            };
+            await fs.writeFile(path.join(testProjectDir, 'conv.jsonl'), JSON.stringify(entry));
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('cov-id', testProjectDir);
+            const userMsg = skeleton!.sequence.find((s: any) => s.role === 'user') as any;
+            expect(userMsg.content.startsWith('[tool_result] Result:')).toBe(true);
+            expect(userMsg.content).toContain('line A');
+            expect(userMsg.content).toContain('line B');
+        });
+
+        // #2946: when text and tool_result blocks coexist, the tool_result marker must stay
+        // at the START so the classifier's leading anchor (^[...]) still fires.
+        it('DEVRAIT mettre le marqueur tool_result en premier (ancre classifier ^) (#2946)', async () => {
+            const mixed = [
+                { type: 'text', text: 'some trailing user note' },
+                { type: 'tool_result', tool_use_id: 'call_ghi', content: 'tool output here' },
+            ];
+            const entry: ClaudeJsonlEntry = {
+                type: 'user',
+                message: { role: 'user', content: mixed as any },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'cov-tool-result-mixed',
+            };
+            await fs.writeFile(path.join(testProjectDir, 'conv.jsonl'), JSON.stringify(entry));
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('cov-id', testProjectDir);
+            const userMsg = skeleton!.sequence.find((s: any) => s.role === 'user') as any;
+            expect(userMsg.content.startsWith('[tool_result] Result:')).toBe(true);
+            expect(/^\[([^\]]+)\] Result:/.test(userMsg.content.trim())).toBe(true);
+            expect(userMsg.content).toContain('some trailing user note');
+        });
     });
 
     // ============================================================
