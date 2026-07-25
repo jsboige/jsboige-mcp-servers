@@ -373,7 +373,10 @@ export function registerCallToolHandler(
                         qdrantIndexQueue: state.qdrantIndexQueue,
                         qdrantIndexInterval: state.qdrantIndexInterval,
                         isQdrantIndexingEnabled: state.isQdrantIndexingEnabled,
-                        indexingMetrics: state.indexingMetrics
+                        indexingMetrics: state.indexingMetrics,
+                        // #2766 S2+: dead-letter surfaces to the status tool.
+                        deadLetterQueue: state.deadLetterQueue,
+                        deadLetterDetails: state.deadLetterDetails,
                     }
                 );
                 break;

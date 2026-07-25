@@ -14,7 +14,7 @@ import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
-import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT } from '../types/indexing.js';
+import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass } from '../types/indexing.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { shouldIndexTask } from './task-partition.js';
 import { dualWriteConversationToStore } from './unified-store/dual-write.js';
@@ -503,13 +503,19 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     // EMB-METRICS called=0 enqueue/dequeue cycle (preflight dedup
                                     // skips them all, markIndexingSuccess refreshes the timestamp,
                                     // next cycle re-queues again).
-                                    const alreadyIndexedInForceMode = forceRescan
-                                        && indexStatus === 'success'
-                                        && lastIndexed
-                                        && mtimeMs <= new Date(lastIndexed).getTime();
-                                    if (!alreadyIndexedInForceMode
-                                        && (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
-                                        && shouldIndexTask(entry.name, state.machineId, state.fleetRoster)) {
+                                    // #2766 S2+: All dead-letter + perm-failed guards consolidated
+                                    // into shouldRequeueForRefresh() for unit-testability.
+                                    const lastActivityMs = new Date(newHeader.metadata.lastActivity).getTime();
+                                    const shouldRequeue = shouldRequeueForRefresh({
+                                        taskId: entry.name,
+                                        state,
+                                        indexStatus,
+                                        lastIndexed,
+                                        fileMtimeMs: mtimeMs,
+                                        lastActivityMs,
+                                        forceRescan,
+                                    });
+                                    if (shouldRequeue && shouldIndexTask(entry.name, state.machineId, state.fleetRoster)) {
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
                                     if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -569,14 +575,19 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                         const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
                                         const indexStatus = newHeader.metadata?.indexingState?.indexStatus;
-                                        // P2 fix: same FORCE-mode guard as Roo branch (see comment above)
-                                        const alreadyIndexedInForceMode = forceRescan
-                                            && indexStatus === 'success'
-                                            && lastIndexed
-                                            && stat.mtime.getTime() <= new Date(lastIndexed).getTime();
-                                        if (!alreadyIndexedInForceMode
-                                            && (!lastIndexed || new Date(newHeader.metadata.lastActivity).getTime() > new Date(lastIndexed).getTime())
-                                            && shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
+                                        // P2 fix + #2766 S2+ dead-letter guard (same as Roo branch).
+                                        // Consolidated via shouldRequeueForRefresh() for testability.
+                                        const lastActivityMs = new Date(newHeader.metadata.lastActivity).getTime();
+                                        const shouldRequeue = shouldRequeueForRefresh({
+                                            taskId,
+                                            state,
+                                            indexStatus,
+                                            lastIndexed,
+                                            fileMtimeMs: stat.mtime.getTime(),
+                                            lastActivityMs,
+                                            forceRescan,
+                                        });
+                                        if (shouldRequeue && shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
                                             state.qdrantIndexQueue.add(taskId);
                                         }
                                         if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -1096,6 +1107,17 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         // Traiter un batch de tâches par intervalle (au lieu d'une seule)
         const taskIds = Array.from(state.qdrantIndexQueue.values()).slice(0, QDRANT_INDEX_BATCH_SIZE);
         for (const taskId of taskIds) {
+            // #2766 S2+ Dead-letter guard: skip tasks that are already in the
+            // dead-letter. Belt-and-braces against the refresh worker briefly
+            // re-adding a perm-failed task between cycles (mitigated by the
+            // refresh worker fix, but this keeps the active queue fast-draining
+            // even during the fix rollout window).
+            // Optional-chaining guards against older state mocks that pre-date
+            // #2766 S2+ (the field is always present on a live ServerState).
+            if (state.deadLetterQueue?.has(taskId)) {
+                state.qdrantIndexQueue.delete(taskId);
+                continue;
+            }
             state.qdrantIndexQueue.delete(taskId);
             await indexTaskInQdrant(taskId, state);
 
@@ -1132,6 +1154,16 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
 
         if (!decision.shouldIndex) {
             console.log(`[SKIP] Task ${taskId}: ${decision.reason} - Protection anti-fuite`);
+            // #2766 S2+ Dead-letter: if this task is already known as perm-failed,
+            // remove it from the active queue (the drain loop already popped it,
+            // but it could be re-added by the refresh worker) and register it
+            // in the dead-letter so operators can see it instead of wondering why
+            // the queue won't drain. NOTE: the refresh worker is fixed to skip
+            // indexStatus='failed' tasks, so this is the only place where dead-letter
+            // entries get inserted for cache-resident perm-failed tasks.
+            if (skeleton.metadata?.indexingState?.indexStatus === 'failed') {
+                registerDeadLetter(state, taskId, skeleton, /*reason*/ decision.reason);
+            }
             return;
         }
 
@@ -1218,16 +1250,29 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         } else {
             const skeleton = state.conversationCache.get(taskId);
             if (skeleton) {
-                const isPermanentError = classifyIndexingError(error);
+                const classification = classifyIndexingError(error);
+                const isPermanentError = classification.isPermanent;
+                // #2766 S2+: Also surface the granular error class on the skeleton's
+                // indexingState so the status tool can group failures by root cause.
+                // markIndexingFailure() only takes (error, isPermanent); we manually
+                // attach errorClass AFTER so the existing failure path stays intact.
                 state.indexingDecisionService.markIndexingFailure(skeleton, error.message, isPermanentError);
+                if (skeleton.metadata?.indexingState) {
+                    skeleton.metadata.indexingState.errorClass = classification.errorClass;
+                }
+                // #2766 S2+ Dead-letter: perm-failed tasks live in deadLetterQueue so
+                // operators can see them and the active queue stops livelocking.
+                if (isPermanentError) {
+                    registerDeadLetter(state, taskId, skeleton, error.message, classification.errorClass);
+                }
                 await saveSkeletonToDisk(skeleton);
 
                 state.indexingMetrics.failedTasks++;
 
                 if (isPermanentError) {
-                    console.error(`[PERMANENT_FAIL] Task ${taskId}: ${error.message} - Marqué pour skip définitif`);
+                    console.error(`[PERMANENT_FAIL] Task ${taskId}: [${classification.errorClass}] ${error.message} - Marqué pour skip définitif`);
                 } else {
-                    console.error(`[RETRY_FAIL] Task ${taskId}: ${error.message} - Programmé pour retry avec backoff`);
+                    console.error(`[RETRY_FAIL] Task ${taskId}: [${classification.errorClass}] ${error.message} - Programmé pour retry avec backoff`);
                 }
             }
 
@@ -1237,41 +1282,251 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
 }
 
 /**
- * Classifie les erreurs d'indexation
+ * #2766 S2+ — Add a task to the dead-letter queue.
+ *
+ * Idempotent: if the task is already in the dead-letter, this is a no-op
+ * (the existing entry is preserved). This avoids duplicate entries when
+ * the same task hits the skip path multiple times during a slow MCP boot.
+ *
+ * The dead-letter is in-memory only (like qdrantIndexQueue) — operators get
+ * it via the `roosync_indexing` `status` tool. Persisting to disk is out of
+ * scope for this PR; the persistent `indexingState.indexStatus='failed'`
+ * flag on the skeleton remains the source of truth across restarts, and
+ * the dead-letter entries are rebuilt at boot from the cache on demand.
  */
-export function classifyIndexingError(error: any): boolean {
-    const errorMessage = error.message ? error.message.toLowerCase() : '';
-
-    const permanentErrors = [
-        'file not found',
-        'not found',              // #1401: "Claude Code session XXX not found" (archived/deleted)
-        'access denied',
-        'permission denied',
-        'invalid format',
-        'corrupted data',
-        'authentication failed',
-        'quota exceeded permanently'
-    ];
-
-    const temporaryErrors = [
-        'network error',
-        'connection timeout',
-        'rate limit',
-        'service unavailable',
-        'timeout',
-        'econnreset',
-        'enotfound'
-    ];
-
-    if (permanentErrors.some(perm => errorMessage.includes(perm))) {
-        return true;
+export function registerDeadLetter(
+    state: ServerState,
+    taskId: string,
+    skeleton: SkeletonHeader,
+    errorMessage: string,
+    explicitErrorClass?: string,
+): void {
+    // Guard against older state mocks that pre-date #2766 S2+ — initialize
+    // lazily so we never crash on missing fields. The live ServerState always
+    // has these fields populated by the StateManager constructor.
+    if (!state.deadLetterQueue) {
+        state.deadLetterQueue = new Set<string>();
+    }
+    if (!state.deadLetterDetails) {
+        state.deadLetterDetails = new Map();
     }
 
-    if (temporaryErrors.some(temp => errorMessage.includes(temp))) {
+    if (state.deadLetterQueue.has(taskId)) {
+        return; // Already dead-lettered — don't overwrite the first-failure snapshot.
+    }
+
+    const idx = skeleton.metadata?.indexingState;
+    const errorClass = explicitErrorClass
+        ?? idx?.errorClass
+        ?? 'unknown';
+    const movedAt = new Date().toISOString();
+    state.deadLetterQueue.add(taskId);
+    state.deadLetterDetails.set(taskId, {
+        taskId,
+        error: errorMessage,
+        errorClass,
+        retryCount: idx?.indexRetryCount ?? 0,
+        lastAttempt: idx?.lastIndexAttempt ?? movedAt,
+        movedAt,
+    });
+}
+
+/**
+ * #2766 S2+ — Pure decision helper for the refresh worker.
+ *
+ * Returns true if the task should be re-queued for Qdrant indexing.
+ * Extracted from the embedded re-queue conditional in `startSkeletonRefreshWorker`
+ * so it can be unit-tested without spinning up the full interval-based worker.
+ *
+ * Rules:
+ *  1. If the task is already in the dead-letter (perm-failed), NEVER re-queue.
+ *  2. If FORCE mode is on AND the task is already a success AND the file
+ *     hasn't changed since lastIndexedAt, skip (avoid #2227 cycle).
+ *  3. If the task has no lastIndexedAt OR its lastActivity > lastIndexedAt,
+ *     it's a candidate for re-queue — but caller still needs to check
+ *     shouldIndexTask() (task-partition) separately.
+ *
+ * The perm-failed guard is the #2766 S2+ fix: WITHOUT it, the refresh worker
+ * re-queues every cycle and the index worker silently drops it via
+ * shouldIndex() → skip, producing livelock.
+ */
+export function shouldRequeueForRefresh(args: {
+    taskId: string;
+    state: ServerState;
+    indexStatus: string | undefined;
+    lastIndexed: string | undefined;
+    fileMtimeMs: number;
+    lastActivityMs: number;
+    forceRescan: boolean;
+}): boolean {
+    // Rule 1: dead-lettered tasks stay dead-lettered. Optional-chaining
+    // guards against older state mocks that pre-date #2766 S2+.
+    if (args.state.deadLetterQueue?.has(args.taskId)) {
         return false;
     }
 
-    return false;
+    // Rule 2: avoid #2227 cycle for already-successfully-indexed tasks in FORCE mode.
+    if (args.forceRescan
+        && args.indexStatus === 'success'
+        && args.lastIndexed
+        && args.fileMtimeMs <= new Date(args.lastIndexed).getTime()) {
+        return false;
+    }
+
+    // Rule 3: content-changed OR never-indexed candidates.
+    const contentChanged = !args.lastIndexed
+        || args.lastActivityMs > new Date(args.lastIndexed).getTime();
+
+    // #2766 S2+ core fix: perm-failed tasks MUST NOT be re-queued.
+    // indexStatus='failed' means the task is in dead-letter territory; the
+    // refresh worker must skip it, otherwise the active queue livelocks.
+    if (args.indexStatus === 'failed') {
+        return false;
+    }
+
+    return contentChanged;
+}
+
+/**
+ * Result of classifying an indexing error. Pairs the boolean permanent/transient
+ * verdict with the fine-grained error class so the dead-letter UI can group
+ * failures by root cause (e.g. "5× claude_session_not_found, 2× embedding_timeout").
+ *
+ * #2766 S2+ — supersedes the original boolean-only `classifyIndexingError`.
+ * Callers that need just the boolean verdict should use `isPermanent` here OR
+ * call `isPermanentIndexingError(error)` which is a thin compatibility shim.
+ */
+export interface IndexingErrorClassification {
+    isPermanent: boolean;
+    errorClass: IndexingErrorClass;
+}
+
+/**
+ * #2766 S2+ — Stable, ordered list of error patterns → error class.
+ *
+ * Order matters: more specific patterns must come BEFORE catch-alls.
+ * E.g. "claude session xxx not found" must match `claude_session_not_found`
+ * before falling through to the generic `file_not_found` match.
+ *
+ * The patterns are case-insensitive substring matches on `error.message`.
+ * Add new entries here AND in the union type `IndexingErrorClass` AND in
+ * tests/unit/services/background-services.test.ts.
+ */
+interface ErrorPattern {
+    errorClass: IndexingErrorClass;
+    patterns: string[];
+}
+
+const ERROR_PATTERNS: readonly ErrorPattern[] = [
+    // Permanent — task cannot be indexed no matter how many retries (operator action required).
+    {
+        errorClass: 'claude_session_not_found',
+        patterns: ['claude code session', 'claude session'], // Most specific — must precede 'not found'.
+    },
+    {
+        errorClass: 'file_not_found',
+        patterns: ['file not found', 'enoent'],
+    },
+    {
+        errorClass: 'access_denied',
+        patterns: ['access denied'],
+    },
+    {
+        errorClass: 'permission_denied',
+        patterns: ['permission denied', 'eperm'],
+    },
+    {
+        errorClass: 'invalid_format',
+        patterns: ['invalid format'],
+    },
+    {
+        errorClass: 'corrupted_data',
+        patterns: ['corrupted data'],
+    },
+    {
+        errorClass: 'quota_exceeded',
+        patterns: ['quota exceeded'],
+    },
+    {
+        errorClass: 'auth_failed',
+        patterns: ['authentication failed', '401', 'unauthorized', 'invalid api key'],
+    },
+    // Transient — retry with backoff. NEVER triggers key rotation.
+    {
+        errorClass: 'service_503',
+        patterns: ['service unavailable', '503', '502', '500 internal'],
+    },
+    {
+        errorClass: 'rate_limit',
+        patterns: ['rate limit', '429', 'too many requests'],
+    },
+    {
+        errorClass: 'network_timeout',
+        patterns: ['network error', 'connection timeout', 'network timeout'],
+    },
+    {
+        errorClass: 'connection_reset',
+        patterns: ['econnreset', 'connection reset'],
+    },
+    {
+        errorClass: 'dns_failure',
+        patterns: ['enotfound', 'getaddrinfo'],
+    },
+    {
+        errorClass: 'embedding_timeout',
+        patterns: ['indexing timeout', 'embedding timeout', 'timeout waiting', 'task timeout'],
+    },
+] as const;
+
+/**
+ * Permanent error classes — anything matching one of these moves the task to
+ * the dead-letter queue and is NOT re-queued by the refresh worker.
+ */
+const PERMANENT_ERROR_CLASSES: ReadonlySet<IndexingErrorClass> = new Set<IndexingErrorClass>([
+    'claude_session_not_found',
+    'file_not_found',
+    'access_denied',
+    'permission_denied',
+    'invalid_format',
+    'corrupted_data',
+    'quota_exceeded',
+    'auth_failed',
+]);
+
+/**
+ * #2766 S2+ — Classify an indexing error.
+ *
+ * Returns `{ isPermanent, errorClass }` so callers can both gate retries AND
+ * expose the fine-grained class to operators (dead-letter UI, dashboards).
+ *
+ * Backward compatibility: callers that previously used `classifyIndexingError(err)`
+ * for its boolean can use the helper `isPermanentIndexingError(err)` instead.
+ */
+export function classifyIndexingError(error: any): IndexingErrorClassification {
+    const errorMessage = error?.message ? String(error.message).toLowerCase() : '';
+
+    if (!errorMessage) {
+        return { isPermanent: false, errorClass: 'unknown' };
+    }
+
+    for (const { errorClass, patterns } of ERROR_PATTERNS) {
+        if (patterns.some(pat => errorMessage.includes(pat.toLowerCase()))) {
+            return {
+                isPermanent: PERMANENT_ERROR_CLASSES.has(errorClass),
+                errorClass,
+            };
+        }
+    }
+
+    return { isPermanent: false, errorClass: 'unknown' };
+}
+
+/**
+ * Backward-compatibility shim — returns the boolean verdict only.
+ * New code should use `classifyIndexingError(error).isPermanent`.
+ */
+export function isPermanentIndexingError(error: any): boolean {
+    return classifyIndexingError(error).isPermanent;
 }
 
 /**

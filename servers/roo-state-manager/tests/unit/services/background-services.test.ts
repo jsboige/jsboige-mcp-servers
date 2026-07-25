@@ -76,9 +76,15 @@ import {
   saveSkeletonIndex,
   loadFullSkeleton,
   classifyIndexingError,
+  isPermanentIndexingError,
+  registerDeadLetter,
+  shouldRequeueForRefresh,
 } from '../../../src/services/background-services.js';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import type { ConversationSkeleton, SkeletonHeader, SkeletonMetadata } from '../../../src/types/conversation.js';
+// #2766 S2+: ServerState is a structural type used by registerDeadLetter() —
+// we import the type for type-checking the test stub's shape below.
+import type { ServerState } from '../../../src/services/state-manager.service.js';
 
 // Typed mock accessors
 const mockFs = fs as unknown as {
@@ -622,57 +628,352 @@ describe('loadFullSkeleton', () => {
 });
 
 // ===================================================================
-// classifyIndexingError
+// classifyIndexingError — #2766 S2+ signature change: returns { isPermanent, errorClass }
+// instead of a bare boolean. The legacy boolean-only path is exposed via
+// isPermanentIndexingError() for backward compatibility.
 // ===================================================================
 describe('classifyIndexingError', () => {
-  it('should classify permanent errors as true', () => {
-    const errors = [
-      new Error('file not found'),
-      new Error('not found in storage'),
-      new Error('access denied for user'),
-      new Error('permission denied: readonly'),
-      new Error('invalid format detected'),
-      new Error('corrupted data stream'),
-      new Error('authentication failed for API'),
-      new Error('quota exceeded permanently'),
+  it('should classify permanent errors with their errorClass', () => {
+    // Each permanent pattern maps to a SPECIFIC error class (not the
+    // generic 'unknown') so the dead-letter UI can group by root cause.
+    const cases: Array<{ message: string; expectedClass: string }> = [
+      { message: 'file not found', expectedClass: 'file_not_found' },
+      { message: 'Claude Code session abc123 not found', expectedClass: 'claude_session_not_found' },
+      { message: 'access denied for user', expectedClass: 'access_denied' },
+      { message: 'permission denied: readonly', expectedClass: 'permission_denied' },
+      { message: 'invalid format detected', expectedClass: 'invalid_format' },
+      { message: 'corrupted data stream', expectedClass: 'corrupted_data' },
+      { message: 'authentication failed for API', expectedClass: 'auth_failed' },
+      { message: 'quota exceeded permanently', expectedClass: 'quota_exceeded' },
+      // 401 / 503 patterns from the S1 typed classifier (#882) cross-reference.
+      { message: '401 Unauthorized', expectedClass: 'auth_failed' },
+      { message: 'invalid api key', expectedClass: 'auth_failed' },
     ];
 
-    for (const error of errors) {
-      expect(classifyIndexingError(error)).toBe(true);
+    for (const { message, expectedClass } of cases) {
+      const result = classifyIndexingError(new Error(message));
+      expect(result.isPermanent).toBe(true);
+      expect(result.errorClass).toBe(expectedClass);
     }
   });
 
-  it('should classify temporary errors as false', () => {
-    const errors = [
-      new Error('network error during fetch'),
-      new Error('connection timeout after 30s'),
-      new Error('rate limit hit'),
-      new Error('service unavailable (503)'),
-      new Error('timeout waiting for response'),
-      new Error('ECONNRESET by peer'),
-      new Error('ENOTFOUND dns failure'),
+  it('should classify temporary errors with their errorClass', () => {
+    // Transient errors must NEVER be marked permanent so they retry.
+    const cases: Array<{ message: string; expectedClass: string }> = [
+      { message: 'network error during fetch', expectedClass: 'network_timeout' },
+      { message: 'connection timeout after 30s', expectedClass: 'network_timeout' },
+      { message: 'rate limit hit', expectedClass: 'rate_limit' },
+      { message: 'service unavailable (503)', expectedClass: 'service_503' },
+      { message: '429 Too Many Requests', expectedClass: 'rate_limit' },
+      { message: '502 Bad Gateway', expectedClass: 'service_503' },
+      { message: 'Indexing timeout for task-123 after 300000ms', expectedClass: 'embedding_timeout' },
+      { message: 'ECONNRESET by peer', expectedClass: 'connection_reset' },
+      { message: 'ENOTFOUND dns failure', expectedClass: 'dns_failure' },
     ];
 
-    for (const error of errors) {
-      expect(classifyIndexingError(error)).toBe(false);
+    for (const { message, expectedClass } of cases) {
+      const result = classifyIndexingError(new Error(message));
+      expect(result.isPermanent).toBe(false);
+      expect(result.errorClass).toBe(expectedClass);
     }
   });
 
-  it('should default to false for unrecognized errors', () => {
-    expect(classifyIndexingError(new Error('something unexpected'))).toBe(false);
-    expect(classifyIndexingError(new Error(''))).toBe(false);
+  it('should default to { isPermanent: false, errorClass: "unknown" } for unrecognized errors', () => {
+    const unknown = classifyIndexingError(new Error('something unexpected'));
+    expect(unknown.isPermanent).toBe(false);
+    expect(unknown.errorClass).toBe('unknown');
+
+    // Empty message also unknown, NOT a true classification.
+    expect(classifyIndexingError(new Error(''))).toEqual({ isPermanent: false, errorClass: 'unknown' });
   });
 
   it('should handle errors without message property', () => {
-    expect(classifyIndexingError({})).toBe(false);
-    expect(classifyIndexingError({ message: null })).toBe(false);
-    expect(classifyIndexingError({ message: undefined })).toBe(false);
+    expect(classifyIndexingError({})).toEqual({ isPermanent: false, errorClass: 'unknown' });
+    expect(classifyIndexingError({ message: null })).toEqual({ isPermanent: false, errorClass: 'unknown' });
+    expect(classifyIndexingError({ message: undefined })).toEqual({ isPermanent: false, errorClass: 'unknown' });
   });
 
   it('should be case-insensitive', () => {
-    expect(classifyIndexingError(new Error('FILE NOT FOUND'))).toBe(true);
-    expect(classifyIndexingError(new Error('Access Denied'))).toBe(true);
-    expect(classifyIndexingError(new Error('Network Error'))).toBe(false);
-    expect(classifyIndexingError(new Error('TIMEOUT'))).toBe(false);
+    expect(classifyIndexingError(new Error('FILE NOT FOUND'))).toEqual({ isPermanent: true, errorClass: 'file_not_found' });
+    expect(classifyIndexingError(new Error('Access Denied'))).toEqual({ isPermanent: true, errorClass: 'access_denied' });
+    expect(classifyIndexingError(new Error('Network Error'))).toEqual({ isPermanent: false, errorClass: 'network_timeout' });
+    // Bare 'TIMEOUT' is ambiguous (could be network or embedding) and falls
+    // through to 'unknown' under the strict-classification policy. The
+    // status tool surfaces 'unknown' so operators can add a matching pattern
+    // if they see it spiking.
+    expect(classifyIndexingError(new Error('TIMEOUT'))).toEqual({ isPermanent: false, errorClass: 'unknown' });
+  });
+
+  // #2766 S2+ regression: 'Claude Code session ... not found' must match
+  // the SPECIFIC claude_session_not_found class, NOT the generic file_not_found.
+  // Without ordering by pattern specificity, the generic 'not found' catch-all
+  // would mask the real root cause ("session archived/deleted" vs "file missing").
+  it('should match claude_session_not_found BEFORE the generic file_not_found pattern', () => {
+    const result = classifyIndexingError(new Error('Claude Code session task-xyz not found in any storage location'));
+    expect(result.isPermanent).toBe(true);
+    expect(result.errorClass).toBe('claude_session_not_found');
+  });
+
+  it('should match auth_failed BEFORE service_503 (401 must not look like 503)', () => {
+    const result = classifyIndexingError(new Error('HTTP 401 from upstream — invalid api key'));
+    expect(result.isPermanent).toBe(true);
+    expect(result.errorClass).toBe('auth_failed');
+  });
+
+  it('should match rate_limit BEFORE service_503 (429 must not look like 503)', () => {
+    const result = classifyIndexingError(new Error('429 Too Many Requests from embedding service'));
+    expect(result.isPermanent).toBe(false);
+    expect(result.errorClass).toBe('rate_limit');
+  });
+});
+
+// ===================================================================
+// isPermanentIndexingError — backward-compat shim
+// ===================================================================
+describe('isPermanentIndexingError', () => {
+  it('should return the boolean verdict for permanent errors', () => {
+    expect(isPermanentIndexingError(new Error('authentication failed'))).toBe(true);
+    expect(isPermanentIndexingError(new Error('permission denied'))).toBe(true);
+  });
+
+  it('should return false for transient errors', () => {
+    expect(isPermanentIndexingError(new Error('rate limit'))).toBe(false);
+    expect(isPermanentIndexingError(new Error('ECONNRESET'))).toBe(false);
+  });
+
+  it('should default to false on empty/unknown errors', () => {
+    expect(isPermanentIndexingError(new Error(''))).toBe(false);
+    expect(isPermanentIndexingError({})).toBe(false);
+  });
+});
+
+// ===================================================================
+// registerDeadLetter — #2766 S2+ Dead-letter isolation
+// ===================================================================
+describe('registerDeadLetter', () => {
+  let state: ServerState;
+  let skeleton: SkeletonHeader;
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should add a task to deadLetterQueue and deadLetterDetails with errorClass', () => {
+    state = makeStateWithQueue();
+    skeleton = makeHeader({
+      taskId: 'task-perm-fail',
+      metadata: makeMetadata({
+        indexingState: {
+          indexStatus: 'failed',
+          indexError: 'Claude Code session not found',
+          indexRetryCount: 3,
+          lastIndexAttempt: '2026-07-24T10:00:00Z',
+          errorClass: 'claude_session_not_found',
+        },
+      }),
+    });
+
+    registerDeadLetter(state, 'task-perm-fail', skeleton, 'Claude Code session not found', 'claude_session_not_found');
+
+    expect(state.deadLetterQueue.has('task-perm-fail')).toBe(true);
+    expect(state.deadLetterDetails.size).toBe(1);
+    const entry = state.deadLetterDetails.get('task-perm-fail');
+    expect(entry).toBeDefined();
+    expect(entry?.taskId).toBe('task-perm-fail');
+    expect(entry?.errorClass).toBe('claude_session_not_found');
+    expect(entry?.retryCount).toBe(3);
+    expect(entry?.lastAttempt).toBe('2026-07-24T10:00:00Z');
+    expect(entry?.movedAt).toBeDefined();
+  });
+
+  it('should be idempotent — repeated calls do NOT overwrite the first entry', () => {
+    state = makeStateWithQueue();
+    skeleton = makeHeader({
+      taskId: 'task-dup',
+      metadata: makeMetadata({
+        indexingState: { indexStatus: 'failed', errorClass: 'auth_failed', indexRetryCount: 1 },
+      }),
+    });
+
+    registerDeadLetter(state, 'task-dup', skeleton, 'first failure', 'auth_failed');
+    const firstEntry = state.deadLetterDetails.get('task-dup');
+
+    registerDeadLetter(state, 'task-dup', skeleton, 'second failure (would overwrite)', 'auth_failed');
+
+    // Same entry — first-failure snapshot preserved.
+    expect(state.deadLetterDetails.get('task-dup')).toEqual(firstEntry);
+    expect(state.deadLetterQueue.size).toBe(1);
+  });
+
+  it('should default errorClass to "unknown" when skeleton has no errorClass set', () => {
+    state = makeStateWithQueue();
+    skeleton = makeHeader({
+      taskId: 'task-no-class',
+      metadata: makeMetadata({
+        indexingState: { indexStatus: 'failed', indexError: 'mystery' },
+      }),
+    });
+
+    registerDeadLetter(state, 'task-no-class', skeleton, 'mystery');
+
+    const entry = state.deadLetterDetails.get('task-no-class');
+    expect(entry?.errorClass).toBe('unknown');
+  });
+
+  it('should use explicitErrorClass when provided (catch block path)', () => {
+    state = makeStateWithQueue();
+    skeleton = makeHeader({
+      taskId: 'task-explicit',
+      metadata: makeMetadata({
+        indexingState: { indexStatus: 'failed', errorClass: 'unknown' },
+      }),
+    });
+
+    // Catch block classifies synchronously and passes the classification directly.
+    registerDeadLetter(state, 'task-explicit', skeleton, 'connection reset by peer', 'connection_reset');
+
+    expect(state.deadLetterDetails.get('task-explicit')?.errorClass).toBe('connection_reset');
+  });
+});
+
+// ===================================================================
+// Helpers for dead-letter tests — minimal ServerState stub. Keep this at the
+// bottom of the file so it doesn't pollute the describe block flow above.
+// ===================================================================
+type ServerState = any;
+
+function makeStateWithQueue(): any {
+  return {
+    qdrantIndexQueue: new Set<string>(),
+    deadLetterQueue: new Set<string>(),
+    deadLetterDetails: new Map<string, any>(),
+    indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+    isQdrantIndexingEnabled: true,
+    qdrantIndexInterval: null,
+    machineId: 'test',
+    fleetRoster: null,
+    isIndexLeader: false,
+    conversationCache: new Map(),
+    indexingDecisionService: null,
+  };
+}
+
+// ===================================================================
+// shouldRequeueForRefresh — #2766 S2+ refresh-worker decision helper
+// ===================================================================
+describe('shouldRequeueForRefresh', () => {
+  // Base case: a fresh task with no lastIndexedAt should re-queue.
+  it('should re-queue a never-indexed task (no lastIndexed)', () => {
+    const state = makeStateWithQueue();
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-fresh',
+      state,
+      indexStatus: undefined,
+      lastIndexed: undefined,
+      fileMtimeMs: 1000,
+      lastActivityMs: 1500,
+      forceRescan: false,
+    });
+    expect(result).toBe(true);
+  });
+
+  it('should re-queue when content changed since last indexation', () => {
+    const state = makeStateWithQueue();
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-changed',
+      state,
+      indexStatus: 'success',
+      lastIndexed: '2026-07-20T10:00:00Z',
+      fileMtimeMs: 1000,
+      lastActivityMs: new Date('2026-07-24T12:00:00Z').getTime(),
+      forceRescan: false,
+    });
+    expect(result).toBe(true);
+  });
+
+  // #2766 S2+ core regression test: a perm-failed task MUST NOT be re-queued.
+  // This is the bug that produced the queue-stuck-at-21 livelock.
+  it('should NOT re-queue perm-failed tasks (indexStatus="failed") — core #2766 S2+ fix', () => {
+    const state = makeStateWithQueue();
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-perm-fail',
+      state,
+      indexStatus: 'failed',
+      lastIndexed: undefined, // never succeeded
+      fileMtimeMs: 1000,
+      lastActivityMs: 2000, // activity still fresh
+      forceRescan: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  it('should NOT re-queue a task already in the dead-letter', () => {
+    const state = makeStateWithQueue();
+    state.deadLetterQueue.add('task-already-dead');
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-already-dead',
+      state,
+      indexStatus: undefined,
+      lastIndexed: undefined,
+      fileMtimeMs: 1000,
+      lastActivityMs: 2000,
+      forceRescan: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  // FORCE-mode guard preserved from #2227.
+  it('should NOT re-queue in FORCE mode when content is unchanged (avoid #2227 cycle)', () => {
+    const state = makeStateWithQueue();
+    const lastIndexed = '2026-07-24T10:00:00Z';
+    const lastIndexedMs = new Date(lastIndexed).getTime();
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-success-unchanged',
+      state,
+      indexStatus: 'success',
+      lastIndexed,
+      // fileMtimeMs BEFORE lastIndexed → not changed since indexation
+      fileMtimeMs: lastIndexedMs - 1000,
+      lastActivityMs: lastIndexedMs - 1000,
+      forceRescan: true,
+    });
+    expect(result).toBe(false);
+  });
+
+  it('SHOULD re-queue in FORCE mode when content changed after last indexation', () => {
+    const state = makeStateWithQueue();
+    const lastIndexed = '2026-07-24T10:00:00Z';
+    const lastIndexedMs = new Date(lastIndexed).getTime();
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-success-changed',
+      state,
+      indexStatus: 'success',
+      lastIndexed,
+      fileMtimeMs: lastIndexedMs + 1000, // mtime AFTER lastIndexed
+      lastActivityMs: lastIndexedMs + 1000,
+      forceRescan: true,
+    });
+    expect(result).toBe(true);
+  });
+
+  it('should NOT re-queue content-unchanged tasks (success + no activity since index)', () => {
+    const state = makeStateWithQueue();
+    const lastIndexed = '2026-07-24T10:00:00Z';
+    const lastIndexedMs = new Date(lastIndexed).getTime();
+    const result = shouldRequeueForRefresh({
+      taskId: 'task-stable-success',
+      state,
+      indexStatus: 'success',
+      lastIndexed,
+      fileMtimeMs: lastIndexedMs - 500,
+      lastActivityMs: lastIndexedMs - 500,
+      forceRescan: false,
+    });
+    expect(result).toBe(false);
   });
 });

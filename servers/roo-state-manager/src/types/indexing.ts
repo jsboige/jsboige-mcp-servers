@@ -4,10 +4,52 @@
 
 export type IndexStatus = 'success' | 'retry' | 'failed' | 'skip';
 
+/**
+ * #2766 S2+ Error class taxonomy for dead-letter routing.
+ *
+ * The S1 typed classifier (#882) emits `openai_error_type` strings on the
+ * embedding response. We bucket those into 7 stable classes for the
+ * dead-letter UI / triage workflow so operators can distinguish "needs a
+ * key rotation" from "transient infra blip" at a glance.
+ *
+ * - `claude_session_not_found` / `file_not_found` / `access_denied` /
+ *   `permission_denied` / `invalid_format` / `corrupted_data` /
+ *   `quota_exceeded` / `auth_failed` → permanent (dead-letter, no retry)
+ * - `network_timeout` / `service_503` / `rate_limit` / `connection_reset` /
+ *   `dns_failure` / `embedding_timeout` / `unknown` → transient (retry
+ *   with backoff, NEVER rotate key)
+ *
+ * Adding a new class = extend this union + classifyIndexingError() map +
+ * tests. The status tool groups failed tasks by this field.
+ */
+export type IndexingErrorClass =
+    | 'claude_session_not_found'
+    | 'file_not_found'
+    | 'access_denied'
+    | 'permission_denied'
+    | 'invalid_format'
+    | 'corrupted_data'
+    | 'quota_exceeded'
+    | 'auth_failed'
+    | 'network_timeout'
+    | 'service_503'
+    | 'rate_limit'
+    | 'connection_reset'
+    | 'dns_failure'
+    | 'embedding_timeout'
+    | 'unknown';
+
 export interface IndexingState {
     lastIndexedAt?: string;        // ISO datetime de dernière indexation réussie
     indexStatus?: IndexStatus;     // Statut granulaire d'indexation
     indexError?: string;           // Message d'erreur pour échecs permanents
+    /**
+     * #2766 S2+: Stable error class taxonomy (see IndexingErrorClass).
+     * Populated by classifyIndexingError() alongside indexError. Lets the
+     * status tool cluster failed tasks by root-cause category instead of
+     * dumping raw messages.
+     */
+    errorClass?: IndexingErrorClass;
     indexVersion?: string;         // Version d'index pour migrations
     nextReindexAfter?: string;     // ISO datetime pour TTL/rafraîchissement
     indexRetryCount?: number;      // Compteur de tentatives pour backoff

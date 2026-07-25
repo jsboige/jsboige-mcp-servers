@@ -289,6 +289,19 @@ export interface IndexingState {
         bandwidthSaved: number;
         lastIndexedAt?: string;
     };
+    // #2766 S2+: dead-letter queue lives on ServerState (in background-services)
+    // and is passed through to this tool's IndexingState so the status output can
+    // expose size + by-class breakdown. Optional for backward compatibility with
+    // any callers that build IndexingState manually.
+    deadLetterQueue?: Set<string>;
+    deadLetterDetails?: Map<string, {
+        taskId: string;
+        error: string;
+        errorClass: string;
+        retryCount: number;
+        lastAttempt: string;
+        movedAt: string;
+    }>;
 }
 
 export async function handleRooSyncIndexing(
@@ -432,7 +445,11 @@ export async function handleRooSyncIndexing(
                 qdrantIndexQueue,
                 qdrantIndexInterval: null,
                 isQdrantIndexingEnabled: false,
-                indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
+                indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+                // #2766 S2+: dead-letter fallback to empty when indexingState
+                // is missing (status tool used outside of MCP host process).
+                deadLetterQueue: new Set<string>(),
+                deadLetterDetails: new Map<string, never>(),
             };
             // Diagnostic hints
             const hints: string[] = [];
@@ -444,21 +461,56 @@ export async function handleRooSyncIndexing(
             }
 
             // #2307: Collect per-task failure details from cache
-            const failedTasks: Array<{ task_id: string; error: string; retry_count: number; last_attempt: string | undefined }> = [];
+            const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined }> = [];
             for (const [taskId, skeleton] of conversationCache) {
                 const idx = skeleton.metadata?.indexingState;
                 if (idx?.indexStatus === 'failed') {
                     failedTasks.push({
                         task_id: taskId,
                         error: idx.indexError || 'unknown error',
+                        // #2766 S2+: surface the fine-grained error class so
+                        // operators can triage without grepping log lines.
+                        error_class: idx.errorClass ?? 'unknown',
                         retry_count: idx.indexRetryCount ?? 0,
                         last_attempt: idx.lastIndexAttempt,
                     });
                 }
             }
 
+            // #2766 S2+: Cluster failed tasks by error_class so the root-cause
+            // distribution is visible at a glance (e.g. "5× claude_session_not_found,
+            // 2× embedding_timeout"). The breakdown is sorted by count desc so the
+            // top offender is first.
+            const failedByClass = new Map<string, number>();
+            for (const t of failedTasks) {
+                failedByClass.set(t.error_class, (failedByClass.get(t.error_class) ?? 0) + 1);
+            }
+            const failedClassBreakdown = Array.from(failedByClass.entries())
+                .map(([error_class, count]) => ({ error_class, count }))
+                .sort((a, b) => b.count - a.count);
+
+            // #2766 S2+: dead-letter queue lives on ServerState (parallel to
+            // qdrantIndexQueue). When state.deadLetterQueue is missing (older
+            // snapshots via `indexingState || {...}` fallback above), the field
+            // is undefined and we render a safe empty shape — never throw.
+            const deadLetterSize = state.deadLetterQueue?.size ?? 0;
+            const deadLetterBreakdown = new Map<string, number>();
+            if (state.deadLetterDetails) {
+                for (const entry of state.deadLetterDetails.values()) {
+                    deadLetterBreakdown.set(entry.errorClass, (deadLetterBreakdown.get(entry.errorClass) ?? 0) + 1);
+                }
+            }
+            const deadLetterByClass = Array.from(deadLetterBreakdown.entries())
+                .map(([error_class, count]) => ({ error_class, count }))
+                .sort((a, b) => b.count - a.count);
+
             if (failedTasks.length > 0) {
                 hints.push(`${failedTasks.length} tâches en échec permanent (détails dans failed_task_details ci-dessous).`);
+            }
+            if (deadLetterSize > 0) {
+                // Distinct hint so operators can spot dead-letter growth vs
+                // freshly-failed tasks in `failed_task_details`.
+                hints.push(`${deadLetterSize} tâches en dead-letter — séparées de la queue active pour éviter le livelock (#2766 S2+).`);
             }
 
             const status = {
@@ -466,6 +518,11 @@ export async function handleRooSyncIndexing(
                     is_running: state.qdrantIndexInterval !== null,
                     is_enabled: state.isQdrantIndexingEnabled,
                     queue_size: state.qdrantIndexQueue.size,
+                    // #2766 S2+: dead-letter size is exposed at the top level
+                    // so dashboards can chart the separation. Operators who
+                    // see queue_size plateau + dead_letter_size growing know
+                    // the fix is working as intended.
+                    dead_letter_size: deadLetterSize,
                     metrics: {
                         total_tasks: state.indexingMetrics.totalTasks,
                         indexed: state.indexingMetrics.indexedTasks,
@@ -476,6 +533,11 @@ export async function handleRooSyncIndexing(
                         last_indexed_at: state.indexingMetrics.lastIndexedAt
                     }
                 },
+                // #2766 S2+: dead-letter detail broken down by error class.
+                dead_letter_by_class: deadLetterByClass.length > 0 ? deadLetterByClass : undefined,
+                // #2766 S2+: failed-task cluster so the distribution of root
+                // causes is visible without parsing raw messages. Sorted desc.
+                failed_by_class: failedClassBreakdown.length > 0 ? failedClassBreakdown : undefined,
                 failed_task_details: failedTasks.length > 0 ? failedTasks : undefined,
                 diagnostic_hints: hints.length > 0 ? hints : undefined
             };
