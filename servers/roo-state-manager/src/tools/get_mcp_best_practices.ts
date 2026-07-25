@@ -158,7 +158,7 @@ export const getMcpBestPractices = {
     },
     async handler(args?: { mcp_name?: string }): Promise<CallToolResult> {
         try {
-            let combinedContent = `# 🔧 GUIDE EXPERT DE DÉBOGAGE MCP - Framework Roo\n\n`;
+            let combinedContent = `# 🔧 GUIDE EXPERT DE DÉBOGAGE MCP - Frameworks Roo Code / Zoo Code\n\n`;
             combinedContent += `*Basé sur l'expérience SDDD réelle de stabilisation de 3 MCPs critiques*\n\n`;
             
             // === SECTION 1: PATTERNS DE DÉBOGAGE ÉPROUVÉS ===
@@ -252,6 +252,7 @@ export const getMcpBestPractices = {
             if (mcpSettings) {
                 combinedContent += `## 📋 CONFIGURATION MCP ACTUELLE\n\n`;
                 combinedContent += `**Fichier:** \`${getMcpSettingsPath()}\`\n\n`;
+                combinedContent += `> ℹ️ **Chemin dynamique (post-migration Zoo):** \`getMcpSettingsPath()\` résout selon l'extension VS Code installée — Roo Code (\`rooveterinaryinc.roo-cline\`, défaut) ou Zoo Code (\`zoocodeorganization.zoo-code\`, via la variable d'environnement \`ROO_EXTENSION_ID\` ou auto-détection). Les patterns de débogage MCP de ce guide s'appliquent identiquement aux deux extensions.\n\n`;
                 combinedContent += `**MCPs configurés (${Object.keys(mcpSettings.mcpServers).length}):**\n\n`;
                 
                 for (const [name, config] of Object.entries(mcpSettings.mcpServers)) {
@@ -319,7 +320,7 @@ export const getMcpBestPractices = {
             combinedContent += `7. **Valider la correction** avec tests fonctionnels\n\n`;
 
             combinedContent += `---\n\n`;
-            combinedContent += `*Ce guide est directement issu de nos sessions de débogage SDDD réelles et contient les patterns éprouvés qui ont effectivement résolu des problèmes MCP complexes dans le framework Roo.*\n`;
+            combinedContent += `*Ce guide est directement issu de nos sessions de débogage SDDD réelles et contient les patterns éprouvés qui ont effectivement résolu des problèmes MCP complexes dans les frameworks Roo Code et Zoo Code. Les patterns MCP (watchPaths, cwd, force reload, progressive isolation) sont communs aux deux extensions.*\n`;
 
             return { content: [{ type: 'text' as const, text: combinedContent }] };
         } catch (error) {
