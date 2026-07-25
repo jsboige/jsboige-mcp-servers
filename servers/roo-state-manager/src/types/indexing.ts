@@ -80,6 +80,25 @@ export const MAX_RETRY_ATTEMPTS = 3;
 export const RETRY_BACKOFF_BASE_MS = 60000; // 1 minute base
 
 /**
+ * #2766 S2+ P1 follow-up — single-source-of-truth for "this task is stuck in
+ * retry-with-no-progress" detection. The status tool's failed_task_details
+ * loop and the `cleanup_failed` action both need to identify retry-budget-
+ * exhausted tasks (recoverable stale state from the pre-#886 livelock era,
+ * not a true perm-fail). Without this helper, the `retryCount >= 3` magic
+ * number was duplicated in two call-sites (NanoClaw review nit #1 of #887).
+ *
+ * Semantics: returns true iff indexStatus='retry' AND retryCount has hit
+ * the MAX_RETRY_ATTEMPTS ceiling. Perm-failed tasks (`indexStatus='failed'`)
+ * are NOT stuck-retry — they are operator-actionable and should be routed
+ * via `cleanup_failed error_class=...`, not silently dropped.
+ */
+export function isStuckRetry(idx: IndexingState | undefined | null): boolean {
+    if (!idx) return false;
+    if (idx.indexStatus !== 'retry') return false;
+    return (idx.indexRetryCount ?? 0) >= MAX_RETRY_ATTEMPTS;
+}
+
+/**
  * Rebuild backoff — applied ONLY when a task is re-indexed because of an
  * index-version migration (decision.action === 'rebuild'). Uniform random
  * jitter [MIN, MAX] in milliseconds is awaited BEFORE processing the task.

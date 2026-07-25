@@ -10,6 +10,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { ConversationSkeleton } from '../../../types/conversation.js';
 
 // Mutable shared-state path so trend_report tests can point at a temp dir.
 // vi.mock is hoisted, so the factory must reference this hoisted holder.
@@ -20,7 +21,8 @@ const { sharedStatePathHolder } = vi.hoisted(() => ({
 const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHandler,
 	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
 	mockDetectStorageLocations, mockFsReadDir, mockFsReadFile, mockFsStat,
-	mockCleanupOldVectors, mockDetectAndCleanupOrphans
+	mockCleanupOldVectors, mockDetectAndCleanupOrphans,
+	mockResetIndexingState, mockClassifyIndexingError
 } = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
@@ -35,7 +37,9 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockFsReadFile: vi.fn(),
 	mockFsStat: vi.fn(),
 	mockCleanupOldVectors: vi.fn(),
-	mockDetectAndCleanupOrphans: vi.fn()
+	mockDetectAndCleanupOrphans: vi.fn(),
+	mockResetIndexingState: vi.fn(),
+	mockClassifyIndexingError: vi.fn()
 }));
 
 // Default mock for shared-state-path — returns '' unless a test sets the holder.
@@ -82,6 +86,52 @@ vi.mock('../../../services/task-indexer/VectorIndexer.js', () => ({
 vi.mock('../cleanup-orphans.js', () => ({
 	detectAndCleanupOrphans: mockDetectAndCleanupOrphans,
 }));
+// #2766 S2+ P1 follow-up — mock the static imports for classifier + dead-letter bookkeeping.
+// The dispatcher imports `classifyIndexingError` at module load for status fallback AND
+// cleanup_failed, so this must be a static (hoisted) vi.mock — not just for dynamic imports.
+vi.mock('../../../services/background-services.js', () => ({
+	// Sync inline classifier mirroring the real ERROR_PATTERNS contract from
+	// background-services.ts:1420. We deliberately don't `vi.importActual` here
+	// because that's async and the dispatcher consumes the function synchronously
+	// from the static import. Substring match on lowercased message.
+	classifyIndexingError: (error: any) => {
+		const msg = String(error?.message ?? '').toLowerCase();
+		if (!msg) return { isPermanent: false, errorClass: 'unknown' };
+		if (msg.includes('claude code session') || msg.includes('claude session')) {
+			return { isPermanent: true, errorClass: 'claude_session_not_found' };
+		}
+		if (msg.includes('file not found') || msg.includes('enoent')) {
+			return { isPermanent: true, errorClass: 'file_not_found' };
+		}
+		if (msg.includes('authentication failed') || msg.includes('401') || msg.includes('unauthorized') || msg.includes('invalid api key')) {
+			return { isPermanent: true, errorClass: 'auth_failed' };
+		}
+		if (msg.includes('rate limit') || msg.includes('429') || msg.includes('too many requests')) {
+			return { isPermanent: false, errorClass: 'rate_limit' };
+		}
+		if (msg.includes('service unavailable') || msg.includes('503') || msg.includes('502') || msg.includes('500 internal')) {
+			return { isPermanent: false, errorClass: 'service_503' };
+		}
+		if (msg.includes('network error') || msg.includes('connection timeout') || msg.includes('network timeout')) {
+			return { isPermanent: false, errorClass: 'network_timeout' };
+		}
+		if (msg.includes('econnreset') || msg.includes('connection reset')) {
+			return { isPermanent: false, errorClass: 'connection_reset' };
+		}
+		if (msg.includes('enotfound') || msg.includes('getaddrinfo')) {
+			return { isPermanent: false, errorClass: 'dns_failure' };
+		}
+		if (msg.includes('indexing timeout') || msg.includes('embedding timeout') || msg.includes('timeout waiting') || msg.includes('task timeout')) {
+			return { isPermanent: false, errorClass: 'embedding_timeout' };
+		}
+		return { isPermanent: false, errorClass: 'unknown' };
+	},
+}));
+vi.mock('../../../services/indexing-decision.js', () => ({
+	IndexingDecisionService: class {
+		resetIndexingState = mockResetIndexingState;
+	},
+}));
 
 // getISOWeek is a pure module-local helper (not exported). We exercise it indirectly via
 // tool_usage_stats weekly bucketing; for direct unit coverage we re-implement the reference
@@ -111,9 +161,9 @@ describe('roosyncIndexingTool', () => {
 		expect(roosyncIndexingTool.inputSchema.required).toEqual(['action']);
 	});
 
-	test('has action enum with 13 values', () => {
+	test('has action enum with 14 values', () => {
 		const actionProp = (roosyncIndexingTool.inputSchema.properties as any).action;
-		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
+		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
 	});
 
 	// ============================================================
@@ -785,6 +835,261 @@ describe('roosync_indexing tool_usage_stats validation', () => {
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain('Invalid');
 		expect(mockDetectStorageLocations).not.toHaveBeenCalled();
+	});
+});
+
+// ============================================================
+// #2766 S2+ P1 follow-up — cleanup_failed action + status retrofit fallback
+// ============================================================
+describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow-up)', () => {
+	// Build a minimal ConversationSkeleton shape for these tests. We only need
+	// `metadata.indexingState` to drive the failedTasks scan and the
+	// cleanup_failed candidate scan.
+	const makeSkeleton = (idx: any): ConversationSkeleton => ({
+		taskId: 'stub',
+		metadata: { indexingState: idx },
+		sequence: [],
+	} as any);
+
+	const ensureFresh = vi.fn().mockResolvedValue(true);
+	const saveSkeleton = vi.fn().mockResolvedValue(undefined);
+	const setEnabled = vi.fn();
+	const mockRebuildHandler = vi.fn();
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		// Reset static mock state — resetIndexingState no-op default.
+		mockResetIndexingState.mockClear();
+	});
+
+	test('status retrofit: legacy idx with no errorClass is re-classified via 15-class classifier', async () => {
+		// Legacy failure persisted BEFORE #886 — idx.errorClass is undefined.
+		// The status tool must run the message through classifyIndexingError so
+		// the operator sees a real class instead of 'unknown'.
+		const cache = new Map<string, ConversationSkeleton>([
+			['legacy-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Claude Code session abc-123 not found',
+				indexRetryCount: 3,
+				lastIndexAttempt: '2026-07-20T00:00:00Z',
+				// NB: NO errorClass — legacy shape.
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.failed_task_details).toHaveLength(1);
+		expect(parsed.failed_task_details[0].error_class).toBe('claude_session_not_found');
+		// failed_by_class reflects the retrofit classification.
+		expect(parsed.failed_by_class).toEqual([{ error_class: 'claude_session_not_found', count: 1 }]);
+	});
+
+	test('status surfaces stuck-retry tasks via isStuckRetry helper (pre-#886 livelock era)', async () => {
+		// Stuck retry: indexStatus='retry' AND retryCount >= MAX_RETRY_ATTEMPTS (3).
+		// These tasks pre-date #886 — they never flipped to 'failed' but the
+		// operator needs to see them. isStuckRetry() is the single source of truth.
+		const cache = new Map<string, ConversationSkeleton>([
+			['stuck-1', makeSkeleton({
+				indexStatus: 'retry',
+				indexError: 'Indexing timeout 300000ms',
+				indexRetryCount: 5, // way past MAX_RETRY_ATTEMPTS=3
+				errorClass: 'embedding_timeout',
+			})],
+			['not-stuck', makeSkeleton({
+				indexStatus: 'retry',
+				indexError: 'Indexing timeout 300000ms',
+				indexRetryCount: 1, // still in retry budget
+				errorClass: 'embedding_timeout',
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		// Only stuck-1 should appear in failed_task_details.
+		expect(parsed.failed_task_details).toHaveLength(1);
+		expect(parsed.failed_task_details[0].task_id).toBe('stuck-1');
+		expect(parsed.failed_task_details[0].retry_count).toBe(5);
+	});
+
+	test('status stall hint: queue=0 but failed>0 nudges operator to cleanup_failed', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['failed-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'quota exceeded',
+				indexRetryCount: 3,
+				errorClass: 'quota_exceeded',
+			})],
+		]);
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(), // drained
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+			deadLetterQueue: new Set<string>(),
+			deadLetterDetails: new Map<string, any>(),
+		};
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		const hints = parsed.diagnostic_hints as string[];
+		expect(hints).toBeDefined();
+		expect(hints.some(h => h.includes('cleanup_failed'))).toBe(true);
+	});
+
+	test('cleanup_failed dry_run=true (default) reports candidates without reset', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['f-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Claude Code session not found',
+				indexRetryCount: 3,
+				errorClass: 'claude_session_not_found',
+			})],
+			['f-2', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'rate limit exceeded',
+				indexRetryCount: 3,
+				errorClass: 'rate_limit',
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('dry_run');
+		expect(parsed.candidates_count).toBe(2);
+		expect(parsed.by_class).toEqual({ claude_session_not_found: 1, rate_limit: 1 });
+		expect(parsed.reset_count).toBe(0);
+		expect(parsed.reset_task_ids).toBeUndefined();
+		// No reset/mutation calls.
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+		expect(saveSkeleton).not.toHaveBeenCalled();
+	});
+
+	test('cleanup_failed error_class filter narrows to matching class', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['f-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Claude Code session not found',
+				indexRetryCount: 3,
+				errorClass: 'claude_session_not_found',
+			})],
+			['f-2', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'rate limit exceeded',
+				indexRetryCount: 3,
+				errorClass: 'rate_limit',
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', error_class: 'claude_session_not_found' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.candidates_count).toBe(1);
+		expect(parsed.by_class).toEqual({ claude_session_not_found: 1 });
+	});
+
+	test('cleanup_failed dry_run=false executes reset + dead-letter + save', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['f-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Claude Code session not found',
+				indexRetryCount: 3,
+				errorClass: 'claude_session_not_found',
+			})],
+		]);
+		const deadLetterQueue = new Set<string>();
+		const deadLetterDetails = new Map<string, any>();
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+			deadLetterQueue,
+			deadLetterDetails,
+		};
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('executed');
+		expect(parsed.reset_count).toBe(1);
+		expect(parsed.reset_task_ids).toEqual(['f-1']);
+		// resetIndexingState must have been called.
+		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
+		// saveSkeleton callback must have been called (NOT direct disk write).
+		expect(saveSkeleton).toHaveBeenCalledTimes(1);
+		// Dead-letter bookkeeping was mirrored.
+		expect(deadLetterQueue.has('f-1')).toBe(true);
+		expect(deadLetterDetails.has('f-1')).toBe(true);
+	});
+
+	test('cleanup_failed skips non-failed and non-stuck-retry tasks', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['healthy', makeSkeleton({
+				indexStatus: 'success',
+				indexError: undefined,
+				indexRetryCount: 0,
+				errorClass: undefined,
+			})],
+			['in-progress', makeSkeleton({
+				indexStatus: 'retry',
+				indexError: 'transient',
+				indexRetryCount: 1, // below MAX_RETRY_ATTEMPTS — not stuck
+				errorClass: 'network_timeout',
+			})],
+			['failed', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'must be cleaned',
+				indexRetryCount: 3,
+				errorClass: 'corrupted_data',
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.candidates_count).toBe(1);
+		expect(parsed.by_class).toEqual({ corrupted_data: 1 });
+	});
+
+	test('cleanup_failed auth_failed emits operator warning note (anti-#1767-self-helix guard)', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['auth-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: '401 Unauthorized',
+				indexRetryCount: 3,
+				errorClass: 'auth_failed',
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', error_class: 'auth_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.note).toBeDefined();
+		expect(parsed.note).toContain('auth_failed');
+		expect(parsed.note).toContain('API key');
+		expect(parsed.reset_count).toBe(1);
 	});
 });
 

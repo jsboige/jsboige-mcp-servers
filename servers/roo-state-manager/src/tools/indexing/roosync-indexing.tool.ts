@@ -14,6 +14,14 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import * as path from 'path';
 
+// #2766 S2+ P1 follow-up — dead-letter classification helpers used by both
+// the status tool (retrofit fallback for legacy `idx.errorClass === undefined`
+// failures from the pre-#886 era) and the cleanup_failed action. Imports stay
+// narrow to avoid pulling the entire background-services module into the tool
+// layer (registry.ts owns that wiring).
+import { classifyIndexingError } from '../../services/background-services.js';
+import { isStuckRetry } from '../../types/indexing.js';
+
 // Import des handlers existants
 import { indexTaskSemanticTool } from './index-task.tool.js';
 import { resetQdrantCollectionTool } from './reset-collection.tool.js';
@@ -64,7 +72,7 @@ export function normalizeToolName(rawName: string): string {
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -132,6 +140,19 @@ export interface RooSyncIndexingArgs {
     /** #2246: Max tasks to repair per call (pour action=repair_gaps). Défaut: 50 */
     max_repair_tasks?: number;
 
+    /**
+     * #2766 S2+ P1 follow-up — `cleanup_failed` action: filter by error class.
+     * Use 'all' to clean every perm-failed + stuck-retry task; otherwise narrow
+     * to one of the 15 IndexingErrorClass values (e.g. 'claude_session_not_found'
+     * for the typical orphaned-JSONL case). Resetting `auth_failed` without
+     * fixing the underlying key rotates the task back into the queue only to
+     * re-fail — see the doc comment on the case below.
+     */
+    error_class?: 'all' | 'claude_session_not_found' | 'file_not_found' | 'access_denied' | 'permission_denied' | 'invalid_format' | 'corrupted_data' | 'quota_exceeded' | 'auth_failed' | 'network_timeout' | 'service_503' | 'rate_limit' | 'connection_reset' | 'dns_failure' | 'embedding_timeout' | 'unknown';
+
+    /** #2766 S2+ P1 follow-up — `cleanup_failed` action: cap on skeletons to reset per call (defensive against huge backlogs). Défaut: 100 */
+    max_cleanup_tasks?: number;
+
     /** #2336 D1: Start date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago */
     start_date?: string;
 
@@ -150,8 +171,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
             },
             task_id: {
                 type: 'string',
@@ -322,10 +343,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, tool_usage_stats, save_snapshot, trend_report` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, cleanup_failed, tool_usage_stats, save_snapshot, trend_report` }]
         };
     }
 
@@ -460,19 +481,35 @@ export async function handleRooSyncIndexing(
                 hints.push('Queue non vide mais worker non démarré. Le serveur MCP peut ne pas avoir initialisé les services background.');
             }
 
-            // #2307: Collect per-task failure details from cache
+            // #2307: Collect per-task failure details from cache.
+            // #2766 S2+ P1 follow-up: include BOTH perm-failed tasks AND stuck-retry
+            // tasks (the latter from the pre-#886 livelock era — retry budget exhausted
+            // but indexStatus never flipped to 'failed'). Both kinds belong in the
+            // operator-visible failure list. Use the shared `isStuckRetry` helper so
+            // the MAX_RETRY_ATTEMPTS threshold has a single source of truth.
             const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined }> = [];
             for (const [taskId, skeleton] of conversationCache) {
                 const idx = skeleton.metadata?.indexingState;
-                if (idx?.indexStatus === 'failed') {
+                const isFailed = idx?.indexStatus === 'failed';
+                const isStuck = isStuckRetry(idx);
+                if (isFailed || isStuck) {
+                    // #2766 S2+ P1 follow-up retrofit: if the worker never set
+                    // `idx.errorClass` (legacy failures from the pre-#886 era —
+                    // 26 tasks observed firsthand on po-2026), run the message
+                    // through the 15-class classifier so the operator gets the
+                    // same triage quality as fresh failures. Falls back to
+                    // 'unknown' when the message is empty or doesn't match any
+                    // pattern (intentional, see ERROR_PATTERNS in
+                    // background-services.ts).
+                    const errorMessage = idx?.indexError || 'unknown error';
+                    const errorClass = idx?.errorClass
+                        ?? classifyIndexingError({ message: errorMessage }).errorClass;
                     failedTasks.push({
                         task_id: taskId,
-                        error: idx.indexError || 'unknown error',
-                        // #2766 S2+: surface the fine-grained error class so
-                        // operators can triage without grepping log lines.
-                        error_class: idx.errorClass ?? 'unknown',
-                        retry_count: idx.indexRetryCount ?? 0,
-                        last_attempt: idx.lastIndexAttempt,
+                        error: errorMessage,
+                        error_class: errorClass,
+                        retry_count: idx?.indexRetryCount ?? 0,
+                        last_attempt: idx?.lastIndexAttempt,
                     });
                 }
             }
@@ -511,6 +548,14 @@ export async function handleRooSyncIndexing(
                 // Distinct hint so operators can spot dead-letter growth vs
                 // freshly-failed tasks in `failed_task_details`.
                 hints.push(`${deadLetterSize} tâches en dead-letter — séparées de la queue active pour éviter le livelock (#2766 S2+).`);
+            }
+            // #2766 S2+ P1 follow-up — operator nudge: when the queue is fully drained
+            // BUT failures linger (legacy perm-fails or stuck retries), point at
+            // `cleanup_failed` so the operator has an obvious next step. Without
+            // this hint, an operator inspecting status sees "queue=0, all fine" and
+            // may not realize there's an actionable pileup sitting in dead-letter.
+            if (state.qdrantIndexQueue.size === 0 && (deadLetterSize > 0 || failedTasks.length > 0)) {
+                hints.push(`Queue vide mais dead-letter / failed non-vide : utilisez \`cleanup_failed\` (dry_run par défaut) pour purger ou re-queue par classe d'erreur.`);
             }
 
             const status = {
@@ -862,6 +907,138 @@ export async function handleRooSyncIndexing(
                 return {
                     isError: true,
                     content: [{ type: 'text', text: `Error during repair_gaps: ${error.message}` }]
+                };
+            }
+        }
+
+        case 'cleanup_failed': {
+            // #2766 S2+ P1 follow-up — operator-facing dead-letter tool.
+            //
+            // The automatic dead-letter in #886 (#886 background-services.ts)
+            // moves perm-failed tasks to state.deadLetterQueue and prevents the
+            // active queue from livelocking. But it does NOT solve the legacy
+            // backlog (26 failures observed firsthand on po-2026 that pre-date
+            // #886 — many with retryCount >= 3 and stale indexError strings).
+            // This action lets the operator:
+            //   1. dry_run=true  (DEFAULT) — see what WOULD be reset, by class.
+            //   2. dry_run=false — actually reset matching skeletons' indexingState
+            //      back to {indexVersion} via the existing decisionService, AND
+            //      move them to state.deadLetterQueue so they leave the active
+            //      queue. After reset they re-enter the queue on the next refresh
+            //      cycle IF the underlying condition is transient (network_timeout,
+            //      embedding_timeout, rate_limit, …) — and skip cleanly if it's
+            //      still permanent (auth_failed stays in dead-letter until the
+            //      operator fixes the key, etc.).
+            //
+            // The reset path is intentionally narrow: we touch ONLY
+            // `metadata.indexingState` (via resetIndexingState) and the dead-letter
+            // map. NO Qdrant vector writes, NO queue mutations beyond marking the
+            // task dead-lettered — the refresh worker picks up the rest.
+            //
+            // Anti-#1767-self-helix guard: resetting `auth_failed` without fixing
+            // the underlying API key rotates the task back into the queue only to
+            // re-fail. The operator should fix the key FIRST and run
+            // cleanup_failed error_class=auth_failed SECOND.
+            const errorClassFilter = args.error_class ?? 'all';
+            const isDryRun = args.dry_run !== false; // default true for safety
+            const maxCleanup = args.max_cleanup_tasks ?? 100;
+
+            try {
+                const { IndexingDecisionService } = await import('../../services/indexing-decision.js');
+                const decisionService = new IndexingDecisionService();
+
+                // Same scan as status — same retrofit fallback — so the operator
+                // sees the SAME picture whether they call status or cleanup_failed.
+                const candidates: Array<{
+                    task_id: string;
+                    error_class: string;
+                    error: string;
+                    retry_count: number;
+                }> = [];
+                for (const [taskId, skeleton] of conversationCache) {
+                    if (candidates.length >= maxCleanup) break;
+                    const idx = skeleton.metadata?.indexingState;
+                    const isFailed = idx?.indexStatus === 'failed';
+                    const isStuck = isStuckRetry(idx);
+                    if (!isFailed && !isStuck) continue;
+
+                    const errorMessage = idx?.indexError || 'unknown error';
+                    const errorClass = idx?.errorClass
+                        ?? classifyIndexingError({ message: errorMessage }).errorClass;
+
+                    if (errorClassFilter !== 'all' && errorClass !== errorClassFilter) continue;
+                    candidates.push({
+                        task_id: taskId,
+                        error_class: errorClass,
+                        error: errorMessage,
+                        retry_count: idx?.indexRetryCount ?? 0,
+                    });
+                }
+
+                const byClass: Record<string, number> = {};
+                for (const c of candidates) {
+                    byClass[c.error_class] = (byClass[c.error_class] ?? 0) + 1;
+                }
+
+                let reset = 0;
+                const resetIds: string[] = [];
+                if (!isDryRun && candidates.length > 0) {
+                    for (const c of candidates) {
+                        const skeleton = conversationCache.get(c.task_id);
+                        if (!skeleton) continue;
+                        decisionService.resetIndexingState(skeleton);
+                        // Mirror #886's dead-letter bookkeeping so the task leaves
+                        // the active queue and shows up in status.dead_letter_by_class.
+                        if (indexingState?.deadLetterQueue && indexingState.deadLetterDetails) {
+                            indexingState.deadLetterQueue.add(c.task_id);
+                            indexingState.deadLetterDetails.set(c.task_id, {
+                                taskId: c.task_id,
+                                error: c.error,
+                                errorClass: c.error_class,
+                                retryCount: c.retry_count,
+                                lastAttempt: new Date().toISOString(),
+                                movedAt: new Date().toISOString(),
+                            });
+                        }
+                        // Persist the reset so the next MCP host restart still sees
+                        // the dead-letter state. Save through the callback (the
+                        // registry wires this to saveSkeletonToDisk) — direct disk
+                        // I/O would bypass the cache freshness protocol.
+                        await saveSkeletonCallback(skeleton);
+                        resetIds.push(c.task_id);
+                        reset++;
+                    }
+                }
+
+                const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
+                const summary = isDryRun
+                    ? `${mode} ${candidates.length} candidats détectés pour cleanup_failed (error_class=${errorClassFilter}, max=${maxCleanup}). Lancez avec dry_run=false pour exécuter.`
+                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés et dead-letterés (error_class=${errorClassFilter}).`;
+
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'cleanup_failed',
+                            mode: isDryRun ? 'dry_run' : 'executed',
+                            error_class: errorClassFilter,
+                            max_cleanup_tasks: maxCleanup,
+                            candidates_count: candidates.length,
+                            by_class: byClass,
+                            reset_count: isDryRun ? 0 : reset,
+                            reset_task_ids: isDryRun ? undefined : (resetIds.length > 0 ? resetIds : undefined),
+                            note: errorClassFilter === 'auth_failed' && !isDryRun
+                                ? 'auth_failed tasks were reset. They will re-fail until the API key is fixed — rotate the key BEFORE running cleanup_failed error_class=auth_failed to avoid churn.'
+                                : undefined,
+                            summary,
+                        }, null, 2)
+                    }]
+                };
+            } catch (error: any) {
+                return {
+                    isError: true,
+                    content: [{ type: 'text', text: `Erreur lors du cleanup_failed: ${error.message}` }]
                 };
             }
         }
