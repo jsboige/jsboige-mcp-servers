@@ -497,17 +497,25 @@ export class SkeletonCacheService {
      *   - 'claude'          → Tier 2 (Claude local)
      *   - 'gdrive-archive'  → Tier 3 (GDrive archives)
      */
-    // #2434: Made async to call ensureFreshCache() before reading cache.
-    // Without this, tier stats could be computed against a stale/cold cache
-    // (unlike every other read path in this class which already awaits ensureFreshCache).
+    // #2766 S2+ (P2): health is a fast liveness probe — it must NOT trigger a full
+    // cache refresh. ensureFreshCache() → loadSkeletonsFromDisk() → buildMissingSkeletons()
+    // can take minutes on a host with many conversations, defeating health's purpose
+    // and risking MCP-transport timeout. Instead, snapshot the current in-memory cache
+    // instantly and expose cacheAgeMs/stale so the consumer knows the freshness.
+    // #2434's staleness concern is addressed transparently (consumer sees the age)
+    // without blocking. Normal read paths (getCache/getSkeleton/etc.) keep the cache
+    // warm via ensureFreshCache(); health only observes.
     public async getCacheTierStats(): Promise<{
         tier1_roo: number;
         tier2_claude: number;
         tier3_archives: number;
         total: number;
         config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
+        cacheAgeMs: number;
+        stale: boolean;
     }> {
-        await this.ensureFreshCache();
+        const cacheAgeMs = Date.now() - this.lastRefreshTime;
+        const stale = cacheAgeMs > this.CACHE_VALIDITY_MS;
 
         let tier1 = 0;
         let tier2 = 0;
@@ -533,6 +541,8 @@ export class SkeletonCacheService {
                 enableClaudeTier: !!SkeletonCacheService.config.enableClaudeTier,
                 enableArchiveTier: !!SkeletonCacheService.config.enableArchiveTier,
             },
+            cacheAgeMs,
+            stale,
         };
     }
 

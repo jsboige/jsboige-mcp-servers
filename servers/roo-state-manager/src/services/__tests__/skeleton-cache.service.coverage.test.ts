@@ -282,5 +282,26 @@ describe('SkeletonCacheService — write/persist/build coverage (#833 C3)', () =
       expect(stats.config.enableClaudeTier).toBe(true);
       expect(stats.config.enableArchiveTier).toBe(false);
     });
+
+    test('#2766 S2+ (P2): does NOT trigger a cache refresh even when stale (fast health)', async () => {
+      // Regression guard: health is a liveness probe and must snapshot the current
+      // in-memory cache instantly. Previously getCacheTierStats awaited
+      // ensureFreshCache(), which on a stale/cold cache fired loadSkeletonsFromDisk
+      // (+ buildMissingSkeletons) — a multi-minute scan. detectStorageLocations is
+      // the first I/O that loadSkeletonsFromDisk performs, so asserting it is NOT
+      // called proves no reload happened.
+      const c = (service as any).cache;
+      c.set('stale-1', skel('stale-1'));
+      // Force the cache to look stale (last refresh long past the 30min validity).
+      (service as any).lastRefreshTime = 0;
+
+      mockDetectStorageLocations.mockClear();
+      const stats = await service.getCacheTierStats();
+
+      expect(mockDetectStorageLocations).not.toHaveBeenCalled();
+      expect(stats.total).toBe(1);
+      expect(stats.stale).toBe(true);
+      expect(stats.cacheAgeMs).toBeGreaterThan(0);
+    });
   });
 });
