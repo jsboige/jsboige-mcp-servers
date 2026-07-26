@@ -22,6 +22,18 @@ import { execSync } from 'child_process';
 /** Timeout for git operations in baseline management */
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_QUICK_TIMEOUT_MS = 10_000; // For rev-parse, tag -l
+
+/**
+ * Workspace root for git operations. The MCP server process runs with cwd set
+ * to its own submodule dir (mcps/internal/servers/roo-state-manager), so bare
+ * `execSync('git ...')` resolves against the submodule (which has no baseline-v*
+ * tags) instead of the parent workspace repo where baselines actually live.
+ * WORKSPACE_PATH is injected by the host (Claude Code / VS Code `${workspaceFolder}`) —
+ * verified empirically: dashboard workspace basename is "roo-extensions" while
+ * process.cwd() basename is "roo-state-manager". Falls back to process.cwd() if
+ * WORKSPACE_PATH is unset (no regression vs current behavior). Refs #2962.
+ */
+const WORKSPACE_ROOT = process.env.WORKSPACE_PATH || process.cwd();
 import type { BaselineConfig } from '../../types/baseline.js';
 import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
 import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
@@ -431,7 +443,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   // Vérifier si le tag existe déjà
   let tagExists = false;
   try {
-    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
+    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
     tagExists = true;
   } catch (error) {
     // Le tag n'existe pas, c'est normal
@@ -445,6 +457,11 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   }
 
   // Committer le fichier de baseline
+  // NOTE: baselinePath lives in GDrive (sharedState), outside any git repo working
+  // tree, so `git add` fails regardless of cwd and is swallowed below — the
+  // commit step is effectively a no-op. This is a pre-existing separate concern
+  // (should the baseline JSON live in git or GDrive?) and is NOT fixed by the
+  // cwd resolution: adding cwd here wouldn't make a GDrive path committable.
   try {
     const baselinePath = join(sharedPath, 'sync-config.ref.json');
     execSync(`git add "${baselinePath}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
@@ -454,9 +471,11 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     getLogger().warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
   }
 
-  // Créer le tag Git
+  // Créer le tag Git — cwd = WORKSPACE_ROOT (parent repo) so the tag lands where
+  // list_versions reads it (#2962 read/write coherence). Without cwd the tag was
+  // created in the submodule, diverging from the read path fixed above.
   try {
-    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
+    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
     getLogger().info('✅ Git tag created successfully', { tagName });
   } catch (error) {
     throw new RooSyncServiceError(
@@ -465,11 +484,12 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     );
   }
 
-  // Pousser le tag si demandé
+  // Pousser le tag si demandé — same cwd = WORKSPACE_ROOT so push targets the
+  // parent repo remote (where baseline-v* tags are tracked).
   let tagPushed = false;
   if (args.pushTags !== false) {
     try {
-      execSync('git push --tags', { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
+      execSync('git push --tags', { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
       tagPushed = true;
       getLogger().info('✅ Git tag pushed successfully');
     } catch (error) {
@@ -636,12 +656,12 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 
       // Vérifier si le tag existe
       try {
-        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
+        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
       } catch (tagError) {
         // Récupérer les tags disponibles
         let availableTags = '';
         try {
-          const allTags = execSync('git tag -l', { encoding: 'utf8', timeout: GIT_QUICK_TIMEOUT_MS });
+          const allTags = execSync('git tag -l', { encoding: 'utf8', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
           const baselineTags = allTags.split('\n').filter(tag => tag.startsWith('baseline-v'));
           if (baselineTags.length > 0) {
             availableTags = `\n\nTags baseline disponibles:\n${baselineTags.map(t => `  - ${t}`).join('\n')}`;
@@ -659,7 +679,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
       }
 
       // Récupérer le contenu du tag
-      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
+      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
       restoredBaseline = JSON.parse(baselineContent) as BaselineConfig;
 
       if (!restoredBaseline.machineId || !restoredBaseline.version) {
@@ -772,6 +792,7 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
   try {
     const allTags = execSync('git tag -l "baseline-v*"', {
       encoding: 'utf8',
+      cwd: WORKSPACE_ROOT,
       timeout: GIT_QUICK_TIMEOUT_MS
     });
 
@@ -799,12 +820,14 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
       try {
         date = execSync(`git log -1 --format=%ai ${tag}`, {
           encoding: 'utf8',
+          cwd: WORKSPACE_ROOT,
           timeout: GIT_QUICK_TIMEOUT_MS
         }).trim();
       } catch { /* skip */ }
       try {
         message = execSync(`git log -1 --format=%s ${tag}`, {
           encoding: 'utf8',
+          cwd: WORKSPACE_ROOT,
           timeout: GIT_QUICK_TIMEOUT_MS
         }).trim();
       } catch { /* skip */ }
