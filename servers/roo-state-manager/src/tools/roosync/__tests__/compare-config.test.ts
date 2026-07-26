@@ -259,6 +259,78 @@ describe('compare-config', () => {
 			expect(result.differences.length).toBeGreaterThanOrEqual(1);
 		});
 
+		// #2963 (rule #2) regression tests: never render diff against a missing source.
+
+		test('#2963: target section vide alors que source peuplée → WARNING status, pas de "suppressions fantômes"', async () => {
+			// Source has 7 MCPs, target has 0 (degraded collection / mcp_settings.json not read).
+			// Previously this rendered as "7 MCP supprimés" in WARNING — false-positive drift
+			// that misled a coordinator into thinking the target had lost its config.
+			mockGetInventory.mockImplementation((machineId: string) => {
+				if (machineId === 'ai-01') {
+					return Promise.resolve({
+						inventory: { mcpServers: {
+							'win-cli': { command: 'node' },
+							'roo-state-manager': { command: 'node' },
+							'playwright': { command: 'node' },
+							'sk-agent': { command: 'node' },
+							'searxng': { command: 'node' },
+							'markitdown': { command: 'node' },
+							'extra-mcp': { command: 'node' },
+						}}
+					});
+				}
+				// Target — degraded collection, mcpServers empty
+				return Promise.resolve({
+					inventory: { mcpServers: {} }
+				});
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2023',
+				diffs: [],
+				stats: { added: 0, removed: 0, modified: 0, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2023',
+				granularity: 'mcp'
+			});
+
+			// Pre-flight short-circuits: GranularDiffDetector is NOT called.
+			expect(mockCompareGranular).not.toHaveBeenCalled();
+			expect(result.summary.total).toBe(1);
+			expect(result.summary.warning).toBe(1);
+			expect(result.summary.critical).toBe(0);
+			expect(result.differences[0].category).toBe('inventory');
+			expect(result.differences[0].description).toMatch(/vide côté cible.*peuplée côté source/);
+		});
+
+		test('#2963: les deux côtés ont 0 MCPs → pas de pre-flight (vrai signal aucun MCP configuré)', async () => {
+			// Both sides legitimately empty — real signal "no MCP configured anywhere".
+			// Pre-flight must not fire (only fires when ONE side is non-empty).
+			mockGetInventory.mockResolvedValue({
+				inventory: { mcpServers: {} }
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2023',
+				diffs: [],
+				stats: { added: 0, removed: 0, modified: 0, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2023',
+				granularity: 'mcp'
+			});
+
+			// Both sections empty → pre-flight does not fire; GranularDiffDetector runs normally.
+			expect(mockCompareGranular).toHaveBeenCalled();
+			// No phantom diff emitted (none expected from empty/empty).
+			expect(result.summary.critical).toBe(0);
+		});
+
 		test('throws when comparison fails', async () => {
 			mockLoadDashboard.mockResolvedValue({
 				machines: {
@@ -948,5 +1020,66 @@ describe('compare-config', () => {
 			// hash differ + identical modes → IMPORTANT (proves the fallback read resolved).
 			expect(diffs.find(d => d.path === 'roo.modelProfile.hash')).toBeDefined();
 		});
+	});
+
+	// ============================================================
+	// #2963: EXPECTED_MACHINE_FIELDS extended to system.os / architecture / platform / arch
+	// These are material facts of each machine — must NOT surface as CRITICAL drift.
+	// ============================================================
+	describe('#2963: EXPECTED_MACHINE_FIELDS downgrades OS/architecture drift to INFO', () => {
+		// Format-comparison helper — verify a diff is downgraded to INFO when its path
+		// matches the extended machine-field filter. We exercise this indirectly through
+		// the compare-config entry point since applyMachineFieldFilter is private.
+		const MACHINE_SPECIFIC_PATHS = [
+			'system.os', 'system.architecture', 'system.osVersion', 'system.platform', 'system.arch',
+			'systemInfo.os', 'systemInfo.arch', 'roo.system.os', 'inventory.system.architecture',
+		];
+
+		for (const path of MACHINE_SPECIFIC_PATHS) {
+			test(`path "${path}" is treated as machine-specific (downgraded from CRITICAL)`, async () => {
+				// Two machines with the same MCPs but different OS strings (Win11 Pro vs Win10).
+				// The diff detector would emit CRITICAL diffs on system.os/architecture.
+				// Without the EXPECTED_MACHINE_FIELDS extension, these would surface as 2 CRITICAL.
+				mockGetInventory.mockImplementation((machineId: string) => {
+					if (machineId === 'ai-01') {
+						return Promise.resolve({
+							system: { os: 'Windows 11 Pro', architecture: 'x64' },
+							inventory: { mcpServers: { 'win-cli': { command: 'node' } } }
+						});
+					}
+					return Promise.resolve({
+						system: { os: 'Windows 10 Pro', architecture: 'arm64' },
+						inventory: { mcpServers: { 'win-cli': { command: 'node' } } }
+					});
+				});
+				// Diff detector emits CRITICAL for the system field difference.
+				mockCompareGranular.mockResolvedValue({
+					sourceLabel: 'ai-01',
+					targetLabel: 'po-2023',
+					diffs: [{
+						type: 'modified',
+						path,
+						category: 'system',
+						severity: 'CRITICAL',
+						description: `Different ${path} between machines`,
+					}],
+					stats: { added: 0, removed: 0, modified: 1, unchanged: 0 }
+				});
+
+				const result = await roosyncCompareConfig({
+					source: 'ai-01',
+					target: 'po-2023',
+					granularity: 'full'
+				});
+
+				// The drift item is present but its severity is downgraded to INFO.
+				const drift = result.differences.find(d => d.path === path);
+				expect(drift).toBeDefined();
+				expect(drift!.severity).toBe('INFO');
+				expect(drift!.description).toContain('[EXPECTED]');
+				// And it does not inflate the CRITICAL count.
+				expect(result.summary.critical).toBe(0);
+			});
+		}
 	});
 });

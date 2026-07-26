@@ -505,17 +505,24 @@ export class SkeletonCacheService {
     // #2434's staleness concern is addressed transparently (consumer sees the age)
     // without blocking. Normal read paths (getCache/getSkeleton/etc.) keep the cache
     // warm via ensureFreshCache(); health only observes.
+    //
+    // #2963: When lastRefreshTime is 0 (cache never initialized), the previous logic
+    // computed `Date.now() - 0` ≈ 1.78e12 ms (~56.6 years), which was then rendered
+    // as a plausible "cold cache" duration. This is the systemic "missing data as
+    // measured zero" pattern: an absent measurement is rendered as a measurement.
+    // Now `cacheAgeMs` is `null` when the cache has never been refreshed, and `stale`
+    // is unconditionally true so consumers still treat it as cold.
     public async getCacheTierStats(): Promise<{
         tier1_roo: number;
         tier2_claude: number;
         tier3_archives: number;
         total: number;
         config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
-        cacheAgeMs: number;
+        cacheAgeMs: number | null;
         stale: boolean;
     }> {
-        const cacheAgeMs = Date.now() - this.lastRefreshTime;
-        const stale = cacheAgeMs > this.CACHE_VALIDITY_MS;
+        const cacheAgeMs = this.lastRefreshTime === 0 ? null : Date.now() - this.lastRefreshTime;
+        const stale = cacheAgeMs === null ? true : cacheAgeMs > this.CACHE_VALIDITY_MS;
 
         let tier1 = 0;
         let tier2 = 0;

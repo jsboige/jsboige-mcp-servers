@@ -293,7 +293,7 @@ describe('SkeletonCacheService — write/persist/build coverage (#833 C3)', () =
       const c = (service as any).cache;
       c.set('stale-1', skel('stale-1'));
       // Force the cache to look stale (last refresh long past the 30min validity).
-      (service as any).lastRefreshTime = 0;
+      (service as any).lastRefreshTime = Date.now() - 60 * 60 * 1000; // 1h ago
 
       mockDetectStorageLocations.mockClear();
       const stats = await service.getCacheTierStats();
@@ -302,6 +302,22 @@ describe('SkeletonCacheService — write/persist/build coverage (#833 C3)', () =
       expect(stats.total).toBe(1);
       expect(stats.stale).toBe(true);
       expect(stats.cacheAgeMs).toBeGreaterThan(0);
+    });
+
+    test('#2963: cacheAgeMs is null when cache has never been refreshed (not 56 years)', async () => {
+      // Regression guard: when lastRefreshTime is 0 (initial state), the previous
+      // implementation returned Date.now() - 0 ≈ 1.78e12 ms (~56.6 years), which
+      // was rendered as a plausible cold-cache duration. This is the systemic
+      // "missing data as measured zero" pattern — an absent measurement must be
+      // distinguishable from a real one (rule #1 of #2963).
+      const c = (service as any).cache;
+      c.set('uninitialized-1', skel('uninitialized-1'));
+      (service as any).lastRefreshTime = 0;
+
+      const stats = await service.getCacheTierStats();
+
+      expect(stats.cacheAgeMs).toBeNull();
+      expect(stats.stale).toBe(true);
     });
   });
 });

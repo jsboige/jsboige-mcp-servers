@@ -36,6 +36,9 @@ const CRITICAL_ENV_VARS = [
  * Machine-specific field patterns that are EXPECTED to differ between machines.
  * These get auto-downgraded from CRITICAL/IMPORTANT to INFO to reduce noise.
  * @see #2307 - False-positive filtering for cross-machine config comparison
+ * @see #2963 - Extended to include system.os / system.architecture which are
+ * material facts of each machine (the fleet runs mixed Win11/Win10 and x64/ARM64).
+ * Previously these surfaced as 2 CRITICAL drifts that buried 8 IMPORTANT + 220 WARNING.
  */
 const EXPECTED_MACHINE_FIELDS: RegExp[] = [
   /(^|\.)hostname$/,           // systemInfo.hostname — always different
@@ -47,6 +50,13 @@ const EXPECTED_MACHINE_FIELDS: RegExp[] = [
   /(^|\.)cwd$/,                // process.cwd() — different install paths
   /\.envVars\.cwd$/,
   /\.systemInfo\./,            // all systemInfo subfields are machine-specific
+  // #2963: OS / arch / OS version are material facts of each machine — reporting
+  // them as CRITICAL drift buried the real signal under false-positive noise.
+  /(^|\.)os$/,                 // system.os, systemInfo.os
+  /(^|\.)architecture$/,       // system.architecture
+  /(^|\.)osVersion$/,          // system.osVersion
+  /(^|\.)platform$/,           // system.platform (win32/linux/darwin)
+  /(^|\.)arch$/,               // system.arch (x64/arm64/ia32)
 ];
 
 /**
@@ -268,6 +278,66 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
           }],
           summary: { total: 1, critical: 1, important: 0, warning: 0, info: 0 }
         };
+      }
+
+      // #2963 (rule #2): Ne jamais rendre un diff contre une source absente.
+      // Si la section comparée (ex: mcpServers) est vide {} d'un côté mais peuplée
+      // de l'autre, le diff "X supprimés" est un artefact de collecte dégradée, pas
+      // un vrai drift. On lève un statut au lieu de lister des suppressions fantômes
+      // qui orienteraient une décision (cas historique: "7 MCP supprimés" dont
+      // win-cli et roo-state-manager lorsque le mcp_settings.json cible n'était pas
+      // lu). On ne déclenche ce statut QUE lorsqu'au moins un côté est non-vide,
+      // pour préserver le vrai signal "les deux n'ont aucun MCP configuré".
+      const preFlightSectionPaths: Record<string, string[]> = {
+        mcp: ['inventory.mcpServers', 'roo.mcpServers', 'mcpServers'],
+        mode: ['inventory.rooModes', 'roo.modes', 'rooModes'],
+        'modes-yaml': ['inventory.rooModes', 'roo.modes', 'rooModes'],
+        claude: ['inventory.claudeConfig', 'claudeConfig'],
+      };
+      const sectionPaths = preFlightSectionPaths[args.granularity];
+      if (sectionPaths) {
+        const resolveSectionSize = (inv: any): number => {
+          for (const p of sectionPaths) {
+            const segs = p.split('.');
+            let cur: any = inv;
+            for (const s of segs) cur = cur?.[s];
+            if (cur && typeof cur === 'object') return Object.keys(cur).length;
+          }
+          return 0;
+        };
+        const sourceSectionSize = resolveSectionSize(sourceInventory);
+        const targetSectionSize = resolveSectionSize(targetInventory);
+
+        if (sourceSectionSize > 0 && targetSectionSize === 0) {
+          return {
+            source: sourceMachineId,
+            target: targetMachineId,
+            granularity: args.granularity,
+            differences: [{
+              category: 'inventory',
+              severity: 'WARNING',
+              path: sectionPaths.map(p => `target.${p}`).join(' | '),
+              description: `Section "${args.granularity}" vide côté cible (${targetMachineId}) mais peuplée côté source (${sourceSectionSize} entrées). Le diff "suppression de ${sourceSectionSize} éléments" serait un artefact de collecte dégradée, pas un drift réel — très probablement mcp_settings.json / inventory non lu chez la cible. Aucun diff n'est émis tant que la collecte cible n'est pas restaurée.`,
+              action: `Vérifier que l'inventaire de ${targetMachineId} est à jour (Get-MachineInventory.ps1) et que les sections ${args.granularity} sont bien peuplées avant de relancer la comparaison.`
+            }],
+            summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+          };
+        }
+        if (targetSectionSize > 0 && sourceSectionSize === 0) {
+          return {
+            source: sourceMachineId,
+            target: targetMachineId,
+            granularity: args.granularity,
+            differences: [{
+              category: 'inventory',
+              severity: 'WARNING',
+              path: sectionPaths.map(p => `source.${p}`).join(' | '),
+              description: `Section "${args.granularity}" vide côté source (${sourceMachineId}) mais peuplée côté cible (${targetSectionSize} entrées). Le diff "ajout de ${targetSectionSize} éléments" serait un artefact de collecte dégradée. Aucun diff n'est émis tant que la collecte source n'est pas restaurée.`,
+              action: `Vérifier que l'inventaire de ${sourceMachineId} est à jour (Get-MachineInventory.ps1) et que les sections ${args.granularity} sont bien peuplées avant de relancer la comparaison.`
+            }],
+            summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+          };
+        }
       }
 
       // Déterminer les données à comparer selon la granularité

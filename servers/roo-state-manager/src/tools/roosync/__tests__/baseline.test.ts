@@ -1707,4 +1707,42 @@ First release
       expect(result.data.exists).toBe(true);
     });
   });
+
+  // ============================================================
+  // #2963 (rule #1): list_versions — distinguish "git error" from "0 tags"
+  // ============================================================
+  describe('action: list_versions (#2963 missing-data-as-zero)', () => {
+    test('git succeeds with 0 tags → success: true, totalVersions: 0, measured: true', async () => {
+      const { execSync } = await import('child_process');
+      vi.mocked(execSync).mockImplementationOnce((cmd: string) => {
+        if (cmd.includes('git tag -l')) return ''; // git OK, 0 matching tags
+        throw new Error('unexpected call');
+      });
+
+      const result = await roosync_baseline({ action: 'list_versions' });
+
+      expect(result.success).toBe(true);
+      expect(result.data.totalVersions).toBe(0);
+      expect(result.data.measured).toBe(true);
+      expect(result.data.versions).toEqual([]);
+    });
+
+    test('git fails (no repo / bad cwd) → success: false with measurementError, NOT success: true + 0', async () => {
+      // The previous bug: a git failure was caught and rendered as success: true
+      // with versions: [] — indistinguishable from a real "0 versions" measurement.
+      const { execSync } = await import('child_process');
+      vi.mocked(execSync).mockImplementationOnce(() => {
+        throw new Error('fatal: not a git repository');
+      });
+
+      const result = await roosync_baseline({ action: 'list_versions' });
+
+      expect(result.success).toBe(false);
+      expect(result.data.measured).toBe(false);
+      expect(result.data.measurementError).toMatch(/not a git repository/);
+      expect(result.data.totalVersions).toBe(0);
+      // Message makes it explicit that the 0 is not a real measurement.
+      expect(result.message).toMatch(/ne reflète pas une absence réelle/);
+    });
+  });
 });

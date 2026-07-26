@@ -428,10 +428,17 @@ async function handleHealthAction(
   // so the counts reflect the current in-memory snapshot — the consumer sees how
   // fresh that snapshot is (a warm cache returns fresh; a cold one returns total:0
   // + stale:true, which itself is useful health info rather than a 2-minute hang).
+  //
+  // #2963: Distinguish "not yet measured" from "measured". When the cache has
+  // never been refreshed, cacheAgeMs is null — rendering it as "age 0s" was the
+  // exact false-positive (56-year cache age computed as Date.now() - 0) that
+  // misled operators into thinking the probe had completed.
   const ageSec = stats.cacheAgeMs != null ? Math.round(stats.cacheAgeMs / 1000) : null;
-  const freshness = stats.stale
-    ? ` — STALE (age ${ageSec}s; refreshes on next read)`
-    : ` — fresh (age ${ageSec}s)`;
+  const freshness = stats.cacheAgeMs === null
+    ? ' — NOT YET MEASURED (cache never refreshed; tier counts reflect in-memory snapshot only)'
+    : stats.stale
+      ? ` — STALE (age ${ageSec}s; refreshes on next read)`
+      : ` — fresh (age ${ageSec}s)`;
 
   return {
     success: true,
