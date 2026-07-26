@@ -437,4 +437,136 @@ describe('search-fallback (text search)', () => {
 			});
 		});
 
+	// #2920: filters that ARE derivable from the task cache must actually be
+	// applied in text fallback mode, and the ones that are not must be named
+	// honestly. The bug was that all eight were silently ignored while the
+	// caller received a full unfiltered set.
+	describe('#2920 — filters applied in text fallback mode', () => {
+		beforeEach(() => {
+			cache = new Map();
+
+			// Two tasks matching the same query, distinguished only by date + failure.
+			cache.set('task-old-ok', createSkeleton({
+				taskId: 'task-old-ok',
+				truncatedInstruction: 'indexing pipeline run',
+				metadata: {
+					title: 'Indexing old success',
+					lastActivity: '2026-07-01T10:00:00Z',
+					createdAt: '2026-07-01T09:00:00Z',
+					messageCount: 3,
+					actionCount: 1,
+					totalSize: 100,
+					workspace: '/test/workspace'
+				},
+				sequence: [
+					{ type: 'tool', name: 'read_file', parameters: {}, status: 'success', timestamp: '2026-07-01T10:00:00Z' }
+				] as any
+			}));
+
+			cache.set('task-new-failed', createSkeleton({
+				taskId: 'task-new-failed',
+				truncatedInstruction: 'indexing pipeline run',
+				metadata: {
+					title: 'Indexing recent failure',
+					lastActivity: '2026-07-20T10:00:00Z',
+					createdAt: '2026-07-20T09:00:00Z',
+					messageCount: 3,
+					actionCount: 2,
+					totalSize: 100,
+					workspace: '/test/workspace'
+				},
+				sequence: [
+					{ type: 'tool', name: 'read_file', parameters: {}, status: 'success', timestamp: '2026-07-20T10:00:00Z' },
+					{ type: 'tool', name: 'qdrant_upsert', parameters: {}, status: 'failure', timestamp: '2026-07-20T10:01:00Z' }
+				] as any
+			}));
+		});
+
+		test('start_date excludes older tasks', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', start_date: '2026-07-10T00:00:00Z' }, cache
+			));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-new-failed']);
+			expect(parsed.metadata.applied_filters).toContain('start_date=2026-07-10T00:00:00Z');
+		});
+
+		test('end_date excludes newer tasks', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', end_date: '2026-07-10T00:00:00Z' }, cache
+			));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-old-ok']);
+		});
+
+		test('has_errors=true keeps only tasks with a failed action', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', has_errors: true }, cache
+			));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-new-failed']);
+			expect(parsed.metadata.applied_filters).toContain('has_errors=true');
+		});
+
+		test('has_errors=false keeps only tasks without a failed action', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', has_errors: false }, cache
+			));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-old-ok']);
+		});
+
+		test('a task with no loaded sequence is reported as unevaluable, not as error-free', async () => {
+			cache.set('task-no-sequence', createSkeleton({
+				taskId: 'task-no-sequence',
+				truncatedInstruction: 'indexing pipeline run',
+				metadata: {
+					title: 'Indexing unknown',
+					lastActivity: '2026-07-15T10:00:00Z',
+					createdAt: '2026-07-15T09:00:00Z',
+					messageCount: 3,
+					actionCount: 0,
+					totalSize: 100,
+					workspace: '/test/workspace'
+				},
+				sequence: []
+			}));
+
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', has_errors: false }, cache
+			));
+			// Excluded from the result set...
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-old-ok']);
+			// ...but counted and named, so its absence is never read as "no errors".
+			expect(parsed.metadata.unevaluable_for_has_errors).toBe(1);
+			expect(parsed.warnings.join(' ')).toContain('not evidence');
+		});
+
+		test('an unparseable date bound is ignored and reported, never applied as match-nothing', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', start_date: 'last tuesday' }, cache
+			));
+			expect(parsed.totalFound).toBe(2);
+			expect(parsed.metadata.applied_filters).toBeUndefined();
+			expect(parsed.warnings.join(' ')).toContain('start_date="last tuesday"');
+		});
+
+		test('filters_requested names only the non-applicable filters', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', filters_requested: true }, cache
+			));
+			const w = parsed.warnings.join(' ');
+			expect(w).toContain('chunk_type');
+			expect(w).toContain('not applicable');
+			// The three now-applied filters must not appear in the "not applied" list.
+			expect(w).not.toContain('has_errors,');
+			expect(w).not.toContain('start_date,');
+		});
+
+		test('applied filters compose with each other', async () => {
+			const parsed = parseResult(await searchFallbackTool(
+				{ query: 'indexing', has_errors: true, end_date: '2026-07-10T00:00:00Z' }, cache
+			));
+			// task-new-failed has the failure but is out of the date window.
+			expect(parsed.totalFound).toBe(0);
+			expect(parsed.metadata.applied_filters).toHaveLength(2);
+		});
+	});
+
 });
