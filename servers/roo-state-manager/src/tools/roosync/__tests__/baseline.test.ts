@@ -439,6 +439,32 @@ describe('roosync_baseline', () => {
     });
   });
 
+  describe('action: version — git cwd write-side (#2962)', () => {
+    test('tag creation + push run against workspace root (read/write coherence)', async () => {
+      const result = await roosync_baseline({
+        action: 'version',
+        version: '2.0.0',
+        message: 'Test version',
+        pushTags: true
+      });
+
+      expect(result.success).toBe(true);
+      const { execSync } = await import('child_process');
+      const expectedCwd = process.env.WORKSPACE_PATH || process.cwd();
+
+      // tag -a creation carries cwd (lands in parent repo, where list_versions reads)
+      expect(execSync).toHaveBeenCalledWith(
+        'git tag -a baseline-v2.0.0 -m "Test version"',
+        expect.objectContaining({ cwd: expectedCwd })
+      );
+      // push --tags carries cwd (pushes from parent repo remote)
+      expect(execSync).toHaveBeenCalledWith(
+        'git push --tags',
+        expect.objectContaining({ cwd: expectedCwd })
+      );
+    });
+  });
+
   // ============================================================
   // Tests pour action: export
   // ============================================================

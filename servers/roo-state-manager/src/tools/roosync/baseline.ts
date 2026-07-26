@@ -457,6 +457,11 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   }
 
   // Committer le fichier de baseline
+  // NOTE: baselinePath lives in GDrive (sharedState), outside any git repo working
+  // tree, so `git add` fails regardless of cwd and is swallowed below — the
+  // commit step is effectively a no-op. This is a pre-existing separate concern
+  // (should the baseline JSON live in git or GDrive?) and is NOT fixed by the
+  // cwd resolution: adding cwd here wouldn't make a GDrive path committable.
   try {
     const baselinePath = join(sharedPath, 'sync-config.ref.json');
     execSync(`git add "${baselinePath}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
@@ -466,9 +471,11 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     getLogger().warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
   }
 
-  // Créer le tag Git
+  // Créer le tag Git — cwd = WORKSPACE_ROOT (parent repo) so the tag lands where
+  // list_versions reads it (#2962 read/write coherence). Without cwd the tag was
+  // created in the submodule, diverging from the read path fixed above.
   try {
-    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
+    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
     getLogger().info('✅ Git tag created successfully', { tagName });
   } catch (error) {
     throw new RooSyncServiceError(
@@ -477,11 +484,12 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     );
   }
 
-  // Pousser le tag si demandé
+  // Pousser le tag si demandé — same cwd = WORKSPACE_ROOT so push targets the
+  // parent repo remote (where baseline-v* tags are tracked).
   let tagPushed = false;
   if (args.pushTags !== false) {
     try {
-      execSync('git push --tags', { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
+      execSync('git push --tags', { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
       tagPushed = true;
       getLogger().info('✅ Git tag pushed successfully');
     } catch (error) {
