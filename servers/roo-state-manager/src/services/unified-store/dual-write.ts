@@ -45,12 +45,22 @@ export async function dualWriteConversationToStore(
     if (source === 'claude-code') harness = 'claude';
     else if (source === 'zoo-code') harness = 'zoo';
 
+    // #2957: normalize machine_id to lowercase at the write boundary. The fallback
+    // chain mixes sources with inconsistent casing — skeleton.metadata.machineId
+    // (often os.hostname(), preserves OS casing), ROOSYNC_MACHINE_ID (normalized
+    // in roosync-config.ts but only when set), and COMPUTERNAME (Windows preserves
+    // the OS casing e.g. 'MyIA-AI-01'). Without normalization the same physical
+    // machine is counted twice in the unified store ('myia-ai-01' vs 'MyIA-AI-01').
+    // dual-write is the single converging point before the DB write, so this one
+    // line covers all three sources. 'unknown' is already lowercase.
+    const rawMachineId = skeleton.metadata?.machineId
+      ?? process.env.ROOSYNC_MACHINE_ID
+      ?? process.env.COMPUTERNAME
+      ?? 'unknown';
+
     const conversationRow: ConversationRow = {
       task_id: taskId,
-      machine_id: skeleton.metadata?.machineId
-        ?? process.env.ROOSYNC_MACHINE_ID
-        ?? process.env.COMPUTERNAME
-        ?? 'unknown',
+      machine_id: rawMachineId.toLowerCase(),
       harness,
       workspace: skeleton.metadata?.workspace ?? null,
       parent_task_id: skeleton.parentTaskId ?? skeleton.metadata?.parentTaskId ?? null,
