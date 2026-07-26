@@ -18,6 +18,7 @@
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
     "noEmit": false,
+    "noEmitOnError": true,
     "types": ["jest", "node"],
     "baseUrl": ".",
     "paths": {
