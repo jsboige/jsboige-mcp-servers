@@ -241,6 +241,47 @@ describe('dual-write — machine_id fallback chain', () => {
     const row = spy.mock.calls[0][0];
     expect(row.machine_id).toBe('real-machine');
   });
+
+  // #2957: casing normalization. The unified store counts conversations per
+  // machine_id; without lowercasing, 'MyIA-AI-01' (from COMPUTERNAME/os.hostname)
+  // and 'myia-ai-01' (from ROOSYNC_MACHINE_ID) are two different machines. The
+  // fix lowercases at the dual-write boundary so all three sources converge.
+  test('#2957 — normalizes COMPUTERNAME casing (Windows "MyIA-AI-01" → "myia-ai-01")', async () => {
+    delete process.env.ROOSYNC_MACHINE_ID;
+    vi.stubEnv('COMPUTERNAME', 'MyIA-AI-01');
+    await dualWriteConversationToStore('task-1', makeSkeleton());
+    const row = spy.mock.calls[0][0];
+    expect(row.machine_id).toBe('myia-ai-01');
+  });
+
+  test('#2957 — normalizes metadata.machineId casing (os.hostname() upper → lower)', async () => {
+    vi.stubEnv('COMPUTERNAME', 'Whatever');
+    await dualWriteConversationToStore('task-1', makeSkeleton({ machineId: 'MyIA-PO-2024' }));
+    const row = spy.mock.calls[0][0];
+    expect(row.machine_id).toBe('myia-po-2024');
+  });
+
+  test('#2957 — normalizes ROOSYNC_MACHINE_ID casing if it slips through un-lowered', async () => {
+    vi.stubEnv('ROOSYNC_MACHINE_ID', 'MyIA-Web1');
+    delete process.env.COMPUTERNAME;
+    await dualWriteConversationToStore('task-1', makeSkeleton());
+    const row = spy.mock.calls[0][0];
+    expect(row.machine_id).toBe('myia-web1');
+  });
+
+  test('#2957 — lowercase machine_id stays lowercase (no double-encoding)', async () => {
+    await dualWriteConversationToStore('task-1', makeSkeleton({ machineId: 'myia-ai-01' }));
+    const row = spy.mock.calls[0][0];
+    expect(row.machine_id).toBe('myia-ai-01');
+  });
+
+  test('#2957 — "unknown" fallback stays lowercase (idempotent on default)', async () => {
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.COMPUTERNAME;
+    await dualWriteConversationToStore('task-1', makeSkeleton());
+    const row = spy.mock.calls[0][0];
+    expect(row.machine_id).toBe('unknown');
+  });
 });
 
 describe('dual-write — row field mapping', () => {
