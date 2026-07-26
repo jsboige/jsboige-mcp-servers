@@ -929,13 +929,39 @@ async function handleCurrentVersionAction(args: BaselineArgs, timestamp: string)
       }
     };
   } catch (error) {
+    // #2967 Défaut B: surface the underlying failure mode so the operator can
+    // distinguish "GDrive non monté" (sharedPath inaccessible) from "JSON invalide"
+    // (parse failure on a corrupt/0-byte file) from a generic load error — the bare
+    // `(error as Error).message` alone left these indistinguishable.
+    const err = error as Error & { code?: string; details?: { baselinePath?: string } };
+    const sharedPathAccessible = existsSync(config.sharedPath);
+    const baselinePath = err.details?.baselinePath;
+    let hint: string;
+    if (!sharedPathAccessible) {
+      hint = `GDrive/sharedPath inaccessible`;
+    } else if (err.code === 'BASELINE_PARSE_FAILED') {
+      hint = `JSON invalide — fichier baseline corrompu`;
+    } else if (err.code === 'BASELINE_LOAD_FAILED') {
+      hint = `Échec chargement baseline`;
+    } else {
+      hint = err.code || err.name || 'erreur inconnue';
+    }
     return {
       success: false,
       action: 'current_version',
       timestamp,
       version: '',
       machineId,
-      message: `Erreur lors de la lecture de la baseline: ${(error as Error).message}`
+      message: `Erreur lors de la lecture de la baseline: ${err.message}`,
+      data: {
+        exists: false,
+        machineId,
+        errorCode: err.code || null,
+        baselinePath: baselinePath || null,
+        sharedPath: config.sharedPath,
+        sharedPathAccessible,
+        hint
+      }
     };
   }
 }

@@ -466,6 +466,72 @@ describe('roosync_baseline', () => {
   });
 
   // ============================================================
+  // Tests pour action: current_version — failure motif (#2967 Défaut B)
+  // The catch branch must surface structured detail (errorCode, baselinePath,
+  // sharedPathAccessible, classification hint) so the operator can distinguish
+  // "GDrive non monté" / "JSON invalide" / generic load failure — the bare
+  // (error as Error).message alone left these indistinguishable.
+  // ============================================================
+
+  describe('action: current_version — failure motif (#2967 Défaut B)', () => {
+    test('catch branch surfaces errorCode, baselinePath, sharedPathAccessible + classification hint', async () => {
+      // Force the mocked BaselineService.loadBaseline to throw a shaped
+      // BaselineLoaderError (as the real loader does on corrupt JSON —
+      // code BASELINE_PARSE_FAILED + details.baselinePath). mockRejectedValueOnce
+      // is self-reverting: only the first call throws, then the spy falls back
+      // to the original mock implementation (safe for subsequent tests).
+      const BaselineServiceModule = await import('../../../services/BaselineService.js');
+      const MockClass = BaselineServiceModule.BaselineService as any;
+      const shapedError = Object.assign(
+        new Error('Erreur parsing JSON baseline: Unexpected token } in JSON at position 0'),
+        {
+          code: 'BASELINE_PARSE_FAILED',
+          details: { baselinePath: join(testSharedStatePath, 'sync-config.ref.json') }
+        }
+      );
+      vi.spyOn(MockClass.prototype, 'loadBaseline').mockRejectedValueOnce(shapedError);
+
+      const result = await roosync_baseline({ action: 'current_version' });
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe('current_version');
+      expect(result.message).toContain('Erreur parsing JSON baseline');
+      // Structured detail is surfaced — the core of Défaut B.
+      expect(result.data).toBeDefined();
+      expect(result.data.errorCode).toBe('BASELINE_PARSE_FAILED');
+      expect(result.data.baselinePath).toContain('sync-config.ref.json');
+      expect(result.data.sharedPathAccessible).toBe(true);
+      // The hint classifies the failure mode so the operator doesn't have to
+      // parse the raw message to know it's a corrupt-JSON issue.
+      expect(result.data.hint).toContain('JSON invalide');
+    });
+
+    test('catch branch classifies GDrive-inaccessible when sharedPath does not exist', async () => {
+      // Point sharedPath at a directory that does not exist → existsSync returns
+      // false in the handler's catch → hint must classify as GDrive inaccessible.
+      const { getRooSyncService } = await import('../../../services/RooSyncService.js');
+      const inaccessiblePath = join(testSharedStatePath, 'does-not-exist-xyz');
+      vi.mocked(getRooSyncService).mockReturnValueOnce({
+        getConfig: () => ({ machineId: 'test-machine', sharedPath: inaccessiblePath }),
+        createNonNominativeBaseline: vi.fn()
+      } as any);
+
+      const BaselineServiceModule = await import('../../../services/BaselineService.js');
+      const MockClass = BaselineServiceModule.BaselineService as any;
+      const rawError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+      vi.spyOn(MockClass.prototype, 'loadBaseline').mockRejectedValueOnce(rawError);
+
+      const result = await roosync_baseline({ action: 'current_version' });
+
+      expect(result.success).toBe(false);
+      expect(result.data.sharedPathAccessible).toBe(false);
+      expect(result.data.sharedPath).toBe(inaccessiblePath);
+      expect(result.data.hint).toContain('GDrive/sharedPath inaccessible');
+      expect(result.data.errorCode).toBe('ENOENT');
+    });
+  });
+
+  // ============================================================
   // Tests pour action: export
   // ============================================================
 
