@@ -387,6 +387,59 @@ describe('roosync_baseline', () => {
   });
 
   // ============================================================
+  // Tests pour git cwd resolution (#2962)
+  // The MCP server process runs with cwd = its submodule dir, which holds no
+  // baseline-v* tags. Bare execSync('git ...') resolved against the submodule
+  // → false-negative "Aucune version". The fix passes cwd = WORKSPACE_PATH ||
+  // process.cwd() so git reads the parent workspace repo.
+  // ============================================================
+
+  describe('action: list_versions — git cwd (#2962)', () => {
+    test('git tag listing + per-tag reads carry cwd = workspace root', async () => {
+      const result = await roosync_baseline({ action: 'list_versions' });
+
+      const { execSync } = await import('child_process');
+      const expectedCwd = process.env.WORKSPACE_PATH || process.cwd();
+
+      // tag listing + date read both carry cwd (message read is symmetric)
+      expect(execSync).toHaveBeenCalledWith(
+        'git tag -l "baseline-v*"',
+        expect.objectContaining({ cwd: expectedCwd })
+      );
+      expect(execSync).toHaveBeenCalledWith(
+        expect.stringContaining('git log -1 --format=%ai'),
+        expect.objectContaining({ cwd: expectedCwd })
+      );
+
+      // Mock returns 2 tags → result reflects them, not a false-negative 0
+      expect(result.success).toBe(true);
+      expect(result.data.totalVersions).toBe(2);
+    });
+  });
+
+  describe('action: restore — git cwd (#2962)', () => {
+    test('tag verification rev-parse + content git show run against workspace root', async () => {
+      const result = await roosync_baseline({
+        action: 'restore',
+        source: 'baseline-v0.9.0',
+        createBackup: false
+      });
+
+      expect(result.success).toBe(true);
+      const { execSync } = await import('child_process');
+      const expectedCwd = process.env.WORKSPACE_PATH || process.cwd();
+      expect(execSync).toHaveBeenCalledWith(
+        'git rev-parse --verify baseline-v0.9.0^{commit}',
+        expect.objectContaining({ cwd: expectedCwd })
+      );
+      expect(execSync).toHaveBeenCalledWith(
+        'git show baseline-v0.9.0:sync-config.ref.json',
+        expect.objectContaining({ cwd: expectedCwd })
+      );
+    });
+  });
+
+  // ============================================================
   // Tests pour action: export
   // ============================================================
 
