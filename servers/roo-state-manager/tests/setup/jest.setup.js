@@ -28,6 +28,20 @@ if (!process.env.QDRANT_COLLECTION_NAME) process.env.QDRANT_COLLECTION_NAME = 'r
 process.env.ROOSYNC_SHARED_PATH = process.env.TMPDIR || process.env.TMP || '/tmp';
 process.env.ROOSYNC_MACHINE_ID = 'ci-test-machine';
 
+// #2957 défaut 3: isolate the unified-store DB connection in test mode (symmetric to the
+// #2592 GDrive isolation above). On machines where .env sets UNIFIED_STORE_DUAL_WRITE=1 +
+// UNIFIED_STORE_PG_URL (ai-01 is the sole production dual-write contributor), tests that
+// transitively construct the writer via getUnifiedStoreWriter() leak real rows into the
+// production Postgres, tagged ROOSYNC_MACHINE_ID='ci-test-machine' (the canary set on the
+// line above) — the 1068 ci-test-machine rows ai-01 measured in prod. The per-test
+// clearUnifiedStoreEnv() guards (#2656) only cover the 2 coverage files that know about it;
+// the 5 other test files that touch the writer path (background-services, skeleton-cache,
+// build-skeleton-cache, …) inherit this global isolation. Force the env-gate OFF so every
+// test starts with the Null writer; tests that exercise the enabled branch stubEnv it
+// explicitly (writer-factory/reader-factory.coverage.test.ts).
+delete process.env.UNIFIED_STORE_DUAL_WRITE;
+delete process.env.UNIFIED_STORE_PG_URL;
+
 // Mock des APIs externes
 vi.mock('openai', () => ({
   OpenAI: vi.fn().mockImplementation(() => ({
