@@ -243,12 +243,18 @@ export async function handleRooSyncSearch(
                 source: args.source,
                 // #2548: Propagate max_results to prevent unbounded dumps
                 max_results: clampedMaxResults,
-                // #2548: Signal that advanced filters were requested but can't be applied
+                // #2548 + #2920: flag ONLY the filters text mode cannot evaluate.
+                // has_errors/start_date/end_date are now applied by the fallback, so
+                // including them here would emit a "not applied" warning about filters
+                // that were in fact applied.
                 filters_requested: !!(
                     args.chunk_type || args.role || args.tool_name ||
-                    args.has_errors || args.model || args.start_date ||
-                    args.end_date || args.exclude_tool_results
-                )
+                    args.model || args.exclude_tool_results
+                ),
+                // #2920: skeleton-derivable filters, applied in text mode.
+                has_errors: args.has_errors,
+                start_date: args.start_date,
+                end_date: args.end_date
             };
             const textResult = await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
 
@@ -291,11 +297,15 @@ export async function handleRooSyncSearch(
                 source: args.source,
                 // #2548: Propagate max_results
                 max_results: Math.min(Math.max(args.max_results || 10, 1), 100),
+                // #2920: see the semantic-fallback site above — only the
+                // non-applicable filters are flagged, the other three are applied.
                 filters_requested: !!(
                     args.chunk_type || args.role || args.tool_name ||
-                    args.has_errors || args.model || args.start_date ||
-                    args.end_date || args.exclude_tool_results
-                )
+                    args.model || args.exclude_tool_results
+                ),
+                has_errors: args.has_errors,
+                start_date: args.start_date,
+                end_date: args.end_date
             };
             return await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
         }
