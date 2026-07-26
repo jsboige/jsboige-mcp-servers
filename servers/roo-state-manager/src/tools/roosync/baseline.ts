@@ -761,6 +761,13 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 /**
  * Handler pour action: list_versions
  * Découvre les versions de baseline disponibles (tags Git baseline-v*)
+ *
+ * #2963 (rule #1): On distingue explicitement :
+ *   - "git a répondu, 0 tags trouvés" (success: true, totalVersions: 0)
+ *   - "git n'a pas répondu / pas de repo / cwd invalide" (success: false, error motivé)
+ * Précédemment les deux cas étaient rendus `success: true` avec versions: [],
+ * ce qui masquait les erreurs de cwd (#2962) derrière un "aucune version trouvée"
+ * plausible — agent consommateur n'avait aucun moyen de douter.
  */
 async function handleListVersionsAction(args: BaselineArgs, timestamp: string): Promise<BaselineResult> {
   interface VersionInfo {
@@ -769,79 +776,87 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
     message: string;
   }
 
+  let allTags: string;
   try {
-    const allTags = execSync('git tag -l "baseline-v*"', {
+    allTags = execSync('git tag -l "baseline-v*"', {
       encoding: 'utf8',
-      timeout: GIT_QUICK_TIMEOUT_MS
+      timeout: GIT_QUICK_TIMEOUT_MS,
     });
-
-    const tags = allTags.split('\n').filter(t => t.trim());
-
-    if (tags.length === 0) {
-      return {
-        success: true,
-        action: 'list_versions',
-        timestamp,
-        version: '',
-        machineId: '',
-        message: 'Aucune version de baseline trouvée (pas de tags baseline-v*)',
-        data: {
-          versions: [],
-          totalVersions: 0
-        }
-      };
-    }
-
-    const versions: VersionInfo[] = [];
-    for (const tag of tags) {
-      let date = '';
-      let message = '';
-      try {
-        date = execSync(`git log -1 --format=%ai ${tag}`, {
-          encoding: 'utf8',
-          timeout: GIT_QUICK_TIMEOUT_MS
-        }).trim();
-      } catch { /* skip */ }
-      try {
-        message = execSync(`git log -1 --format=%s ${tag}`, {
-          encoding: 'utf8',
-          timeout: GIT_QUICK_TIMEOUT_MS
-        }).trim();
-      } catch { /* skip */ }
-      versions.push({ tag, date, message });
-    }
-
-    // Sort by date descending (newest first)
-    versions.sort((a, b) => b.date.localeCompare(a.date));
-
+  } catch (error) {
+    // git a échoué (pas un repo, binaire absent, cwd invalide, etc.).
+    // Rendu comme "non mesurable" — pas comme un zéro mesuré.
+    const errMsg = (error as Error).message?.split('\n')[0] || (error as Error).message;
     return {
-      success: true,
+      success: false,
       action: 'list_versions',
       timestamp,
-      version: versions[0]?.tag || '',
+      version: '',
       machineId: '',
-      message: `${versions.length} versions de baseline trouvées`,
+      message: `Impossible de lister les tags baseline-v*: ${errMsg}. Aucun tag n'a pu être lu — le résultat "0 versions" ne reflète pas une absence réelle. (cwd actuel: ${process.cwd()})`,
       data: {
-        versions,
-        totalVersions: versions.length,
-        latest: versions[0]?.tag || null
+        versions: [],
+        totalVersions: 0,
+        measurementError: errMsg,
+        measured: false,
       }
     };
-  } catch (error) {
+  }
+
+  const tags = allTags.split('\n').filter(t => t.trim());
+
+  if (tags.length === 0) {
+    // git a répondu mais aucun tag baseline-v* n'existe — c'est un vrai zéro mesuré.
     return {
       success: true,
       action: 'list_versions',
       timestamp,
       version: '',
       machineId: '',
-      message: `Impossible de lister les tags: ${(error as Error).message}`,
+      message: 'Aucune version de baseline trouvée (pas de tags baseline-v*)',
       data: {
         versions: [],
         totalVersions: 0,
-        message: `Impossible de lister les tags: ${(error as Error).message}`
+        measured: true,
       }
     };
   }
+
+  const versions: VersionInfo[] = [];
+  for (const tag of tags) {
+    let date = '';
+    let message = '';
+    try {
+      date = execSync(`git log -1 --format=%ai ${tag}`, {
+        encoding: 'utf8',
+        timeout: GIT_QUICK_TIMEOUT_MS,
+      }).trim();
+    } catch { /* skip */ }
+    try {
+      message = execSync(`git log -1 --format=%s ${tag}`, {
+        encoding: 'utf8',
+        timeout: GIT_QUICK_TIMEOUT_MS,
+      }).trim();
+    } catch { /* skip */ }
+    versions.push({ tag, date, message });
+  }
+
+  // Sort by date descending (newest first)
+  versions.sort((a, b) => b.date.localeCompare(a.date));
+
+  return {
+    success: true,
+    action: 'list_versions',
+    timestamp,
+    version: versions[0]?.tag || '',
+    machineId: '',
+    message: `${versions.length} versions de baseline trouvées`,
+    data: {
+      versions,
+      totalVersions: versions.length,
+      latest: versions[0]?.tag || null,
+      measured: true,
+    }
+  };
 }
 
 /**

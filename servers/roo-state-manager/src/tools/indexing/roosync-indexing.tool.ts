@@ -558,6 +558,51 @@ export async function handleRooSyncIndexing(
                 hints.push(`Queue vide mais dead-letter / failed non-vide : utilisez \`cleanup_failed\` (dry_run par défaut) pour purger ou re-queue par classe d'erreur.`);
             }
 
+            // #2963 (rule #1): distinguish "measured zero" from "counter never populated".
+            // The lifetime metrics (totalTasks/indexedTasks/etc.) live in indexingState and
+            // are only incremented by the background indexer when running in the MCP host
+            // process. When `status` is invoked outside that host (or before any indexing
+            // cycle completes), every counter reads 0 — which previously rendered as a
+            // real "0/0 indexed" measurement. Now: when ALL lifetime counters are 0 AND
+            // the live cache carries real data (failedTasks or conversationCache non-empty),
+            // we surface the lifetime metrics as `null` rather than `0`, with a hint.
+            const m = state.indexingMetrics;
+            const allLifetimeCountersZero =
+                m.totalTasks === 0 && m.indexedTasks === 0 && m.skippedTasks === 0 &&
+                m.failedTasks === 0 && m.retryTasks === 0;
+            const liveCacheHasData = failedTasks.length > 0 || conversationCache.size > 0;
+            const lifetimeMetricsUnpopulated = allLifetimeCountersZero && liveCacheHasData;
+
+            // #2963 (rule #3): make incoherent counters fail rather than publishing both.
+            // `metrics.failed` is the lifetime counter (worker-incremented); `failedTasks`
+            // is computed from the live conversation cache scanning skeletons flagged
+            // 'failed' or stuck-retry. When the cache scan finds MORE failures than the
+            // counter — historically 12 vs 26 — both were rendered, leaving the consumer
+            // to pick a number. The cache-derived count captures stuck-retry tasks (pre-#886
+            // livelock era — retries exhausted but indexStatus never flipped to 'failed'),
+            // which the lifetime counter never saw. When cache > counter, the cache is the
+            // source of truth on a running host: we publish it AND surface the divergence.
+            // Counter > cache is normal churn (failed-then-succeeded retries) — leave the
+            // lifetime counter intact.
+            //
+            // When lifetime counters are entirely unpopulated, the cache scan is the ONLY
+            // source we have for the failure count — so `failed` is published from cache,
+            // while the other metrics (total/indexed/skipped/retry/bandwidth) become null
+            // because we have no live source of truth for them.
+            const liveFailedTotal = failedTasks.length;
+            const counterMissesStuckTasks = !lifetimeMetricsUnpopulated &&
+                liveFailedTotal > state.indexingMetrics.failedTasks;
+            const publishedFailed = lifetimeMetricsUnpopulated
+                ? liveFailedTotal
+                : (counterMissesStuckTasks ? liveFailedTotal : state.indexingMetrics.failedTasks);
+
+            if (lifetimeMetricsUnpopulated) {
+                hints.push(`Lifetime metrics à zéro alors que le cache live contient ${conversationCache.size} skeletons (${failedTasks.length} en échec). Les compteurs total/indexed/etc. ne sont pas alimentés — probable appel hors host-process MCP ou indexer non démarré. Les champs total/indexed/skipped/retry/bandwidth sont publiés à null (pas mesurés), pas à 0 (mesurés) ; failed reste dérivé du cache live.`);
+            }
+            if (counterMissesStuckTasks) {
+                hints.push(`Incohérence compteur : metrics.failed (lifetime)=${state.indexingMetrics.failedTasks} < failed_by_class total (cache live)=${liveFailedTotal}. Le cache live capture les stuck-retry tasks que le compteur lifetime n'a jamais vus ; metrics.failed est aligné sur ${liveFailedTotal}.`);
+            }
+
             const status = {
                 background_indexer: {
                     is_running: state.qdrantIndexInterval !== null,
@@ -569,12 +614,12 @@ export async function handleRooSyncIndexing(
                     // the fix is working as intended.
                     dead_letter_size: deadLetterSize,
                     metrics: {
-                        total_tasks: state.indexingMetrics.totalTasks,
-                        indexed: state.indexingMetrics.indexedTasks,
-                        skipped: state.indexingMetrics.skippedTasks,
-                        failed: state.indexingMetrics.failedTasks,
-                        retry: state.indexingMetrics.retryTasks,
-                        bandwidth_saved_bytes: state.indexingMetrics.bandwidthSaved,
+                        total_tasks: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.totalTasks,
+                        indexed: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.indexedTasks,
+                        skipped: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.skippedTasks,
+                        failed: publishedFailed,
+                        retry: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.retryTasks,
+                        bandwidth_saved_bytes: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.bandwidthSaved,
                         last_indexed_at: state.indexingMetrics.lastIndexedAt
                     }
                 },

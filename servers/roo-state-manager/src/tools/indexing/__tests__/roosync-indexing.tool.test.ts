@@ -470,6 +470,104 @@ describe('roosync_indexing status action', () => {
 		const parsed = JSON.parse(result.content[0].text);
 		expect(parsed.background_indexer.queue_size).toBe(1);
 	});
+
+	// #2963 regression tests — distinguish "measured zero" from "not measured",
+	// and surface counter divergence (rule #3: failed 12 vs failed_by_class 26).
+
+	test('#2963 (rule #1): lifetime metrics à 0 avec cache live non-vide → metrics null, pas 0', async () => {
+		// Cache carries real skeletons (some flagged failed/stuck) but lifetime
+		// counters never got incremented (e.g. status invoked outside MCP host).
+		const localCache = new Map([
+			['t1', { metadata: { indexingState: { indexStatus: 'failed', indexError: 'boom', errorClass: 'unknown' } } } as any],
+			['t2', { metadata: { indexingState: { indexStatus: 'indexed' } } } as any],
+		]);
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: false,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			localCache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		expect(result.isError).toBe(false);
+		const parsed = JSON.parse(result.content[0].text);
+		// All lifetime metrics must be `null`, not `0` — that is the distinction
+		// "counter never populated" vs "counter measured a real zero".
+		expect(parsed.background_indexer.metrics.total_tasks).toBeNull();
+		expect(parsed.background_indexer.metrics.indexed).toBeNull();
+		expect(parsed.background_indexer.metrics.failed).toBe(1); // 1 failed skeleton from cache scan (live source of truth)
+		// failed_by_class is populated from the cache scan (which IS the live source).
+		expect(parsed.failed_by_class).toBeDefined();
+		expect(parsed.diagnostic_hints).toEqual(expect.arrayContaining([
+			expect.stringMatching(/Lifetime metrics à zéro alors que le cache live contient 2 skeletons/)
+		]));
+	});
+
+	test('#2963 (rule #3): cache > counter (stuck-retry) → publish cache-derived count + hint', async () => {
+		// Lifetime counter says 12, cache scan finds 26 stuck-retry/failed tasks.
+		const stuckSkeleton = (id: string) => ({
+			metadata: {
+				indexingState: {
+					indexStatus: 'failed',
+					indexError: 'claude_session_not_found',
+					errorClass: 'claude_session_not_found',
+					indexRetryCount: 5,
+					lastIndexAttempt: '2026-01-01T00:00:00Z',
+				},
+			},
+		} as any);
+		const localCache = new Map<string, any>();
+		for (let i = 0; i < 26; i++) localCache.set(`t-${i}`, stuckSkeleton(`t-${i}`));
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 100, skippedTasks: 10, indexedTasks: 78, failedTasks: 12, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			localCache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		expect(result.isError).toBe(false);
+		const parsed = JSON.parse(result.content[0].text);
+		// Cache-derived count wins over the stale lifetime counter.
+		expect(parsed.background_indexer.metrics.failed).toBe(26);
+		expect(parsed.diagnostic_hints).toEqual(expect.arrayContaining([
+			expect.stringMatching(/Incohérence compteur.*12.*26/)
+		]));
+	});
+
+	test('#2963 (rule #3): counter > cache (normal churn) → keep lifetime counter, no incoherence hint', async () => {
+		// Lifetime counter has 5 historical failures; cache scan is empty because
+		// skeletons were successfully retried. This is normal churn — not incoherence.
+		const localCache = new Map();
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 100, skippedTasks: 10, indexedTasks: 85, failedTasks: 5, retryTasks: 2, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			localCache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		expect(result.isError).toBe(false);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.metrics.failed).toBe(5);
+		// No incoherence hint — churn is not incoherence.
+		expect(parsed.diagnostic_hints || []).not.toContain(expect.stringMatching(/Incohérence compteur/));
+	});
 });
 
 // ============================================================

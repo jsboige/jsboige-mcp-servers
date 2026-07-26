@@ -358,6 +358,28 @@ describe('roosync_diagnose', () => {
 
       expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
+
+    // #2963 (rule #1): cache never refreshed → cacheAgeMs null, NOT 56 years
+    it('#2963: surfaces "NOT YET MEASURED" when cache has never been refreshed', async () => {
+      const mockStats = {
+        tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
+        config: { enableClaudeTier: false, enableArchiveTier: false },
+        cacheAgeMs: null,  // SkeletonCacheService.getCacheTierStats returns null when lastRefreshTime===0
+        stale: true,
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
+      } as any);
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.success).toBe(true);
+      // Message must distinguish "not yet measured" from "measured at N seconds".
+      expect(result.message).toContain('NOT YET MEASURED');
+      // The data field preserves the null so consumers can branch on it.
+      expect(result.data.cacheAgeMs).toBeNull();
+      expect(result.data.stale).toBe(true);
+    });
   });
 
   // ============================================================
