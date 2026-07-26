@@ -79,8 +79,13 @@ export default mergeConfig(unitConfig, defineConfig({
       'src/tools/roosync/__tests__/list-diffs.smoke.test.ts',
 
       // ===== CI-excluded: APPDATA/GDRIVE (Windows paths + GDrive) =====
+      // 2026-07-26 (#2967): src/tools/roosync/__tests__/baseline.test.ts RE-ENABLED in CI.
+      //   All tests use vi.mock() for child_process, RooSyncService, ConfigService,
+      //   shared-state-path, BaselineService, InventoryCollector, DiffDetector. No real
+      //   GDrive/APPDATA/PowerShell dependency. Verified: 79/79 pass under CI config,
+      //   full suite 12635/12635 pass with file re-enabled.
+      //   The heavier baseline.integration.test.ts below stays excluded (real GDrive).
       'src/tools/roosync/__tests__/baseline.integration.test.ts',
-      'src/tools/roosync/__tests__/baseline.test.ts',
       'src/tools/roosync/__tests__/compare-config.integration.test.ts',
       'src/tools/roosync/__tests__/config.integration.test.ts',
       'src/tools/roosync/__tests__/decision.integration.test.ts',
