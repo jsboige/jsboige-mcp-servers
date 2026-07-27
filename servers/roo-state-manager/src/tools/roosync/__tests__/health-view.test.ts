@@ -313,6 +313,22 @@ describe('roosyncHealthView orchestration + scoring', () => {
     );
   });
 
+  it('#2977 follow-up (web1 review): network-kind recommendation interpolates the configured QDRANT_URL host, not a hardcoded qdrant.myia.io', async () => {
+    // qdrant configured, embeddings configured; fetch THROWS → probe kind 'network'.
+    process.env.QDRANT_URL = 'https://qdrant-custom.example.io';
+    process.env.QDRANT_API_KEY = 'test-key';
+    mockFetch.mockRejectedValueOnce(new Error('fetch failed'));
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+    const result = await roosyncHealthView({});
+    expect(result.capabilities.qdrantReachable).toBe(false);
+    expect(result.capabilities.qdrantProbe?.kind).toBe('network');
+    const rec = result.recommendations.find((r) => r.includes('NOT REACHABLE'));
+    expect(rec).toBeDefined();
+    // Host is derived from QDRANT_URL — the hint matches the actual deployment.
+    expect(rec).toContain('qdrant-custom.example.io');
+    expect(rec).not.toContain('qdrant.myia.io');
+  });
+
   it('includeEnvCheck=false skips env var collection', async () => {
     mockFetch.mockResolvedValue({ ok: true });
     mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });

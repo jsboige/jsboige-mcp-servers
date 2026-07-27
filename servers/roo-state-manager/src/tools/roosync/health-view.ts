@@ -427,6 +427,15 @@ function determineStatus(score: number): 'HEALTHY' | 'WARNING' | 'CRITICAL' {
 function qdrantUnreachableRecommendation(probe?: QdrantProbeResult): string {
   const prefix = 'Qdrant configured but NOT REACHABLE';
   const suffix = ' — semantic search degraded to text mode';
+  // #2977 follow-up (web1 review): QDRANT_URL is env-configurable, so derive the host for
+  // the human-prose hint instead of hardcoding qdrant.myia.io — a different deployment
+  // would otherwise get a misleading hint. This string is rendered in the health view, so
+  // a malformed URL must never throw here: fall back to the raw value, or a generic label.
+  const rawUrl = process.env.QDRANT_URL;
+  let host = rawUrl || 'the qdrant endpoint';
+  if (rawUrl) {
+    try { const parsed = new URL(rawUrl).host; if (parsed) host = parsed; } catch { /* keep raw */ }
+  }
   switch (probe?.kind) {
     case 'auth':
       // Server is up (it returned 401/403); the key was refused. Rotation drift is the
@@ -436,9 +445,9 @@ function qdrantUnreachableRecommendation(probe?: QdrantProbeResult): string {
       // Non-2xx, non-auth (503/500/404): the server answered, the request failed.
       return `${prefix} — HTTP ${probe.status} (server answered, request failed). Check qdrant container / reverse proxy / collection state${suffix}`;
     case 'timeout':
-      return `${prefix} — TIMEOUT (no response within probe window). Check network path / load on qdrant.myia.io${suffix}`;
+      return `${prefix} — TIMEOUT (no response within probe window). Check network path / load on ${host}${suffix}`;
     case 'network':
-      return `${prefix} — NETWORK error (connection refused / DNS / TLS). Check qdrant.myia.io reachability / reverse proxy${suffix}`;
+      return `${prefix} — NETWORK error (connection refused / DNS / TLS). Check ${host} reachability / reverse proxy${suffix}`;
     case 'ok':
     case 'unconfigured':
     default:
