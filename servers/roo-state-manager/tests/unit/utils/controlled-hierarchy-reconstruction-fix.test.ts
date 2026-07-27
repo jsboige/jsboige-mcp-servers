@@ -54,9 +54,15 @@ const TEST_HIERARCHY_IDS = {
     COLLECTE: 'e73ea764-4971-4adb-9197-52c2f8ede8ef' // À ignorer dans les tests
 } as const;
 
-// Chemin vers les données de test contrôlées
-// Utiliser process.cwd() car __dirname est instable dans l'environnement de test Vitest
-const CONTROLLED_DATA_PATH = path.join(process.cwd(), 'tests/fixtures/controlled-hierarchy');
+// Chemin vers les données de test contrôlées.
+// Resolve via __dirname (the test file's own dir) so the fixture is found
+// regardless of the process cwd. The prior comment claimed __dirname was
+// "instable dans l'environnement de test Vitest" — that was false: __dirname is
+// computed at module-load (L42, fileURLToPath(import.meta.url)) and is stable.
+// process.cwd() instead made all 9 tests fail when run from a cwd ≠ the
+// submodule root (e.g. a parent-repo worktree), reporting a regression that
+// existed only in the launch directory. Fix per #2987.
+const CONTROLLED_DATA_PATH = path.join(__dirname, '..', '..', 'fixtures', 'controlled-hierarchy');
 
 describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
     let engine: HierarchyReconstructionEngine;
