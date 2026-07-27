@@ -333,17 +333,18 @@ describe('roosync_baseline', () => {
       ).rejects.toThrow('Source de restauration non reconnue');
     });
 
-    test('should restore from tag', async () => {
-      // Note: Ce test depend du mock global qui simule git show
-      // Le mock global retourne deja une baseline valide pour git show
-      const result = await roosync_baseline({
-        action: 'restore',
-        source: 'baseline-v0.9.0',
-        createBackup: false
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('restore');
+    test('should reject tag restore as unsupported (#2983 — baseline content lives on GDrive, not git tags)', async () => {
+      // Restore-from-tag was removed: the tag only marks repo state at cut time,
+      // the baseline JSON lives on GDrive. A baseline-v* source must be rejected up
+      // front with a message that names the cause (not RESTORE_FROM_TAG_ERROR which
+      // hid it behind a generic "restore failed").
+      await expect(
+        roosync_baseline({
+          action: 'restore',
+          source: 'baseline-v0.9.0',
+          createBackup: false
+        })
+      ).rejects.toThrow('Restore-from-tag n\'est pas supporté');
     });
 
     test('should restore from backup file', async () => {
@@ -414,28 +415,6 @@ describe('roosync_baseline', () => {
       // Mock returns 2 tags → result reflects them, not a false-negative 0
       expect(result.success).toBe(true);
       expect(result.data.totalVersions).toBe(2);
-    });
-  });
-
-  describe('action: restore — git cwd (#2962)', () => {
-    test('tag verification rev-parse + content git show run against workspace root', async () => {
-      const result = await roosync_baseline({
-        action: 'restore',
-        source: 'baseline-v0.9.0',
-        createBackup: false
-      });
-
-      expect(result.success).toBe(true);
-      const { execSync } = await import('child_process');
-      const expectedCwd = process.env.WORKSPACE_PATH || process.cwd();
-      expect(execSync).toHaveBeenCalledWith(
-        'git rev-parse --verify baseline-v0.9.0^{commit}',
-        expect.objectContaining({ cwd: expectedCwd })
-      );
-      expect(execSync).toHaveBeenCalledWith(
-        'git show baseline-v0.9.0:sync-config.ref.json',
-        expect.objectContaining({ cwd: expectedCwd })
-      );
     });
   });
 
@@ -1117,25 +1096,17 @@ describe('roosync_baseline', () => {
   // ============================================================
 
   describe('restore action edge cases', () => {
-    test('should list available tags when tag not found', async () => {
-      const { execSync } = await import('child_process');
-      vi.mocked(execSync).mockImplementation((cmd: string) => {
-        if (cmd.includes('git rev-parse --verify')) {
-          throw new Error('Tag not found');
-        }
-        if (cmd.includes('git tag -l')) {
-          return 'baseline-v1.0.0\nbaseline-v1.1.0\nbaseline-v2.0.0\n';
-        }
-        return '';
-      });
-
+    test('should reject tag restore as unsupported regardless of tag existence (#2983)', async () => {
+      // Tag restore short-circuits to TAG_RESTORE_UNSUPPORTED before any git call —
+      // the tag's existence is irrelevant since baseline content lives on GDrive, not
+      // in the tag. No git rev-parse / git tag -l should run for a baseline-v* source.
       await expect(
         roosync_baseline({
           action: 'restore',
           source: 'baseline-v3.0.0',
           createBackup: false
         })
-      ).rejects.toThrow('Tags baseline disponibles');
+      ).rejects.toThrow('Restore-from-tag n\'est pas supporté');
     });
 
     test('should restore baseline with all fields preserved', async () => {
