@@ -456,20 +456,14 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
     );
   }
 
-  // Committer le fichier de baseline
-  // NOTE: baselinePath lives in GDrive (sharedState), outside any git repo working
-  // tree, so `git add` fails regardless of cwd and is swallowed below — the
-  // commit step is effectively a no-op. This is a pre-existing separate concern
-  // (should the baseline JSON live in git or GDrive?) and is NOT fixed by the
-  // cwd resolution: adding cwd here wouldn't make a GDrive path committable.
-  try {
-    const baselinePath = join(sharedPath, 'sync-config.ref.json');
-    execSync(`git add "${baselinePath}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
-    execSync(`git commit -m "chore: baseline version ${args.version}"`, { stdio: 'pipe', timeout: GIT_TIMEOUT_MS });
-    getLogger().info('✅ Baseline committed successfully');
-  } catch (error) {
-    getLogger().warn('⚠️ Could not commit baseline file', { error: (error as Error).message });
-  }
+  // The baseline JSON (sync-config.ref.json) lives in GDrive (sharedState), NOT in
+  // git — the repo's absolute rule n°1: "RooSync = GDrive ONLY (never git)". An
+  // earlier version attempted `git add` + `git commit` here, but the commit was a
+  // no-op (baselinePath is outside any repo) whose harmlessness relied entirely on
+  // `git add` failing first; under a different ROOSYNC_SHARED_PATH it would have
+  // committed the MCP process's entire cwd with no pathspec. Removed per #2967.
+  // The git tag below marks the repo state at baseline-cut time; the baseline
+  // content itself is tracked on GDrive, not version-controlled here.
 
   // Créer le tag Git — cwd = WORKSPACE_ROOT (parent repo) so the tag lands where
   // list_versions reads it (#2962 read/write coherence). Without cwd the tag was
