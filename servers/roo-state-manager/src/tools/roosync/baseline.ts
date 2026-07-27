@@ -90,7 +90,7 @@ export const BaselineArgsSchema = z.object({
 
   // Paramètres pour action: restore
   source: z.string().optional()
-    .describe('[restore] Source de la restauration (tag Git ou chemin de sauvegarde, requis pour restore)'),
+    .describe('[restore] Source de la restauration (chemin de sauvegarde sync-config.ref.backup.*, requis pour restore)'),
   targetVersion: z.string().optional()
     .describe('[restore] Version cible pour la restauration (optionnel)'),
   restoredBy: z.string().optional()
@@ -639,57 +639,25 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
   }
 
   // Restaurer selon le type de source
-  let sourceType: 'tag' | 'backup';
+  let sourceType: 'backup';
   let restoredBaseline: BaselineConfig;
 
   if (args.source.startsWith('baseline-v')) {
-    // Restauration depuis un tag Git
-    sourceType = 'tag';
-    try {
-      getLogger().info('Restauration depuis le tag Git', { tagName: args.source });
-
-      // Vérifier si le tag existe
-      try {
-        execSync(`git rev-parse --verify ${args.source}^{commit}`, { encoding: 'utf8', stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
-      } catch (tagError) {
-        // Récupérer les tags disponibles
-        let availableTags = '';
-        try {
-          const allTags = execSync('git tag -l', { encoding: 'utf8', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
-          const baselineTags = allTags.split('\n').filter(tag => tag.startsWith('baseline-v'));
-          if (baselineTags.length > 0) {
-            availableTags = `\n\nTags baseline disponibles:\n${baselineTags.map(t => `  - ${t}`).join('\n')}`;
-          }
-        } catch (listError) {
-          // Ignorer
-        }
-
-        throw new StateManagerError(
-          `Le tag Git ${args.source} n'existe pas.${availableTags}\n\nUtilisez un tag existant ou restaurez depuis une sauvegarde.`,
-          'TAG_NOT_FOUND',
-          'BaselineTool',
-          { source: args.source }
-        );
-      }
-
-      // Récupérer le contenu du tag
-      const baselineContent = execSync(`git show ${args.source}:sync-config.ref.json`, { encoding: 'utf8', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
-      restoredBaseline = JSON.parse(baselineContent) as BaselineConfig;
-
-      if (!restoredBaseline.machineId || !restoredBaseline.version) {
-        throw new BaselineServiceError('Baseline invalide: champs requis manquants', BaselineServiceErrorCode.BASELINE_INVALID);
-      }
-
-      getLogger().info('Baseline récupérée depuis le tag', {
-        machineId: restoredBaseline.machineId,
-        version: restoredBaseline.version
-      });
-    } catch (error) {
-      throw new RooSyncServiceError(
-        `Erreur lors de la restauration depuis le tag ${args.source}: ${(error as Error).message}`,
-        'RESTORE_FROM_TAG_ERROR'
-      );
-    }
+    // Restore-from-tag was removed (#2983): baseline content lives on GDrive
+    // (sharedState), NOT in git tags. The version action creates a tag that only
+    // marks the repo STATE at baseline-cut time — it never commits the baseline JSON
+    // (rule n°1 "RooSync = GDrive ONLY", reaffirmed by #909). The repo's checked-in
+    // roo-config/sync-config.ref.json is a generic SyncConfig TEMPLATE (placeholder
+    // "local-machine", 2025-12-04), not a BaselineConfig: it has no top-level
+    // `machineId`, so even with the read path fixed to roo-config/ it failed the
+    // validation one line later. Per #571 (machine-specific baselines on GDrive),
+    // tag restore is architecturally impossible. Point users at backup files.
+    // Prior-question (ai-01 #2983) answered firsthand: the roo-config file is an
+    // inherited template, not the tool's baseline → option (b), not (a).
+    throw new RooSyncServiceError(
+      `Restore-from-tag n'est pas supporté : le contenu baseline vit sur GDrive (sharedState), pas dans les tags Git. Le tag "${args.source}" ne marque que l'état du repo au moment de la coupe. Utilisez un chemin de sauvegarde (sync-config.ref.backup.* sous .rollback/) ou repartez de la baseline courante (action update).`,
+      'TAG_RESTORE_UNSUPPORTED'
+    );
   } else if (args.source.includes('sync-config.ref.backup.')) {
     // Restauration depuis un fichier de sauvegarde
     sourceType = 'backup';
@@ -719,7 +687,7 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
     }
   } else {
     throw new RooSyncServiceError(
-      `Source de restauration non reconnue: ${args.source}. Utilisez un tag Git (baseline-vX.Y.Z) ou un chemin de sauvegarde.`,
+      `Source de restauration non reconnue: ${args.source}. Utilisez un chemin de sauvegarde (sync-config.ref.backup.* sous .rollback/).`,
       'INVALID_SOURCE'
     );
   }
