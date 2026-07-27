@@ -105,45 +105,56 @@ afterEach(() => {
 // ============================================================
 // Part A — probeQdrantBackend (#2628 regression suite)
 // ============================================================
-describe('probeQdrantBackend (#2628 regression suite)', () => {
-  it('returns false when QDRANT_URL is not set', async () => {
+describe('probeQdrantBackend (#2628/#2977 regression suite)', () => {
+  it('returns reachable:false + kind unconfigured when QDRANT_URL is not set', async () => {
     delete process.env.QDRANT_URL;
-    expect(await probeQdrantBackend()).toBe(false);
+    const r = await probeQdrantBackend();
+    expect(r.reachable).toBe(false);
+    expect(r.kind).toBe('unconfigured');
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('returns true on a 2xx response and strips trailing slashes from the URL', async () => {
+  it('is reachable on a 2xx response and strips trailing slashes from the URL', async () => {
     process.env.QDRANT_URL = 'https://qdrant.example.com///';
-    mockFetch.mockResolvedValueOnce({ ok: true });
-    expect(await probeQdrantBackend()).toBe(true);
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    const r = await probeQdrantBackend();
+    expect(r.reachable).toBe(true);
+    expect(r.kind).toBe('ok');
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const calledUrl = mockFetch.mock.calls[0][0] as string;
     expect(calledUrl).toBe('https://qdrant.example.com/collections');
   });
 
+  // #2977: each non-reachable outcome now carries a cause-specific kind. 401/403 = AUTH
+  // (server up, key refused); 503/500/404 = HTTP (server answered, request failed).
   it.each([
-    ['503 service unavailable', 503],
-    ['500 internal error', 500],
-    ['404 not found', 404],
-    ['401 unauthorized (auth failure)', 401],
-    ['403 forbidden (auth failure)', 403],
-  ])('returns false on %s (resp.ok false)', async (_label, status) => {
+    ['503 service unavailable', 503, 'http'],
+    ['500 internal error', 500, 'http'],
+    ['404 not found', 404, 'http'],
+    ['401 unauthorized (auth failure)', 401, 'auth'],
+    ['403 forbidden (auth failure)', 403, 'auth'],
+  ])('returns reachable:false + kind %s on HTTP %s (resp.ok false)', async (_label, status, expectedKind) => {
     process.env.QDRANT_URL = 'https://qdrant.example.com';
-    mockFetch.mockResolvedValueOnce({ ok: status < 200 || status >= 300 });
-    // Simulate the real resp.ok semantics: ok is true only for 2xx.
+    // Simulate the real resp.ok semantics: ok is true only for 2xx. Return the status so
+    // the probe can classify auth (401/403) vs http (other non-2xx) — the #2977 distinction.
     const okStatus = status >= 200 && status < 300;
     mockFetch.mockReset();
-    mockFetch.mockResolvedValueOnce({ ok: okStatus });
-    expect(await probeQdrantBackend()).toBe(false);
+    mockFetch.mockResolvedValueOnce({ ok: okStatus, status });
+    const r = await probeQdrantBackend();
+    expect(r.reachable).toBe(false);
+    expect(r.kind).toBe(expectedKind);
+    expect(r.status).toBe(status);
   });
 
-  it('returns false when fetch throws a network error (ECONNRESET / fetch failed)', async () => {
+  it('returns reachable:false + kind network when fetch throws (ECONNRESET / fetch failed)', async () => {
     process.env.QDRANT_URL = 'https://qdrant.example.com';
     mockFetch.mockRejectedValueOnce(new Error('fetch failed'));
-    expect(await probeQdrantBackend()).toBe(false);
+    const r = await probeQdrantBackend();
+    expect(r.reachable).toBe(false);
+    expect(r.kind).toBe('network');
   });
 
-  it('returns false on timeout (AbortError)', async () => {
+  it('returns reachable:false + kind timeout on AbortError', async () => {
     process.env.QDRANT_URL = 'https://qdrant.example.com';
     process.env.QDRANT_HEALTH_PROBE_TIMEOUT_MS = '50';
     // fetch rejects with an AbortError-like object when the controller aborts.
@@ -154,7 +165,9 @@ describe('probeQdrantBackend (#2628 regression suite)', () => {
       setTimeout(() => reject(abortErr), 200);
     }));
     const start = Date.now();
-    expect(await probeQdrantBackend()).toBe(false);
+    const r = await probeQdrantBackend();
+    expect(r.reachable).toBe(false);
+    expect(r.kind).toBe('timeout');
     // Bounded: should return well before the 200ms fake-fetch reject.
     expect(Date.now() - start).toBeLessThan(500);
   });
@@ -291,9 +304,11 @@ describe('roosyncHealthView orchestration + scoring', () => {
     // (sharedPath+embeddings+drift clean) but strictly less than the HEALTHY baseline.
     expect(result.capabilities.qdrantReachable).toBe(false);
     expect(result.score).toBeLessThan(100);
+    // #2977: the recommendation now names the cause (HTTP/AUTH/TIMEOUT/NETWORK), not just
+    // "a real outage". The prefix stays stable across all branches, so assert it.
     expect(result.recommendations).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('Qdrant configured but UNREACHABLE'),
+        expect.stringContaining('Qdrant configured but NOT REACHABLE'),
       ])
     );
   });

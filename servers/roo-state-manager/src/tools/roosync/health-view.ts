@@ -75,6 +75,13 @@ export interface HealthViewResult {
      * Without it, a live 503/timeout was masked as "Qdrant: OK" (regression of #2547).
      */
     qdrantReachable?: boolean;
+    /**
+     * #2977: Cause-resolving Qdrant probe result. Preferred over `qdrantReachable`
+     * (which only carries the bool) — `qdrantProbe.kind` names why a probe failed so the
+     * rendering distinguishes a 401 (key problem) from a real outage. `qdrantReachable`
+     * above is retained for backward compatibility with consumers that only read the bool.
+     */
+    qdrantProbe?: QdrantProbeResult;
   };
   drift: {
     checked: boolean;
@@ -232,20 +239,43 @@ async function probeEmbeddingBackend(): Promise<boolean> {
 }
 
 /**
- * #2628: Async live probe of the Qdrant backend.
- * Distinguishes "configured" (env vars present) from "reachable" (backend responds 2xx).
+ * #2977: Cause-resolving Qdrant probe result.
  *
- * Performs a bounded, authenticated `GET /collections`. ANY of the following → `false`:
- * non-2xx (503/500/404), auth failure (401/403), timeout (AbortController), or a
- * thrown network error (ECONNRESET / ENOTFOUND / CERT_HAS_EXPIRED / "fetch failed").
- * This is precisely what makes a live outage flip the verdict to FAIL instead of being
- * masked as `Qdrant: OK` because the env vars happen to be present (regression of #2547).
+ * `reachable` collapses to a bool for scoring, but `kind` (+ `status`) carries the
+ * *cause* so the rendering can tell a 401 (key problem, server is up) from a real
+ * outage — instead of inventing "container down" for an auth failure.
  *
- * Exported for unit testing (the regression suite asserts 503/401/timeout → false).
+ * - `ok`        : 2xx — backend up and serving.
+ * - `auth`      : 401/403 — server reachable, key refused (key rotation drift, etc.).
+ * - `http`      : other non-2xx (503/500/404) — server up, request failed.
+ * - `timeout`   : AbortController fired — no response within the probe window.
+ * - `network`   : thrown fetch error (ECONNRESET / ENOTFOUND / CERT_HAS_EXPIRED / "fetch failed").
+ * - `unconfigured`: QDRANT_URL unset (defensive; the caller gates on `capabilities.qdrant`).
  */
-export async function probeQdrantBackend(): Promise<boolean> {
+export type QdrantProbeResult = {
+  reachable: boolean;
+  status?: number;
+  kind: 'ok' | 'auth' | 'http' | 'timeout' | 'network' | 'unconfigured';
+};
+
+/**
+ * #2628 / #2977: Async live probe of the Qdrant backend.
+ * Distinguishes "configured" (env vars present) from "reachable" (backend responds 2xx),
+ * and — per #2977 — reports the *cause* of a non-reachable verdict instead of collapsing
+ * six distinct outcomes (auth / http / timeout / network) into one indistinguishable bool.
+ *
+ * Performs a bounded, authenticated `GET /collections`. The result's `reachable` flag is
+ * what flips the score/verdict (regression guard for #2547/#2628: a live outage is no longer
+ * masked as `Qdrant: OK` just because the env vars are present); the `kind`/`status` let the
+ * rendering name the right cause so an operator is not sent to restart infrastructure that a
+ * 401 proves is alive.
+ *
+ * Exported for unit testing (the regression suite asserts 503/401/timeout → not reachable,
+ * and now asserts the rendered *cause*).
+ */
+export async function probeQdrantBackend(): Promise<QdrantProbeResult> {
   const qdrantUrl = process.env.QDRANT_URL;
-  if (!qdrantUrl) return false;
+  if (!qdrantUrl) return { reachable: false, kind: 'unconfigured' };
   const apiKey = process.env.QDRANT_API_KEY;
   const timeoutMs = parseInt(process.env.QDRANT_HEALTH_PROBE_TIMEOUT_MS || '8000', 10);
   const controller = new AbortController();
@@ -258,10 +288,26 @@ export async function probeQdrantBackend(): Promise<boolean> {
       headers,
       signal: controller.signal,
     });
-    return resp.ok; // 2xx only — 503/500/404/401/403 all resolve to false
-  } catch {
-    // AbortError (timeout) + TCP reset / DNS / TLS / "fetch failed" all land here → unreachable
-    return false;
+    // #2977: surface the cause instead of collapsing six outcomes into one bool.
+    // `resp.ok` (2xx) → reachable. A non-2xx still proves the server is up; the status
+    // distinguishes an auth gap (401/403, key problem) from a real HTTP failure (503/500/404).
+    if (resp.ok) return { reachable: true, status: resp.status, kind: 'ok' };
+    const authStatus = resp.status === 401 || resp.status === 403;
+    return {
+      reachable: false,
+      status: resp.status,
+      kind: authStatus ? 'auth' : 'http',
+    };
+  } catch (err) {
+    // AbortError = our timeout; everything else (ECONNRESET/ENOTFOUND/CERT_HAS_EXPIRED/"fetch failed")
+    // is a transport-level failure. A timeout is a reachable-but-slow signal; a network error means
+    // we could not reach the server at all. Both are non-2xx → not reachable, but the kind lets the
+    // rendering name the right cause instead of inventing "container down" for a 401 (#2977).
+    const isTimeout = err instanceof Error && err.name === 'AbortError';
+    return {
+      reachable: false,
+      kind: isTimeout ? 'timeout' : 'network',
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -372,10 +418,40 @@ function determineStatus(score: number): 'HEALTHY' | 'WARNING' | 'CRITICAL' {
   return 'CRITICAL';
 }
 
+/**
+ * #2977: Cause-specific recommendation for a configured-but-not-reachable Qdrant.
+ * Replaces the previous single message ("a real outage, not a config gap") that routed
+ * every failure shape — including a 401 key problem on a live server — to "restart the
+ * container". Each branch names the right thing to check.
+ */
+function qdrantUnreachableRecommendation(probe?: QdrantProbeResult): string {
+  const prefix = 'Qdrant configured but NOT REACHABLE';
+  const suffix = ' — semantic search degraded to text mode';
+  switch (probe?.kind) {
+    case 'auth':
+      // Server is up (it returned 401/403); the key was refused. Rotation drift is the
+      // usual cause. NEVER send the operator to restart the container for an auth failure.
+      return `${prefix} — AUTH (server reachable at status ${probe.status}, key refused). Check QDRANT_API_KEY (rotation alignment), not the container${suffix}`;
+    case 'http':
+      // Non-2xx, non-auth (503/500/404): the server answered, the request failed.
+      return `${prefix} — HTTP ${probe.status} (server answered, request failed). Check qdrant container / reverse proxy / collection state${suffix}`;
+    case 'timeout':
+      return `${prefix} — TIMEOUT (no response within probe window). Check network path / load on qdrant.myia.io${suffix}`;
+    case 'network':
+      return `${prefix} — NETWORK error (connection refused / DNS / TLS). Check qdrant.myia.io reachability / reverse proxy${suffix}`;
+    case 'ok':
+    case 'unconfigured':
+    default:
+      // Defensive: probe was reachable/absent but the caller treated it as unreachable.
+      // Surface the raw kind so the mismatch is visible rather than silently generic.
+      return `${prefix} (probe kind: ${probe?.kind ?? 'unknown'})${suffix}`;
+  }
+}
+
 function generateRecommendations(
   onlineCount: number,
   totalCount: number,
-  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean },
+  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean; qdrantProbe?: QdrantProbeResult },
   drift: { checked: boolean; critical: number; important: number; items: DriftItem[] },
   envMissing: Array<{ name: string; severity: string }>
 ): string[] {
@@ -387,8 +463,10 @@ function generateRecommendations(
   if (!capabilities.qdrant) {
     recs.push('Qdrant not configured (QDRANT_URL / QDRANT_API_KEY / QDRANT_COLLECTION_NAME) — semantic search disabled');
   } else if (capabilities.qdrantReachable === false) {
-    // #2628: configured but the live probe failed — a real outage, not a config gap.
-    recs.push('Qdrant configured but UNREACHABLE (live GET /collections failed) — semantic search degraded to text mode; check qdrant.myia.io / container / reverse proxy');
+    // #2977: name the cause instead of asserting "a real outage, not a config gap" — that
+    // was only true for 2 of the 6 non-reachable branches. A 401/403 is a key problem on a
+    // live server; a 503 is the server itself. Route the operator to the right fix.
+    recs.push(qdrantUnreachableRecommendation(capabilities.qdrantProbe));
   }
   if (!capabilities.embeddings) {
     recs.push('Embedding service not configured — codebase_search disabled');
@@ -432,9 +510,14 @@ export function formatMarkdown(result: HealthViewResult): string {
   lines.push('## Capabilities');
   lines.push(`- SharedPath: ${result.capabilities.sharedPath ? 'OK' : 'MISSING'}`);
   // #2628: report FAIL (not OK) when configured but the live probe failed.
+  // #2977: name the cause in the FAIL label so a 401 (key) is not read as "container down".
+  const qdrantProbe = result.capabilities.qdrantProbe;
+  const qdrantFailCause = qdrantProbe
+    ? { auth: `AUTH (status ${qdrantProbe.status}, key refused)`, http: `HTTP ${qdrantProbe.status}`, timeout: 'TIMEOUT', network: 'NETWORK', unconfigured: 'UNCONFIGURED', ok: '' }[qdrantProbe.kind]
+    : '';
   const qdrantStatus = !result.capabilities.qdrant ? 'MISSING (not configured)'
     : result.capabilities.qdrantReachable === true ? 'OK (configured + reachable)'
-    : result.capabilities.qdrantReachable === false ? 'FAIL (configured but unreachable)'
+    : result.capabilities.qdrantReachable === false ? `FAIL (configured but unreachable${qdrantFailCause ? ` — ${qdrantFailCause}` : ''})`
     : 'OK (configured)';
   lines.push(`- Qdrant: ${qdrantStatus}`);
   const embStatus = !result.capabilities.embeddings ? 'MISSING (not configured)'
@@ -490,7 +573,7 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   const capabilities = collectCapabilities();
 
   // Collect all data sources in parallel (including optional backend probes)
-  const [systemHealth, drift, envCheck, embeddingsReachable, qdrantReachable] = await Promise.all([
+  const [systemHealth, drift, envCheck, embeddingsReachable, qdrantProbe] = await Promise.all([
     collectSystemHealth(),
     collectDrift(targetMachine),
     args.includeEnvCheck !== false ? Promise.resolve(collectEnvCheck()) : Promise.resolve({
@@ -498,16 +581,21 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
     }),
     // #2547: Async live probe of embedding backend (only if configured)
     capabilities.embeddings ? probeEmbeddingBackend() : Promise.resolve(false as boolean),
-    // #2628: Async live probe of Qdrant backend (only if configured)
-    capabilities.qdrant ? probeQdrantBackend() : Promise.resolve(false as boolean),
+    // #2628/#2977: Async live Qdrant probe (only if configured) — returns the cause, not just a bool
+    capabilities.qdrant
+      ? probeQdrantBackend()
+      : Promise.resolve({ reachable: false, kind: 'unconfigured' } as QdrantProbeResult),
   ]);
 
-  // #2547/#2628: Merge the async probe results into capabilities BEFORE scoring,
-  // so a configured-but-unreachable backend actually moves the score/verdict.
+  // #2547/#2628/#2977: Merge the async probe results into capabilities BEFORE scoring,
+  // so a configured-but-unreachable backend actually moves the score/verdict. `qdrantProbe`
+  // carries the cause (#2977); `qdrantReachable` is the bool derivative for the score and
+  // backward compatibility with consumers that only read the bool.
   const enrichedCapabilities = {
     ...capabilities,
     embeddingsReachable: capabilities.embeddings ? embeddingsReachable : false,
-    qdrantReachable: capabilities.qdrant ? qdrantReachable : false,
+    qdrantProbe: capabilities.qdrant ? qdrantProbe : ({ reachable: false, kind: 'unconfigured' } as QdrantProbeResult),
+    qdrantReachable: capabilities.qdrant ? qdrantProbe.reachable : false,
   };
 
   const criticalEnvMissing = envCheck.missing.filter(e => e.severity === 'critical').length;
