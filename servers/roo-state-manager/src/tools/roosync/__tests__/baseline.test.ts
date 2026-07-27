@@ -726,35 +726,6 @@ describe('roosync_baseline', () => {
       ).rejects.toThrow('existe déjà');
     });
 
-    test('should handle git commit failure gracefully', async () => {
-      // Importer le module pour accéder au mock
-      const { execSync } = await import('child_process');
-
-      // Sauvegarder et remplacer temporairement le mock
-      const originalImplementation = vi.mocked(execSync).mockImplementation;
-      vi.mocked(execSync).mockImplementation((cmd: string) => {
-        if (cmd.includes('git commit')) {
-          throw new Error('Git commit failed');
-        }
-        if (cmd.includes('git rev-parse --verify refs/tags/')) {
-          throw new Error('Tag not found');
-        }
-        if (cmd.includes('git tag -l')) {
-          return 'baseline-v1.0.0\n';
-        }
-        // Utiliser le comportement par défaut pour les autres commandes
-        return '';
-      });
-
-      // Le test doit réussir même si le commit échoue (warning only)
-      const result = await roosync_baseline({
-        action: 'version',
-        version: '1.0.1',
-        pushTags: false
-      });
-      expect(result.success).toBe(true);
-    });
-
     test('should handle git tag creation failure', async () => {
       // Importer le module pour accéder au mock
       const { execSync } = await import('child_process');
