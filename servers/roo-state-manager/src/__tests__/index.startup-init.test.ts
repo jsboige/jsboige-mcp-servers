@@ -10,6 +10,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 
 describe('#1817 — MCP startup initialization timing', () => {
 
@@ -297,5 +299,55 @@ describe('#1817 — MCP startup initialization timing', () => {
             expect(_initError).toBeNull();
             expect(result).toBe(stateManager);
         });
+    });
+});
+
+/**
+ * #2993 — the guard must be asserted on the SHIPPED source, not on a copy of it.
+ *
+ * The pattern-replication tests above document the intended contract, but they
+ * define their own local `initializeTail`/`_initError` and would keep passing if
+ * someone re-added `_initError = e` inside the real catch — the gap both reviewers
+ * flagged on #913. These three assertions read `src/index.ts` itself and close it.
+ *
+ * `initializeAsync` is private and pulls the whole server graph in, so exercising
+ * it for real is out of reach from a unit test; reading the file is weaker than a
+ * behavioural test, and this comment is the honest statement of that. What it does
+ * buy: it fails if the guard is removed or neutered, which is the regression that
+ * cost ai-01 a full session on 2026-07-28.
+ *
+ * Verified against both broken shapes before being proposed:
+ *   - bare `await preloadRooSync()` with no try  → first assertion fails
+ *   - catch that rethrows                        → second assertion fails
+ */
+describe('#2993 — preload guard asserted on the real index.ts source', () => {
+
+    const source = readFileSync(
+        fileURLToPath(new URL('../index.ts', import.meta.url)),
+        'utf-8'
+    );
+
+    test('the preload call sits inside a try/catch', () => {
+        expect(source).toMatch(
+            /try\s*\{[\s\S]{0,400}?await preloadRooSync\(\);[\s\S]{0,400}?\}\s*catch/
+        );
+    });
+
+    test('the catch swallows the failure — no rethrow, no _initError', () => {
+        const catchBlock = source.match(
+            /await preloadRooSync\(\);[\s\S]*?\}\s*catch\s*\([\s\S]*?\)\s*\{([\s\S]*?)\n\s*\}/
+        );
+        expect(catchBlock).not.toBeNull();
+        const body = catchBlock![1];
+
+        expect(body).toMatch(/logger\.warn/);
+        expect(body).not.toMatch(/\bthrow\b/);
+        expect(body).not.toMatch(/_initError/);
+    });
+
+    test('genuine initialization failures still set _initError', () => {
+        // The guard must stay narrow: it neutralises the preload only. A real
+        // StateManager failure must keep failing loudly.
+        expect(source).toMatch(/this\._initError\s*=/);
     });
 });
