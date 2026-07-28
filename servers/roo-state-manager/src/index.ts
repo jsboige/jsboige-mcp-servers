@@ -205,6 +205,13 @@ class RooStateManagerServer {
     // a retry is in flight — concurrent ensureInitialized() callers share the same retry.
     private _initRetryPromise: Promise<void> | null = null;
     private _lastInitRetryAt: number = 0;
+    // #3001 item 3: idempotence guard for background services. If initializeAsync fails
+    // AFTER StateManager construction (e.g. in initializeBackgroundServices), the retry
+    // path re-enters initializeAsync. Without this flag, the retry re-executes
+    // initializeBackgroundServices on the same state, starting duplicate interval workers
+    // (skeleton refresh, Qdrant indexer) while the old ones keep running against the
+    // same ServerState conversationCache.
+    private _bgServicesInitialized = false;
     // Cooldown matches RooSyncService #2017 backoff (30s) — prevents thrashing on
     // every tool call when the underlying issue persists.
     private static readonly INIT_RETRY_COOLDOWN_MS = 30_000;
@@ -270,8 +277,17 @@ class RooStateManagerServer {
      * Heavy initialization — runs in background after transport connects
      */
     private async initializeAsync(): Promise<void> {
-        const { StateManager } = await getStateManager();
-        this.stateManager = new StateManager();
+        // #3001 item 3: on retry after partial init failure, reuse the existing
+        // StateManager instead of creating a new one. A failure in the steps
+        // below (initializeNotificationSystem, initializeBackgroundServices)
+        // leaves stateManager set and _initError posed. Without this guard,
+        // the retry creates a second StateManager, orphaning the first one's
+        // background workers (skeleton refresh interval, Qdrant indexer) which
+        // keep running against the old ServerState.
+        if (!this.stateManager) {
+            const { StateManager } = await getStateManager();
+            this.stateManager = new StateManager();
+        }
 
         // #883: Log workspace detection
         const wsPath = process.env.WORKSPACE_PATH;
@@ -286,10 +302,19 @@ class RooStateManagerServer {
         // Initialize notification system (deferred — pulls in MessageManager 3.8s)
         await this.initializeNotificationSystem();
 
-        // Initialize background services (skeleton cache, etc.)
-        const { initializeBackgroundServices } = await getBackgroundServices();
-        const state = this.stateManager.getState();
-        await initializeBackgroundServices(state);
+        // #3001 item 3: guard background services against double-init on retry.
+        // initializeBackgroundServices starts interval-based workers
+        // (startSkeletonRefreshWorker, startQdrantIndexingBackgroundProcess).
+        // On a retry after partial failure, these would be started a second time.
+        // The inner guards (if(state.skeletonRefreshInterval)) only work when
+        // the SAME state object is reused — which the StateManager guard above
+        // now ensures. This flag is the outer guard for the service init itself.
+        if (!this._bgServicesInitialized) {
+            const { initializeBackgroundServices } = await getBackgroundServices();
+            const state = this.stateManager.getState();
+            await initializeBackgroundServices(state);
+            this._bgServicesInitialized = true;
+        }
 
         // #1495: Preload RooSyncService so dashboard/heartbeat are ready on first call.
         // Without this, getRooSyncService() only loads on first tool call → "Not connected".
