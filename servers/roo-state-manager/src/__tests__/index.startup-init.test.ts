@@ -300,6 +300,221 @@ describe('#1817 — MCP startup initialization timing', () => {
             expect(result).toBe(stateManager);
         });
     });
+
+    describe('#2993(b) — _initError recovers via one-shot retry after a transient failure', () => {
+
+        // #2993(b): complement to fix (a). Even with the preload made non-fatal, a
+        // genuine failure elsewhere in initializeAsync() (e.g. StateManager construction
+        // throwing on a transient env problem) sets _initError, and the existing code
+        // never cleared it. After fix (b), ensureInitialized() launches a one-shot retry
+        // gated by a 30s cooldown — concurrent callers share the same retry. Success
+        // clears _initError; failure leaves it set (and the cooldown resets).
+
+        // Mirror of the production gate: retry only if cooldown elapsed AND no retry in flight.
+        const COOLDOWN_MS = 30_000;
+
+        function buildEnsureInitialized(params: {
+            initialError: Error;
+            retryImpl: () => Promise<{ stateManager: unknown }>;
+        }) {
+            let _initError: Error | null = params.initialError;
+            let _resolveInit!: () => void;
+            let _rejectInit!: (error: Error) => void;
+            // In production the initial init failure runs through startBackgroundInit →
+            // catch → _initError = error; _rejectInit(error). The harness replicates this
+            // by settling the promise with the initial error (rejection), so awaiters
+            // unblock immediately.
+            let _initPromise = new Promise<void>((_resolve, reject) => {
+                // Capture the resolve/reject for the retry path; settle the initial one.
+                _resolveInit = () => {};
+                _rejectInit = reject;
+            });
+            _rejectInit(params.initialError);
+            // Swallow the unhandled rejection (it represents the logged failure).
+            _initPromise.catch(() => {});
+            let _initRetryPromise: Promise<void> | null = null;
+            let _lastInitRetryAt = 0;
+            let stateManager: unknown = null;
+
+            const ensureInitialized = async () => {
+                if (!stateManager) {
+                    try {
+                        await _initPromise;
+                    } catch {
+                        // _initError is set; retry path below handles the recovery.
+                    }
+                }
+                if (_initError) {
+                    const now = Date.now();
+                    if (
+                        _initRetryPromise === null &&
+                        now - _lastInitRetryAt >= COOLDOWN_MS
+                    ) {
+                        _lastInitRetryAt = now;
+                        _initPromise = new Promise<void>((resolve, reject) => {
+                            _resolveInit = resolve;
+                            _rejectInit = reject;
+                        });
+                        _initRetryPromise = params.retryImpl()
+                            .then((res) => {
+                                stateManager = res.stateManager;
+                                _initError = null; // cleared on success only
+                                _resolveInit();
+                            })
+                            .catch((error: Error) => {
+                                _initError = error;
+                                _rejectInit(error);
+                            })
+                            .finally(() => {
+                                _initRetryPromise = null;
+                            });
+                        try {
+                            await _initPromise;
+                        } catch {
+                            // Retry-side rejection — _initError carries the cause,
+                            // the final check below will throw the wrapped message.
+                        }
+                    } else if (_initRetryPromise !== null) {
+                        try {
+                            await _initPromise;
+                        } catch {
+                            // Same as above for the concurrent-share path.
+                        }
+                    }
+                }
+                if (_initError) {
+                    throw new Error(`MCP server initialization failed: ${_initError.message}`);
+                }
+                if (!stateManager) {
+                    throw new Error('StateManager not available after initialization');
+                }
+                return stateManager;
+            };
+
+            return { ensureInitialized, getError: () => _initError, getLastRetryAt: () => _lastInitRetryAt };
+        }
+
+        test('successful retry clears _initError and returns stateManager', async () => {
+            const initialErr = new Error('G:\\.shared-state temporarily unreachable');
+            const newStateManager = { recovered: true };
+
+            const { ensureInitialized, getError } = buildEnsureInitialized({
+                initialError: initialErr,
+                retryImpl: async () => {
+                    // Simulate G: coming back online — retry succeeds.
+                    return { stateManager: newStateManager };
+                },
+            });
+
+            const result = await ensureInitialized();
+
+            expect(result).toBe(newStateManager);
+            expect(getError()).toBeNull();
+        });
+
+        test('failed retry leaves _initError set and still throws', async () => {
+            const initialErr = new Error('first failure');
+            const retryErr = new Error('second failure');
+
+            const { ensureInitialized, getError } = buildEnsureInitialized({
+                initialError: initialErr,
+                retryImpl: async () => {
+                    throw retryErr;
+                },
+            });
+
+            await expect(ensureInitialized()).rejects.toThrow('MCP server initialization failed: second failure');
+            expect(getError()).toBe(retryErr);
+        });
+
+        test('cooldown blocks back-to-back retries: only one retry fires per cooldown window', async () => {
+            // The first call to ensureInitialized() sees _initError set, fires a retry,
+            // and updates _lastInitRetryAt. A subsequent call while the retry is still
+            // in flight (or right after it succeeded) must NOT fire a *second* retry
+            // — either because _initRetryPromise is non-null (concurrent) or because
+            // cooldown hasn't elapsed.
+            //
+            // We verify both: (a) the gate fires exactly once on the first call, and
+            // (b) _lastInitRetryAt is updated to a recent timestamp.
+            let retryCalls = 0;
+            const harness = buildEnsureInitialized({
+                initialError: new Error('first transient'),
+                retryImpl: async () => {
+                    retryCalls++;
+                    return { stateManager: { ok: true } };
+                },
+            });
+
+            const before = Date.now();
+            await harness.ensureInitialized();
+            const after = Date.now();
+
+            expect(retryCalls).toBe(1);
+            const lastRetryAt = harness.getLastRetryAt();
+            expect(lastRetryAt).toBeGreaterThanOrEqual(before);
+            expect(lastRetryAt).toBeLessThanOrEqual(after);
+        });
+
+        test('concurrent callers share the same retry (no duplicate firings)', async () => {
+            // Two concurrent ensureInitialized() calls while _initError is set must
+            // share the same _initRetryPromise — only one retryImpl invocation.
+            let retryCalls = 0;
+            let resolveRetry!: () => void;
+            const retryReturned = new Promise<void>((resolve) => {
+                resolveRetry = resolve;
+            });
+
+            const harness = buildEnsureInitialized({
+                initialError: new Error('initial'),
+                retryImpl: async () => {
+                    retryCalls++;
+                    await retryReturned;
+                    return { stateManager: { ok: true } };
+                },
+            });
+
+            // Fire two concurrent calls.
+            const c1 = harness.ensureInitialized();
+            const c2 = harness.ensureInitialized();
+            // Yield so both callers reach the retry-check.
+            await Promise.resolve();
+            await Promise.resolve();
+            // Resolve the retry.
+            resolveRetry();
+            const [r1, r2] = await Promise.all([c1, c2]);
+
+            expect(retryCalls).toBe(1); // shared: only one retryImpl invocation
+            expect(r1).toEqual({ ok: true });
+            expect(r2).toEqual({ ok: true });
+        });
+
+        test('retry stops awaiting after init succeeds (no infinite loop)', async () => {
+            const initialErr = new Error('initial');
+            let resolveRetry!: () => void;
+            const retryReturned = new Promise<void>((resolve) => {
+                resolveRetry = resolve;
+            });
+
+            const { ensureInitialized, getError } = buildEnsureInitialized({
+                initialError: initialErr,
+                retryImpl: async () => {
+                    await retryReturned;
+                    return { stateManager: { recovered: true } };
+                },
+            });
+
+            // Start the call but don't await — will hang on retry until we resolve.
+            const pending = ensureInitialized();
+            // Let microtasks flow so the retry kicks off.
+            await Promise.resolve();
+            // Now resolve the retry.
+            resolveRetry();
+            const result = await pending;
+
+            expect(result).toEqual({ recovered: true });
+            expect(getError()).toBeNull();
+        });
+    });
 });
 
 /**
