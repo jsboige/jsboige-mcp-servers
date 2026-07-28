@@ -124,8 +124,9 @@ export function getFallbackChatOpenAIClient(): OpenAI | null {
     fallbackChatOpenai = new OpenAI({
       apiKey,
       baseURL: baseUrl,
-      // Fallback is lightweight (flash model) — short timeout, no SDK retries
-      // The per-function retry loop handles re-attempts.
+      // Fallback is lightweight (flash model) — short timeout, no SDK retries.
+      // #2998: Retry on 429/5xx is handled by cloudCondenseWithRetry (exponential
+      // backoff, 3 attempts) — NOT by the SDK, so it can skip non-retryable 4xx.
       timeout: Math.min(timeout, 60000),
       maxRetries: 0,
     });
