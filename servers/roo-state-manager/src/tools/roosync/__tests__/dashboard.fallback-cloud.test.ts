@@ -176,4 +176,105 @@ describe('#2719 cloud-fallback condensation telemetry', () => {
     );
     expect(cloudPasses).toHaveLength(0);
   });
+
+  // #2998 Fix A: Retry on 429 — the fallback endpoint intermittently returns 429
+  // (rate limit). The first attempt fails with 429, the second succeeds. Without
+  // retry, this would be `fallback-truncated`. With retry, it should be `fallback-cloud`.
+  it('(d) #2998 primary down → fallback 429 then 200 → outcome `fallback-cloud` (retry works)', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // First fallback attempt(s): 429 (rate limited). Subsequent: success.
+    // Two LLM calls (summary + status) run concurrently, each with its own retry loop,
+    // so the first N calls may all get 429 before the retry succeeds.
+    const error429 = Object.assign(new Error('429 Rate Limited — code 1305'), { status: 429 });
+    mockFallbackCreate
+      .mockRejectedValueOnce(error429)
+      .mockResolvedValue({
+        choices: [{ message: { content: '## Cloud summary (after retry)\n\nSalvaged by z.ai on 2nd attempt.' } }],
+      });
+
+    const condensedResult = await fillUntilCondensed();
+
+    expect(condensedResult.condenseDiagnostic).toBeDefined();
+    const cloudPasses = condensedResult.condenseDiagnostic!.filter(
+      (d: any) => d.outcome === 'fallback-cloud',
+    );
+    expect(cloudPasses.length).toBeGreaterThanOrEqual(1);
+    // The fallback client must have been called at least twice (first 429, then 200).
+    expect(mockFallbackCreate.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // #2998 Fix A: No retry on 401 (auth errors don't heal with backoff).
+  it('(e) #2998 primary down → fallback 401 → single attempt, no retry', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // 401 auth error — should NOT be retried.
+    const error401 = Object.assign(new Error('401 Unauthorized'), { status: 401 });
+    mockFallbackCreate.mockRejectedValue(error401);
+
+    const condensedResult = await fillUntilCondensed();
+
+    expect(condensedResult.condenseDiagnostic).toBeDefined();
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter(
+      (d: any) => d.outcome === 'fallback-truncated',
+    );
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+    // The fallback client should have been called exactly ONCE per condensation pass
+    // (401 is not retryable). Each condense pass makes 2 LLM calls (summary + status),
+    // so verify that each individual call site only invoked once by checking there's
+    // no retry doubling. At least 1 call happened, and less than 6 (= 2 calls × 3 retries).
+    expect(mockFallbackCreate.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(mockFallbackCreate.mock.calls.length).toBeLessThan(6);
+  });
+
+  // #2998 Fix B: When fallback fails, diagnostic stats must include
+  // fallbackAttempted + fallbackError so operators can distinguish "unconfigured"
+  // from "attempted but rejected".
+  it('(f) #2998 primary down AND fallback 429 (all retries) → diagnostic shows fallbackAttempted', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // All fallback attempts fail with 429.
+    const error429 = Object.assign(new Error('429 Rate Limited'), { status: 429 });
+    mockFallbackCreate.mockRejectedValue(error429);
+
+    const condensedResult = await fillUntilCondensed();
+
+    expect(condensedResult.condenseDiagnostic).toBeDefined();
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter(
+      (d: any) => d.outcome === 'fallback-truncated',
+    );
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+
+    // #2998 Fix B: At least one truncated pass must surface the fallback attempt in stats.
+    const passesWithFallbackAttempt = truncatedPasses.filter((d: any) => {
+      const s = d.llm?.summary;
+      const st = d.llm?.status;
+      return (s?.fallbackAttempted === true || st?.fallbackAttempted === true);
+    });
+    expect(passesWithFallbackAttempt.length).toBeGreaterThanOrEqual(1);
+
+    // And the fallbackError must be set (not undefined).
+    const passesWithFallbackError = passesWithFallbackAttempt.filter((d: any) => {
+      const s = d.llm?.summary;
+      const st = d.llm?.status;
+      return (s?.fallbackError && typeof s.fallbackError === 'string')
+        || (st?.fallbackError && typeof st.fallbackError === 'string');
+    });
+    expect(passesWithFallbackError.length).toBeGreaterThanOrEqual(1);
+  });
 });

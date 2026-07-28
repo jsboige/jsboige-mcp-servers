@@ -134,6 +134,12 @@ const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
 const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
+// #2998: Cloud fallback retry — the fallback endpoint (z.ai) intermittently returns
+// 429 (service overloaded) which is transient by definition. Retry up to 3 times
+// with exponential backoff, matching the primary's retry pattern. Only 429 and 5xx
+// are retried — 401/403 (auth) won't heal with a backoff.
+const FB_MAX_ATTEMPTS = 3;
+const FB_INITIAL_BACKOFF_MS = 2000;
 
 // #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
 // generation is already bounded UNDER the ~600s IIS→vLLM gateway by
@@ -235,11 +241,34 @@ function buildThinkingControl(isVllm: boolean): {
  */
 let cloudFallbackDisabledLogged = false;
 
+/**
+ * #2998: Classify whether a cloud fallback error is worth retrying.
+ * 429 (rate limit) and 5xx (server errors) are transient by definition.
+ * 4xx auth/client errors (401, 403) won't heal with backoff.
+ * Connection errors (no HTTP status) are treated as retryable.
+ */
+function isRetryableFallbackError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'status' in error) {
+    const status = (error as Record<string, unknown>).status;
+    if (typeof status === 'number') {
+      return status === 429 || status >= 500;
+    }
+  }
+  // No status → connection error (ECONNREFUSED, ETIMEDOUT, etc.) → retryable.
+  return true;
+}
+
+/** Result of a single cloud fallback attempt. */
+type CloudCondenseOnceResult =
+  | { ok: true; content: string; elapsedMs: number; model: string }
+  | { ok: false; retryable: boolean; error: string; elapsedMs: number; model: string }
+  | null; // unconfigured (no API key) or empty content
+
 async function cloudCondenseOnce(
   systemPrompt: string,
   userPrompt: string,
   opts: { maxTokens: number; temperature: number },
-): Promise<{ content: string; elapsedMs: number; model: string } | null> {
+): Promise<CloudCondenseOnceResult> {
   const fallbackClient = getFallbackChatOpenAIClient();
   if (!fallbackClient) {
     // #2719 visibility: a missing FALLBACK_API_KEY (or ZAI_API_KEY) makes the
@@ -292,19 +321,53 @@ async function cloudCondenseOnce(
       elapsed: `${elapsedMs}ms`,
       sizeKB: `${(Buffer.byteLength(content, 'utf8') / 1024).toFixed(1)}KB`,
     });
-    return { content, elapsedMs, model: fbModel };
+    return { ok: true, content, elapsedMs, model: fbModel };
   } catch (error: unknown) {
     const errStr = safeErrorString(error);
-    logger.error('#2719 cloud fallback condensation failed', { fbModel, error: truncateError(errStr) });
-    return null;
+    const elapsedMs = Date.now() - fbStart;
+    const retryable = isRetryableFallbackError(error);
+    logger.error('#2719 cloud fallback condensation failed', { fbModel, error: truncateError(errStr), retryable, elapsed: `${elapsedMs}ms` });
+    return { ok: false, retryable, error: truncateError(errStr), elapsedMs, model: fbModel };
   }
 }
 
 /**
- * Stats-aware wrapper around cloudCondenseOnce for the LLMCallResult condensers
+ * #2998: Cloud condensation with retry on transient errors (429/5xx).
+ * Wraps cloudCondenseOnce with up to FB_MAX_ATTEMPTS attempts and exponential
+ * backoff. Returns the successful result, the last error (if all retries
+ * exhausted), or null when the fallback is unconfigured.
+ */
+async function cloudCondenseWithRetry(
+  systemPrompt: string,
+  userPrompt: string,
+  opts: { maxTokens: number; temperature: number },
+): Promise<{ content: string; elapsedMs: number; model: string } | { error: string; attempts: number } | null> {
+  let lastError: string | undefined;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= FB_MAX_ATTEMPTS; attempt++) {
+    const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts);
+    if (result === null) return null; // unconfigured or empty content
+    if (result.ok) return result; // success
+    attempts = attempt;
+    lastError = result.error;
+    if (!result.retryable || attempt >= FB_MAX_ATTEMPTS) break;
+    const backoff = FB_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+    logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${FB_MAX_ATTEMPTS})`, {
+      model: result.model, error: result.error,
+    });
+    await new Promise(resolve => setTimeout(resolve, backoff));
+  }
+  return { error: lastError ?? 'unknown error', attempts };
+}
+
+/**
+ * Stats-aware wrapper around cloudCondenseWithRetry for the LLMCallResult condensers
  * (generateLLMSummary / generateStatusUpdate). On fallback success, stamps the fallback
  * fields + 'ok-with-fallback' outcome and returns the result; otherwise returns null so
  * the caller returns its original primary-failure result (and its diagnostic stats) unchanged.
+ *
+ * #2998: On fallback failure, stamps `fallbackAttempted` + `fallbackError` in stats so
+ * the diagnostic distinguishes "fallback unconfigured" from "fallback attempted but rejected".
  */
 async function tryCloudCondenseFallback(
   systemPrompt: string,
@@ -313,14 +376,22 @@ async function tryCloudCondenseFallback(
   stats: LLMCallStats,
   callStart: number,
 ): Promise<LLMCallResult | null> {
-  const fb = await cloudCondenseOnce(systemPrompt, userPrompt, opts);
-  if (!fb) return null;
-  stats.fallbackUsed = true;
-  stats.fallbackModel = fb.model;
-  stats.fallbackElapsedMs = fb.elapsedMs;
-  stats.finalOutcome = 'ok-with-fallback';
-  stats.elapsedMs = Date.now() - callStart;
-  return { content: fb.content, stats };
+  const fb = await cloudCondenseWithRetry(systemPrompt, userPrompt, opts);
+  if (fb && 'content' in fb) {
+    stats.fallbackUsed = true;
+    stats.fallbackModel = fb.model;
+    stats.fallbackElapsedMs = fb.elapsedMs;
+    stats.finalOutcome = 'ok-with-fallback';
+    stats.elapsedMs = Date.now() - callStart;
+    return { content: fb.content, stats };
+  }
+  // #2998: record fallback failure so diagnostics can distinguish "unconfigured"
+  // (fb === null) from "attempted but rejected" (fb has error).
+  if (fb && 'error' in fb) {
+    stats.fallbackAttempted = true;
+    stats.fallbackError = fb.error;
+  }
+  return null;
 }
 
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
@@ -1113,8 +1184,8 @@ export interface CondenseAttemptInfo {
   elapsedMs: number;
   archivedMessageCount: number;
   llm?: {
-    summary: LLMCallStats;
-    status: LLMCallStats;
+    summary?: LLMCallStats;
+    status?: LLMCallStats;
   };
 }
 
@@ -1151,6 +1222,13 @@ export interface LLMCallStats {
   fallbackModel?: string;
   /** Wall-clock time for the successful fallback attempt (ms). */
   fallbackElapsedMs?: number;
+  // #2998: Cloud fallback diagnostic fields — distinguish "fallback unconfigured"
+  // (fallbackAttempted absent) from "fallback attempted but rejected" (fallbackAttempted
+  // true, fallbackError set) from "fallback succeeded" (fallbackUsed true).
+  /** Whether the cloud fallback was attempted but failed (set only when fallbackUsed is not true). */
+  fallbackAttempted?: boolean;
+  /** Error message from the last failed fallback attempt (truncated). */
+  fallbackError?: string;
 }
 
 /**
@@ -1699,16 +1777,17 @@ RÈGLES :
     }
   }
 
-  // #2719: primary LLM never converged (down / empty / still oversized) → one cloud
-  // fallback attempt before falling to lossy truncation. The cloud result must still
+  // #2719: primary LLM never converged (down / empty / still oversized) → cloud
+  // fallback before falling to lossy truncation. The cloud result must still
   // respect the HARD cap (#2598): use it only if under cap, else keep it as the best
   // candidate for the deterministic backstop below.
-  const fbCloud = await cloudCondenseOnce(
+  // #2998: cloudCondenseWithRetry retries on 429/5xx instead of a single attempt.
+  const fbCloud = await cloudCondenseWithRetry(
     `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.`,
     text,
     { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 },
   );
-  if (fbCloud) {
+  if (fbCloud && 'content' in fbCloud) {
     const fbSize = Buffer.byteLength(fbCloud.content, 'utf8');
     if (fbSize <= maxSizeBytes) {
       logger.info(`#2719 cloud fallback condensed ${label} under cap`, { afterKB: `${(fbSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB` });
@@ -1996,6 +2075,15 @@ ${archiveMessages}
     diagnostic.outcome = 'fallback-truncated';
     diagnostic.elapsedMs = totalElapsed;
     diagnostic.archivedMessageCount = toArchive.length;
+    // #2998: Surface LLM stats (including fallbackAttempted/fallbackError) in the
+    // truncation diagnostic so operators can distinguish "fallback unconfigured"
+    // from "fallback attempted but rejected" — not just "LLM failed → truncated".
+    if (failedCalls) {
+      diagnostic.llm = {
+        summary: failedCalls.summaryCall?.stats,
+        status: failedCalls.statusCall?.stats,
+      };
+    }
   }
 
   // #2463: Deterministic status truncation — never let status exceed its cap,
