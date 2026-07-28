@@ -351,3 +351,105 @@ describe('#2993 — preload guard asserted on the real index.ts source', () => {
         expect(source).toMatch(/this\._initError\s*=/);
     });
 });
+
+/**
+ * #2993(c) — initializeNotificationSystem must NOT re-enter ensureInitialized().
+ *
+ * ai-01 #914 CHANGES_REQUESTED found the deadlock: initializeAsync (L278) calls
+ * initializeNotificationSystem (L322), which called ensureInitialized (L370).
+ * Today harmless (stateManager truthy → the _initPromise await is skipped; _initError
+ * null → no throw), but once an _initError retry path exists (#914's whole purpose),
+ * the re-entrant call awaits _initPromise — which only resolves when this very
+ * initializeAsync() finishes, and it is blocked at that call = circular wait. The
+ * regime flips from "throws on every call" (diagnosable) to "never responds"
+ * (indistinguishable from a dead machine).
+ *
+ * Fix (c): initializeNotificationSystem is only ever called from initializeAsync (L278),
+ * where this.stateManager is already constructed (L265). Use it directly — no gate.
+ *
+ * Like the preload guard above, this is asserted on the SHIPPED source because
+ * initializeNotificationSystem is private and pulls the notification graph in; a
+ * behavioural test is out of reach. The source read is weaker but fails the moment
+ * the re-entrant call is re-added, which is the regression that deadlocks the fleet
+ * once #914 (or any retry) lands.
+ */
+describe('#2993(c) — no re-entrant ensureInitialized() from initializeNotificationSystem', () => {
+
+    const source = readFileSync(
+        fileURLToPath(new URL('../index.ts', import.meta.url)),
+        'utf-8'
+    );
+
+    test('initializeNotificationSystem does not call ensureInitialized()', () => {
+        // Isolate the method body so the assertion is scoped, not repo-wide. Match the
+        // actual call form (`await this.ensureInitialized()`) — the method's comments
+        // reference the symbol by name, so a bare substring match would false-positive.
+        const method = source.match(/private async initializeNotificationSystem\(\)[\s\S]*?\n    \}/);
+        expect(method).not.toBeNull();
+        const body = method![0];
+        expect(body).not.toMatch(/await\s+this\.ensureInitialized\(\)/);
+    });
+
+    test('the notification step reads this.stateManager directly (the non-re-entrant path)', () => {
+        const method = source.match(/private async initializeNotificationSystem\(\)[\s\S]*?\n    \}/);
+        expect(method).not.toBeNull();
+        const body = method![0];
+        // Direct ref, not a gate call — with a defensive null guard (the caller invariant).
+        expect(body).toMatch(/const sm = this\.stateManager/);
+        expect(body).toMatch(/if \(!sm\)/);
+    });
+
+    describe('logic replication — why re-entrance deadlocks once a retry exists', () => {
+        // Models the #914 retry shape (not yet in main) to document WHY the structural
+        // fix in (c) matters. The re-entrant ensureInitialized() consults _initPromise;
+        // under a one-shot retry that promise is settled only by the retry's own success,
+        // which is blocked at the re-entrant call. Direct stateManager access breaks the cycle.
+
+        test('re-entrant gate hangs when _initPromise is held by the caller (the #914 deadlock)', async () => {
+            const stateManager = { getState: vi.fn() };
+            const _initPromise = new Promise<void>(() => { /* never settles: retry blocked */ });
+            const _initError: Error | null = new Error('transient');
+            const _initRetryPromise: Promise<unknown> | null = Promise.resolve(); // retry in flight
+
+            // The retry-era ensureInitialized gate (models #914's added branch).
+            const ensureInitialized = async () => {
+                if (!stateManager) await _initPromise;
+                if (_initError && _initRetryPromise !== null) await _initPromise; // ← circular wait
+                if (_initError) throw new Error('locked');
+                return stateManager;
+            };
+
+            // OLD L370: const sm = await this.ensureInitialized();
+            const oldNotificationStep = async () => ensureInitialized();
+
+            const winner = await Promise.race([
+                oldNotificationStep().then(() => 'done' as const),
+                new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 50)),
+            ]);
+            // OLD shape hangs → timeout wins. This is the deadlock #914 would ship without (c).
+            expect(winner).toBe('timeout');
+        });
+
+        test('direct stateManager access completes regardless of _initPromise/_initError (the fix)', async () => {
+            const state = { conversationCache: {} };
+            const stateManager = { getState: vi.fn(() => state) };
+            const _initPromise = new Promise<void>(() => { /* never settles — irrelevant now */ });
+            const _initError: Error | null = new Error('transient');
+
+            // FIXED L370: const sm = this.stateManager; — no gate, no await.
+            const fixedNotificationStep = async () => {
+                const sm = stateManager;
+                if (!sm) throw new Error('invariant');
+                return sm.getState();
+            };
+
+            const winner = await Promise.race([
+                fixedNotificationStep().then((s) => { expect(s).toBe(state); return 'done' as const; }),
+                new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 50)),
+            ]);
+            expect(winner).toBe('done');
+            // _initError being set no longer blocks the notification step.
+            expect(_initError).not.toBeNull();
+        });
+    });
+});
