@@ -106,6 +106,18 @@ if (!hasEmbeddingKey) {
     } else if (!hasFallbackKey) {
         console.error('   ⚠️ Clé fallback (FALLBACK_API_KEY) MANQUANTE → pas de filet si le LLM primaire (vLLM) tombe; échec primaire = truncation.');
     }
+    // Cohérence modèle/endpoint (#2963, mesuré sur ai-01 les 27-28/07). Les deux
+    // valeurs par défaut ci-dessus sont mutuellement incohérentes : le modèle par
+    // défaut est auto-hébergé, l'endpoint par défaut est le cloud OpenAI. Quand
+    // les DEUX variables manquent, la condensation part vers api.openai.com avec
+    // un nom de modèle qu'OpenAI ne sert pas → 401/404 à chaque passage. Chaque
+    // champ du bandeau reste individuellement exact, donc rien ne le signale :
+    // c'est la conjonction qui est impossible, et personne ne l'asserte.
+    // Test indépendant de la chaîne ci-dessus : le défaut survient aussi (et
+    // surtout) quand les deux clés sont présentes.
+    if (!process.env.OPENAI_BASE_URL && !process.env.OPENAI_CHAT_MODEL_ID) {
+        console.error(`   ⚠️ OPENAI_BASE_URL ET OPENAI_CHAT_MODEL_ID absentes → le SDK route vers api.openai.com en demandant le modèle auto-hébergé "${primaryModel}". Combinaison impossible: la condensation échouera à chaque passage. Définir OPENAI_BASE_URL (endpoint vLLM) dans le .env.`);
+    }
 }
 
 if (problems.length > 0) {
