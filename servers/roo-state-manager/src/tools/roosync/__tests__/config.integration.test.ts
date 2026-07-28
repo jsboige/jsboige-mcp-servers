@@ -462,10 +462,12 @@ describe('roosyncConfig (integration)', () => {
       });
       // #2507: warning is valid when target files don't exist on this machine
       expect(['success', 'warning']).toContain(collectResult.status);
-      expect(collectResult.packagePath).toBeDefined();
 
       // Step 2: Publish (only if collect succeeded)
+      // #2766: warning (0 files) cleans up temp dir + omits packagePath;
+      // only success guarantees a publishable packagePath.
       if (collectResult.status === 'success') {
+        expect(collectResult.packagePath).toBeDefined();
         const publishResult = await roosyncConfig({
           action: 'publish',
           version: '1.0.0',
@@ -525,14 +527,16 @@ describe('roosyncConfig (integration)', () => {
       // #2507: warning is valid when target files don't exist on this machine
       expect(['success', 'warning']).toContain(collect2.status);
 
-      // Publish from first collect
-      const publish = await roosyncConfig({
-        action: 'publish',
-        version: '3.0.0',
-        description: 'Multiple operations test',
-        packagePath: collect1.packagePath
-      });
-      expect(publish.status).toBe('success');
+      // Publish from first collect (#2766: only when collect1 produced a package)
+      if (collect1.status === 'success') {
+        const publish = await roosyncConfig({
+          action: 'publish',
+          version: '3.0.0',
+          description: 'Multiple operations test',
+          packagePath: collect1.packagePath
+        });
+        expect(publish.status).toBe('success');
+      }
     });
   });
 
