@@ -266,23 +266,27 @@ describe('DiffDetector', () => {
   });
 
   describe('détermination de sévérité', () => {
-    it('devrait classifier les différences système comme CRITICAL', async () => {
+    it('devrait classifier les différences système (os/arch) comme INFO — fait matériel, pas drift (#2963)', async () => {
       const systemDiffMachine: MachineInventory = {
         ...machineInventory,
         config: {
           ...machineInventory.config,
           system: {
-            os: 'Linux', // Différence critique
+            os: 'Linux', // Différence de fait matériel, pas drift
             architecture: 'x64'
           }
         }
       };
-      
+
       const differences = await diffDetector.compareBaselineWithMachine(baselineConfig, systemDiffMachine);
       const systemDiffs = differences.filter(diff => diff.category === 'system');
-      
+
+      // #2963: OS/architecture sont des faits matériels de chaque machine (flotte mixte
+      // Win11/Win10, x64/ARM64), pas du drift. Downgradés CRITICAL → INFO avec marqueur
+      // [EXPECTED] pour ne pas noyer le vrai signal CRITICAL. Le diff est toujours surfacé.
       expect(systemDiffs.length).toBeGreaterThan(0);
-      expect(systemDiffs.every(diff => diff.severity === 'CRITICAL')).toBe(true);
+      expect(systemDiffs.every(diff => diff.severity === 'INFO')).toBe(true);
+      expect(systemDiffs.every(diff => /\[EXPECTED\]/.test(diff.description))).toBe(true);
     });
 
     it('devrait classifier les différences config comme CRITICAL', async () => {

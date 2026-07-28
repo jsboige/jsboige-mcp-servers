@@ -542,7 +542,7 @@ describe('DiffDetector', () => {
   // === System Config Comparison ===
 
   describe('compareSystemConfig', () => {
-    it('should detect different OS as CRITICAL', async () => {
+    it('should report different OS as INFO (material fact, not drift — #2963)', async () => {
       const baseline = createBaselineConfig();
       const machine = createMachineInventoryWithPaths();
       machine.config.system.os = 'Ubuntu 22.04';
@@ -551,13 +551,17 @@ describe('DiffDetector', () => {
       const osDiff = diffs.find(d => d.path === 'system.os');
 
       expect(osDiff).toBeDefined();
-      expect(osDiff!.severity).toBe('CRITICAL');
+      // #2963: OS is a material fact of each machine (mixed Win11/Win10 fleet), not config
+      // drift. Downgraded CRITICAL → INFO with [EXPECTED] marker so it no longer buries real
+      // CRITICAL signal. The diff is still surfaced (the machine's OS differs from baseline).
+      expect(osDiff!.severity).toBe('INFO');
       expect(osDiff!.category).toBe('system');
+      expect(osDiff!.description).toMatch(/\[EXPECTED\]/);
       expect(osDiff!.baselineValue).toBe('Windows 11 Pro');
       expect(osDiff!.actualValue).toBe('Ubuntu 22.04');
     });
 
-    it('should detect different architecture as CRITICAL', async () => {
+    it('should report different architecture as INFO (material fact, not drift — #2963)', async () => {
       const baseline = createBaselineConfig();
       const machine = createMachineInventoryWithPaths();
       machine.config.system.architecture = 'arm64';
@@ -566,8 +570,10 @@ describe('DiffDetector', () => {
       const archDiff = diffs.find(d => d.path === 'system.architecture');
 
       expect(archDiff).toBeDefined();
-      expect(archDiff!.severity).toBe('CRITICAL');
+      // #2963: x64/arm64 are material facts, not drift — downgraded CRITICAL → INFO.
+      expect(archDiff!.severity).toBe('INFO');
       expect(archDiff!.category).toBe('system');
+      expect(archDiff!.description).toMatch(/\[EXPECTED\]/);
       expect(archDiff!.baselineValue).toBe('x64');
       expect(archDiff!.actualValue).toBe('arm64');
     });
