@@ -199,6 +199,15 @@ class RooStateManagerServer {
     private _initError: Error | null = null;
     private _resolveInit!: () => void;
     private _rejectInit!: (error: Error) => void;
+    // #2993(b): when init has failed, allow a one-shot retry on the next ensureInitialized()
+    // call (after a cooldown) so that a transient GDrive/G: outage at startup doesn't
+    // permanently lock all 15 tools for the session. _initRetryPromise is non-null while
+    // a retry is in flight — concurrent ensureInitialized() callers share the same retry.
+    private _initRetryPromise: Promise<void> | null = null;
+    private _lastInitRetryAt: number = 0;
+    // Cooldown matches RooSyncService #2017 backoff (30s) — prevents thrashing on
+    // every tool call when the underlying issue persists.
+    private static readonly INIT_RETRY_COOLDOWN_MS = 30_000;
 
     constructor() {
         // Create MCP server IMMEDIATELY — no heavy imports yet
@@ -302,10 +311,70 @@ class RooStateManagerServer {
 
     /**
      * Ensures stateManager is ready. Called by handlers that need state.
+     *
+     * #2993(b): if init has previously failed (e.g. transient GDrive outage at startup),
+     * attempt a one-shot retry on this call — gated by a cooldown so persistent failures
+     * don't cause thrashing. The retry is shared across concurrent ensureInitialized()
+     * callers via _initRetryPromise.
      */
     private async ensureInitialized(): Promise<import('./services/state-manager.service.js').StateManager> {
         if (!this.stateManager) {
-            await this._initPromise;
+            try {
+                await this._initPromise;
+            } catch {
+                // Init previously failed — the _initError check below drives the retry path.
+                // Swallow here so the retry attempt can execute before reporting failure.
+            }
+        }
+        if (this._initError) {
+            // #2993(b): schedule a one-shot retry if cooldown has elapsed and no retry
+            // is already in flight. Multiple concurrent callers share the same retry.
+            // _initError is left set until the retry resolves — this way concurrent
+            // callers all enter the same `else if` branch and wait on _initRetryPromise
+            // rather than racing to the cooldown gate (which would fire a second retry).
+            const now = Date.now();
+            if (
+                this._initRetryPromise === null &&
+                now - this._lastInitRetryAt >= RooStateManagerServer.INIT_RETRY_COOLDOWN_MS
+            ) {
+                this._lastInitRetryAt = now;
+                logger.warn(`[#2993(b)] Retrying initialization after previous failure: ${this._initError.message}`);
+                // Rebuild _initPromise — initializeAsync() will resolve it on success
+                // or reject it on failure. _initError is cleared only on success so
+                // concurrent callers continue to see "retry in progress" via the
+                // _initRetryPromise !== null branch.
+                this._initPromise = new Promise<void>((resolve, reject) => {
+                    this._resolveInit = resolve;
+                    this._rejectInit = reject;
+                });
+                this._initRetryPromise = this.initializeAsync()
+                    .then(() => {
+                        this._initError = null;
+                        this._resolveInit();
+                    })
+                    .catch((error: Error) => {
+                        logger.error('[#2993(b)] Init retry failed:', { error });
+                        this._initError = error;
+                        this._rejectInit(error);
+                    })
+                    .finally(() => {
+                        this._initRetryPromise = null;
+                    });
+                try {
+                    await this._initPromise;
+                } catch {
+                    // Settled as a rejection — _initError carries the cause; the
+                    // final check below will throw the wrapped message.
+                }
+            } else if (this._initRetryPromise !== null) {
+                // A retry is already running — wait for it.
+                try {
+                    await this._initPromise;
+                } catch {
+                    // Same as above — catch the retry-side rejection; the final
+                    // check below produces the wrapped error.
+                }
+            }
         }
         if (this._initError) {
             throw new Error(`MCP server initialization failed: ${this._initError.message}`);
