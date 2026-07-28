@@ -284,9 +284,23 @@ class RooStateManagerServer {
 
         // #1495: Preload RooSyncService so dashboard/heartbeat are ready on first call.
         // Without this, getRooSyncService() only loads on first tool call → "Not connected".
-        const { getRooSyncService: preloadRooSync } = await import('./services/lazy-roosync.js');
-        await preloadRooSync();
-        logger.info('✅ [ColdStart] RooSyncService preloaded — dashboard/heartbeat ready');
+        //
+        // #2993: This is a LATENCY OPTIMISATION — it must never be fatal. If the shared
+        // path is transiently unavailable at cold start (GDrive not mounted yet, host
+        // under memory pressure), letting this throw sets `_initError`, which makes
+        // `ensureInitialized()` reject for EVERY tool — including ones unrelated to
+        // RooSync (codebase_search, conversation_browser, indexing) — for the entire
+        // lifetime of the process, with no reset path. Loading is already lazy and
+        // `RooSyncService.getInstance()` carries its own 30s backoff retry (#2017),
+        // so swallowing the failure here restores in-session recovery.
+        try {
+            const { getRooSyncService: preloadRooSync } = await import('./services/lazy-roosync.js');
+            await preloadRooSync();
+            logger.info('✅ [ColdStart] RooSyncService preloaded — dashboard/heartbeat ready');
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.warn(`[ColdStart] RooSyncService preload failed (non-fatal — will retry lazily on first RooSync tool call): ${msg}`);
+        }
     }
 
     /**

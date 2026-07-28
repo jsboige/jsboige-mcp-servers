@@ -10,6 +10,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 
 describe('#1817 — MCP startup initialization timing', () => {
 
@@ -219,5 +221,54 @@ describe('#1817 — MCP startup initialization timing', () => {
             const result = await resultPromise;
             expect(result).toBe(mockStateManager);
         });
+    });
+});
+
+/**
+ * #2993 — the RooSync preload must never latch the whole server.
+ *
+ * `initializeAsync()` ends with a preload of RooSyncService that exists purely to
+ * shave latency off the first dashboard/heartbeat call. Before this guard it was
+ * unprotected: a transient failure (GDrive not mounted yet, host under memory
+ * pressure) propagated out of `startBackgroundInit`, set `_initError`, and made
+ * `ensureInitialized()` reject for EVERY tool — including the ones that never
+ * touch RooSync — for the whole lifetime of the process, with no reset path.
+ *
+ * These are STRUCTURAL assertions read off the real source, not a simulation of it.
+ * `initializeAsync` is private and drags the full server graph in, so exercising it
+ * for real is out of reach from a unit test; a mock-based re-implementation would
+ * only assert its own mock. Reading the shipped file is weaker than a behavioural
+ * test but it is honest, and it fails if the guard is ever removed — which is the
+ * regression that actually cost a session.
+ */
+describe('#2993 — RooSync preload failure must not latch initialization', () => {
+
+    const source = readFileSync(
+        fileURLToPath(new URL('../index.ts', import.meta.url)),
+        'utf-8'
+    );
+
+    test('the preload call is wrapped in try/catch', () => {
+        expect(source).toMatch(
+            /try\s*\{[\s\S]{0,400}?await preloadRooSync\(\);[\s\S]{0,400}?\}\s*catch/
+        );
+    });
+
+    test('the catch swallows the failure instead of rethrowing', () => {
+        const catchBlock = source.match(
+            /await preloadRooSync\(\);[\s\S]*?\}\s*catch\s*\([\s\S]*?\)\s*\{([\s\S]*?)\n\s*\}/
+        );
+        expect(catchBlock).not.toBeNull();
+        const body = catchBlock![1];
+
+        expect(body).toMatch(/logger\.warn/);
+        expect(body).not.toMatch(/\bthrow\b/);
+        expect(body).not.toMatch(/_initError/);
+    });
+
+    test('_initError is still set for genuine initialization failures', () => {
+        // The guard must be narrow: it neutralises the preload only. A real
+        // StateManager failure must keep failing loudly.
+        expect(source).toMatch(/this\._initError\s*=/);
     });
 });
