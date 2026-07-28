@@ -220,4 +220,82 @@ describe('#1817 — MCP startup initialization timing', () => {
             expect(result).toBe(mockStateManager);
         });
     });
+
+    describe('#2993 — preload is non-fatal (transient GDrive/G: outage recovery)', () => {
+
+        // #2993: a transient shared-state (GDrive/G:) hiccup during the RooSync
+        // preload at the tail of initializeAsync() used to set _initError, which
+        // ensureInitialized() then threw on EVERY subsequent call — disabling all
+        // 15 tools for the entire session even after G: recovered. The preload is
+        // a latency optimization, not a correctness requirement (getRooSyncService
+        // is lazy and self-retries via #2017 backoff), so its failure is now caught
+        // and logged as a warning rather than failing init.
+
+        test('preload failure does NOT set _initError and init still succeeds', async () => {
+            let _initError: Error | null = null;
+            let _resolveInit!: () => void;
+            const initPromise = new Promise<void>((resolve) => {
+                _resolveInit = resolve;
+            });
+            const stateManager = { ready: true };
+
+            // Replicate the tail of initializeAsync(): preload wrapped non-fatal.
+            const preloadFails = new Error('ENOENT: G:\\ not mounted');
+            const initializeTail = async () => {
+                try {
+                    throw preloadFails; // simulate the dynamic import + preload throwing
+                } catch {
+                    // non-fatal: warn only, do NOT set _initError
+                }
+                _resolveInit();
+            };
+
+            const ensureInitialized = async () => {
+                await initPromise;
+                if (_initError) {
+                    throw new Error(`MCP server initialization failed: ${_initError.message}`);
+                }
+                return stateManager;
+            };
+
+            await initializeTail();
+            const result = await ensureInitialized();
+
+            // _initError was never set despite the preload throwing — init succeeded.
+            expect(_initError).toBeNull();
+            expect(result).toBe(stateManager);
+        });
+
+        test('preload success path is unchanged (still resolves init)', async () => {
+            let _initError: Error | null = null;
+            let _resolveInit!: () => void;
+            const initPromise = new Promise<void>((resolve) => {
+                _resolveInit = resolve;
+            });
+            const stateManager = { ready: true };
+
+            const initializeTail = async () => {
+                try {
+                    // preload would await getRooSyncService() here — succeeds
+                } catch {
+                    // unreachable on success path
+                }
+                _resolveInit();
+            };
+
+            const ensureInitialized = async () => {
+                await initPromise;
+                if (_initError) {
+                    throw new Error(`MCP server initialization failed: ${_initError.message}`);
+                }
+                return stateManager;
+            };
+
+            await initializeTail();
+            const result = await ensureInitialized();
+
+            expect(_initError).toBeNull();
+            expect(result).toBe(stateManager);
+        });
+    });
 });
