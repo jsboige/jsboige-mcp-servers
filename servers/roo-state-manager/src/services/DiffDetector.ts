@@ -487,32 +487,41 @@ export class DiffDetector implements IDiffDetector {
     const differences: BaselineDifference[] = [];
 
     // OS
+    // #2963: OS is a material fact of each machine, not config drift. The fleet runs mixed
+    // OS versions (Win11/Win10, and dev hosts on Linux/macOS). Reporting `system.os` as
+    // CRITICAL buried the real signal under false-positive noise (the #2963 row that
+    // "noyait 8 IMPORTANT + 220 WARNING"). Downgraded to INFO with an [EXPECTED] marker —
+    // consistent with the compare-config.ts EXPECTED_MACHINE_FIELDS filter (#900) and the
+    // existing system.hostname INFO handling below. A genuine OS mismatch is still surfaced
+    // (the diff is present), it just no longer masquerades as critical drift.
     const baselineOs = safeGet(baselineSystem, ['os'], 'unknown');
     const machineOs = safeGet(machineSystem, ['os'], 'unknown');
     if (baselineOs !== machineOs) {
       differences.push({
         category: 'system',
-        severity: 'CRITICAL',
+        severity: 'INFO',
         path: 'system.os',
-        description: `Système d'exploitation différent : ${baselineOs} vs ${machineOs}`,
+        description: `[EXPECTED] Système d'exploitation différent : ${baselineOs} vs ${machineOs}`,
         baselineValue: baselineOs,
         actualValue: machineOs,
-        recommendedAction: 'Revue manuelle requise - différence système critique'
+        recommendedAction: 'Aucune action requise'
       });
     }
 
     // Architecture
+    // #2963: same rationale as system.os — x64/arm64/ia32 are material facts of each
+    // machine, not drift. Downgraded CRITICAL → INFO + [EXPECTED].
     const baselineArch = safeGet(baselineSystem, ['architecture'], 'unknown');
     const machineArch = safeGet(machineSystem, ['architecture'], 'unknown');
     if (baselineArch !== machineArch) {
       differences.push({
         category: 'system',
-        severity: 'CRITICAL',
+        severity: 'INFO',
         path: 'system.architecture',
-        description: `Architecture système différente : ${baselineArch} vs ${machineArch}`,
+        description: `[EXPECTED] Architecture système différente : ${baselineArch} vs ${machineArch}`,
         baselineValue: baselineArch,
         actualValue: machineArch,
-        recommendedAction: 'Attention : architectures incompatibles peuvent nécessiter des builds différents'
+        recommendedAction: 'Aucune action requise'
       });
     }
 
