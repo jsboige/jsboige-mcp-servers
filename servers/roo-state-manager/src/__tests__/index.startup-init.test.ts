@@ -668,3 +668,40 @@ describe('#2993(c) — no re-entrant ensureInitialized() from initializeNotifica
         });
     });
 });
+
+/**
+ * #3001 item 2 — guard against re-introducing ensureInitialized() re-entrance from initializeAsync.
+ *
+ * #918 removed the only re-entrant path that ever existed (initializeAsync →
+ * initializeNotificationSystem → ensureInitialized). #2993(c) guards the *callee*
+ * (initializeNotificationSystem must not call ensureInitialized). This block guards the
+ * *caller*: initializeAsync itself must never await this.ensureInitialized() — a direct call
+ * there awaits _initPromise, which only resolves when initializeAsync returns, so the call is
+ * blocked at itself = circular wait = the server never responds, indistinguishable from a dead
+ * machine. That failure regime cost a full session on 2026-07-28.
+ *
+ * Little code for the highest-value lock in this file: the failure is silent and total.
+ *
+ * Like the #2993(c) guards above, this is asserted on the SHIPPED source because
+ * initializeAsync is private and pulls the whole server graph in; a behavioural test is out of
+ * reach. The source read is weaker than exercising the code, but it fails the moment the
+ * re-entrant call is re-added directly in initializeAsync — the regression that deadlocks the
+ * fleet.
+ */
+describe('#3001 item 2 — initializeAsync must not re-enter ensureInitialized()', () => {
+
+    const source = readFileSync(
+        fileURLToPath(new URL('../index.ts', import.meta.url)),
+        'utf-8'
+    );
+
+    test('initializeAsync does not directly call ensureInitialized()', () => {
+        // Isolate the method body so the assertion is scoped, not repo-wide. The call form is
+        // `await this.ensureInitialized()` (comments reference the symbol by name, so a bare
+        // substring match would false-positive — the same care #2993(c) took).
+        const method = source.match(/private async initializeAsync\(\)[\s\S]*?\n    \}/);
+        expect(method).not.toBeNull();
+        const body = method![0];
+        expect(body).not.toMatch(/await\s+this\.ensureInitialized\(\)/);
+    });
+});
