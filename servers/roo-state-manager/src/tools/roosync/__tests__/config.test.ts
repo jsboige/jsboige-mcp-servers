@@ -206,6 +206,34 @@ describe('roosyncConfig', () => {
         dryRun: true
       });
     });
+
+    test('#2964: dryRun collect with files tears down temp dir and omits packagePath', async () => {
+      // Create a real temp dir matching isCollectTempPackage's contract:
+      // basename starts with 'config-collect-' and path contains a lowercase 'temp' segment.
+      const tempDir = join(tmpdir(), 'config-test-2964', 'temp', 'config-collect-dryrun-test');
+      await fs.mkdir(tempDir, { recursive: true });
+      await fs.writeFile(join(tempDir, 'manifest.json'), '{}');
+      expect(existsSync(tempDir)).toBe(true);
+
+      mockCollectConfig.mockResolvedValue({
+        packagePath: tempDir,
+        filesCount: 4,
+        totalSize: 2048,
+        manifest: { files: [] }
+      });
+
+      const result = await roosyncConfig({ action: 'collect', dryRun: true });
+
+      expect(result.status).toBe('success');
+      expect(result.packagePath).toBeUndefined(); // dryRun withholds the path
+      expect(result.totalSize).toBe(2048);        // manifest/size still returned (preview payload)
+      expect(result.manifest).toEqual({ files: [] });
+      expect(existsSync(tempDir)).toBe(false);    // #2964: temp dir torn down — no accumulation
+      expect(mockCollectConfig).toHaveBeenCalledWith({
+        targets: ['modes', 'mcp'],
+        dryRun: true
+      });
+    });
   });
 
   describe('action: publish', () => {

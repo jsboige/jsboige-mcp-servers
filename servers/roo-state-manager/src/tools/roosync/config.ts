@@ -300,6 +300,21 @@ export async function roosyncConfig(args: ConfigArgs) {
           };
         }
 
+        // #2964 — dryRun: a preview must not persist a package to disk. The service
+        // ignores options.dryRun (collectConfig unconditionally mkdir+writeFile), so
+        // we tear down the temp dir at the tool layer after computing the manifest.
+        // Reuses the #884 teardown helpers. Returns the same manifest/filesCount/
+        // totalSize as a normal collect — only packagePath is withheld.
+        if (dryRun && isCollectTempPackage(result.packagePath)) {
+          await safeCleanupTempPackage(result.packagePath);
+          return {
+            status: 'success',
+            message: `Configuration collectée avec succès (${result.filesCount} fichiers) — dry-run, paquet non persisté.`,
+            totalSize: result.totalSize,
+            manifest: result.manifest
+          };
+        }
+
         return {
           status: 'success',
           message: `Configuration collectée avec succès (${result.filesCount} fichiers)`,
