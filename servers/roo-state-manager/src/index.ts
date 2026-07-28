@@ -284,9 +284,20 @@ class RooStateManagerServer {
 
         // #1495: Preload RooSyncService so dashboard/heartbeat are ready on first call.
         // Without this, getRooSyncService() only loads on first tool call → "Not connected".
-        const { getRooSyncService: preloadRooSync } = await import('./services/lazy-roosync.js');
-        await preloadRooSync();
-        logger.info('✅ [ColdStart] RooSyncService preloaded — dashboard/heartbeat ready');
+        // #2993(a): the preload is a latency optimization, NOT a correctness requirement —
+        // getRooSyncService() is lazy and carries its own #2017 backoff, so it recovers on the
+        // first real tool call even if the preload fails here. A transient ROOSYNC_SHARED_PATH
+        // outage at startup (e.g. GoogleDriveFS killed by memory pressure) must NOT be fatal to
+        // the whole server: previously a thrown preload propagated to startInit's catch, set
+        // _initError, and locked all 15 tools (incl. semantic search, conversation history) for
+        // the entire session even after G: recovered. Non-fatal now — recovery happens lazily.
+        try {
+            const { getRooSyncService: preloadRooSync } = await import('./services/lazy-roosync.js');
+            await preloadRooSync();
+            logger.info('✅ [ColdStart] RooSyncService preloaded — dashboard/heartbeat ready');
+        } catch (e) {
+            logger.warn(`[ColdStart] RooSync preload failed (non-fatal, will retry lazily via #2017 backoff): ${e instanceof Error ? e.message : String(e)}`);
+        }
     }
 
     /**
