@@ -367,7 +367,20 @@ class RooStateManagerServer {
                 }
             ]);
 
-            const sm = await this.ensureInitialized();
+            // #2993(c): use this.stateManager directly — do NOT re-enter ensureInitialized().
+            // initializeNotificationSystem() is only ever called from initializeAsync() (L278),
+            // where this.stateManager is already constructed (L265). Calling ensureInitialized()
+            // here re-enters the init gate from *within* init. That is harmless today (stateManager
+            // truthy → the _initPromise await is skipped; _initError null → no throw), but it is a
+            // latent circular wait: once an _initError retry path exists (#914), the re-entrant call
+            // awaits _initPromise, which only resolves when this very initializeAsync() finishes —
+            // and it is blocked right here. The notification step needs only state, already built.
+            const sm = this.stateManager;
+            if (!sm) {
+                // Defensive: L265 runs before L278 by construction. If this invariant is ever
+                // violated, fail loudly rather than wire a half-initialized notification system.
+                throw new Error('initializeNotificationSystem called before StateManager construction (caller invariant violated)');
+            }
             const state = sm.getState();
             const machineId = process.env.ROOSYNC_MACHINE_ID || 'local_machine';
             this.toolInterceptor = new ToolUsageInterceptor(
