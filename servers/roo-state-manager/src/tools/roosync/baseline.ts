@@ -627,7 +627,12 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
 
       const backupDir = join(sharedPath, '.rollback');
       if (!existsSync(backupDir)) {
-        execSync(`mkdir -p "${backupDir}"`, { stdio: 'pipe', timeout: GIT_QUICK_TIMEOUT_MS });
+        // #2962 follow-up (ai-01 deep-file item 2): `execSync('mkdir -p ...')` goes through
+        // cmd.exe on Windows, where `-p` is not a flag → the mkdir fails, caught by the
+        // surrounding catch (warn-only) → backup dir silently not created before the
+        // writeFileSync below. Use the cross-platform node API instead (mkdirSync recursive
+        // == `mkdir -p` semantics). backupDir is absolute (sharedPath-derived), so no cwd.
+        mkdirSync(backupDir, { recursive: true });
       }
 
       writeFileSync(backupPath, JSON.stringify(currentBaseline, null, 2), 'utf-8');
