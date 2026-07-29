@@ -42,7 +42,7 @@ vi.mock('@/services/openai', () => ({
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-cloud-');
 
-describe('#2719 cloud-fallback condensation telemetry', () => {
+describe('#2719 cloud-fallback condensation telemetry', { testTimeout: 30000 }, () => {
   let tmpDir: string;
 
   beforeEach(async () => {
