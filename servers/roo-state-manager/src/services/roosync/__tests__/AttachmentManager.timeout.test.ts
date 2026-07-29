@@ -192,6 +192,79 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
     }
   }, 10_000);
 
+  // --- Bounded concurrency (#2766 case (a): `attachments_list` unusable on the
+  // fleet share). The per-read cap above bounds each read but NOT their sum:
+  // read sequentially, N cloud-only entries cost N × timeout. These tests assert
+  // the sum is bounded too. They fail on the sequential implementation, which is
+  // what makes them worth having.
+
+  test('listAttachments reads metadata concurrently (>1 in flight)', async () => {
+    for (let i = 0; i < 5; i++) {
+      seedAttachment(sharedState, `33333333-0000-0000-0000-00000000000${i}`);
+    }
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        // Yield long enough that a sequential loop cannot overlap two reads.
+        await new Promise((r) => setTimeout(r, 20));
+        return realReadFile(filePath, 'utf-8');
+      } finally {
+        inFlight--;
+      }
+    });
+
+    const manager = new AttachmentManager(sharedState, 10_000);
+    const result = await manager.listAttachments();
+
+    expect(result).toHaveLength(5);
+    // Sequential gives exactly 1. Anything above proves overlap.
+    expect(maxInFlight).toBeGreaterThan(1);
+  }, 10_000);
+
+  test('listAttachments cost is bounded by the pool, not by the entry count', async () => {
+    // 8 cloud-only entries. Sequential: 8 × 50ms = 400ms. Pooled (C=32): ~50ms.
+    for (let i = 0; i < 8; i++) {
+      seedAttachment(sharedState, `44444444-0000-0000-0000-00000000000${i}`);
+    }
+
+    mocks.readFile.mockImplementation(async () => new Promise<string>(() => {}));
+
+    const manager = new AttachmentManager(sharedState, TEST_TIMEOUT_MS);
+    const started = Date.now();
+    const result = await manager.listAttachments();
+    const elapsed = Date.now() - started;
+
+    expect(result).toEqual([]);
+    // Generous bound: well under the sequential 400ms, well above the ~50ms floor
+    // so a loaded CI machine doesn't flake.
+    expect(elapsed).toBeLessThan(250);
+  }, 10_000);
+
+  test('listAttachments preserves readdir order despite out-of-order completion', async () => {
+    const firstUuid = '55555555-0000-0000-0000-000000000001';
+    const secondUuid = '66666666-0000-0000-0000-000000000002';
+    seedAttachment(sharedState, firstUuid);
+    seedAttachment(sharedState, secondUuid);
+
+    // Make the FIRST entry finish last: appending results as they complete would
+    // put `second` at index 0 — a silent ordering regression for callers.
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.includes(firstUuid)) {
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, 10_000);
+    const result = await manager.listAttachments();
+
+    expect(result.map((m) => m.uuid)).toEqual([firstUuid, secondUuid]);
+  }, 10_000);
+
   test('cleanupOldAttachments skips cloud-only entries and cleans the rest', async () => {
     const goodUuid = '11111111-0000-0000-0000-000000000011';
     const hungUuid = '22222222-0000-0000-0000-000000000022';
