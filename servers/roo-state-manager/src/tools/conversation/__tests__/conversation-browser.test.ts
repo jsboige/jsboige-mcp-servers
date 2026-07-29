@@ -720,8 +720,9 @@ describe('conversation_browser', () => {
 			expect(parsed[2].taskId).toBe('task-old'); // 5 messages
 		});
 
-		test('list respects limit as hard cap (#1410: limit is total cap, not page size)', async () => {
-			// mockCache has 3 tasks. limit=2 caps total to 2, totalPages=1, has_next=false.
+		test('list respects limit as hard cap (#1410: limit caps returned items, not total_count)', async () => {
+			// mockCache has 3 tasks. limit=2 returns 2 items but total_count reflects corpus (3).
+			// #3005: total_count must be the real corpus size after filters, NOT capped by limit.
 			const result = await handleConversationBrowser(
 				{ action: 'list', limit: 2, sortBy: 'lastActivity', sortOrder: 'desc' },
 				mockCache,
@@ -734,10 +735,10 @@ describe('conversation_browser', () => {
 			expect(parsed.length).toBe(2);
 			expect(parsed[0].taskId).toBe('task-new');
 			expect(parsed[1].taskId).toBe('task-middle');
-			// #1410 fix: total_count and has_next must be capped by limit
-			expect(_response.pagination.total_count).toBe(2);
-			expect(_response.pagination.total_pages).toBe(1);
-			expect(_response.pagination.has_next).toBe(false);
+			// #3005 fix: total_count = corpus size (3), NOT limit (2)
+			expect(_response.pagination.total_count).toBe(3);
+			expect(_response.pagination.total_pages).toBe(2); // ceil(3/2) = 2
+			expect(_response.pagination.has_next).toBe(true); // page 1 < 2
 		});
 
 		test('list filters by workspace when specified', async () => {
