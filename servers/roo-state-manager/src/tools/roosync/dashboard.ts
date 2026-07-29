@@ -245,16 +245,30 @@ let cloudFallbackDisabledLogged = false;
  * #2998: Classify whether a cloud fallback error is worth retrying.
  * 429 (rate limit) and 5xx (server errors) are transient by definition.
  * 4xx auth/client errors (401, 403) won't heal with backoff.
- * Connection errors (no HTTP status) are treated as retryable.
+ *
+ * #3011: Connection errors (no HTTP status) are split — a HUNG endpoint
+ * (timeout) must NOT be retried, mirroring the primary's #2267 rule. A hung
+ * endpoint won't recover in a 2-8s backoff, so retrying just burns another
+ * full FALLBACK_TIMEOUT_MS (~30s each → ~90s for 3 attempts today). A
+ * FAILED-FAST connection (ECONNREFUSED / ENOTFOUND) is still retryable: it
+ * rejects immediately, so the retry is cheap and can ride out a brief blip.
+ * Exported for direct unit testing of the classification (#3011 bite-test).
  */
-function isRetryableFallbackError(error: unknown): boolean {
+export function isRetryableFallbackError(error: unknown): boolean {
   if (error && typeof error === 'object' && 'status' in error) {
     const status = (error as Record<string, unknown>).status;
     if (typeof status === 'number') {
       return status === 429 || status >= 500;
     }
   }
-  // No status → connection error (ECONNREFUSED, ETIMEDOUT, etc.) → retryable.
+  // No status → connection-class error. Distinguish hung (timeout) from
+  // failed-fast. The OpenAI SDK throws APIConnectionTimeoutError on a client
+  // `timeout` expiry; a raw fetch abort surfaces as AbortError.
+  const errName = (error as { name?: string } | null | undefined)?.name ?? '';
+  if (errName === 'APIConnectionTimeoutError' || errName === 'AbortError') {
+    return false;
+  }
+  // ECONNREFUSED / ENOTFOUND / etc. → fail fast → retryable.
   return true;
 }
 
@@ -314,6 +328,12 @@ async function cloudCondenseOnce(
     const elapsedMs = Date.now() - fbStart;
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
+      // #3011: returns null (same shape as "unconfigured") so no retry is attempted.
+      // Deliberate: an empty body is a SUCCESSFUL HTTP round-trip — the endpoint
+      // answered 200, it just returned nothing. Retrying is unlikely to yield
+      // different content (the model chose to emit nothing), and conflating it
+      // with a transient failure would mask a genuine empty-answer. Contrast with
+      // a 429/5xx where the transport itself was rejected.
       return null;
     }
     logger.info('#2719 cloud fallback condensation succeeded', {
