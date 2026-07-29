@@ -21,6 +21,7 @@ import { CACHE_CONFIG } from '../config/server-config.js';
 import { createLogger } from '../utils/logger.js';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
+import { resolveFullConversationSkeleton } from '../utils/server-helpers.js';
 
 // #1817: Lazy-loaded heavy modules — these pull deep ESM dependency chains
 // (roo-storage-detector → glob, cache-manager, skeleton-*; background-services → task-indexer, etc.)
@@ -328,7 +329,9 @@ export function registerCallToolHandler(
                     cache,
                     state.xmlExporterService,
                     async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); },
-                    async (id: string) => cache.get(id) || null
+                    // #3007: resolve full skeleton (cache header-only → disk load) instead of
+                    // returning the SkeletonHeader without its sequence.
+                    async (id: string) => resolveFullConversationSkeleton(id, cache)
                 );
                 break;
             }
@@ -454,7 +457,9 @@ export function registerCallToolHandler(
                    cache,
                    state.xmlExporterService,
                    async (options?: { workspace?: string }) => { await ensureSkeletonCacheIsFresh(options); },
-                   async (id: string) => cache.get(id) || null
+                   // #3007: resolve full skeleton (cache header-only → disk load) instead of
+                   // returning the SkeletonHeader without its sequence.
+                   async (id: string) => resolveFullConversationSkeleton(id, cache)
                );
                break;
            }

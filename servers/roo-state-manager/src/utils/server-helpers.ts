@@ -8,9 +8,10 @@ import path from 'path';
 import os from 'os';
 import { exec } from 'child_process'; // kept for potential future use
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../types/conversation.js';
+import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
 import { RooStorageDetector } from './roo-storage-detector.js';
 import { OUTPUT_CONFIG } from '../config/server-config.js';
+import { existsSync } from 'fs';
 // FIX: Dynamic import to break circular dependency cycle:
 // server-helpers → tools/index → roosync/* → RooSyncService → InventoryCollector → server-helpers
 // This circular dep causes ESM module evaluation deadlock (Node.js v24).
@@ -251,5 +252,110 @@ export async function handleExportConversationCsv(
             content: [{ type: 'text', text: `❌ Erreur lors de l'export CSV: ${errorMessage}` }],
             isError: true
         };
+    }
+}
+
+/**
+ * #3007: Resolve a full ConversationSkeleton from cache + disk on demand.
+ *
+ * The in-memory `conversationCache` is populated as `SkeletonHeader` (no
+ * `sequence` field) for Tier 1 (Roo local) sources — see state-manager.service.ts
+ * (`conversationCache: Map<string, SkeletonHeader>`). Tools that need the
+ * conversation sequence (export XML, view, summarize) MUST go through this
+ * resolver; otherwise `XmlExporterService.generateTaskXml` iterates
+ * `skeleton.sequence ?? []` and produces an empty `<sequence/>` (issue #3007).
+ *
+ * Resolution strategy (mirrors view-details.tool.ts:118-140 — the canonical
+ * cache→Claude→Roo-disk resolution used by `view_task_details`):
+ *
+ *   1. Cache hit with full sequence (Tier 2/3 hot tiers — Claude/Archive):
+ *      return as-is. `sequence` is non-empty, no disk read needed.
+ *   2. Claude Code session (`id` starts with `claude-`): the cache holds a
+ *      header-only entry (or none). `loadFullSkeleton` reads Roo `.skeletons/`
+ *      and cannot serve a Claude session, so route to
+ *      `ClaudeStorageDetector.findConversationById` (Claude JSONL store).
+ *      Covers the Claude half of #3007 (the measured 17-msg claude-* task).
+ *   3. Cache hit header-only (Tier 1 Roo): delegate to `loadFullSkeleton`
+ *      which reads `<storage>/tasks/.skeletons/<id>.json`. The disk file
+ *      is the source of truth for the sequence.
+ *   4. Cache miss: scan Roo storage for the conversation directory. Found
+ *      directory → `RooStorageDetector.analyzeConversation` rebuilds a
+ *      full skeleton from `ui_messages.json` + `api_conversation_history.json`.
+ *   5. Not found anywhere → null.
+ *
+ * Designed to fail OPEN (return whatever partial data exists) rather than
+ * throw — callers (export_data, task_export, etc.) decide how to surface
+ * the absence via their own error contracts. Never throws.
+ */
+export async function resolveFullConversationSkeleton(
+    id: string,
+    cache: Map<string, SkeletonHeader>
+): Promise<ConversationSkeleton | null> {
+    try {
+        const cached = cache.get(id);
+
+        // 1. Cache hit — Tier 2/3 hot tiers carry a full sequence inline.
+        if (cached) {
+            const cachedAny = cached as any;
+            const hasFullSequence = Array.isArray(cachedAny.sequence) && cachedAny.sequence.length > 0;
+            if (hasFullSequence) {
+                return cached as any as ConversationSkeleton;
+            }
+        }
+
+        // 2. #3007 Claude branch — claude-* ids resolve from the Claude JSONL store.
+        //    `loadFullSkeleton` (step 3) reads Roo `.skeletons/` (background-services.ts:140)
+        //    and cannot serve a Claude session, so a claude-* header-only entry (or a
+        //    cache miss) would otherwise fall through to the Roo disk scan → null. The
+        //    #3007 measurement covered TWO tasks — Roo (61 msgs) AND Claude (17 msgs) —
+        //    both with empty <sequence/>; this branch covers the Claude half. Mirrors
+        //    view-details.tool.ts:118-140.
+        if (id.startsWith('claude-')) {
+            // Empty cached conversation — no disk read needed (mirror Roo empty-header).
+            if (cached && cached.metadata.messageCount === 0) {
+                return { ...cached, sequence: [] } as any as ConversationSkeleton;
+            }
+            const { ClaudeStorageDetector } = await import('./claude-storage-detector.js');
+            const loaded = await ClaudeStorageDetector.findConversationById(id);
+            if (loaded) {
+                if (!loaded.metadata) loaded.metadata = {} as any;
+                (loaded.metadata as any).source = 'claude-code';
+                (loaded.metadata as any).dataSource = 'claude';
+                cache.set(id, loaded as any as SkeletonHeader);
+                return loaded;
+            }
+            // Not found in Claude storage — fall through to Roo paths (rare).
+        }
+
+        // 3. Tier 1 Roo: header-only in cache — load the disk-backed full skeleton.
+        if (cached) {
+            if (cached.metadata.messageCount > 0) {
+                const { loadFullSkeleton } = await import('../services/background-services.js');
+                const full = await loadFullSkeleton(id, cache);
+                if (full) return full;
+                // Fall through to disk scan if the disk file is missing/corrupt.
+            } else {
+                // Empty conversation — return header with empty sequence (no disk read needed).
+                return { ...cached, sequence: [] } as any as ConversationSkeleton;
+            }
+        }
+
+        // 4. Disk scan — Roo tasks whose header was never loaded into cache.
+        const locations = await RooStorageDetector.detectStorageLocations();
+        for (const loc of locations) {
+            // #1325: detectStorageLocations returns base paths, need 'tasks' segment.
+            const taskPath = path.join(loc, 'tasks', id);
+            if (existsSync(taskPath)) {
+                const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
+                if (skeleton) {
+                    cache.set(id, skeleton as any as SkeletonHeader);
+                    return skeleton;
+                }
+            }
+        }
+        return null;
+    } catch {
+        // Never throw — export tools must degrade gracefully.
+        return null;
     }
 }
