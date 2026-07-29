@@ -300,6 +300,109 @@ describe('listConversationsTool.handler', () => {
   });
 
   // ============================================================
+  // #3005: Pagination metadata integrity
+  // total_count must reflect the real corpus size after filters,
+  // NOT be capped by `limit`. has_next must be derivable from real totals.
+  // ============================================================
+
+  describe('#3005 pagination metadata integrity', () => {
+    test('total_count does NOT follow limit — reflects real corpus size', async () => {
+      // Seed a corpus of 15 root-level tasks
+      const tasks = Array.from({ length: 15 }, (_, i) => makeConversation(`task-${i + 1}`));
+      const cache = makeCache(...tasks);
+
+      // Two calls with different limits — same corpus
+      const result3 = await listConversationsTool.handler({ limit: 3 }, cache);
+      const result10 = await listConversationsTool.handler({ limit: 10 }, cache);
+
+      const parsed3 = JSON.parse((result3.content[0] as any).text);
+      const parsed10 = JSON.parse((result10.content[0] as any).text);
+
+      // The conversations array should respect the limit
+      expect(parsed3.conversations).toHaveLength(3);
+      expect(parsed10.conversations).toHaveLength(10);
+
+      // CRITICAL: total_count must be the corpus size (15), NOT the limit
+      expect(parsed3.pagination.total_count).toBe(15);
+      expect(parsed10.pagination.total_count).toBe(15);
+
+      // total_count must NOT equal per_page in either case
+      expect(parsed3.pagination.total_count).not.toBe(parsed3.pagination.per_page);
+      expect(parsed10.pagination.total_count).not.toBe(parsed10.pagination.per_page);
+    });
+
+    test('has_next is true when corpus exceeds one page', async () => {
+      const tasks = Array.from({ length: 25 }, (_, i) => makeConversation(`task-${i + 1}`));
+      const cache = makeCache(...tasks);
+
+      const result = await listConversationsTool.handler({ limit: 10 }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      expect(parsed.pagination.has_next).toBe(true);
+      expect(parsed.pagination.total_pages).toBe(3); // ceil(25/10) = 3
+    });
+
+    test('has_next is false only when corpus fits in one page', async () => {
+      const tasks = Array.from({ length: 5 }, (_, i) => makeConversation(`task-${i + 1}`));
+      const cache = makeCache(...tasks);
+
+      const result = await listConversationsTool.handler({ limit: 10 }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      expect(parsed.pagination.has_next).toBe(false);
+      expect(parsed.pagination.total_pages).toBe(1);
+    });
+
+    test('per_page is reported correctly in pagination block', async () => {
+      const tasks = Array.from({ length: 20 }, (_, i) => makeConversation(`task-${i + 1}`));
+      const cache = makeCache(...tasks);
+
+      const result = await listConversationsTool.handler({ per_page: 15 }, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      expect(parsed.pagination.per_page).toBe(15);
+      expect(parsed.pagination.total_count).toBe(20);
+      expect(parsed.pagination.has_next).toBe(true);
+    });
+
+    test('total_count reflects post-filter corpus, not pre-filter', async () => {
+      // 20 tasks, 5 in workspace-A, 15 in workspace-B
+      const tasksA = Array.from({ length: 5 }, (_, i) =>
+        makeConversation(`task-a-${i}`, {
+          metadata: {
+            workspace: '/workspace/A', mode: 'code-simple',
+            timestamp: '2026-01-01T00:00:00.000Z',
+            lastActivity: '2026-01-15T12:00:00.000Z',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            messageCount: 5, actionCount: 2, totalSize: 512,
+          } as any,
+        })
+      );
+      const tasksB = Array.from({ length: 15 }, (_, i) =>
+        makeConversation(`task-b-${i}`, {
+          metadata: {
+            workspace: '/workspace/B', mode: 'code-simple',
+            timestamp: '2026-01-01T00:00:00.000Z',
+            lastActivity: '2026-01-15T12:00:00.000Z',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            messageCount: 5, actionCount: 2, totalSize: 512,
+          } as any,
+        })
+      );
+      const cache = makeCache(...tasksA, ...tasksB);
+
+      const result = await listConversationsTool.handler(
+        { workspace: '/workspace/A', limit: 3 },
+        cache
+      );
+      const parsed = JSON.parse((result.content[0] as any).text);
+
+      // total_count = 5 (post-filter), NOT 3 (limit) or 20 (pre-filter)
+      expect(parsed.pagination.total_count).toBe(5);
+    });
+  });
+
+  // ============================================================
   // Structure hiérarchique
   // ============================================================
 

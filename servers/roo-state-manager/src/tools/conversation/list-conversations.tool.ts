@@ -937,16 +937,15 @@ export const listConversationsTool = {
             ? Math.min(Math.max(rawPerPage, 10), 100)
             : Math.min(rawPerPage, 100);
         const page = Math.max(args.page || 1, 1);
-        const totalCount = hasLimit
-            ? Math.min(forest.length, args.limit!)
-            : forest.length;
-        const totalPages = hasLimit
-            ? 1
-            : Math.ceil(totalCount / perPage);
-        const startIdx = hasLimit ? 0 : (page - 1) * perPage;
-        const paginatedForest = hasLimit
-            ? forest.slice(0, Math.min(args.limit!, perPage))
-            : forest.slice(startIdx, startIdx + perPage);
+        // #3005: total_count must reflect the real corpus size after filters,
+        // NOT be capped by `limit`. Previously, when `limit` was provided,
+        // total_count was capped to limit and has_next was always false —
+        // making pagination impossible and corpus size reporting incorrect.
+        const totalCount = forest.length;
+        const totalPages = Math.ceil(totalCount / perPage);
+        const startIdx = (page - 1) * perPage;
+        const maxItems = hasLimit ? Math.min(args.limit!, perPage) : perPage;
+        const paginatedForest = forest.slice(startIdx, startIdx + maxItems);
 
         // Phase 2: Détecter les synthèses UNIQUEMENT pour les nœuds de la page courante
         // #834: Moved AFTER pagination — was running on ALL 3000+ skeletons before,
