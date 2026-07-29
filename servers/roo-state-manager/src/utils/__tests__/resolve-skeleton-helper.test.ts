@@ -40,6 +40,19 @@ vi.mock('../../services/background-services.js', () => ({
     loadFullSkeleton: mockLoadFullSkeleton
 }));
 
+// Mock ClaudeStorageDetector pour la branche claude-* (#3007 ai-01 review).
+// findConversationById lit le store JSONL Claude ; on l'isole pour tester la
+// branche claude- sans I/O réel.
+const { mockFindConversationById } = vi.hoisted(() => ({
+    mockFindConversationById: vi.fn()
+}));
+
+vi.mock('../claude-storage-detector.js', () => ({
+    ClaudeStorageDetector: class {
+        static findConversationById = mockFindConversationById;
+    }
+}));
+
 describe('resolveFullConversationSkeleton — #3007 helper', () => {
     let cache: Map<string, SkeletonHeader>;
 
@@ -49,11 +62,92 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
         mockDetectStorageLocations.mockResolvedValue([]);
         mockAnalyzeConversation.mockResolvedValue(null);
         mockLoadFullSkeleton.mockResolvedValue(null);
+        mockFindConversationById.mockResolvedValue(null);
     });
 
     test('returns null when cache is empty and disk has nothing', async () => {
         const result = await resolveFullConversationSkeleton('absent-task', cache);
         expect(result).toBeNull();
+    });
+
+    // #3007 ai-01 review — la branche claude-. Le bug mesuré couvrait 2 tâches :
+    // une Roo (61 msgs) ET une Claude (17 msgs), toutes deux <sequence/> vide.
+    // loadFullSkeleton lit Roo .skeletons/ et ne peut servir une session Claude.
+    // Sans la branche claude-, ces tests échouent (findConversationById jamais
+    // appelé → null au lieu d'une séquence non vide).
+    test('claude-* cache MISS: findConversationById resolves non-empty sequence', async () => {
+        const claudeFull: ConversationSkeleton = {
+            taskId: 'claude-test-project',
+            metadata: {
+                lastActivity: '2026-07-29T10:00:00Z',
+                createdAt: '2026-07-29T09:00:00Z',
+                messageCount: 17,
+                actionCount: 0,
+                totalSize: 4000
+            },
+            sequence: [
+                { role: 'user', content: 'claude msg 1', timestamp: '2026-07-29T10:00:00Z', isTruncated: false },
+                { role: 'assistant', content: 'claude reply 1', timestamp: '2026-07-29T10:00:01Z', isTruncated: false }
+            ]
+        };
+        mockFindConversationById.mockResolvedValueOnce(claudeFull);
+
+        // Cache complètement vide — la tâche Claude n'a jamais été vue.
+        const result = await resolveFullConversationSkeleton('claude-test-project', cache);
+
+        expect(result).toBeTruthy();
+        expect((result!.sequence ?? []).length).toBe(2);
+        expect(mockFindConversationById).toHaveBeenCalledWith('claude-test-project');
+        // loadFullSkeleton (Roo) ne doit JAMAIS être appelé pour une tâche claude-*.
+        expect(mockLoadFullSkeleton).not.toHaveBeenCalled();
+        // Cache populated pour les prochaines résolutions.
+        expect(cache.has('claude-test-project')).toBe(true);
+    });
+
+    test('claude-* header-only in cache: routes to ClaudeStorageDetector, not Roo loadFullSkeleton', async () => {
+        // Le cas exact de l'issue #3007 : header Claude en cache (sans sequence),
+        // messageCount > 0. Sans la branche claude-, loadFullSkeleton (Roo) serait
+        // appelé et échouerait → null.
+        const headerOnly: SkeletonHeader = {
+            taskId: 'claude-measured-task',
+            metadata: {
+                lastActivity: '2026-07-29T10:00:00Z',
+                createdAt: '2026-07-29T09:00:00Z',
+                messageCount: 17,
+                actionCount: 0,
+                totalSize: 4000
+            }
+        };
+        cache.set('claude-measured-task', headerOnly);
+
+        const claudeFull: ConversationSkeleton = {
+            ...headerOnly,
+            sequence: [
+                { role: 'user', content: 'first', timestamp: '2026-07-29T10:00:00Z', isTruncated: false },
+                { role: 'assistant', content: 'second', timestamp: '2026-07-29T10:00:01Z', isTruncated: false },
+                { role: 'user', content: 'third', timestamp: '2026-07-29T10:00:02Z', isTruncated: false }
+            ]
+        };
+        mockFindConversationById.mockResolvedValueOnce(claudeFull);
+
+        const result = await resolveFullConversationSkeleton('claude-measured-task', cache);
+
+        expect(result).toBe(claudeFull);
+        expect((result!.sequence ?? []).length).toBe(3);
+        expect(mockFindConversationById).toHaveBeenCalledWith('claude-measured-task');
+        // Roo path must NOT run for a claude-* task it cannot serve.
+        expect(mockLoadFullSkeleton).not.toHaveBeenCalled();
+    });
+
+    test('claude-* not found in Claude store falls through to Roo disk scan (graceful)', async () => {
+        // claude-* prefix mais introuvable dans le store Claude (rare) → ne doit pas
+        // crasher, peut retomber sur le scan Roo (qui retourne null ici).
+        mockFindConversationById.mockResolvedValueOnce(null);
+
+        const result = await resolveFullConversationSkeleton('claude-phantom', cache);
+
+        expect(result).toBeNull();
+        expect(mockFindConversationById).toHaveBeenCalledWith('claude-phantom');
     });
 
     test('Tier 2/3: returns full skeleton from cache when sequence is non-empty', async () => {
