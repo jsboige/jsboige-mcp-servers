@@ -36,6 +36,23 @@ const DEFAULT_MAX_AGE_DAYS = 30;
 const ATTACHMENT_READ_TIMEOUT_MS = 10_000;
 
 /**
+ * Max concurrent metadata reads in `listAttachments`.
+ *
+ * The per-read cap above bounds each read but NOT their sum. Read sequentially,
+ * a shared folder holding N cloud-only attachments costs
+ * N × ATTACHMENT_READ_TIMEOUT_MS: at the 153 attachments observed on the fleet
+ * share that is ~25 min, far past both MCP tool timeouts (120s / 300s), so the
+ * tool always died before returning — and worse, the cost grows with fleet
+ * history, so it can only get further out of reach.
+ *
+ * With bounded concurrency the worst case becomes ceil(N / C) × timeout:
+ * 153 entries at C=32 is ~50s, which fits under the tool timeout. Bounded
+ * rather than unbounded so we never open N handles at once against the GDrive
+ * FUSE mount.
+ */
+const ATTACHMENT_LIST_CONCURRENCY = 32;
+
+/**
  * Métadonnées d'une pièce jointe stockée
  */
 export interface AttachmentMetadata {
@@ -213,35 +230,50 @@ export class AttachmentManager {
     }
 
     const entries = await fs.readdir(this.attachmentsPath, { withFileTypes: true });
-    const results: AttachmentMetadata[] = [];
+    const dirs = entries.filter((entry) => entry.isDirectory());
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+    // Slot-indexed so the result keeps readdir order regardless of which reads
+    // finish first — callers saw a stable order before this became concurrent.
+    const slots: (AttachmentMetadata | undefined)[] = new Array(dirs.length);
 
-      const metadataPath = join(this.attachmentsPath, entry.name, 'metadata.json');
-      if (!existsSync(metadataPath)) continue;
+    // Worker pool draining a shared cursor: exactly ATTACHMENT_LIST_CONCURRENCY
+    // reads stay in flight, so one hung (cloud-only) entry stalls its own worker
+    // and nothing else — the entries behind it are already being read by peers.
+    let cursor = 0;
+    const drain = async (): Promise<void> => {
+      while (cursor < dirs.length) {
+        const index = cursor++;
+        const entry = dirs[index];
 
-      try {
-        const raw = await withReadTimeout(
-          fs.readFile(metadataPath, 'utf-8'),
-          this.readTimeoutMs,
-          `metadata:${entry.name}`,
-        );
-        // Skip entries whose metadata read timed out (GDrive cloud-only hang, #2267 residual).
-        // Keeps `attachments_list` responsive by returning a partial result.
-        if (raw === null) continue;
+        const metadataPath = join(this.attachmentsPath, entry.name, 'metadata.json');
+        if (!existsSync(metadataPath)) continue;
 
-        const meta: AttachmentMetadata = JSON.parse(raw);
+        try {
+          const raw = await withReadTimeout(
+            fs.readFile(metadataPath, 'utf-8'),
+            this.readTimeoutMs,
+            `metadata:${entry.name}`,
+          );
+          // Skip entries whose metadata read timed out (GDrive cloud-only hang, #2267 residual).
+          // Keeps `attachments_list` responsive by returning a partial result.
+          if (raw === null) continue;
 
-        if (!messageId || meta.messageId === messageId) {
-          results.push(meta);
+          const meta: AttachmentMetadata = JSON.parse(raw);
+
+          if (!messageId || meta.messageId === messageId) {
+            slots[index] = meta;
+          }
+        } catch (err) {
+          logger.warn('Failed to parse attachment metadata', { uuid: entry.name, error: String(err) });
         }
-      } catch (err) {
-        logger.warn('Failed to parse attachment metadata', { uuid: entry.name, error: String(err) });
       }
-    }
+    };
 
-    return results;
+    await Promise.all(
+      Array.from({ length: Math.min(ATTACHMENT_LIST_CONCURRENCY, dirs.length) }, drain),
+    );
+
+    return slots.filter((meta): meta is AttachmentMetadata => meta !== undefined);
   }
 
   /**
