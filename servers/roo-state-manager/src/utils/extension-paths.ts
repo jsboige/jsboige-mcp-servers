@@ -146,10 +146,19 @@ export function resolveActiveExtensionId(): string {
  * filesystem probe. This is the path `roosync_mcp_management` must use so it
  * finds the Zoo-Code config on Zoo-only hosts instead of ENOENTing on roo-cline.
  *
- * Path: `...globalStorage/<resolveActiveExtensionId()>/settings/mcp_settings.json`
+ * #3006 — When `targetExtension` is explicitly provided ('roo' or 'zoo'), it
+ * overrides the filesystem probe. This fixes dual-install machines where the
+ * probe picks Roo (preference) but the caller needs the Zoo config — the exact
+ * condition on migrated hosts where the roo-cline globalStorage still exists
+ * (with leftover data) but is no longer the active extension.
+ *
+ * Path: `...globalStorage/<extensionId>/settings/mcp_settings.json`
  */
-export function getActiveMcpSettingsPath(): string {
-	return path.join(resolveGlobalStorageRoot(), resolveActiveExtensionId(), 'settings', 'mcp_settings.json');
+export function getActiveMcpSettingsPath(targetExtension?: 'roo' | 'zoo'): string {
+	const extensionId = targetExtension === 'zoo' ? ZOO_CODE_EXTENSION_ID
+		: targetExtension === 'roo' ? DEFAULT_EXTENSION_ID
+		: resolveActiveExtensionId();
+	return path.join(resolveGlobalStorageRoot(), extensionId, 'settings', 'mcp_settings.json');
 }
 
 // ── Source detection from storage path (#2429) ─────────────────────────

@@ -474,7 +474,8 @@ export const roosyncMcpManagementDefinition = {
             settings: { type: 'object' },
             backup: { type: 'boolean', default: true },
             tools: { type: 'array', items: { type: 'string' } },
-            mcp_name: { type: 'string', description: 'Required for rebuild' }
+            mcp_name: { type: 'string', description: 'Required for rebuild' },
+            targetExtension: { type: 'string', enum: ['roo', 'zoo'], description: 'Target extension for path resolution (read AND write). "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. When omitted, auto-detects via filesystem probe (#2766 S2). (#3006)' }
         },
         required: ['action'],
         additionalProperties: false

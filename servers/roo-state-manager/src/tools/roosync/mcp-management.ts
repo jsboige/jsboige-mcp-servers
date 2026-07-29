@@ -56,8 +56,8 @@ interface McpSettings {
  * See incident 2026-03-08: test wrote to REAL mcp_settings.json, wiping all
  * Roo MCP configs on ai-01 (753 backup files created).
  */
-export function getMcpSettingsPath(): string {
-    const resolved = getActiveMcpSettingsPath();
+export function getMcpSettingsPath(targetExtension?: 'roo' | 'zoo'): string {
+    const resolved = getActiveMcpSettingsPath(targetExtension);
     // SAFETY GUARD: In test environments, reject paths that point to the REAL
     // mcp_settings.json. This prevents tests from wiping production MCP configs.
     // Incidents: 2026-03-08 (ai-01, 753 backups), 2026-04-03 (po-2023).
@@ -172,7 +172,13 @@ export const McpManagementArgsSchema = z.object({
 
     // Paramètre pour action: 'rebuild'
     mcp_name: z.string().optional()
-        .describe('Nom du MCP à rebuild (requis pour action rebuild)')
+        .describe('Nom du MCP à rebuild (requis pour action rebuild)'),
+
+    // #3006: Target extension for path resolution. When provided, overrides the
+    // filesystem probe in getActiveMcpSettingsPath. Fixes dual-install machines
+    // where the probe picks Roo but the caller needs the Zoo config.
+    targetExtension: z.enum(['roo', 'zoo']).optional()
+        .describe('Target extension for path resolution (read AND write). "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. When omitted, auto-detects via filesystem probe (#2766 S2).')
 });
 
 export type McpManagementArgs = z.infer<typeof McpManagementArgsSchema>;
@@ -199,7 +205,7 @@ export type McpManagementResult = z.infer<typeof McpManagementResultSchema>;
 // ====================================================================
 
 async function handleManageAction(args: McpManagementArgs): Promise<McpManagementResult> {
-    const { subAction, server_name, server_config, settings, backup = true } = args;
+    const { subAction, server_name, server_config, settings, backup = true, targetExtension } = args;
 
     if (!subAction) {
         throw new HeartbeatServiceError(
@@ -212,7 +218,8 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
 
     switch (subAction) {
         case 'read': {
-            const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+            const settingsPath = getMcpSettingsPath(targetExtension);
+            const content = await fs.readFile(settingsPath, 'utf-8');
             const mcpSettings = JSON.parse(content) as McpSettings;
             recordSuccessfulRead();
 
@@ -221,7 +228,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 action: 'manage',
                 subAction: 'read',
                 timestamp,
-                message: `✅ Configuration MCP lue depuis ${getMcpSettingsPath()}\n\n🔒 **AUTORISATION D'ÉCRITURE ACCORDÉE** (valable 5 minutes)`,
+                message: `✅ Configuration MCP lue depuis ${settingsPath}\n\n🔒 **AUTORISATION D'ÉCRITURE ACCORDÉE** (valable 5 minutes)`,
                 details: mcpSettings
             };
         }
@@ -244,12 +251,13 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             }
 
             if (backup) {
-                await backupMcpSettings();
+                await backupMcpSettings(targetExtension);
             }
 
             // #552: Clean up empty autoApprove arrays before writing
             cleanupEmptyAutoApprove(settings);
-            await fs.writeFile(getMcpSettingsPath(), JSON.stringify(settings, null, 2), 'utf-8');
+            const writePath = getMcpSettingsPath(targetExtension);
+            await fs.writeFile(writePath, JSON.stringify(settings, null, 2), 'utf-8');
 
             return {
                 success: true,
@@ -257,12 +265,12 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 subAction: 'write',
                 timestamp,
                 message: `✅ Configuration MCP écrite avec succès${backup ? ' (sauvegarde créée)' : ''}\n\n${authCheck.message}`,
-                details: { path: getMcpSettingsPath() }
+                details: { path: writePath }
             };
         }
 
         case 'backup': {
-            const backupPath = await backupMcpSettings();
+            const backupPath = await backupMcpSettings(targetExtension);
 
             return {
                 success: true,
@@ -290,15 +298,15 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+            const content = await fs.readFile(getMcpSettingsPath(targetExtension), 'utf-8');
             const mcpSettings = JSON.parse(content) as McpSettings;
 
             if (backup) {
-                await backupMcpSettings();
+                await backupMcpSettings(targetExtension);
             }
 
             mcpSettings.mcpServers[server_name] = server_config as McpServer;
-            await fs.writeFile(getMcpSettingsPath(), JSON.stringify(mcpSettings, null, 2), 'utf-8');
+            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings, null, 2), 'utf-8');
 
             return {
                 success: true,
@@ -329,7 +337,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const content4 = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+            const content4 = await fs.readFile(getMcpSettingsPath(targetExtension), 'utf-8');
             const mcpSettings4 = JSON.parse(content4) as McpSettings;
 
             if (!mcpSettings4.mcpServers[server_name]) {
@@ -340,7 +348,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             }
 
             if (backup) {
-                await backupMcpSettings();
+                await backupMcpSettings(targetExtension);
             }
 
             // FUSION (merge) au lieu de remplacement: on ne touche que les champs fournis
@@ -348,7 +356,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             const updatedFields = Object.keys(server_config);
             mcpSettings4.mcpServers[server_name] = { ...existingConfig, ...server_config } as McpServer;
 
-            await fs.writeFile(getMcpSettingsPath(), JSON.stringify(mcpSettings4, null, 2), 'utf-8');
+            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings4, null, 2), 'utf-8');
 
             return {
                 success: true,
@@ -378,7 +386,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+            const content = await fs.readFile(getMcpSettingsPath(targetExtension), 'utf-8');
             const mcpSettings = JSON.parse(content) as McpSettings;
 
             if (!mcpSettings.mcpServers[server_name]) {
@@ -386,13 +394,13 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             }
 
             if (backup) {
-                await backupMcpSettings();
+                await backupMcpSettings(targetExtension);
             }
 
             const currentState = mcpSettings.mcpServers[server_name].disabled === true;
             mcpSettings.mcpServers[server_name].disabled = !currentState;
 
-            await fs.writeFile(getMcpSettingsPath(), JSON.stringify(mcpSettings, null, 2), 'utf-8');
+            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings, null, 2), 'utf-8');
 
             const newState = mcpSettings.mcpServers[server_name].disabled ? 'désactivé' : 'activé';
 
@@ -419,7 +427,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+            const content = await fs.readFile(getMcpSettingsPath(targetExtension), 'utf-8');
             const mcpSettings = JSON.parse(content) as McpSettings;
 
             if (!mcpSettings.mcpServers[server_name]) {
@@ -427,7 +435,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             }
 
             if (backup) {
-                await backupMcpSettings();
+                await backupMcpSettings(targetExtension);
             }
 
             const existingAlwaysAllow = mcpSettings.mcpServers[server_name].alwaysAllow || [];
@@ -461,7 +469,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 }
             }
 
-            await fs.writeFile(getMcpSettingsPath(), JSON.stringify(mcpSettings, null, 2), 'utf-8');
+            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings, null, 2), 'utf-8');
 
             return {
                 success: true,
@@ -489,7 +497,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
 }
 
 async function handleRebuildAction(args: McpManagementArgs): Promise<McpManagementResult> {
-    const { mcp_name } = args;
+    const { mcp_name, targetExtension } = args;
 
     if (!mcp_name) {
         throw new HeartbeatServiceError('mcp_name requis pour action "rebuild"', 'MISSING_MCP_NAME');
@@ -498,7 +506,7 @@ async function handleRebuildAction(args: McpManagementArgs): Promise<McpManageme
     const timestamp = new Date().toISOString();
 
     // Lire la configuration MCP
-    const settingsContent = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+    const settingsContent = await fs.readFile(getMcpSettingsPath(targetExtension), 'utf-8');
     const settings = JSON.parse(settingsContent) as McpSettings;
 
     const mcpConfig = settings.mcpServers?.[mcp_name];
@@ -537,7 +545,7 @@ async function handleRebuildAction(args: McpManagementArgs): Promise<McpManageme
     } else {
         // Restart global via settings file
         restartStrategy = 'global';
-        touchedFile = getMcpSettingsPath();
+        touchedFile = getMcpSettingsPath(targetExtension);
         await touchFile(touchedFile);
         warningMessage = `\n\n⚠️ WARNING: MCP "${mcp_name}" n'a pas de 'watchPaths' configuré. Le restart est global, ce qui est moins fiable. Pour de meilleurs résultats, ajoutez une propriété 'watchPaths' pointant vers le fichier de build.`;
     }
@@ -557,15 +565,17 @@ async function handleRebuildAction(args: McpManagementArgs): Promise<McpManageme
     };
 }
 
-async function handleTouchAction(): Promise<McpManagementResult> {
+async function handleTouchAction(args: McpManagementArgs): Promise<McpManagementResult> {
+    const { targetExtension } = args;
     const timestamp = new Date().toISOString();
+    const settingsPath = getMcpSettingsPath(targetExtension);
 
     // Vérifier que le fichier existe
-    await fs.access(getMcpSettingsPath());
+    await fs.access(settingsPath);
 
     // Toucher le fichier
     const now = new Date();
-    await fs.utimes(getMcpSettingsPath(), now, now);
+    await fs.utimes(settingsPath, now, now);
 
     return {
         success: true,
@@ -573,7 +583,7 @@ async function handleTouchAction(): Promise<McpManagementResult> {
         timestamp,
         message: `✅ Fichier mcp_settings.json touché avec succès - Tous les MCPs vont redémarrer`,
         details: {
-            path: getMcpSettingsPath(),
+            path: settingsPath,
             touchedAt: now.toISOString()
         }
     };
@@ -583,11 +593,12 @@ async function handleTouchAction(): Promise<McpManagementResult> {
 // FONCTIONS UTILITAIRES
 // ====================================================================
 
-async function backupMcpSettings(): Promise<string> {
+async function backupMcpSettings(targetExtension?: 'roo' | 'zoo'): Promise<string> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupPath = getMcpSettingsPath().replace('.json', `_backup_${timestamp}.json`);
+    const settingsPath = getMcpSettingsPath(targetExtension);
+    const backupPath = settingsPath.replace('.json', `_backup_${timestamp}.json`);
 
-    const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');
+    const content = await fs.readFile(settingsPath, 'utf-8');
     await fs.writeFile(backupPath, content, 'utf-8');
 
     return backupPath;
@@ -671,7 +682,7 @@ export async function roosyncMcpManagement(args: McpManagementArgs): Promise<Mcp
                 return await handleRebuildAction(args);
 
             case 'touch':
-                return await handleTouchAction();
+                return await handleTouchAction(args);
 
             default:
                 throw new HeartbeatServiceError(`Action non reconnue: ${action}`, 'UNKNOWN_ACTION');
