@@ -202,10 +202,10 @@ async function safeCleanupTempPackage(packagePath: string): Promise<void> {
 // #2964 (point 3) — retention cap for collect temp packages.
 // collectConfig (ConfigSharingService.ts:59) writes to `join(cwd, 'temp',
 // 'config-collect-<ms>')` with no retention, so the dir grows unbounded
-// (32 157 dirs observed on web1, doubling every ~3 days). Each collect now
+// (32 157 dirs observed on web1, ~150/day steady since 2025-12-27). Each collect now
 // sweeps stale packages older than COLLECT_TEMP_MAX_AGE_MS. The sweep is
 // throttled to one per COLLECT_TEMP_PRUNE_INTERVAL_MS so the high caller
-// rate (~145–5300/day) doesn't turn every collect into a full enumeration.
+// rate (~150/day) doesn't turn every collect into a full enumeration.
 const COLLECT_TEMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const COLLECT_TEMP_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // sweep at most hourly
 let lastCollectTempPruneAt = 0;
