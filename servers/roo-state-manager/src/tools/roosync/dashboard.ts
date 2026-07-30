@@ -242,6 +242,35 @@ function buildThinkingControl(isVllm: boolean): {
 let cloudFallbackDisabledLogged = false;
 
 /**
+ * #3012: Detect an LLM call timeout on the primary path.
+ *
+ * The primary condensation call passes `{ timeout: CONDENSE_LLM_TIMEOUT_MS }` to the
+ * SDK (no AbortController), so on a hung endpoint the SDK throws
+ * `APIConnectionTimeoutError`. That class never assigns `this.name` — instances
+ * inherit `Error.prototype.name` = `"Error"`, while `constructor.name` holds the real
+ * type ("APIConnectionTimeoutError"). The old guard `error.name === 'AbortError'`
+ * was therefore DEAD for the only timeout this path can produce, and the #2267
+ * "do NOT retry a timeout" decision was never honored: a hung endpoint burned 3× full
+ * CONDENSE_LLM_TIMEOUT_MS (~36 min) instead of failing fast to the truncation fallback.
+ *
+ * We match on `constructor.name` rather than `instanceof APIConnectionTimeoutError`:
+ * importing the class as a value would add a runtime dependency on 'openai' in this
+ * module, which the global test mock (tests/setup/jest.setup.js) replaces with a stub
+ * that does not export it (→ `instanceof undefined` TypeError mid-condensation). The
+ * MCP ships un-bundled ESM (tsc only), so `constructor.name` is stable in production.
+ *
+ * `error.name === 'AbortError'` is retained for a genuine AbortController abort
+ * (native fetch / browser paths that do use an AbortController).
+ *
+ * Exported for the #3012 bite-test (see dashboard-timeout-guard.test.ts).
+ */
+export function isLLMTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'AbortError') return true;
+  return error.constructor?.name === 'APIConnectionTimeoutError';
+}
+
+/**
  * #2998: Classify whether a cloud fallback error is worth retrying.
  * 429 (rate limit) and 5xx (server errors) are transient by definition.
  * 4xx auth/client errors (401, 403) won't heal with backoff.
@@ -1429,7 +1458,7 @@ FORMAT :
       const elapsed = Date.now() - startTime;
       const errStr = safeErrorString(error);
       stats.errorCount += 1;
-      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
         logger.warn('LLM summary timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
@@ -1639,7 +1668,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       const elapsed = Date.now() - startTime;
       const errStr = safeErrorString(error);
       stats.errorCount += 1;
-      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
         logger.warn('LLM status update timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
