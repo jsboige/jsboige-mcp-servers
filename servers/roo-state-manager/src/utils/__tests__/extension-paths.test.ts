@@ -204,24 +204,46 @@ describe('#2766 S2 — filesystem-aware resolution', () => {
 		fs.rmSync(tmpAppData, { recursive: true, force: true });
 	});
 
+	// #3006: the probe targets the settings/mcp_settings.json FILE. Helper writes
+	// a real (empty-JSON) settings file so the probe's fs.existsSync matches a
+	// genuine install, not just an orphaned globalStorage directory.
+	function writeMcpSettings(extId: string): void {
+		const settingsDir = path.join(globalStorageRoot, extId, 'settings');
+		fs.mkdirSync(settingsDir, { recursive: true });
+		fs.writeFileSync(path.join(settingsDir, 'mcp_settings.json'), '{}');
+	}
+
 	test('probeInstalledExtensionId returns null when neither is installed', () => {
 		expect(probeInstalledExtensionId()).toBeNull();
 	});
 
-	test('probeInstalledExtensionId returns roo-cline when only roo-cline exists', () => {
-		fs.mkdirSync(path.join(globalStorageRoot, ROO), { recursive: true });
+	test('probeInstalledExtensionId returns roo-cline when only roo-cline has settings', () => {
+		writeMcpSettings(ROO);
 		expect(probeInstalledExtensionId()).toBe(ROO);
 	});
 
-	test('probeInstalledExtensionId returns zoo-code when only zoo-code exists (the ENOENT regression)', () => {
-		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+	test('probeInstalledExtensionId returns zoo-code when only zoo-code has settings (the ENOENT regression)', () => {
+		writeMcpSettings(ZOO);
 		expect(probeInstalledExtensionId()).toBe(ZOO);
 	});
 
-	test('probeInstalledExtensionId prefers roo-cline when both exist (back-compat)', () => {
-		fs.mkdirSync(path.join(globalStorageRoot, ROO), { recursive: true });
-		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+	test('probeInstalledExtensionId prefers roo-cline when both genuinely have settings (back-compat)', () => {
+		writeMcpSettings(ROO);
+		writeMcpSettings(ZOO);
 		expect(probeInstalledExtensionId()).toBe(ROO);
+	});
+
+	// #3006 bite-test (the residual): a migrated host leaves the roo-cline
+	// globalStorage as an EMPTY SHELL (orphaned dir, no settings file) while Zoo
+	// carries the live config. A directory-based probe picked Roo and ENOENTed;
+	// the file-based probe must skip the shell and resolve Zoo. RED on pre-fix
+	// code (probe checked the directory → returned ROO).
+	test('#3006 prefers zoo-code when roo-cline is an empty shell (dir present, no settings file)', () => {
+		// Roo: orphaned directory only — no settings/mcp_settings.json inside.
+		fs.mkdirSync(path.join(globalStorageRoot, ROO), { recursive: true });
+		// Zoo: live config with the settings file.
+		writeMcpSettings(ZOO);
+		expect(probeInstalledExtensionId()).toBe(ZOO);
 	});
 
 	test('resolveActiveExtensionId: env override wins over filesystem probe', () => {
@@ -231,7 +253,7 @@ describe('#2766 S2 — filesystem-aware resolution', () => {
 	});
 
 	test('resolveActiveExtensionId: probe wins over default on a zoo-only host', () => {
-		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		writeMcpSettings(ZOO);
 		expect(resolveActiveExtensionId()).toBe(ZOO);
 	});
 
@@ -240,14 +262,14 @@ describe('#2766 S2 — filesystem-aware resolution', () => {
 	});
 
 	test('getActiveMcpSettingsPath resolves to zoo-code on a zoo-only host', () => {
-		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		writeMcpSettings(ZOO);
 		const resolved = getActiveMcpSettingsPath();
 		expect(resolved).toContain(ZOO);
 		expect(resolved.endsWith(path.join('settings', 'mcp_settings.json'))).toBe(true);
 	});
 
 	test('getActiveMcpSettingsPath does NOT resolve to roo-cline on a zoo-only host (regression guard)', () => {
-		fs.mkdirSync(path.join(globalStorageRoot, ZOO), { recursive: true });
+		writeMcpSettings(ZOO);
 		expect(getActiveMcpSettingsPath()).not.toContain(ROO);
 	});
 });
