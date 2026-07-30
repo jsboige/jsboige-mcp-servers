@@ -245,16 +245,49 @@ let cloudFallbackDisabledLogged = false;
  * #2998: Classify whether a cloud fallback error is worth retrying.
  * 429 (rate limit) and 5xx (server errors) are transient by definition.
  * 4xx auth/client errors (401, 403) won't heal with backoff.
- * Connection errors (no HTTP status) are treated as retryable.
+ *
+ * #3011: Connection errors (no HTTP status) are split — a HUNG endpoint
+ * (timeout) must NOT be retried, mirroring the primary's #2267 rule. A hung
+ * endpoint won't recover in a 2-8s backoff, so retrying just burns another
+ * full FALLBACK_TIMEOUT_MS (~30s each → ~90s for 3 attempts today). A
+ * FAILED-FAST connection (ECONNREFUSED / ENOTFOUND) is still retryable: it
+ * rejects immediately, so the retry is cheap and can ride out a brief blip.
+ * Exported for direct unit testing of the classification (#3011 bite-test).
+ *
+ * #3011 second tour: detection reads `constructor.name`, NOT `error.name`.
+ * The OpenAI SDK never assigns `this.name` on its error subclasses (verified
+ * against openai@4.104.0 error.js — `grep "this.name"` → 0 hits), so every
+ * subclass instance inherits `Error.prototype.name` = `"Error"`. The real
+ * subclass type lives on `constructor.name` (e.g. "APIConnectionTimeoutError").
+ * The first attempt read `error.name`: that matched the SYNTHETIC test error
+ * (`Object.assign(new Error, { name })` → name set, constructor.name="Error")
+ * but was exactly inverted — and dead — on the REAL SDK error
+ * (`new APIConnectionTimeoutError` → name="Error", constructor.name set). CI
+ * was green, production retried the timeout anyway. Matching `constructor.name`
+ * fixes both. See the #3012 sibling fix `isLLMTimeoutError` for the same root
+ * cause on the primary path.
  */
-function isRetryableFallbackError(error: unknown): boolean {
+export function isRetryableFallbackError(error: unknown): boolean {
   if (error && typeof error === 'object' && 'status' in error) {
     const status = (error as Record<string, unknown>).status;
     if (typeof status === 'number') {
       return status === 429 || status >= 500;
     }
+    // `status` is declared on the SDK's APIError base class but `undefined` for a
+    // connection/timeout error → fall through to the connection-class check below.
   }
-  // No status → connection error (ECONNREFUSED, ETIMEDOUT, etc.) → retryable.
+  // Connection-class error (no usable HTTP status). Distinguish hung from failed-fast.
+  if (error instanceof Error) {
+    // constructor.name is the production-stable type signal (see JSDoc). It also
+    // survives a duplicate `openai` package instance in node_modules, which would
+    // defeat an `instanceof` check across the two prototypes.
+    const ctorName = (error as { constructor?: { name?: string } })?.constructor?.name;
+    if (ctorName === 'APIConnectionTimeoutError') return false;
+    // A genuine AbortController abort sets error.name = 'AbortError' (native fetch /
+    // browser paths). Retained though the fallback client doesn't use a signal today.
+    if (error.name === 'AbortError') return false;
+  }
+  // ECONNREFUSED / ENOTFOUND / etc. → fail fast → retryable.
   return true;
 }
 
@@ -314,6 +347,12 @@ async function cloudCondenseOnce(
     const elapsedMs = Date.now() - fbStart;
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
+      // #3011: returns null (same shape as "unconfigured") so no retry is attempted.
+      // Deliberate: an empty body is a SUCCESSFUL HTTP round-trip — the endpoint
+      // answered 200, it just returned nothing. Retrying is unlikely to yield
+      // different content (the model chose to emit nothing), and conflating it
+      // with a transient failure would mask a genuine empty-answer. Contrast with
+      // a 429/5xx where the transport itself was rejected.
       return null;
     }
     logger.info('#2719 cloud fallback condensation succeeded', {

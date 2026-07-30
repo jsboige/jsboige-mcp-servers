@@ -22,7 +22,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, resetCondenseCircuitBreaker } from '../dashboard.js';
+import { roosyncDashboard, resetCondenseCircuitBreaker, isRetryableFallbackError } from '../dashboard.js';
+
+// #3011 second tour: import the REAL SDK timeout class so the bite-test constructs the
+// exact error the fallback path throws on a hung endpoint. The global test setup
+// (tests/setup/jest.setup.js) mocks 'openai' (overriding OpenAI); this per-file override
+// restores the real exports so APIConnectionTimeoutError is the genuine class — the only
+// shape that proves the classifier works on a production error (mirrors #932's pattern).
+import { APIConnectionTimeoutError } from 'openai';
+vi.mock('openai', async (importOriginal) => {
+  return { ...(await importOriginal<typeof import('openai')>()) };
+});
 
 // Primary chat client + create — lazy indirection so each test can swap behaviour.
 const mockPrimaryCreate = vi.fn();
@@ -276,5 +286,86 @@ describe('#2719 cloud-fallback condensation telemetry', { testTimeout: 30000 }, 
         || (st?.fallbackError && typeof st.fallbackError === 'string');
     });
     expect(passesWithFallbackError.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // #3011: A timeout must NOT be retried. A hung endpoint won't recover in a 2-8s
+  // backoff — retrying burns another full FALLBACK_TIMEOUT_MS (3×30s = ~90s today).
+  // Mirrors the primary's #2267 rule. Bite-test: pre-fix, a timeout (no .status) was
+  // classified retryable and retried 3×; post-fix it is non-retryable → single attempt.
+  it('(g) #3011 primary down → fallback timeout (APIConnectionTimeoutError) → single attempt, no retry', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // OpenAI SDK client-timeout expiry: the REAL APIConnectionTimeoutError class
+    // (no .status; .name="Error", constructor.name="APIConnectionTimeoutError").
+    const timeoutErr = new APIConnectionTimeoutError({ message: 'Request timed out' });
+    mockFallbackCreate.mockRejectedValue(timeoutErr);
+
+    const condensedResult = await fillUntilCondensed();
+
+    expect(condensedResult.condenseDiagnostic).toBeDefined();
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter(
+      (d: any) => d.outcome === 'fallback-truncated',
+    );
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+    // Bite: the timeout must land in the NON-retryable regime (like 401, test e),
+    // not the retryable regime (like 429, test d). Each condensation pass makes up
+    // to 2 LLM calls (summary + status); pre-fix each would retry 3× → ≥6 calls per
+    // pass. Post-fix each attempts once → ≤2 per pass. Asserting < 4 separates the
+    // two regimes unambiguously (2 post-fix < 4 < 6 pre-fix).
+    expect(mockFallbackCreate.mock.calls.length).toBeLessThan(4);
+    expect(mockFallbackCreate.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// #3011: Direct classification tests. The integration test (g) proves end-to-end
+// behaviour, but the call-count boundary can be muddied by concurrent condensation
+// passes. These assert the classifier itself, unambiguously.
+describe('#3011 isRetryableFallbackError classification', () => {
+  it('retries 429 (rate limit)', () => {
+    const err = Object.assign(new Error('429 Rate Limited'), { status: 429 });
+    expect(isRetryableFallbackError(err)).toBe(true);
+  });
+
+  it('retries 5xx (server error)', () => {
+    const err = Object.assign(new Error('503 Service Unavailable'), { status: 503 });
+    expect(isRetryableFallbackError(err)).toBe(true);
+  });
+
+  it('does NOT retry 401 (auth — will not heal with backoff)', () => {
+    const err = Object.assign(new Error('401 Unauthorized'), { status: 401 });
+    expect(isRetryableFallbackError(err)).toBe(false);
+  });
+
+  // Bite-test: pre-fix this returned `true` (timeout has no .status → retryable).
+  // #3011 second tour: constructed from the REAL SDK class so it cannot silently
+  // regress to the synthetic inverse (name set, constructor.name="Error"). Sanity-
+  // asserts the SDK shape (.name="Error", constructor.name set) — the classifier
+  // must work on this exact production shape, not a synthetic stand-in.
+  it('#3011 does NOT retry APIConnectionTimeoutError (real SDK instance, hung endpoint)', () => {
+    const err = new APIConnectionTimeoutError({ message: 'Request timed out' });
+    // Sanity: confirm the SDK shape the fix depends on (.name inherited = "Error",
+    // real type on constructor.name). If these ever flip, the test itself is wrong.
+    expect(err.name).toBe('Error');
+    expect(err.constructor.name).toBe('APIConnectionTimeoutError');
+    expect(isRetryableFallbackError(err)).toBe(false);
+  });
+
+  it('#3011 does NOT retry AbortError (fetch abort)', () => {
+    const err = Object.assign(new Error('The user aborted a request'), {
+      name: 'AbortError',
+    });
+    expect(isRetryableFallbackError(err)).toBe(false);
+  });
+
+  // #3011 guard: a failed-FAST connection (ECONNREFUSED, no .status, plain Error
+  // name) stays retryable — it rejects immediately so the retry is cheap.
+  it('retries ECONNREFUSED (failed-fast connection)', () => {
+    const err = new Error('connect ECONNREFUSED 127.0.0.1:5002');
+    expect(isRetryableFallbackError(err)).toBe(true);
   });
 });
