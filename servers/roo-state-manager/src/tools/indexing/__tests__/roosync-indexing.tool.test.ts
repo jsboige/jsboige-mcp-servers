@@ -22,7 +22,7 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
 	mockDetectStorageLocations, mockFsReadDir, mockFsReadFile, mockFsStat,
 	mockCleanupOldVectors, mockDetectAndCleanupOrphans,
-	mockResetIndexingState, mockClassifyIndexingError
+	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo
 } = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
@@ -39,7 +39,8 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockCleanupOldVectors: vi.fn(),
 	mockDetectAndCleanupOrphans: vi.fn(),
 	mockResetIndexingState: vi.fn(),
-	mockClassifyIndexingError: vi.fn()
+	mockClassifyIndexingError: vi.fn(),
+	mockReadLeaderLockInfo: vi.fn()
 }));
 
 // Default mock for shared-state-path — returns '' unless a test sets the holder.
@@ -126,6 +127,8 @@ vi.mock('../../../services/background-services.js', () => ({
 		}
 		return { isPermanent: false, errorClass: 'unknown' };
 	},
+	// #3014: readLeaderLockInfo is now imported by the status handler.
+	readLeaderLockInfo: mockReadLeaderLockInfo,
 }));
 vi.mock('../../../services/indexing-decision.js', () => ({
 	IndexingDecisionService: class {
@@ -469,6 +472,120 @@ describe('roosync_indexing status action', () => {
 		expect(result.isError).toBe(false);
 		const parsed = JSON.parse(result.content[0].text);
 		expect(parsed.background_indexer.queue_size).toBe(1);
+	});
+
+	// #3014: the diagnostic trap. Two materially different states — a healthy
+	// follower (queue plateaus because the drain is carried by the leader
+	// elsewhere on the machine) and a blocked leader (queue plateaus while this
+	// process IS leader) — used to produce IDENTICAL status output (is_running
+	// was the only signal). Cost ai-01 5 reads / 4 cycles. The fix exposes
+	// is_leader / leader_pid / leader_lock_age_ms so the two states are
+	// distinguishable. RED on pre-fix code (is_leader field absent → undefined
+	// in both → not distinguishable), GREEN on fix.
+
+	test('#3014 (leader): is_leader=true, own PID, no follower hint', async () => {
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 1234, lockAgeMs: 5000 });
+		const indexingState = {
+			qdrantIndexQueue: new Set(['t1']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			isIndexLeader: true,
+			machineId: 'myia-test',
+			indexingMetrics: { totalTasks: 1, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.is_leader).toBe(true);
+		expect(parsed.background_indexer.leader_pid).toBe(1234);
+		expect(parsed.background_indexer.leader_lock_age_ms).toBe(5000);
+		// Leader does NOT get the follower hint.
+		const hints = parsed.diagnostic_hints;
+		expect(hints === undefined || !hints.some((h: string) => h.includes('PAS le leader'))).toBe(true);
+	});
+
+	test('#3014 (follower): is_leader=false, foreign PID, follower hint present', async () => {
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 9999, lockAgeMs: 120000 });
+		const indexingState = {
+			qdrantIndexQueue: new Set(['t1']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			isIndexLeader: false,
+			machineId: 'myia-test',
+			indexingMetrics: { totalTasks: 1, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.is_leader).toBe(false);
+		expect(parsed.background_indexer.leader_pid).toBe(9999);
+		expect(parsed.background_indexer.leader_lock_age_ms).toBe(120000);
+		// Follower GETS the explanatory hint.
+		expect(parsed.diagnostic_hints).toBeDefined();
+		expect(parsed.diagnostic_hints.some((h: string) => h.includes('PAS le leader'))).toBe(true);
+	});
+
+	test('#3014 (the trap): identical queue plateau → distinguishable leader vs follower output', async () => {
+		// The exact #3014 scenario: queue_size=505 plateaus in BOTH states.
+		// Pre-fix, both produced byte-identical output (no is_leader field).
+		// Post-fix, is_leader + leader_pid differ → the operator can tell them apart.
+		const queue = new Set(Array.from({ length: 505 }, (_, i) => `t${i}`));
+
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 1234, lockAgeMs: 10000 });
+		const leaderResult = await handleRooSyncIndexing(
+			{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			{ qdrantIndexQueue: queue, qdrantIndexInterval: {} as NodeJS.Timeout, isQdrantIndexingEnabled: true, isIndexLeader: true, machineId: 'm', indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined } }
+		);
+
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 9999, lockAgeMs: 10000 });
+		const followerResult = await handleRooSyncIndexing(
+			{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			{ qdrantIndexQueue: queue, qdrantIndexInterval: {} as NodeJS.Timeout, isQdrantIndexingEnabled: true, isIndexLeader: false, machineId: 'm', indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined } }
+		);
+
+		const leaderParsed = JSON.parse(leaderResult.content[0].text);
+		const followerParsed = JSON.parse(followerResult.content[0].text);
+
+		// Both plateaus look the same on queue_size (the trap).
+		expect(leaderParsed.background_indexer.queue_size).toBe(505);
+		expect(followerParsed.background_indexer.queue_size).toBe(505);
+		// But they are now DISTINGUISHABLE — the whole point of #3014.
+		expect(leaderParsed.background_indexer.is_leader).toBe(true);
+		expect(followerParsed.background_indexer.is_leader).toBe(false);
+		expect(leaderParsed.background_indexer.leader_pid).not.toBe(followerParsed.background_indexer.leader_pid);
+	});
+
+	test('#3014: readLeaderLockInfo null (no/currupt lock) → leader_pid null, is_leader still from state', async () => {
+		mockReadLeaderLockInfo.mockResolvedValue(null);
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			isIndexLeader: false,
+			machineId: 'myia-test',
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.is_leader).toBe(false);
+		expect(parsed.background_indexer.leader_pid).toBeNull();
+		expect(parsed.background_indexer.leader_lock_age_ms).toBeNull();
 	});
 
 	// #2963 regression tests — distinguish "measured zero" from "not measured",
