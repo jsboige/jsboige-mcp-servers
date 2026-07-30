@@ -73,13 +73,15 @@ describe('roosync_list_attachments', () => {
   test('filters by messageId when provided', async () => {
     mockListAttachments.mockResolvedValue([]);
     await roosyncListAttachments({ message_id: 'msg-xyz' });
-    expect(mockListAttachments).toHaveBeenCalledWith('msg-xyz');
+    // Second arg is the stats accumulator (#3013) — shape is covered by the
+    // manager tests; here we only care that the message_id propagated.
+    expect(mockListAttachments).toHaveBeenCalledWith('msg-xyz', expect.anything());
   });
 
   test('lists all attachments when no messageId provided', async () => {
     mockListAttachments.mockResolvedValue([]);
     await roosyncListAttachments({});
-    expect(mockListAttachments).toHaveBeenCalledWith(undefined);
+    expect(mockListAttachments).toHaveBeenCalledWith(undefined, expect.anything());
   });
 
   test('handles errors gracefully', async () => {
@@ -188,13 +190,14 @@ describe('roosync_attachments (CONS-7)', () => {
     mockListAttachments.mockResolvedValue([]);
     const result = await roosyncAttachments({ action: 'list' });
     expect(result.content[0].text).toContain('Aucune pièce jointe');
-    expect(mockListAttachments).toHaveBeenCalledWith(undefined);
+    // Stats accumulator is passed as second arg (#3013) — covered by manager tests.
+    expect(mockListAttachments).toHaveBeenCalledWith(undefined, expect.anything());
   });
 
   test('action=list with message_id filters correctly', async () => {
     mockListAttachments.mockResolvedValue([]);
     await roosyncAttachments({ action: 'list', message_id: 'msg-123' });
-    expect(mockListAttachments).toHaveBeenCalledWith('msg-123');
+    expect(mockListAttachments).toHaveBeenCalledWith('msg-123', expect.anything());
   });
 
   test('action=get requires uuid', async () => {
