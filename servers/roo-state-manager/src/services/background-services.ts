@@ -993,6 +993,35 @@ export async function getLeaderLockPath(machineId: string): Promise<string> {
 }
 
 /**
+ * #3014: Read-only inspection of the leader lock. Returns the PID holding the
+ * lock and the lock's age, WITHOUT attempting to acquire/renew it. Used by the
+ * status tool to distinguish a healthy non-leader (queue plateau is normal —
+ * this process is a follower; the leader elsewhere carries the drain) from a
+ * blocked leader (queue plate while this process IS leader). Before #3014 the
+ * status output exposed `is_running` (a setInterval handle exists) but never
+ * `is_leader` / `leader_pid` / lock age — the two materially different states
+ * produced identical output (the diagnostic trap that cost ai-01 5 reads / 4
+ * cycles on a system that was working).
+ *
+ * Returns null when the lock is absent, unreadable, or corrupt (never throws).
+ * A `leader_lock_age_ms` greater than LEADER_LOCK_STALE_MS signals an orphan
+ * lock the next cycle would steal.
+ */
+export async function readLeaderLockInfo(machineId: string): Promise<{ leaderPid: number; lockAgeMs: number } | null> {
+    try {
+        const lockPath = await getLeaderLockPath(machineId);
+        const content = await fs.readFile(lockPath, 'utf-8');
+        const data = JSON.parse(content);
+        if (typeof data.pid !== 'number' || typeof data.timestamp !== 'number') {
+            return null;
+        }
+        return { leaderPid: data.pid, lockAgeMs: Date.now() - data.timestamp };
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Try to acquire or renew the leader lock. Non-blocking (single attempt).
  * Returns true if this process is the leader.
  */

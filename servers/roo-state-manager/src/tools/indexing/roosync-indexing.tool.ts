@@ -19,7 +19,7 @@ import * as path from 'path';
 // failures from the pre-#886 era) and the cleanup_failed action. Imports stay
 // narrow to avoid pulling the entire background-services module into the tool
 // layer (registry.ts owns that wiring).
-import { classifyIndexingError } from '../../services/background-services.js';
+import { classifyIndexingError, readLeaderLockInfo } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 
 // Import des handlers existants
@@ -603,10 +603,29 @@ export async function handleRooSyncIndexing(
                 hints.push(`Incohérence compteur : metrics.failed (lifetime)=${state.indexingMetrics.failedTasks} < failed_by_class total (cache live)=${liveFailedTotal}. Le cache live capture les stuck-retry tasks que le compteur lifetime n'a jamais vus ; metrics.failed est aligné sur ${liveFailedTotal}.`);
             }
 
+            // #3014: Expose leader-election state so a healthy non-leader (queue
+            // plateau is normal — the drain is carried by the leader elsewhere on
+            // this machine) is distinguishable from a blocked leader. Before this,
+            // `is_running` (a setInterval handle exists) was the only signal, so a
+            // follower and a stuck leader produced identical status output — the
+            // diagnostic trap that cost ai-01 5 reads / 4 cycles on a working system.
+            const leaderMachineId = (state as { machineId?: string }).machineId;
+            const isLeader = (state as { isIndexLeader?: boolean }).isIndexLeader === true;
+            const leaderInfo = leaderMachineId ? await readLeaderLockInfo(leaderMachineId) : null;
+            if (leaderMachineId && !isLeader) {
+                const holder = leaderInfo ? `PID ${leaderInfo.leaderPid}` : 'un autre process';
+                const ageClause = leaderInfo ? ` (âge du verrou ${Math.round(leaderInfo.lockAgeMs / 1000)}s)` : ' (verrou illisible/absent)';
+                hints.push(`Ce process n'est PAS le leader d'indexation (is_leader=false) — une file plate est normale, le drain est porté par ${holder}${ageClause}. Si le leader est réellement bloqué, investiguez ce verrou (stale > 15 min = devrait être volé au prochain cycle).`);
+            }
+
             const status = {
                 background_indexer: {
                     is_running: state.qdrantIndexInterval !== null,
                     is_enabled: state.isQdrantIndexingEnabled,
+                    // #3014: distinguishes healthy follower from blocked leader.
+                    is_leader: isLeader,
+                    leader_pid: leaderInfo?.leaderPid ?? null,
+                    leader_lock_age_ms: leaderInfo?.lockAgeMs ?? null,
                     queue_size: state.qdrantIndexQueue.size,
                     // #2766 S2+: dead-letter size is exposed at the top level
                     // so dashboards can chart the separation. Operators who
