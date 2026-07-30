@@ -28,6 +28,12 @@ import { randomUUID } from 'crypto';
 const mocks = vi.hoisted(() => ({
   warn: vi.fn(),
   readFile: vi.fn(),
+  // Mutable holder for the per-test shared-state path. The tool resolves the
+  // attachments dir via getSharedStatePath() at call time, so pointing this at
+  // the test's temp dir routes the real AttachmentManager through the mocked
+  // fs without mocking AttachmentManager itself (the bite-test below needs the
+  // real stats accumulation path).
+  sharedStatePath: '',
 }));
 
 // Logger mock: capture warn calls to assert the skip is logged.
@@ -53,8 +59,16 @@ vi.mock('fs', async (importOriginal) => {
   };
 });
 
+// shared-state-path mock: returns the per-test temp dir so the real
+// AttachmentManager (which the tool instantiates internally) reads from the
+// fixture laid down by `seedAttachment`. Hoisted ref so the factory stays stable.
+vi.mock('../../../utils/shared-state-path.js', () => ({
+  getSharedStatePath: () => mocks.sharedStatePath,
+}));
+
 // Imported AFTER mocks are registered.
 import { AttachmentManager } from '../AttachmentManager.js';
+import { roosyncListAttachments } from '../../../tools/roosync/roosync-attachments.tool.js';
 
 // Real fs captured at module load (before any mock override) for passthrough.
 const realFs = await vi.importActual<typeof import('fs')>('fs');
@@ -283,5 +297,67 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
 
     expect(deleted).toBe(1);
     expect(mocks.warn).toHaveBeenCalled();
+  }, 10_000);
+
+  // --- #3013 bite-test: the per-read path must surface a signal in the tool
+  // response. This is the exact scenario that was silent before — a hung
+  // cloud-only entry got dropped from the list, and the agent received a
+  // shorter list with no indication anything was missing. Red on the silent
+  // implementation, green once `roosyncListAttachments` formats the skip line.
+  //
+  // The false-bite to avoid: asserting the presence of a *new field* (red
+  // trivially, proves nothing). The property under test is the *response text*
+  // — it must contain an explicit signal that entries were omitted, broken
+  // down by cause so the caller can tell a partial list from a complete one.
+
+  test('roosyncListAttachments surfaces an omission signal when an entry times out (#3013)', async () => {
+    const goodUuid = '77777777-0000-0000-0000-000000000001';
+    const hungUuid = '88888888-0000-0000-0000-000000000002';
+    seedAttachment(sharedState, goodUuid);
+    seedAttachment(sharedState, hungUuid);
+
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(hungUuid)) return new Promise<string>(() => {});
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    // Route the real AttachmentManager (instantiated inside the tool) at our
+    // temp dir via the shared-state-path mock.
+    mocks.sharedStatePath = sharedState;
+    try {
+      const result = await roosyncListAttachments({});
+
+      const text = result.content[0].text;
+      // Good entry is still listed.
+      expect(text).toContain(goodUuid);
+      // The response MUST carry an explicit omission signal — silent truncation
+      // was the bug. The breakdown lets the caller tell timeout from parse from
+      // missing-file rather than guessing.
+      expect(text).toMatch(/omise/);
+      expect(text).toMatch(/timeout\s*1/);
+    } finally {
+      mocks.sharedStatePath = '';
+    }
+    // Tool instantiates AttachmentManager with the production 10s default
+    // (no inject hook), so the hung entry must wait one full timeout — ~10s.
+    // Honest cost of exercising the real per-read timeout path end-to-end.
+  }, 20_000);
+
+  test('roosyncListAttachments is silent when no entries are dropped (#3013)', async () => {
+    const goodUuid = '99999999-0000-0000-0000-000000000003';
+    seedAttachment(sharedState, goodUuid);
+
+    // No hang — every entry reads cleanly, so no omission line in the response.
+    mocks.readFile.mockImplementation(async (filePath: string) => realReadFile(filePath, 'utf-8'));
+
+    mocks.sharedStatePath = sharedState;
+    try {
+      const result = await roosyncListAttachments({});
+      const text = result.content[0].text;
+      expect(text).toContain(goodUuid);
+      expect(text).not.toMatch(/omise/);
+    } finally {
+      mocks.sharedStatePath = '';
+    }
   }, 10_000);
 });

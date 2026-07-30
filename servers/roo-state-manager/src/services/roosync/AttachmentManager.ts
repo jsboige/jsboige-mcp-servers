@@ -84,6 +84,34 @@ export interface AttachmentRef {
 }
 
 /**
+ * Compteur des entrées omises par `listAttachments`, ventilé par cause.
+ *
+ * `listAttachments` lit chaque `metadata.json` et peut skipper un slot pour
+ * trois raisons distinctes — fichier absent, lecture expirée (cloud-only
+ * GDrive), JSON invalide. L'ancien chemin les confondait avec le filtre
+ * `messageId` voulu via `.filter(meta => meta !== undefined)`, laissant
+ * l'appelant sans signal qu'une partie de la liste avait été silencieusement
+ * tronquée (#3013).
+ *
+ * Le filtre `messageId` est intentionnel et n'est PAS compté ici — l'agréger
+ * aux pertes rendrait le signal inutilisable (un appel par `messageId` aurait
+ * toujours N-1 "pertes" pour N attachments total).
+ *
+ * Le paramètre est optionnel : un appelant qui ne le passe pas reçoit le
+ * comportement historique (table tronquée, aucun signal). Seul le surface
+ * outil (`attachments_list`) le peuple aujourd'hui et traduit le total en
+ * ligne d'avertissement.
+ */
+export interface AttachmentListStats {
+  /** UUID dir présente mais `metadata.json` absent (upload interrompu ?). */
+  missingMetadata: number;
+  /** `readFile` a expiré (cloud-only GDrive, #2267 residual). */
+  readTimeout: number;
+  /** `JSON.parse` a échoué sur un metadata.json illisible. */
+  parseError: number;
+}
+
+/**
  * Correspondance extension → type MIME basique
  */
 const MIME_TYPES: Record<string, string> = {
@@ -222,9 +250,15 @@ export class AttachmentManager {
    * Liste les pièces jointes, avec filtre optionnel par messageId
    *
    * @param messageId Filtre optionnel par ID de message
+   * @param stats Compteur optionnel des entrées omises, ventilé par cause
+   *   (`missingMetadata`, `readTimeout`, `parseError`). Pass-by-reference :
+   *   l'appelant alloue l'objet, la méthode le peuple. Voir `AttachmentListStats`.
    * @returns Liste des métadonnées d'attachments
    */
-  async listAttachments(messageId?: string): Promise<AttachmentMetadata[]> {
+  async listAttachments(
+    messageId?: string,
+    stats?: AttachmentListStats,
+  ): Promise<AttachmentMetadata[]> {
     if (!existsSync(this.attachmentsPath)) {
       return [];
     }
@@ -246,7 +280,14 @@ export class AttachmentManager {
         const entry = dirs[index];
 
         const metadataPath = join(this.attachmentsPath, entry.name, 'metadata.json');
-        if (!existsSync(metadataPath)) continue;
+        if (!existsSync(metadataPath)) {
+          // Cause #1: UUID dir exists but metadata.json is missing (interrupted
+          // upload, manual deletion). Surfaced via `stats.missingMetadata` when
+          // the caller wants to distinguish a partial list from a complete one
+          // (#3013) — the historical behavior was a silent `continue`.
+          if (stats) stats.missingMetadata++;
+          continue;
+        }
 
         try {
           const raw = await withReadTimeout(
@@ -256,15 +297,26 @@ export class AttachmentManager {
           );
           // Skip entries whose metadata read timed out (GDrive cloud-only hang, #2267 residual).
           // Keeps `attachments_list` responsive by returning a partial result.
-          if (raw === null) continue;
+          if (raw === null) {
+            // Cause #2: per-read timeout. The warn log fires inside `withReadTimeout`
+            // (diagnosable at tool level); here we count it so the response can say
+            // *how many* were dropped instead of leaving the caller to guess (#3013).
+            if (stats) stats.readTimeout++;
+            continue;
+          }
 
           const meta: AttachmentMetadata = JSON.parse(raw);
 
+          // Filter `messageId` is intentional — NOT counted as a loss. Aggregating
+          // it would make the signal unusable (a per-message call always drops N-1
+          // of N attachments). See `AttachmentListStats` doc.
           if (!messageId || meta.messageId === messageId) {
             slots[index] = meta;
           }
         } catch (err) {
+          // Cause #3: JSON.parse failed on an unreadable metadata.json.
           logger.warn('Failed to parse attachment metadata', { uuid: entry.name, error: String(err) });
+          if (stats) stats.parseError++;
         }
       }
     };

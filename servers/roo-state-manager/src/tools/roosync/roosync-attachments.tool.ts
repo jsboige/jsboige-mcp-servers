@@ -9,7 +9,7 @@
  * @version 1.0.0
  */
 
-import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
+import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -27,7 +27,11 @@ export async function roosyncListAttachments(
   try {
     const sharedStatePath = getSharedStatePath();
     const manager = new AttachmentManager(sharedStatePath);
-    const attachments = await manager.listAttachments(args.message_id);
+    // Pass-by-reference accumulator so the tool response can say *how many*
+    // entries were dropped and *why* — distinguishing a partial list from a
+    // complete one (#3013). Filter `messageId` is NOT aggregated here.
+    const stats: AttachmentListStats = { missingMetadata: 0, readTimeout: 0, parseError: 0 };
+    const attachments = await manager.listAttachments(args.message_id, stats);
 
     if (attachments.length === 0) {
       const scopeLabel = args.message_id ? `le message \`${args.message_id}\`` : 'le stockage partagé';
@@ -47,10 +51,19 @@ export async function roosyncListAttachments(
       ? `Message \`${args.message_id}\``
       : 'Tous les attachments';
 
+    // Silent in normal regime (total = 0). When entries were dropped, the line
+    // tells the caller how many are missing and the cause breakdown — the
+    // principle violated by the historical per-read path: a diagnosable signal
+    // beats a silently truncated list (#3013).
+    const totalSkipped = stats.readTimeout + stats.missingMetadata + stats.parseError;
+    const skipLine = totalSkipped > 0
+      ? `\n\n⚠️ **${totalSkipped} entrée(s) omise(s)** — timeout ${stats.readTimeout} · metadata absente ${stats.missingMetadata} · parse ${stats.parseError}`
+      : '';
+
     const text = `## 📎 Pièces Jointes — ${scopeLabel}
 
 **Total :** ${attachments.length}
-
+${skipLine}
 | UUID | Fichier | Taille | Type | Date | Machine | Message |
 |------|---------|--------|------|------|---------|---------|
 ${rows}
