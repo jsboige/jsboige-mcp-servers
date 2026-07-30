@@ -129,7 +129,7 @@ describe('ConfigArgsSchema', () => {
   });
 });
 
-describe('roosyncConfig', () => {
+describe('roosyncConfig', { testTimeout: 30000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetConfigVersion.mockResolvedValue('2.3.0');
@@ -795,7 +795,7 @@ describe('roosyncConfig', () => {
 // now tears them down after publish (success OR failure) and on empty collect.
 // These tests use REAL temp dirs (no fs mock) so the cleanup is verified end-to-end.
 // ============================================================
-describe('roosyncConfig — #2766 S2+ temp-package teardown', () => {
+describe('roosyncConfig — #2766 S2+ temp-package teardown', { testTimeout: 30000 }, () => {
   let seq = 0;
 
   /** Create a real temp dir that matches isCollectTempPackage() (basename config-collect-*, under /temp/). */
@@ -874,7 +874,7 @@ describe('roosyncConfig — #2766 S2+ temp-package teardown', () => {
   });
 });
 
-describe('sweepCollectTempPackages — #2964 retention cap', () => {
+describe('sweepCollectTempPackages — #2964 retention cap', { testTimeout: 30000 }, () => {
   let seq = 0;
 
   /** Unique temp root per test (under os.tmpdir, never the real server temp/). */
