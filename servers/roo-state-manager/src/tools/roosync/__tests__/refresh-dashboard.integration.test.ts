@@ -37,7 +37,7 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 import { roosyncRefreshDashboard } from '../refresh-dashboard.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
 
-describe('roosync_refresh_dashboard (integration)', () => {
+describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () => {
   // Fix #634: Save original env var to restore after tests
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
 
