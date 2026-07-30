@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ConfigArgsSchema, roosyncConfig, ConfigArgs } from '../config.js';
+import { ConfigArgsSchema, roosyncConfig, ConfigArgs, sweepCollectTempPackages } from '../config.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../../types/errors.js';
 import { promises as fs, existsSync } from 'fs';
 import { join } from 'path';
@@ -871,5 +871,89 @@ describe('roosyncConfig — #2766 S2+ temp-package teardown', () => {
     expect(result.packagePath).toBe(tempPkg);
     expect(existsSync(tempPkg)).toBe(true); // kept — successful collect returns the package
     await fs.rm(tempPkg, { recursive: true, force: true }); // test artifact cleanup
+  });
+});
+
+describe('sweepCollectTempPackages — #2964 retention cap', () => {
+  let seq = 0;
+
+  /** Unique temp root per test (under os.tmpdir, never the real server temp/). */
+  function freshRoot(): string {
+    seq++;
+    return join(tmpdir(), `sweep-root-${process.pid}-${seq}`);
+  }
+
+  /** Create a `config-collect-<suffix>` dir under root and optionally backdate its mtime by ageMs. */
+  async function makeCollectDir(root: string, suffix: string, ageMs: number): Promise<string> {
+    const dir = join(root, `config-collect-${suffix}`);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'manifest.json'), '{}');
+    if (ageMs > 0) {
+      const past = (Date.now() - ageMs) / 1000;
+      await fs.utimes(dir, past, past);
+    }
+    return dir;
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+
+  test('removes config-collect-* older than maxAge, preserves recent ones', async () => {
+    const root = freshRoot();
+    const maxAge = 7 * 86_400_000;
+    const now = Date.now();
+    const old1 = await makeCollectDir(root, 'old1', 10 * 86_400_000); // 10d old
+    const old2 = await makeCollectDir(root, 'old2', 8 * 86_400_000);  // 8d old
+    const fresh = await makeCollectDir(root, 'fresh', 0);             // current
+
+    const removed = await sweepCollectTempPackages(root, maxAge, now);
+
+    expect(removed).toBe(2);
+    expect(existsSync(old1)).toBe(false);
+    expect(existsSync(old2)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  test('does not touch non-config-collect entries in the temp dir', async () => {
+    const root = freshRoot();
+    const oldCollect = await makeCollectDir(root, 'stale', 30 * 86_400_000);
+    const otherDir = join(root, 'some-other-temp'); // NOT config-collect-*
+    await fs.mkdir(otherDir, { recursive: true });
+    await fs.writeFile(join(otherDir, 'f'), 'x');
+    const past = (Date.now() - 30 * 86_400_000) / 1000;
+    await fs.utimes(otherDir, past, past); // heavily backdated too
+
+    const removed = await sweepCollectTempPackages(root, 7 * 86_400_000, Date.now());
+
+    expect(removed).toBe(1);
+    expect(existsSync(oldCollect)).toBe(false);
+    expect(existsSync(otherDir)).toBe(true); // foreign entry untouched
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  test('returns 0 and does not throw when temp dir is missing', async () => {
+    const removed = await sweepCollectTempPackages(
+      join(tmpdir(), `sweep-nope-${process.pid}`),
+      7 * 86_400_000,
+      Date.now(),
+    );
+    expect(removed).toBe(0);
+  });
+
+  test('boundary: mtime within maxAge is kept, just past maxAge is removed', async () => {
+    const root = freshRoot();
+    const maxAge = 7 * 86_400_000;
+    const now = Date.now();
+    const justOver = await makeCollectDir(root, 'over', 0);
+    const justUnder = await makeCollectDir(root, 'under', 0);
+    await fs.utimes(justOver, (now - maxAge - 1) / 1000, (now - maxAge - 1) / 1000); // maxAge+1ms old
+    await fs.utimes(justUnder, (now - maxAge + 1) / 1000, (now - maxAge + 1) / 1000); // maxAge-1ms old
+
+    const removed = await sweepCollectTempPackages(root, maxAge, now);
+
+    expect(removed).toBe(1);
+    expect(existsSync(justOver)).toBe(false);
+    expect(existsSync(justUnder)).toBe(true);
+    await fs.rm(root, { recursive: true, force: true });
   });
 });

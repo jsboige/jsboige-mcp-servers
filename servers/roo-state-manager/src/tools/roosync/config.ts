@@ -4,7 +4,7 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
 import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
 import { promises as fs } from 'fs';
-import { basename } from 'path';
+import { basename, join } from 'path';
 
 /**
  * Claude Code scope pour les configurations MCP
@@ -199,6 +199,62 @@ async function safeCleanupTempPackage(packagePath: string): Promise<void> {
   }
 }
 
+// #2964 (point 3) — retention cap for collect temp packages.
+// collectConfig (ConfigSharingService.ts:59) writes to `join(cwd, 'temp',
+// 'config-collect-<ms>')` with no retention, so the dir grows unbounded
+// (32 157 dirs observed on web1, ~150/day steady since 2025-12-27). Each collect now
+// sweeps stale packages older than COLLECT_TEMP_MAX_AGE_MS. The sweep is
+// throttled to one per COLLECT_TEMP_PRUNE_INTERVAL_MS so the high caller
+// rate (~150/day) doesn't turn every collect into a full enumeration.
+const COLLECT_TEMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const COLLECT_TEMP_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // sweep at most hourly
+let lastCollectTempPruneAt = 0;
+
+/**
+ * Core sweep: remove every `config-collect-*` subdir under `tempDir` whose
+ * mtime is older than `maxAgeMs` (relative to `now`). Returns the count
+ * removed. Pure (no global state, no clock) so it is unit-testable with a
+ * controlled tempDir + clock. Never throws.
+ */
+export async function sweepCollectTempPackages(
+  tempDir: string,
+  maxAgeMs: number,
+  now: number
+): Promise<number> {
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = await fs.readdir(tempDir);
+  } catch {
+    return 0; // temp dir missing or unreadable — nothing to sweep
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith('config-collect-')) continue;
+    const dirPath = join(tempDir, entry);
+    try {
+      const st = await fs.stat(dirPath);
+      if (now - st.mtimeMs > maxAgeMs) {
+        await fs.rm(dirPath, { recursive: true, force: true });
+        removed++;
+      }
+    } catch {
+      // individual entry failure doesn't abort the sweep
+    }
+  }
+  return removed;
+}
+
+/**
+ * Throttled retention sweep run on every collect. Defers to
+ * {@link sweepCollectTempPackages} with the production temp root + clock.
+ */
+async function pruneCollectTempPackages(): Promise<void> {
+  const now = Date.now();
+  if (now - lastCollectTempPruneAt < COLLECT_TEMP_PRUNE_INTERVAL_MS) return;
+  lastCollectTempPruneAt = now;
+  await sweepCollectTempPackages(join(process.cwd(), 'temp'), COLLECT_TEMP_MAX_AGE_MS, now);
+}
+
 /**
  * Gestion de configuration RooSync (collect, publish, apply)
  *
@@ -279,6 +335,11 @@ export async function roosyncConfig(args: ConfigArgs) {
       case 'collect': {
         // Action collect: Collecte la configuration locale
         const { targets = ['modes', 'mcp'] } = args;
+
+        // #2964 (point 3) — best-effort retention sweep (throttled hourly).
+        // Runs before collectConfig so stale packages are reclaimed even on
+        // dryRun calls. Never throws; never blocks on failure.
+        await pruneCollectTempPackages();
 
         const result = await configSharingService.collectConfig({
           targets: targets as ConfigTarget[],
