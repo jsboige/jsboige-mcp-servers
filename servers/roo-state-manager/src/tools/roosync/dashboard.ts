@@ -253,6 +253,19 @@ let cloudFallbackDisabledLogged = false;
  * FAILED-FAST connection (ECONNREFUSED / ENOTFOUND) is still retryable: it
  * rejects immediately, so the retry is cheap and can ride out a brief blip.
  * Exported for direct unit testing of the classification (#3011 bite-test).
+ *
+ * #3011 second tour: detection reads `constructor.name`, NOT `error.name`.
+ * The OpenAI SDK never assigns `this.name` on its error subclasses (verified
+ * against openai@4.104.0 error.js — `grep "this.name"` → 0 hits), so every
+ * subclass instance inherits `Error.prototype.name` = `"Error"`. The real
+ * subclass type lives on `constructor.name` (e.g. "APIConnectionTimeoutError").
+ * The first attempt read `error.name`: that matched the SYNTHETIC test error
+ * (`Object.assign(new Error, { name })` → name set, constructor.name="Error")
+ * but was exactly inverted — and dead — on the REAL SDK error
+ * (`new APIConnectionTimeoutError` → name="Error", constructor.name set). CI
+ * was green, production retried the timeout anyway. Matching `constructor.name`
+ * fixes both. See the #3012 sibling fix `isLLMTimeoutError` for the same root
+ * cause on the primary path.
  */
 export function isRetryableFallbackError(error: unknown): boolean {
   if (error && typeof error === 'object' && 'status' in error) {
@@ -260,13 +273,19 @@ export function isRetryableFallbackError(error: unknown): boolean {
     if (typeof status === 'number') {
       return status === 429 || status >= 500;
     }
+    // `status` is declared on the SDK's APIError base class but `undefined` for a
+    // connection/timeout error → fall through to the connection-class check below.
   }
-  // No status → connection-class error. Distinguish hung (timeout) from
-  // failed-fast. The OpenAI SDK throws APIConnectionTimeoutError on a client
-  // `timeout` expiry; a raw fetch abort surfaces as AbortError.
-  const errName = (error as { name?: string } | null | undefined)?.name ?? '';
-  if (errName === 'APIConnectionTimeoutError' || errName === 'AbortError') {
-    return false;
+  // Connection-class error (no usable HTTP status). Distinguish hung from failed-fast.
+  if (error instanceof Error) {
+    // constructor.name is the production-stable type signal (see JSDoc). It also
+    // survives a duplicate `openai` package instance in node_modules, which would
+    // defeat an `instanceof` check across the two prototypes.
+    const ctorName = (error as { constructor?: { name?: string } })?.constructor?.name;
+    if (ctorName === 'APIConnectionTimeoutError') return false;
+    // A genuine AbortController abort sets error.name = 'AbortError' (native fetch /
+    // browser paths). Retained though the fallback client doesn't use a signal today.
+    if (error.name === 'AbortError') return false;
   }
   // ECONNREFUSED / ENOTFOUND / etc. → fail fast → retryable.
   return true;

@@ -24,6 +24,16 @@ import * as path from 'path';
 import * as os from 'os';
 import { roosyncDashboard, resetCondenseCircuitBreaker, isRetryableFallbackError } from '../dashboard.js';
 
+// #3011 second tour: import the REAL SDK timeout class so the bite-test constructs the
+// exact error the fallback path throws on a hung endpoint. The global test setup
+// (tests/setup/jest.setup.js) mocks 'openai' (overriding OpenAI); this per-file override
+// restores the real exports so APIConnectionTimeoutError is the genuine class — the only
+// shape that proves the classifier works on a production error (mirrors #932's pattern).
+import { APIConnectionTimeoutError } from 'openai';
+vi.mock('openai', async (importOriginal) => {
+  return { ...(await importOriginal<typeof import('openai')>()) };
+});
+
 // Primary chat client + create — lazy indirection so each test can swap behaviour.
 const mockPrimaryCreate = vi.fn();
 const mockGetPrimaryClient = vi.fn();
@@ -290,10 +300,9 @@ describe('#2719 cloud-fallback condensation telemetry', () => {
     mockGetFallbackClient.mockReturnValue({
       chat: { completions: { create: mockFallbackCreate } },
     });
-    // OpenAI SDK client-timeout expiry: APIConnectionTimeoutError (no .status).
-    const timeoutErr = Object.assign(new Error('Request timed out'), {
-      name: 'APIConnectionTimeoutError',
-    });
+    // OpenAI SDK client-timeout expiry: the REAL APIConnectionTimeoutError class
+    // (no .status; .name="Error", constructor.name="APIConnectionTimeoutError").
+    const timeoutErr = new APIConnectionTimeoutError({ message: 'Request timed out' });
     mockFallbackCreate.mockRejectedValue(timeoutErr);
 
     const condensedResult = await fillUntilCondensed();
@@ -333,10 +342,16 @@ describe('#3011 isRetryableFallbackError classification', () => {
   });
 
   // Bite-test: pre-fix this returned `true` (timeout has no .status → retryable).
-  it('#3011 does NOT retry APIConnectionTimeoutError (hung endpoint)', () => {
-    const err = Object.assign(new Error('Request timed out'), {
-      name: 'APIConnectionTimeoutError',
-    });
+  // #3011 second tour: constructed from the REAL SDK class so it cannot silently
+  // regress to the synthetic inverse (name set, constructor.name="Error"). Sanity-
+  // asserts the SDK shape (.name="Error", constructor.name set) — the classifier
+  // must work on this exact production shape, not a synthetic stand-in.
+  it('#3011 does NOT retry APIConnectionTimeoutError (real SDK instance, hung endpoint)', () => {
+    const err = new APIConnectionTimeoutError({ message: 'Request timed out' });
+    // Sanity: confirm the SDK shape the fix depends on (.name inherited = "Error",
+    // real type on constructor.name). If these ever flip, the test itself is wrong.
+    expect(err.name).toBe('Error');
+    expect(err.constructor.name).toBe('APIConnectionTimeoutError');
     expect(isRetryableFallbackError(err)).toBe(false);
   });
 
