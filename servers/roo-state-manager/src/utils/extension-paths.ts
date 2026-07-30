@@ -110,16 +110,25 @@ function resolveGlobalStorageRoot(): string {
  * hosts — activity-based "which is running" detection is a follow-up, not
  * needed to fix the ENOENT). Only the Zoo-only case changes behavior.
  *
- * @returns The discovered extension ID, or `null` when neither globalStorage
- * exists (clean machine with no Roo/Zoo, or a test APPDATA).
+ * #3006 — The probe targets the `settings/mcp_settings.json` FILE, not the
+ * extension directory. On a migrated host the roo-cline globalStorage survives
+ * as an empty shell (leftover conversations, no settings file), and a
+ * directory-based probe picked Roo → ENOENT on the missing file even though
+ * Zoo was the live config. Probing the file makes the shell invisible: Zoo
+ * (which carries the file) wins. A genuine dual-install (both files present)
+ * still prefers Roo — back-compat preserved. The caller reads the file the
+ * probe already confirmed exists, so there is no new ENOENT path.
+ *
+ * @returns The discovered extension ID, or `null` when neither settings file
+ * exists (clean machine with no Roo/Zoo config, or a test APPDATA).
  */
 export function probeInstalledExtensionId(): string | null {
 	try {
 		const root = resolveGlobalStorageRoot();
-		const rooExists = fs.existsSync(path.join(root, DEFAULT_EXTENSION_ID));
-		if (rooExists) return DEFAULT_EXTENSION_ID;
-		const zooExists = fs.existsSync(path.join(root, ZOO_CODE_EXTENSION_ID));
-		if (zooExists) return ZOO_CODE_EXTENSION_ID;
+		const rooSettings = path.join(root, DEFAULT_EXTENSION_ID, 'settings', 'mcp_settings.json');
+		if (fs.existsSync(rooSettings)) return DEFAULT_EXTENSION_ID;
+		const zooSettings = path.join(root, ZOO_CODE_EXTENSION_ID, 'settings', 'mcp_settings.json');
+		if (fs.existsSync(zooSettings)) return ZOO_CODE_EXTENSION_ID;
 		return null;
 	} catch {
 		return null;
