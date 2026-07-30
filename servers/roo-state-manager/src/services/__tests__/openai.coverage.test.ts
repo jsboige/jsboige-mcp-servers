@@ -26,9 +26,9 @@
  * - **`getFallbackChatOpenAIClient` FALLBACK_BASE_URL arm (L121)**: 3-way fallback
  *   `ZAI_BASE_URL || FALLBACK_BASE_URL || default`. Base tests ZAI_BASE_URL override
  *   + default; the MIDDLE arm (FALLBACK_BASE_URL without ZAI_BASE_URL) is cold.
- * - **`getFallbackChatOpenAIClient` timeout below cap (L129)**: base tests the cap
- *   (120000→60000); a below-cap value (30000 default, or sub-60k override) passing
- *   through Math.min unchanged is cold.
+ * - **`getFallbackChatOpenAIClient` timeout passthrough (L129)**: #3016 removed the
+ *   former Math.min(timeout, 60000) clamp. A sub-default override passing through
+ *   unchanged (and the raised 120000 default) are exercised here.
  *
  * Strategy: same vi.hoisted MockOpenAI pattern as the base (default export mock),
  * dynamic import + vi.resetModules per test. No production code touched (#1936 anti-churn).
@@ -275,8 +275,9 @@ describe('openai — branch coverage (#833 C3, source-grounded)', () => {
             );
         });
 
-        test('below-cap timeout passes through Math.min unchanged (L129)', async () => {
-            // Math.min(15000, 60000) = 15000 — below-cap value is NOT raised to the cap.
+        test('sub-default FALLBACK_TIMEOUT_MS passes through unchanged (L129, #3016)', async () => {
+            // #3016 removed the Math.min(timeout, 60000) clamp. A small override now
+            // flows straight through (no floor is added either) — 15000 stays 15000.
             process.env.ZAI_API_KEY = 'k';
             process.env.FALLBACK_TIMEOUT_MS = '15000';
             MockOpenAI.mockImplementation(function () { return { mock: true }; });
@@ -289,16 +290,17 @@ describe('openai — branch coverage (#833 C3, source-grounded)', () => {
             );
         });
 
-        test('default timeout 30000 (FALLBACK_TIMEOUT_MS unset) passes through under cap (L122 + L129)', async () => {
+        test('default timeout 120000 (FALLBACK_TIMEOUT_MS unset, #3016 raised default)', async () => {
             process.env.ZAI_API_KEY = 'k';
             MockOpenAI.mockImplementation(function () { return { mock: true }; });
 
             const { getFallbackChatOpenAIClient } = await import('../openai.js');
             getFallbackChatOpenAIClient();
 
-            // Math.min(30000, 60000) = 30000.
+            // #3016: default raised 30000 → 120000 (covers the summary condensation call);
+            // no clamp, so the default flows through as-is.
             expect(MockOpenAI).toHaveBeenCalledWith(
-                expect.objectContaining({ timeout: 30000 }),
+                expect.objectContaining({ timeout: 120000 }),
             );
         });
     });

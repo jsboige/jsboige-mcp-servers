@@ -119,15 +119,31 @@ export function getFallbackChatOpenAIClient(): OpenAI | null {
       return null;
     }
     const baseUrl = process.env.ZAI_BASE_URL || process.env.FALLBACK_BASE_URL || 'https://api.z.ai/api/paas/v4';
-    const timeout = parseInt(process.env.FALLBACK_TIMEOUT_MS || '30000', 10);
+    // #3016: Default 120000ms (2 min). The prior 30000ms default — combined with a
+    // silent Math.min(timeout, 60000) clamp (now removed below) that defeated this
+    // env var — was too short for the SUMMARY condensation call (the largest prompt).
+    // During a vLLM wedge the primary fail-fasts correctly (~6s; #2267/#3011/#3012
+    // are unchanged and out of scope) and the cloud fallback carries the call, but
+    // its summary generation exceeded 30s and was cut by the client timeout →
+    // `fallback-truncated` with no digest (#3016). The value is derived, not guessed:
+    // a summary is bounded by CONDENSE_LLM_MAX_TOKENS (7200); at a conservative cloud
+    // rate of 60 tok/s a MAXIMAL summary takes 7200/60 = 120s, so 120s covers the
+    // worst-case summary the code can request (real non-thinking summaries are
+    // ~700-1500 tokens, far under). That is 4x the production-observed 30s floor and
+    // stays well under the ~600s wedge window — the fallback produces ONE summary, it
+    // does not span the wedge. The clamp is gone so FALLBACK_TIMEOUT_MS is honoured
+    // as-is; a hung endpoint still fast-fails here (maxRetries:0 + #3011
+    // timeout-not-retried) and never compounds. Env-overridable for ops tuning.
+    const timeout = parseInt(process.env.FALLBACK_TIMEOUT_MS || '120000', 10);
 
     fallbackChatOpenai = new OpenAI({
       apiKey,
       baseURL: baseUrl,
-      // Fallback is lightweight (flash model) — short timeout, no SDK retries.
       // #2998: Retry on 429/5xx is handled by cloudCondenseWithRetry (exponential
       // backoff, 3 attempts) — NOT by the SDK, so it can skip non-retryable 4xx.
-      timeout: Math.min(timeout, 60000),
+      // #3016: no clamp — FALLBACK_TIMEOUT_MS is the true per-attempt ceiling (the
+      // former Math.min(timeout, 60000) silently defeated it).
+      timeout,
       maxRetries: 0,
     });
   }

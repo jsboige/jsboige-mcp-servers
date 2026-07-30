@@ -228,10 +228,11 @@ describe('openai', () => {
 				const client = getFallbackChatOpenAIClient();
 
 				expect(client).toBeDefined();
+				// #3016: default raised 30000 → 120000 (covers the summary condensation call).
 				expect(MockOpenAI).toHaveBeenCalledWith({
 					apiKey: 'zai-key',
 					baseURL: 'https://api.z.ai/api/paas/v4',
-					timeout: 30000,
+					timeout: 120000,
 					maxRetries: 0,
 				});
 			});
@@ -261,16 +262,20 @@ describe('openai', () => {
 				);
 			});
 
-			test('caps timeout at 60000ms even when FALLBACK_TIMEOUT_MS is larger', async () => {
+			test('#3016 respects FALLBACK_TIMEOUT_MS above the former 60s cap (clamp removed)', async () => {
+				// Pre-#3016 this clamped 90000 → 60000 via Math.min(timeout, 60000), silently
+				// defeating the env var. The clamp is removed; a value > 60000 now passes through.
+				// 90000 (not 120000) is used so it is distinct from the new default and proves the
+				// env var itself is honoured rather than coinciding with the default.
 				process.env.ZAI_API_KEY = 'k';
-				process.env.FALLBACK_TIMEOUT_MS = '120000';
+				process.env.FALLBACK_TIMEOUT_MS = '90000';
 				MockOpenAI.mockImplementation(() => ({ mock: true }));
 
 				const { getFallbackChatOpenAIClient } = await import('../openai.js');
 				getFallbackChatOpenAIClient();
 
 				expect(MockOpenAI).toHaveBeenCalledWith(
-					expect.objectContaining({ timeout: 60000 })
+					expect.objectContaining({ timeout: 90000 })
 				);
 			});
 
