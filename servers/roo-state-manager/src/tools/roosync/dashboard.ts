@@ -249,7 +249,7 @@ let cloudFallbackDisabledLogged = false;
  * #3011: Connection errors (no HTTP status) are split — a HUNG endpoint
  * (timeout) must NOT be retried, mirroring the primary's #2267 rule. A hung
  * endpoint won't recover in a 2-8s backoff, so retrying just burns another
- * full FALLBACK_TIMEOUT_MS (~30s each → ~90s for 3 attempts today). A
+ * full FALLBACK_TIMEOUT_MS (~120s each at the #3016 default → ~6 min for 3 attempts). A
  * FAILED-FAST connection (ECONNREFUSED / ENOTFOUND) is still retryable: it
  * rejects immediately, so the retry is cheap and can ride out a brief blip.
  * Exported for direct unit testing of the classification (#3011 bite-test).

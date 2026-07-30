@@ -289,7 +289,7 @@ describe('#2719 cloud-fallback condensation telemetry', { testTimeout: 30000 }, 
   });
 
   // #3011: A timeout must NOT be retried. A hung endpoint won't recover in a 2-8s
-  // backoff — retrying burns another full FALLBACK_TIMEOUT_MS (3×30s = ~90s today).
+  // backoff — retrying burns another full FALLBACK_TIMEOUT_MS (3×120s ≈ 6 min at the #3016 default).
   // Mirrors the primary's #2267 rule. Bite-test: pre-fix, a timeout (no .status) was
   // classified retryable and retried 3×; post-fix it is non-retryable → single attempt.
   it('(g) #3011 primary down → fallback timeout (APIConnectionTimeoutError) → single attempt, no retry', async () => {
