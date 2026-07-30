@@ -1276,6 +1276,45 @@ export function condenseEndpointHost(): string {
 }
 
 /**
+ * Detect whether a caught error is a condensation LLM timeout.
+ *
+ * #3012: The primary condensation path passes `{ timeout: ms }` to the OpenAI SDK
+ * (no AbortController). On a hung endpoint the SDK throws `APIConnectionTimeoutError`,
+ * which inherits `Error.prototype.name` — i.e. `error.name === "Error"`, NOT
+ * `"AbortError"`. The previous guard (`error.name === 'AbortError'`) never fired on
+ * the primary path, so the #2267 "do not retry a timeout" guard was dead code: every
+ * real timeout was retried 3× (~3 × CONDENSE_LLM_TIMEOUT_MS = ~36 min) before falling
+ * back to truncation, instead of failing fast.
+ *
+ * Detection strategy:
+ *   - `error.constructor?.name === 'APIConnectionTimeoutError'` — identifies the
+ *     SDK timeout class by its constructor name. This works even when a double
+ *     copy of the SDK in `node_modules` defeats `instanceof` (duplicate package
+ *     instances have different prototypes). It also avoids a static value import
+ *     from `openai`, which would interact with the test suite's module mocks.
+ *   - `error.name === 'AbortError'` — kept for the day an `AbortController`/`signal`
+ *     is introduced on this path; today nothing produces it here.
+ *
+ * Measured on `openai@4.104.0`: `new APIConnectionTimeoutError({}).name === "Error"`
+ * but `.constructor.name === "APIConnectionTimeoutError"`. The SDK never sets
+ * `this.name`, so `Error.prototype.name` ("Error") is inherited — the old check
+ * was structurally unable to match.
+ *
+ * Shared by `generateLLMSummary` and `generateStatusUpdate` so the two twin call
+ * sites cannot silently diverge again.
+ */
+function isLLMTimeoutError(error: unknown): boolean {
+  // Primary signal: constructor.name identifies the SDK class even across
+  // duplicate module copies (where instanceof fails due to different prototypes).
+  const ctorName = (error as { constructor?: { name?: string } })?.constructor?.name;
+  if (ctorName === 'APIConnectionTimeoutError') return true;
+  // Legacy AbortController signal path (currently unused on the primary, kept
+  // so a future `signal` introduction doesn't silently regress the guard).
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  return false;
+}
+
+/**
  * Build an EXPLICIT, human-readable failure string for a failed condensation LLM call.
  *
  * User mandate 2026-06-01: "le condenser doit exploser avec des erreurs explicites le
@@ -1429,7 +1468,10 @@ FORMAT :
       const elapsed = Date.now() - startTime;
       const errStr = safeErrorString(error);
       stats.errorCount += 1;
-      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      // #3012: use class-identity detection — see isLLMTimeoutError. The previous
+      // `error.name === 'AbortError'` test never fired here because the SDK throws
+      // APIConnectionTimeoutError (whose `.name` inherits "Error").
+      const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
         logger.warn('LLM summary timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
@@ -1639,7 +1681,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       const elapsed = Date.now() - startTime;
       const errStr = safeErrorString(error);
       stats.errorCount += 1;
-      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      // #3012: use class-identity detection — see isLLMTimeoutError.
+      const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
         logger.warn('LLM status update timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
