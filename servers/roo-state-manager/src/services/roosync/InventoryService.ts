@@ -8,12 +8,11 @@ import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { getMcpSettingsPath as getExtensionMcpSettingsPath } from '../../utils/extension-paths.js';
+import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 
 export class InventoryService {
   private static instance: InventoryService;
   private readonly ROO_EXTENSIONS_PATH: string;
-  private readonly MCP_SETTINGS_PATH: string;
   private readonly ROO_CONFIG_PATH: string;
   private readonly SCRIPTS_PATH: string;
   private readonly CLAUDE_JSON_PATH: string; // #489: Ajout chemin vers ~/.claude.json
@@ -52,13 +51,33 @@ export class InventoryService {
     // In a real scenario, these might be configurable or auto-detected
     const userHome = os.homedir();
     this.ROO_EXTENSIONS_PATH = InventoryService.findRooExtensionsRoot();
-    this.MCP_SETTINGS_PATH = getExtensionMcpSettingsPath();
     this.ROO_CONFIG_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'roo-config');
     this.SCRIPTS_PATH = path.join(this.ROO_EXTENSIONS_PATH, 'scripts');
     this.CLAUDE_JSON_PATH = path.join(userHome, '.claude.json'); // #489: Ajout chemin ~/.claude.json
     // #601: Claude Code scopes - project and settings
     this.PROJECT_MCP_JSON_PATH = path.join(this.ROO_EXTENSIONS_PATH, '.mcp.json'); // Project MCPs
     this.CLAUDE_SETTINGS_PATH = path.join(userHome, '.claude', 'settings.json'); // Settings scope (env, hooks, permissions)
+  }
+
+  /**
+   * Chemin du fichier mcp_settings.json de l'extension VS Code ACTIVE (Roo ou Zoo).
+   *
+   * Accesseur (et non champ) pour deux raisons, dans cet ordre d'importance :
+   *
+   * 1. `getActiveMcpSettingsPath()` sonde le disque pour déterminer l'extension
+   *    installée (Roo `rooveterinaryinc.roo-cline` vs Zoo `zoocodeorganization.zoo-code`).
+   *    L'ancien `getMcpSettingsPath()` était env-only et retombait toujours sur Roo :
+   *    sur une machine migrée vers Zoo, `paths.mcpSettings` pointait vers un répertoire
+   *    inexistant, et `collectMcpServers()` / `ConfigSharingService.collectMcpSettings()`
+   *    renvoyaient silencieusement un inventaire vide.
+   *
+   * 2. La résolution doit avoir lieu à l'APPEL, pas au chargement du module ni à la
+   *    construction du singleton — `process.env` et l'état du disque peuvent changer
+   *    après l'instanciation. Voir la même mise en garde dans
+   *    `src/tools/manage-mcp-settings.ts` (incidents 2026-03-08 ai-01 et 2026-03-10 po-2026).
+   */
+  private get MCP_SETTINGS_PATH(): string {
+    return getActiveMcpSettingsPath();
   }
 
   public static getInstance(): InventoryService {
