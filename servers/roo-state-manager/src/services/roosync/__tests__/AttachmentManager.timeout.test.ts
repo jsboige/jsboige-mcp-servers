@@ -360,4 +360,69 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
       mocks.sharedStatePath = '';
     }
   }, 10_000);
+
+  // --- #925 follow-up: "filter before read". The bounded-concurrency pool (#925) caps
+  // the *per-batch* read cost; this reverse index caps the *per-query* read count to the
+  // matches, so a filtered `listAttachments(messageId)` doesn't read the N−k non-matching
+  // metadata files. On a shared GDrive store of cloud-only attachments that is the
+  // dominant cost (N≈960 ⇒ 300 s even pooled). The defining property: after one scan has
+  // populated the index, a second filtered query touches only the requested message's
+  // metadata. Red without the fast path (reads all N), green with it (reads only matches).
+
+  test('listAttachments(messageId) skips non-matching metadata after the index is warm (#925)', async () => {
+    // Two messages: A carries 3 attachments, B carries 2 (5 total).
+    const msgA = 'msg-filter-A';
+    const msgB = 'msg-filter-B';
+    const aUuids = ['a1a1a1a1-0000-0000-0000-000000000001', 'a1a1a1a1-0000-0000-0000-000000000002', 'a1a1a1a1-0000-0000-0000-000000000003'];
+    const bUuids = ['b2b2b2b2-0000-0000-0000-000000000004', 'b2b2b2b2-0000-0000-0000-000000000005'];
+    for (const u of aUuids) seedAttachment(sharedState, u, msgA);
+    for (const u of bUuids) seedAttachment(sharedState, u, msgB);
+
+    // Count metadata readFiles across the whole sequence.
+    let readCount = 0;
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.endsWith('metadata.json')) readCount++;
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, 10_000);
+
+    // 1) Unfiltered scan: reads all 5 metadata, populates the reverse index as a
+    //    side-effect for both messages.
+    const all = await manager.listAttachments();
+    expect(all).toHaveLength(5);
+    const firstPass = readCount;
+    expect(firstPass).toBe(5);
+
+    // 2) Filtered query for msg-A with a WARM index: must read only A's 3 metadata,
+    //    not re-read B's 2. This is the property — without the fast path, readCount
+    //    would jump to 5 again (all N), with it only +3.
+    readCount = 0;
+    const onlyA = await manager.listAttachments(msgA);
+
+    expect(onlyA).toHaveLength(3);
+    expect(onlyA.map((m) => m.uuid).sort()).toEqual([...aUuids].sort());
+    expect(readCount).toBe(3); // ← the bite: not 5 (no fast path), exactly 3 (fast path)
+  }, 10_000);
+
+  test('listAttachments(unknown messageId) still scans all (never trusts absence) (#925)', async () => {
+    // One attachment for msg-A. Query a DIFFERENT, never-seen message: the index has no
+    // entry, so the code must fall back to a full scan (correctness over speed — another
+    // machine may have uploaded for the queried message on the shared store). Asserting
+    // it does NOT short-circuit to [] without looking.
+    seedAttachment(sharedState, 'c3c3c3c3-0000-0000-0000-000000000009', 'msg-seen');
+
+    let readCount = 0;
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.endsWith('metadata.json')) readCount++;
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, 10_000);
+    const result = await manager.listAttachments('msg-never-seen');
+
+    // No match, but only after actually scanning (readCount=1, not 0).
+    expect(result).toEqual([]);
+    expect(readCount).toBe(1); // scanned the one dir; did not trust absence from a cold index
+  }, 10_000);
 });

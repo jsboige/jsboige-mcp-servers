@@ -176,6 +176,28 @@ export class AttachmentManager {
   private attachmentsPath: string;
   private readonly readTimeoutMs: number;
 
+  /**
+   * #925 follow-up — In-memory reverse index `messageId → Set<uuid>`, populated as a
+   * side-effect of every `listAttachments` scan (and maintained by upload/delete).
+   *
+   * Lets a filtered `listAttachments(messageId)` **filter before read**: once we've
+   * seen a message's attachments in this process, a later query for it skips reading
+   * the N−k metadata files of non-matching attachments. That read is the dominant
+   * cost on a shared GDrive store holding many cloud-only attachments (N≈960 ⇒ 300 s
+   * even after #925's bounded concurrency). Bounded concurrency caps the *per-batch*
+   * cost; this index caps the *per-query* read count to the matches.
+   *
+   * Positive cache only. A messageId PRESENT here is served from the fast path; a
+   * messageId ABSENT here always falls back to a full scan — we never conclude
+   * absence from the index, because another machine may have uploaded attachments
+   * for it on the shared store since the last scan. So the index can only cause a
+   * speed-up, never a false "no attachments". Stale uuids (an attachment since
+   * deleted by another machine) are tolerated: the fast path readdirs and
+   * existsSync-checks each uuid, so a gone dir is counted as `missingMetadata` and
+   * skipped — not fatal. The index rebuilds itself on the next full scan.
+   */
+  private readonly messageIndex: Map<string, Set<string>> = new Map();
+
   constructor(sharedStatePath: string, readTimeoutMs: number = ATTACHMENT_READ_TIMEOUT_MS) {
     this.attachmentsPath = join(sharedStatePath, 'attachments');
     this.readTimeoutMs = readTimeoutMs;
@@ -243,6 +265,18 @@ export class AttachmentManager {
 
     logger.info('📎 Attachment uploaded', { uuid, filename: resolvedFilename, sizeBytes });
 
+    // #925 follow-up — keep the reverse index warm so the next filtered query for this
+    // message hits the fast path without a full scan. The metadata was just written, so
+    // the uuid↔messageId binding is known here without re-reading.
+    if (messageId) {
+      let bucket = this.messageIndex.get(messageId);
+      if (!bucket) {
+        bucket = new Set();
+        this.messageIndex.set(messageId, bucket);
+      }
+      bucket.add(uuid);
+    }
+
     return { uuid, filename: resolvedFilename, sizeBytes };
   }
 
@@ -264,7 +298,20 @@ export class AttachmentManager {
     }
 
     const entries = await fs.readdir(this.attachmentsPath, { withFileTypes: true });
-    const dirs = entries.filter((entry) => entry.isDirectory());
+    let dirs = entries.filter((entry) => entry.isDirectory());
+
+    // #925 follow-up — "filter before read". When a messageId is requested AND we've
+    // already seen its attachments this process, restrict `dirs` to those uuids so the
+    // worker pool reads only the matching metadata files, not all N. `readdir` (directory
+    // entries, no content fetch) is cheap next to the N metadata readFiles it avoids. A
+    // first query for an unseen message falls through to the full scan below, which
+    // populates the index (for every parsed attachment, not just the filter match) so the
+    // next query for any seen message hits this fast path. See `messageIndex` for why
+    // absence is never trusted (multi-machine shared store).
+    if (messageId && this.messageIndex.has(messageId)) {
+      const known = this.messageIndex.get(messageId)!;
+      dirs = dirs.filter((entry) => known.has(entry.name));
+    }
 
     // Slot-indexed so the result keeps readdir order regardless of which reads
     // finish first — callers saw a stable order before this became concurrent.
@@ -306,6 +353,19 @@ export class AttachmentManager {
           }
 
           const meta: AttachmentMetadata = JSON.parse(raw);
+
+          // #925 follow-up — index every parsed attachment by its messageId as a
+          // side-effect, so a future filtered query for ANY seen message (not just the
+          // one currently requested) hits the fast path. Done for all parsed metas, so a
+          // single full scan populates the whole reverse index. No await, no throw.
+          if (meta.messageId) {
+            let bucket = this.messageIndex.get(meta.messageId);
+            if (!bucket) {
+              bucket = new Set();
+              this.messageIndex.set(meta.messageId, bucket);
+            }
+            bucket.add(entry.name);
+          }
 
           // Filter `messageId` is intentional — NOT counted as a loss. Aggregating
           // it would make the signal unusable (a per-message call always drops N-1
@@ -404,6 +464,12 @@ export class AttachmentManager {
 
     await fs.rm(attachmentDir, { recursive: true, force: true });
     logger.info('🗑️ Attachment deleted', { uuid });
+
+    // #925 follow-up — prune the deleted uuid from the reverse index so a later filtered
+    // query for its message doesn't route through a now-gone dir. Best-effort across all
+    // buckets (we don't re-read already-deleted metadata to learn which message it was);
+    // the fast path tolerates a residual stale entry anyway (existsSync skip). No throw.
+    for (const bucket of this.messageIndex.values()) bucket.delete(uuid);
   }
 
   /**
