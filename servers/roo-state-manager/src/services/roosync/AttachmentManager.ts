@@ -53,6 +53,21 @@ const ATTACHMENT_READ_TIMEOUT_MS = 10_000;
 const ATTACHMENT_LIST_CONCURRENCY = 32;
 
 /**
+ * #925 follow-up — How long a messageId's "completeness" (established by a full
+ * scan) is trusted on the fast path before a filtered query falls back to a full
+ * scan.
+ *
+ * This bounds the ONE irreducible case: another machine adds an attachment for a
+ * message this process already scanned, so its index entry is stale-and-incomplete.
+ * We can't detect that without the very full scan the fast path exists to avoid —
+ * the uuid↔messageId binding lives in `metadata.json`, i.e. the read we skip — so we
+ * bound it in time instead. 60s: the gain materializes on burst queries (repeated
+ * lists for the same message within a UI session), which a 60s window preserves,
+ * while no process trusts a stale complete-set longer than that.
+ */
+const DEFAULT_COMPLETENESS_TTL_MS = 60_000;
+
+/**
  * Métadonnées d'une pièce jointe stockée
  */
 export interface AttachmentMetadata {
@@ -177,30 +192,51 @@ export class AttachmentManager {
   private readonly readTimeoutMs: number;
 
   /**
-   * #925 follow-up — In-memory reverse index `messageId → Set<uuid>`, populated as a
-   * side-effect of every `listAttachments` scan (and maintained by upload/delete).
-   *
-   * Lets a filtered `listAttachments(messageId)` **filter before read**: once we've
-   * seen a message's attachments in this process, a later query for it skips reading
-   * the N−k metadata files of non-matching attachments. That read is the dominant
-   * cost on a shared GDrive store holding many cloud-only attachments (N≈960 ⇒ 300 s
-   * even after #925's bounded concurrency). Bounded concurrency caps the *per-batch*
-   * cost; this index caps the *per-query* read count to the matches.
-   *
-   * Positive cache only. A messageId PRESENT here is served from the fast path; a
-   * messageId ABSENT here always falls back to a full scan — we never conclude
-   * absence from the index, because another machine may have uploaded attachments
-   * for it on the shared store since the last scan. So the index can only cause a
-   * speed-up, never a false "no attachments". Stale uuids (an attachment since
-   * deleted by another machine) are tolerated: the fast path readdirs and
-   * existsSync-checks each uuid, so a gone dir is counted as `missingMetadata` and
-   * skipped — not fatal. The index rebuilds itself on the next full scan.
+   * #925 follow-up — In-memory reverse index `messageId → Set<uuid>`. Holds the
+   * uuids we've *seen* for each message, but **presence here is NOT proof of
+   * completeness** (see `completeMessages`). `upload`/`delete` mutate it to stay
+   * warm, but only a full scan can establish that we've seen every attachment.
    */
   private readonly messageIndex: Map<string, Set<string>> = new Map();
 
-  constructor(sharedStatePath: string, readTimeoutMs: number = ATTACHMENT_READ_TIMEOUT_MS) {
+  /**
+   * #925 follow-up — Messages whose attachment set we know **complete** from a full
+   * scan, mapped to the epoch-ms at which that completeness was established. A
+   * filtered query takes the fast path ONLY for a message present here AND within
+   * `completenessTtlMs` AND whose bucket is non-empty. Stamped exclusively at the
+   * end of a full scan (rebuilt from scratch each time); `upload`/`delete` never
+   * touch it — they change what we *know*, not what we've verified *complete*.
+   *
+   * This separates "what I know" (`messageIndex`) from "what I know complete"
+   * (this set), which is the fix for the three holes a reviewer caught: a bucket
+   * created by `upload` (authoritative-looking but partial), a bucket emptied by
+   * `delete` (a negative cache, since `Map.has` is true for an empty `Set`), and an
+   * addition by another machine on the shared store (irreducible without a full
+   * scan, so bounded by the TTL instead). The first two are killed exactly; the
+   * third is bounded, not eliminated — documented here rather than over-promised.
+   */
+  private readonly completeMessages: Map<string, number> = new Map();
+
+  constructor(
+    sharedStatePath: string,
+    readTimeoutMs: number = ATTACHMENT_READ_TIMEOUT_MS,
+    private readonly completenessTtlMs: number = DEFAULT_COMPLETENESS_TTL_MS,
+  ) {
     this.attachmentsPath = join(sharedStatePath, 'attachments');
     this.readTimeoutMs = readTimeoutMs;
+  }
+
+  /**
+   * #925 follow-up — True iff `messageId` was established **complete** by a full
+   * scan AND that completeness is still within the TTL window. The fast path's only
+   * gate: `upload`/`delete` never make a message complete, so a partial bucket can
+   * never masquerade as a complete set. When this returns false the filtered query
+   * falls back to a full scan (correctness over speed).
+   */
+  private isComplete(messageId: string): boolean {
+    const completedAt = this.completeMessages.get(messageId);
+    if (completedAt === undefined) return false;
+    return Date.now() - completedAt < this.completenessTtlMs;
   }
 
   /**
@@ -265,9 +301,12 @@ export class AttachmentManager {
 
     logger.info('📎 Attachment uploaded', { uuid, filename: resolvedFilename, sizeBytes });
 
-    // #925 follow-up — keep the reverse index warm so the next filtered query for this
-    // message hits the fast path without a full scan. The metadata was just written, so
-    // the uuid↔messageId binding is known here without re-reading.
+    // #925 follow-up — warm the reverse index with the uuid we just wrote, so the next
+    // FULL scan sees it. We do NOT mark the message complete here: this bucket holds only
+    // our own upload, and the message may already have other attachments on the shared
+    // store that we've never read. Marking it complete would let a later filtered query
+    // serve this partial bucket as if it were the full set. Completeness is established
+    // solely by a full scan; `upload` only records what it wrote.
     if (messageId) {
       let bucket = this.messageIndex.get(messageId);
       if (!bucket) {
@@ -300,15 +339,20 @@ export class AttachmentManager {
     const entries = await fs.readdir(this.attachmentsPath, { withFileTypes: true });
     let dirs = entries.filter((entry) => entry.isDirectory());
 
-    // #925 follow-up — "filter before read". When a messageId is requested AND we've
-    // already seen its attachments this process, restrict `dirs` to those uuids so the
-    // worker pool reads only the matching metadata files, not all N. `readdir` (directory
-    // entries, no content fetch) is cheap next to the N metadata readFiles it avoids. A
-    // first query for an unseen message falls through to the full scan below, which
-    // populates the index (for every parsed attachment, not just the filter match) so the
-    // next query for any seen message hits this fast path. See `messageIndex` for why
-    // absence is never trusted (multi-machine shared store).
-    if (messageId && this.messageIndex.has(messageId)) {
+    // #925 follow-up — "filter before read". The fast path is taken ONLY when the
+    // requested message is known **complete** from a prior full scan (within TTL) and its
+    // bucket is non-empty. Then `dirs` is restricted to those uuids and the worker pool
+    // reads only the matching metadata, not all N. `readdir` (directory names, no content
+    // fetch) is cheap next to the N metadata readFiles it avoids. Gating on completeness
+    // (not mere bucket presence) is what stops a partial bucket — one created by `upload`,
+    // emptied by `delete`, or grown by another machine — from being served as if complete.
+    // Anything else (unfiltered call, cold message, expired TTL, emptied bucket) falls
+    // through to a full scan, which rebuilds completeness. See `completeMessages`/`isComplete`.
+    const fastPathTaken =
+      !!messageId &&
+      this.isComplete(messageId) &&
+      (this.messageIndex.get(messageId)?.size ?? 0) > 0;
+    if (fastPathTaken) {
       const known = this.messageIndex.get(messageId)!;
       dirs = dirs.filter((entry) => known.has(entry.name));
     }
@@ -316,6 +360,11 @@ export class AttachmentManager {
     // Slot-indexed so the result keeps readdir order regardless of which reads
     // finish first — callers saw a stable order before this became concurrent.
     const slots: (AttachmentMetadata | undefined)[] = new Array(dirs.length);
+
+    // #925 follow-up — messageIds whose metadata was read THIS pass. On a full scan
+    // (fast path not taken) this is the authoritative complete set for the on-disk
+    // state at this instant, used to rebuild `completeMessages` after the pool.
+    const seenThisPass = new Set<string>();
 
     // Worker pool draining a shared cursor: exactly ATTACHMENT_LIST_CONCURRENCY
     // reads stay in flight, so one hung (cloud-only) entry stalls its own worker
@@ -359,6 +408,7 @@ export class AttachmentManager {
           // one currently requested) hits the fast path. Done for all parsed metas, so a
           // single full scan populates the whole reverse index. No await, no throw.
           if (meta.messageId) {
+            seenThisPass.add(meta.messageId);
             let bucket = this.messageIndex.get(meta.messageId);
             if (!bucket) {
               bucket = new Set();
@@ -384,6 +434,19 @@ export class AttachmentManager {
     await Promise.all(
       Array.from({ length: Math.min(ATTACHMENT_LIST_CONCURRENCY, dirs.length) }, drain),
     );
+
+    // #925 follow-up — on a FULL scan (fast path not taken) `seenThisPass` is exactly
+    // the set of messages currently on disk, so rebuild completeness from it with fresh
+    // timestamps. Cleared-then-refilled (not merged) so a message whose attachments were
+    // all deleted elsewhere drops out of the complete-set — its next filtered query falls
+    // back to a full scan instead of trusting a stale bucket. The TTL then bounds how long
+    // any entry is trusted against additions by another machine. A fast-path pass leaves
+    // completeness untouched: the gate already proved the message complete-and-fresh.
+    if (!fastPathTaken) {
+      this.completeMessages.clear();
+      const now = Date.now();
+      for (const msgId of seenThisPass) this.completeMessages.set(msgId, now);
+    }
 
     return slots.filter((meta): meta is AttachmentMetadata => meta !== undefined);
   }
@@ -465,10 +528,14 @@ export class AttachmentManager {
     await fs.rm(attachmentDir, { recursive: true, force: true });
     logger.info('🗑️ Attachment deleted', { uuid });
 
-    // #925 follow-up — prune the deleted uuid from the reverse index so a later filtered
-    // query for its message doesn't route through a now-gone dir. Best-effort across all
-    // buckets (we don't re-read already-deleted metadata to learn which message it was);
-    // the fast path tolerates a residual stale entry anyway (existsSync skip). No throw.
+    // #925 follow-up — prune the deleted uuid from any bucket. We do NOT touch
+    // `completeMessages`: a local deletion is known, so if the message was complete it
+    // stays complete (just with one fewer uuid), and the fast path will skip the now-gone
+    // dir. We also do NOT remove a bucket that becomes empty — `Map.has` is true for an
+    // empty `Set`, but the fast-path gate checks `bucket.size > 0`, so an emptied bucket
+    // (last attachment deleted) routes the next filtered query to a full scan instead of
+    // short-circuiting to a false `[]`. Best-effort across all buckets since we don't
+    // re-read the deleted metadata to learn which message it belonged to. No throw.
     for (const bucket of this.messageIndex.values()) bucket.delete(uuid);
   }
 

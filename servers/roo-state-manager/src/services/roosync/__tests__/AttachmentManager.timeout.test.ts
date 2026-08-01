@@ -425,4 +425,98 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
     expect(result).toEqual([]);
     expect(readCount).toBe(1); // scanned the one dir; did not trust absence from a cold index
   }, 10_000);
+
+  // --- ai-01 review §6: the three completeness holes. Each is RED on the v1 fast path
+  // (which gated on bucket presence, not completeness) and GREEN once `completeMessages`
+  // separates "known" from "known complete". The defining property is stated per test.
+
+  test('upload does not let a partial bucket masquerade as complete (hole a)', async () => {
+    // msg-X ALREADY has 2 attachments on disk (seeded directly, never scanned this process).
+    seedAttachment(sharedState, 'd4d4d4d4-0000-0000-0000-000000000010', 'msg-X');
+    seedAttachment(sharedState, 'd4d4d4d4-0000-0000-0000-000000000011', 'msg-X');
+
+    let readCount = 0;
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.endsWith('metadata.json')) readCount++;
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, 10_000);
+
+    // Upload a 3rd attachment for msg-X via the real upload path. v1 created an
+    // authoritative-looking bucket {only-this-uuid} here; a later filtered query then
+    // served ONLY this upload, hiding the 2 pre-existing ones. upload must NOT mark the
+    // message complete.
+    const src = join(sharedState, 'src-upload.bin');
+    writeFileSync(src, 'payload', 'utf-8');
+    await manager.uploadAttachment(src, 'myia-po-2023', 'up.txt', 'msg-X');
+
+    // A filtered query for msg-X must fall back to a full scan (message not complete) and
+    // render ALL 3 attachments — the 2 pre-existing plus our upload.
+    readCount = 0;
+    const result = await manager.listAttachments('msg-X');
+
+    expect(result).toHaveLength(3); // ← not 1 (the v1 bug: partial bucket served as complete)
+    expect(readCount).toBe(3); // it scanned all 3, did not short-circuit to the uploaded one
+  }, 10_000);
+
+  test('deleting the last attachment does not produce a false [] (hole b)', async () => {
+    // msg-X and msg-Y each have one attachment. Warm the index with a full scan so both
+    // are marked complete.
+    const xUuid = 'e5e5e5e5-0000-0000-0000-000000000020';
+    const yUuid = 'e5e5e5e5-0000-0000-0000-000000000021';
+    seedAttachment(sharedState, xUuid, 'msg-X');
+    seedAttachment(sharedState, yUuid, 'msg-Y');
+
+    let readCount = 0;
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.endsWith('metadata.json')) readCount++;
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, 10_000);
+    await manager.listAttachments(); // full scan → msg-X, msg-Y complete; readCount=2
+    readCount = 0;
+
+    // Delete msg-X's only attachment. Its bucket becomes an empty Set, but Map.has(msg-X)
+    // is still true. v1 gated on has() and short-circuited to [] without scanning.
+    await manager.deleteAttachment(xUuid);
+
+    // A filtered query for msg-X must SCAN (the emptied bucket routes here via size>0
+    // guard), read msg-Y's metadata as part of that scan, and honestly return [] for msg-X.
+    const result = await manager.listAttachments('msg-X');
+
+    expect(result).toEqual([]);
+    expect(readCount).toBe(1); // ← the bite: v1 short-circuited (0); correctness scans (1)
+  }, 10_000);
+
+  test('a post-scan addition by another machine is bounded by the completeness TTL (hole c)', async () => {
+    // Inject a tiny TTL so the bound can be exercised in real time without a 60s wait.
+    const TTL = 50;
+    const manager = new AttachmentManager(sharedState, 10_000, TTL);
+
+    const firstUuid = 'f6f6f6f6-0000-0000-0000-000000000030';
+    seedAttachment(sharedState, firstUuid, 'msg-X');
+
+    mocks.readFile.mockImplementation(async (filePath: string) => realReadFile(filePath, 'utf-8'));
+
+    // 1) Warm the index: full scan sees {firstUuid} and marks msg-X complete.
+    await manager.listAttachments();
+
+    // 2) Another machine adds a 2nd attachment for msg-X on the shared store.
+    const addedUuid = 'f6f6f6f6-0000-0000-0000-000000000031';
+    seedAttachment(sharedState, addedUuid, 'msg-X');
+
+    // 3) Query WITHIN the TTL: msg-X is still trusted complete, so the fast path serves the
+    //    stale {firstUuid} and misses the addition. This is the irreducible case — we can't
+    //    detect it without the very full scan the fast path avoids. The TTL is the bound.
+    const withinTtl = await manager.listAttachments('msg-X');
+    expect(withinTtl.map((m) => m.uuid)).toEqual([firstUuid]); // stale-but-bounded (documented)
+
+    // 4) After the TTL expires, completeness is no longer trusted → full scan → the
+    //    addition is seen. The window is closed in time, independent of FS mtime semantics.
+    await new Promise((r) => setTimeout(r, TTL + 20));
+    const afterTtl = await manager.listAttachments('msg-X');
+    expect(afterTtl.map((m) => m.uuid).sort()).toEqual([firstUuid, addedUuid].sort());
+  }, 10_000);
 });
