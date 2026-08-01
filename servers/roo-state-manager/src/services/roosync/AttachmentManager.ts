@@ -361,10 +361,16 @@ export class AttachmentManager {
     // finish first — callers saw a stable order before this became concurrent.
     const slots: (AttachmentMetadata | undefined)[] = new Array(dirs.length);
 
-    // #925 follow-up — messageIds whose metadata was read THIS pass. On a full scan
-    // (fast path not taken) this is the authoritative complete set for the on-disk
-    // state at this instant, used to rebuild `completeMessages` after the pool.
+    // #925 follow-up — messageIds whose metadata was read THIS pass, AND how many
+    // entries were skipped by an early exit (missing metadata / read timeout / parse
+    // error). `seenThisPass` is the complete on-disk set ONLY when `skipped === 0`:
+    // the three early exits can't feed `seenThisPass` (the messageId lives in the
+    // metadata.json that just failed to read), so a pass with any skip did NOT see
+    // every attachment and must not be treated as authoritative — a timed-out entry
+    // would be silently dropped from the complete-set and hidden for a TTL window.
+    // Used to gate the completeness stamp after the pool.
     const seenThisPass = new Set<string>();
+    let skipped = 0;
 
     // Worker pool draining a shared cursor: exactly ATTACHMENT_LIST_CONCURRENCY
     // reads stay in flight, so one hung (cloud-only) entry stalls its own worker
@@ -382,6 +388,7 @@ export class AttachmentManager {
           // the caller wants to distinguish a partial list from a complete one
           // (#3013) — the historical behavior was a silent `continue`.
           if (stats) stats.missingMetadata++;
+          skipped++;
           continue;
         }
 
@@ -398,6 +405,7 @@ export class AttachmentManager {
             // (diagnosable at tool level); here we count it so the response can say
             // *how many* were dropped instead of leaving the caller to guess (#3013).
             if (stats) stats.readTimeout++;
+            skipped++;
             continue;
           }
 
@@ -427,6 +435,7 @@ export class AttachmentManager {
           // Cause #3: JSON.parse failed on an unreadable metadata.json.
           logger.warn('Failed to parse attachment metadata', { uuid: entry.name, error: String(err) });
           if (stats) stats.parseError++;
+          skipped++;
         }
       }
     };
@@ -435,14 +444,20 @@ export class AttachmentManager {
       Array.from({ length: Math.min(ATTACHMENT_LIST_CONCURRENCY, dirs.length) }, drain),
     );
 
-    // #925 follow-up — on a FULL scan (fast path not taken) `seenThisPass` is exactly
-    // the set of messages currently on disk, so rebuild completeness from it with fresh
-    // timestamps. Cleared-then-refilled (not merged) so a message whose attachments were
-    // all deleted elsewhere drops out of the complete-set — its next filtered query falls
-    // back to a full scan instead of trusting a stale bucket. The TTL then bounds how long
-    // any entry is trusted against additions by another machine. A fast-path pass leaves
-    // completeness untouched: the gate already proved the message complete-and-fresh.
-    if (!fastPathTaken) {
+    // #925 follow-up — rebuild completeness from `seenThisPass`, but ONLY when the pass
+    // saw every entry (`skipped === 0`). The three early exits above (missing metadata /
+    // read timeout / parse error) can't feed `seenThisPass` — the messageId lives in the
+    // metadata.json that just failed — so a pass with any skip did NOT see every attachment
+    // and must not be treated as complete. Otherwise a timed-out entry would be silently
+    // absent from the freshly-stamped complete-set, and a filtered query within the TTL
+    // window would not even attempt to re-read it — a false-response class `main` doesn't
+    // have, in the exact cloud-only environment this code targets.
+    //
+    // On a PARTIAL pass (`skipped > 0`) we do nothing: neither refill (we didn't see
+    // everything) nor clear (a prior stamp came from a clean pass and stays TTL-bounded;
+    // erasing it would cost fast paths without buying exactness). A fast-path pass leaves
+    // completeness untouched regardless: the gate already proved the message complete-and-fresh.
+    if (!fastPathTaken && skipped === 0) {
       this.completeMessages.clear();
       const now = Date.now();
       for (const msgId of seenThisPass) this.completeMessages.set(msgId, now);

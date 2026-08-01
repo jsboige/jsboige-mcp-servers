@@ -519,4 +519,46 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
     const afterTtl = await manager.listAttachments('msg-X');
     expect(afterTtl.map((m) => m.uuid).sort()).toEqual([firstUuid, addedUuid].sort());
   }, 10_000);
+
+  // --- ai-01 review §"Le point restant": a pass that FINISHES is not a pass that READ
+  // EVERYTHING. If a metadata read times out (cloud-only), seenThisPass can't include it
+  // (the messageId lives in the metadata that failed), yet v2 stamped the message complete
+  // at pass end anyway. A later filtered query then took the fast path, reduced dirs to the
+  // entries it had seen, and never re-attempted the timed-out one — a false-response class
+  // `main` doesn't have, in the exact cloud-only environment this code targets. The guard:
+  // don't stamp complete unless the pass skipped nothing.
+
+  test('a partial pass (one read timed out) does not stamp completeness (hole d)', async () => {
+    const u1 = 'a7a7a7a7-0000-0000-0000-000000000040';
+    const u2 = 'a7a7a7a7-0000-0000-0000-000000000041';
+    seedAttachment(sharedState, u1, 'msg-X');
+    seedAttachment(sharedState, u2, 'msg-X');
+
+    // u2's metadata read hangs on the FIRST pass only (cloud-only that times out), then
+    // reads cleanly afterwards — mirroring the common case where a cloud-only read that
+    // expires has triggered GDrive hydration, so the retry succeeds.
+    let u2Hung = true;
+    mocks.readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.includes(u2) && u2Hung) return new Promise<string>(() => {});
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new AttachmentManager(sharedState, TEST_TIMEOUT_MS);
+
+    // 1) Unfiltered scan: u1 parses, u2 times out → partial result of 1. This is the
+    //    expected #2267-residual behavior (skip + return the rest). Crucially, the pass
+    //    skipped one entry, so it must NOT stamp msg-X complete.
+    const first = await manager.listAttachments();
+    expect(first).toHaveLength(1);
+    expect(first[0].uuid).toBe(u1);
+
+    // 2) u2 now hydrates — its read will succeed on the next attempt.
+    u2Hung = false;
+
+    // 3) Filtered query for msg-X. Because the prior pass was partial, msg-X was never
+    //    stamped complete, so this falls back to a full scan — which now reads BOTH u1 and
+    //    u2 and renders 2. RED on v2 (stamped complete despite the skip → fast path → 1).
+    const second = await manager.listAttachments('msg-X');
+    expect(second.map((m) => m.uuid).sort()).toEqual([u1, u2].sort());
+  }, 10_000);
 });
