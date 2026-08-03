@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
-import { getMcpSettingsPath as getExtensionMcpSettingsPath } from '../utils/extension-paths.js';
+import { getActiveMcpSettingsPath as getExtensionMcpSettingsPath } from '../utils/extension-paths.js';
 
 interface McpServer {
     transportType?: string;
