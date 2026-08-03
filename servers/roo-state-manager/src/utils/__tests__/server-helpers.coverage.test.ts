@@ -70,7 +70,7 @@ vi.mock('../../config/server-config.js', () => ({
 
 // Mock extension-paths for handleTouchMcpSettings test-path detection tests
 vi.mock('../extension-paths.js', () => ({
-    getMcpSettingsPath: vi.fn(),
+    getActiveMcpSettingsPath: vi.fn(),
 }));
 
 // Mock fs to capture readFileSync for env var resolution
@@ -90,7 +90,7 @@ import * as extensionPaths from '../extension-paths.js';
 import * as toolExports from '../../tools/export/export-conversation-json.js';
 import * as toolExportsCsv from '../../tools/export/export-conversation-csv.js';
 
-const mockedGetMcpSettingsPath = vi.mocked(extensionPaths.getMcpSettingsPath);
+const mockedGetMcpSettingsPath = vi.mocked(extensionPaths.getActiveMcpSettingsPath);
 const mockedHandleExportJson = vi.mocked(toolExports.handleExportConversationJson);
 const mockedHandleExportCsv = vi.mocked(toolExportsCsv.handleExportConversationCsv);
 

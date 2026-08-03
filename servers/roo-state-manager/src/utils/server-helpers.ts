@@ -3,7 +3,7 @@
  */
 
 import { promises as fs } from 'fs';
-import { getMcpSettingsPath as getExtensionMcpSettingsPath } from './extension-paths.js';
+import { getActiveMcpSettingsPath as getExtensionMcpSettingsPath } from './extension-paths.js';
 import path from 'path';
 import os from 'os';
 import { exec } from 'child_process'; // kept for potential future use
