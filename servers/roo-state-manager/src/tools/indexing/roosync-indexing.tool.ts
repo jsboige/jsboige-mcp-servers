@@ -1467,7 +1467,13 @@ export async function handleRooSyncIndexing(
                 const snapshotsDir = path.join(sharedPath, 'tool-usage-snapshots');
                 await fs.mkdir(snapshotsDir, { recursive: true });
 
-                const hostname = os.hostname();
+                // #3027: lowercase the hostname so filenames (and the per-machine
+                // grouping in trend_report) are case-insensitive. Pre-fix, ai-01
+                // wrote `MyIA-AI-01-*` (os.hostname mixed case) which ASCII-sorts
+                // BEFORE lowercase prefixes — making every ai-01 snapshot invisible
+                // to trend_report's slice(-2). trend_report still tolerates legacy
+                // mixed-case filenames at read time.
+                const hostname = os.hostname().toLowerCase();
                 const now = new Date();
                 const dateStr = now.toISOString().slice(0, 10);
                 const filename = `${hostname}-${dateStr}.json`;
@@ -1527,9 +1533,9 @@ export async function handleRooSyncIndexing(
                 const sharedPath = getSharedStatePath();
                 const snapshotsDir = path.join(sharedPath, 'tool-usage-snapshots');
 
-                // Load all snapshots
+                // Load all snapshot filenames.
                 let files: string[];
-                try { files = (await fs.readdir(snapshotsDir)).filter(f => f.endsWith('.json')).sort(); } catch {
+                try { files = (await fs.readdir(snapshotsDir)).filter(f => f.endsWith('.json')); } catch {
                     return {
                         isError: true,
                         content: [{ type: 'text', text: 'No snapshots found. Run save_snapshot first.' }],
@@ -1543,8 +1549,74 @@ export async function handleRooSyncIndexing(
                     };
                 }
 
-                // Load the 2 most recent snapshots (or 1 if only 1 exists)
-                const toLoad = files.slice(-2);
+                // #3027: select the two most recent snapshots OF THE SAME MACHINE.
+                // The previous logic sorted filenames lexicographically then took
+                // slice(-2). Because the filename starts with the machineId, that
+                // sorted by machine first (and was further defeated by `os.hostname()`
+                // mixed case — `MyIA-AI-01` ASCII-sorts before lowercase prefixes,
+                // so ai-01 snapshots were never in slice(-2)). On the 7-file corpus
+                // observed on ai-01 at cycle 111, that picked 06-04 → 06-17 (the
+                // two OLDEST) instead of any 08-03 snapshot. Fix: parse machineId
+                // and date from the filename, group by machineId (lowercased so
+                // legacy mixed-case files still cluster), sort each group
+                // chronologically, and pick the machine whose latest snapshot is
+                // the newest among machines with ≥2 snapshots.
+                type ParsedFile = { filename: string; machineId: string; date: string };
+                const filenameRe = /^(.+)-(\d{4}-\d{2}-\d{2})\.json$/;
+                const parsed: ParsedFile[] = [];
+                const unparsed: string[] = [];
+                for (const f of files) {
+                    const m = f.match(filenameRe);
+                    if (m) parsed.push({ filename: f, machineId: m[1].toLowerCase(), date: m[2] });
+                    else unparsed.push(f);
+                }
+
+                const byMachine = new Map<string, ParsedFile[]>();
+                for (const p of parsed) {
+                    const list = byMachine.get(p.machineId) ?? [];
+                    list.push(p);
+                    byMachine.set(p.machineId, list);
+                }
+                for (const list of byMachine.values()) {
+                    list.sort((a, b) => a.date.localeCompare(b.date));
+                }
+
+                // Pick the machine: newest `latest-snapshot date` wins; ties broken
+                // by machineId asc (deterministic). Only machines with ≥2 snapshots
+                // are eligible — comparison needs two points.
+                let chosenMachine: string | null = null;
+                let chosen: ParsedFile[] = [];
+                const candidateMachines = Array.from(byMachine.entries())
+                    .filter(([, list]) => list.length >= 2)
+                    .sort((a, b) => {
+                        const aL = a[1][a[1].length - 1].date;
+                        const bL = b[1][b[1].length - 1].date;
+                        if (aL !== bL) return bL.localeCompare(aL); // newest first
+                        return a[0].localeCompare(b[0]);
+                    });
+                if (candidateMachines.length > 0) {
+                    chosenMachine = candidateMachines[0][0];
+                    chosen = candidateMachines[0][1];
+                }
+
+                let toLoad: string[];
+                let baselineOnly = false;
+                let selectionReason: string;
+                if (chosen.length >= 2) {
+                    toLoad = [chosen[chosen.length - 2].filename, chosen[chosen.length - 1].filename];
+                    selectionReason = `machine ${chosenMachine} (newest latest-snapshot date among machines with ≥2 snapshots)`;
+                } else if (parsed.length > 0) {
+                    // No machine has ≥2 snapshots — fall back to the single most recent.
+                    const sortedAll = parsed.slice().sort((a, b) => b.date.localeCompare(a.date));
+                    toLoad = [sortedAll[0].filename];
+                    baselineOnly = true;
+                    selectionReason = `baseline only — no machine has ≥2 snapshots; showing most recent (${sortedAll[0].machineId})`;
+                } else {
+                    // Only legacy filenames (no YYYY-MM-DD suffix) — preserve old behaviour.
+                    toLoad = unparsed.slice().sort().slice(-2);
+                    selectionReason = `legacy filenames (no YYYY-MM-DD suffix) — lexicographic fallback`;
+                }
+
                 const snapshots: any[] = [];
                 for (const f of toLoad) {
                     const content = await fs.readFile(path.join(snapshotsDir, f), 'utf-8');
@@ -1562,7 +1634,11 @@ export async function handleRooSyncIndexing(
                 lines.push(`# Tool Usage Trend Report`);
                 lines.push(``);
                 lines.push(`**Generated:** ${new Date().toISOString().slice(0, 10)}`);
-                lines.push(`**Snapshots:** ${files.length} total, comparing ${toLoad[0]}${previous ? ' → ' + toLoad[1] : ' (baseline only)'}`);
+                const compareStr = baselineOnly || toLoad.length === 1
+                    ? `${toLoad[0]} (baseline only)`
+                    : `${toLoad[0]} → ${toLoad[1]}`;
+                lines.push(`**Snapshots:** ${files.length} total, comparing ${compareStr}`);
+                lines.push(`**Machine selected:** ${selectionReason}`);
                 lines.push(``);
 
                 // Summary comparison

@@ -781,6 +781,143 @@ describe('roosync_indexing trend_report action', () => {
 		// No schema-drift note.
 		expect(text).not.toContain('older schema');
 	});
+
+	// ============================================================
+	// #3027 — trend_report must compare same-machine snapshots, picked by date.
+	// Pre-fix: lexicographic filename sort + slice(-2) picked the two OLDEST
+	// of the lexicographically-last machine (and never picked ai-01 at all
+	// because `MyIA-AI-01` ASCII-sorts before lowercase). Reproduction corpus
+	// comes straight from the issue.
+	// ============================================================
+
+	function writeSnapshot(dir: string, filename: string, total: number, tools = 1) {
+		const snapshot = {
+			action: 'tool_usage_stats',
+			total_tool_calls: total,
+			unique_tools: tools,
+			files_scanned: 10,
+			date_range: { start: '2026-01-01', end: '2026-01-08' },
+			tools: Array.from({ length: tools }, (_, i) => ({
+				tool_name: `Tool${i}`, calls: total, errors: 0, error_rate: 0,
+				retries: 0, retry_rate: 0, downstream_actions: 0, downstream_action_rate: 0,
+			})),
+		};
+		fs.writeFileSync(path.join(dir, filename), JSON.stringify(snapshot));
+	}
+
+	test('#3027: compares the two most recent snapshots of a single machine (7-file corpus)', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Exact 7-file corpus from the issue. Pre-fix sorted lexicographically:
+		//   [ 'MyIA-AI-01-…', 'myia-po-2024-2026-07-06', …07-13, …07-27, …08-03',
+		//     'myia-po-2026-2026-06-04', 'myia-po-2026-2026-06-17' ]
+		// slice(-2) → po-2026 06-04 → 06-17 (the two OLDEST in the directory).
+		writeSnapshot(snapshotsDir, 'MyIA-AI-01-2026-08-03.json', 100);
+		writeSnapshot(snapshotsDir, 'myia-po-2024-2026-07-06.json', 110);
+		writeSnapshot(snapshotsDir, 'myia-po-2024-2026-07-13.json', 120);
+		writeSnapshot(snapshotsDir, 'myia-po-2024-2026-07-27.json', 130);
+		writeSnapshot(snapshotsDir, 'myia-po-2024-2026-08-03.json', 140);
+		writeSnapshot(snapshotsDir, 'myia-po-2026-2026-06-04.json', 150);
+		writeSnapshot(snapshotsDir, 'myia-po-2026-2026-06-17.json', 160);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+
+		// Machine selected must be po-2024 (4 snapshots, latest 08-03 — newest
+		// among machines with ≥2 snapshots; ai-01 has only 1 so it is ineligible).
+		expect(text).toContain('Machine selected:** machine myia-po-2024');
+		// The two compared snapshots must be po-2024's two most recent.
+		expect(text).toContain('myia-po-2024-2026-07-27.json → myia-po-2024-2026-08-03.json');
+		// Pre-fix regression guard: the comparison must NOT be 06-04 → 06-17.
+		expect(text).not.toMatch(/06-04\.json → myia-po-2026-2026-06-17\.json/);
+		// Summary row reflects the po-2024 comparison (130 → 140 calls).
+		expect(text).toContain('| Total calls | 130 | 140');
+	});
+
+	test('#3027: ai-01 snapshots (mixed-case prefix) are selectable when machine has ≥2', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// ai-01 has 2 snapshots and the newest latest-date (08-03 > po-2026's 06-17).
+		// Pre-fix, `MyIA-AI-01` ASCII-sorted before lowercase prefixes → always
+		// at the head of the list → never in slice(-2). It must now be picked.
+		writeSnapshot(snapshotsDir, 'MyIA-AI-01-2026-07-30.json', 200);
+		writeSnapshot(snapshotsDir, 'MyIA-AI-01-2026-08-03.json', 210);
+		writeSnapshot(snapshotsDir, 'myia-po-2026-2026-06-04.json', 220);
+		writeSnapshot(snapshotsDir, 'myia-po-2026-2026-06-17.json', 230);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+
+		// Machine key is normalized to lowercase in the selection reason, but
+		// the actual filenames are cited verbatim — so the mixed-case prefix
+		// appears as-written.
+		expect(text).toContain('Machine selected:** machine myia-ai-01');
+		expect(text).toContain('MyIA-AI-01-2026-07-30.json → MyIA-AI-01-2026-08-03.json');
+		expect(text).toContain('| Total calls | 200 | 210');
+	});
+
+	test('#3027: clusters mixed-case variants of the same machine together', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Two files written by the same host before/after a hostname case change
+		// (or by two different code paths normalizing differently). Must cluster
+		// as one machine with 2 snapshots, not two machines with 1 each.
+		writeSnapshot(snapshotsDir, 'MyMachine-2026-07-01.json', 300);
+		writeSnapshot(snapshotsDir, 'mymachine-2026-07-08.json', 310);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+
+		// Picked the lowercased id as the cluster key; both files are compared.
+		expect(text).toContain('Machine selected:** machine mymachine');
+		expect(text).toContain('MyMachine-2026-07-01.json → mymachine-2026-07-08.json');
+		expect(text).toContain('| Total calls | 300 | 310');
+	});
+
+	test('#3027: falls back to baseline-only when no machine has ≥2 snapshots', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Three machines, each with 1 snapshot. Pre-fix, slice(-2) silently
+		// compared two DIFFERENT machines (po-2024 vs po-2026). Post-fix, the
+		// report refuses to cross-compare and shows the single most recent.
+		writeSnapshot(snapshotsDir, 'myia-po-2024-2026-08-03.json', 410);
+		writeSnapshot(snapshotsDir, 'myia-po-2026-2026-06-17.json', 420);
+		writeSnapshot(snapshotsDir, 'MyIA-AI-01-2026-07-30.json', 430);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+
+		// Baseline-only mode: no comparison arrow, the most recent snapshot shown.
+		expect(text).toContain('Machine selected:** baseline only');
+		// Most recent is po-2024 08-03 (later than ai-01 07-30 and po-2026 06-17).
+		expect(text).toContain('myia-po-2024-2026-08-03.json (baseline only)');
+		// Pre-fix regression guard: must not fabricate a cross-machine comparison.
+		expect(text).not.toMatch(/→.*\.json/);
+	});
 });
 
 // ============================================================
