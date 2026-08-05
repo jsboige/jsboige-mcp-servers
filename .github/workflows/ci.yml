@@ -62,7 +62,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd servers/roo-state-manager
-        npm install
+        npm ci
 
     - name: Build
       run: |
