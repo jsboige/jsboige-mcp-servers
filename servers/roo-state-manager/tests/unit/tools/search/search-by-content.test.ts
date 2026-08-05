@@ -102,7 +102,9 @@ describe('🔍 search_tasks_by_content', () => {
       expect.any(String),
       expect.objectContaining({
         vector: expect.any(Array),
-        limit: 5,
+        // #3043 (SDDD #2766): diversify-by-task over-fetches by DIVERSIFY_OVERFETCH=3
+        // so grouping + per-task cap can surface >=3 unique_tasks. Pre-fix limit was 5.
+        limit: 5 * 3,
         with_payload: expect.any(Object),
         params: expect.any(Object)
       })

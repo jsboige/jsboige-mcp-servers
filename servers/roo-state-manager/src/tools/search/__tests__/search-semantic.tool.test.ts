@@ -431,7 +431,9 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(5);
+// #3043 (SDDD #2766): diversify-by-task — over-fetch by DIVERSIFY_OVERFETCH so
+			// grouping can find additional tasks even when one task dominates the Qdrant ranking.
+			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(5 * 3);
 		});
 
 		test('defaults to 10 results', async () => {
@@ -444,7 +446,9 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(10);
+// #3043 (SDDD #2766): diversify-by-task — over-fetch by DIVERSIFY_OVERFETCH so
+			// grouping can find additional tasks even when one task dominates the Qdrant ranking.
+			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(10 * 3);
 		});
 
 		test('returns grouped results with cross-machine analysis', async () => {
@@ -809,6 +813,94 @@ describe('helper functions (indirect via handler)', () => {
 		expect(parsed.results[1].taskId).toBe('task-b');
 		expect(parsed.results[1].chunks).toHaveLength(2);
 		expect(parsed.results[1].best_score).toBe(0.7);
+	});
+
+	// ============================================================
+	// #3043 (SDDD #2766): diversify-by-task — one task must not monopolize
+	// the top-K. Pre-fix: 5 chunks all from the same task produced
+	// unique_tasks: 1. Post-fix: over-fetch + per-task cap surface >=3 tasks.
+	// ============================================================
+	describe('#3043 diversify-by-task', () => {
+		beforeEach(() => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+			mockUnifiedStoreReader.isNull.mockReturnValue(true); // bypass Postgres path
+		});
+
+		test('one task with 5 chunks + 2 other tasks => unique_tasks >= 3', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.827, payload: { task_id: 'task-dominant', content: 'newTask broadcast 1', host_os: 'h1' } },
+				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 2', host_os: 'h1' } },
+				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 3', host_os: 'h1' } },
+				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 4', host_os: 'h1' } },
+				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 5', host_os: 'h1' } },
+				{ score: 0.71, payload: { task_id: 'task-other-1', content: 'real match', host_os: 'h1' } },
+				{ score: 0.68, payload: { task_id: 'task-other-2', content: 'real match', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'worker claim', max_results: 5 },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			// AC: >= 3 unique_tasks for 5 results (with diversify-by-task)
+			expect(parsed.current_machine.unique_tasks).toBeGreaterThanOrEqual(3);
+			// Qdrant over-fetched limit (5 * 3 = 15) so all 7 returned points are processed
+			expect(parsed.results.length).toBe(3);
+			// Per-task cap (2 chunks/task) — dominant task kept at most 2 chunks
+			const dominant = parsed.results.find((r: any) => r.taskId === 'task-dominant');
+			expect(dominant).toBeDefined();
+			expect(dominant.chunks).toHaveLength(2);
+		});
+
+		test('per-task cap of 2 chunks holds across many chunks', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-mega', content: 'c1', host_os: 'h1' } },
+				{ score: 0.89, payload: { task_id: 'task-mega', content: 'c2', host_os: 'h1' } },
+				{ score: 0.88, payload: { task_id: 'task-mega', content: 'c3', host_os: 'h1' } },
+				{ score: 0.87, payload: { task_id: 'task-mega', content: 'c4', host_os: 'h1' } },
+				{ score: 0.86, payload: { task_id: 'task-mega', content: 'c5', host_os: 'h1' } },
+				{ score: 0.85, payload: { task_id: 'task-mega', content: 'c6', host_os: 'h1' } },
+				{ score: 0.7, payload: { task_id: 'task-x', content: 'x', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'mega', max_results: 5 },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			const mega = parsed.results.find((r: any) => r.taskId === 'task-mega');
+			expect(mega).toBeDefined();
+			expect(mega.chunks).toHaveLength(2);
+			expect(mega.chunks[0].score).toBeGreaterThanOrEqual(mega.chunks[1].score);
+		});
+
+		test('default max_results=10 returns at most 10 unique tasks', async () => {
+			const hits = [];
+			for (let i = 0; i < 30; i++) {
+				hits.push({
+					score: 0.9 - i * 0.01,
+					payload: { task_id: `task-${i}`, content: `c${i}`, host_os: 'h1' },
+				});
+			}
+			mockQdrantClient.search.mockResolvedValue(hits);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'diverse' }, // no max_results → default 10
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.length).toBe(10);
+			expect(parsed.current_machine.unique_tasks).toBe(10);
+		});
 	});
 
 	// ============================================================

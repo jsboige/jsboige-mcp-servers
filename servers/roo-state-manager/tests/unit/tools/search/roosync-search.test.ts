@@ -362,7 +362,9 @@ describe('roosync_search - CONS-11', () => {
 
             expect(result.isError).toBeFalsy();
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
-            expect(searchCall.limit).toBe(100);
+            // #3043 (SDDD #2766): diversify-by-task over-fetches by DIVERSIFY_OVERFETCH=3
+            // Pre-fix limit was 100 (clamped from 500). New effectiveLimit = 100*3.
+            expect(searchCall.limit).toBe(100 * 3);
         });
 
         it('should clamp max_results < 1 to 1', async () => {
@@ -376,7 +378,8 @@ describe('roosync_search - CONS-11', () => {
             expect(result.isError).toBeFalsy();
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
             // max_results=0 is falsy, falls back to default 10 then clamped
-            expect(searchCall.limit).toBe(10);
+            // #3043: diversify-by-task over-fetches by 3 → effectiveLimit = 10*3
+            expect(searchCall.limit).toBe(10 * 3);
         });
 
         it('should preserve max_results within [1, 100]', async () => {
@@ -389,7 +392,8 @@ describe('roosync_search - CONS-11', () => {
 
             expect(result.isError).toBeFalsy();
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
-            expect(searchCall.limit).toBe(50);
+            // #3043: diversify-by-task over-fetches by 3 → effectiveLimit = 50*3
+            expect(searchCall.limit).toBe(50 * 3);
         });
     });
 });

@@ -67,6 +67,16 @@ const queryEmbeddingCache = new Map<string, { embedding: number[]; expiresAt: nu
 const QUERY_EMBEDDING_CACHE_TTL_MS = parseInt(process.env.QUERY_EMBEDDING_CACHE_TTL_MS || '3600000'); // 1h
 const QUERY_EMBEDDING_CACHE_MAX = 100;
 
+// #3043 (SDDD #2766): diversify-by-task to prevent one task from monopolizing
+// the top-K. DIVERSIFY_OVERFETCH widens the Qdrant window so grouping can find
+// additional tasks even when a single task produces many high-score chunks.
+// DIVERSIFY_MAX_CHUNKS_PER_TASK caps the chunk array per grouped task so that
+// no task hogs the result budget. Both constants are conservative defaults:
+// max_results * 3 with a 2-chunk/task cap means a request for 10 results can
+// surface up to 15 unique tasks (capped at max_results returned).
+const DIVERSIFY_OVERFETCH = 3;
+const DIVERSIFY_MAX_CHUNKS_PER_TASK = 2;
+
 function getCachedQueryEmbedding(query: string): number[] | null {
     const cached = queryEmbeddingCache.get(query);
     if (cached && Date.now() < cached.expiresAt) {
@@ -680,10 +690,16 @@ export const searchTasksByContentTool = {
             // #883: Global search is now allowed (workspace auto-defaults in roosync_search)
 
             // #851: Optimized search params for 10M+ vector collection
-            // #249: Wrap Qdrant search with retry for transient failures
+            // #3043 (SDDD #2766): diversify-by-task to prevent one task from monopolizing
+            // the top-K. A single long task can produce 5+ near-duplicate chunks with
+            // scores >= 0.82, starving the response of other relevant tasks. Over-fetch
+            // by DIVERSIFY_OVERFETCH so that grouping + per-task cap can surface >=3
+            // unique_tasks even when one task dominates the Qdrant ranking.
+            const effectiveMaxResults = max_results || 10;
+            const diversifyLimit = effectiveMaxResults * DIVERSIFY_OVERFETCH;
             const searchResults = await withRetry(() => qdrant.search(collectionName, {
                 vector: queryVector,
-                limit: max_results || 10,
+                limit: diversifyLimit,
                 filter: filter,
                 params: {
                     hnsw_ef: 128,
@@ -754,6 +770,18 @@ export const searchTasksByContentTool = {
 
             // Group by task_id: deduplicate multiple chunks from the same conversation
             let groupedResults = groupResultsByTask(filteredResults);
+
+            // #3043 (SDDD #2766): diversify-by-task — cap chunks per task + truncate
+            // to max_results unique tasks. Without this, a single long task with many
+            // high-score chunks monopolizes the response and unique_tasks stays at 1.
+            for (const group of groupedResults) {
+                if (group.chunks.length > DIVERSIFY_MAX_CHUNKS_PER_TASK) {
+                    group.chunks = group.chunks.slice(0, DIVERSIFY_MAX_CHUNKS_PER_TASK);
+                }
+            }
+            if (groupedResults.length > effectiveMaxResults) {
+                groupedResults = groupedResults.slice(0, effectiveMaxResults);
+            }
 
             // #2426 Phase C+: Unified-store Postgres enrichment (env-gate)
             // When PgUnifiedStoreReader is active, use joinFromQdrant() to:
