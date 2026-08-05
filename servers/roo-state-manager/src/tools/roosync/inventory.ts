@@ -291,12 +291,17 @@ export const inventoryTool: UnifiedToolContract = {
         const lines: string[] = [`**Inventory Summary** (${retrievedAt})`, ''];
 
         if (machineInventory) {
-          const inv = machineInventory as any;
-          lines.push(`**Machine:** ${inv.systemInfo?.hostname || machineId || 'unknown'}`);
-          lines.push(`- OS: ${inv.systemInfo?.os || 'N/A'}`);
-          const mcpCount = inv.mcpServers ? Object.keys(inv.mcpServers).length : 0;
+          // #2766: payload is machineInventory.inventory.{systemInfo,mcpServers,rooModes}
+          // (InventoryService shape, confirmed via DiffDetector/InventoryCollectorWrapper).
+          // Reading one level too high (machineInventory.*) left every field undefined.
+          const inv = (machineInventory as any).inventory as any;
+          lines.push(`**Machine:** ${inv?.systemInfo?.hostname || machineId || 'unknown'}`);
+          lines.push(`- OS: ${inv?.systemInfo?.os || 'N/A'}`);
+          const mcpCount = Array.isArray(inv?.mcpServers) ? inv.mcpServers.length : 0;
           lines.push(`- MCPs: ${mcpCount} servers`);
-          const modes = inv.rooModes?.modes ? Object.keys(inv.rooModes.modes).length : 0;
+          // rooModes is an array (InventoryCollectorWrapper maps over it), not an object
+          // with a .modes property — the old inv.rooModes?.modes always rendered 0.
+          const modes = Array.isArray(inv?.rooModes) ? inv.rooModes.length : 0;
           lines.push(`- Roo modes: ${modes}`);
           lines.push('');
         }
