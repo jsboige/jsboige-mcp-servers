@@ -3,8 +3,11 @@ node_modules/
 npm-debug.log
 yarn-debug.log
 yarn-error.log
-package-lock.json
-yarn.lock
+
+# NE PAS ignorer les lockfiles : ils sont la seule garantie que la CI et les
+# 6 machines installent le même arbre de dépendances. Le 2026-08-04, une
+# publication amont de @qdrant/js-client-rest a cassé la CI sans aucun commit
+# fautif, précisément parce que package-lock.json était ignoré ici. Voir #3037.
 
 # Fichiers de configuration réels (les exemples sont versionnés)
 **/config.json
