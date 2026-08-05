@@ -21,12 +21,27 @@ import { join } from 'path';
 vi.mock('../../../services/roosync/InventoryService.js', () => ({
   InventoryService: {
     getInstance: vi.fn(() => ({
+      // #2766: mirror the real InventoryService payload shape —
+      // machineInventory.inventory.{systemInfo,mcpServers,rooModes}. The previous
+      // flat {config:{modes,mcp}} mock never exercised the summary formatter's
+      // dereferencing, so the bug was invisible to the suite.
       getMachineInventory: vi.fn((machineId) => ({
         machineId: machineId || 'test-hostname',
         timestamp: new Date().toISOString(),
-        config: {
-          modes: ['code', 'architect', 'ask'],
-          mcp: ['quickfiles', 'jinavigator']
+        inventory: {
+          systemInfo: {
+            hostname: machineId || 'test-hostname',
+            os: 'test-os'
+          },
+          mcpServers: [
+            { name: 'quickfiles' },
+            { name: 'jinavigator' }
+          ],
+          rooModes: [
+            { slug: 'code', name: 'Code' },
+            { slug: 'architect', name: 'Architect' },
+            { slug: 'ask', name: 'Ask' }
+          ]
         }
       }))
     }))
@@ -312,6 +327,13 @@ describe('inventoryTool', () => {
       expect(result.data.summary).toContain('Cluster status');
       expect(result.data.summary).toContain('Online');
       expect(result.data.summary).toContain('Unknown');
+      // #2766: assert the VALUE, not just the label — the summary must not
+      // render "Machine: unknown" / "MCPs: 0" when the payload actually has data.
+      expect(result.data.summary).toContain('**Machine:** test-hostname');
+      expect(result.data.summary).toContain('- MCPs: 2 servers');
+      expect(result.data.summary).toContain('- Roo modes: 3');
+      expect(result.data.summary).not.toContain('**Machine:** unknown');
+      expect(result.data.summary).not.toContain('MCPs: 0 servers');
     });
 
     test('should not return full JSON when summary=true', async () => {
@@ -342,8 +364,10 @@ describe('inventoryTool', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.data.summary).toContain('Machine:');
-      expect(result.data.summary).toContain('MCPs:');
+      // #2766: assert real values, not just labels — see type=all test above
+      expect(result.data.summary).toContain('**Machine:** test-hostname');
+      expect(result.data.summary).toContain('- MCPs: 2 servers');
+      expect(result.data.summary).toContain('- Roo modes: 3');
     });
   });
 });
