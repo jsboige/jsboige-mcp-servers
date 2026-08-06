@@ -142,6 +142,33 @@ describe('roosync_messages dispatcher', () => {
       );
     });
 
+    // #3029: Alias retro-compat reply_to → message_id pour reply/amend.
+    // Sans ce fix, l'agent qui passait reply_to pour action="reply" recevait
+    // "Paramètre message_id requis" et devait retenter. L'alias évite ce coût.
+    test('#3029 reply accepts reply_to as alias for message_id', async () => {
+      await roosyncMessages({ action: 'reply', reply_to: 'msg-42', body: 'OK' });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'reply', message_id: 'msg-42', body: 'OK' })
+      );
+    });
+
+    test('#3029 amend accepts reply_to as alias for message_id', async () => {
+      await roosyncMessages({ action: 'amend', reply_to: 'msg-42', new_content: 'Updated' });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'amend', message_id: 'msg-42', new_content: 'Updated' })
+      );
+    });
+
+    test('#3029 message_id wins when both message_id and reply_to provided', async () => {
+      await roosyncMessages({ action: 'reply', message_id: 'msg-EXPLICIT', reply_to: 'msg-ALIAS', body: 'OK' });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'reply', message_id: 'msg-EXPLICIT', body: 'OK' })
+      );
+      // reply_to ne doit PAS fuiter vers send (qui l'attend pour action='send')
+      const callArg = mockSend.mock.calls[0][0];
+      expect(callArg).not.toHaveProperty('reply_to');
+    });
+
     test('inbox routes to roosyncRead with mode=inbox', async () => {
       await roosyncMessages({ action: 'inbox' });
       expect(mockRead).toHaveBeenCalledWith(
