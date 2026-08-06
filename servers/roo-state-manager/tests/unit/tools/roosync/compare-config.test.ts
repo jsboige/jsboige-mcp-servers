@@ -431,4 +431,363 @@ describe('roosync_compare_config', () => {
       expect(result.summary.critical).toBe(1);
     });
   });
+
+  // #3044 — VibeSync: surface source_value/target_value (masked + truncated)
+  // and harmonization_candidates so the caller can arbitrate without opening
+  // config files manually.
+  describe('#3044 VibeSync — value surfacing + harmonization_candidates', () => {
+    it('défaut (detail omis) = values: each diff porte source_value/target_value + harmonization_candidates remplie', async () => {
+      const args = {
+        source: 'machine-a',
+        target: 'machine-b',
+        granularity: 'mcp' as const
+        // detail omis → défaut 'values'
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'machine-a' });
+      mockRooSyncService.getInventory.mockResolvedValue({
+        machineId: 'machine-a',
+        inventory: { mcpServers: { sk: {} } }
+      });
+
+      // Diff granulaire simulé: type='modified' avec oldValue/newValue définis
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r1',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'machine-a',
+        targetLabel: 'machine-b',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'sk-agent.args',
+            type: 'modified',
+            severity: 'WARNING',
+            category: 'array',
+            description: "Élément modifié: 'sk-agent'",
+            oldValue: { command: 'npx', args: ['-y', 'a'] },
+            newValue: { command: 'npx', args: ['-y', 'b'] }
+          }
+        ],
+        summary: { total: 1, byType: { modified: 1 }, bySeverity: { WARNING: 1 }, byCategory: { array: 1 } },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      const diff = result.differences[0];
+      expect(diff.source_value).toBeDefined();
+      expect(diff.target_value).toBeDefined();
+      // Source = oldValue côté GranularDiffDetector
+      expect(diff.source_value).toContain('npx');
+      expect(diff.target_value).toContain('npx');
+      // Discrimination present_absent vs divergent_value
+      expect(result.harmonization_candidates).toBeDefined();
+      expect(result.harmonization_candidates!.summary).toEqual({ total: 1, present_absent: 0, divergent_value: 1 });
+      expect(result.harmonization_candidates!.divergent_value[0].path).toContain('sk-agent');
+      expect(result.harmonization_candidates!.divergent_value[0].source_value).toContain('npx');
+    });
+
+    it('detail="paths" omet values et harmonization_candidates (rendu léger)', async () => {
+      const args = {
+        source: 'machine-a',
+        target: 'machine-b',
+        granularity: 'mcp' as const,
+        detail: 'paths' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'machine-a' });
+      mockRooSyncService.getInventory.mockResolvedValue({
+        machineId: 'machine-a',
+        inventory: { mcpServers: { sk: {} } }
+      });
+
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r2',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'machine-a',
+        targetLabel: 'machine-b',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'sk-agent',
+            type: 'modified',
+            severity: 'WARNING',
+            category: 'array',
+            description: "Élément modifié: 'sk-agent'",
+            oldValue: { command: 'npx' },
+            newValue: { command: 'node' }
+          }
+        ],
+        summary: { total: 1, byType: { modified: 1 }, bySeverity: { WARNING: 1 }, byCategory: { array: 1 } },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      expect(result.differences[0].source_value).toBeUndefined();
+      expect(result.differences[0].target_value).toBeUndefined();
+      expect(result.harmonization_candidates).toBeUndefined();
+    });
+
+    it('masque les secrets: paths contenant API_KEY/SECRET/TOKEN → <set:len=N:sha256=...>, jamais en clair', async () => {
+      const args = {
+        source: 'machine-a',
+        target: 'machine-b',
+        granularity: 'mcp' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'machine-a' });
+      mockRooSyncService.getInventory.mockResolvedValue({
+        machineId: 'machine-a',
+        inventory: { mcpServers: {} }
+      });
+
+      const SECRET = 'sk-super-secret-1234567890';
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r3',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'machine-a',
+        targetLabel: 'machine-b',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'embeddings.API_KEY',
+            type: 'modified',
+            severity: 'CRITICAL',
+            category: 'nested',
+            description: 'Valeur modifiée',
+            oldValue: SECRET,
+            newValue: 'different-key-9999'
+          }
+        ],
+        summary: { total: 1, byType: { modified: 1 }, bySeverity: { CRITICAL: 1 }, byCategory: { nested: 1 } },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      const diff = result.differences[0];
+      // Jamais de fuite du clear text
+      expect(diff.source_value).not.toContain(SECRET);
+      expect(diff.source_value).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+      expect(diff.target_value).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+      // Deux secrets différents → hashes différents (permet arbitrage "même clé ?")
+      expect(diff.source_value).not.toBe(diff.target_value);
+    });
+
+    it('masque récursivement les clés sensibles nichées dans un objet', async () => {
+      const args = {
+        source: 'machine-a',
+        target: 'machine-b',
+        granularity: 'mcp' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'machine-a' });
+      mockRooSyncService.getInventory.mockResolvedValue({
+        machineId: 'machine-a',
+        inventory: { mcpServers: {} }
+      });
+
+      const SECRET = 'ghp_abcdef1234567890XYZ';
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r4',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'machine-a',
+        targetLabel: 'machine-b',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'github.server',
+            type: 'modified',
+            severity: 'WARNING',
+            category: 'nested',
+            description: 'Valeur modifiée',
+            oldValue: { command: 'npx', env: { GITHUB_TOKEN: SECRET } },
+            newValue: { command: 'npx', env: { GITHUB_TOKEN: 'other-token-9999' } }
+          }
+        ],
+        summary: { total: 1, byType: { modified: 1 }, bySeverity: { WARNING: 1 }, byCategory: { nested: 1 } },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      const diff = result.differences[0];
+      expect(diff.source_value).toBeDefined();
+      expect(diff.source_value).not.toContain(SECRET);
+      // La valeur maskée doit apparaître dans le rendu stringifié
+      expect(diff.source_value).toMatch(/GITHUB_TOKEN.*<set:len=\d+:sha256=[0-9a-f]{8}>/);
+    });
+
+    it('tronque les valeurs longues (>200 chars) avec marqueur [...]', async () => {
+      const args = {
+        source: 'machine-a',
+        target: 'machine-b',
+        granularity: 'full' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'machine-a' });
+      mockRooSyncService.getInventory.mockResolvedValue({
+        machineId: 'machine-a',
+        inventory: {}
+      });
+
+      const LONG_VALUE = 'x'.repeat(500);
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r5',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'machine-a',
+        targetLabel: 'machine-b',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'config.longField',
+            type: 'modified',
+            severity: 'INFO',
+            category: 'nested',
+            description: 'Valeur modifiée',
+            oldValue: LONG_VALUE,
+            newValue: 'short'
+          }
+        ],
+        summary: { total: 1, byType: { modified: 1 }, bySeverity: { INFO: 1 }, byCategory: { nested: 1 } },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      const diff = result.differences[0];
+      // Tronqué et marqué (le marquer peut être à l'intérieur des quotes pour
+      // les strings, ou en suffixe pour le JSON — on accepte les deux)
+      expect(diff.source_value!.length).toBeLessThan(LONG_VALUE.length);
+      expect(diff.source_value!).toMatch(/\[\.\.\.\]"?$/);
+    });
+
+    it('harmonization_candidates sépare present_absent (ajout/suppression) de divergent_value', async () => {
+      const args = {
+        source: 'machine-a',
+        target: 'machine-b',
+        granularity: 'mcp' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'machine-a' });
+      mockRooSyncService.getInventory.mockResolvedValue({
+        machineId: 'machine-a',
+        inventory: { mcpServers: {} }
+      });
+
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r6',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'machine-a',
+        targetLabel: 'machine-b',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'sk-agent',
+            type: 'added',
+            severity: 'INFO',
+            category: 'array',
+            description: "Élément ajouté: 'sk-agent'",
+            oldValue: undefined,
+            newValue: { command: 'npx' }
+          },
+          {
+            id: 'd2',
+            path: 'markitdown',
+            type: 'removed',
+            severity: 'WARNING',
+            category: 'array',
+            description: "Élément supprimé: 'markitdown'",
+            oldValue: { command: 'python' },
+            newValue: undefined
+          },
+          {
+            id: 'd3',
+            path: 'searxng.enabled',
+            type: 'modified',
+            severity: 'WARNING',
+            category: 'nested',
+            description: 'Valeur modifiée',
+            oldValue: true,
+            newValue: false
+          }
+        ],
+        summary: { total: 3, byType: { added: 1, removed: 1, modified: 1 }, bySeverity: { WARNING: 2, INFO: 1 }, byCategory: { array: 2, nested: 1 } },
+        performance: { executionTime: 1, nodesCompared: 3 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      expect(result.harmonization_candidates).toBeDefined();
+      const hc = result.harmonization_candidates!;
+      expect(hc.summary).toEqual({ total: 3, present_absent: 2, divergent_value: 1 });
+      expect(hc.present_absent).toHaveLength(2);
+      expect(hc.divergent_value).toHaveLength(1);
+      // Chaque candidat porte son kind
+      expect(hc.present_absent.every(c => c.kind === 'present_absent')).toBe(true);
+      expect(hc.divergent_value.every(c => c.kind === 'divergent_value')).toBe(true);
+    });
+
+    it('AC #3044 — Demo sk-agent ai-01 vs po-2026: décision "harmoniser ou pas" arbitrable sans ouvrir fichier', async () => {
+      // Scénario réel de l'issue: sk-agent absent de po-2026 mais présent sur ai-01.
+      // Les DEUX machines ont un inventaire mcp non-vide (le preflight #2963 ne
+      // bloque que si un côté est totalement vide — ici on est dans le cas
+      // d'un vrai diff "sk-agent supprimé").
+      const args = {
+        source: 'myia-ai-01',
+        target: 'myia-po-2026',
+        granularity: 'mcp' as const
+      };
+
+      mockRooSyncService.getConfig.mockReturnValue({ machineId: 'myia-ai-01' });
+      mockRooSyncService.getInventory.mockImplementation((machineId: string) => Promise.resolve({
+        machineId,
+        // Les deux côtés peuplés: ai-01 a sk-agent, po-2026 a d'autres MCPs
+        inventory: {
+          mcpServers: machineId === 'myia-ai-01'
+            ? { 'sk-agent': {} }
+            : { 'roo-state-manager': {}, 'win-cli': {} }
+        }
+      }));
+
+      mockGranularDiffDetector.compareGranular.mockResolvedValue({
+        reportId: 'r7',
+        timestamp: new Date().toISOString(),
+        sourceLabel: 'myia-ai-01',
+        targetLabel: 'myia-po-2026',
+        diffs: [
+          {
+            id: 'd1',
+            path: 'sk-agent',
+            type: 'removed',
+            severity: 'WARNING',
+            category: 'array',
+            description: "Élément supprimé: 'sk-agent'",
+            oldValue: {
+              command: 'cmd',
+              args: ['/c', 'python', '-m', 'sk_agent'],
+              env: { SK_API_KEY: 'sk-demo-key-not-real-1234567890' }
+            },
+            newValue: undefined
+          }
+        ],
+        summary: { total: 1, byType: { removed: 1 }, bySeverity: { WARNING: 1 }, byCategory: { array: 1 } },
+        performance: { executionTime: 1, nodesCompared: 1 }
+      });
+
+      const result = await roosyncCompareConfig(args);
+
+      // AC: la valeur est visible (masquée pour le secret) → arbitrage sans fichier
+      const diff = result.differences[0];
+      expect(diff.source_value).toBeDefined();
+      expect(diff.target_value).toBeUndefined();
+      // Secret niché masqué, jamais en clair
+      expect(diff.source_value).not.toContain('sk-demo-key-not-real');
+      expect(diff.source_value).toMatch(/SK_API_KEY.*<set:len=\d+:sha256=[0-9a-f]{8}>/);
+      // Candidat present_absent
+      expect(result.harmonization_candidates!.present_absent[0].kind).toBe('present_absent');
+      expect(result.harmonization_candidates!.present_absent[0].source_value).toBe(diff.source_value);
+    });
+  });
 });

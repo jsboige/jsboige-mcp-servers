@@ -329,7 +329,7 @@ export const roosyncInitDefinition = {
 
 export const roosyncCompareConfigDefinition = {
     name: 'roosync_compare_config',
-    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO).',
+    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -337,7 +337,8 @@ export const roosyncCompareConfigDefinition = {
             target: { type: 'string', description: 'Default: remote' },
             force_refresh: { type: 'boolean' },
             granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'] },
-            filter: { type: 'string', description: 'Path filter e.g. "jupyter"' }
+            filter: { type: 'string', description: 'Path filter e.g. "jupyter"' },
+            detail: { type: 'string', enum: ['values', 'paths'], description: 'Default: values. values = each diff carries source_value/target_value (masked, truncated) + harmonization_candidates section. paths = historical lightweight render (paths + description only).' }
         },
         additionalProperties: false
     }

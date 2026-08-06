@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { createHash } from 'crypto';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
 import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
@@ -17,6 +18,171 @@ import { RooSettingsService, SYNC_SAFE_KEYS } from '../../services/RooSettingsSe
 import { promises as fsPromises } from 'fs';
 import { existsSync } from 'fs';
 import { join } from 'path';
+
+/**
+ * #3044 — VibeSync: surface source/target values for each diff so the caller
+ * can arbitrage harmonization without opening config files manually.
+ *
+ * Helpers below mask secrets, truncate long values, and build the
+ * `harmonization_candidates` section that groups diffs by kind.
+ */
+const MAX_VALUE_LENGTH = 200;
+
+const SENSITIVE_KEY_PATTERNS: RegExp[] = [
+  /API_KEY/i,
+  /SECRET/i,
+  /TOKEN/i,
+  /PASSWORD/i,
+  /PASSPHRASE/i,
+  /CREDENTIAL/i,
+  /PRIVATE_KEY/i,
+  /BEARER/i,
+];
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY_PATTERNS.some(p => p.test(key));
+}
+
+function isSensitivePath(path: string): boolean {
+  return SENSITIVE_KEY_PATTERNS.some(p => p.test(path));
+}
+
+/**
+ * Produce a secret-safe digest: `<set:len=N:sha256=hash8>` or `<unset>` / `<empty>`.
+ * The hash lets the caller decide "same secret on both sides?" without ever
+ * seeing the cleartext — that's the arbitration signal VibeSync needs.
+ */
+function maskSecretValue(value: unknown): string {
+  if (value === null || value === undefined) return '<unset>';
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  if (str === undefined) return '<unset>';
+  if (str.length === 0) return '<empty>';
+  const hash = createHash('sha256').update(str).digest('hex').substring(0, 8);
+  return `<set:len=${str.length}:sha256=${hash}>`;
+}
+
+/**
+ * Recursively walk an object/array and replace values whose key matches a
+ * sensitive pattern with their masked digest. Top-level scalar values that
+ * live at a sensitive path are handled by the caller via `maskSecretValue`.
+ */
+function maskSensitiveInObject(value: any, currentPath: string): any {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value.map((v, i) => maskSensitiveInObject(v, `${currentPath}[${i}]`));
+  }
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(value)) {
+    const childPath = currentPath ? `${currentPath}.${k}` : k;
+    if (isSensitiveKey(k)) {
+      out[k] = maskSecretValue(v);
+    } else {
+      out[k] = maskSensitiveInObject(v, childPath);
+    }
+  }
+  return out;
+}
+
+/**
+ * Format a value for VibeSync display: masks secrets (whole value if path is
+ * sensitive, or recursively walks to mask nested sensitive keys), then
+ * truncates the result to ~MAX_VALUE_LENGTH chars.
+ *
+ * Returns `undefined` for `undefined` so the JSON output simply omits the
+ * field — preserving backward compatibility for diffs that have only one side.
+ */
+function formatValue(value: any, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  let prepared: any;
+  if (isSensitivePath(path)) {
+    return maskSecretValue(value);
+  }
+  prepared = maskSensitiveInObject(value, path);
+  if (typeof prepared === 'string') {
+    return prepared.length > MAX_VALUE_LENGTH
+      ? `"${prepared.substring(0, MAX_VALUE_LENGTH - 6)}[...]"` // leave room for "[...]"
+      : `"${prepared}"`;
+  }
+  if (prepared === null) return 'null';
+  if (typeof prepared === 'number' || typeof prepared === 'boolean') return String(prepared);
+  // Object/array — JSON-stringify, then truncate
+  const json = JSON.stringify(prepared);
+  if (json === undefined) return undefined;
+  return json.length > MAX_VALUE_LENGTH
+    ? `${json.substring(0, MAX_VALUE_LENGTH - 5)}[...]`
+    : json;
+}
+
+/**
+ * Diff shape extended for VibeSync (#3044). `source_value`/`target_value`
+ * are pre-formatted strings (masked + truncated) ready for direct display.
+ */
+interface VibeSyncDiff {
+  category: string;
+  severity: string;
+  path: string;
+  description: string;
+  action?: string;
+  source_value?: string;
+  target_value?: string;
+}
+
+interface HarmonizationCandidateBase {
+  path: string;
+  severity: string;
+  source_value?: string;
+  target_value?: string;
+  description: string;
+}
+interface PresentAbsentCandidate extends HarmonizationCandidateBase {
+  kind: 'present_absent';
+}
+interface DivergentValueCandidate extends HarmonizationCandidateBase {
+  kind: 'divergent_value';
+}
+type HarmonizationCandidate = PresentAbsentCandidate | DivergentValueCandidate;
+
+interface HarmonizationCandidates {
+  present_absent: PresentAbsentCandidate[];
+  divergent_value: DivergentValueCandidate[];
+  summary: { total: number; present_absent: number; divergent_value: number };
+}
+
+/**
+ * Group value-bearing diffs into harmonization buckets. Diffs without any
+ * formatted value (env diagnostics, roster checks, model profile hashes that
+ * embed values in prose) are skipped — they aren't per-side arbitrable.
+ */
+function buildHarmonizationCandidates(diffs: VibeSyncDiff[]): HarmonizationCandidates {
+  const present_absent: PresentAbsentCandidate[] = [];
+  const divergent_value: DivergentValueCandidate[] = [];
+  for (const d of diffs) {
+    if (d.source_value === undefined && d.target_value === undefined) continue;
+    const isPresentAbsent = d.source_value === undefined || d.target_value === undefined;
+    const base = {
+      path: d.path,
+      severity: d.severity,
+      source_value: d.source_value,
+      target_value: d.target_value,
+      description: d.description,
+    };
+    if (isPresentAbsent) {
+      present_absent.push({ ...base, kind: 'present_absent' as const });
+    } else {
+      divergent_value.push({ ...base, kind: 'divergent_value' as const });
+    }
+  }
+  return {
+    present_absent,
+    divergent_value,
+    summary: {
+      total: present_absent.length + divergent_value.length,
+      present_absent: present_absent.length,
+      divergent_value: divergent_value.length,
+    },
+  };
+}
 
 /**
  * Variables d'environnement critiques pour le fonctionnement du MCP
@@ -61,15 +227,9 @@ const EXPECTED_MACHINE_FIELDS: RegExp[] = [
 
 /**
  * Check if a diff path matches an expected machine-specific field.
- * If so, downgrade severity to INFO.
+ * If so, downgrade severity to INFO. Preserves VibeSync value fields (#3044).
  */
-function applyMachineFieldFilter(diff: {
-  category: string;
-  severity: string;
-  path: string;
-  description: string;
-  action?: string;
-}): { category: string; severity: string; path: string; description: string; action?: string } {
+function applyMachineFieldFilter(diff: VibeSyncDiff): VibeSyncDiff {
   for (const pattern of EXPECTED_MACHINE_FIELDS) {
     if (pattern.test(diff.path)) {
       return {
@@ -130,7 +290,9 @@ export const CompareConfigArgsSchema = z.object({
   granularity: z.enum(['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full']).optional()
     .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète GranularDiffDetector)'),
   filter: z.string().optional()
-    .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)')
+    .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)'),
+  detail: z.enum(['values', 'paths']).optional()
+    .describe('Niveau de détail du rendu (#3044). values (défaut) — chaque diff inclut source_value/target_value (valeurs masquées + tronquées) + section harmonization_candidates regroupant les écarts par type. paths — rendu historique (paths + description seulement, moins volumineux).')
 });
 
 export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
@@ -148,7 +310,9 @@ export const CompareConfigResultSchema = z.object({
     severity: z.string().describe('Niveau de sévérité'),
     path: z.string().describe('Chemin de la différence'),
     description: z.string().describe('Description de la différence'),
-    action: z.string().optional().describe('Action recommandée')
+    action: z.string().optional().describe('Action recommandée'),
+    source_value: z.string().optional().describe('Valeur côté source, formatée (secrets masqués, tronquée ~200 chars). Uniquement en detail=values (défaut). #3044'),
+    target_value: z.string().optional().describe('Valeur côté cible, formatée (secrets masqués, tronquée ~200 chars). Uniquement en detail=values (défaut). #3044')
   })).describe('Liste des différences détectées'),
   summary: z.object({
     total: z.number().describe('Nombre total de différences'),
@@ -156,7 +320,30 @@ export const CompareConfigResultSchema = z.object({
     important: z.number().describe('Différences importantes'),
     warning: z.number().describe('Avertissements'),
     info: z.number().describe('Informations')
-  }).describe('Résumé des différences')
+  }).describe('Résumé des différences'),
+  harmonization_candidates: z.object({
+    present_absent: z.array(z.object({
+      path: z.string(),
+      kind: z.literal('present_absent'),
+      severity: z.string(),
+      source_value: z.string().optional(),
+      target_value: z.string().optional(),
+      description: z.string()
+    })).describe('Écarts où un côté a la valeur et l\'autre non (ajout/suppression) — candidats « adopter ou pas »'),
+    divergent_value: z.array(z.object({
+      path: z.string(),
+      kind: z.literal('divergent_value'),
+      severity: z.string(),
+      source_value: z.string().optional(),
+      target_value: z.string().optional(),
+      description: z.string()
+    })).describe('Écarts où les deux côtés ont une valeur mais elle diffère — candidats « aligner sur A ou B »'),
+    summary: z.object({
+      total: z.number(),
+      present_absent: z.number(),
+      divergent_value: z.number()
+    })
+  }).optional().describe('Candidats d\'harmonisation regroupés par type (#3044). Uniquement en detail=values (défaut).')
 });
 
 export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
@@ -247,7 +434,8 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
 
     // Settings comparison: uses RooSettingsService + GDrive published settings
     if (args.granularity === 'settings') {
-      const settingsResult = await compareSettings(sourceMachineId, targetMachineId, service, args.filter);
+      const detail = args.detail ?? 'values';
+      const settingsResult = await compareSettings(sourceMachineId, targetMachineId, service, args.filter, detail);
       return withRosterCheck(settingsResult, config, service);
     }
 
@@ -440,9 +628,22 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
         );
       }
 
+      // #3044 — détail du rendu: values (défaut) surface source_value/target_value
+      // + harmonization_candidates ; paths conserve le rendu historique.
+      const detail = args.detail ?? 'values';
+
       // Convertir au format CompareConfigResult (avec comparaison model profiles #498)
       return withRosterCheck(
-        formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, args.granularity, sourceInventory, targetInventory),
+        formatGranularReport(
+          granularReport,
+          filteredDiffs,
+          sourceMachineId,
+          targetMachineId,
+          args.granularity,
+          sourceInventory,
+          targetInventory,
+          detail
+        ),
         config,
         service
       );
@@ -511,15 +712,10 @@ async function compareSettings(
   sourceMachineId: string,
   targetMachineId: string,
   service: any,
-  filter?: string
+  filter?: string,
+  detail: 'values' | 'paths' = 'values'
 ): Promise<CompareConfigResult> {
-  const differences: Array<{
-    category: string;
-    severity: string;
-    path: string;
-    description: string;
-    action?: string;
-  }> = [];
+  const differences: VibeSyncDiff[] = [];
 
   // 1. Load source settings (local machine = live from state.vscdb)
   const settingsService = new RooSettingsService();
@@ -565,6 +761,7 @@ async function compareSettings(
 
   // 3. Compare all sync-safe keys
   const allKeys = new Set([...Object.keys(sourceSettings), ...Object.keys(targetSettings)]);
+  const includeValues = detail === 'values';
 
   for (const key of allKeys) {
     if (!SYNC_SAFE_KEYS.has(key)) continue; // Only compare sync-safe keys
@@ -606,7 +803,10 @@ async function compareSettings(
       severity: catInfo.severity,
       path,
       description,
-      action: catInfo.severity === 'CRITICAL' ? 'Synchroniser ce paramètre' : undefined
+      action: catInfo.severity === 'CRITICAL' ? 'Synchroniser ce paramètre' : undefined,
+      // #3044 — expose structured values (masked + truncated) for direct arbitration
+      source_value: includeValues ? formatValue(sourceVal, path) : undefined,
+      target_value: includeValues ? formatValue(targetVal, path) : undefined,
     });
   }
 
@@ -622,7 +822,7 @@ async function compareSettings(
     info: differences.filter(d => d.severity === 'INFO').length
   };
 
-  return {
+  const result: CompareConfigResult = {
     source: sourceLabel,
     target: `${targetMachineId} (published)`,
     granularity: 'settings',
@@ -630,6 +830,12 @@ async function compareSettings(
     differences,
     summary
   };
+
+  if (includeValues) {
+    result.harmonization_candidates = buildHarmonizationCandidates(differences);
+  }
+
+  return result;
 }
 
 /**
@@ -810,7 +1016,8 @@ function formatGranularReport(
   targetMachineId: string,
   granularity: string,
   sourceInventory?: any,
-  targetInventory?: any
+  targetInventory?: any,
+  detail: 'values' | 'paths' = 'values'
 ): CompareConfigResult {
   // Vérifier les variables d'environnement critiques manquantes (#495)
   const envDiffs = checkMissingEnvVars();
@@ -818,13 +1025,21 @@ function formatGranularReport(
   // #498: Comparer les profils de modèle
   const modelProfileDiffs = compareModelProfiles(sourceInventory, targetInventory);
 
-  const allDifferences = [
+  // #3044 — For each granular diff, attach formatted source/target values.
+  // GranularDiffDetector sets oldValue = source side, newValue = target side
+  // (verified in performGranularComparison: 'added' = source→target où source
+  // est undefined, 'removed' = source défini, 'modified' = les deux).
+  const includeValues = detail === 'values';
+
+  const allDifferences: VibeSyncDiff[] = [
     ...filteredDiffs.map(diff => applyMachineFieldFilter({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,
       description: diff.description,
-      action: getRecommendedAction(diff)
+      action: getRecommendedAction(diff),
+      source_value: includeValues ? formatValue(diff.oldValue, diff.path) : undefined,
+      target_value: includeValues ? formatValue(diff.newValue, diff.path) : undefined,
     })),
     ...envDiffs,
     ...modelProfileDiffs
@@ -839,7 +1054,7 @@ function formatGranularReport(
     info: allDifferences.filter(d => d.severity === 'INFO').length
   };
 
-  return {
+  const result: CompareConfigResult = {
     source: sourceMachineId,
     target: targetMachineId,
     granularity,
@@ -847,6 +1062,12 @@ function formatGranularReport(
     differences: allDifferences,
     summary
   };
+
+  if (includeValues) {
+    result.harmonization_candidates = buildHarmonizationCandidates(allDifferences);
+  }
+
+  return result;
 }
 
 /**
