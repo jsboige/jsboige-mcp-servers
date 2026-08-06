@@ -5,7 +5,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 // Fix #636 timeout: Use static import instead of dynamic imports
-import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig, compareModelProfiles } from '../compare-config.js';
+import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig, compareModelProfiles, isSecretPath, formatValueForDisplay, buildArbitrationCandidates } from '../compare-config.js';
 
 // Mock dependencies
 const { mockGetConfig, mockCompareRealConfigurations, mockLoadDashboard, mockGetInventory } = vi.hoisted(() => ({
@@ -1081,5 +1081,316 @@ describe('compare-config', () => {
 				expect(result.summary.critical).toBe(0);
 			});
 		}
+	});
+
+	// ============================================================
+	// #3044 — Valeurs divergentes + secret masking + arbitration grouping
+	// Critère d'acceptation : "décider harmoniser ou pas pour chaque écart
+	// sans ouvrir aucun fichier de config manuellement".
+	// ============================================================
+
+	describe('#3044: diverging values + secret masking + arbitration grouping', () => {
+		test('isSecretPath detects API_KEY/SECRET/TOKEN/PASSWORD/ACCESS_KEY/PRIVATE_KEY suffixes', () => {
+			// Critère #2 : paths sensibles sur la dernière portion doivent être détectés
+			expect(isSecretPath('env.EMBEDDING_API_KEY')).toBe(true);
+			expect(isSecretPath('inventory.mcpServers.foo.env.QDRANT_API_KEY')).toBe(true);
+			expect(isSecretPath('settings.GITHUB_TOKEN')).toBe(true);
+			expect(isSecretPath('mcpServers.sk-agent.env.OPENAI_API_KEY')).toBe(true);
+			expect(isSecretPath('claudeConfig.PASSWORD')).toBe(true);
+			expect(isSecretPath('claudeConfig.PASSWD')).toBe(true);
+			expect(isSecretPath('claudeConfig.AWS_ACCESS_KEY')).toBe(true);
+			expect(isSecretPath('claudeConfig.PRIVATE_KEY')).toBe(true);
+			expect(isSecretPath('claudeConfig.CLIENT_SECRET')).toBe(true);
+			// Non-secrets : ne pas sur-masquer
+			expect(isSecretPath('env.OPENAI_MODEL')).toBe(false);
+			expect(isSecretPath('mcpServers.sk-agent.command')).toBe(false);
+			expect(isSecretPath('settings.autoCondenseContext')).toBe(false);
+		});
+
+		test('formatValueForDisplay masks secrets as <set:length:N:hash=...> — NEVER the raw value', () => {
+			// Critère #2 : la valeur d'un EMBEDDING_API_KEY ne doit JAMAIS apparaître en clair
+			const realKey = 'sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx';
+			const masked = formatValueForDisplay(realKey, 'env.EMBEDDING_API_KEY');
+			expect(masked).not.toContain(realKey);
+			expect(masked).toMatch(/^<set:length:\d+:hash=[0-9a-f]{8}>$/);
+			// La longueur est préservée (utilisable pour audit)
+			expect(masked).toContain(`length:${realKey.length}`);
+		});
+
+		test('formatValueForDisplay returns <unset>/<empty>/<null> markers — never raw undefined', () => {
+			expect(formatValueForDisplay(undefined, 'env.SOME_KEY')).toBe('<unset>');
+			expect(formatValueForDisplay(null, 'env.SOME_KEY')).toBe('<null>');
+			expect(formatValueForDisplay('', 'env.SOME_KEY')).toBe('<empty>');
+		});
+
+		test('formatValueForDisplay truncates long strings at VALUE_DISPLAY_MAX_CHARS (~200) — critère #1', () => {
+			const longString = 'A'.repeat(500);
+			const out = formatValueForDisplay(longString, 'claudeConfig.someField');
+			expect(out.length).toBeLessThanOrEqual(210); // head 60% + ellipsis + tail 30% ≈ 180
+			expect(out).toContain('…');
+			// Doit commencer et finir par la valeur (pas juste tronqué à gauche)
+			expect(out.startsWith('A')).toBe(true);
+			expect(out.endsWith('A')).toBe(true);
+		});
+
+		test('formatValueForDisplay JSON-stringifies objects/arrays', () => {
+			expect(formatValueForDisplay({ command: 'node', disabled: false }, 'mcpServers.win-cli'))
+				.toBe('{"command":"node","disabled":false}');
+			expect(formatValueForDisplay(['a', 'b'], 'mcpServers.list'))
+				.toBe('["a","b"]');
+		});
+
+		test('granular mcp diff exposes source_value/target_value (default detail=values) — critère #1', async () => {
+			mockGetInventory.mockResolvedValue({
+				inventory: {
+					mcpServers: {
+						'win-cli': { command: 'node', args: ['--old'] }
+					}
+				}
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2026',
+				diffs: [
+					{
+						type: 'modified',
+						path: 'win-cli.args',
+						category: 'roo_config',
+						severity: 'WARNING',
+						description: 'Élément modifié: \'win-cli.args\'',
+						oldValue: ['--old'],
+						newValue: ['--new', '--with-flag'],
+					}
+				],
+				stats: { added: 0, removed: 0, modified: 1, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2026',
+				granularity: 'mcp'
+			});
+
+			expect(result.detail).toBe('values');
+			const diff = result.differences.find(d => d.path === 'inventory.mcpServers.win-cli.args');
+			expect(diff).toBeDefined();
+			expect(diff!.source_value).toBe('["--old"]');
+			expect(diff!.target_value).toBe('["--new","--with-flag"]');
+			expect(diff!.diff_kind).toBe('value_differs');
+		});
+
+		test('granular mcp diff EXCLUDES source_value/target_value when detail="paths" — critère #3', async () => {
+			mockGetInventory.mockResolvedValue({
+				inventory: { mcpServers: { 'win-cli': { command: 'node' } } }
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2026',
+				diffs: [{
+					type: 'modified',
+					path: 'win-cli.args',
+					category: 'roo_config',
+					severity: 'WARNING',
+					description: 'Élément modifié',
+					oldValue: ['--old'],
+					newValue: ['--new']
+				}],
+				stats: { added: 0, removed: 0, modified: 1, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2026',
+				granularity: 'mcp',
+				detail: 'paths'
+			});
+
+			expect(result.detail).toBe('paths');
+			const diff = result.differences.find(d => d.path === 'inventory.mcpServers.win-cli.args');
+			expect(diff).toBeDefined();
+			expect(diff!.source_value).toBeUndefined();
+			expect(diff!.target_value).toBeUndefined();
+			// diff_kind reste (utilisé par arbitration_candidates)
+			expect(diff!.diff_kind).toBe('value_differs');
+		});
+
+		test('SECRET in env var is masked in source_value/target_value — NO raw key in output', async () => {
+			// Simulation : un inventaire qui détecterait une variable d'env sensible.
+			// On l'attache via mockCompareGranular avec un path env.* explicite.
+			mockGetInventory.mockResolvedValue({
+				inventory: { mcpServers: {} }
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2026',
+				diffs: [{
+					type: 'modified',
+					path: 'env.EMBEDDING_API_KEY',
+					category: 'roo_config',
+					severity: 'WARNING',
+					description: 'EMBEDDING_API_KEY diffère',
+					oldValue: 'sk-proj-real-secret-key-aaaaaaaaaaaaaaaa',
+					newValue: 'sk-proj-different-secret-key-bbbbbbbbbbbbbbb',
+				}],
+				stats: { added: 0, removed: 0, modified: 1, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2026',
+				granularity: 'full'
+			});
+
+			const secretDiff = result.differences.find(d => d.path === 'env.EMBEDDING_API_KEY');
+			expect(secretDiff).toBeDefined();
+			expect(secretDiff!.source_value).not.toContain('aaaaaaaa');
+			expect(secretDiff!.target_value).not.toContain('bbbbbbbb');
+			// Les deux valeurs doivent être masquées en <set:length:N:hash=...>
+			expect(secretDiff!.source_value).toMatch(/^<set:length:\d+:hash=[0-9a-f]{8}>$/);
+			expect(secretDiff!.target_value).toMatch(/^<set:length:\d+:hash=[0-9a-f]{8}>$/);
+		});
+
+		test('arbitration_candidates groups by kind (source-only/target-only/value-differs) — critère #4', async () => {
+			mockGetInventory.mockResolvedValue({
+				inventory: { mcpServers: {} }
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2026',
+				diffs: [
+					// présent côté source seul
+					{ type: 'removed', path: 'win-cli', category: 'array', severity: 'WARNING',
+					  description: 'Élément supprimé', oldValue: { command: 'node' }, newValue: undefined },
+					// présent côté cible seul
+					{ type: 'added', path: 'sk-agent', category: 'array', severity: 'WARNING',
+					  description: 'Élément ajouté', oldValue: undefined, newValue: { command: 'node' } },
+					// valeur divergente
+					{ type: 'modified', path: 'markitdown', category: 'array', severity: 'WARNING',
+					  description: 'Élément modifié', oldValue: { v: 1 }, newValue: { v: 2 } },
+					// autre valeur divergente (même kind, doit s'agréger)
+					{ type: 'modified', path: 'playwright', category: 'array', severity: 'INFO',
+					  description: 'Élément modifié', oldValue: { v: 3 }, newValue: { v: 4 } },
+				],
+				stats: { added: 1, removed: 1, modified: 2, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2026',
+				granularity: 'mcp'
+			});
+
+			// Critère : permet de décider "harmoniser ou pas" sans ouvrir de fichier.
+			expect(result.arbitration_candidates).toBeDefined();
+			expect(result.arbitration_candidates).toHaveLength(3);
+
+			const byKind = new Map<string, any>();
+			for (const c of result.arbitration_candidates!) byKind.set(c.kind, c);
+
+			expect(byKind.get('present_on_source_only')?.count).toBe(1);
+			expect(byKind.get('present_on_source_only')?.paths).toContain('inventory.mcpServers.win-cli');
+
+			expect(byKind.get('present_on_target_only')?.count).toBe(1);
+			expect(byKind.get('present_on_target_only')?.paths).toContain('inventory.mcpServers.sk-agent');
+
+			expect(byKind.get('value_differs')?.count).toBe(2);
+			expect(byKind.get('value_differs')?.paths).toEqual(
+				expect.arrayContaining(['inventory.mcpServers.markitdown', 'inventory.mcpServers.playwright'])
+			);
+			// Severity du groupe value_differs = max(WARNING, INFO) = WARNING
+			expect(byKind.get('value_differs')?.severity).toBe('WARNING');
+		});
+
+		test('buildArbitrationCandidates pure function — empty input → empty output', () => {
+			expect(buildArbitrationCandidates([])).toEqual([]);
+		});
+
+		test('buildArbitrationCandidates ignores diffs without diff_kind (e.g. env-var diffs)', () => {
+			const out = buildArbitrationCandidates([
+				{ severity: 'WARNING', path: 'env.SOMETHING' }, // pas de diff_kind
+				{ diff_kind: 'value_differs', severity: 'WARNING', path: 'mcp.foo' },
+			]);
+			expect(out).toHaveLength(1);
+			expect(out[0].kind).toBe('value_differs');
+		});
+
+		test('CompareConfigResultSchema accepts the new optional fields (source_value/target_value/diff_kind/arbitration_candidates)', () => {
+			// Smoke test : le schéma doit accepter les nouveaux champs sans casser les anciens
+			const parsed = CompareConfigResultSchema.parse({
+				source: 'ai-01',
+				target: 'po-2026',
+				granularity: 'mcp',
+				detail: 'values',
+				differences: [
+					{
+						category: 'roo_config',
+						severity: 'WARNING',
+						path: 'inventory.mcpServers.win-cli',
+						description: '...',
+						source_value: '["--old"]',
+						target_value: '["--new"]',
+						diff_kind: 'value_differs',
+					}
+				],
+				summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 },
+				arbitration_candidates: [
+					{ kind: 'value_differs', label: 'libellé', severity: 'WARNING', count: 1, paths: ['x'] }
+				]
+			});
+			expect(parsed.detail).toBe('values');
+			expect(parsed.differences[0].source_value).toBe('["--old"]');
+			expect(parsed.arbitration_candidates).toHaveLength(1);
+		});
+
+		test('CompareConfigArgsSchema accepts detail="values" (default) and detail="paths"', () => {
+			expect(CompareConfigArgsSchema.parse({}).detail).toBeUndefined(); // opt, défaut appliqué côté impl
+			expect(CompareConfigArgsSchema.parse({ detail: 'values' }).detail).toBe('values');
+			expect(CompareConfigArgsSchema.parse({ detail: 'paths' }).detail).toBe('paths');
+			expect(() => CompareConfigArgsSchema.parse({ detail: 'full' })).toThrow();
+		});
+
+		test('demo issue #3044: sk-agent écart réel ai-01 vs po-2026 → présent_on_target_only avec valeurs', async () => {
+			// Reproduction EXACTE du constat de l'issue #3044 :
+			// > « sk-agent PRÉSENT côté cible seul, ABSENT côté source »
+			// Avant le fix : seul le path était affiché, aucune valeur.
+			// Après le fix : l'opérateur voit la valeur de sk-agent côté cible
+			// (permettant de décider "harmoniser en l'ajoutant côté source ?").
+			mockGetInventory.mockResolvedValue({
+				inventory: { mcpServers: {} }
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'ai-01',
+				targetLabel: 'po-2026',
+				diffs: [{
+					type: 'added',
+					path: 'sk-agent',
+					category: 'array',
+					severity: 'WARNING',
+					description: 'Élément ajouté: \'sk-agent\'',
+					oldValue: undefined,
+					newValue: { command: 'node', args: ['build/index.js'], disabled: false }
+				}],
+				stats: { added: 1, removed: 0, modified: 0, unchanged: 6 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'ai-01',
+				target: 'po-2026',
+				granularity: 'mcp'
+			});
+
+			const skAgentDiff = result.differences.find(d => d.path === 'inventory.mcpServers.sk-agent');
+			expect(skAgentDiff).toBeDefined();
+			expect(skAgentDiff!.diff_kind).toBe('present_on_target_only');
+			expect(skAgentDiff!.source_value).toBe('<unset>');
+			expect(skAgentDiff!.target_value).toContain('node');
+			expect(skAgentDiff!.target_value).toContain('build/index.js');
+
+			// Et la section arbitration est directement utilisable
+			const candidate = result.arbitration_candidates?.find(c => c.kind === 'present_on_target_only');
+			expect(candidate).toBeDefined();
+			expect(candidate!.paths).toContain('inventory.mcpServers.sk-agent');
+			expect(candidate!.label).toContain('Présent côté cible seul');
+		});
 	});
 });

@@ -5,7 +5,8 @@
  * Supporte implicitement le mode "profils" via l'ID de cible.
  *
  * @module tools/roosync/compare-config
- * @version 2.3.0 - Added settings granularity for state.vscdb comparison (#547)
+ * @version 2.4.0 - #3044 Show diverging values (source/target) + secret masking
+ *                          + `detail` option (values|paths) + arbitration_candidates grouping.
  */
 
 import { z } from 'zod';
@@ -130,7 +131,12 @@ export const CompareConfigArgsSchema = z.object({
   granularity: z.enum(['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full']).optional()
     .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète GranularDiffDetector)'),
   filter: z.string().optional()
-    .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)')
+    .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)'),
+  // #3044: `values` (défaut) inclut les valeurs divergentes source/target (suffisamment
+  // tronquées, secrets masqués). `paths` ne renvoie que les paths — utile quand le volume
+  // est trop important ou que les valeurs ne sont pas nécessaires pour décider.
+  detail: z.enum(['values', 'paths']).optional()
+    .describe('Niveau de détail des diffs (#3044): "values" (défaut) inclut source_value/target_value (secrets masqués, tronqués à 200 chars); "paths" n\'inclut que les paths et descriptions')
 });
 
 export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
@@ -143,12 +149,26 @@ export const CompareConfigResultSchema = z.object({
   target: z.string().describe('Machine cible'),
   granularity: z.string().optional().describe('Granularité de comparaison (mcp, mode, settings, claude, modes-yaml, full)'),
   host_id: z.string().optional().describe('Identifiant de l\'hôte local'),
+  // #3044: indicateur du niveau de détail utilisé (utile pour audit/debug)
+  detail: z.enum(['values', 'paths']).optional().describe('Niveau de détail des diffs (#3044): "values" expose source_value/target_value; "paths" les omet'),
   differences: z.array(z.object({
     category: z.string().describe('Catégorie de différence'),
     severity: z.string().describe('Niveau de sévérité'),
     path: z.string().describe('Chemin de la différence'),
     description: z.string().describe('Description de la différence'),
-    action: z.string().optional().describe('Action recommandée')
+    action: z.string().optional().describe('Action recommandée'),
+    // #3044: valeurs divergentes (source = oldValue du détecteur, target = newValue).
+    // - Présentes quand `detail="values"` (défaut) et le détecteur expose oldValue/newValue.
+    // - Omises quand `detail="paths"`.
+    // - Secrets (paths sensibles) anonymisés en `<set:length:N>`/`<unset>`/`<redacted>` —
+    //   JAMAIS la valeur réelle (cf. #3044 critère 2).
+    // - Tronquées à ~200 chars (cf. #3044 critère 1).
+    source_value: z.string().optional().describe('Valeur côté source, anonymisée/tronquée (#3044)'),
+    target_value: z.string().optional().describe('Valeur côté cible, anonymisée/tronquée (#3044)'),
+    // Sémantique de l'écart utile pour l'arbitrage : present-vs-absent vs valeur-divergente.
+    // `present_on_source_only` / `present_on_target_only` / `value_differs`
+    diff_kind: z.enum(['present_on_source_only', 'present_on_target_only', 'value_differs']).optional()
+      .describe('Nature de l\'écart (#3044): présent côté source seul / cible seule / valeurs divergentes')
   })).describe('Liste des différences détectées'),
   summary: z.object({
     total: z.number().describe('Nombre total de différences'),
@@ -156,7 +176,16 @@ export const CompareConfigResultSchema = z.object({
     important: z.number().describe('Différences importantes'),
     warning: z.number().describe('Avertissements'),
     info: z.number().describe('Informations')
-  }).describe('Résumé des différences')
+  }).describe('Résumé des différences'),
+  // #3044: section prête-à-arbitrer, regroupée par type d'écart. Vise à éviter
+  // à l'opérateur d'avoir à reclassifier manuellement les diffs avant arbitrage.
+  arbitration_candidates: z.array(z.object({
+    kind: z.enum(['present_on_source_only', 'present_on_target_only', 'value_differs']),
+    label: z.string().describe('Libellé lisible du groupe'),
+    severity: z.string().describe('Sévérité maximale du groupe'),
+    count: z.number().describe('Nombre de diffs dans le groupe'),
+    paths: z.array(z.string()).describe('Paths concernés (limité à 20 pour lisibilité)')
+  })).optional().describe('Candidats d\'harmonisation (#3044) regroupés par type, pour arbitrage direct')
 });
 
 export type CompareConfigResult = z.infer<typeof CompareConfigResultSchema>;
@@ -441,8 +470,19 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       }
 
       // Convertir au format CompareConfigResult (avec comparaison model profiles #498)
+      // #3044 : passe `detail` pour piloter l'affichage des valeurs (values vs paths)
+      const detailMode: 'values' | 'paths' = args.detail ?? 'values';
       return withRosterCheck(
-        formatGranularReport(granularReport, filteredDiffs, sourceMachineId, targetMachineId, args.granularity, sourceInventory, targetInventory),
+        formatGranularReport(
+          granularReport,
+          filteredDiffs,
+          sourceMachineId,
+          targetMachineId,
+          args.granularity,
+          sourceInventory,
+          targetInventory,
+          detailMode
+        ),
         config,
         service
       );
@@ -795,6 +835,12 @@ function formatComparisonReport(report: any, granularity: string = 'full'): Comp
     target: report.targetMachine,
     granularity,
     host_id: report.hostId || 'unknown',
+    // #3044 : pour le chemin legacy (compareRealConfigurations), les valeurs source/target
+    // ne sont pas exposées par le service → on indique detail='values' pour cohérence du
+    // schéma mais les diffs n'auront pas source_value/target_value. L'opérateur doit
+    // utiliser le chemin granulaire (`granularity: 'mcp'|'mode'|'claude'|'full'`) pour
+    // bénéficier de l'enrichissement #3044.
+    detail: 'values',
     differences: allDifferences,
     summary
   };
@@ -810,7 +856,8 @@ function formatGranularReport(
   targetMachineId: string,
   granularity: string,
   sourceInventory?: any,
-  targetInventory?: any
+  targetInventory?: any,
+  detail: 'values' | 'paths' = 'values'
 ): CompareConfigResult {
   // Vérifier les variables d'environnement critiques manquantes (#495)
   const envDiffs = checkMissingEnvVars();
@@ -818,16 +865,34 @@ function formatGranularReport(
   // #498: Comparer les profils de modèle
   const modelProfileDiffs = compareModelProfiles(sourceInventory, targetInventory);
 
-  const allDifferences = [
-    ...filteredDiffs.map(diff => applyMachineFieldFilter({
+  // #3044 : pour chaque diff granulaire on enrichit avec source_value / target_value
+  // (sauf si detail === 'paths') + diff_kind pour le regroupement d'arbitrage.
+  const enrichedDiffs = filteredDiffs.map(diff => {
+    const base = applyMachineFieldFilter({
       category: diff.category,
       severity: diff.severity,
       path: diff.path,
       description: diff.description,
       action: getRecommendedAction(diff)
-    })),
-    ...envDiffs,
-    ...modelProfileDiffs
+    });
+    const kind = classifyDiffKind(diff);
+    const enriched: any = { ...base };
+    if (kind) enriched.diff_kind = kind;
+    if (detail === 'values') {
+      // formatValueForDisplay applique le secret-mask + truncation (#3044 #1 #2)
+      enriched.source_value = formatValueForDisplay(diff.oldValue, diff.path);
+      enriched.target_value = formatValueForDisplay(diff.newValue, diff.path);
+    }
+    return enriched;
+  });
+
+  const allDifferences = [
+    ...enrichedDiffs,
+    // Les envDiffs / modelProfileDiffs ne portent pas de oldValue/newValue granulaire —
+    // ils sont construits en string dans le code. On les passe à detail=paths (pas de valeurs)
+    // pour ne pas inventer une valeur. L'opérateur a déjà la description pour ces cas.
+    ...envDiffs.map(d => ({ ...d, diff_kind: undefined })),
+    ...modelProfileDiffs.map(d => ({ ...d, diff_kind: undefined }))
   ];
 
   // Recalculer le summary basé sur tous les diffs (incluant env vars et model profiles)
@@ -839,13 +904,24 @@ function formatGranularReport(
     info: allDifferences.filter(d => d.severity === 'INFO').length
   };
 
+  // #3044 critère 4 : section « candidats d'harmonisation » groupée par kind
+  // pour présentation directe à l'arbitrage. Calculée sur les diffs enrichis
+  // (les envDiffs / modelProfileDiffs n'ont pas de diff_kind → exclus).
+  const arbitration_candidates = buildArbitrationCandidates(
+    allDifferences
+      .filter((d: any) => d.diff_kind)
+      .map((d: any) => ({ diff_kind: d.diff_kind, severity: d.severity, path: d.path }))
+  );
+
   return {
     source: sourceMachineId,
     target: targetMachineId,
     granularity,
     host_id: report.sourceLabel,
+    detail,
     differences: allDifferences,
-    summary
+    summary,
+    arbitration_candidates
   };
 }
 
@@ -1125,4 +1201,195 @@ function getRecommendedAction(diff: GranularDiffResult): string | undefined {
     default:
       return undefined;
   }
+}
+
+// ============================================================================
+// #3044 — Helpers : valeurs divergentes affichables (secret masking + truncation
+// + regroupement pour arbitrage). Toutes les fonctions sont pures / synchrones.
+// ============================================================================
+
+/**
+ * Longueur maximale d'une valeur sérialisée avant troncature (#3044 critère 1).
+ * Le but est qu'un appelant voie assez pour décider, sans déballer 50 KB de JSON.
+ */
+const VALUE_DISPLAY_MAX_CHARS = 200;
+
+/**
+ * Patterns qui désignent un *nom* (clé de path, pas valeur) sensible. Détectés
+ * sur la dernière portion du path après le dernier `.` (ex: `env.EMBEDDING_API_KEY`
+ * → `EMBEDDING_API_KEY`). On est volontairement large — un faux positif (mascarade
+ * d'une valeur qui n'était pas secrète) est acceptable, l'inverse (laisser fuiter
+ * une clé API) ne l'est pas.
+ *
+ * Critère #3044 #2 : "JAMAIS afficher les cles API en clair, afficher `<set>`/`<unset>`/hash court".
+ */
+const SECRET_KEY_PATTERNS: RegExp[] = [
+  /API[_-]?KEY$/i,
+  /APIKEY$/i,
+  /SECRET$/i,
+  /TOKEN$/i,
+  /PASSWORD$/i,
+  /PASSWD$/i,
+  /ACCESS[_-]?KEY$/i,
+  /PRIVATE[_-]?KEY$/i,
+  /CLIENT[_-]?SECRET$/i,
+  /CREDENTIALS?$/i,
+  /AUTH$/i,                 // ex: `BASIC_AUTH`, `OAUTH_AUTH`
+  /AUTHORIZATION$/i,
+];
+
+/**
+ * Indique si un path de diff correspond à un nom de clé sensible.
+ * On regarde la dernière portion du path (cas majoritaire), et on ajoute
+ * aussi une heuristique "n'importe où dans le path" pour `args.*` MCP qui
+ * contient souvent `--api-key=…` directement dans la valeur.
+ */
+export function isSecretPath(path: string): boolean {
+  if (!path) return false;
+  const segments = path.split('.');
+  const last = segments[segments.length - 1] ?? '';
+  // Strip trailing index `[N]` (paths can be `mcpServers.foo.args[0]`)
+  const lastClean = last.replace(/\[\d+\]$/, '');
+  if (SECRET_KEY_PATTERNS.some(re => re.test(lastClean))) return true;
+  // Heuristique : path contient `env.` + une clé sensible (cas `env.EMBEDDING_API_KEY`)
+  if (segments[0] === 'env' && segments.length === 2 &&
+      SECRET_KEY_PATTERNS.some(re => re.test(segments[1]))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Petit hash non-cryptographique pour donner une empreinte stable (et non-sensible)
+ * d'une valeur secrète, permettant à un opérateur de comparer visuellement "même clé ?"
+ * sans voir la clé elle-même. FNV-1a 32-bit, suffisant pour identifier l'égalité.
+ */
+function shortHash(value: string | null | undefined): string {
+  if (value === null || value === undefined) return '<unset>';
+  const str = String(value);
+  if (str.length === 0) return '<empty>';
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  // Hex 8 chars — 32 bits, collisions ~1% à 65k vals, OK pour de la visu humaine
+  return h.toString(16).padStart(8, '0');
+}
+
+/**
+ * Convertit n'importe quelle valeur JS en représentation textuelle affichable.
+ * - undefined / null → `<unset>`
+ * - string vide → `<empty>`
+ * - secret (selon path) → `<set:length:N>` (jamais la valeur), `<unset>` ou hash court
+ * - string > 200 chars → tronquée avec `…` au début ET à la fin pour préserver contexte
+ * - objet/array → JSON sérialisé (tronqué)
+ */
+export function formatValueForDisplay(
+  value: unknown,
+  path: string,
+  options: { allowSecretLeak?: boolean } = {}
+): string {
+  if (value === undefined) return '<unset>';
+  if (value === null) return '<null>';
+  if (!options.allowSecretLeak && isSecretPath(path)) {
+    // Pour les secrets, on distingue set / unset / empty mais JAMAIS la valeur.
+    // Le hash permet de voir si les deux côtés ont la même clé (collision volontairement
+    // possible : 2 clés différentes qui hashent pareil affichent le même hash).
+    if (typeof value === 'string') {
+      return value.length > 0 ? `<set:length:${value.length}:hash=${shortHash(value)}>` : '<empty>';
+    }
+    // Non-string (objet) : on signale juste la présence
+    return '<set:redacted>';
+  }
+
+  let str: string;
+  if (typeof value === 'string') str = value;
+  else if (typeof value === 'number' || typeof value === 'boolean') str = String(value);
+  else if (value === undefined) return '<unset>';
+  else str = JSON.stringify(value);
+
+  if (str === '') return '<empty>';
+
+  // Troncature à VALUE_DISPLAY_MAX_CHARS : on garde début + fin pour préserver contexte
+  // (ex: une URL avec query params longue garde à la fois host et params).
+  if (str.length > VALUE_DISPLAY_MAX_CHARS) {
+    const head = str.slice(0, Math.floor(VALUE_DISPLAY_MAX_CHARS * 0.6));
+    const tail = str.slice(-Math.floor(VALUE_DISPLAY_MAX_CHARS * 0.3));
+    return `${head}…${tail}`;
+  }
+  return str;
+}
+
+/**
+ * Détermine la nature de l'écart (#3044 critère 4) à partir des métadonnées
+ * du détecteur granulaire. Permet à l'appelant de regrouper "présents que sur
+ * la source", "présents que sur la cible", et "valeurs divergentes".
+ */
+function classifyDiffKind(diff: GranularDiffResult): 'present_on_source_only' | 'present_on_target_only' | 'value_differs' | undefined {
+  if (diff.type === 'removed') return 'present_on_source_only';
+  if (diff.type === 'added') return 'present_on_target_only';
+  if (diff.type === 'modified') return 'value_differs';
+  // 'moved' / 'copied' / 'unchanged' ne sont pas des écarts à arbitrer
+  return undefined;
+}
+
+/**
+ * Construit la section `arbitration_candidates` (#3044 critère 4) qui regroupe
+ * les diffs par `kind` pour présentation directe à l'arbitrage. Cap le nombre
+ * de paths affichés par groupe pour rester lisible.
+ */
+export function buildArbitrationCandidates(
+  diffs: Array<{ diff_kind?: 'present_on_source_only' | 'present_on_target_only' | 'value_differs'; severity: string; path: string }>
+): Array<{
+  kind: 'present_on_source_only' | 'present_on_target_only' | 'value_differs';
+  label: string;
+  severity: string;
+  count: number;
+  paths: string[];
+}> {
+  const KIND_LABELS: Record<'present_on_source_only' | 'present_on_target_only' | 'value_differs', string> = {
+    present_on_source_only: 'Présent côté source seul (à déployer vers cible ?)',
+    present_on_target_only: 'Présent côté cible seul (à supprimer côté cible ?)',
+    value_differs: 'Valeur divergente (à harmoniser — laquelle prévaut ?)',
+  };
+  const SEVERITY_ORDER: Record<string, number> = { CRITICAL: 0, IMPORTANT: 1, WARNING: 2, INFO: 3 };
+  const groups = new Map<'present_on_source_only' | 'present_on_target_only' | 'value_differs', Array<{ severity: string; path: string }>>();
+
+  for (const d of diffs) {
+    if (!d.diff_kind) continue;
+    if (!groups.has(d.diff_kind)) groups.set(d.diff_kind, []);
+    groups.get(d.diff_kind)!.push({ severity: d.severity, path: d.path });
+  }
+
+  const out: Array<{
+    kind: 'present_on_source_only' | 'present_on_target_only' | 'value_differs';
+    label: string;
+    severity: string;
+    count: number;
+    paths: string[];
+  }> = [];
+
+  for (const [kind, items] of groups) {
+    if (items.length === 0) continue;
+    // Severity "maximale" = la plus haute (CRITICAL > IMPORTANT > WARNING > INFO)
+    items.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 4) - (SEVERITY_ORDER[b.severity] ?? 4));
+    const topSeverity = items[0].severity;
+    const paths = items.slice(0, 20).map(i => i.path);
+    out.push({
+      kind,
+      label: KIND_LABELS[kind],
+      severity: topSeverity,
+      count: items.length,
+      paths,
+    });
+  }
+
+  // Tri final : par severity puis par kind pour stabilité
+  out.sort((a, b) => {
+    const s = (SEVERITY_ORDER[a.severity] ?? 4) - (SEVERITY_ORDER[b.severity] ?? 4);
+    return s !== 0 ? s : a.kind.localeCompare(b.kind);
+  });
+
+  return out;
 }
