@@ -237,6 +237,27 @@ describe('get-status (Option B)', () => {
       expect(result.flags).toContain('UNKNOWN:myia-po-2023');
     });
 
+    test('never emits SYNC_STALE, even with an ancient lastSync on every machine', async () => {
+      // Production reality: `lastSync` is written only by BaselineManager / roosync_init,
+      // so under v2.3 coordination it is months old on all 6 machines and the old
+      // 24h check fired permanently. The rest of this suite feeds a FRESH lastSync,
+      // which is precisely why the defect stayed green in CI — so this test feeds the
+      // broken case instead. SYNC_STALE now lives in health-view.ts, dashboard-fed.
+      const ancient = '2026-01-05T22:41:37.147Z';
+      mockLoadDashboard.mockResolvedValue({
+        overallStatus: 'synced',
+        lastUpdate: new Date().toISOString(),
+        machines: {
+          'myia-ai-01': { status: 'online', lastSync: ancient, pendingDecisions: 0, diffsCount: 0 },
+          'myia-po-2023': { status: 'online', lastSync: ancient, pendingDecisions: 0, diffsCount: 0 }
+        }
+      });
+
+      const result = await roosyncGetStatus({});
+
+      expect(result.flags.filter(f => f.startsWith('SYNC_STALE'))).toEqual([]);
+    });
+
     test('throws when machine not found', async () => {
       mockLoadDashboard.mockResolvedValue({
         overallStatus: 'synced',
