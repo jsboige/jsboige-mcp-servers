@@ -795,9 +795,11 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('groupResultsByTask: groups and sorts by best score', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.6, payload: { task_id: 'task-b', content: 'chunk1', host_os: 'h1' } },
-			{ score: 0.9, payload: { task_id: 'task-a', content: 'chunk1', host_os: 'h1' } },
-			{ score: 0.7, payload: { task_id: 'task-b', content: 'chunk2', host_os: 'h1' } },
+			// #2766: content DISTINCT per task — identical cross-task content is now
+			// collapsed by dedupGroupedChunksByContent (covered in its own describe block).
+			{ score: 0.6, payload: { task_id: 'task-b', content: 'chunk-b1', host_os: 'h1' } },
+			{ score: 0.9, payload: { task_id: 'task-a', content: 'chunk-a1', host_os: 'h1' } },
+			{ score: 0.7, payload: { task_id: 'task-b', content: 'chunk-b2', host_os: 'h1' } },
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -834,7 +836,8 @@ describe('helper functions (indirect via handler)', () => {
 				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 4', host_os: 'h1' } },
 				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 5', host_os: 'h1' } },
 				{ score: 0.71, payload: { task_id: 'task-other-1', content: 'real match', host_os: 'h1' } },
-				{ score: 0.68, payload: { task_id: 'task-other-2', content: 'real match', host_os: 'h1' } },
+				// #2766: distinct content — 'real match' x2 across tasks would be deduped.
+				{ score: 0.68, payload: { task_id: 'task-other-2', content: 'other real match', host_os: 'h1' } },
 			]);
 
 			const result = await searchTasksByContentTool.handler(
@@ -900,6 +903,132 @@ describe('helper functions (indirect via handler)', () => {
 			const parsed = JSON.parse(getTextContent(result));
 			expect(parsed.results.length).toBe(10);
 			expect(parsed.current_machine.unique_tasks).toBe(10);
+		});
+	});
+
+	// ============================================================
+	// #2766 (SDDD echo pollution): cross-task exact-duplicate dedup.
+	// groupResultsByTask keys by taskId, so byte-identical chunks in DIFFERENT
+	// tasks survive as distinct groups (measured ~16% of returned chunks, 19/40
+	// cross-task). These tests prove the collapse + duplicate_count signal.
+	// ============================================================
+	describe('#2766 cross-task content dedup', () => {
+		beforeEach(() => {
+			mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+			mockUnifiedStoreReader.isNull.mockReturnValue(true); // bypass Postgres path
+		});
+
+		test('collapses identical cross-task chunks, keeps the best-scored, exposes duplicate_count', async () => {
+			// task-a and task-b carry IDENTICAL content → identical snippet under one
+			// query → deduped. task-c is distinct → survives.
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.90, payload: { task_id: 'task-a', content: 'rate limiter bug here', host_os: 'h1' } },
+				{ score: 0.75, payload: { task_id: 'task-b', content: 'rate limiter bug here', host_os: 'h1' } },
+				{ score: 0.60, payload: { task_id: 'task-c', content: 'completely different content', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'rate limiter bug', max_results: 5 },
+				makeCache(), mockEnsureCache, defaultFallback,
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			// The two 'rate limiter bug' tasks collapse to ONE representative (task-a,
+			// best-scored at 0.90); task-b is pruned (its only chunk was a duplicate).
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-a', 'task-c']);
+			expect(parsed.results.find((r: any) => r.taskId === 'task-b')).toBeUndefined();
+			// Pollution signal preserved on the representative.
+			expect(parsed.results[0].chunks[0].duplicate_count).toBe(1);
+			// Observability block.
+			expect(parsed.current_machine.dedup).toBeDefined();
+			expect(parsed.current_machine.dedup.duplicates_removed).toBe(1);
+			expect(parsed.current_machine.dedup.groups_pruned).toBe(1);
+			expect(parsed.current_machine.dedup.mode).toBe('exact');
+		});
+
+		test('keeps distinct content from different tasks (no false dedup)', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-a', content: 'alpha implementation', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-b', content: 'beta implementation', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'implementation' },
+				makeCache(), mockEnsureCache, defaultFallback,
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results).toHaveLength(2);
+			// No duplicates → no duplicate_count, no dedup block (quiet path).
+			expect(parsed.results[0].chunks[0].duplicate_count).toBeUndefined();
+			expect(parsed.current_machine.dedup).toBeUndefined();
+		});
+
+		test('intra-task identical chunks collapse too (same task, dup content)', async () => {
+			// Two identical chunks in the SAME task both survive the per-task cap (2),
+			// then dedup collapses them within the group.
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-a', content: 'echo payload', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-a', content: 'echo payload', host_os: 'h1' } },
+				{ score: 0.7, payload: { task_id: 'task-b', content: 'solo payload', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'payload' },
+				makeCache(), mockEnsureCache, defaultFallback,
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-a', 'task-b']);
+			// The intra-task duplicate collapsed → task-a keeps 1 chunk.
+			expect(parsed.results[0].chunks).toHaveLength(1);
+			expect(parsed.results[0].chunks[0].duplicate_count).toBe(1);
+			expect(parsed.current_machine.dedup.duplicates_removed).toBe(1);
+			expect(parsed.current_machine.dedup.groups_pruned).toBe(0); // task-a still has a chunk
+		});
+
+		test('SEARCH_DEDUP_ENABLED=0 disables dedup (rollback / A-B)', async () => {
+			process.env.SEARCH_DEDUP_ENABLED = '0';
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-a', content: 'twin content', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-b', content: 'twin content', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'twin' },
+				makeCache(), mockEnsureCache, defaultFallback,
+			);
+
+			delete process.env.SEARCH_DEDUP_ENABLED;
+			const parsed = JSON.parse(getTextContent(result));
+			// Disabled → both tasks survive (no collapse, no prune).
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-a', 'task-b']);
+			// Dedup block still emitted when disabled (rollback visibility).
+			expect(parsed.current_machine.dedup.enabled).toBe(false);
+			expect(parsed.current_machine.dedup.duplicates_removed).toBe(0);
+		});
+
+		test('SEARCH_DEDUP_NORMALIZE=1 catches case/whitespace variants', async () => {
+			process.env.SEARCH_DEDUP_NORMALIZE = '1';
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-a', content: 'Rate Limiter', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-b', content: 'rate  limiter', host_os: 'h1' } },
+				{ score: 0.7, payload: { task_id: 'task-c', content: 'totally other thing', host_os: 'h1' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'rate', max_results: 5 },
+				makeCache(), mockEnsureCache, defaultFallback,
+			);
+
+			delete process.env.SEARCH_DEDUP_NORMALIZE;
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.dedup.mode).toBe('normalized');
+			// 'Rate Limiter' and 'rate  limiter' normalize equal → collapsed; task-c survives.
+			const survivors = parsed.results.map((r: any) => r.taskId);
+			expect(survivors).toContain('task-c');
+			expect(survivors).not.toContain('task-b');
+			expect(parsed.current_machine.dedup.duplicates_removed).toBeGreaterThanOrEqual(1);
 		});
 	});
 
