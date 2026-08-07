@@ -223,7 +223,12 @@ async function replyToMessage(
   // Validation des paramètres requis
   if (!args.message_id) {
     throw new MessageManagerError(
-      'Paramètre "message_id" requis : ID du message auquel répondre',
+      // #3029: Message d'erreur informatif — redirige l'agent vers le bon paramètre.
+      // reply_to est l'alias sémantique naturel ("le message auquel je réponds") mais
+      // le champ runtime est message_id (consistance avec mark_read/archive/message/etc.).
+      'Paramètre "message_id" requis : ID du message auquel répondre. ' +
+      'Note : "reply_to" est réservé à action="send" (pour threader un nouveau message). ' +
+      'Pour action="reply"/"amend"/"mark_read"/"archive", utiliser "message_id".',
       MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
       { missingParam: 'message_id', providedArgs: Object.keys(args) }
     );

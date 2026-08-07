@@ -127,18 +127,21 @@ export async function roosyncMessages(args: MessagesArgs) {
       });
 
     case 'reply':
+      // #3029: Alias reply_to → message_id pour rétro-compatibilité (agent passes reply_to expecting "the message to reply to").
+      // L'alias est ignoré si message_id est déjà fourni.
       return roosyncSend({
         action: 'reply',
-        message_id: args.message_id,
+        message_id: args.message_id ?? args.reply_to,
         body: args.body,
         priority: args.priority,
         tags: args.tags
       });
 
     case 'amend':
+      // #3029: Idem — alias reply_to accepté pour amend (consistance avec reply).
       return roosyncSend({
         action: 'amend',
-        message_id: args.message_id,
+        message_id: args.message_id ?? args.reply_to,
         new_content: args.new_content,
         reason: args.reason
       });
