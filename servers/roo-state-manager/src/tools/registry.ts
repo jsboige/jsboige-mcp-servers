@@ -23,7 +23,7 @@ import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
 import { resolveFullConversationSkeleton } from '../utils/server-helpers.js';
 
-// #1817: Lazy-loaded heavy modules — these pull deep ESM dependency chains
+// 511396f0: Lazy-loaded heavy modules — these pull deep ESM dependency chains
 // (roo-storage-detector → glob, cache-manager, skeleton-*; background-services → task-indexer, etc.)
 // Static imports added 7.8s to startup. Lazy loaders defer until first tool call.
 let _rooStorageDetector: typeof import('../utils/roo-storage-detector.js') | null = null;

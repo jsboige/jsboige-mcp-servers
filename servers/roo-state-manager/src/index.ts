@@ -17,7 +17,7 @@ import gracefulFs from 'graceful-fs';
 import realFs from 'fs';
 gracefulFs.gracefulify(realFs);
 
-// #1668: Redirect console.log → stderr to keep stdout clean for MCP JSON-RPC.
+// f801b2a9: Redirect console.log → stderr to keep stdout clean for MCP JSON-RPC.
 // 730+ console.log calls across 63 source files pollute stdout, breaking the
 // MCP stdio handshake (client expects only Content-Length framed JSON-RPC).
 console.log = (...args) => console.error(...args);
@@ -235,7 +235,7 @@ class RooStateManagerServer {
      * during module evaluation. Even with setImmediate, the import could block BEFORE
      * the stdin data (initialize request) was processed → client sees timeout.
      *
-     * #1817: Fixed by using server.oninitialized — the SDK calls this AFTER the client
+     * 511396f0: Fixed by using server.oninitialized — the SDK calls this AFTER the client
      * sends the `notifications/initialized` message, which happens AFTER the server
      * responds to the initialize request. This guarantees the handshake completes
      * before heavy imports block the event loop.
@@ -260,14 +260,14 @@ class RooStateManagerServer {
         // init (dynamic import → synchronous ESM graph evaluation) here,
         // it blocks the event loop and tools/list never gets answered.
         this.server.oninitialized = () => {
-            logger.info("[#1817] MCP handshake complete, scheduling heavy initialization after event loop yield");
+            logger.info("[511396f0] MCP handshake complete, scheduling heavy initialization after event loop yield");
             setImmediate(startInit);
         };
 
         // Fallback: if client doesn't send initialized notification within 5s, start anyway
         setTimeout(() => {
             if (!this.stateManager) {
-                logger.warn("[#1817] oninitialized timeout (5s) — starting init without handshake confirmation");
+                logger.warn("[511396f0] oninitialized timeout (5s) — starting init without handshake confirmation");
                 startInit();
             }
         }, 5000);
@@ -691,7 +691,7 @@ class RooStateManagerServer {
         await this.server.connect(transport);
         logger.info(`Roo State Manager Server started - v${packageJson.version} (${Date.now() - t0}ms total)`);
 
-        // #1817: Start heavy initialization AFTER MCP handshake completes.
+        // 511396f0: Start heavy initialization AFTER MCP handshake completes.
         // server.oninitialized fires after client confirms connection.
         this.startBackgroundInit();
     }

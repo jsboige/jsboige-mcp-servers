@@ -1,5 +1,5 @@
 /**
- * Tests for #1817: Lazy dynamic imports in registry.ts
+ * Tests for 511396f0: Lazy dynamic imports in registry.ts
  *
  * Verifies:
  * 1. Lazy loaders cache the module after first call
@@ -10,7 +10,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-describe('#1817 — Lazy dynamic import patterns', () => {
+describe('511396f0 — Lazy dynamic import patterns', () => {
 
     describe('lazy loader caching', () => {
 
