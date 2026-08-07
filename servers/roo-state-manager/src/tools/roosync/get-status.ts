@@ -149,8 +149,7 @@ export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
 function buildFlags(
   heartbeatState: { onlineMachines: string[]; unknownMachines: string[]; idleMachines: string[] },
   inboxStats: { unread: number; urgent: number },
-  pendingDecisions: number,
-  machines: Array<{ id: string; status: string; lastSync?: string }>
+  pendingDecisions: number
 ): string[] {
   const flags: string[] = [];
 
@@ -179,16 +178,15 @@ function buildFlags(
     flags.push(`DECISIONS_PENDING:${pendingDecisions}`);
   }
 
-  // Stale syncs (>24h since last sync)
-  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-  for (const m of machines) {
-    if (m.lastSync) {
-      const syncDate = new Date(m.lastSync).getTime();
-      if (!isNaN(syncDate) && syncDate < oneDayAgo && m.status !== 'unknown') {
-        flags.push(`SYNC_STALE:${m.id}`);
-      }
-    }
-  }
+  // NOTE: no SYNC_STALE here. It used to be derived from `lastSync`, which is
+  // only ever written by BaselineManager / roosync_init — baseline operations, not
+  // coordination. Under RooSync v2.3 nothing refreshes it, so every machine's value
+  // was 5-8 months old and the flag fired on 6/6 machines permanently. The
+  // `status !== 'unknown'` guard even restricted it to the machines that were
+  // actually online, inverting its usefulness. A flag that is always on is worse
+  // than no flag: it trains readers to skip the whole `flags` array, including
+  // HEARTBEAT_STALE / INBOX_URGENT / DECISIONS_PENDING, which are live-fed.
+  // The useful SYNC_STALE lives in health-view.ts, keyed on real dashboard activity.
 
   return flags;
 }
@@ -378,8 +376,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
         idleMachines: filteredIdleMachines
       },
       inboxStats,
-      pendingDecisions,
-      filteredDashboardMachines
+      pendingDecisions
     );
 
     // Derive overall status (based on KNOWN machines only)
