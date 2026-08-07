@@ -124,6 +124,19 @@ export class QdrantHealthMonitor {
     async getCollectionStatus(): Promise<{ exists: boolean; count: number }> {
         try {
             const result = await this.qdrantClient.getCollections();
+            // #2996: a malformed response is NOT "collection absent". This monitor exists
+            // precisely to tell those two apart, so coercing the first into the second
+            // (`?? false`) would make it report a confident wrong diagnosis — and would
+            // erase the only observable symptom of a defect nobody has reproduced yet
+            // (user arbitration 2026-08-04 on #2996). Fail loudly, but name the cause
+            // instead of letting `.some()` of undefined surface as an opaque
+            // "Cannot read properties of undefined (reading 'some')" -32603.
+            if (!Array.isArray(result?.collections)) {
+                throw new Error(
+                    "Qdrant getCollections() resolved without a `.collections` array — malformed response " +
+                    "(Qdrant unreachable, misconfigured, or a proxy returned a non-Qdrant body). Ref #2996."
+                );
+            }
             const collectionExists = result.collections.some((collection) => collection.name === COLLECTION_NAME);
 
             if (collectionExists) {
