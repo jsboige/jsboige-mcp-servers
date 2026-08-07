@@ -76,7 +76,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
@@ -1029,6 +1029,87 @@ describe('helper functions (indirect via handler)', () => {
 			expect(survivors).toContain('task-c');
 			expect(survivors).not.toContain('task-b');
 			expect(parsed.current_machine.dedup.duplicates_removed).toBeGreaterThanOrEqual(1);
+		});
+	});
+
+	// ============================================================
+	// #2766 hardening (ai-01 c.156): dedup must index the chunk REFERENCE, not
+	// {groupIdx, chunkIdx}. The first iteration stored chunkIdx as an index into
+	// `surviving`, but the lookup read `groups[gi].chunks` — still the ORIGINAL
+	// array mid-loop for intra-group duplicates — so when a chunk before the
+	// representative was itself a dropped duplicate, duplicate_count landed on the
+	// wrong chunk. Unreachable via the handler while DIVERSIFY_MAX_CHUNKS_PER_TASK=2
+	// (the cap truncates to ≤2 chunks/group before dedup), so this test exercises
+	// the exported function directly with a 3-chunk group — the exact shape that
+	// would resurface (and lie as a measurement) the day the cap rises.
+	// ============================================================
+	describe('#2766 dedup hardening (reference, not indices)', () => {
+		// Minimal GroupedTask/chunk builders — dedup only touches .snippet + .duplicate_count.
+		const mkChunk = (snippet: string, score: number) => ({
+			score, relevance: 'good', snippet, chunk_type: 'message_exchange' as const,
+			role: 'user' as const, relative_time: 'now', message_position: undefined,
+			tool_name: undefined, has_error: undefined,
+		});
+		const mkGroup = (taskId: string, snippets: Array<{ s: string; score: number }>) => ({
+			taskId, task_title: taskId, workspace: undefined, host_os: 'h1',
+			best_score: Math.max(...snippets.map(x => x.score)), relevance: 'good',
+			source: undefined, model: undefined,
+			chunks: snippets.map(x => mkChunk(x.s, x.score)),
+		});
+
+		beforeEach(() => { delete process.env.SEARCH_DEDUP_ENABLED; delete process.env.SEARCH_DEDUP_NORMALIZE; });
+
+		test('intra-group dup after a dropped chunk increments the RIGHT representative', () => {
+			// group-0 holds the earlier 'shared echo' representative.
+			// group-1: c0='shared echo' (dup of group-0 → dropped), c1='real' (rep,
+			//   surviving[0]), c2='real' (intra-group dup of c1 → must bump c1, not c0).
+			const groups = [
+				mkGroup('task-earlier', [{ s: 'shared echo', score: 0.95 }]),
+				mkGroup('task-g', [
+					{ s: 'shared echo', score: 0.80 }, // dropped (dup of group-0's rep)
+					{ s: 'real content', score: 0.75 }, // rep at surviving[0]
+					{ s: 'real content', score: 0.70 }, // intra-dup of c1
+				]),
+			] as any;
+
+			const stats = dedupGroupedChunksByContent(groups);
+
+			// Both echoes removed: c0 (cross-group) + c2 (intra-group).
+			expect(stats.duplicates_removed).toBe(2);
+			expect(stats.groups_pruned).toBe(0); // both groups still carry a chunk
+			// group-0 rep absorbed c0.
+			expect(groups[0].chunks[0].duplicate_count).toBe(1);
+			// group-1 surviving = [c1] only (c0 and c2 dropped).
+			expect(groups[1].chunks).toHaveLength(1);
+			// THE REGRESSION: the surviving rep for 'real content' (c1) must carry the
+			// intra-group duplicate. Pre-fix this was undefined — the count landed on c0
+			// (index 0 of the original array, not the surviving array) which is dropped
+			// and never output, so the tool reported a false duplicate_count of 0.
+			expect(groups[1].chunks[0].duplicate_count).toBe(1);
+			expect(groups[1].chunks[0].snippet).toBe('real content');
+		});
+
+		test('reference approach stays correct when the dropped-first-chunk shape recurs at scale', () => {
+			// 3 groups. Each group-1/2 starts with an ECHO chunk (dup of group-0's ECHO,
+			// dropped) THEN its OWN unique content repeated twice (intra-group dup).
+			// Distinct unique content per group (A1/A2) so intra-dups don't collapse cross-group.
+			const groups = [
+				mkGroup('t0', [{ s: 'ECHO', score: 0.9 }, { s: 'A0', score: 0.8 }]),
+				mkGroup('t1', [{ s: 'ECHO', score: 0.7 }, { s: 'A1', score: 0.6 }, { s: 'A1', score: 0.5 }]),
+				mkGroup('t2', [{ s: 'ECHO', score: 0.4 }, { s: 'A2', score: 0.3 }, { s: 'A2', score: 0.2 }]),
+			] as any;
+
+			const stats = dedupGroupedChunksByContent(groups);
+			// ECHO dups: t1.c0 + t2.c0 (2). Intra-dups: t1.c2(A1) + t2.c2(A2) (2). = 4 removed.
+			expect(stats.duplicates_removed).toBe(4);
+			expect(stats.groups_pruned).toBe(0); // every group keeps a chunk
+			// t0's ECHO rep absorbed t1.c0 + t2.c0.
+			expect(groups[0].chunks[0].duplicate_count).toBe(2);
+			// Each group's surviving rep absorbed its own intra-group duplicate.
+			expect(groups[1].chunks[0].duplicate_count).toBe(1);
+			expect(groups[1].chunks[0].snippet).toBe('A1');
+			expect(groups[2].chunks[0].duplicate_count).toBe(1);
+			expect(groups[2].chunks[0].snippet).toBe('A2');
 		});
 	});
 
