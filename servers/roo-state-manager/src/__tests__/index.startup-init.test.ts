@@ -1,5 +1,5 @@
 /**
- * Tests for #1817: MCP startup blocking fix
+ * Tests for 511396f0: MCP startup blocking fix
  *
  * Verifies:
  * 1. startBackgroundInit uses oninitialized callback (not setImmediate)
@@ -13,7 +13,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 
-describe('#1817 — MCP startup initialization timing', () => {
+describe('511396f0 — MCP startup initialization timing', () => {
 
     describe('startBackgroundInit — oninitialized callback', () => {
 
