@@ -131,6 +131,27 @@ describe('QdrantHealthMonitor', () => {
 		await expect(monitor.getCollectionStatus()).rejects.toThrow('API down');
 	});
 
+	// #2996: a response that RESOLVES but carries no `.collections` array is a third
+	// case, distinct from both tests above — not "collection absent", not a rejected
+	// call. It used to surface as an opaque "reading 'some'" -32603. It must now name
+	// itself, and it must NOT be silently folded into exists:false: this monitor's
+	// only job is to distinguish "absent" from "cannot tell".
+	test.each([
+		['empty object', {}],
+		['null', null],
+		['undefined', undefined],
+		['collections is not an array', { collections: 'unexpected' }],
+	])('getCollectionStatus throws a named error on a malformed response (%s)', async (_label, payload) => {
+		mockGetCollections.mockResolvedValue(payload as never);
+
+		const { QdrantHealthMonitor } = await import('../QdrantHealthMonitor.js');
+		const monitor = new QdrantHealthMonitor();
+
+		// Rejecting is the assertion: the failure mode being guarded against is the
+		// silent one, where this resolves to { exists: false } and the caller believes it.
+		await expect(monitor.getCollectionStatus()).rejects.toThrow(/malformed response/);
+	});
+
 	// ============================================================
 	// startHealthCheck / stopHealthCheck
 	// ============================================================

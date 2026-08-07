@@ -280,9 +280,19 @@ export async function ensureCollectionExists() {
     try {
         const qdrant = getQdrantClient();
         const result = await qdrant.getCollections();
-        // #2996: guard malformed Qdrant response — getCollections() may resolve without
-        // `.collections` during outages/misconfig, which threw "reading 'some'" (raw -32603).
-        const collectionExists = result?.collections?.some((collection) => collection.name === COLLECTION_NAME) ?? false;
+        // #2996: same guard as QdrantHealthMonitor, and here the stakes are higher —
+        // coercing a malformed response to "collection absent" (`?? false`) sends the
+        // very next line into createCollection, i.e. a mutation decided on a response
+        // we just established we cannot read. Fail loudly and name the cause; the
+        // opaque "reading 'some'" -32603 disappears without the symptom disappearing
+        // with it (user arbitration 2026-08-04 on #2996).
+        if (!Array.isArray(result?.collections)) {
+            throw new Error(
+                "Qdrant getCollections() resolved without a `.collections` array — malformed response " +
+                "(Qdrant unreachable, misconfigured, or a proxy returned a non-Qdrant body). Ref #2996."
+            );
+        }
+        const collectionExists = result.collections.some((collection) => collection.name === COLLECTION_NAME);
 
         if (!collectionExists) {
             const vectorSize = getEmbeddingDimensions();
