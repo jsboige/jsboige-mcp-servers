@@ -323,6 +323,9 @@ interface GroupedTask {
         // #636: Enriched chunk-level metadata
         tool_name: string | undefined;
         has_error: boolean | undefined;
+        // #2766 (SDDD echo pollution): count of exact-duplicate chunks (cross- or
+        // intra-task) collapsed into this representative. Absent = 0 (unique).
+        duplicate_count?: number;
     }>;
 }
 
@@ -377,6 +380,94 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
 
     // Sort tasks by best score descending
     return Array.from(taskMap.values()).sort((a, b) => b.best_score - a.best_score);
+}
+
+/**
+ * #2766 (SDDD echo pollution): cross-task content dedup.
+ *
+ * `groupResultsByTask` (#3043 diversify) keys by `taskId`, so chunks that are
+ * byte-identical but live in DIFFERENT tasks survive as distinct groups.
+ * Measured at ~16.1% of returned chunks (po-2024 c.154: 40/249 across 12
+ * queries), and 19/40 of those duplicates are cross-taskId — invisible to #947
+ * (which dedups same-task) and to the per-task cap (each survives as its own
+ * group). This collapses them.
+ *
+ * Runs AFTER groupResultsByTask + per-task cap + Postgres enrichment, on the
+ * already ANN-ordered, budget-bounded set: a single O(n) pass with a Map keyed
+ * by exact snippet text. The first occurrence (best-ranked in ANN order —
+ * effectively best-scored, since exact-duplicate content shares an embedding
+ * neighborhood) is the representative; later exact-duplicate chunks are dropped
+ * and the representative's `duplicate_count` is incremented, so the pollution
+ * signal is preserved rather than erased by the fix. Groups emptied by dedup
+ * are pruned (their only content was already shown by a better-ranked task).
+ *
+ * Orthogonal to #947 / #3043 by construction: those operate within a task;
+ * this operates across tasks.
+ *
+ * Flags (read at call time so tests can toggle them post-import):
+ *   SEARCH_DEDUP_ENABLED=0   → disable entirely (rollback / A-B).
+ *   SEARCH_DEDUP_NORMALIZE=1 → key on trim+lowercase+collapse-ws instead of the
+ *     raw snippet, to catch near-identical chunks. OFF by default: at a measured
+ *     median of 159 chars, normalization would fuse legitimately distinct chunks
+ *     that merely share a prefix. Enable only if a residual is measured.
+ */
+function dedupGroupedChunksByContent(groups: GroupedTask[]): {
+    duplicates_removed: number;
+    groups_pruned: number;
+    mode: 'exact' | 'normalized';
+    enabled: boolean;
+} {
+    if (process.env.SEARCH_DEDUP_ENABLED === '0') {
+        return { duplicates_removed: 0, groups_pruned: 0, mode: 'exact', enabled: false };
+    }
+    const normalize = process.env.SEARCH_DEDUP_NORMALIZE === '1';
+    const mode: 'exact' | 'normalized' = normalize ? 'normalized' : 'exact';
+    // Map: content key → location of the representative (first/best-ranked hit).
+    const seen = new Map<string, { groupIdx: number; chunkIdx: number }>();
+    let duplicates_removed = 0;
+
+    for (let gi = 0; gi < groups.length; gi++) {
+        const group = groups[gi];
+        // Rebuild the chunk array without duplicates of earlier (better-ranked) chunks.
+        const surviving: typeof group.chunks = [];
+        for (const chunk of group.chunks) {
+            const key = normalize
+                ? chunk.snippet.trim().toLowerCase().replace(/\s+/g, ' ')
+                : chunk.snippet;
+            // Empty snippet: cannot dedup meaningfully — keep (never drop a real hit on a blank key).
+            if (!key) {
+                surviving.push(chunk);
+                continue;
+            }
+            const first = seen.get(key);
+            if (first) {
+                // Duplicate of an already-kept representative: drop this chunk and
+                // bump the representative's duplicate_count (preserves the signal).
+                const rep = groups[first.groupIdx].chunks[first.chunkIdx];
+                rep.duplicate_count = (rep.duplicate_count || 0) + 1;
+                duplicates_removed++;
+            } else {
+                seen.set(key, { groupIdx: gi, chunkIdx: surviving.length });
+                surviving.push(chunk);
+            }
+        }
+        group.chunks = surviving;
+    }
+
+    // Prune groups that lost every chunk to dedup (their content was already
+    // shown by a better-ranked task — keeping them would be pure noise).
+    let groups_pruned = 0;
+    if (duplicates_removed > 0) {
+        const before = groups.length;
+        for (let i = groups.length - 1; i >= 0; i--) {
+            if (groups[i].chunks.length === 0) {
+                groups.splice(i, 1);
+            }
+        }
+        groups_pruned = before - groups.length;
+    }
+
+    return { duplicates_removed, groups_pruned, mode, enabled: true };
 }
 
 /**
@@ -839,6 +930,12 @@ export const searchTasksByContentTool = {
                 }
             }
 
+            // #2766 (SDDD echo pollution): collapse cross-task exact-duplicate
+            // chunks AFTER grouping + per-task cap + Postgres enrichment, so
+            // duplicate_count reflects exactly what is shown. See
+            // dedupGroupedChunksByContent for rationale and flags.
+            const dedupStats = dedupGroupedChunksByContent(groupedResults);
+
             // Cross-machine analysis
             const allHosts = filteredResults.map(r => r.metadata.host_os);
             const machinesFound = [...new Set(allHosts)];
@@ -868,6 +965,17 @@ export const searchTasksByContentTool = {
                             end_date: end_date || null,
                             pre_filter_count: results.length,
                             post_filter_count: filteredResults.length,
+                        }
+                    } : {}),
+                    // #2766 (SDDD): cross-task dedup observability. Emitted only when
+                    // dedup removed something OR is explicitly disabled (rollback
+                    // visibility); quiet for the common 0-duplicate query.
+                    ...(dedupStats.duplicates_removed > 0 || !dedupStats.enabled ? {
+                        dedup: {
+                            enabled: dedupStats.enabled,
+                            mode: dedupStats.mode,
+                            duplicates_removed: dedupStats.duplicates_removed,
+                            groups_pruned: dedupStats.groups_pruned,
                         }
                     } : {})
                 },
