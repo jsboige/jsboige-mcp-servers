@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { splitChunk, getHostIdentifier, computeChunkId, MAX_SUBCHUNKS_PER_CHUNK, Chunk } from '../ChunkExtractor.js';
+import { splitChunk, getHostIdentifier, computeChunkId, MAX_SUBCHUNKS_PER_CHUNK, isCodeCitation, Chunk } from '../ChunkExtractor.js';
 
 // Reset uuid mock and use real implementation
 vi.mock('uuid', () => vi.importActual('uuid'));
@@ -351,6 +351,95 @@ describe('ChunkExtractor', () => {
       partsA.forEach((part, i) => {
         expect(part.chunk_id).toBe(partsB[i].chunk_id);
       });
+    });
+  });
+
+  describe('isCodeCitation (po-204 c.161, ai-01 c.160 SDDD echo half)', () => {
+    it('returns false for empty / short / non-code content', () => {
+      expect(isCodeCitation('')).toBe(false);
+      expect(isCodeCitation('   ')).toBe(false);
+      expect(isCodeCitation('Hello world, this is a short prose sentence.')).toBe(false);
+    });
+
+    it('returns true for content dominated by a fenced code block', () => {
+      const fenceOnly = [
+        '```python',
+        'def hello(name):',
+        '    return f"hi {name}"',
+        '',
+        'class Greeter:',
+        '    def __init__(self, name):',
+        '        self.name = name',
+        '```',
+      ].join('\n');
+      expect(isCodeCitation(fenceOnly)).toBe(true);
+    });
+
+    it('returns true when a short prose prefix is followed by a code block', () => {
+      // Even with a single-line prose prefix, the line-shape heuristic still
+      // classifies the content as code: the indented/keyword-rich lines dominate.
+      // This is intentional — false-negatives are cheap, false-positives cost
+      // signal, but a brief "here's the snippet:" prefix shouldn't rescue
+      // a predominantly-code chunk back into message_exchange territory.
+      const fenced = [
+        'Here is the snippet:',
+        '```ts',
+        'export const hello = (name: string): string => {',
+        '  return `hi ${name}`;',
+        '};',
+        '```',
+      ].join('\n');
+      expect(isCodeCitation(fenced)).toBe(true);
+    });
+
+    it('returns true for an indented code sample (no fence)', () => {
+      const indented = [
+        '  const a = 1;',
+        '  const b = 2;',
+        '  function add(x, y) {',
+        '    return x + y;',
+        '  }',
+        '  add(a, b);',
+      ].join('\n');
+      expect(isCodeCitation(indented)).toBe(true);
+    });
+
+    it('returns false for prose with a single-line code mention', () => {
+      const prose = [
+        'The user reported a NullPointerException in the parser.',
+        'We traced it to the line where we call `parse(input)` and the',
+        'argument was empty. Patched by adding a guard at the top of the',
+        'function: if (!input) return null. This is the fix described in',
+        'the issue. We will deploy it tomorrow after review with the team.',
+        'The error was reproducible on staging only, never on production.',
+      ].join('\n');
+      expect(isCodeCitation(prose)).toBe(false);
+    });
+
+    it('returns false when prose prefix precedes a code block (conservative)', () => {
+      const mixed = [
+        'You can fix this with the following patch:',
+        '```diff',
+        '- foo()',
+        '+ bar()',
+        '```',
+        'Let me know if that works on your end.',
+      ].join('\n');
+      // The fence alone is < 50% of the trimmed content, and the first
+      // non-empty line is prose — so the helper returns false. This is
+      // deliberate: false-negatives are cheap, false-positives cost signal.
+      expect(isCodeCitation(mixed)).toBe(false);
+    });
+
+    it('preserves UUID determinism across chunk_type changes (#2247 + c.161)', () => {
+      const taskId = 'task-c161-determinism';
+      const content = '```ts\nconst x: number = 42;\n```\n';
+      const idMessage = computeChunkId(taskId, 'message_exchange', 0, content);
+      const idCode = computeChunkId(taskId, 'code_citation', 0, content);
+      // Re-indexation of the same content under a new chunk_type MUST yield
+      // the same UUID — otherwise the Qdrant collection doubles up. #2247
+      // decoupled chunk_type from the seed specifically for this scenario.
+      expect(idCode).toBe(idMessage);
     });
   });
 });

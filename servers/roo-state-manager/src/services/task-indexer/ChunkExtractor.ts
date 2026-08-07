@@ -73,7 +73,7 @@ export interface Chunk {
   task_id: string;
   parent_task_id: string | null;
   root_task_id: string | null;
-  chunk_type: 'message_exchange' | 'tool_interaction' | 'task_summary';
+  chunk_type: 'message_exchange' | 'tool_interaction' | 'task_summary' | 'code_citation';
   sequence_order: number;
   timestamp: string;
   indexed: boolean;
@@ -131,6 +131,51 @@ export function getHostIdentifier() {
     const platform = os.platform();
     const arch = os.arch();
     return `${hostname}-${platform}-${arch}`;
+}
+
+/**
+ * #2247 follow-up (po-204 c.161, ai-01 c.160 SDDD): classify code citations.
+ *
+ * Returns true if the content is predominantly a cited code block (a fenced
+ * block OR an indented code sample) rather than a message exchange. The aim is
+ * to disambiguate the echo-pollution family where a `[tool_result]` payload
+ * (often JSON, often a snippet from a baseline/settings file) is currently
+ * emitted as `chunk_type='message_exchange'` and re-ingested as if it were a
+ * fresh user turn — so the same JSON turns up in `codebase_search` results
+ * ranked above the actual conversation content.
+ *
+ * Heuristic (intentionally conservative — false-negatives are cheap, false
+ * positives cost signal):
+ *   - fenced block ratio >= 0.5 (the fenced code occupies the majority of the
+ *     trimmed content), OR
+ *   - ratio of lines that *look like code* (indented, or ending in `{ } ; :`
+ *     outside natural-language punctuation) >= 0.5 AND the first non-empty
+ *     line is itself code-shaped (no prose prefix).
+ *
+ * The helper is exported for unit testing; production callers should reach
+ * for the union type `'code_citation'` rather than re-implementing the check.
+ */
+export function isCodeCitation(content: string): boolean {
+    if (!content) return false;
+    const trimmed = content.trim();
+    if (trimmed.length < 40) return false; // too short to classify reliably
+    const fenceMatches = trimmed.match(/```[\s\S]*?(?:```|$)/g) || [];
+    const fenceChars = fenceMatches.reduce((acc, m) => acc + m.length, 0);
+    if (fenceChars > 0 && fenceChars / trimmed.length >= 0.5) return true;
+
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.length > 0);
+    if (lines.length < 3) return false;
+    const codeLineRe = /^[ \t].*[{}\];:]|^[ \t]*(?:def |class |function |const |let |var |import |export |from |#|\/\/|\/\*|if |for |while |return |[a-zA-Z_][\w]*\s*\()[\s\S]*[{}\];:]$/;
+    let codeLike = 0;
+    for (const line of lines) {
+        if (codeLineRe.test(line)) codeLike++;
+    }
+    if (codeLike / lines.length < 0.5) return false;
+    // First non-empty line must also be code-shaped — guards against "Here's
+    // the snippet:\n  foo();\n  bar();" where the prose prefix should keep
+    // the chunk in message_exchange territory.
+    const firstNonEmpty = lines[0];
+    return codeLineRe.test(firstNonEmpty) || /^[ \t]/.test(firstNonEmpty);
 }
 
 /**
@@ -337,7 +382,17 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         ? `${taskId}#unit-${childUnitIdx}`
                         : taskId;
                     // #2825 (G5): chunk_type 'task_summary' for condensation outputs
-                    const chunkType = sourceKind === 'condensation-fallback' ? 'task_summary' : 'message_exchange';
+                    // po-204 c.161 (SDDD echo half): route code citations to a distinct
+                    // chunk_type so search filters can demote them vs genuine prose turns.
+                    // Task summary wins — condensation outputs must not be re-tagged.
+                    let chunkType: Chunk['chunk_type'];
+                    if (sourceKind === 'condensation-fallback') {
+                        chunkType = 'task_summary';
+                    } else if (isCodeCitation(contentText)) {
+                        chunkType = 'code_citation';
+                    } else {
+                        chunkType = 'message_exchange';
+                    }
                     chunks.push({
                         chunk_id: computeChunkId(effectiveTaskId, chunkType, seq, contentText),
                         task_id: effectiveTaskId,
@@ -458,7 +513,15 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 ? `${taskId}#unit-${uiChildUnitIdx}`
                 : taskId;
             // #2825 (G5): chunk_type 'task_summary' for condensation outputs
-            const uiChunkType = sourceKind === 'condensation-fallback' ? 'task_summary' : 'message_exchange';
+            // po-204 c.161: same code_citation routing as the api loop above.
+            let uiChunkType: Chunk['chunk_type'];
+            if (sourceKind === 'condensation-fallback') {
+                uiChunkType = 'task_summary';
+            } else if (isCodeCitation(uiContent)) {
+                uiChunkType = 'code_citation';
+            } else {
+                uiChunkType = 'message_exchange';
+            }
             chunks.push({
                 chunk_id: computeChunkId(uiEffectiveTaskId, uiChunkType, seq, uiContent),
                 task_id: uiEffectiveTaskId,
@@ -665,12 +728,18 @@ export async function extractChunksFromClaudeSession(
                             : taskId;
 
                         const seq = sequenceOrder++;
+                        // po-204 c.161: route code citations to chunk_type='code_citation'
+                        // in the Claude Code path too — the JSONL session can carry
+                        // tool_result payloads (often JSON / code) re-ingested as fresh turns.
+                        const claudeChunkType: Chunk['chunk_type'] = isCodeCitation(contentText)
+                            ? 'code_citation'
+                            : 'message_exchange';
                         chunks.push({
-                            chunk_id: computeChunkId(claudeEffectiveTaskId, 'claude_message', seq, contentText),
+                            chunk_id: computeChunkId(claudeEffectiveTaskId, claudeChunkType, seq, contentText),
                             task_id: claudeEffectiveTaskId,
                             parent_task_id: claudeIsOverflow ? taskId : null,
                             root_task_id: claudeIsOverflow ? taskId : null,
-                            chunk_type: 'message_exchange',
+                            chunk_type: claudeChunkType,
                             sequence_order: seq,
                             timestamp: entry.timestamp || new Date().toISOString(),
                             indexed: true,
