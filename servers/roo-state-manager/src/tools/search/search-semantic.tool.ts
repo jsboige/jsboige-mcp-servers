@@ -411,7 +411,7 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
  *     median of 159 chars, normalization would fuse legitimately distinct chunks
  *     that merely share a prefix. Enable only if a residual is measured.
  */
-function dedupGroupedChunksByContent(groups: GroupedTask[]): {
+export function dedupGroupedChunksByContent(groups: GroupedTask[]): {
     duplicates_removed: number;
     groups_pruned: number;
     mode: 'exact' | 'normalized';
@@ -422,12 +422,21 @@ function dedupGroupedChunksByContent(groups: GroupedTask[]): {
     }
     const normalize = process.env.SEARCH_DEDUP_NORMALIZE === '1';
     const mode: 'exact' | 'normalized' = normalize ? 'normalized' : 'exact';
-    // Map: content key → location of the representative (first/best-ranked hit).
-    const seen = new Map<string, { groupIdx: number; chunkIdx: number }>();
+    // Map: content key → the representative chunk itself (a direct reference).
+    // #2766 hardening (ai-01 c.156): store the chunk REFERENCE, never indices.
+    // The first iteration stored {groupIdx, chunkIdx} where chunkIdx was an index
+    // into `surviving` (the array under construction), but the lookup indexed
+    // `groups[gi].chunks` — which is still the ORIGINAL array mid-loop for
+    // intra-group duplicates (group.chunks = surviving runs only after the inner
+    // loop). If a chunk before the representative was itself a dropped duplicate,
+    // surviving and original diverge and duplicate_count landed on the wrong chunk.
+    // Unreachable while DIVERSIFY_MAX_CHUNKS_PER_TASK=2 (≤2 chunks/group), but it
+    // would resurface — and lie as a measurement — the day the cap rises. A direct
+    // reference makes the index arithmetic (and its bug class) impossible.
+    const seen = new Map<string, GroupedTask['chunks'][number]>();
     let duplicates_removed = 0;
 
-    for (let gi = 0; gi < groups.length; gi++) {
-        const group = groups[gi];
+    for (const group of groups) {
         // Rebuild the chunk array without duplicates of earlier (better-ranked) chunks.
         const surviving: typeof group.chunks = [];
         for (const chunk of group.chunks) {
@@ -439,15 +448,14 @@ function dedupGroupedChunksByContent(groups: GroupedTask[]): {
                 surviving.push(chunk);
                 continue;
             }
-            const first = seen.get(key);
-            if (first) {
+            const rep = seen.get(key);
+            if (rep) {
                 // Duplicate of an already-kept representative: drop this chunk and
                 // bump the representative's duplicate_count (preserves the signal).
-                const rep = groups[first.groupIdx].chunks[first.chunkIdx];
                 rep.duplicate_count = (rep.duplicate_count || 0) + 1;
                 duplicates_removed++;
             } else {
-                seen.set(key, { groupIdx: gi, chunkIdx: surviving.length });
+                seen.set(key, chunk);
                 surviving.push(chunk);
             }
         }
