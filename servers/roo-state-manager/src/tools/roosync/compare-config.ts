@@ -85,6 +85,31 @@ function maskSensitiveInObject(value: any, currentPath: string): any {
 }
 
 /**
+ * Truncate a string in the middle: keep `headRatio` of the budget at the
+ * start and `tailRatio` at the end, with `[...]` as the cut marker.
+ *
+ * Why head+tail and not head-only: the case d'usage principal of
+ * `compare_config` is to arbitrage config paths between machines, and the
+ * discriminant part of a path is usually at the end
+ * (`.../build/index.js` vs `.../build/src/index.js`). Head-only ate it.
+ *
+ * Ratios come from the original #949 implementation (60 % head, 30 % tail,
+ * 10 % slack for the marker). Consigné sur #3044.
+ */
+const TRUNC_MARKER = '[...]';
+const TRUNC_HEAD_RATIO = 0.6;
+const TRUNC_TAIL_RATIO = 0.3;
+
+function truncateMiddle(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const budget = maxLen - TRUNC_MARKER.length;
+  if (budget <= 0) return TRUNC_MARKER;
+  const headLen = Math.max(1, Math.floor(budget * TRUNC_HEAD_RATIO));
+  const tailLen = Math.max(1, Math.floor(budget * TRUNC_TAIL_RATIO));
+  return s.substring(0, headLen) + TRUNC_MARKER + s.substring(s.length - tailLen);
+}
+
+/**
  * Format a value for VibeSync display: masks secrets (whole value if path is
  * sensitive, or recursively walks to mask nested sensitive keys), then
  * truncates the result to ~MAX_VALUE_LENGTH chars.
@@ -100,18 +125,15 @@ function formatValue(value: any, path: string): string | undefined {
   }
   prepared = maskSensitiveInObject(value, path);
   if (typeof prepared === 'string') {
-    return prepared.length > MAX_VALUE_LENGTH
-      ? `"${prepared.substring(0, MAX_VALUE_LENGTH - 6)}[...]"` // leave room for "[...]"
-      : `"${prepared}"`;
+    // -2 for the surrounding quotes
+    return `"${truncateMiddle(prepared, MAX_VALUE_LENGTH - 2)}"`;
   }
   if (prepared === null) return 'null';
   if (typeof prepared === 'number' || typeof prepared === 'boolean') return String(prepared);
   // Object/array — JSON-stringify, then truncate
   const json = JSON.stringify(prepared);
   if (json === undefined) return undefined;
-  return json.length > MAX_VALUE_LENGTH
-    ? `${json.substring(0, MAX_VALUE_LENGTH - 5)}[...]`
-    : json;
+  return truncateMiddle(json, MAX_VALUE_LENGTH);
 }
 
 /**

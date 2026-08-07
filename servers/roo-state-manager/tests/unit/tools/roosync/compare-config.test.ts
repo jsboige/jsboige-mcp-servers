@@ -619,7 +619,7 @@ describe('roosync_compare_config', () => {
       expect(diff.source_value).toMatch(/GITHUB_TOKEN.*<set:len=\d+:sha256=[0-9a-f]{8}>/);
     });
 
-    it('tronque les valeurs longues (>200 chars) avec marqueur [...]', async () => {
+    it('tronque les valeurs longues (>200 chars) avec marqueur [...] en milieu (head+tail)', async () => {
       const args = {
         source: 'machine-a',
         target: 'machine-b',
@@ -632,7 +632,10 @@ describe('roosync_compare_config', () => {
         inventory: {}
       });
 
-      const LONG_VALUE = 'x'.repeat(500);
+      // Tête distinguable de la queue : 250 'A' puis 250 'B' = 500 chars.
+      // Après troncature 60/30 (head ≈ 116 chars, tail ≈ 58 chars), on doit
+      // retrouver des 'A' en début et des 'B' en fin, avec `[...]` au milieu.
+      const LONG_VALUE = 'A'.repeat(250) + 'B'.repeat(250);
       mockGranularDiffDetector.compareGranular.mockResolvedValue({
         reportId: 'r5',
         timestamp: new Date().toISOString(),
@@ -657,10 +660,14 @@ describe('roosync_compare_config', () => {
       const result = await roosyncCompareConfig(args);
 
       const diff = result.differences[0];
-      // Tronqué et marqué (le marquer peut être à l'intérieur des quotes pour
-      // les strings, ou en suffixe pour le JSON — on accepte les deux)
+      // Tronqué
       expect(diff.source_value!.length).toBeLessThan(LONG_VALUE.length);
-      expect(diff.source_value!).toMatch(/\[\.\.\.\]"?$/);
+      // Marqueur `[...]` présent, mais AU MILIEU (pas en suffixe)
+      expect(diff.source_value!).toContain('[...]');
+      expect(diff.source_value!).not.toMatch(/\[\.\.\.\]"?$/);
+      // Head=tête du texte original ('A'), tail=queue ('B')
+      expect(diff.source_value).toMatch(/^"+A+/);
+      expect(diff.source_value).toMatch(/B+"*$/);
     });
 
     it('harmonization_candidates sépare present_absent (ajout/suppression) de divergent_value', async () => {
