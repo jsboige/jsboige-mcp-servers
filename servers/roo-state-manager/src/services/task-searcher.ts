@@ -19,7 +19,7 @@ interface Chunk {
   task_id: string;
   parent_task_id: string | null;
   root_task_id: string | null;
-  chunk_type: 'message_exchange' | 'tool_interaction' | 'task_summary';
+  chunk_type: 'message_exchange' | 'tool_interaction' | 'task_summary' | 'code_citation';
   sequence_order: number;
   timestamp: string;
   indexed: boolean;
