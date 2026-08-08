@@ -114,6 +114,14 @@ describe('roosync_messages dispatcher', () => {
         expect(result.data).not.toHaveProperty('unknownParam');
       }
     });
+
+    test('#3029 AC-4: handler consumes MessagesArgsSchema at runtime (validation layer)', async () => {
+      // The handler now parses args via MessagesArgsSchema at runtime, making the schema
+      // an active validation layer — not just a z.infer type source. Invalid input is
+      // rejected by the handler itself before routing. (Valid input passing through is
+      // already covered by the 30+ routing tests below.)
+      await expect(roosyncMessages({ action: 'invalid_action' } as any)).rejects.toThrow();
+    });
   });
 
   // ============================================================

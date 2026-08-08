@@ -106,6 +106,10 @@ export type MessagesArgs = z.infer<typeof MessagesArgsSchema>;
 // ====================================================================
 
 export async function roosyncMessages(args: MessagesArgs) {
+  // #3029 AC-4: MessagesArgsSchema consumed at runtime as the active validation layer,
+  // not just a type source (z.infer). Throws ZodError on genuinely malformed input;
+  // valid input passes through unchanged (handler cherry-picks known keys downstream).
+  MessagesArgsSchema.parse(args);
   const { action } = args;
 
   switch (action) {
