@@ -76,7 +76,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
@@ -1110,6 +1110,89 @@ describe('helper functions (indirect via handler)', () => {
 			expect(groups[1].chunks[0].snippet).toBe('A1');
 			expect(groups[2].chunks[0].duplicate_count).toBe(1);
 			expect(groups[2].chunks[0].snippet).toBe('A2');
+		});
+	});
+
+	// ============================================================
+	// #956 résiduel (ai-01 c.160 Item 4 — "durcir la dédup AVANT toute hausse
+	// de DIVERSIFY_MAX_CHUNKS_PER_TASK"). The dedup function's index-mixing bug was
+	// structurally eliminated by #957 (direct chunk reference). This block hardens
+	// the SIBLING concern — the per-task diversify cap (the slice) — which is the
+	// logic that actually changes the day the cap rises. Extracted to the exported
+	// applyDiversifyCap() helper so it is unit-testable at ANY cap value without
+	// driving the full Qdrant-backed handler, and to surface the baseline
+	// (how often the cap binds → recall left on the table) before any cap raise.
+	// ============================================================
+	describe('#956 diversify-cap hardening + baseline observability', () => {
+		const mkChunk = (snippet: string, score: number) => ({
+			score, relevance: 'good', snippet, chunk_type: 'message_exchange' as const,
+			role: 'user' as const, relative_time: 'now', message_position: undefined,
+			tool_name: undefined, has_error: undefined,
+		});
+		const mkGroup = (taskId: string, snippets: Array<{ s: string; score: number }>) => ({
+			taskId, task_title: taskId, workspace: undefined, host_os: 'h1',
+			best_score: Math.max(...snippets.map(x => x.score)), relevance: 'good',
+			source: undefined, model: undefined,
+			chunks: snippets.map(x => mkChunk(x.s, x.score)),
+		});
+
+		test('cap never binds → returns zeros and does not mutate (common query, quiet report)', () => {
+			const groups = [
+				mkGroup('t0', [{ s: 'a', score: 0.9 }, { s: 'b', score: 0.8 }]),
+				mkGroup('t1', [{ s: 'c', score: 0.7 }]),
+			] as any;
+			const before = groups.map(g => g.chunks.length);
+			const stats = applyDiversifyCap(groups, 2);
+			expect(stats.truncated_groups).toBe(0);
+			expect(stats.chunks_capped).toBe(0);
+			expect(groups.map(g => g.chunks.length)).toEqual(before);
+		});
+
+		test('cap binds on one over-represented task → counts the group + the dropped chunks', () => {
+			// t0 monopolizes with 5 chunks; cap=2 keeps the 2 best-scored, drops 3.
+			const groups = [
+				mkGroup('t0', [
+					{ s: 'a', score: 0.9 }, { s: 'b', score: 0.8 }, { s: 'c', score: 0.7 },
+					{ s: 'd', score: 0.6 }, { s: 'e', score: 0.5 },
+				]),
+				mkGroup('t1', [{ s: 'z', score: 0.4 }]),
+			] as any;
+			const stats = applyDiversifyCap(groups, 2);
+			expect(stats.truncated_groups).toBe(1); // only t0 exceeded
+			expect(stats.chunks_capped).toBe(3);    // 5 − 2
+			// group[0] is sliced to the cap, preserving the BEST-ranked head.
+			expect(groups[0].chunks).toHaveLength(2);
+			expect(groups[0].chunks.map((c: any) => c.snippet)).toEqual(['a', 'b']);
+			// group[1] untouched.
+			expect(groups[1].chunks).toHaveLength(1);
+		});
+
+		test('HIGHER cap (the raise ai-01 is evaluating) stays correct — no index artifact', () => {
+			// The exact regression shape ai-01 flagged: behavior at a raised cap.
+			// cap=4 on a 6-chunk group → truncates to 4, counts 2 dropped. No mutation
+			// of the wrong array, no miscount — the helper indexes its own loop variable.
+			const groups = [
+				mkGroup('t0', Array.from({ length: 6 }, (_, i) => ({ s: `c${i}`, score: 1 - i * 0.1 }))),
+				mkGroup('t1', Array.from({ length: 3 }, (_, i) => ({ s: `d${i}`, score: 0.3 - i * 0.05 }))),
+			] as any;
+			const stats = applyDiversifyCap(groups, 4);
+			expect(stats.truncated_groups).toBe(1); // only t0 (6) exceeded 4; t1 (3) did not
+			expect(stats.chunks_capped).toBe(2);    // 6 − 4
+			expect(groups[0].chunks).toHaveLength(4);
+			expect(groups[0].chunks.map((c: any) => c.snippet)).toEqual(['c0', 'c1', 'c2', 'c3']);
+			expect(groups[1].chunks).toHaveLength(3); // untouched
+		});
+
+		test('multiple tasks over the cap each counted independently', () => {
+			const groups = [
+				mkGroup('t0', Array.from({ length: 4 }, (_, i) => ({ s: `a${i}`, score: 0.9 - i * 0.1 }))),
+				mkGroup('t1', Array.from({ length: 5 }, (_, i) => ({ s: `b${i}`, score: 0.5 - i * 0.05 }))),
+			] as any;
+			const stats = applyDiversifyCap(groups, 2);
+			expect(stats.truncated_groups).toBe(2); // both exceeded
+			expect(stats.chunks_capped).toBe(5);    // (4−2) + (5−2)
+			expect(groups[0].chunks).toHaveLength(2);
+			expect(groups[1].chunks).toHaveLength(2);
 		});
 	});
 

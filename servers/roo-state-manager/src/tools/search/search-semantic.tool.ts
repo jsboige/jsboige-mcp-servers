@@ -479,6 +479,35 @@ export function dedupGroupedChunksByContent(groups: GroupedTask[]): {
 }
 
 /**
+ * #3043 (SDDD #2766) + #956 résiduel (ai-01 c.160 Item 4): cap the chunk array per
+ * grouped task so no single task monopolizes the result budget, and report how often
+ * the cap binds. Extracted to a unit-testable helper — parallel to
+ * dedupGroupedChunksByContent — so the cap behavior is verifiable at ANY value
+ * (including the higher caps we may evaluate against the baseline) without driving
+ * the full Qdrant-backed handler.
+ *
+ * Mutates each group's `chunks` in place (truncates to `cap`) and returns counts:
+ *   - truncated_groups: how many groups had more chunks than the cap
+ *   - chunks_capped:    total chunks dropped across all truncated groups
+ * Both are 0 when the cap never binds (the common query) → quiet in the report.
+ */
+export function applyDiversifyCap(groups: GroupedTask[], cap: number): {
+    truncated_groups: number;
+    chunks_capped: number;
+} {
+    let truncated_groups = 0;
+    let chunks_capped = 0;
+    for (const group of groups) {
+        if (group.chunks.length > cap) {
+            chunks_capped += group.chunks.length - cap;
+            group.chunks = group.chunks.slice(0, cap);
+            truncated_groups++;
+        }
+    }
+    return { truncated_groups, chunks_capped };
+}
+
+/**
  * Définition de l'outil MCP search_tasks_by_content
  */
 export const searchTasksByContentTool = {
@@ -873,11 +902,12 @@ export const searchTasksByContentTool = {
             // #3043 (SDDD #2766): diversify-by-task — cap chunks per task + truncate
             // to max_results unique tasks. Without this, a single long task with many
             // high-score chunks monopolizes the response and unique_tasks stays at 1.
-            for (const group of groupedResults) {
-                if (group.chunks.length > DIVERSIFY_MAX_CHUNKS_PER_TASK) {
-                    group.chunks = group.chunks.slice(0, DIVERSIFY_MAX_CHUNKS_PER_TASK);
-                }
-            }
+            // #956 résiduel (ai-01 c.160 Item 4 — "mesure la baseline avant de toucher
+            // au paramètre"): apply the cap via the unit-tested helper and surface how
+            // often it binds, so the cost of the current conservative value (recall
+            // dropped from over-represented tasks) becomes measurable. Quiet for the
+            // common non-truncating query (reported only when > 0).
+            const diversifyStats = applyDiversifyCap(groupedResults, DIVERSIFY_MAX_CHUNKS_PER_TASK);
             if (groupedResults.length > effectiveMaxResults) {
                 groupedResults = groupedResults.slice(0, effectiveMaxResults);
             }
@@ -984,6 +1014,17 @@ export const searchTasksByContentTool = {
                             mode: dedupStats.mode,
                             duplicates_removed: dedupStats.duplicates_removed,
                             groups_pruned: dedupStats.groups_pruned,
+                        }
+                    } : {}),
+                    // #956 résiduel (ai-01 c.160 Item 4): diversify-cap observability.
+                    // Emitted only when the per-task cap actually truncated groups, so the
+                    // baseline (how often cap=2 binds → recall left on the table) becomes
+                    // measurable before any decision to raise DIVERSIFY_MAX_CHUNKS_PER_TASK.
+                    ...(diversifyStats.truncated_groups > 0 ? {
+                        diversify: {
+                            cap_per_task: DIVERSIFY_MAX_CHUNKS_PER_TASK,
+                            truncated_groups: diversifyStats.truncated_groups,
+                            chunks_capped: diversifyStats.chunks_capped,
                         }
                     } : {})
                 },
