@@ -24,9 +24,52 @@
  * SkeletonCacheService.addOrUpdate) to satisfy floating-promise linting.
  */
 
-import type { ConversationSkeleton } from '../../types/conversation.js';
-import type { ConversationRow, Harness } from './types.js';
+import type { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
+import type { ConversationRow, Harness, MessageRow } from './types.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
+
+/**
+ * #2957 défaut 1: structural type guard distinguishing MessageSkeleton from
+ * ActionMetadata in the `sequence` union. ActionMetadata carries a `type`
+ * discriminant ('tool' | 'command'); MessageSkeleton carries a `role`
+ * ('user' | 'assistant'). Checking `role` keeps the guard structural — it does
+ * not need to import ActionMetadata and tolerates additive fields on either side.
+ */
+function isMessageSkeleton(
+  item: ConversationSkeleton['sequence'][number]
+): item is MessageSkeleton {
+  return typeof (item as MessageSkeleton).role === 'string';
+}
+
+/**
+ * #2957 défaut 1: map a skeleton's `sequence` to the DB `MessageRow[]` shape.
+ * Filters out ActionMetadata (tool/command actions are not message rows) and
+ * assigns a message-relative contiguous `seq` — stable across re-analysis even
+ * when action detection varies (a message's seq does not shift if the number of
+ * interleaved actions changes). MessageSkeleton carries no `message_id` nor
+ * `tool_calls`, so those are null.
+ */
+function mapSequenceToMessageRows(
+  taskId: string,
+  sequence: ConversationSkeleton['sequence']
+): MessageRow[] {
+  const rows: MessageRow[] = [];
+  let seq = 0;
+  for (const item of sequence) {
+    if (!isMessageSkeleton(item)) continue; // skip ActionMetadata (tool/command)
+    rows.push({
+      task_id: taskId,
+      message_id: null,
+      seq,
+      role: item.role,
+      content: item.content,
+      tool_calls: null,
+      ts: item.timestamp,
+    });
+    seq++;
+  }
+  return rows;
+}
 
 /**
  * Map a ConversationSkeleton to a ConversationRow and upsert it into the unified store.
@@ -72,6 +115,24 @@ export async function dualWriteConversationToStore(
     };
 
     await writer.upsertConversationOnly(conversationRow);
+
+    // #2957 défaut 1: also dual-write the message-level rows. The writer HAS
+    // upsertMessages (PgUnifiedStoreWriter.ts:199) but production never called
+    // it → the `messages` table stayed empty while conversations declared
+    // sum(msg_count) in the millions (signature #692: writer method with zero
+    // call site). Wired here at the single converging point, same fire-and-forget
+    // contract. Conversation-first satisfies any FK; both writes fall through
+    // the catch on failure (best-effort, like the conversation write above).
+    // Single-point guard (audit reco #1): skip when the sequence is empty or
+    // missing — covers header-only toHeader() partials (which drop sequence)
+    // AND legitimately empty conversations, so the 9 call sites + future
+    // callers never emit a spurious empty upsert. Env-gate is inherited:
+    // NullUnifiedStoreWriter.upsertMessages is a no-op when the flag is off.
+    const sequence = skeleton.sequence ?? [];
+    const messageRows = mapSequenceToMessageRows(taskId, sequence);
+    if (messageRows.length > 0) {
+      await writer.upsertMessages(messageRows);
+    }
   } catch {
     // Swallow all errors — dual-write must never block the caller.
     // PgUnifiedStoreWriter has its own circuit-breaker; this catch covers the

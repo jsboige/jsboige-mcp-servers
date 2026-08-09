@@ -463,3 +463,106 @@ describe('dual-write — error swallowing (never throws)', () => {
     spy.mockRestore();
   });
 });
+
+// =====================================================================
+// #2957 défaut 1 — message-level dual-write
+// The conversation write (upsertConversationOnly) was the only one wired; the
+// writer HAS upsertMessages but prod never called it → `messages` table empty.
+// These assert the new message-write path: filter ActionMetadata, map to rows,
+// contiguous message-relative seq, and the single-point empty-sequence guard.
+// =====================================================================
+describe('dual-write — #2957 défaut 1 message-write', () => {
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let convSpy: ReturnType<typeof vi.spyOn>;
+  let msgSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    resetWriterInstance();
+    vi.unstubAllEnvs();
+    clearUnifiedStoreEnv();
+    infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    convSpy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertConversationOnly');
+    msgSpy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertMessages');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    infoSpy.mockRestore();
+    convSpy.mockRestore();
+    msgSpy.mockRestore();
+    resetWriterInstance();
+  });
+
+  // Skeleton with a mixed sequence: user msg, tool action, assistant msg, command action.
+  // Expected message rows = the 2 MessageSkeleton entries (actions filtered out).
+  function makeSkeletonWithSequence(taskId: string): ConversationSkeleton {
+    return {
+      taskId,
+      parentTaskId: null,
+      messageCount: 2,
+      sequence: [
+        { role: 'user', content: 'hello world', timestamp: '2026-08-09T10:00:00.000Z', isTruncated: false },
+        { type: 'tool', name: 'Read', parameters: { path: '/a' }, status: 'success', timestamp: '2026-08-09T10:00:01.000Z' },
+        { role: 'assistant', content: 'I read it', timestamp: '2026-08-09T10:00:02.000Z', isTruncated: true },
+        { type: 'command', name: 'npm', parameters: { cmd: 'test' }, status: 'success', timestamp: '2026-08-09T10:00:03.000Z' },
+      ],
+      metadata: {
+        lastActivity: '2026-08-09T10:00:02.000Z',
+        createdAt: '2026-08-09T10:00:00.000Z',
+        messageCount: 2,
+        actionCount: 2,
+        totalSize: 100,
+        source: 'roo',
+        machineId: 'myia-po-2026',
+      },
+    } as unknown as ConversationSkeleton;
+  }
+
+  test('calls upsertMessages with mapped message rows (ActionMetadata filtered)', async () => {
+    await dualWriteConversationToStore('task-seq', makeSkeletonWithSequence('task-seq'));
+    expect(msgSpy).toHaveBeenCalledTimes(1);
+    const rows = msgSpy.mock.calls[0][0];
+    expect(rows).toHaveLength(2); // 2 messages, 2 actions filtered out
+    expect(rows[0]).toMatchObject({
+      task_id: 'task-seq',
+      message_id: null,
+      seq: 0,
+      role: 'user',
+      content: 'hello world',
+      tool_calls: null,
+      ts: '2026-08-09T10:00:00.000Z',
+    });
+    expect(rows[1]).toMatchObject({
+      task_id: 'task-seq',
+      message_id: null,
+      seq: 1, // message-relative contiguous (action at original index 1 does NOT shift this)
+      role: 'assistant',
+      content: 'I read it',
+      tool_calls: null,
+      ts: '2026-08-09T10:00:02.000Z',
+    });
+  });
+
+  test('single-point guard: empty sequence → upsertMessages NOT called', async () => {
+    // makeSkeleton() produces sequence: [] — the guard must skip the message write
+    // entirely (no spurious empty upsert). Conversation write still happens.
+    await dualWriteConversationToStore('task-empty', makeSkeleton());
+    expect(convSpy).toHaveBeenCalledTimes(1);
+    expect(msgSpy).not.toHaveBeenCalled();
+  });
+
+  test('single-point guard: missing sequence (undefined) → upsertMessages NOT called', async () => {
+    // Header-only toHeader() partials drop the sequence entirely. The nullish
+    // fallback (`skeleton.sequence ?? []`) must absorb this without throwing.
+    const headerOnly = { taskId: 'task-hdr', metadata: { source: 'roo' } } as unknown as ConversationSkeleton;
+    await expect(dualWriteConversationToStore('task-hdr', headerOnly)).resolves.toBeUndefined();
+    expect(msgSpy).not.toHaveBeenCalled();
+  });
+
+  test('conversation write still fires alongside message write', async () => {
+    // Regression guard: wiring messages must not break the existing conversation write.
+    await dualWriteConversationToStore('task-both', makeSkeletonWithSequence('task-both'));
+    expect(convSpy).toHaveBeenCalledTimes(1);
+    expect(msgSpy).toHaveBeenCalledTimes(1);
+  });
+});
