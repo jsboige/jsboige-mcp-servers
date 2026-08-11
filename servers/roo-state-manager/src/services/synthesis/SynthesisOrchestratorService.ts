@@ -10,6 +10,7 @@
  *
  * @author Roo Code v4 - SDDD Phase 3
  * @version 3.0.0
+ * @experimental Pipeline synthesis DÉSACTIVÉ — `SYNTHESIS_DISABLED` guard actif (issue #788 Phase 4). Ce service est inerte tant que l'orchestration LLM réelle n'est pas branchée. Ne pas consommer via MCP.
  */
 
 import {
