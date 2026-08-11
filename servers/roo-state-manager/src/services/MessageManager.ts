@@ -14,6 +14,9 @@ import { createLogger } from '../utils/logger.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId } from '../utils/message-helpers.js';
+// Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
+// cannot re-enter the cycle documented below.
+import { AttachmentManager } from './roosync/AttachmentManager.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -144,6 +147,24 @@ export class MessageManager {
   private inboxPath: string;
   private sentPath: string;
   private archivePath: string;
+
+  /**
+   * Lazily built so the common paths (send/read/list) pay nothing for it — only
+   * destruction touches attachments. Injectable for tests via `setAttachmentManager`.
+   */
+  private _attachmentManager?: AttachmentManager;
+
+  private get attachmentManager(): AttachmentManager {
+    if (!this._attachmentManager) {
+      this._attachmentManager = new AttachmentManager(this.sharedStatePath);
+    }
+    return this._attachmentManager;
+  }
+
+  /** Test seam: inject a double so destruction can be exercised without a real store. */
+  setAttachmentManager(manager: AttachmentManager): void {
+    this._attachmentManager = manager;
+  }
 
   /** In-memory metadata cache for inbox messages (#638 perf) */
   private inboxCache: MessageListItem[] | null = null;
@@ -937,6 +958,51 @@ export class MessageManager {
       if (message.destroyed_at) {
         logger.info(`Message ${messageId} already destroyed`);
         return true;
+      }
+
+      // Purge attachment blobs BEFORE stamping `destroyed_at`.
+      //
+      // Until this was wired, destruction wiped only `body` and left every attached
+      // file in clear on the shared store — while the attachment is precisely the
+      // channel mandated for secrets (value in the attachment, never in the indexed
+      // body). The one payload that had to be purged was the only one that never was,
+      // and `destroy_after` therefore bounded nothing.
+      //
+      // Ordering is deliberate: purge first, stamp second. A failure here leaves the
+      // message un-stamped so the next `cleanupExpiredMessages` retries it. Stamping
+      // first and purging best-effort would let us report a destroyed message whose
+      // secret is still on disk — the exact defect this fixes, rebuilt one layer up.
+      const attachmentRefs = message.attachments ?? [];
+      const survivors: string[] = [];
+      for (const ref of attachmentRefs) {
+        try {
+          // A missing attachment is a success, not an error: destruction is idempotent
+          // and another machine may have removed it. Without this check the
+          // `Attachment introuvable` throw would make cleanup retry the same message
+          // on every pass, forever.
+          //
+          // Known narrow gap, stated rather than papered over: a directory whose
+          // `metadata.json` is unreadable also reads as absent here, so a corrupt-metadata
+          // blob would be skipped. Deleting on that signal alone would be worse (it would
+          // delete on a read failure), so we accept the gap and surface it in the log below.
+          const meta = await this.attachmentManager.getAttachmentMetadata(ref.uuid);
+          if (meta === null) {
+            logger.info(`Attachment ${ref.uuid} already absent for ${messageId}`);
+            continue;
+          }
+          await this.attachmentManager.deleteAttachment(ref.uuid);
+        } catch (error) {
+          survivors.push(ref.uuid);
+          logger.error(`Failed to purge attachment ${ref.uuid} of ${messageId}`, error);
+        }
+      }
+
+      if (survivors.length > 0) {
+        logger.error(
+          `Message ${messageId} NOT destroyed: ${survivors.length}/${attachmentRefs.length} ` +
+            `attachment(s) survived (${survivors.join(', ')}). Left un-stamped for retry.`
+        );
+        return false;
       }
 
       // Wipe sensitive content
