@@ -11,6 +11,7 @@
  *
  * @author Roo Code v4 - SDDD Phase 3
  * @version 1.1.0
+ * @experimental Pipeline synthesis DÉSACTIVÉ — `SYNTHESIS_DISABLED` guard actif (issue #788 Phase 4). Plusieurs méthodes restent en placeholder Phase 3 (`triggerContextCondensation` l.1636). Ce service est inerte. Ne pas consommer via MCP.
  */
 
 import {
