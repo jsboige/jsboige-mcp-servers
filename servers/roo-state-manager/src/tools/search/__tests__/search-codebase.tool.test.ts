@@ -372,6 +372,9 @@ describe('search-codebase.tool', () => {
 		});
 
 		test('returns success with marginal relevance (score 0.45)', async () => {
+			// Explicit low min_score: this test exercises the relevance labeling at a sub-default
+			// score (0.45 < DEFAULT_MIN_SCORE 0.5). Without it, the post-malus min_score filter
+			// (re-applied on the adjusted score, PR #972) would drop the hit before labeling.
 			mockQdrant.query.mockResolvedValue({
 				points: [{
 					score: 0.45,
@@ -379,7 +382,7 @@ describe('search-codebase.tool', () => {
 				}]
 			});
 
-			const result = await handleCodebaseSearch({ query: 'x variable', workspace: '/ws' });
+			const result = await handleCodebaseSearch({ query: 'x variable', workspace: '/ws', min_score: 0.2 });
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('success');
 			expect(parsed.results[0].relevance).toBe('marginal');
@@ -393,7 +396,7 @@ describe('search-codebase.tool', () => {
 				}]
 			});
 
-			const result = await handleCodebaseSearch({ query: 'z', workspace: '/ws' });
+			const result = await handleCodebaseSearch({ query: 'z', workspace: '/ws', min_score: 0.2 });
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('success');
 			expect(parsed.results[0].relevance).toBe('marginal');
@@ -617,6 +620,38 @@ describe('search-codebase.tool', () => {
 				// spec at 0.80 → malused to 0.76 < source 0.78 → source ranks first.
 				expect(parsed.results[0].file_path).toBe('src/widget.ts');
 				expect(parsed.test_file_malus_applied).toBe(1);
+			});
+
+			test('min_score is re-applied on the post-malus score — a borderline test hit is dropped', async () => {
+				// Qdrant filters on the RAW score (score_threshold). A test file at raw 0.71
+				// passes a 0.70 raw threshold, but the ×0.95 malus drops it to 0.6745 < 0.70.
+				// Without re-applying min_score on the adjusted score, this hit would be returned
+				// with score 0.6745 while the response announces min_score_used: 0.70 — a
+				// self-contradiction (CHANGES_REQUESTED ai-01 on PR #972). The borderline test
+				// must be ABSENT; a clear test (raw 0.80 → 0.76) and a source must remain, proving
+				// the filter is surgical, not a blanket removal of test files.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.71, payload: { filePath: 'src/__tests__/borderline.test.ts', codeChunk: "test('borderline', () => {})", startLine: 1, endLine: 3 } },
+						{ score: 0.80, payload: { filePath: 'src/__tests__/clear.test.ts', codeChunk: "test('clear', () => {})", startLine: 1, endLine: 3 } },
+						{ score: 0.72, payload: { filePath: 'src/services/foo.ts', codeChunk: 'export function foo() {}', startLine: 10, endLine: 12 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'foo', workspace: '/ws', min_score: 0.70 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.min_score_used).toBe(0.70);
+				const paths = parsed.results.map((r: any) => r.file_path);
+				// The borderline test (raw 0.71 → 0.6745) falls below the announced threshold → absent.
+				expect(paths).not.toContain('src/__tests__/borderline.test.ts');
+				// The clear test (raw 0.80 → 0.76) and the source survive the threshold.
+				expect(paths).toContain('src/__tests__/clear.test.ts');
+				expect(paths).toContain('src/services/foo.ts');
+				// Invariant: no returned result contradicts its own announced min_score_used.
+				for (const r of parsed.results) {
+					expect(r.score).toBeGreaterThanOrEqual(0.70);
+				}
 			});
 		});
 

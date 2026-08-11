@@ -727,10 +727,17 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const TEST_FILE_MALUS = 0.95;
 		const MAX_CHUNKS_PER_FILE = 2;
 
-		const adjusted: { point: any; score: number }[] = finalHits.map((point: any) => {
-			const isTestFile = TEST_FILE_RE.test(String(point.payload.filePath || ''));
-			return { point, score: isTestFile ? point.score * TEST_FILE_MALUS : point.score };
-		});
+		const adjusted: { point: any; score: number }[] = finalHits
+			.map((point: any) => {
+				const isTestFile = TEST_FILE_RE.test(String(point.payload.filePath || ''));
+				return { point, score: isTestFile ? point.score * TEST_FILE_MALUS : point.score };
+			})
+			// Re-apply min_score on the ADJUSTED (post-malus) score. Qdrant already filters on
+			// the RAW score (score_threshold above), but a test file at raw 0.71 passes a 0.70
+			// threshold, gets malussed to 0.6745, and would otherwise be returned — contradicting
+			// min_score_used. Filtering BEFORE the per-file cap ensures a threshold-eliminated hit
+			// doesn't consume a slot of its file (then get dropped, wasting the slot).
+			.filter(a => a.score >= effectiveMinScore);
 		adjusted.sort((a, b) => b.score - a.score);
 
 		// Per-file cap (A): greedy walk by adjusted score, then backfill with leftovers so
