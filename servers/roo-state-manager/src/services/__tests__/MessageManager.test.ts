@@ -15,6 +15,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageManager, type MessageListItem } from '../MessageManager.js';
+import { AttachmentManager } from '../roosync/AttachmentManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
 import { join } from 'path';
@@ -923,6 +924,107 @@ describe('MessageManager', () => {
 
       const destroyed = await messageManager.getMessage(msg.id);
       expect(destroyed!.body).toBe('[DESTROYED]');
+    });
+
+    /**
+     * Attachment purge on destruction.
+     *
+     * These pin the DEFECT, not the happy path: before the fix, destruction wiped
+     * `body` and left the attachment blob in clear on the shared store. Since the
+     * attachment is the channel mandated for secrets (value never in the indexed
+     * body), the only payload that had to disappear was the one that never did.
+     * A test that merely asserted `body === '[DESTROYED]'` passed throughout and
+     * guarded nothing — which is why the defect survived this suite.
+     */
+    describe('attachment purge (destroyMessage)', () => {
+      /** Uploads a real attachment and links it to `messageId`. Returns its uuid. */
+      async function attachTo(messageId: string, contents: string): Promise<string> {
+        const src = join(testSharedStatePath, `payload-${messageId}.env`);
+        await fs.writeFile(src, contents, 'utf-8');
+
+        const am = new AttachmentManager(testSharedStatePath);
+        const ref = await am.uploadAttachment(src, 'machine-a', 'secret.env', messageId);
+
+        // Link the ref onto the stored message, as the send path does.
+        const filePath = join(testSharedStatePath, 'messages/inbox', `${messageId}.json`);
+        const stored = JSON.parse(await fs.readFile(filePath, 'utf-8'));
+        stored.attachments = [{ uuid: ref.uuid, filename: 'secret.env', sizeBytes: contents.length }];
+        await fs.writeFile(filePath, JSON.stringify(stored, null, 2), 'utf-8');
+
+        return ref.uuid;
+      }
+
+      const blobDir = (uuid: string) => join(testSharedStatePath, 'attachments', uuid);
+
+      test('destroyMessage removes the attachment blob, not just the body', async () => {
+        const msg = await messageManager.sendMessage(
+          'machine-a', 'machine2', 'Secret', 'value is in the attachment', 'HIGH',
+          undefined, undefined, undefined,
+          { auto_destruct: true }
+        );
+        const uuid = await attachTo(msg.id, 'API_KEY=sk-should-not-survive');
+        expect(existsSync(blobDir(uuid))).toBe(true); // precondition
+
+        const ok = await messageManager.destroyMessage(msg.id, 'ttl_expired');
+
+        expect(ok).toBe(true);
+        expect(existsSync(blobDir(uuid))).toBe(false); // ← failed before the fix
+        expect((await messageManager.getMessage(msg.id))!.body).toBe('[DESTROYED]');
+      });
+
+      test('TTL expiry purges attachments (the path secrets actually travel)', async () => {
+        const msg = await messageManager.sendMessage(
+          'machine-a', 'machine2', 'Rotated key', 'see attachment', 'HIGH',
+          undefined, undefined, undefined,
+          { auto_destruct: true, destruct_after: '1m' }
+        );
+        const uuid = await attachTo(msg.id, 'QDRANT_API_KEY=should-not-survive-ttl');
+
+        const filePath = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
+        const stored = JSON.parse(await fs.readFile(filePath, 'utf-8'));
+        stored.expires_at = new Date(Date.now() - 60_000).toISOString();
+        await fs.writeFile(filePath, JSON.stringify(stored, null, 2), 'utf-8');
+
+        expect(await messageManager.cleanupExpiredMessages()).toBe(1);
+        expect(existsSync(blobDir(uuid))).toBe(false); // ← failed before the fix
+      });
+
+      test('a failed purge leaves the message un-stamped so cleanup retries it', async () => {
+        const msg = await messageManager.sendMessage(
+          'machine-a', 'machine2', 'Secret', 'body', 'HIGH',
+          undefined, undefined, undefined,
+          { auto_destruct: true }
+        );
+        await attachTo(msg.id, 'API_KEY=locked');
+
+        messageManager.setAttachmentManager({
+          getAttachmentMetadata: async () => ({ uuid: 'x' }),
+          deleteAttachment: async () => { throw new Error('EBUSY: file locked'); },
+        } as unknown as AttachmentManager);
+
+        // Reporting success here would rebuild the very defect one layer up:
+        // a "destroyed" message whose secret is still on disk.
+        expect(await messageManager.destroyMessage(msg.id, 'ttl_expired')).toBe(false);
+
+        const after = await messageManager.getMessage(msg.id);
+        expect(after!.destroyed_at).toBeUndefined();
+        expect(after!.destroyed_reason).toBeUndefined();
+      });
+
+      test('an already-absent attachment is success, not an endless retry', async () => {
+        const msg = await messageManager.sendMessage(
+          'machine-a', 'machine2', 'Secret', 'body', 'HIGH',
+          undefined, undefined, undefined,
+          { auto_destruct: true }
+        );
+        const uuid = await attachTo(msg.id, 'API_KEY=already-gone');
+
+        // Another machine removed it first.
+        await new AttachmentManager(testSharedStatePath).deleteAttachment(uuid);
+
+        expect(await messageManager.destroyMessage(msg.id, 'ttl_expired')).toBe(true);
+        expect((await messageManager.getMessage(msg.id))!.destroyed_at).toBeDefined();
+      });
     });
 
     test('cleanupExpiredMessages should destroy TTL-expired messages', async () => {
