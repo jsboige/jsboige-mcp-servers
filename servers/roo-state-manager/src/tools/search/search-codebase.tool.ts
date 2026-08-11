@@ -471,6 +471,12 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 	// Limiter le nombre de résultats
 	const effectiveLimit = Math.min(Math.max(1, limit), MAX_LIMIT);
 	const effectiveMinScore = Math.max(0, Math.min(1, min_score));
+	// tests-rank-reranking (po-204 c.194, GO ai-01 c.197): over-fetch a candidate pool so post-retrieval re-ranking (test-file malus +
+	// per-file diversification, see block near result formatting) has headroom to work with.
+	// Without this, capping a noisy file at 2 chunks would just shrink recall — there would be
+	// no lower-ranked hits from other files to backfill the freed slots. 3× the requested limit
+	// (capped at MAX_LIMIT) is enough cross-file headroom; the HNSW cost (hnsw_ef) is unchanged.
+	const fetchLimit = Math.min(effectiveLimit * 3, MAX_LIMIT);
 
 	try {
 		// 1. Calculer les variantes possibles du nom de collection
@@ -666,7 +672,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			query: queryVector,
 			filter: filter,
 			score_threshold: effectiveMinScore,
-			limit: effectiveLimit,
+			limit: fetchLimit,
 			params: {
 				hnsw_ef: 256,
 				exact: false
@@ -704,17 +710,76 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			deadPathsFiltered = 0; // rawHits returned as-is, nothing actually filtered out
 		}
 
-		const results = finalHits.map((point: any) => ({
-			file_path: point.payload.filePath,
-			score: point.score,
-			relevance: interpretScore(point.score),
-			snippet: extractSnippet(point.payload.codeChunk || '', query),
-			start_line: point.payload.startLine,
-			end_line: point.payload.endLine,
-			lines: point.payload.startLine && point.payload.endLine
-				? `${point.payload.startLine}-${point.payload.endLine}`
-				: undefined
-		}));
+		// tests-rank-reranking (po-204 c.194 investigation, GO ai-01 c.197): post-retrieval re-ranking to
+		// counter the test-files-rank-above-source asymmetry. text-embedding-3-small scores
+		// descriptive test titles (natural-language intent like 'should allow sending between
+		// workspaces') higher than the code source they test — the source carries syntactic
+		// noise (generics, types, modifiers) that dilutes the signal. Measured firsthand
+		// po-204: test-title chunk 0.72 vs source chunk 0.68 on identical intent. The code
+		// chunking lives in Roo Code (reference-only submodule); both correctives below are
+		// post-retrieval only, no submodule change.
+		//
+		// B — test-file malus: nudge test files down (×0.95) so a source chunk within ~0.047
+		//     of a test outranks it. Tests stay visible (degraded, not removed).
+		// A — per-file diversification: a single noisy file can otherwise occupy most slots
+		//     (measured: task-indexer.test.ts = 5/8). Cap at 2 chunks/file, backfill by score.
+		const TEST_FILE_RE = /[\\/]__tests__[\\/]|\.test\.|\.spec\./;
+		const TEST_FILE_MALUS = 0.95;
+		const MAX_CHUNKS_PER_FILE = 2;
+
+		const adjusted: { point: any; score: number }[] = finalHits
+			.map((point: any) => {
+				const isTestFile = TEST_FILE_RE.test(String(point.payload.filePath || ''));
+				return { point, score: isTestFile ? point.score * TEST_FILE_MALUS : point.score };
+			})
+			// Re-apply min_score on the ADJUSTED (post-malus) score. Qdrant already filters on
+			// the RAW score (score_threshold above), but a test file at raw 0.71 passes a 0.70
+			// threshold, gets malussed to 0.6745, and would otherwise be returned — contradicting
+			// min_score_used. Filtering BEFORE the per-file cap ensures a threshold-eliminated hit
+			// doesn't consume a slot of its file (then get dropped, wasting the slot).
+			.filter(a => a.score >= effectiveMinScore);
+		adjusted.sort((a, b) => b.score - a.score);
+
+		// Per-file cap (A): greedy walk by adjusted score, then backfill with leftovers so
+		// recall is preserved when the cap drops hits below the requested limit.
+		const perFileCount = new Map<string, number>();
+		const picked: any[] = [];
+		const leftovers: { point: any; score: number }[] = [];
+		for (const a of adjusted) {
+			const fp = String(a.point.payload.filePath || '');
+			if ((perFileCount.get(fp) || 0) < MAX_CHUNKS_PER_FILE) {
+				picked.push(a.point);
+				perFileCount.set(fp, (perFileCount.get(fp) || 0) + 1);
+			} else {
+				leftovers.push(a);
+			}
+		}
+		for (const a of leftovers) {
+			if (picked.length >= effectiveLimit) break;
+			picked.push(a.point);
+		}
+		const rankedHits = picked.slice(0, effectiveLimit);
+		let testFileMalusApplied = 0;
+
+		const results = rankedHits.map((point: any) => {
+			const isTestFile = TEST_FILE_RE.test(String(point.payload.filePath || ''));
+			if (isTestFile) testFileMalusApplied++;
+			// Expose the adjusted (post-malus) score so the value matches the rank order;
+			// an unadjusted test at 0.72 ranked below a source at 0.68 would otherwise read
+			// as a contradiction. The raw cosine is not surfaced (the order is the signal).
+			const adjustedScore = isTestFile ? point.score * TEST_FILE_MALUS : point.score;
+			return {
+				file_path: point.payload.filePath,
+				score: adjustedScore,
+				relevance: interpretScore(adjustedScore),
+				snippet: extractSnippet(point.payload.codeChunk || '', query),
+				start_line: point.payload.startLine,
+				end_line: point.payload.endLine,
+				lines: point.payload.startLine && point.payload.endLine
+					? `${point.payload.startLine}-${point.payload.endLine}`
+					: undefined
+			};
+		});
 
 		// #2609/#2554: warn when the dead-path filter shrank recall below the requested
 		// limit in the PARTIAL case (some hits live, some dead). Without this, a caller
@@ -741,6 +806,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			min_score_used: effectiveMinScore,
 			// #2609/#2554: dead-path filtering observability
 			...(deadPathsFiltered > 0 ? { dead_paths_filtered: deadPathsFiltered } : {}),
+			// tests-rank-reranking: test-file re-ranking observability — how many returned hits had the
+			// ×0.95 malus applied (tests ranked above source by raw cosine; see block above).
+			...(testFileMalusApplied > 0 ? { test_file_malus_applied: testFileMalusApplied } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results
