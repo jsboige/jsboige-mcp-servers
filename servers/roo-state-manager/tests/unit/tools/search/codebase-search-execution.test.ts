@@ -217,10 +217,14 @@ describe('codebase_search - handleCodebaseSearch - Search success', () => {
 	});
 
 	it('devrait respecter le paramètre limit', async () => {
+		// tests-rank-reranking (po-204 c.194, GO ai-01 c.197): the tool over-fetches a candidate pool (3× the requested limit, capped at
+		// MAX_LIMIT) so post-retrieval re-ranking has headroom. For limit:5 the qdrant query
+		// requests 15; the RESULT-level cap at the requested limit (5) is validated in the
+		// diversification tests in src/tools/search/__tests__/search-codebase.tool.test.ts.
 		await hcs({ query: 'test', workspace: '/test', limit: 5 });
 		expect(mockQuery).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ limit: 5 })
+			expect.objectContaining({ limit: 15 })
 		);
 	});
 

@@ -533,6 +533,94 @@ describe('search-codebase.tool', () => {
 		});
 
 		// ============================================================
+		// tests-rank-reranking (po-204 c.194, GO ai-01 c.197) — test-files-rank-above-source re-ranking (malus B + diversification A)
+		// text-embedding-3-small scores descriptive test titles higher than the source they
+		// test (natural-language intent vs syntactic noise). Two post-retrieval correctives:
+		// B = test-file malus (×0.95), A = per-file diversification cap (2 chunks/file) +
+		// over-fetch so backfill has cross-file candidates to draw from.
+		// ============================================================
+
+		describe('handleCodebaseSearch - test-file re-ranking (tests-rank-reranking)', () => {
+			test('B — source outranks a higher-scoring test file after the ×0.95 malus', async () => {
+				// Raw cosine: test 0.72 > source 0.70 (the measured asymmetry). After malus the
+				// test drops to 0.684 < 0.70 → the source must take rank 1, the test rank 2,
+				// and the test's exposed score must be the adjusted value (not the raw 0.72).
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.72, payload: { filePath: 'src/__tests__/foo.test.ts', codeChunk: "test('should send message', () => {})", startLine: 1, endLine: 3 } },
+						{ score: 0.70, payload: { filePath: 'src/services/foo.ts', codeChunk: 'export async function send(msg: Msg): Promise<void> {}', startLine: 10, endLine: 12 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'send message', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.results[0].file_path).toBe('src/services/foo.ts');
+				expect(parsed.results[1].file_path).toBe('src/__tests__/foo.test.ts');
+				expect(parsed.results[1].score).toBeCloseTo(0.684, 5);
+				expect(parsed.test_file_malus_applied).toBe(1);
+			});
+
+			test('A — per-file diversification caps a noisy file so a second file gets promoted', async () => {
+				// A single source file would occupy all 3 slots (scores 0.80/0.79/0.78) and
+				// evict bar.ts (0.77). The cap (2/file) frees the 3rd slot for bar.ts.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: 'src/foo.ts', codeChunk: 'a', startLine: 1, endLine: 1 } },
+						{ score: 0.79, payload: { filePath: 'src/foo.ts', codeChunk: 'b', startLine: 2, endLine: 2 } },
+						{ score: 0.78, payload: { filePath: 'src/foo.ts', codeChunk: 'c', startLine: 3, endLine: 3 } },
+						{ score: 0.77, payload: { filePath: 'src/bar.ts', codeChunk: 'd', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'foo bar', workspace: '/ws', limit: 3 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.results_count).toBe(3);
+				const paths = parsed.results.map((r: any) => r.file_path);
+				expect(paths).toContain('src/bar.ts');
+				// foo.ts capped at 2 entries (not 3) — the 3rd foo chunk was demoted to a leftover.
+				expect(paths.filter((p: string) => p === 'src/foo.ts').length).toBe(2);
+			});
+
+			test('non-test files are unaffected — score and order preserved (regression guard)', async () => {
+				// Two source files: no malus, no cap effect. The exact raw scores must surface
+				// and order by raw cosine. Guards against the malus firing on ordinary source
+				// paths or the diversification reordering single-chunk files.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.65, payload: { filePath: 'src/foo.ts', codeChunk: 'export function foo() {}', startLine: 1, endLine: 5 } },
+						{ score: 0.60, payload: { filePath: 'src/bar.ts', codeChunk: 'export function bar() {}', startLine: 1, endLine: 5 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'functions', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results[0].score).toBe(0.65);
+				expect(parsed.results[1].score).toBe(0.60);
+				expect(parsed.test_file_malus_applied).toBeUndefined();
+			});
+
+			test('test-file detection covers .spec. and Windows __tests__ separators', async () => {
+				// The malus regex must catch all three conventions: __tests__/ dir, .test.,
+				// and .spec. — on both POSIX and Windows separators. A missed form would let
+				// that test variant keep ranking above source undegraded.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: 'src\\__tests__\\widget.spec.ts', codeChunk: 'spec', startLine: 1, endLine: 1 } },
+						{ score: 0.78, payload: { filePath: 'src/widget.ts', codeChunk: 'export class Widget {}', startLine: 1, endLine: 5 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'widget', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				// spec at 0.80 → malused to 0.76 < source 0.78 → source ranks first.
+				expect(parsed.results[0].file_path).toBe('src/widget.ts');
+				expect(parsed.test_file_malus_applied).toBe(1);
+			});
+		});
+
+		// ============================================================
 		// #2609/#2554 L1 — content-based collection matching (hash-mismatch fallback)
 		// Root cause: the workspace path hash is fragile cross-agent; when no hash variant
 		// matches, the right ws-* collection is identified by its indexed top-level dirs vs
