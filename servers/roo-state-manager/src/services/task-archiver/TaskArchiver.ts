@@ -393,27 +393,36 @@ export class TaskArchiver {
         for (const machineDir of machineDirs) {
             // Essayer d'abord le format Roo
             const rooArchivePath = path.join(archiveBase, machineDir, `${taskId}.json.gz`);
-            try {
-                const compressed = await fs.readFile(rooArchivePath);
-                const decompressed = await gunzipAsync(compressed);
-                const archived: ArchivedTask = JSON.parse(decompressed.toString('utf-8'));
-                return archived;
-            } catch {
-                // Essayer le format Claude Code
-                const claudeArchivePath = path.join(archiveBase, machineDir, `claude-${taskId}.json.gz`);
-                try {
-                    const compressed = await fs.readFile(claudeArchivePath);
-                    const decompressed = await gunzipAsync(compressed);
-                    const archived: ArchivedTask = JSON.parse(decompressed.toString('utf-8'));
-                    return archived;
-                } catch {
-                    // Pas dans ce repertoire machine
-                    continue;
-                }
-            }
+            const rooResult = await TaskArchiver.readArchivedTaskFromPath(rooArchivePath);
+            if (rooResult) return rooResult;
+
+            // Essayer le format Claude Code
+            const claudeArchivePath = path.join(archiveBase, machineDir, `claude-${taskId}.json.gz`);
+            const claudeResult = await TaskArchiver.readArchivedTaskFromPath(claudeArchivePath);
+            if (claudeResult) return claudeResult;
         }
 
         return null;
+    }
+
+    /**
+     * Lit une archive directement depuis son chemin fichier.
+     *
+     * #1244 — Utilise par `loadArchivedSkeletonsFromGDrive` pour eviter le O(M) probe
+     * par taskId (M = nombre de machine-dirs). Quand on connait deja le chemin fichier
+     * (issue du readdir par machine-dir), on lit directement sans essayer les autres.
+     *
+     * Retourne null si le fichier n'existe pas ou si la decompression/parse echoue.
+     */
+    static async readArchivedTaskFromPath(filePath: string): Promise<ArchivedTask | null> {
+        try {
+            const compressed = await fs.readFile(filePath);
+            const decompressed = await gunzipAsync(compressed);
+            const archived: ArchivedTask = JSON.parse(decompressed.toString('utf-8'));
+            return archived;
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -488,6 +497,55 @@ export class TaskArchiver {
         }
 
         return taskIds;
+    }
+
+    /**
+     * #1244 — Liste les archives cross-machine avec leur chemin fichier direct.
+     *
+     * Contrairement a `listArchivedTasks()` qui retourne uniquement les taskIds
+     * (et force ensuite un probe O(M) par taskId dans `readArchivedTask`),
+     * cette methode retourne en un seul passe les triplets `(taskId, filePath, machineId)`.
+     *
+     * Le `machineId` est derive du nom du repertoire parent (`task-archive/<machineId>/`).
+     * Le `taskId` est le nom du fichier sans extension `.json.gz` (inclut le prefixe
+     * `claude-` pour les sessions Claude Code).
+     *
+     * @param machineId Optionnel: limite le scan a une machine specifique.
+     * @returns Tableau de `{ taskId, filePath, machineId }`.
+     */
+    static async listArchivedTaskFiles(
+        machineId?: string
+    ): Promise<Array<{ taskId: string; filePath: string; machineId: string }>> {
+        const archiveBase = getArchiveBasePath();
+        const results: Array<{ taskId: string; filePath: string; machineId: string }> = [];
+
+        let machineDirs: string[];
+        try {
+            machineDirs = machineId ? [machineId] : await fs.readdir(archiveBase);
+        } catch {
+            return [];
+        }
+
+        for (const dir of machineDirs) {
+            const dirPath = path.join(archiveBase, dir);
+            try {
+                const files = await fs.readdir(dirPath);
+                for (const file of files) {
+                    if (file.endsWith('.json.gz')) {
+                        const taskId = file.replace('.json.gz', '');
+                        results.push({
+                            taskId,
+                            filePath: path.join(dirPath, file),
+                            machineId: dir,
+                        });
+                    }
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        return results;
     }
 
     /**
