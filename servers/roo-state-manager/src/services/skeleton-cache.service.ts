@@ -438,52 +438,74 @@ export class SkeletonCacheService {
      * Necessite `ROOSYNC_SHARED_PATH` (sinon `getSharedStatePath()` throw —
      * capture par le try/catch global, no-op silencieux).
      *
-     * **Attention scale:** Peut charger des milliers d'archives. Activable
-     * uniquement en production via `configure({ enableArchiveTier: true })`.
+     * **Attention scale:** Peut charger des milliers d'archives (flotte typique:
+     * 11k+). Activable uniquement en production via `configure({ enableArchiveTier: true })`.
+     *
+     * #1244 (perf fix): Parallelise les reads avec concurrence bornee (20) et
+     * appelle `readArchivedTaskFromPath` directement (plus de probe O(M) par
+     * taskId). Reduit le cold-start de 30s+ → ~3-5s pour 11k archives.
      */
     private async loadArchivedSkeletonsFromGDrive(): Promise<void> {
         try {
             const { TaskArchiver } = await import('./task-archiver/index.js');
             const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
 
-            const taskIds = await TaskArchiver.listArchivedTasks();
+            // Phase 1: Liste tous les fichiers d'archive avec leur chemin direct.
+            // Un seul readdir par machine-dir (interne a listArchivedTaskFiles).
+            const allFiles = await TaskArchiver.listArchivedTaskFiles();
 
-            if (taskIds.length === 0) {
+            if (allFiles.length === 0) {
                 console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive trouvee');
                 return;
             }
 
+            // Phase 2: Construire la work queue en evitant les collisions connues
+            type WorkItem = { taskId: string; filePath: string };
+            const workQueue: WorkItem[] = [];
+            for (const item of allFiles) {
+                if (!this.cache.has(item.taskId)) {
+                    workQueue.push({ taskId: item.taskId, filePath: item.filePath });
+                }
+            }
+            const skippedCollision = allFiles.length - workQueue.length;
+
+            // Phase 3: Lire avec concurrence bornee (20 parallel)
+            // Batching evite de saturer I/O et le thread pool libuv.
+            const CONCURRENCY = 20;
             let loaded = 0;
-            let skippedCollision = 0;
             let failed = 0;
 
-            for (const taskId of taskIds) {
-                // Tiers chauds (Roo local + Claude local) ont la priorite
-                if (this.cache.has(taskId)) {
-                    skippedCollision++;
-                    continue;
-                }
-
+            const processItem = async (item: WorkItem): Promise<void> => {
                 try {
-                    const archive = await TaskArchiver.readArchivedTask(taskId);
+                    const archive = await TaskArchiver.readArchivedTaskFromPath(item.filePath);
                     if (!archive) {
                         failed++;
-                        continue;
+                        return;
                     }
                     const skeleton = archiveToSkeleton(archive);
                     if (!skeleton.metadata) skeleton.metadata = {} as any;
                     skeleton.metadata.dataSource = 'gdrive-archive';
-                    this.cache.set(skeleton.taskId, skeleton);
-                    loaded++;
+                    // Re-verifier la collision (race safety avec Tier 1/2 charges en parallele)
+                    if (!this.cache.has(skeleton.taskId)) {
+                        this.cache.set(skeleton.taskId, skeleton);
+                        loaded++;
+                    }
                 } catch (error) {
                     failed++;
-                    console.warn(`[SkeletonCacheService] Tier 3 (archives): echec lecture ${taskId}:`, error);
+                    if (failed <= 3) {
+                        console.warn(`[SkeletonCacheService] Tier 3 (archives): echec lecture ${item.taskId}:`, error);
+                    }
                 }
+            };
+
+            for (let i = 0; i < workQueue.length; i += CONCURRENCY) {
+                const batch = workQueue.slice(i, i + CONCURRENCY);
+                await Promise.all(batch.map(processItem));
             }
 
             console.log(
                 `[SkeletonCacheService] Tier 3 (archives): ${loaded} chargees, ` +
-                `${skippedCollision} collisions ignorees (local prioritaire), ${failed} echecs sur ${taskIds.length} total`
+                `${skippedCollision} collisions ignorees (local prioritaire), ${failed} echecs sur ${allFiles.length} total`
             );
         } catch (error) {
             console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);

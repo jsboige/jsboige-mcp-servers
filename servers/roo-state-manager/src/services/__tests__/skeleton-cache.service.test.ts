@@ -37,12 +37,16 @@ const {
 	mockClaudeDetectLocations,
 	mockClaudeAnalyzeConversation,
 	mockListArchivedTasks,
+	mockListArchivedTaskFiles,
 	mockReadArchivedTask,
+	mockReadArchivedTaskFromPath,
 } = vi.hoisted(() => ({
 	mockClaudeDetectLocations: vi.fn(),
 	mockClaudeAnalyzeConversation: vi.fn(),
 	mockListArchivedTasks: vi.fn(),
+	mockListArchivedTaskFiles: vi.fn(),
 	mockReadArchivedTask: vi.fn(),
+	mockReadArchivedTaskFromPath: vi.fn(),
 }));
 
 vi.mock('../../utils/claude-storage-detector.js', () => ({
@@ -55,7 +59,9 @@ vi.mock('../../utils/claude-storage-detector.js', () => ({
 vi.mock('../task-archiver/index.js', () => ({
 	TaskArchiver: {
 		listArchivedTasks: mockListArchivedTasks,
+		listArchivedTaskFiles: mockListArchivedTaskFiles,
 		readArchivedTask: mockReadArchivedTask,
+		readArchivedTaskFromPath: mockReadArchivedTaskFromPath,
 	}
 }));
 
@@ -393,8 +399,11 @@ describe('SkeletonCacheService', () => {
 
 		test('configure({ enableArchiveTier: true }) loads Tier 3', async () => {
 			setupTier1(['roo-1']);
-			mockListArchivedTasks.mockResolvedValue(['archived-task-A', 'archived-task-B']);
-			mockReadArchivedTask
+			mockListArchivedTaskFiles.mockResolvedValue([
+				{ taskId: 'archived-task-A', filePath: '/mock/archive/myia-po-2025/archived-task-A.json.gz', machineId: 'myia-po-2025' },
+				{ taskId: 'archived-task-B', filePath: '/mock/archive/myia-web1/archived-task-B.json.gz', machineId: 'myia-web1' },
+			]);
+			mockReadArchivedTaskFromPath
 				.mockResolvedValueOnce({
 					version: 1,
 					taskId: 'archived-task-A',
@@ -418,8 +427,8 @@ describe('SkeletonCacheService', () => {
 			const service = SkeletonCacheService.getInstance();
 			const cache = await service.getCache();
 
-			expect(mockListArchivedTasks).toHaveBeenCalled();
-			expect(mockReadArchivedTask).toHaveBeenCalledTimes(2);
+			expect(mockListArchivedTaskFiles).toHaveBeenCalled();
+			expect(mockReadArchivedTaskFromPath).toHaveBeenCalledTimes(2);
 			expect(cache.has('roo-1')).toBe(true);
 			expect(cache.has('archived-task-A')).toBe(true);
 			expect(cache.has('archived-task-B')).toBe(true);
@@ -429,9 +438,11 @@ describe('SkeletonCacheService', () => {
 
 		test('Tier 3 collision with Tier 1: local Roo wins, archive skipped', async () => {
 			setupTier1(['shared-id']);
-			mockListArchivedTasks.mockResolvedValue(['shared-id']);
-			// Should NOT be called because Tier 1 already has 'shared-id'
-			mockReadArchivedTask.mockResolvedValue({
+			mockListArchivedTaskFiles.mockResolvedValue([
+				{ taskId: 'shared-id', filePath: '/mock/archive/remote-machine/shared-id.json.gz', machineId: 'remote-machine' },
+			]);
+			// Should NOT be called because Tier 1 already has 'shared-id' (filtered out before read)
+			mockReadArchivedTaskFromPath.mockResolvedValue({
 				version: 1,
 				taskId: 'shared-id',
 				machineId: 'remote-machine',
@@ -448,12 +459,12 @@ describe('SkeletonCacheService', () => {
 			expect(cache.has('shared-id')).toBe(true);
 			// Tier 1 entry preserved — no machineId from archive
 			expect(cache.get('shared-id')!.metadata.machineId).toBeUndefined();
-			expect(mockReadArchivedTask).not.toHaveBeenCalled();
+			expect(mockReadArchivedTaskFromPath).not.toHaveBeenCalled();
 		});
 
 		test('Tier 3 failure (e.g. ROOSYNC_SHARED_PATH unset) does not break Tier 1', async () => {
 			setupTier1(['roo-1']);
-			mockListArchivedTasks.mockRejectedValue(new Error('ROOSYNC_SHARED_PATH not set'));
+			mockListArchivedTaskFiles.mockRejectedValue(new Error('ROOSYNC_SHARED_PATH not set'));
 
 			SkeletonCacheService.configure({ enableArchiveTier: true });
 			const service = SkeletonCacheService.getInstance();
@@ -480,7 +491,7 @@ describe('SkeletonCacheService', () => {
 		test('configure() merges flags across calls (idempotent)', async () => {
 			setupTier1(['roo-1']);
 			mockClaudeDetectLocations.mockResolvedValue([]);
-			mockListArchivedTasks.mockResolvedValue([]);
+			mockListArchivedTaskFiles.mockResolvedValue([]);
 
 			SkeletonCacheService.configure({ enableClaudeTier: true });
 			SkeletonCacheService.configure({ enableArchiveTier: true });
@@ -489,7 +500,7 @@ describe('SkeletonCacheService', () => {
 			await service.getCache();
 
 			expect(mockClaudeDetectLocations).toHaveBeenCalled();
-			expect(mockListArchivedTasks).toHaveBeenCalled();
+			expect(mockListArchivedTaskFiles).toHaveBeenCalled();
 		});
 			// ============================================================
 			// #1747 sub-issue C — Cross-tier integration tests
@@ -509,8 +520,10 @@ describe('SkeletonCacheService', () => {
 					sequence: [{ role: 'user', content: 'from claude', timestamp: '2026-01-01T00:00:00Z' }]
 				});
 
-				mockListArchivedTasks.mockResolvedValue([sharedId]);
-				mockReadArchivedTask.mockResolvedValue({
+				mockListArchivedTaskFiles.mockResolvedValue([
+					{ taskId: sharedId, filePath: `/mock/archive/myia-po-2023/${sharedId}.json.gz`, machineId: 'myia-po-2023' },
+				]);
+				mockReadArchivedTaskFromPath.mockResolvedValue({
 					version: 1,
 					taskId: sharedId,
 					machineId: 'myia-po-2023',
@@ -527,7 +540,7 @@ describe('SkeletonCacheService', () => {
 				expect(cache.has(sharedId)).toBe(true);
 				expect(cache.get(sharedId)!.metadata.source).toBe('roo');
 				expect(cache.get(sharedId)!.metadata.machineId).toBeUndefined();
-				expect(mockReadArchivedTask).not.toHaveBeenCalled();
+				expect(mockReadArchivedTaskFromPath).not.toHaveBeenCalled();
 				expect(cache.has('claude-shared-task')).toBe(true);
 			});
 
@@ -543,8 +556,10 @@ describe('SkeletonCacheService', () => {
 					sequence: [{ role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00Z' }]
 				});
 
-				mockListArchivedTasks.mockResolvedValue(['claude-proj-x']);
-				mockReadArchivedTask.mockResolvedValue({
+				mockListArchivedTaskFiles.mockResolvedValue([
+					{ taskId: 'claude-proj-x', filePath: '/mock/archive/myia-web1/claude-proj-x.json.gz', machineId: 'myia-web1' },
+				]);
+				mockReadArchivedTaskFromPath.mockResolvedValue({
 					version: 1,
 					taskId: 'claude-proj-x',
 					machineId: 'myia-web1',
@@ -561,33 +576,36 @@ describe('SkeletonCacheService', () => {
 				expect(cache.has('claude-proj-x')).toBe(true);
 				expect(cache.get('claude-proj-x')!.metadata.source).toBe('claude-code');
 				expect(cache.get('claude-proj-x')!.metadata.dataSource).toBe('claude');
-				expect(mockReadArchivedTask).not.toHaveBeenCalled();
+				expect(mockReadArchivedTaskFromPath).not.toHaveBeenCalled();
 			});
 
 			test('forceRefresh reloads all enabled tiers', async () => {
 				setupTier1(['roo-1']);
 				mockClaudeDetectLocations.mockResolvedValue([]);
-				mockListArchivedTasks.mockResolvedValue([]);
+				mockListArchivedTaskFiles.mockResolvedValue([]);
 
 				SkeletonCacheService.configure({ enableClaudeTier: true, enableArchiveTier: true });
 				const service = SkeletonCacheService.getInstance();
 				await service.getCache();
 
 				mockClaudeDetectLocations.mockClear();
-				mockListArchivedTasks.mockClear();
+				mockListArchivedTaskFiles.mockClear();
 				mockReaddir.mockClear();
 
 				await service.forceRefresh();
 
 				expect(mockReaddir).toHaveBeenCalled();
 				expect(mockClaudeDetectLocations).toHaveBeenCalled();
-				expect(mockListArchivedTasks).toHaveBeenCalled();
+				expect(mockListArchivedTaskFiles).toHaveBeenCalled();
 			});
 
 			test('Tier 3 loads archives from multiple machines with correct machineId', async () => {
 				setupTier1(['roo-local']);
-				mockListArchivedTasks.mockResolvedValue(['task-po2023', 'task-web1']);
-				mockReadArchivedTask
+				mockListArchivedTaskFiles.mockResolvedValue([
+					{ taskId: 'task-po2023', filePath: '/mock/archive/myia-po-2023/task-po2023.json.gz', machineId: 'myia-po-2023' },
+					{ taskId: 'task-web1', filePath: '/mock/archive/myia-web1/task-web1.json.gz', machineId: 'myia-web1' },
+				]);
+				mockReadArchivedTaskFromPath
 					.mockResolvedValueOnce({
 						version: 1,
 						taskId: 'task-po2023',
@@ -620,8 +638,11 @@ describe('SkeletonCacheService', () => {
 
 			test('Tier 3 handles null archive gracefully', async () => {
 				setupTier1(['roo-1']);
-				mockListArchivedTasks.mockResolvedValue(['ghost-task', 'valid-task']);
-				mockReadArchivedTask
+				mockListArchivedTaskFiles.mockResolvedValue([
+					{ taskId: 'ghost-task', filePath: '/mock/archive/myia-po-2025/ghost-task.json.gz', machineId: 'myia-po-2025' },
+					{ taskId: 'valid-task', filePath: '/mock/archive/myia-po-2025/valid-task.json.gz', machineId: 'myia-po-2025' },
+				]);
+				mockReadArchivedTaskFromPath
 					.mockResolvedValueOnce(null)
 					.mockResolvedValueOnce({
 						version: 1,
