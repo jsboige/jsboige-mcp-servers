@@ -117,6 +117,16 @@ export class ToolUsageInterceptor {
     const result = await execute();
 
     // 4. Annex notification footer if pending (#2192)
+    // Never annex on roosync_messages: that tool just read or mutated the inbox
+    // (action: inbox / mark_read / send), so the pendingFooter — computed at the
+    // last 60s background tick — is already stale by the time we annotate its own
+    // response. It is also useless there: the agent just looked at its mail. Drop
+    // it; the next background tick rebuilds an accurate count if anything is
+    // genuinely still unread. Fixes the stale "[NOTIF] N non lus" banner observed
+    // in the very response of a mark_read that had just cleared the inbox.
+    if (this.pendingFooter && toolName === 'roosync_messages') {
+      this.pendingFooter = null;
+    }
     if (this.pendingFooter) {
       const footer = this.pendingFooter;
       this.pendingFooter = null;
