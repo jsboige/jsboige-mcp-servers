@@ -649,6 +649,46 @@ describe('list-conversations', () => {
 
       expect(Array.isArray(parsed)).toBe(true);
     });
+
+    // #977 Tier 3 cold-start Hybride: graceful-degradation arm. When the archive
+    // cache isn't ready within budget (awaitFreshnessWithBudget -> false, e.g. slow
+    // GDrive at boot), the handler must return LOCAL results + a `notice` field
+    // instead of hard-failing or hanging — and must NOT call getCache().
+    it('should degrade gracefully (local + notice) when archive cache not ready within budget', async () => {
+      const localSkeleton = {
+        taskId: 'local-only-task',
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 4,
+          actionCount: 1,
+          totalSize: 400,
+          workspace: 'my-workspace'
+        }
+      };
+
+      // Force the budget to elapse (cache not ready) — the Hybride degradation arm.
+      mockAwaitFreshness.mockResolvedValue(false);
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true },
+        new Map([['local-only-task', localSkeleton]])
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+
+      // Local results ARE returned (graceful — never empty/hard-fail).
+      const parsed = _response.conversations ?? _response;
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed.length).toBeGreaterThanOrEqual(1);
+      expect(parsed.find((c: any) => c.taskId === 'local-only-task')).toBeDefined();
+
+      // A notice explains the archives are still loading.
+      expect(_response.notice).toEqual(expect.any(String));
+      expect(_response.notice.toLowerCase()).toContain('archiv');
+
+      // The archive cache was NOT read (awaitFreshnessWithBudget short-circuited).
+      expect(mockGetCache).not.toHaveBeenCalled();
+    });
   });
 
   describe('result structure validation', () => {
