@@ -654,6 +654,17 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
         console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'}`);
 
+        // Tier 3 cold-start: pre-warm SkeletonCacheService (incl. Tier 3 GDrive archives)
+        // in background. The archive tier was ONLY loaded lazily on the first
+        // includeArchives:true call — cold-loading ~11k archives synchronously inside the
+        // 30s conversation_browser timeout (TIMEOUT on first cross-machine browse).
+        // Warming it here (fire-and-forget) lets the first includeArchives call find the
+        // cache ready, or await the in-progress load via awaitFreshnessWithBudget (which
+        // degrades gracefully to local results + notice instead of hard-failing).
+        SkeletonCacheService.getInstance().warmCache().catch((err: any) => {
+            console.warn('[Skeleton-Worker] Skeleton cache pre-warm failed (non-blocking):', err?.message || err);
+        });
+
         // ===== ALL NON-BLOCKING (fire-and-forget) =====
 
         // Load skeleton index in background — first tool call that needs it
