@@ -848,5 +848,41 @@ describe('ToolUsageInterceptor', () => {
 
       interceptor.dispose();
     });
+
+    // DEFECT #2192: roosync_messages annexed a stale footer computed at the last
+    // 60s background tick — observed as "[NOTIF] N non lu(s)" in the very response
+    // of a mark_read/inbox call that had just cleared the inbox. This test MUST
+    // fail on origin/main (footer annexed) and pass once the footer is dropped
+    // for roosync_messages. Dispatch ai-01 c.203 (option 4: drop, don't recompute).
+    test('roosync_messages response carries no stale footer (defect #2192)', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      // Background check populates pendingFooter ("[NOTIF] 1 message(s) non lu(s)").
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      // Sanity: a normal tool receives the footer (proves pendingFooter is live,
+      // so the assertion below is meaningful — not a trivial pass on empty state).
+      const otherResult = await interceptor.interceptToolCall('other_tool', {}, async () => 'r-other');
+      expect(otherResult).toContain('[NOTIF]');
+
+      // Re-arm pendingFooter via the next background tick (the call above consumed it).
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushMicrotasks();
+
+      // DEFECT under test: roosync_messages just read/mutated the inbox, so the
+      // pendingFooter (computed at the 60s tick) is stale. Annexing it to this very
+      // response is both wrong and useless — the agent just saw its inbox.
+      const inboxResult = await interceptor.interceptToolCall('roosync_messages', {}, async () => 'inbox-response');
+      expect(inboxResult).toBe('inbox-response');
+
+      interceptor.dispose();
+    });
   });
 });
