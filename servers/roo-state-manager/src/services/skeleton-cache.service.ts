@@ -228,7 +228,16 @@ export class SkeletonCacheService {
                 this.loadPromise = null;
             });
             await this.loadPromise;
-            this.lastRefreshTime = now;
+            // Only mark the cache fresh if the load actually populated it.
+            // loadSkeletonsFromDisk swallows internal errors (returns on no-storage /
+            // no-tasks-dir, catches per-file + top-level) — it resolves even when the
+            // cache ends up empty (e.g. GDrive down at boot → Tier 3 empty). Marking an
+            // empty cache "fresh" for CACHE_VALIDITY_MS would silently serve no archives
+            // for 30 min; instead, leave lastRefreshTime untouched so the next call retries
+            // (the cache.size === 0 entry condition above keeps retriggering until it loads).
+            if (this.cache.size > 0) {
+                this.lastRefreshTime = now;
+            }
         }
     }
 
