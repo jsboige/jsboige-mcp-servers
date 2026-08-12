@@ -582,6 +582,18 @@ const CONVERSATION_BROWSER_TIMEOUT_MS = parseInt(
 );
 
 /**
+ * Tier 3 cold-start: includeArchives (Tier 3 GDrive) gets a larger budget than the
+ * default 30s. The archive cache is pre-warmed at boot (background-services), and the
+ * list handler degrades gracefully at 45s (local results + notice) via
+ * SkeletonCacheService.awaitFreshnessWithBudget — so this 90s cap is a pure backstop
+ * that should never fire for the list path. 90s default, env-overridable.
+ */
+const CONVERSATION_BROWSER_ARCHIVE_TIMEOUT_MS = parseInt(
+    process.env.CONVERSATION_BROWSER_ARCHIVE_TIMEOUT_MS || '90000',
+    10
+);
+
+/**
  * Handler consolidé pour l'outil conversation_browser
  *
  * @param args Arguments de l'outil
@@ -601,20 +613,25 @@ export async function handleConversationBrowser(
     serverState?: ServerState
 ): Promise<CallToolResult> {
     // #1262 — Hard timeout (default 30s, env-overridable).
+    // Tier 3 cold-start: includeArchives (Tier 3 GDrive) gets a larger budget (90s
+    // default) — a backstop above the list handler's 45s graceful-degradation budget.
+    const effectiveTimeoutMs = args.includeArchives
+        ? CONVERSATION_BROWSER_ARCHIVE_TIMEOUT_MS
+        : CONVERSATION_BROWSER_TIMEOUT_MS;
     // The inner work runs unmodified; we just race it against a timer.
     const startedAt = Date.now();
     let timeoutHandle: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<CallToolResult>((_, reject) => {
         timeoutHandle = setTimeout(() => {
             reject(new Error(
-                `conversation_browser TIMEOUT after ${CONVERSATION_BROWSER_TIMEOUT_MS}ms ` +
+                `conversation_browser TIMEOUT after ${effectiveTimeoutMs}ms ` +
                 `(action: ${args.action}). This is a BUG to report: list pagination or ` +
                 `conversation detail must complete in <30s. Likely culprit: blocking ` +
                 `ensureSkeletonCacheIsFresh() in src/index.ts (failsafe full rebuild or ` +
                 `disk-scan storm). Workaround: disable force_refresh and retry; if it still ` +
                 `blocks, restart the MCP server.`
             ));
-        }, CONVERSATION_BROWSER_TIMEOUT_MS);
+        }, effectiveTimeoutMs);
         // Allow process to exit even if timer is still pending
         if (typeof timeoutHandle?.unref === 'function') {
             timeoutHandle.unref();

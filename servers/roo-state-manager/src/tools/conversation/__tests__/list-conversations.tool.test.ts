@@ -63,11 +63,13 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 
 // Mock SkeletonCacheService (needed for includeArchives / Bug #3 / #1752)
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
-const { mockGetCache, mockGetInstance } = vi.hoisted(() => {
+const { mockGetCache, mockGetInstance, mockAwaitFreshness } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
+	const awaitFn = vi.fn(() => Promise.resolve(true));
 	return {
 		mockGetCache: cacheFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn }))
+		mockAwaitFreshness: awaitFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn }))
 	};
 });
 
@@ -534,7 +536,8 @@ describe('list-conversations', () => {
     beforeEach(() => {
       // Re-wire after vi.restoreAllMocks() in afterEach may have cleared implementations.
       mockGetCache.mockResolvedValue(new Map());
-      mockGetInstance.mockReturnValue({ getCache: mockGetCache });
+      mockAwaitFreshness.mockResolvedValue(true);
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness });
     });
 
     it('should not load archives when includeArchives is false (default)', async () => {

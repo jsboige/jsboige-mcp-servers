@@ -581,6 +581,10 @@ export const listConversationsTool = {
 
         let allSkeletons: ConversationSkeleton[] = [];
 
+        // Tier 3 cold-start (Hybride): set when archives were requested but the cache
+        // wasn't ready within budget; surfaced as a `notice` field in the response.
+        let archiveNotice: string | undefined;
+
 
 
         // Include Roo conversations (default behavior)
@@ -628,20 +632,33 @@ export const listConversationsTool = {
         if (args.includeArchives) {
             try {
                 const scsInstance = SkeletonCacheService.getInstance();
-                const scsCache = await scsInstance.getCache();
-                const archiveSkeletons: ConversationSkeleton[] = [];
+                // Tier 3 cold-start (Hybride): bound the archive-cache wait so the first
+                // post-boot call degrades gracefully instead of hitting the
+                // conversation_browser hard timeout. The boot pre-warm usually completes
+                // before any call; under slow GDrive we return local results + a notice
+                // (never hard-fail, never invisible-hang). Budget kept well under the
+                // outer conversation_browser includeArchives budget (90s).
+                const ARCHIVE_READY_BUDGET_MS = 45000;
+                const archiveReady = await scsInstance.awaitFreshnessWithBudget(ARCHIVE_READY_BUDGET_MS);
+                if (archiveReady) {
+                    const scsCache = await scsInstance.getCache();
+                    const archiveSkeletons: ConversationSkeleton[] = [];
 
-                for (const [taskId, skeleton] of scsCache.entries()) {
-                    const dataSource = (skeleton as any).metadata?.dataSource;
-                    if (dataSource === 'gdrive-archive' && !conversationCache.has(taskId)) {
-                        archiveSkeletons.push(skeleton);
+                    for (const [taskId, skeleton] of scsCache.entries()) {
+                        const dataSource = (skeleton as any).metadata?.dataSource;
+                        if (dataSource === 'gdrive-archive' && !conversationCache.has(taskId)) {
+                            archiveSkeletons.push(skeleton);
+                        }
                     }
-                }
 
-                if (archiveSkeletons.length > 0) {
-                    console.log(`[list_conversations] Loaded ${archiveSkeletons.length} archived tasks from SkeletonCacheService Tier 3`);
+                    if (archiveSkeletons.length > 0) {
+                        console.log(`[list_conversations] Loaded ${archiveSkeletons.length} archived tasks from SkeletonCacheService Tier 3`);
+                    }
+                    allSkeletons = allSkeletons.concat(archiveSkeletons);
+                } else {
+                    archiveNotice = `Tier 3 GDrive archives still loading in background (budget ${ARCHIVE_READY_BUDGET_MS}ms elapsed); showing local results only. Retry shortly for cross-machine archives.`;
+                    console.warn(`[list_conversations] ${archiveNotice}`);
                 }
-                allSkeletons = allSkeletons.concat(archiveSkeletons);
             } catch (archiveError) {
                 console.warn('⚠️ list_conversations: Archive tier read failed (continuing without archives):', archiveError instanceof Error ? archiveError.message : archiveError);
             }
@@ -992,7 +1009,8 @@ export const listConversationsTool = {
                 total_count: totalCount,
                 total_pages: totalPages,
                 has_next: page < totalPages,
-            }
+            },
+            ...(archiveNotice ? { notice: archiveNotice } : {}),
         }, null, 2);
 
 

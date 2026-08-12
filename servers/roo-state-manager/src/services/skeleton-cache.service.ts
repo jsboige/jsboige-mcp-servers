@@ -43,6 +43,10 @@ export class SkeletonCacheService {
     private static config: SkeletonCacheServiceConfig = {};
     private cache: Map<string, ConversationSkeleton> = new Map();
     private lastRefreshTime: number = 0;
+    /** Tier 3 cold-start: in-progress full-load promise. Reused by concurrent callers
+     *  so a boot pre-warm and a first tool call never launch two full Tier 1/2/3 loads
+     *  at once. */
+    private loadPromise: Promise<void> | null = null;
     private readonly CACHE_VALIDITY_MS = 30 * 60 * 1000; // 30 minutes (was 5min, increased for stability)
 
     private constructor() {
@@ -210,9 +214,65 @@ export class SkeletonCacheService {
         const cacheAge = now - this.lastRefreshTime;
 
         if (cacheAge > this.CACHE_VALIDITY_MS || this.cache.size === 0) {
+            // Tier 3 cold-start: reuse an in-progress load instead of starting a duplicate.
+            // Without this, a boot pre-warm (warmCache) racing a first tool call would
+            // launch two full Tier 1/2/3 loads concurrently — double GDrive scan and
+            // double cold-start latency. Only the first caller starts the load; the
+            // rest await the same promise.
+            if (this.loadPromise) {
+                await this.loadPromise;
+                return;
+            }
             console.log(`[SkeletonCacheService] Cache obsolète (âge: ${Math.round(cacheAge / 1000)}s), rafraîchissement...`);
-            await this.loadSkeletonsFromDisk();
+            this.loadPromise = this.loadSkeletonsFromDisk().finally(() => {
+                this.loadPromise = null;
+            });
+            await this.loadPromise;
             this.lastRefreshTime = now;
+        }
+    }
+
+    /**
+     * Tier 3 cold-start: pre-warm the full cache (Tier 1 Roo + Tier 2 Claude + Tier 3
+     * GDrive archives) in background at boot. Fire-and-forget from the caller's
+     * perspective: the first tool call finds it warmed, or awaits the in-progress load
+     * via ensureFreshCache (guarded against duplicates).
+     */
+    public async warmCache(): Promise<void> {
+        await this.ensureFreshCache();
+    }
+
+    /**
+     * Tier 3 cold-start (Hybride design): await an in-progress (or freshly triggered)
+     * cache refresh with a bounded budget. Returns true if the cache is fresh within
+     * the budget; false if the budget elapsed (the caller should then degrade
+     * gracefully — e.g. return local results + an "archives loading" notice). Never
+     * throws.
+     *
+     * The boot pre-warm (background-services.warmCache) usually completes before any
+     * tool call, so this resolves true fast. Under slow GDrive it returns false instead
+     * of hanging past the budget — the conversation_browser hard timeout never fires,
+     * and the caller's graceful-degradation arm serves local results. This converts the
+     * old block-then-reject (visible 30s error / invisible hang) into a non-failing,
+     * eventually-consistent response.
+     */
+    public async awaitFreshnessWithBudget(timeoutMs: number): Promise<boolean> {
+        try {
+            const now = Date.now();
+            if ((now - this.lastRefreshTime) <= this.CACHE_VALIDITY_MS && this.cache.size > 0) {
+                return true;
+            }
+            // ensureFreshCache dedups via loadPromise (boot pre-warm reuse). Race it
+            // against the budget; the underlying load keeps running in the background
+            // either way, warming the cache for the next call.
+            await Promise.race([
+                this.ensureFreshCache(),
+                new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+            ]);
+            const ageAfter = Date.now() - this.lastRefreshTime;
+            return ageAfter <= this.CACHE_VALIDITY_MS && this.cache.size > 0;
+        } catch {
+            return false;
         }
     }
 
