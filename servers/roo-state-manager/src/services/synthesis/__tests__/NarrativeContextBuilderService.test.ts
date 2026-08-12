@@ -4,7 +4,7 @@
  * Focus: tree traversal, cache, sibling collection, context building
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock TaskNavigator
 vi.mock('../../task-navigator.js', () => ({
@@ -55,12 +55,71 @@ const defaultOptions: NarrativeContextBuilderOptions = {
 	defaultMaxDepth: 3
 };
 
+// =============================================================================
+// Phase 3 helpers (#1315) — tests de batch condensation
+// =============================================================================
+
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { ConversationAnalysis } from '../../../models/synthesis/SynthesisModels.js';
+
+/**
+ * Crée un répertoire temporaire unique pour un test, automatiquement nettoyé
+ * après exécution (via afterEach dans la suite de tests). Garantit l'isolation
+ * entre tests du système de fichiers.
+ */
+function makeTempDir(prefix: string): string {
+	return mkdtempSync(join(tmpdir(), `narrative-${prefix}-`));
+}
+
+function makeAnalysis(taskId: string, finalTaskSummary: string): ConversationAnalysis {
+	return {
+		taskId,
+		analysisEngineVersion: 'v3',
+		analysisTimestamp: '2026-01-15T10:00:00Z',
+		llmModelId: 'model-1',
+		contextTrace: {
+			rootTaskId: taskId,
+			previousSiblingTaskIds: [],
+			synthesisType: 'atomic'
+		},
+		objectives: {},
+		strategy: {},
+		quality: {},
+		metrics: {},
+		synthesis: {
+			initialContextSummary: '',
+			finalTaskSummary
+		}
+	};
+}
+
 describe('NarrativeContextBuilderService', () => {
 	let cache: Map<string, any>;
+	const tempDirs: string[] = [];
+
+	function trackedTempDir(prefix: string): string {
+		const dir = makeTempDir(prefix);
+		tempDirs.push(dir);
+		return dir;
+	}
 
 	beforeEach(() => {
 		vi.clearAllMocks();
 		cache = new Map();
+	});
+
+	afterEach(() => {
+		// Cleanup des répertoires temporaires créés par les tests Phase 3 (#1315)
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop()!;
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// best-effort cleanup
+			}
+		}
 	});
 
 	// ============================================================
@@ -405,26 +464,219 @@ describe('NarrativeContextBuilderService', () => {
 	});
 
 	// ============================================================
-	// findExistingCondensedBatch
+	// findExistingCondensedBatch (Phase 3 — issue #1315)
 	// ============================================================
 
 	describe('findExistingCondensedBatch', () => {
-		test('returns null (Phase 1 stub)', async () => {
+		test('returns null for empty taskIds', async () => {
 			const service = new NarrativeContextBuilderService(defaultOptions, cache);
+			const result = await service.findExistingCondensedBatch([]);
+			expect(result).toBeNull();
+		});
+
+		test('returns null when no batches exist on disk', async () => {
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: trackedTempDir('empty-batches')
+			}, cache);
 			const result = await service.findExistingCondensedBatch(['task-1', 'task-2']);
 			expect(result).toBeNull();
+		});
+
+		test('returns existing batch when all taskIds are covered by a single batch', async () => {
+			const dir = trackedTempDir('find-single');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			const analyses = [
+				makeAnalysis('task-A', 'Alpha summary'),
+				makeAnalysis('task-B', 'Beta summary')
+			];
+			const created = await service.createCondensedBatch(analyses, 'model-1');
+			service.clearCaches(); // force lazy reload from disk
+
+			const found = await service.findExistingCondensedBatch(['task-A', 'task-B']);
+			expect(found).not.toBeNull();
+			expect(found!.batchId).toBe(created.batchId);
+			expect(found!.sourceTaskIds).toEqual(['task-A', 'task-B']);
+			expect(found!.batchSummary).toContain('Alpha summary');
+			expect(found!.batchSummary).toContain('Beta summary');
+		});
+
+		test('returns null when taskIds span multiple batches', async () => {
+			const dir = trackedTempDir('find-multi');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			await service.createCondensedBatch([makeAnalysis('task-A', 'A')], 'model-1');
+			await service.createCondensedBatch([makeAnalysis('task-B', 'B')], 'model-1');
+			service.clearCaches();
+
+			const found = await service.findExistingCondensedBatch(['task-A', 'task-B']);
+			expect(found).toBeNull();
+		});
+
+		test('returns null when any requested taskId has no batch', async () => {
+			const dir = trackedTempDir('find-missing');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			await service.createCondensedBatch([makeAnalysis('task-A', 'A')], 'model-1');
+			service.clearCaches();
+
+			const found = await service.findExistingCondensedBatch(['task-A', 'task-unknown']);
+			expect(found).toBeNull();
 		});
 	});
 
 	// ============================================================
-	// createCondensedBatch
+	// createCondensedBatch (Phase 3 — issue #1315)
 	// ============================================================
 
 	describe('createCondensedBatch', () => {
-		test('throws not implemented error', async () => {
-			const service = new NarrativeContextBuilderService(defaultOptions, cache);
+		test('rejects empty analyses array', async () => {
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: trackedTempDir('create-empty')
+			}, cache);
 			await expect(service.createCondensedBatch([], 'model-1'))
-				.rejects.toThrow('Pas encore implémenté');
+				.rejects.toThrow(/at least one analysis/);
+		});
+
+		test('creates a batch with deterministic shape and persists to disk', async () => {
+			const dir = trackedTempDir('create-happy');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			const analyses = [
+				makeAnalysis('task-X', 'Summary X'),
+				makeAnalysis('task-Y', 'Summary Y')
+			];
+
+			const batch = await service.createCondensedBatch(analyses, 'model-1');
+
+			expect(batch.batchId).toMatch(/^[0-9a-f-]{36}$/i);
+			expect(batch.llmModelId).toBe('model-1');
+			expect(batch.sourceTaskIds).toEqual(['task-X', 'task-Y']);
+			expect(batch.batchSummary).toContain('[task-X]');
+			expect(batch.batchSummary).toContain('Summary X');
+			expect(batch.batchSummary).toContain('[task-Y]');
+			expect(batch.batchSummary).toContain('Summary Y');
+			expect(typeof batch.creationTimestamp).toBe('string');
+			expect(new Date(batch.creationTimestamp).toISOString()).toBe(batch.creationTimestamp);
+
+			// Vérifier la persistance
+			const fs = await import('fs/promises');
+			const entries = await fs.readdir(dir);
+			const batchFiles = entries.filter(e => e.startsWith('batch-task-X-') && e.endsWith('.json'));
+			expect(batchFiles).toHaveLength(1);
+		});
+
+		test('truncates summaries that exceed the per-analysis budget', async () => {
+			const dir = trackedTempDir('create-truncate');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir,
+				// Permet de tester la troncature : 100 / 2 = 50 chars par analyse.
+				maxContextSizeBeforeCondensation: 100
+			}, cache);
+			const longText = 'A'.repeat(500);
+			const analyses = [
+				makeAnalysis('task-Long', longText),
+				makeAnalysis('task-Short', 'short')
+			];
+
+			const batch = await service.createCondensedBatch(analyses, 'model-1');
+			// L'entrée pour task-Long doit être tronquée et contenir le marqueur d'ellipse
+			const longEntry = batch.batchSummary.split('\n').find(p => p.startsWith('[task-Long]'));
+			expect(longEntry).toBeDefined();
+			// Bracket + taskId + " " + body : on autorise un peu de marge pour le préfixe "[task-Long] "
+			expect(longEntry!.length).toBeLessThan(longText.length);
+			expect(longEntry).toMatch(/…$/);
+		});
+
+		test('handles analyses with missing finalTaskSummary', async () => {
+			const dir = trackedTempDir('create-missing');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			const analyses = [
+				{
+					taskId: 'task-NS',
+					analysisEngineVersion: 'v3',
+					analysisTimestamp: '2026-01-15T10:00:00Z',
+					llmModelId: 'model-1',
+					contextTrace: { rootTaskId: 'task-NS', previousSiblingTaskIds: [], synthesisType: 'atomic' },
+					objectives: {}, strategy: {}, quality: {}, metrics: {},
+					synthesis: { initialContextSummary: '', finalTaskSummary: '' }
+				}
+			];
+
+			const batch = await service.createCondensedBatch(analyses as any, 'model-1');
+			expect(batch.batchSummary).toContain('[No summary for task-NS]');
+		});
+
+		test('indexes all source taskIds for subsequent findExistingCondensedBatch', async () => {
+			const dir = trackedTempDir('create-indexed');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			await service.createCondensedBatch(
+				[makeAnalysis('idx-1', 'I1'), makeAnalysis('idx-2', 'I2')],
+				'model-1'
+			);
+
+			const found = await service.findExistingCondensedBatch(['idx-1', 'idx-2']);
+			expect(found).not.toBeNull();
+			expect(found!.batchSummary).toContain('I1');
+			expect(found!.batchSummary).toContain('I2');
+		});
+	});
+
+	// ============================================================
+	// getOrCreateCondensedBatch (Phase 3 — issue #1315, wiring public)
+	// ============================================================
+
+	describe('getOrCreateCondensedBatch', () => {
+		test('creates a new batch when no existing one covers the taskIds', async () => {
+			const dir = trackedTempDir('getorcreate-new');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			const analyses = [makeAnalysis('g-1', 'G1'), makeAnalysis('g-2', 'G2')];
+
+			const batch = await service.getOrCreateCondensedBatch(['g-1', 'g-2'], analyses, 'model-1');
+			expect(batch.sourceTaskIds).toEqual(['g-1', 'g-2']);
+		});
+
+		test('reuses existing batch when taskIds match exactly', async () => {
+			const dir = trackedTempDir('getorcreate-exact');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			const analyses = [makeAnalysis('e-1', 'E1'), makeAnalysis('e-2', 'E2')];
+			const first = await service.getOrCreateCondensedBatch(['e-1', 'e-2'], analyses, 'model-1');
+
+			const second = await service.getOrCreateCondensedBatch(['e-1', 'e-2'], analyses, 'model-1');
+			expect(second.batchId).toBe(first.batchId);
+		});
+
+		test('rejects empty taskIds', async () => {
+			const dir = trackedTempDir('getorcreate-empty');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			await expect(service.getOrCreateCondensedBatch([], [], 'model-1'))
+				.rejects.toThrow(/at least one taskId/);
 		});
 	});
 
