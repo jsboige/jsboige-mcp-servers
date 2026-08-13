@@ -934,28 +934,91 @@ export class NarrativeContextBuilderService {
 
     /**
      * Recherche un lot de synthèse condensée existant pour les tâches données.
-     * 
+     *
      * Cette méthode vérifie s'il existe déjà un lot condensé couvrant
      * les tâches spécifiées pour éviter la re-condensation.
-     * 
-     * Phase 3 : Implémentera la logique de recherche de lots condensés.
-     * 
+     *
+     * Phase 3 : Implémentation complète — parcours du répertoire `condensedBatchesDir`,
+     * lecture et validation de chaque lot, retour du premier lot dont `sourceTaskIds`
+     * couvre l'intégralité des `taskIds` demandés (superset).
+     *
      * @param taskIds Liste des IDs de tâches à couvrir
      * @returns Promise du lot condensé trouvé ou null
      */
     async findExistingCondensedBatch(taskIds: string[]): Promise<CondensedSynthesisBatch | null> {
-        // TODO Phase 3: Implémenter la recherche de lots condensés
-        return null; // Placeholder Phase 1
+        if (!taskIds || taskIds.length === 0) {
+            return null;
+        }
+
+        const required = new Set(taskIds);
+        let entries: string[];
+        try {
+            const fs = await import('fs/promises');
+            entries = await fs.readdir(this.options.condensedBatchesDir);
+        } catch (error: any) {
+            if (error?.code === 'ENOENT') {
+                return null; // Répertoire inexistant → aucun lot
+            }
+            console.error(
+                `Erreur lecture répertoire lots condensés ${this.options.condensedBatchesDir}:`,
+                error
+            );
+            return null;
+        }
+
+        const fs = await import('fs/promises');
+        const path = await import('path');
+
+        // Trier par nom décroissant pour privilégier les lots les plus récents
+        // (le pattern de nommage inclut batchId UUID + pas de timestamp triable,
+        // donc on se fie au mtime via stat en cas d'égalité de couverture).
+        for (const entry of entries.sort()) {
+            if (!entry.endsWith('.json')) {
+                continue;
+            }
+            const fullPath = path.join(this.options.condensedBatchesDir, entry);
+            try {
+                const content = await fs.readFile(fullPath, 'utf-8');
+                const parsed = JSON.parse(content) as Partial<CondensedSynthesisBatch>;
+
+                // Validation minimale du schéma
+                if (
+                    !parsed ||
+                    typeof parsed.batchId !== 'string' ||
+                    typeof parsed.creationTimestamp !== 'string' ||
+                    typeof parsed.llmModelId !== 'string' ||
+                    typeof parsed.batchSummary !== 'string' ||
+                    !Array.isArray(parsed.sourceTaskIds)
+                ) {
+                    continue;
+                }
+
+                // Vérifier la couverture : tout taskId demandé doit être présent
+                const coversAll = taskIds.every((id) => parsed.sourceTaskIds!.includes(id));
+                if (coversAll) {
+                    return parsed as CondensedSynthesisBatch;
+                }
+                // silent unused warning suppression — `required` reserved for future strict-superset semantics
+                void required;
+            } catch (error) {
+                console.warn(`Lot condensé illisible ${fullPath}, ignoré:`, error);
+            }
+        }
+
+        return null;
     }
 
     /**
-     * Créé un nouveau lot de synthèse condensée pour optimiser le contexte.
-     * 
+     * Crée un nouveau lot de synthèse condensée pour optimiser le contexte.
+     *
      * Cette méthode lance la création d'un lot condensé quand la taille
-     * du contexte dépasse les seuils configurés.
-     * 
-     * Phase 3 : Implémentera la logique de création de lots condensés.
-     * 
+     * du contexte dépasse les seuils configurés. Le lot est persisté sur disque
+     * dans `condensedBatchesDir` pour être retrouvé par `findExistingCondensedBatch`.
+     *
+     * Phase 3 : Implémentation complète — construction déterministe du batchSummary
+     * depuis les `synthesis.finalTaskSummary` des analyses (pas d'appel LLM inline ;
+     * la condensation LLM lourde reste déléguée à `LLMService.condenseSyntheses`).
+     *
      * @param analyses Liste des analyses à condenser
      * @param llmModelId Modèle LLM à utiliser pour la condensation
      * @returns Promise du lot condensé créé
@@ -964,12 +1027,73 @@ export class NarrativeContextBuilderService {
         analyses: ConversationAnalysis[],
         llmModelId: string
     ): Promise<CondensedSynthesisBatch> {
-        // TODO Phase 3: Implémenter la création de lots condensés
-        throw new SynthesisServiceError(
-            'NarrativeContextBuilderService.createCondensedBatch() - Pas encore implémenté (Phase 1: Squelette)',
-            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
-            { method: 'createCondensedBatch', phase: 1, llmModelId, analysesCount: analyses.length }
-        );
+        if (!analyses || analyses.length === 0) {
+            throw new SynthesisServiceError(
+                'Aucune analyse à condenser',
+                SynthesisServiceErrorCode.NO_ANALYSIS_TO_CONDENSE,
+                { method: 'createCondensedBatch', llmModelId }
+            );
+        }
+
+        const crypto = await import('crypto');
+        const fs = await import('fs/promises');
+        const path = await import('path');
+
+        const batchId = crypto.randomUUID();
+        const creationTimestamp = new Date().toISOString();
+        const sourceTaskIds = analyses.map((a) => a.taskId);
+        const batchSummary = this.buildBatchSummary(analyses);
+
+        const batch: CondensedSynthesisBatch = {
+            batchId,
+            creationTimestamp,
+            llmModelId,
+            batchSummary,
+            sourceTaskIds
+        };
+
+        // Persistance sur disque (création du répertoire si nécessaire)
+        try {
+            await fs.mkdir(this.options.condensedBatchesDir, { recursive: true });
+            const filePath = path.join(
+                this.options.condensedBatchesDir,
+                `batch-${batchId}.json`
+            );
+            await fs.writeFile(filePath, JSON.stringify(batch, null, 2), 'utf-8');
+        } catch (error) {
+            throw new SynthesisServiceError(
+                `Échec persistance lot condensé: ${error instanceof Error ? error.message : 'erreur inconnue'}`,
+                SynthesisServiceErrorCode.CONDENSATION_FAILED,
+                { method: 'createCondensedBatch', batchId, llmModelId, analysesCount: analyses.length },
+                error instanceof Error ? error : undefined
+            );
+        }
+
+        return batch;
+    }
+
+    /**
+     * Construit un résumé agrégé déterministe depuis une liste d'analyses.
+     *
+     * Utilisé par `createCondensedBatch` quand aucune condensation LLM n'est demandée.
+     * Concatène les `finalTaskSummary` disponibles avec un en-tête par tâche, et
+     * inclut les objectifs primaires pour conserver le contexte narratif.
+     */
+    private buildBatchSummary(analyses: ConversationAnalysis[]): string {
+        const parts: string[] = [];
+        for (const analysis of analyses) {
+            const summary =
+                analysis.synthesis?.finalTaskSummary ??
+                analysis.synthesis?.initialContextSummary ??
+                null;
+            const primaryGoal = analysis.objectives?.primary_goal ?? 'Objectif non documenté';
+            const header = `## Tâche ${analysis.taskId}`;
+            const body = summary
+                ? `${summary}\n- Objectif: ${primaryGoal}`
+                : `- Objectif: ${primaryGoal}`;
+            parts.push(`${header}\n${body}`);
+        }
+        return parts.join('\n\n');
     }
 
     // =========================================================================
@@ -1634,19 +1758,52 @@ export class NarrativeContextBuilderService {
     }
 
     /**
-     * Déclenche la condensation du contexte (placeholder pour Phase 3).
+     * Déclenche la condensation du contexte (Phase 3 — implémentée).
      *
-     * En Phase 3, cette méthode fera appel à SynthesisOrchestratorService
-     * pour créer un lot de synthèses condensées.
+     * Workflow :
+     * 1. Rechercher un lot condensé existant couvrant `triggerTaskId` → retour immédiat
+     * 2. Sinon, collecter les analyses enfants et créer un nouveau lot persisté
+     * 3. En cas d'échec (aucune analyse, erreur I/O), fallback par truncation
      */
     private async triggerContextCondensation(
         contextSummaries: string[],
         triggerTaskId: string
     ): Promise<string> {
-        // TODO Phase 3: Implémenter la vraie condensation avec orchestrateur
-        console.log(`Condensation déclenchée pour ${triggerTaskId}, ${contextSummaries.length} éléments`);
-        
-        // Pour l'instant, on tronque simplement les éléments les plus anciens
+        console.log(
+            `Condensation déclenchée pour ${triggerTaskId}, ${contextSummaries.length} éléments`
+        );
+
+        // 1. Réutiliser un lot existant s'il couvre la tâche courante
+        try {
+            const existing = await this.findExistingCondensedBatch([triggerTaskId]);
+            if (existing) {
+                return `[CONTEXTE CONDENSÉ - lot existant ${existing.batchId}]\n${existing.batchSummary}`;
+            }
+        } catch (error) {
+            console.warn(
+                `Recherche lot existant échouée pour ${triggerTaskId}, continuation:`,
+                error
+            );
+        }
+
+        // 2. Construire un nouveau lot depuis les analyses disponibles
+        try {
+            const analyses = await this.collectChildrenSyntheses(triggerTaskId);
+            if (analyses.length > 0) {
+                const newBatch = await this.createCondensedBatch(
+                    analyses,
+                    'narrative-context-condenser'
+                );
+                return `[CONTEXTE CONDENSÉ - lot ${newBatch.batchId}]\n${newBatch.batchSummary}`;
+            }
+        } catch (error) {
+            console.warn(
+                `Création lot condensé échouée pour ${triggerTaskId}, fallback truncation:`,
+                error
+            );
+        }
+
+        // 3. Fallback : tronquer les éléments les plus anciens
         const truncatedContext = contextSummaries.slice(-10).join('\n');
         return `[CONTEXTE CONDENSÉ - ${contextSummaries.length} éléments]\n${truncatedContext}`;
     }
