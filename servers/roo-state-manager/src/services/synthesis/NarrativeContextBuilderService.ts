@@ -1185,6 +1185,25 @@ export class NarrativeContextBuilderService {
     }
 
     /**
+     * Valide la forme minimale d'un lot condensé lu depuis le disque.
+     * Protège contre les fichiers corrompus ou à écriture interrompue :
+     * un lot au schéma invalide est ignoré (→ `null`), jamais servi.
+     */
+    private isValidCondensedBatchShape(parsed: unknown): parsed is CondensedSynthesisBatch {
+        if (!parsed || typeof parsed !== 'object') {
+            return false;
+        }
+        const b = parsed as Partial<CondensedSynthesisBatch>;
+        return (
+            typeof b.batchId === 'string' &&
+            typeof b.creationTimestamp === 'string' &&
+            typeof b.llmModelId === 'string' &&
+            typeof b.batchSummary === 'string' &&
+            Array.isArray(b.sourceTaskIds)
+        );
+    }
+
+    /**
      * Lit un lot condensé depuis le disque. Retourne `null` si le fichier
      * est absent ou corrompu (logged), pour préserver la résilience de
      * `findExistingCondensedBatch`.
@@ -1210,8 +1229,8 @@ export class NarrativeContextBuilderService {
             const filePath = path.join(this.options.condensedBatchesDir, filename);
             try {
                 const content = await fs.readFile(filePath, 'utf-8');
-                const parsed = JSON.parse(content) as CondensedSynthesisBatch;
-                if (!parsed.batchId || !Array.isArray(parsed.sourceTaskIds)) {
+                const parsed = JSON.parse(content) as unknown;
+                if (!this.isValidCondensedBatchShape(parsed)) {
                     console.warn(`[NarrativeContextBuilderService] Invalid batch shape in ${filePath}, skipping`);
                     return null;
                 }
@@ -1233,8 +1252,8 @@ export class NarrativeContextBuilderService {
                 const filePath = path.join(this.options.condensedBatchesDir, entry);
                 try {
                     const content = await fs.readFile(filePath, 'utf-8');
-                    const parsed = JSON.parse(content) as CondensedSynthesisBatch;
-                    if (parsed.batchId === batchFileOrId) {
+                    const parsed = JSON.parse(content) as unknown;
+                    if (this.isValidCondensedBatchShape(parsed) && parsed.batchId === batchFileOrId) {
                         this.batchCache.set(parsed.batchId, parsed);
                         return parsed;
                     }

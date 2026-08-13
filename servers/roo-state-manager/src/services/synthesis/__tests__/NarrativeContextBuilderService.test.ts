@@ -59,7 +59,7 @@ const defaultOptions: NarrativeContextBuilderOptions = {
 // Phase 3 helpers (#1315) — tests de batch condensation
 // =============================================================================
 
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ConversationAnalysis } from '../../../models/synthesis/SynthesisModels.js';
@@ -528,6 +528,50 @@ describe('NarrativeContextBuilderService', () => {
 			service.clearCaches();
 
 			const found = await service.findExistingCondensedBatch(['task-A', 'task-unknown']);
+			expect(found).toBeNull();
+		});
+
+		test('skips batches with invalid schema (missing required fields)', async () => {
+			const dir = trackedTempDir('find-invalid-schema');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			// Fichier avec batchId + sourceTaskIds mais champs requis manquants
+			// (écriture interrompue simulée) — doit être ignoré, pas servi.
+			writeFileSync(
+				join(dir, 'batch-corrupt.json'),
+				JSON.stringify({ batchId: 'b-corrupt', sourceTaskIds: ['task-A'] })
+			);
+			service.clearCaches();
+
+			const found = await service.findExistingCondensedBatch(['task-A']);
+			expect(found).toBeNull();
+		});
+
+		test('skips corrupt JSON files without crashing', async () => {
+			const dir = trackedTempDir('find-invalid-json');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			writeFileSync(join(dir, 'batch-garbage.json'), '{ this is not valid json');
+			service.clearCaches();
+
+			const found = await service.findExistingCondensedBatch(['task-A']);
+			expect(found).toBeNull();
+		});
+
+		test('ignores non-batch JSON files in the directory', async () => {
+			const dir = trackedTempDir('find-non-batch');
+			const service = new NarrativeContextBuilderService({
+				...defaultOptions,
+				condensedBatchesDir: dir
+			}, cache);
+			writeFileSync(join(dir, 'unrelated.json'), JSON.stringify({ foo: 'bar' }));
+			service.clearCaches();
+
+			const found = await service.findExistingCondensedBatch(['task-A']);
 			expect(found).toBeNull();
 		});
 	});
