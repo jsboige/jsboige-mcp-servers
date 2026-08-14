@@ -65,11 +65,11 @@ export class MessagesReportingStrategy extends BaseReportingStrategy {
         
         // En-tête du message avec ancre
         const firstLine = this.getTruncatedFirstLine(content.content, 200);
-        formattedContent.push(`### ${title} - ${firstLine} {#${anchor}}`);
+        formattedContent.push(`### ${title} - ${firstLine}`);
         formattedContent.push('');
-        
-        // Div avec classe CSS
-        formattedContent.push(`<div class="${cssClass}">`);
+
+        // Div avec classe CSS + ancre HTML navigable depuis la TOC (#756)
+        formattedContent.push(`<div id="${anchor}" class="${cssClass}">`);
         
         if (content.subType === 'UserMessage') {
             // Messages utilisateur nettoyés mais complets

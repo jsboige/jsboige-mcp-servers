@@ -157,11 +157,13 @@ describe('FullReportingStrategy', () => {
       expect(result.content).toContain('my_tool');
     });
 
-    test('résultat court : pas de balise <details>', () => {
+    test('résultat court : balise <details> systématique (#756 F1)', () => {
       const toolContent = '[read_file] Result: Short result';
       const content = makeContent({ type: 'Assistant', subType: 'ToolResult', content: toolContent });
       const result = strategy.formatMessageContent(content, 1, classicOptions);
-      expect(result.content).not.toContain('<details>');
+      expect(result.content).toContain('<details>');
+      expect(result.content).toContain('<summary>');
+      expect(result.content).toContain('Short result');
     });
 
     test('résultat long (>1000 chars) : balise <details>', () => {
@@ -172,12 +174,37 @@ describe('FullReportingStrategy', () => {
       expect(result.content).toContain('<details>');
     });
 
-    test('résultat long contient "Résultat complet"', () => {
+    test('résultat long : contenu intégral préservé dans le <details>', () => {
       const longResult = 'y'.repeat(1002);
       const toolContent = `[grep] Result: ${longResult}`;
       const content = makeContent({ type: 'Assistant', subType: 'ToolResult', content: toolContent, contentSize: toolContent.length });
       const result = strategy.formatMessageContent(content, 1, classicOptions);
-      expect(result.content).toContain('Résultat complet');
+      expect(result.content).toContain(longResult);
+      expect(result.content).toContain('caractères');
+    });
+
+    test('heading unique, pas de double ### (#756 F8)', () => {
+      const content = makeContent({ type: 'User', subType: 'UserMessage', content: 'Bonjour' });
+      const result = strategy.formatMessageContent(content, 1, classicOptions);
+      expect(result.content).not.toContain('### ###');
+      expect(result.content).toMatch(/^### 👤 MESSAGE UTILISATEUR/);
+    });
+
+    test('ancre HTML id= sur le div, pas de suffixe Pandoc {#} (#756 F2)', () => {
+      const content = makeContent({ type: 'User', subType: 'UserMessage', content: 'Bonjour' });
+      const result = strategy.formatMessageContent(content, 1, classicOptions);
+      expect(result.content).not.toContain('{#');
+      expect(result.content).toContain('<div id="UserMessage-1" class="user-message">');
+    });
+
+    test('environment_details préservés en <details> collapsible (#756 F1)', () => {
+      const userContent = 'Fais le travail\n<environment_details>\n# Current Workspace Directory\ntest\n</environment_details>';
+      const content = makeContent({ type: 'User', subType: 'UserMessage', content: userContent });
+      const result = strategy.formatMessageContent(content, 1, classicOptions);
+      expect(result.content).toContain('<details>');
+      expect(result.content).toContain('🌍 Environment details');
+      expect(result.content).not.toContain('Environment details supprimés');
+      expect(result.content).toContain('# Current Workspace Directory');
     });
   });
 
