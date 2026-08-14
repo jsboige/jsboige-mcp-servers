@@ -31,6 +31,9 @@ interface NarrativeContext {
 import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
 import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 import { TaskNavigator } from '../task-navigator.js';
+import { randomUUID } from 'crypto';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 /**
  * Options de configuration spécifiques au service de construction de contexte.
@@ -193,6 +196,22 @@ export class NarrativeContextBuilderService {
      * Optimisation performance pour l'accès aux synthèses existantes.
      */
     private analysisCache: Map<string, ConversationAnalysis> = new Map();
+
+    /**
+     * Cache des lots condensés chargés depuis le disque.
+     * Clé = batchId, valeur = CondensedSynthesisBatch.
+     * Lazy-load : peuplé à la première consultation de findExistingCondensedBatch
+     * et mis à jour par createCondensedBatch.
+     */
+    private batchCache: Map<string, CondensedSynthesisBatch> = new Map();
+
+    /**
+     * Index taskId -> batchId pour lookup O(1) des lots existants.
+     * Quand une tâche apparaît dans plusieurs lots, seul le dernier est retenu
+     * (les lots plus anciens couvrant la même tâche sont considérés obsolètes
+     * à des fins de lookup). Cohérent avec la sémantique « retour du lot actif ».
+     */
+    private batchIndex: Map<string, string> = new Map();
 
     /**
      * Constructeur avec injection de dépendances.
@@ -934,42 +953,318 @@ export class NarrativeContextBuilderService {
 
     /**
      * Recherche un lot de synthèse condensée existant pour les tâches données.
-     * 
+     *
      * Cette méthode vérifie s'il existe déjà un lot condensé couvrant
      * les tâches spécifiées pour éviter la re-condensation.
-     * 
-     * Phase 3 : Implémentera la logique de recherche de lots condensés.
-     * 
+     *
+     * Sémantique : retourne un lot uniquement si TOUS les taskIds sont
+     * couverts par UN SEUL lot existant. Si les taskIds sont répartis sur
+     * plusieurs lots (ou aucun lot ne les couvre), retourne `null` et
+     * l'appelant devra créer un nouveau lot via `createCondensedBatch`.
+     *
+     * L'index `batchIndex` (taskId -> batchId) est lazy-load depuis le
+     * disque à la première consultation. Les lots invalides/corrompus sont
+     * silencieusement ignorés (logged) plutôt que de faire échouer la recherche.
+     *
      * @param taskIds Liste des IDs de tâches à couvrir
      * @returns Promise du lot condensé trouvé ou null
      */
     async findExistingCondensedBatch(taskIds: string[]): Promise<CondensedSynthesisBatch | null> {
-        // TODO Phase 3: Implémenter la recherche de lots condensés
-        return null; // Placeholder Phase 1
+        if (taskIds.length === 0) {
+            return null;
+        }
+
+        // Charger l'index depuis le disque au premier accès
+        if (this.batchIndex.size === 0) {
+            await this.loadBatchIndexFromDisk();
+        }
+
+        // Récupérer les batchIds distincts couvrant les taskIds demandés
+        const candidateBatchIds = new Set<string>();
+        for (const taskId of taskIds) {
+            const batchId = this.batchIndex.get(taskId);
+            if (!batchId) {
+                // taskId jamais couvert par un lot existant
+                return null;
+            }
+            candidateBatchIds.add(batchId);
+        }
+
+        // Si les taskIds s'étalent sur plusieurs lots, on ne peut pas servir
+        // un lot unique couvrant tout — l'appelant devra condenser à nouveau.
+        if (candidateBatchIds.size > 1) {
+            return null;
+        }
+
+        const batchId = candidateBatchIds.values().next().value as string;
+        // Récupérer le lot (depuis le cache mémoire, ou recharger depuis le disque)
+        let batch: CondensedSynthesisBatch | null = this.batchCache.get(batchId) ?? null;
+        if (!batch) {
+            batch = await this.readBatchFromDisk(batchId);
+            if (batch) {
+                this.batchCache.set(batchId, batch);
+            }
+        }
+        return batch;
     }
 
     /**
      * Créé un nouveau lot de synthèse condensée pour optimiser le contexte.
-     * 
-     * Cette méthode lance la création d'un lot condensé quand la taille
-     * du contexte dépasse les seuils configurés.
-     * 
-     * Phase 3 : Implémentera la logique de création de lots condensés.
-     * 
+     *
+     * Stratégie A (heuristique, sans LLM) — défaut Phase 3 :
+     * 1. Valide l'entrée (au moins une analyse)
+     * 2. Génère un batchId (UUID)
+     * 3. Construit `batchSummary` par concaténation tronquée des
+     *    `finalTaskSummary` de chaque analyse, en respectant la limite
+     *    `maxContextSizeBeforeCondensation`
+     * 4. Persiste sur disque dans `condensedBatchesDir/batch-{seedTaskId}-{timestamp}.json`
+     * 5. Met à jour l'index in-memory pour les lookups suivants
+     * 6. Retourne le lot créé
+     *
+     * Stratégie B (LLM-powered) — future :
+     * déléguerait à SynthesisOrchestratorService pour produire un résumé
+     * cohérent. Non implémenté ici (cf. issue #1315).
+     *
      * @param analyses Liste des analyses à condenser
-     * @param llmModelId Modèle LLM à utiliser pour la condensation
+     * @param llmModelId Modèle LLM déclaré (référence, non utilisé en Stratégie A)
      * @returns Promise du lot condensé créé
      */
     async createCondensedBatch(
         analyses: ConversationAnalysis[],
         llmModelId: string
     ): Promise<CondensedSynthesisBatch> {
-        // TODO Phase 3: Implémenter la création de lots condensés
-        throw new SynthesisServiceError(
-            'NarrativeContextBuilderService.createCondensedBatch() - Pas encore implémenté (Phase 1: Squelette)',
-            SynthesisServiceErrorCode.NOT_IMPLEMENTED,
-            { method: 'createCondensedBatch', phase: 1, llmModelId, analysesCount: analyses.length }
+        if (analyses.length === 0) {
+            throw new SynthesisServiceError(
+                'createCondensedBatch requires at least one analysis',
+                SynthesisServiceErrorCode.NO_ANALYSIS_TO_CONDENSE,
+                { method: 'createCondensedBatch', analysesCount: 0 }
+            );
+        }
+
+        const batchId = randomUUID();
+        const creationTimestamp = new Date().toISOString();
+        const sourceTaskIds = analyses.map(a => a.taskId);
+
+        // Construire le batchSummary en concaténant les finalTaskSummary,
+        // tronqué à maxContextSizeBeforeCondensation
+        const perAnalysisBudget = Math.max(
+            1,
+            Math.floor(this.options.maxContextSizeBeforeCondensation / analyses.length)
         );
+        const summaryParts: string[] = [];
+        let totalLength = 0;
+        for (const analysis of analyses) {
+            const raw = analysis.synthesis?.finalTaskSummary || `[No summary for ${analysis.taskId}]`;
+            const truncated = raw.length > perAnalysisBudget
+                ? `${raw.slice(0, perAnalysisBudget - 1)}…`
+                : raw;
+            summaryParts.push(`[${analysis.taskId}] ${truncated}`);
+            totalLength += truncated.length;
+        }
+        const batchSummary = summaryParts.join('\n');
+
+        const batch: CondensedSynthesisBatch = {
+            batchId,
+            creationTimestamp,
+            llmModelId,
+            batchSummary,
+            sourceTaskIds,
+        };
+
+        // Persister sur disque
+        const seedTaskId = sourceTaskIds[0];
+        const filename = `batch-${seedTaskId}-${Date.now()}.json`;
+        const filePath = path.join(this.options.condensedBatchesDir, filename);
+        try {
+            await fs.mkdir(this.options.condensedBatchesDir, { recursive: true });
+            await fs.writeFile(filePath, JSON.stringify(batch, null, 2), 'utf-8');
+        } catch (error) {
+            throw new SynthesisServiceError(
+                `Failed to persist condensed batch to ${filePath}: ${(error as Error).message}`,
+                SynthesisServiceErrorCode.SYNTHESIS_GENERATION_FAILED,
+                { method: 'createCondensedBatch', batchId, filePath, cause: (error as Error).message }
+            );
+        }
+
+        // Mettre à jour les caches mémoire
+        this.batchCache.set(batchId, batch);
+        for (const taskId of sourceTaskIds) {
+            this.batchIndex.set(taskId, batchId);
+        }
+
+        return batch;
+    }
+
+    /**
+     * Idempotent : retourne un lot condensé couvrant `taskIds`, en le créant
+     * à partir des analyses fournies si aucun lot existant ne les couvre.
+     *
+     * Sémantique :
+     * 1. Si un lot existant couvre EXACTEMENT les `taskIds` (set identique)
+     *    → retour du lot existant.
+     * 2. Sinon, si un lot couvre un SUR-ENSEMBLE (existing ⊇ taskIds) → on
+     *    retourne le lot existant (couvrir plus est acceptable : on bénéficie
+     *    de la cache-hit et le contenu est pertinent).
+     * 3. Sinon → on crée un nouveau lot à partir des analyses.
+     *
+     * C'est le point d'entrée principal pour les orchestrateurs (Phase 3) qui
+     * veulent condenser un ensemble de tâches en un seul appel.
+     *
+     * @param taskIds IDs des tâches à couvrir
+     * @param analyses Analyses nécessaires si création d'un nouveau lot
+     * @param llmModelId Modèle LLM déclaré (référence, Stratégie A n'en fait pas usage)
+     * @returns Lot condensé couvrant au moins les taskIds demandées
+     */
+    async getOrCreateCondensedBatch(
+        taskIds: string[],
+        analyses: ConversationAnalysis[],
+        llmModelId: string
+    ): Promise<CondensedSynthesisBatch> {
+        if (taskIds.length === 0) {
+            throw new SynthesisServiceError(
+                'getOrCreateCondensedBatch requires at least one taskId',
+                SynthesisServiceErrorCode.TASK_ID_REQUIRED,
+                { method: 'getOrCreateCondensedBatch' }
+            );
+        }
+        const requested = new Set(taskIds);
+
+        // 1. Match exact
+        const exact = await this.findExistingCondensedBatch(taskIds);
+        if (exact) {
+            const exactSet = new Set(exact.sourceTaskIds);
+            const isExact = exactSet.size === requested.size
+                && [...requested].every(t => exactSet.has(t));
+            if (isExact) {
+                return exact;
+            }
+            // 2. Sur-ensemble acceptable
+            const isSuperset = [...requested].every(t => exactSet.has(t));
+            if (isSuperset) {
+                return exact;
+            }
+        }
+
+        // 3. Création d'un nouveau lot
+        return await this.createCondensedBatch(analyses, llmModelId);
+    }
+
+    /**
+     * Charge l'index `taskId -> batchId` depuis les fichiers de lots sur disque.
+     * Appelé en lazy à la première consultation de `findExistingCondensedBatch`.
+     * Les fichiers corrompus sont loggés et ignorés (best-effort).
+     */
+    private async loadBatchIndexFromDisk(): Promise<void> {
+        try {
+            await fs.mkdir(this.options.condensedBatchesDir, { recursive: true });
+        } catch {
+            // Le répertoire sera créé à l'écriture ; sans batch existant, l'index reste vide.
+            return;
+        }
+
+        let entries: string[];
+        try {
+            entries = await fs.readdir(this.options.condensedBatchesDir);
+        } catch {
+            return;
+        }
+
+        for (const entry of entries) {
+            if (!entry.startsWith('batch-') || !entry.endsWith('.json')) {
+                continue;
+            }
+            // entry = nom de fichier (sans .json) déjà préfixé "batch-"
+            const batch = await this.readBatchFromDisk(entry.replace(/\.json$/, ''));
+            if (batch) {
+                this.batchCache.set(batch.batchId, batch);
+                for (const taskId of batch.sourceTaskIds) {
+                    this.batchIndex.set(taskId, batch.batchId);
+                }
+            }
+        }
+    }
+
+    /**
+     * Valide la forme minimale d'un lot condensé lu depuis le disque.
+     * Protège contre les fichiers corrompus ou à écriture interrompue :
+     * un lot au schéma invalide est ignoré (→ `null`), jamais servi.
+     */
+    private isValidCondensedBatchShape(parsed: unknown): parsed is CondensedSynthesisBatch {
+        if (!parsed || typeof parsed !== 'object') {
+            return false;
+        }
+        const b = parsed as Partial<CondensedSynthesisBatch>;
+        return (
+            typeof b.batchId === 'string' &&
+            typeof b.creationTimestamp === 'string' &&
+            typeof b.llmModelId === 'string' &&
+            typeof b.batchSummary === 'string' &&
+            Array.isArray(b.sourceTaskIds)
+        );
+    }
+
+    /**
+     * Lit un lot condensé depuis le disque. Retourne `null` si le fichier
+     * est absent ou corrompu (logged), pour préserver la résilience de
+     * `findExistingCondensedBatch`.
+     */
+    private async readBatchFromDisk(batchFileOrId: string): Promise<CondensedSynthesisBatch | null> {
+        // Accepte soit un nom de fichier (avec ou sans .json, déjà préfixé "batch-"
+        // ou non), soit un batchId. On tente d'abord le nom tel quel, sinon on
+        // tente avec le préfixe "batch-" et l'extension ".json".
+        const candidates: string[] = [];
+        if (batchFileOrId.endsWith('.json')) {
+            candidates.push(batchFileOrId);
+        } else {
+            candidates.push(`${batchFileOrId}.json`);
+            // Cas : batchId nu (UUID) → nom dérivé « batch-{seedTaskId}-{timestamp}.json »
+            // n'est PAS reconstructible depuis le batchId seul. On doit scanner le
+            // répertoire et matcher par batchId. Voir fallback ci-dessous.
+        }
+        if (!batchFileOrId.startsWith('batch-') && !batchFileOrId.endsWith('.json')) {
+            candidates.push(`batch-${batchFileOrId}.json`);
+        }
+
+        for (const filename of candidates) {
+            const filePath = path.join(this.options.condensedBatchesDir, filename);
+            try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                const parsed = JSON.parse(content) as unknown;
+                if (!this.isValidCondensedBatchShape(parsed)) {
+                    console.warn(`[NarrativeContextBuilderService] Invalid batch shape in ${filePath}, skipping`);
+                    return null;
+                }
+                this.batchCache.set(parsed.batchId, parsed);
+                return parsed;
+            } catch (error: any) {
+                if (error?.code !== 'ENOENT') {
+                    console.warn(`[NarrativeContextBuilderService] Failed to read batch ${filePath}: ${error?.message ?? error}`);
+                    return null;
+                }
+                // ENOENT : essayer le candidat suivant
+            }
+        }
+        // Fallback : scan du répertoire pour matcher par batchId
+        try {
+            const entries = await fs.readdir(this.options.condensedBatchesDir);
+            for (const entry of entries) {
+                if (!entry.startsWith('batch-') || !entry.endsWith('.json')) continue;
+                const filePath = path.join(this.options.condensedBatchesDir, entry);
+                try {
+                    const content = await fs.readFile(filePath, 'utf-8');
+                    const parsed = JSON.parse(content) as unknown;
+                    if (this.isValidCondensedBatchShape(parsed) && parsed.batchId === batchFileOrId) {
+                        this.batchCache.set(parsed.batchId, parsed);
+                        return parsed;
+                    }
+                } catch {
+                    // ignorer
+                }
+            }
+        } catch {
+            // répertoire inaccessible
+        }
+        return null;
     }
 
     // =========================================================================
@@ -1074,6 +1369,8 @@ export class NarrativeContextBuilderService {
      */
     clearCaches(): void {
         this.analysisCache.clear();
+        this.batchCache.clear();
+        this.batchIndex.clear();
         // Note: conversationCache est global et ne doit pas être vidé ici
     }
 
@@ -1460,7 +1757,12 @@ export class NarrativeContextBuilderService {
             // 4. Vérification de la taille et condensation si nécessaire
             const fullContext = contextSummaries.join('\n');
             if (this.shouldCondenseContext(fullContext)) {
-                return await this.triggerContextCondensation(contextSummaries, taskId);
+                // Wiring Phase 3 (#1315) : on passe le taskId déclencheur comme source
+                // candidate. Si un lot condensé existe déjà pour cette tâche seule, on
+                // le réutilise. Sinon, fallback à la troncature (le flow complet de
+                // création de batch à partir de N ConversationAnalysis vit dans
+                // createCondensedBatch, appelé directement par le SynthesisOrchestrator).
+                return await this.triggerContextCondensation(contextSummaries, taskId, [taskId]);
             }
             
             return fullContext;
@@ -1634,19 +1936,41 @@ export class NarrativeContextBuilderService {
     }
 
     /**
-     * Déclenche la condensation du contexte (placeholder pour Phase 3).
+     * Déclenche la condensation du contexte.
      *
-     * En Phase 3, cette méthode fera appel à SynthesisOrchestratorService
-     * pour créer un lot de synthèses condensées.
+     * Phase 3 (implémentation partielle) : si `sourceTaskIds` est fourni et
+     * qu'un lot condensé existe déjà couvrant exactement ces tâches, on
+     * réutilise le résumé du lot. Sinon, on conserve le fallback historique
+     * (troncature des éléments les plus anciens) — la création automatique
+     * d'un lot à partir des `contextSummaries` seuls n'est pas implémentée
+     * car il faudrait reconstruire des `ConversationAnalysis`, ce qui sort
+     * du scope de cette méthode (les analyses sont construites par Phase 2).
+     *
+     * @param contextSummaries Tableau de résumés individuels à condenser
+     * @param triggerTaskId ID de la tâche qui déclenche la condensation
+     * @param sourceTaskIds Optionnel — IDs des tâches contribuant aux résumés
+     * @returns Contexte condensé (string)
      */
     private async triggerContextCondensation(
         contextSummaries: string[],
-        triggerTaskId: string
+        triggerTaskId: string,
+        sourceTaskIds: string[] = []
     ): Promise<string> {
-        // TODO Phase 3: Implémenter la vraie condensation avec orchestrateur
         console.log(`Condensation déclenchée pour ${triggerTaskId}, ${contextSummaries.length} éléments`);
-        
-        // Pour l'instant, on tronque simplement les éléments les plus anciens
+
+        // Si on connaît les taskIds sources, on tente de réutiliser un lot existant.
+        if (sourceTaskIds.length > 0) {
+            try {
+                const existing = await this.findExistingCondensedBatch(sourceTaskIds);
+                if (existing) {
+                    return `[CONTEXTE CONDENSÉ - Lot ${existing.batchId} couvrant ${existing.sourceTaskIds.length} tâches]\n${existing.batchSummary}`;
+                }
+            } catch (error) {
+                console.warn(`[NarrativeContextBuilderService] Lookup batch failed for ${triggerTaskId}, fallback to truncation: ${(error as Error).message}`);
+            }
+        }
+
+        // Fallback : troncature des éléments les plus anciens.
         const truncatedContext = contextSummaries.slice(-10).join('\n');
         return `[CONTEXTE CONDENSÉ - ${contextSummaries.length} éléments]\n${truncatedContext}`;
     }
