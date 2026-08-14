@@ -1,6 +1,6 @@
 # Wrapper script pour capturer TOUS les logs du serveur MCP roo-state-manager
 param(
-    [string]$ServerPath = "D:\dev\roo-extensions\mcps\internal\servers\roo-state-manager\build\src\index.js"
+    [string]$ServerPath = (Join-Path $PSScriptRoot "build\index.js")
 )
 
 Write-Host "[LOG-WRAPPER] Démarrage du serveur roo-state-manager avec capture complète des logs" -ForegroundColor Green
