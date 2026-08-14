@@ -227,6 +227,58 @@ export async function saveSkeletonIndex(
 const MAX_PROACTIVE_REPAIR_TASKS = 200;
 
 /**
+ * Fuite bande passante po-2025 (handover Maintenance 2026-08-14) : persistance
+ * machine-locale du curseur de refresh des squelettes.
+ *
+ * `lastSkeletonRefreshAt` ne vivait qu'en memoire (positionne dans un `.then()`
+ * fire-and-forget) : chaque redemarrage re-analysait tout l'espace de taches, et
+ * un `loadSkeletonsFromDisk()` qui rejette laissait le curseur a 0 POUR TOUJOURS —
+ * le worker de 2 min re-analysait alors chaque tache a chaque tick (mesure :
+ * 11 Mo/s de lecture disque soutenue sur po-2025).
+ *
+ * Co-localise avec l'index de squelettes (`tasks/.skeletons/`) pour partager sa
+ * duree de vie. Ecriture atomique (tmp + rename) : des instances MCP concurrentes
+ * peuvent se courir sus, mais la valeur est un timestamp monotone — le dernier
+ * gagnant est correct.
+ */
+const INDEXER_STATE_FILENAME = 'indexer-state.json';
+
+async function getIndexerStatePath(): Promise<string | null> {
+    const storageLocations = await RooStorageDetector.detectStorageLocations();
+    if (storageLocations.length === 0) return null;
+    return path.join(storageLocations[0], 'tasks', '.skeletons', INDEXER_STATE_FILENAME);
+}
+
+/** Persiste le curseur. Ne rejette jamais (fire-and-forget safe). */
+export async function persistIndexerCursor(lastSkeletonRefreshAt: number): Promise<void> {
+    try {
+        const statePath = await getIndexerStatePath();
+        if (!statePath) return;
+        await fs.mkdir(path.dirname(statePath), { recursive: true });
+        const tmpPath = `${statePath}.tmp-${process.pid}`;
+        await fs.writeFile(tmpPath, JSON.stringify({ version: 1, lastSkeletonRefreshAt }), 'utf8');
+        await fs.rename(tmpPath, statePath);
+    } catch (error: any) {
+        console.warn('[Indexer-State] Cursor persist failed (non-blocking):', error?.message || error);
+    }
+}
+
+/**
+ * Charge le curseur persiste. Renvoie 0 si absent/corrompu (full scan = defaut sur),
+ * ne rejette jamais.
+ */
+export async function loadPersistedIndexerCursor(): Promise<number> {
+    try {
+        const statePath = await getIndexerStatePath();
+        if (!statePath) return 0;
+        const data = JSON.parse(await fs.readFile(statePath, 'utf8'));
+        return typeof data.lastSkeletonRefreshAt === 'number' ? data.lastSkeletonRefreshAt : 0;
+    } catch {
+        return 0;
+    }
+}
+
+/**
  * Auto-réparation proactive des métadonnées manquantes au démarrage
  */
 export async function startProactiveMetadataRepair(): Promise<void> {
@@ -606,6 +658,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
             }
 
             state.lastSkeletonRefreshAt = startTime;
+            persistIndexerCursor(startTime);
             const elapsed = Date.now() - startTime;
 
             if (updatedCount > 0 || newCount > 0) {
@@ -667,6 +720,13 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
 
         // ===== ALL NON-BLOCKING (fire-and-forget) =====
 
+        // Fuite po-2025 : hydrater le curseur persiste AVANT tout worker. Sans cela,
+        // un chargement initial lent/rejete laisse lastSkeletonRefreshAt=0 et le worker
+        // de 2 min re-analyse tout a chaque tick (boucle 11 Mo/s disque).
+        if (!state.lastSkeletonRefreshAt) {
+            state.lastSkeletonRefreshAt = await loadPersistedIndexerCursor();
+        }
+
         // Load skeleton index in background — first tool call that needs it
         // will find it already loaded (or will trigger lazy load via ensureSkeletonCacheLoaded)
         loadSkeletonsFromDisk(state.conversationCache).then(() => {
@@ -674,6 +734,7 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             // only picks up tasks modified AFTER this point — NOT all 7620 tasks.
             // Without this, lastSkeletonRefreshAt=0 causes the worker to re-analyze everything.
             state.lastSkeletonRefreshAt = Date.now();
+            persistIndexerCursor(state.lastSkeletonRefreshAt);
             // Once index is loaded, discover Claude sessions too
             return loadClaudeCodeSessions(state.conversationCache);
         }).then(async () => {
@@ -704,6 +765,14 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             }
         }).catch((error: any) => {
             console.warn('[Startup] Background skeleton/Claude load failed (non-blocking):', error?.message || error);
+            // Fuite po-2025 : armer le curseur AUSSI en cas de rejet. Le .then() ci-dessus
+            // ne s'execute jamais si loadSkeletonsFromDisk rejette — le curseur restait a 0
+            // et le worker re-analysait l'integralite des taches a chaque cycle de 2 min.
+            // On n'ecrase pas une valeur hydratee plus ancienne (fenetre de rattrapage).
+            if (!state.lastSkeletonRefreshAt) {
+                state.lastSkeletonRefreshAt = Date.now();
+                persistIndexerCursor(state.lastSkeletonRefreshAt);
+            }
         });
 
         // Auto-réparation proactive: fire-and-forget with timeout
@@ -711,13 +780,20 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
         });
 
-        // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
-        startSkeletonRefreshWorker(state);
+        // Fuite po-2025 : kill-switch dur. ROO_INDEXING_ENABLED=false coupe les DEUX
+        // workers d'indexation (refresh squelettes = scan disque + re-analyse, Qdrant =
+        // trafic embeddings) — pour les machines a connexion facturee. Defaut : ON.
+        if (!state.isQdrantIndexingEnabled) {
+            console.log('⛔ [Indexing] ROO_INDEXING_ENABLED=false — skeleton refresh + Qdrant indexing desactivés');
+        } else {
+            // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
+            startSkeletonRefreshWorker(state);
 
-        // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
-        initializeQdrantIndexingService(state).catch((error: any) => {
-            console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
-        });
+            // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
+            initializeQdrantIndexingService(state).catch((error: any) => {
+                console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
+            });
+        }
 
         // Heartbeat: ADR 008 passive model — no auto-start needed.
         // Every MCP tool call IS the heartbeat. Status derived from timestamps.
@@ -812,7 +888,9 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
     } catch (error: any) {
         console.error('⚠️  Erreur lors de l\'initialisation du service d\'indexation Qdrant (non-bloquant):', error?.message || error);
         // Even if this fails, we still want to proceed and let the background process handle it gracefully
-        state.isQdrantIndexingEnabled = true; // Keep it enabled - let the background process disable if needed
+        // Fuite po-2025 : respecter le kill-switch sur le chemin d'erreur aussi —
+        // l'ancien `= true` dur reactivait l'indexation sur les machines opted-out.
+        state.isQdrantIndexingEnabled = process.env.ROO_INDEXING_ENABLED !== 'false';
         console.error('⚠️  Service d\'indexation continuera en arrière-plan avec gestion des erreurs renforcée');
     }
 }
