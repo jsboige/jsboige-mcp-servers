@@ -6,13 +6,16 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 // Mock external dependencies before importing
-const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir, mockStat } = vi.hoisted(() => ({
+const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir, mockStat, mockExistsSync } = vi.hoisted(() => ({
 	mockReadFile: vi.fn(),
 	mockWriteFile: vi.fn(),
 	mockMkdir: vi.fn(),
 	mockAccess: vi.fn(),
 	mockReaddir: vi.fn(),
 	mockStat: vi.fn(),
+	// #608: getArchiveBasePath() sonde les deux emplacements d'archive.
+	// Mocke pour que la resolution reste deterministe sans toucher le disque.
+	mockExistsSync: vi.fn(() => false),
 }));
 
 vi.mock('fs', () => ({
@@ -33,7 +36,9 @@ vi.mock('fs', () => ({
 			readdir: mockReaddir,
 			stat: mockStat,
 		},
+		existsSync: mockExistsSync,
 	},
+	existsSync: mockExistsSync,
 	createReadStream: vi.fn(),
 }));
 

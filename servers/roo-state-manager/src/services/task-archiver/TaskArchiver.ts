@@ -14,7 +14,7 @@ import path from 'path';
 import os from 'os';
 import { gzip, gunzip } from 'zlib';
 import { promisify } from 'util';
-import { createReadStream } from 'fs';
+import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
@@ -127,8 +127,37 @@ function transformClaudeCodeJsonl(jsonlLines: ClaudeCodeJsonlLine[]): ArchivedTa
         }));
 }
 
+/**
+ * Racine des archives de taches.
+ *
+ * #608 — `.shared-state` est marque "disponible hors connexion" dans Google Drive
+ * sur toutes les machines : tout ce qui vit dessous est materialise en entier sur
+ * chaque disque et re-telecharge a chaque rotation. Les archives de taches sont un
+ * stockage de masse, jamais consulte a chaud — elles doivent donc vivre a cote de
+ * `.shared-state`, pas dedans, pour rester cloud-only.
+ *
+ * La resolution tolere les deux emplacements pendant la bascule de la flotte :
+ * tant que les donnees n'ont pas ete deplacees, une machine deja a jour continue
+ * de lire l'ancien chemin. L'ordre entre le deploiement du code et le deplacement
+ * des donnees n'a donc pas d'importance, dans un sens comme dans l'autre.
+ */
 function getArchiveBasePath(): string {
-    return path.join(getSharedStatePath(), 'task-archive');
+    if (process.env.ROOSYNC_ARCHIVE_PATH) {
+        return process.env.ROOSYNC_ARCHIVE_PATH;
+    }
+
+    const shared = path.resolve(getSharedStatePath());
+    const primary = path.join(path.dirname(shared), 'task-archive');
+    if (existsSync(primary)) {
+        return primary;
+    }
+
+    const legacy = path.join(shared, 'task-archive');
+    if (existsSync(legacy)) {
+        return legacy;
+    }
+
+    return primary;
 }
 
 /**
