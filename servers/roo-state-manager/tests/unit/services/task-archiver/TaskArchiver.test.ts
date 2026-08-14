@@ -10,7 +10,10 @@ vi.mock('fs', () => ({
         writeFile: vi.fn(),
         mkdir: vi.fn(),
         readdir: vi.fn(),
-    }
+    },
+    // #608: getArchiveBasePath() sonde les deux emplacements d'archive.
+    // Mocke pour que la resolution reste deterministe sans toucher le disque.
+    existsSync: vi.fn(() => false),
 }));
 
 // Mock zlib
