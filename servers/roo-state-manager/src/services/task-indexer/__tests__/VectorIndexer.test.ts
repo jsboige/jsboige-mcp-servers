@@ -1029,4 +1029,76 @@ describe('VectorIndexer', () => {
 		});
 	});
 
+	// ============================================================
+	// collectExistingContentHashes — the pagination cursor must advance
+	// ============================================================
+
+	describe('collectExistingContentHashes', () => {
+		/** Build a scroll mock over `pages`, recording every offset it is called with. */
+		function scrollOverPages(pages: Record<string, any>, hardStop = 6) {
+			const offsets: unknown[] = [];
+			const scroll = vi.fn(async (_collection: string, params: any) => {
+				offsets.push(params.offset);
+				// A stuck cursor would spin forever and hang the suite instead of failing it.
+				if (offsets.length > hardStop) {
+					throw new Error(`cursor never advanced — same page re-requested ${offsets.length}x`);
+				}
+				return pages[params.offset ?? '__first__'];
+			});
+			return { scroll, offsets };
+		}
+
+		test('advances the cursor across pages, collects every hash, and terminates', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+			const { collectExistingContentHashes } = await import('../VectorIndexer.js');
+
+			const { scroll, offsets } = scrollOverPages({
+				__first__: { points: [{ payload: { contentHash: 'h1' } }], next_page_offset: 'p2' },
+				p2: { points: [{ payload: { contentHash: 'h2' } }], next_page_offset: 'p3' },
+				p3: { points: [{ payload: { contentHash: 'h3' } }], next_page_offset: null },
+			});
+
+			const found = new Set<string>();
+			await collectExistingContentHashes({ scroll }, ['h1', 'h2', 'h3'], found);
+
+			// The defect: every request carried page 1's offset, so this read
+			// [undefined, 'p2', 'p2', 'p2', …] and never ended.
+			expect(offsets).toEqual([undefined, 'p2', 'p3']);
+			expect(new Set(offsets).size).toBe(offsets.length); // no offset requested twice
+			expect([...found].sort()).toEqual(['h1', 'h2', 'h3']);
+		});
+
+		test('sends no offset on the first request', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+			const { collectExistingContentHashes } = await import('../VectorIndexer.js');
+
+			const { scroll } = scrollOverPages({
+				__first__: { points: [], next_page_offset: null },
+			});
+
+			await collectExistingContentHashes({ scroll }, ['h1'], new Set());
+
+			expect(scroll).toHaveBeenCalledTimes(1);
+			expect(scroll.mock.calls[0][1]).not.toHaveProperty('offset');
+		});
+
+		test('stops after one page when Qdrant returns no next offset', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+			const { collectExistingContentHashes } = await import('../VectorIndexer.js');
+
+			const { scroll } = scrollOverPages({
+				__first__: { points: [{ payload: { contentHash: 'only' } }], next_page_offset: null },
+			});
+
+			const found = new Set<string>();
+			await collectExistingContentHashes({ scroll }, ['only'], found);
+
+			expect(scroll).toHaveBeenCalledTimes(1);
+			expect([...found]).toEqual(['only']);
+		});
+	});
+
 });

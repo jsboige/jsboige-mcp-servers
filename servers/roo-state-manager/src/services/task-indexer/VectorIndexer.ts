@@ -556,6 +556,58 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
 }
 
 /**
+ * Scroll every page of contentHash matches for one batch of hashes, adding each hash
+ * found to `existingHashes`.
+ *
+ * The pagination cursor MUST advance between requests. This loop previously existed as
+ * two copy-pasted copies — in {@link dedupByContentHash} and in
+ * {@link preflightDedupByContentHash} — and both carried the same defect: the loop
+ * condition read the FIRST page's `next_page_offset` (never reassigned) and passed that
+ * same offset on every request, so a full page 2 was re-fetched forever. The exit test
+ * inspected a response that never changed, so it never fired.
+ *
+ * The cost was not a hung request. `indexTask` races each task against
+ * `INDEX_TASK_TIMEOUT_MS`, and `Promise.race` abandons the loser without cancelling it:
+ * every timed-out task left one orphaned scroll loop downloading a 1000-point page in a
+ * tight cycle, for the life of the process. Meanwhile the preflight it broke is the one
+ * that skips embeddings for content Qdrant already holds — so the failure also restored
+ * the ~90% wasted-embedding path that #2369 was written to remove.
+ *
+ * Exported for the regression test, which asserts the cursor advances.
+ */
+export async function collectExistingContentHashes(
+    qdrant: { scroll: (collection: string, params: any) => Promise<any> },
+    batch: string[],
+    existingHashes: Set<string>,
+): Promise<void> {
+    const filter = {
+        should: batch.map(hash => ({
+            key: 'contentHash',
+            match: { value: hash },
+        })),
+    };
+
+    let offset: unknown = undefined;
+    do {
+        const page = await qdrant.scroll(COLLECTION_NAME, {
+            filter,
+            limit: 1000,
+            // The first request carries no offset, as before.
+            ...(offset === undefined ? {} : { offset }),
+            with_vector: false,
+            with_payload: { include: ['contentHash'] },
+        });
+
+        for (const point of page.points) {
+            const hash = (point.payload as any)?.contentHash as string | undefined;
+            if (hash) existingHashes.add(hash);
+        }
+
+        offset = page.next_page_offset ?? undefined;
+    } while (offset !== undefined);
+}
+
+/**
  * #1985: Deduplicate points by contentHash before upserting to Qdrant.
  * Queries Qdrant for existing points with matching contentHash values.
  * Prevents re-indexing of already-indexed content (especially Claude Code /resume sessions).
@@ -579,42 +631,7 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
         for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
             const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
             try {
-                const results = await qdrant.scroll(COLLECTION_NAME, {
-                    filter: {
-                        should: batch.map(hash => ({
-                            key: 'contentHash',
-                            match: { value: hash },
-                        })),
-                    },
-                    limit: 1000,
-                    with_vector: false,
-                    with_payload: { include: ['contentHash'] },
-                });
-
-                for (const point of results.points) {
-                    const hash = (point.payload as any)?.contentHash as string | undefined;
-                    if (hash) existingHashes.add(hash);
-                }
-
-                while (results.next_page_offset) {
-                    const nextResults = await qdrant.scroll(COLLECTION_NAME, {
-                        filter: {
-                            should: batch.map(hash => ({
-                                key: 'contentHash',
-                                match: { value: hash },
-                            })),
-                        },
-                        limit: 1000,
-                        offset: results.next_page_offset,
-                        with_vector: false,
-                        with_payload: { include: ['contentHash'] },
-                    });
-                    for (const point of nextResults.points) {
-                        const hash = (point.payload as any)?.contentHash as string | undefined;
-                        if (hash) existingHashes.add(hash);
-                    }
-                    if (!nextResults.next_page_offset) break;
-                }
+                await collectExistingContentHashes(qdrant, batch, existingHashes);
             } catch (scrollError: any) {
                 console.warn(`[#1985] Dedup scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
             }
@@ -766,42 +783,7 @@ async function preflightDedupByContentHash(
         for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
             const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
             try {
-                const results = await qdrant.scroll(COLLECTION_NAME, {
-                    filter: {
-                        should: batch.map(hash => ({
-                            key: 'contentHash',
-                            match: { value: hash },
-                        })),
-                    },
-                    limit: 1000,
-                    with_vector: false,
-                    with_payload: { include: ['contentHash'] },
-                });
-
-                for (const point of results.points) {
-                    const hash = (point.payload as any)?.contentHash as string | undefined;
-                    if (hash) existingHashes.add(hash);
-                }
-
-                while (results.next_page_offset) {
-                    const nextResults = await qdrant.scroll(COLLECTION_NAME, {
-                        filter: {
-                            should: batch.map(hash => ({
-                                key: 'contentHash',
-                                match: { value: hash },
-                            })),
-                        },
-                        limit: 1000,
-                        offset: results.next_page_offset,
-                        with_vector: false,
-                        with_payload: { include: ['contentHash'] },
-                    });
-                    for (const point of nextResults.points) {
-                        const hash = (point.payload as any)?.contentHash as string | undefined;
-                        if (hash) existingHashes.add(hash);
-                    }
-                    if (!nextResults.next_page_offset) break;
-                }
+                await collectExistingContentHashes(qdrant, batch, existingHashes);
             } catch (scrollError: any) {
                 console.warn(`[#2369] Preflight contentHash scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
                 // Non-blocking: on failure, keep chunks (will be caught by post-index dedup)
