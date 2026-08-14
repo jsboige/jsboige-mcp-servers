@@ -32,9 +32,6 @@
     "test:all": "npm run build && npm run build:tests && npm run test:run && npm run test:detector",
     "test:watch": "vitest watch",
     "test:hierarchy": "vitest run tests/unit/services/hierarchy-reconstruction-engine.test.ts",
-    "test:baseline": "jest src/tests/BaselineService.test.ts",
-    "test:baseline:watch": "jest src/tests/BaselineService.test.ts --watch",
-    "test:baseline:coverage": "jest src/tests/BaselineService.test.ts --coverage",
     "eval:harness": "vitest run --config vitest.config.eval-harness.ts",
     "postinstall": "node scripts/patch-pathe.mjs"
   },
