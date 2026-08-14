@@ -99,8 +99,14 @@ export const resetQdrantCollectionTool = {
                 qdrantIndexQueue.add(taskId);
             }
             
-            // Réactiver le service s'il était désactivé
-            setQdrantIndexingEnabled(true);
+            // Réactiver le service s'il était désactivé — #985 review finding 2: clamp
+            // à l'env. Sans ça, reset re-flippe le flag à true sur une machine
+            // kill-switchée et `status.is_enabled` mentait vs ROO_INDEXING_ENABLED.
+            if (process.env.ROO_INDEXING_ENABLED !== 'false') {
+                setQdrantIndexingEnabled(true);
+            } else {
+                console.log('[Reset] ROO_INDEXING_ENABLED=false — indexing stays disabled (kill-switch), flag not re-enabled');
+            }
             
             return {
                 content: [{

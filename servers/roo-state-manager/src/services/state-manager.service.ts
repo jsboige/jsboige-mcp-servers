@@ -134,7 +134,9 @@ export class StateManager {
             lastSkeletonRefreshAt: 0,
             qdrantIndexQueue: new Set(),
             qdrantIndexInterval: null,
-            isQdrantIndexingEnabled: true,
+            // Fuite bande passante po-2025 (2026-08-14): ROO_INDEXING_ENABLED=false coupe
+            // Worker A (skeleton refresh) ET Worker B (Qdrant) — machines a connexion facturee.
+            isQdrantIndexingEnabled: process.env.ROO_INDEXING_ENABLED !== 'false',
             isIndexLeader: false,
             fleetRoster: rooSyncCfg?.fleetRoster ?? null,
             machineId: rooSyncCfg?.machineId ?? (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),

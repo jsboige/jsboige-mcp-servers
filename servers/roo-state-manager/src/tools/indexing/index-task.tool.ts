@@ -46,6 +46,15 @@ export const indexTaskSemanticTool = {
             const { task_id } = args;
             const source = args.source || 'roo';
 
+            // #985 review finding 1: le kill-switch coupe AUSSI l'indexation explicite —
+            // sinon un agent qui appelle `index` contourne le garrot de la machine.
+            if (process.env.ROO_INDEXING_ENABLED === 'false') {
+                throw new GenericError(
+                    'Indexing disabled: ROO_INDEXING_ENABLED=false is set on this machine (bandwidth kill-switch).',
+                    GenericErrorCode.INVALID_ARGUMENT
+                );
+            }
+
             // **FAILSAFE: Auto-rebuild cache si nécessaire**
             await ensureCacheFreshCallback();
 
