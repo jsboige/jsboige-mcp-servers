@@ -7,15 +7,18 @@
  * strategie upgrade-if-v1 (soft transition v1 -> v2, aucune troncature).
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock external dependencies before importing
-const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir } = vi.hoisted(() => ({
+const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir, mockExistsSync } = vi.hoisted(() => ({
 	mockReadFile: vi.fn(),
 	mockWriteFile: vi.fn(),
 	mockMkdir: vi.fn(),
 	mockAccess: vi.fn(),
 	mockReaddir: vi.fn(),
+	// #608: getArchiveBasePath() sonde les deux emplacements d'archive.
+	// Mocke pour que la resolution reste deterministe sans toucher le disque.
+	mockExistsSync: vi.fn(() => false),
 }));
 
 vi.mock('fs', () => ({
@@ -26,6 +29,7 @@ vi.mock('fs', () => ({
 		access: mockAccess,
 		readdir: mockReaddir,
 	},
+	existsSync: mockExistsSync,
 	default: {
 		promises: {
 			readFile: mockReadFile,
@@ -34,6 +38,7 @@ vi.mock('fs', () => ({
 			access: mockAccess,
 			readdir: mockReaddir,
 		},
+		existsSync: mockExistsSync,
 	},
 }));
 
@@ -505,5 +510,65 @@ describe('TaskArchiver', () => {
 
 			expect(progress).toEqual([[1, 2], [2, 2]]);
 		});
+	});
+});
+
+// ============================================================
+// #608 — Resolution de la racine d'archive
+//
+// `.shared-state` est marque "disponible hors connexion" dans Google Drive sur
+// toutes les machines : tout ce qui vit dessous est materialise en entier sur
+// chaque disque. Ces tests epinglent le defaut — ils echouent si la racine
+// d'archive repasse sous `.shared-state`.
+// ============================================================
+describe('TaskArchiver — racine d\'archive hors zone epinglee (#608)', () => {
+	const savedShared = process.env.ROOSYNC_SHARED_PATH;
+	const savedArchive = process.env.ROOSYNC_ARCHIVE_PATH;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		process.env.ROOSYNC_SHARED_PATH = '/mock/RooSync/.shared-state';
+		delete process.env.ROOSYNC_ARCHIVE_PATH;
+		mockExistsSync.mockReturnValue(false);
+		mockReaddir.mockResolvedValue([]);
+	});
+
+	afterEach(() => {
+		if (savedShared === undefined) delete process.env.ROOSYNC_SHARED_PATH;
+		else process.env.ROOSYNC_SHARED_PATH = savedShared;
+		if (savedArchive === undefined) delete process.env.ROOSYNC_ARCHIVE_PATH;
+		else process.env.ROOSYNC_ARCHIVE_PATH = savedArchive;
+	});
+
+	/** Fait resoudre la racine et retourne le chemin reellement utilise. */
+	async function resolvedBase(): Promise<string> {
+		await TaskArchiver.listArchivedTasks();
+		return mockReaddir.mock.calls[0][0] as string;
+	}
+
+	test('archive a cote de .shared-state quand aucun emplacement n\'existe encore', async () => {
+		const base = await resolvedBase();
+
+		expect(base).not.toContain('.shared-state');
+		expect(base.endsWith('task-archive')).toBe(true);
+	});
+
+	test('reste sur l\'ancien emplacement tant que les donnees n\'ont pas ete deplacees', async () => {
+		mockExistsSync.mockImplementation((p: any) => String(p).includes('.shared-state'));
+
+		expect(await resolvedBase()).toContain('.shared-state');
+	});
+
+	test('bascule des que les donnees sont arrivees hors zone epinglee', async () => {
+		mockExistsSync.mockImplementation((p: any) => !String(p).includes('.shared-state'));
+
+		expect(await resolvedBase()).not.toContain('.shared-state');
+	});
+
+	test('ROOSYNC_ARCHIVE_PATH prime sur toute resolution', async () => {
+		process.env.ROOSYNC_ARCHIVE_PATH = '/mock/elsewhere/archives';
+
+		expect(await resolvedBase()).toBe('/mock/elsewhere/archives');
+		expect(mockExistsSync).not.toHaveBeenCalled();
 	});
 });
