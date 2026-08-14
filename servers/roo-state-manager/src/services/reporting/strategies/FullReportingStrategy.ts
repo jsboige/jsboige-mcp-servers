@@ -60,17 +60,18 @@ export class FullReportingStrategy extends BaseReportingStrategy {
         // Comportement classique (fallback)
         let formattedContent: string[] = [];
         
-        // En-tête du message avec ancre
+        // En-tête du message (l'ancre HTML vit sur le div ci-dessous, #756)
         const firstLine = this.getTruncatedFirstLine(content.content, 200);
-        formattedContent.push(`### ${title} - ${firstLine} {#${anchor}}`);
+        formattedContent.push(`### ${title} - ${firstLine}`);
         formattedContent.push('');
-        
-        // Div avec classe CSS
-        formattedContent.push(`<div class="${cssClass}">`);
-        
+
+        // Div avec classe CSS + ancre HTML navigable depuis la TOC
+        formattedContent.push(`<div id="${anchor}" class="${cssClass}">`);
+
         if (content.subType === 'UserMessage') {
-            // Messages utilisateur nettoyés mais complets
-            const cleanedContent = this.cleanUserMessage(content.content);
+            // Messages utilisateur nettoyés mais complets —
+            // mode Full : environment_details préservés en section collapsible (#756)
+            const cleanedContent = this.cleanUserMessagePreservingEnvDetails(content.content);
             formattedContent.push(cleanedContent);
         } else if (content.subType === 'ToolResult') {
             // Résultats d'outils avec détails complets
@@ -110,38 +111,38 @@ export class FullReportingStrategy extends BaseReportingStrategy {
      */
     private formatToolResultClassic(content: ClassifiedContent): string {
         const parts: string[] = [];
-        
+
         // Format simplifié pour la compatibilité
         const toolResultMatch = content.content.match(/\[([^\]]+)\] Result:\s*(.*)/s);
         if (toolResultMatch) {
             const toolName = toolResultMatch[1];
             const result = toolResultMatch[2].trim();
-            
+            const resultType = this.getToolResultType(result);
+
             parts.push(`**Résultat d'outil :** \`${toolName}\``);
             parts.push('');
-            
-            // Résultat avec détails (mode Full)
-            if (result.length > 1000) {
-                parts.push('<details>');
-                parts.push('<summary>**Résultat complet** - Cliquez pour afficher</summary>');
-                parts.push('');
-                parts.push('```');
-                parts.push(result);
-                parts.push('```');
-                parts.push('</details>');
-            } else {
-                parts.push('```');
-                parts.push(result);
-                parts.push('```');
-            }
+
+            // Mode Full : résultat intégral, systématiquement collapsible (#756) —
+            // le seuil de 1000 caractères laissait les tool results courts en inline
+            parts.push('<details>');
+            parts.push(`<summary>${resultType} — ${result.length} caractères — Cliquez pour afficher</summary>`);
+            parts.push('');
+            parts.push('```');
+            parts.push(result);
+            parts.push('```');
+            parts.push('</details>');
         } else {
             parts.push('**Résultat d\'outil**');
+            parts.push('');
+            parts.push('<details>');
+            parts.push(`<summary>Résultat brut — ${content.content.length} caractères</summary>`);
             parts.push('');
             parts.push('```');
             parts.push(content.content);
             parts.push('```');
+            parts.push('</details>');
         }
-        
+
         return parts.join('\n');
     }
 

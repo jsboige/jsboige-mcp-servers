@@ -349,14 +349,37 @@ class NonRenderingStrategy extends BaseReportingStrategy {
     }
 }
 
+/**
+ * Mimics the production strategies: emits an HTML id anchor derived from
+ * generateAnchor(content, messageIndex) — the TOC↔body contract (#756 F2).
+ */
+class AnchorEchoStrategy extends BaseReportingStrategy {
+    readonly detailLevel = 'AnchorEcho';
+    readonly description = 'emits id anchors like production strategies';
+    formatMessageContent(
+        content: ClassifiedContent,
+        messageIndex: number,
+        _options: EnhancedSummaryOptions
+    ): FormattedMessage {
+        const anchor = this.generateAnchor(content, messageIndex);
+        return {
+            content: `<div id="${anchor}">body</div>`,
+            cssClass: '',
+            shouldRender: true,
+            messageType: '',
+            anchor
+        };
+    }
+}
+
 describe('BaseReportingStrategy - public report generation (coverage C3 #833)', () => {
     const strategy = new TestableStrategy();
     const noCssOptions = {} as EnhancedSummaryOptions;
 
     describe('generateTableOfContents', () => {
-        it('should start with the TOC header (src L131-132)', () => {
+        it('should start with the TOC header + back-link anchor (#756)', () => {
             const toc = strategy.generateTableOfContents([], noCssOptions);
-            expect(toc.startsWith('## TABLE DES MATIÈRES')).toBe(true);
+            expect(toc.startsWith('## <a id="table-des-matieres"></a>TABLE DES MATIÈRES')).toBe(true);
         });
 
         it('should render a UserMessage as an internal anchor with user class (src L147-148)', () => {
@@ -434,10 +457,10 @@ describe('BaseReportingStrategy - public report generation (coverage C3 #833)', 
             expect(overview).toContain('**Stratégie:** Test strategy for unit testing');
         });
 
-        it('should embed statistics and the table of contents (src L195,199)', () => {
+        it('should embed statistics and the table of contents (#756: header porte l\'ancre back-link)', () => {
             const overview = strategy.generateOverview(contents, noCssOptions);
             expect(overview).toContain('## STATISTIQUES');
-            expect(overview).toContain('## TABLE DES MATIÈRES');
+            expect(overview).toContain('## <a id="table-des-matieres"></a>TABLE DES MATIÈRES');
         });
 
         it('should NOT emit an initial instruction in non-TOC-only mode (src L203 guard)', () => {
@@ -489,6 +512,32 @@ describe('BaseReportingStrategy - public report generation (coverage C3 #833)', 
             const report = hidden.generateReport(contents, noCssOptions);
             expect(report).toContain('## MESSAGES');
             expect(report).not.toContain('SHOULD_NOT_APPEAR');
+        });
+
+        it('body anchors match TOC hrefs via per-type counters (#756 F2)', () => {
+            const echo = new AnchorEchoStrategy();
+            const mixed: ClassifiedContent[] = [
+                makeContent({ type: 'User', subType: 'UserMessage', content: 'u1', index: 0 }),
+                makeContent({ type: 'Assistant', subType: 'Completion', content: 'a1', index: 1 }),
+                makeContent({ type: 'User', subType: 'UserMessage', content: 'u2', index: 2 }),
+                makeContent({ type: 'User', subType: 'ToolResult', content: 't1', index: 3 }),
+            ];
+            const report = echo.generateReport(mixed, noCssOptions);
+            // TOC hrefs (per-type counters)…
+            expect(report).toContain('href="#UserMessage-1"');
+            expect(report).toContain('href="#UserMessage-2"');
+            expect(report).toContain('href="#Completion-1"');
+            expect(report).toContain('href="#ToolResult-1"');
+            // …doivent chacune résoudre vers un id= présent dans le corps
+            expect(report).toContain('<div id="UserMessage-1"');
+            expect(report).toContain('<div id="UserMessage-2"');
+            expect(report).toContain('<div id="Completion-1"');
+            expect(report).toContain('<div id="ToolResult-1"');
+        });
+
+        it('back-links "^ Table des matières" resolve to the TOC heading anchor (#756 F2)', () => {
+            const report = strategy.generateReport(contents, noCssOptions);
+            expect(report).toContain('<a id="table-des-matieres"></a>');
         });
     });
 

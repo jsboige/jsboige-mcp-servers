@@ -128,7 +128,8 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
         sourceFilePath?: string
     ): string {
         const toc: string[] = [];
-        toc.push('## TABLE DES MATIÈRES');
+        // Cible des back-links "^ Table des matières" générés par les stratégies (#756)
+        toc.push('## <a id="table-des-matieres"></a>TABLE DES MATIÈRES');
         toc.push('');
 
         let userMessageCounter = 0;
@@ -234,9 +235,27 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
             report.push('');
             report.push('## MESSAGES');
             report.push('');
-            
-            contents.forEach((content, index) => {
-                const formatted = this.formatMessageContent(content, index + 1, options);
+
+            // Compteurs par type alignés sur generateTableOfContents (#756) :
+            // l'ancre générée ici doit être identique à celle liée par la TOC
+            const counters = { user: 0, toolResult: 0, assistant: 0 };
+            let fallbackIndex = 0;
+            contents.forEach((content) => {
+                let index: number;
+                if (content.subType === 'UserMessage') {
+                    counters.user++;
+                    index = counters.user;
+                } else if (content.subType === 'ToolResult') {
+                    counters.toolResult++;
+                    index = counters.toolResult;
+                } else if (content.type === 'Assistant') {
+                    counters.assistant++;
+                    index = counters.assistant;
+                } else {
+                    fallbackIndex++;
+                    index = fallbackIndex;
+                }
+                const formatted = this.formatMessageContent(content, index, options);
                 if (formatted.shouldRender) {
                     report.push(formatted.content);
                     report.push('');
@@ -477,7 +496,48 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
         
         return cleaned;
     }
-    
+
+    /**
+     * Variante de cleanUserMessage qui préserve les <environment_details>
+     * dans une section <details> collapsible au lieu de les supprimer (#756)
+     */
+    protected cleanUserMessagePreservingEnvDetails(content: string): string {
+        if (!content?.trim()) return '';
+
+        const envBlocks: string[] = [];
+        const withPlaceholders = content.replace(
+            /<environment_details>([\s\S]*?)<\/environment_details>/g,
+            (_match: string, inner: string) => {
+                envBlocks.push(inner.trim());
+                return `@@ENV_DETAILS_${envBlocks.length - 1}@@`;
+            }
+        );
+
+        const cleaned = this.cleanUserMessage(withPlaceholders);
+        if (envBlocks.length === 0) return cleaned;
+
+        let result = cleaned;
+        envBlocks.forEach((block, i) => {
+            const placeholder = `@@ENV_DETAILS_${i}@@`;
+            const details = [
+                '<details>',
+                `<summary>🌍 Environment details (${block.length} caractères)</summary>`,
+                '',
+                '```',
+                block,
+                '```',
+                '',
+                '</details>'
+            ].join('\n');
+            // Fallback : si cleanUserMessage a éliminé le placeholder (message
+            // devenu trop court → extraction <user_message>), réattacher en fin
+            result = result.includes(placeholder)
+                ? result.replace(placeholder, details)
+                : `${result}\n\n${details}`;
+        });
+        return result;
+    }
+
     /**
      * Vérifie si le contenu contient des détails d'outils
      */
@@ -495,22 +555,23 @@ export abstract class BaseReportingStrategy implements IReportingStrategy {
     }
 
     /**
-     * Génère le titre d'un message
+     * Génère le titre d'un message (sans préfixe de heading —
+     * les stratégies ajoutent leur propre `### `/#756 double-heading fix)
      */
     protected generateMessageTitle(content: ClassifiedContent, messageIndex: number): string {
         const messageType = this.getMessageType(content);
-        
+
         if (content.subType === 'UserMessage') {
-            return `### 👤 ${messageType} #${messageIndex}`;
+            return `👤 ${messageType} #${messageIndex}`;
         } else if (content.subType === 'ToolResult') {
-            return `### 🔧 ${messageType} #${messageIndex}`;
+            return `🔧 ${messageType} #${messageIndex}`;
         } else if (content.subType === 'ToolCall') {
-            return `### ⚙️ ${messageType} #${messageIndex}`;
+            return `⚙️ ${messageType} #${messageIndex}`;
         } else if (content.type === 'Assistant') {
             const hasTools = content.content.includes('<') || content.toolCallDetails;
-            return hasTools ? `### 🤖⚙️ ${messageType} #${messageIndex}` : `### 🤖 ${messageType} #${messageIndex}`;
+            return hasTools ? `🤖⚙️ ${messageType} #${messageIndex}` : `🤖 ${messageType} #${messageIndex}`;
         }
-        
-        return `### 💬 ${messageType} #${messageIndex}`;
+
+        return `💬 ${messageType} #${messageIndex}`;
     }
 }

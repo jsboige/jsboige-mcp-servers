@@ -93,9 +93,12 @@ export class UserOnlyReportingStrategy extends BaseReportingStrategy {
         // Format simple pour les messages utilisateur
         const anchor = `user-message-${messageIndex}`;
         const title = `Message Utilisateur #${messageIndex + 1}`;
-        
+
+        // Ancre HTML explicite : la TOC UserOnly lie vers #user-message-N (#756)
         const formattedContent = [
-            `## ${title} {#${anchor}}`,
+            `<a id="${anchor}"></a>`,
+            '',
+            `## ${title}`,
             '',
             processedContent,
             ''
