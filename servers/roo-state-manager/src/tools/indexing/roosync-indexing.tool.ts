@@ -475,7 +475,13 @@ export async function handleRooSyncIndexing(
             // Diagnostic hints
             const hints: string[] = [];
             if (!state.isQdrantIndexingEnabled) {
-                hints.push('Indexation Qdrant désactivée. Vérifiez les variables d\'environnement: QDRANT_URL, QDRANT_API_KEY, EMBEDDING_API_KEY');
+                // #985 review finding 3: le kill-switch env est une cause probable —
+                // le lister évite de faussement investiguer les credentials.
+                if (process.env.ROO_INDEXING_ENABLED === 'false') {
+                    hints.push('Indexation Qdrant désactivée. Cause: ROO_INDEXING_ENABLED=false (kill-switch actif sur cette machine).');
+                } else {
+                    hints.push('Indexation Qdrant désactivée. Vérifiez les variables d\'environnement: QDRANT_URL, QDRANT_API_KEY, EMBEDDING_API_KEY');
+                }
             }
             if (state.qdrantIndexQueue.size > 0 && !state.qdrantIndexInterval) {
                 hints.push('Queue non vide mais worker non démarré. Le serveur MCP peut ne pas avoir initialisé les services background.');

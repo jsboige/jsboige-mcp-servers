@@ -30,6 +30,7 @@ vi.mock('../task-indexer.js', () => ({
     TaskIndexer: class {
         async indexTask() { return []; }
         async countPointsByHostOs() { return 0; }
+        async resetCollection() { return undefined; }
     },
     getHostIdentifier: vi.fn().mockReturnValue('test-host'),
 }));
@@ -72,6 +73,7 @@ import {
 } from '../background-services.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { StateManager } from '../state-manager.service.js';
+import { indexTaskSemanticTool } from '../../tools/indexing/index-task.tool.js';
 
 const ENV_VAR = 'ROO_INDEXING_ENABLED';
 
@@ -112,6 +114,42 @@ describe('P0 kill-switch ROO_INDEXING_ENABLED', () => {
 
         expect(state.skeletonRefreshInterval).toBeNull();
         expect(state.qdrantIndexInterval).toBeNull();
+    });
+
+    it("ROO_INDEXING_ENABLED='false' : l'outil index_task_semantic REFUSE avant tout travail (gate explicite)", async () => {
+        // #985 review finding 1 : sans gate, un appel explicite `index` contourne
+        // le kill-switch machine. La gate doit jeter AVANT ensureCacheFreshCallback.
+        process.env[ENV_VAR] = 'false';
+        const ensureCacheFresh = vi.fn().mockResolvedValue(true);
+
+        const result = await indexTaskSemanticTool.handler(
+            { task_id: 'whatever' },
+            new Map(),
+            ensureCacheFresh
+        );
+
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain('ROO_INDEXING_ENABLED');
+        expect(ensureCacheFresh).not.toHaveBeenCalled();
+    });
+
+    it("ROO_INDEXING_ENABLED='false' : reset_qdrant_collection ne re-flippe PAS le flag à true", async () => {
+        // #985 review finding 2 : sans clamp, reset appelait
+        // setQdrantIndexingEnabled(true) même sur une machine kill-switchée.
+        process.env[ENV_VAR] = 'false';
+        const { resetQdrantCollectionTool } = await import('../../tools/indexing/reset-collection.tool.js');
+        const setIndexingEnabled = vi.fn();
+
+        // TaskIndexer est mocké (resetCollection no-op) — pas de vraie connexion Qdrant.
+        await resetQdrantCollectionTool.handler(
+            { confirm: true },
+            new Map(),
+            vi.fn().mockResolvedValue(undefined),
+            new Set<string>(),
+            setIndexingEnabled
+        );
+
+        expect(setIndexingEnabled).not.toHaveBeenCalled();
     });
 });
 
