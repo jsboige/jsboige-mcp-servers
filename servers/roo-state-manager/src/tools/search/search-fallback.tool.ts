@@ -88,9 +88,16 @@ export async function searchFallbackTool(
     }> = [];
 
     for (const [taskId, skeleton] of conversationCache.entries()) {
-      // Filtrer par workspace si spécifié
-      if (workspace && skeleton.metadata?.workspace !== workspace) {
-        continue;
+      // Filtrer par workspace si spécifié — match full path OR short name.
+      // The cache stores path form (c:/dev/roo-extensions) while callers pass
+      // the short name (roo-extensions); strict !== on the path alone made every
+      // workspace-filtered text search return 0 hits (#795 finding, web1).
+      if (workspace) {
+        const ws = skeleton.metadata?.workspace;
+        const wsShort = ws ? ws.split(/[\\/]/).filter(Boolean).pop() : undefined;
+        if (ws !== workspace && wsShort !== workspace) {
+          continue;
+        }
       }
 
       // #604: Filtrer par source si spécifié

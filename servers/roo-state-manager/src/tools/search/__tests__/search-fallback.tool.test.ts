@@ -227,6 +227,56 @@ describe('searchFallbackTool', () => {
 			expect(parsed.results[0].taskId).toBe('task-ws1');
 		});
 
+		test('matches the short workspace name against the path form stored in cache', async () => {
+			const task1 = makeSkeleton('task-short', {
+				metadata: {
+					title: 'Deploy task',
+					workspace: 'c:/dev/roo-extensions',
+					lastActivity: '2026-03-01T00:00:00Z',
+					createdAt: '2026-01-01T00:00:00Z',
+					mode: 'code-simple',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 1024,
+				},
+			} as any);
+			const cache = makeCache(task1);
+
+			const result = await searchFallbackTool(
+				{ query: 'deploy', workspace: 'roo-extensions' },
+				cache
+			);
+			const parsed = parseResult(result);
+
+			expect(parsed.totalFound).toBe(1);
+			expect(parsed.results[0].taskId).toBe('task-short');
+		});
+
+		test('matches the short name for a Windows backslash path', async () => {
+			const task1 = makeSkeleton('task-ws-backslash', {
+				metadata: {
+					title: 'Deploy task',
+					workspace: 'C:\\dev\\roo-extensions',
+					lastActivity: '2026-03-01T00:00:00Z',
+					createdAt: '2026-01-01T00:00:00Z',
+					mode: 'code-simple',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 1024,
+				},
+			} as any);
+			const cache = makeCache(task1);
+
+			const result = await searchFallbackTool(
+				{ query: 'deploy', workspace: 'roo-extensions' },
+				cache
+			);
+			const parsed = parseResult(result);
+
+			expect(parsed.totalFound).toBe(1);
+			expect(parsed.results[0].taskId).toBe('task-ws-backslash');
+		});
+
 		test('returns all workspaces when no workspace filter', async () => {
 			const task1 = makeSkeleton('task-a', {
 				metadata: {
