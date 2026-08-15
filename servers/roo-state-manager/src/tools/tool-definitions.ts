@@ -333,8 +333,8 @@ export const roosyncCompareConfigDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            source: { type: 'string', description: 'Default: local' },
-            target: { type: 'string', description: 'Default: remote' },
+            source: { type: 'string', description: 'Default: local machineId (alias "local-machine"). Remote machines: real machineId, e.g. "myia-ai-01"' },
+            target: { type: 'string', description: 'Default: first other machine in roster (sorted). "local-machine" or real machineId — NOT "remote"' },
             force_refresh: { type: 'boolean' },
             granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'] },
             filter: { type: 'string', description: 'Path filter e.g. "jupyter"' },
