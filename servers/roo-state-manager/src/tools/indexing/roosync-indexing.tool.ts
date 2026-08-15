@@ -1162,6 +1162,9 @@ export async function handleRooSyncIndexing(
                 const retryCounts: Record<string, number> = {};
                 const sourceCounts: Record<string, number> = {};
                 const downstreamActionCounts: Record<string, number> = {}; // #2336 D2: tool_use followed by non-tool action
+                // #2336: raw tool-name counts per normalized key — keep raw and normalized identity
+                // side by side so naming drift stays debuggable after aggregation.
+                const rawVariants: Record<string, Record<string, number>> = {};
                 let totalCalls = 0;
                 let filesScanned = 0;
 
@@ -1211,6 +1214,8 @@ export async function handleRooSyncIndexing(
                                         totalCalls++;
                                         const toolName = normalizeToolName(block.name);
                                         toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                                        const rawBucket = rawVariants[toolName] || (rawVariants[toolName] = {});
+                                        rawBucket[block.name] = (rawBucket[block.name] || 0) + 1;
                                         sourceCounts['roo'] = (sourceCounts['roo'] || 0) + 1;
 
                                         // Track tool_use_id → tool_name for error matching
@@ -1342,6 +1347,8 @@ export async function handleRooSyncIndexing(
                                         totalCalls++;
                                         const toolName = normalizeToolName(block.name);
                                         toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+                                        const rawBucket = rawVariants[toolName] || (rawVariants[toolName] = {});
+                                        rawBucket[block.name] = (rawBucket[block.name] || 0) + 1;
                                         sourceCounts['claude-code'] = (sourceCounts['claude-code'] || 0) + 1;
 
                                         // Track tool_use_id → tool_name for error matching
@@ -1405,6 +1412,9 @@ export async function handleRooSyncIndexing(
                     .map(([name, count]) => ({
                         tool_name: name,
                         calls: count,
+                        raw_variants: Object.entries(rawVariants[name] || {})
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([rawName, rawCount]) => ({ raw_name: rawName, calls: rawCount })),
                         errors: errorCounts[name] || 0,
                         error_rate: count > 0 ? +((errorCounts[name] || 0) / count * 100).toFixed(1) : 0,
                         retries: retryCounts[name] || 0,
