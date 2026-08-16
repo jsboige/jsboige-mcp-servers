@@ -601,7 +601,9 @@ describe('registry.ts - Tool Registration', () => {
             } as any;
         });
 
-        it('should route roosync_send to handler', { timeout: 60_000 }, async () => {
+        // #3139 partie 2: roosync_send/read/manage retirés du CallTool dispatch (redirects legacy #1841 supprimés).
+        // Le nom vivant de la messagerie est roosync_messages.
+        it('should route roosync_messages to handler', { timeout: 60_000 }, async () => {
             registerCallToolHandler(
                 mockServer,
                 mockState,
@@ -613,7 +615,7 @@ describe('registry.ts - Tool Registration', () => {
             const handler = mockServer.setRequestHandler.mock.calls[0][1];
             const request = {
                 params: {
-                    name: 'roosync_send',
+                    name: 'roosync_messages',
                     arguments: {
                         action: 'send',
                         to: 'test-machine',

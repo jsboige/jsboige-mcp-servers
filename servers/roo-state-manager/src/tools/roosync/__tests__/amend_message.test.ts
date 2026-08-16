@@ -271,7 +271,9 @@ describe('amend_message', () => {
 			});
 
 			expect(result.content[0].text).toContain('Vérifications');
-			expect(result.content[0].text).toContain('roosync_get_message');
+			// #3139 partie 2: la suggestion pointe vers l'outil vivant.
+			expect(result.content[0].text).toContain('roosync_messages');
+			expect(result.content[0].text).toContain('action: "message"');
 		});
 	});
 });

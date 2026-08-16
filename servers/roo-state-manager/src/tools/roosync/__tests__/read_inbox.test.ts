@@ -169,7 +169,13 @@ describe('read_inbox', () => {
 
 		const result = await readInbox({});
 
-		expect(result.content[0].text).toContain('roosync_get_message');
-		expect(result.content[0].text).toContain('roosync_read_inbox');
+		// #3139 partie 2: pointer vers l'outil VIVANT, avec sa syntaxe.
+		expect(result.content[0].text).toContain('roosync_messages');
+		expect(result.content[0].text).toContain('action: "message"');
+		expect(result.content[0].text).toContain('action: "inbox"');
+		// Garde de non-régression: jamais un nom d'outil retiré du catalogue.
+		for (const dead of ['roosync_read_inbox', 'roosync_get_message', 'roosync_send_message', 'roosync_reply_message', 'roosync_archive_message', 'roosync_mark_message_read']) {
+			expect(result.content[0].text).not.toMatch(new RegExp(`\\b${dead}\\b`));
+		}
 	});
 });

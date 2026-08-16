@@ -121,7 +121,7 @@ Le message n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read_inbox\` pour lister les messages disponibles`
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`
         }]
       };
     }
@@ -174,17 +174,17 @@ Le message n'a pas été trouvé dans :
     result += `## 💡 Actions disponibles\n\n`;
     
     if (message.status === 'unread') {
-      result += `- ✉️ **Marquer comme lu** : Utilisez \`roosync_get_message\` avec \`mark_as_read: true\`\n`;
+      result += `- ✉️ **Marquer comme lu** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`mark_as_read: true\`\n`;
     }
-    
+
     if (message.status !== 'archived') {
-      result += `- 📦 **Archiver** : Utilisez \`roosync_archive_message\` (Phase 2)\n`;
+      result += `- 📦 **Archiver** : Utilisez \`roosync_messages\` avec \`action: "archive"\` et \`message_id: "${message.id}"\`\n`;
     }
-    
-    result += `- 💬 **Répondre** : Utilisez \`roosync_send_message\` avec \`reply_to: "${message.id}"\`\n`;
-    
+
+    result += `- 💬 **Répondre** : Utilisez \`roosync_messages\` avec \`action: "reply"\` et \`message_id: "${message.id}"\`\n`;
+
     if (message.thread_id) {
-      result += `- 🔗 **Voir le thread** : Utilisez \`roosync_read_inbox\` puis filtrez par thread_id\n`;
+      result += `- 🔗 **Voir le thread** : Utilisez \`roosync_messages\` avec \`action: "inbox"\` puis filtrez par thread_id\n`;
     }
 
     logger.info('✅ Message retrieved successfully', { messageId: args.message_id, markedAsRead: args.mark_as_read });

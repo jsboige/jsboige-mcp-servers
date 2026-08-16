@@ -118,6 +118,26 @@ describe('roosyncSend', () => {
       expect((result.content[0] as any).text).toContain('Test Subject');
     });
 
+    // #3139 partie 2: le footer de send est la surface vivante de roosync_messages(action: "send").
+    // Cette garde doit ROUGIR si un nom d'outil retiré du catalogue revient dans le texte émis.
+    test('should never name a removed tool in agent-facing output', async () => {
+      const result = await roosyncSend({
+        action: 'send',
+        to: 'target-machine',
+        subject: 'Test Subject',
+        body: 'Test body content'
+      });
+
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('roosync_messages');
+      expect(text).toContain('action: "message"');
+      expect(text).toContain('action: "inbox"');
+      for (const dead of ['roosync_read_inbox', 'roosync_get_message', 'roosync_send_message', 'roosync_send']) {
+        expect(text).not.toMatch(new RegExp(`\\b${dead}\\b`));
+      }
+    });
+
     test('should send message with optional fields', async () => {
       const result = await roosyncSend({
         action: 'send',
