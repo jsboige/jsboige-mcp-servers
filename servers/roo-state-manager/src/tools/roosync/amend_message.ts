@@ -155,7 +155,7 @@ Le **contenu original** est préservé dans \`metadata.original_content\` pour t
 - Le message n'est-il pas archivé ?
 
 **Suggestions :**
-- Utilisez \`roosync_get_message\` pour vérifier le statut du message
+- Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id\` pour vérifier le statut du message
 - Vérifiez que l'ID du message est correct
 - Si le message est déjà lu, vous ne pouvez plus le modifier`
       }]

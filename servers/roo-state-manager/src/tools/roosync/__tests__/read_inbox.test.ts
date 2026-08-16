@@ -169,7 +169,11 @@ describe('read_inbox', () => {
 
 		const result = await readInbox({});
 
-		expect(result.content[0].text).toContain('roosync_get_message');
-		expect(result.content[0].text).toContain('roosync_read_inbox');
+		expect(result.content[0].text).toContain('roosync_messages');
+		expect(result.content[0].text).toContain('action: "message"');
+
+		for (const dead of ['roosync_read_inbox', 'roosync_get_message']) {
+			expect(result.content[0].text).not.toMatch(new RegExp(`\\b${dead}\\b`));
+		}
 	});
 });

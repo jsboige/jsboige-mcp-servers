@@ -86,7 +86,7 @@ Le message n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read_inbox\` pour lister les messages disponibles`
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`
         }]
       };
     }
@@ -108,7 +108,7 @@ Le message n'a pas été trouvé dans :
 Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/\`.
 
 **Actions disponibles :**
-- 📋 Utilisez \`roosync_get_message\` pour voir le contenu complet`
+- 📋 Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id\` pour voir le contenu complet`
         }]
       };
     }
@@ -135,13 +135,13 @@ Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/
     result += `## 📁 Emplacement\n\n`;
     result += `Le message a été déplacé vers :\n`;
     result += `\`messages/archive/${args.message_id}.json\`\n\n`;
-    result += `Il n'apparaîtra plus dans la boîte de réception (\`roosync_read_inbox\`).\n\n`;
+    result += `Il n'apparaîtra plus dans la boîte de réception (\`roosync_messages\` avec \`action: "inbox"\`).\n\n`;
     result += `---\n\n`;
     result += `## 💡 Actions disponibles\n\n`;
-    result += `- 📋 **Voir détails** : Utilisez \`roosync_get_message\` pour voir le contenu complet\n`;
-    
+    result += `- 📋 **Voir détails** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id\` pour voir le contenu complet\n`;
+
     if (message.thread_id) {
-      result += `- 🔗 **Voir le thread** : Utilisez \`roosync_read_inbox\` puis filtrez par thread_id\n`;
+      result += `- 🔗 **Voir le thread** : Utilisez \`roosync_messages\` avec \`action: "inbox"\` puis filtrez par thread_id\n`;
     }
 
     logger.info('✅ Message archived successfully', { messageId: args.message_id });
