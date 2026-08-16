@@ -225,8 +225,17 @@ describe.sequential('roosyncRead', () => {
         mode: 'inbox'
       });
 
-      expect((result.content[0] as any).text).toContain('Actions disponibles');
-      expect((result.content[0] as any).text).toContain('roosync_read');
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Actions disponibles');
+      // #3139: pointer vers l'outil VIVANT, avec sa syntaxe.
+      expect(text).toContain('roosync_messages');
+      expect(text).toContain('action: "message"');
+      expect(text).toContain('action: "inbox"');
+      // #3139: et jamais vers un outil retire (cf. garde detaillee en mode: message).
+      for (const dead of ['roosync_read', 'roosync_send', 'roosync_manage']) {
+        expect(text).not.toMatch(new RegExp(`\\b${dead}\\b`));
+      }
     });
   });
 
@@ -373,9 +382,32 @@ describe.sequential('roosyncRead', () => {
         message_id: testMessageId
       });
 
-      expect((result.content[0] as any).text).toContain('Actions disponibles');
-      expect((result.content[0] as any).text).toContain('roosync_manage');
-      expect((result.content[0] as any).text).toContain('roosync_send');
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Actions disponibles');
+      // #3139: les actions doivent pointer vers l'outil VIVANT, avec sa syntaxe.
+      expect(text).toContain('roosync_messages');
+      expect(text).toContain('action: "mark_read"');
+      expect(text).toContain('action: "archive"');
+      expect(text).toContain('action: "reply"');
+    });
+
+    // #3139: garde de non-regression. Ces trois outils ont ete fusionnes dans
+    // roosync_messages (CONS-1841) et n'existent plus. Les nommer dans une sortie
+    // destinee a un agent le fait echouer sur un outil inexistant.
+    // Cette assertion doit ROUGIR si un nom mort revient dans le texte emis.
+    test('should never name a removed tool in agent-facing output', async () => {
+      const result = await roosyncRead({
+        mode: 'message',
+        message_id: testMessageId
+      });
+
+      const text = (result.content[0] as any).text as string;
+
+      for (const dead of ['roosync_read', 'roosync_send', 'roosync_manage']) {
+        // \b evite que roosync_messages ou roosync_read_inbox declenchent a tort.
+        expect(text).not.toMatch(new RegExp(`\\b${dead}\\b`));
+      }
     });
   });
 
