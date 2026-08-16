@@ -271,7 +271,7 @@ describe('amend_message', () => {
 			});
 
 			expect(result.content[0].text).toContain('Vérifications');
-			expect(result.content[0].text).toContain('roosync_get_message');
+			expect(result.content[0].text).toContain('roosync_messages');
 		});
 	});
 });

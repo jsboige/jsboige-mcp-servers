@@ -170,9 +170,9 @@ ${args.status ? `**Filtre :** ${args.status}` : '**Filtre :** tous les messages'
 
     result += `---\n\n`;
     result += `**💡 Actions disponibles :**\n`;
-    result += `- \`roosync_get_message\` avec l'ID pour lire un message complet\n`;
-    result += `- \`roosync_read_inbox\` avec \`status: "unread"\` pour voir uniquement les non-lus\n`;
-    result += `- \`roosync_read_inbox\` avec \`limit: 5\` pour limiter le nombre de résultats`;
+    result += `- \`roosync_messages\` avec \`action: "message"\` et \`message_id\` pour lire un message complet\n`;
+    result += `- \`roosync_messages\` avec \`action: "inbox", status: "unread"\` pour voir uniquement les non-lus\n`;
+    result += `- \`roosync_messages\` avec \`action: "inbox", limit: 5\` pour limiter le nombre de résultats`;
 
     logger.info('✅ Inbox read successfully', { messageCount: messages.length, unreadCount, readCount });
     return {

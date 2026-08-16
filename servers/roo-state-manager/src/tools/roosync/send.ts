@@ -192,9 +192,9 @@ ${truncateBodyPreview(args.body!)}
 
 ## 💡 Actions disponibles
 
-- 📋 **Voir le message** : Utilisez \`roosync_get_message\` avec l'ID \`${message.id}\`
-- 📬 **Lire l'inbox** : Utilisez \`roosync_read_inbox\` pour voir les messages reçus
-- 📤 **Répondre** : Utilisez \`roosync_send\` avec \`action: reply\` et \`message_id: ${message.id}\``;
+- 📋 **Voir le message** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id: "${message.id}"\`
+- 📬 **Lire l'inbox** : Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour voir les messages reçus
+- 📤 **Répondre** : Utilisez \`roosync_messages\` avec \`action: "reply"\` et \`message_id: ${message.id}\``;
 
   logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to });
   // Fire-and-forget heartbeat update: sending a message proves the machine is active
@@ -260,7 +260,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read_inbox\` pour lister les messages disponibles`;
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`;
   }
 
   // Construire la réponse
@@ -347,9 +347,9 @@ ${truncateBodyPreview(args.body!)}
 
 ## 💡 Actions disponibles
 
-- 📋 **Voir la réponse** : Utilisez \`roosync_get_message\` avec l'ID \`${replyMessageObj.id}\`
-- 🔗 **Voir le thread** : Filtrez par thread_id \`${threadId}\` dans \`roosync_read_inbox\`
-- 📦 **Archiver l'original** : Utilisez \`roosync_archive_message\` avec l'ID \`${originalMessage.id}\``;
+- 📋 **Voir la réponse** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id: "${replyMessageObj.id}"\`
+- 🔗 **Voir le thread** : Filtrez par thread_id \`${threadId}\` dans \`roosync_messages\` avec \`action: "inbox"\`
+- 📦 **Archiver l'original** : Utilisez \`roosync_messages\` avec \`action: "archive"\` et \`message_id: "${originalMessage.id}"\``;
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
   // Fire-and-forget heartbeat update: sending a reply proves the machine is active
@@ -445,8 +445,8 @@ Le **contenu original** est préservé dans \`metadata.original_content\` pour t
 
 ## 💡 Actions disponibles
 
-- 📋 **Voir le message** : Utilisez \`roosync_get_message\` avec l'ID \`${result.message_id}\`
-- 📬 **Lire l'inbox** : Utilisez \`roosync_read_inbox\` pour voir les messages reçus`;
+- 📋 **Voir le message** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id: "${result.message_id}"\`
+- 📬 **Lire l'inbox** : Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour voir les messages reçus`;
 
   logger.info('✅ Message amended successfully', { messageId: args.message_id });
   return successMessage;

@@ -120,7 +120,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read_inbox\` pour lister les messages disponibles`
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`
         }]
       };
     }
@@ -197,9 +197,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     
     result += `---\n\n`;
     result += `## 💡 Actions disponibles\n\n`;
-    result += `- 📋 **Voir la réponse** : Utilisez \`roosync_get_message\` avec l'ID \`${replyMessageObj.id}\`\n`;
-    result += `- 🔗 **Voir le thread** : Filtrez par thread_id \`${threadId}\` dans \`roosync_read_inbox\`\n`;
-    result += `- 📦 **Archiver l'original** : Utilisez \`roosync_archive_message\` avec l'ID \`${originalMessage.id}\`\n`;
+    result += `- 📋 **Voir la réponse** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id: "${replyMessageObj.id}"\`\n`;
+    result += `- 🔗 **Voir le thread** : Filtrez par thread_id \`${threadId}\` dans \`roosync_messages\` avec \`action: "inbox"\`\n`;
+    result += `- 📦 **Archiver l'original** : Utilisez \`roosync_messages\` avec \`action: "archive"\` et \`message_id: "${originalMessage.id}"\`\n`;
 
     logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
     return {

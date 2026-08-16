@@ -601,7 +601,7 @@ describe('registry.ts - Tool Registration', () => {
             } as any;
         });
 
-        it('should route roosync_send to handler', { timeout: 60_000 }, async () => {
+        it('should reject legacy roosync_send/read/manage as removed tools (#3139)', { timeout: 60_000 }, async () => {
             registerCallToolHandler(
                 mockServer,
                 mockState,
@@ -611,23 +611,15 @@ describe('registry.ts - Tool Registration', () => {
             );
 
             const handler = mockServer.setRequestHandler.mock.calls[0][1];
-            const request = {
-                params: {
-                    name: 'roosync_send',
-                    arguments: {
-                        action: 'send',
-                        to: 'test-machine',
-                        subject: 'Test Subject',
-                        body: 'Test message body'
+            for (const dead of ['roosync_send', 'roosync_read', 'roosync_manage']) {
+                const request = {
+                    params: {
+                        name: dead,
+                        arguments: {}
                     }
-                }
-            };
-
-            const result = await handler(request);
-
-            expect(result).toBeDefined();
-            expect(result).toHaveProperty('content');
-            expect(Array.isArray(result.content)).toBe(true);
+                };
+                await expect(handler(request)).rejects.toThrow(`Tool not found: ${dead}`);
+            }
         });
 
         it('should route roosync_dashboard to handler', { timeout: 30000 }, async () => {

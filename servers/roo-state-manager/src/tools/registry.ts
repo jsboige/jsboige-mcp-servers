@@ -93,9 +93,6 @@ export function getToolTimeoutMs(toolName: string): number {
 // Tools not listed here have no capability dependency (always available).
 export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	// RooSync/sharedPath-dependent tools
-	roosync_read: ['sharedPath'],
-	roosync_send: ['sharedPath'],
-	roosync_manage: ['sharedPath'],
 	roosync_attachments: ['sharedPath'],
 	roosync_messages: ['sharedPath'], // #1841 Cluster G: consolidated messaging
 	roosync_dashboard: ['sharedPath'],
@@ -650,34 +647,8 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // CONS-1: Outils messagerie consolidés (6→3)
-           case 'roosync_send': {
-               try {
-                   const m = await import('./roosync/send.js');
-                   result = await m.roosyncSend(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
-           case 'roosync_read': {
-               try {
-                   const m = await import('./roosync/read.js');
-                   result = await m.roosyncRead(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
-           case 'roosync_manage': {
-               try {
-                   const m = await import('./roosync/manage.js');
-                   result = await m.roosyncManage(args as any) as CallToolResult;
-               } catch (error) {
-                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
-               }
-               break;
-           }
+          // #3139: roosync_send/roosync_read/roosync_manage dispatch cases removed (dead code cleanup) —
+          // legacy tools absent from tools/list since #1841 Cluster G; use roosync_messages instead.
           // #1841 Cluster G: Outil consolide messagerie (4→1: send+read+manage+attachments)
            case 'roosync_messages': {
                try {

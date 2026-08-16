@@ -87,7 +87,7 @@ Le message n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read_inbox\` pour lister les messages disponibles`
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`
         }]
       };
     }
@@ -129,9 +129,9 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`
     result += `**Statut :** 🆕 UNREAD → ✅ READ\n`;
     result += `\n---\n\n`;
     result += `## 💡 Actions disponibles\n\n`;
-    result += `- 📦 **Archiver** : Utilisez \`roosync_archive_message\` pour archiver ce message\n`;
-    result += `- 💬 **Répondre** : Utilisez \`roosync_reply_message\` pour répondre à ce message\n`;
-    result += `- 📋 **Voir détails** : Utilisez \`roosync_get_message\` pour voir le contenu complet\n`;
+    result += `- 📦 **Archiver** : Utilisez \`roosync_messages\` avec \`action: "archive"\`\n`;
+    result += `- 💬 **Répondre** : Utilisez \`roosync_messages\` avec \`action: "reply"\` et \`message_id: "${args.message_id}"\`\n`;
+    result += `- 📋 **Voir détails** : Utilisez \`roosync_messages\` avec \`action: "message"\` pour voir le contenu complet\n`;
 
     logger.info('✅ Message marked as read successfully', { messageId: args.message_id });
     return {
