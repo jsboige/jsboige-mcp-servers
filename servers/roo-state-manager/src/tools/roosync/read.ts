@@ -230,9 +230,9 @@ Votre inbox est vide pour le moment.
 
   result += `---\n\n`;
   result += `**💡 Actions disponibles :**\n`;
-  result += `- \`roosync_read\` avec \`mode: "message"\` et l'ID pour lire un message complet\n`;
-  result += `- \`roosync_read\` avec \`status: "unread"\` pour voir uniquement les non-lus\n`;
-  result += `- \`roosync_read\` avec \`page: 1, per_page: 20\` pour paginer les résultats`;
+  result += `- \`roosync_messages\` avec \`action: "message"\` et \`message_id\` pour lire un message complet\n`;
+  result += `- \`roosync_messages\` avec \`action: "inbox", status: "unread"\` pour voir uniquement les non-lus\n`;
+  result += `- \`roosync_messages\` avec \`action: "inbox", page: 1, per_page: 20\` pour paginer les résultats`;
 
   return result;
 }
@@ -270,7 +270,7 @@ Le message n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read\` avec \`mode: "inbox"\` pour lister les messages disponibles`;
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`;
   }
 
   // Marquer comme lu si demandé (avec tracking per-machine #629)
@@ -343,14 +343,14 @@ Le message n'a pas été trouvé dans :
   result += `## 💡 Actions disponibles\n\n`;
 
   if (message.status === 'unread') {
-    result += `- ✉️ **Marquer comme lu** : Utilisez \`roosync_manage\` avec \`action: "mark_read"\`\n`;
+    result += `- ✉️ **Marquer comme lu** : Utilisez \`roosync_messages\` avec \`action: "mark_read"\`\n`;
   }
 
-  result += `- 📦 **Archiver** : Utilisez \`roosync_manage\` avec \`action: "archive"\`\n`;
-  result += `- 💬 **Répondre** : Utilisez \`roosync_send\` avec \`action: "reply"\` et \`message_id: "${message.id}"\`\n`;
+  result += `- 📦 **Archiver** : Utilisez \`roosync_messages\` avec \`action: "archive"\`\n`;
+  result += `- 💬 **Répondre** : Utilisez \`roosync_messages\` avec \`action: "reply"\` et \`message_id: "${message.id}"\`\n`;
 
   if (message.thread_id) {
-    result += `- 🔗 **Voir le thread** : Utilisez \`roosync_read\` avec \`mode: "inbox"\` puis filtrez par thread_id\n`;
+    result += `- 🔗 **Voir le thread** : Utilisez \`roosync_messages\` avec \`action: "inbox"\` puis filtrez par thread_id\n`;
   }
 
   return result;
@@ -381,7 +381,7 @@ async function readAttachmentsMode(args: RooSyncReadArgs): Promise<string> {
 Aucune pièce jointe pour ce message.
 
 **💡 Actions disponibles :**
-- Utilisez \`roosync_send\` avec le paramètre \`attachments\` pour ajouter des fichiers à vos messages
+- Utilisez \`roosync_messages\` avec \`action: "send"\` et le paramètre \`attachments\` pour ajouter des fichiers à vos messages
 - Utilisez \`roosync_list_attachments\` pour lister toutes les pièces jointes disponibles`;
   }
 
@@ -405,7 +405,7 @@ Aucune pièce jointe pour ce message.
   result += `**💡 Actions disponibles :**\n`;
   result += `- 📥 **Télécharger** : Utilisez \`roosync_get_attachment\` avec l'UUID et un \`targetPath\`\n`;
   result += `- 🗑️ **Supprimer** : Utilisez \`roosync_delete_attachment\` avec l'UUID\n`;
-  result += `- 📋 **Voir détails message** : Utilisez \`roosync_read\` avec \`mode: "message"\` et l'ID du message`;
+  result += `- 📋 **Voir détails message** : Utilisez \`roosync_messages\` avec \`action: "message"\` et l'ID du message`;
 
   return result;
 }

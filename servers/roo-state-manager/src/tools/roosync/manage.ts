@@ -88,7 +88,7 @@ Le message n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read\` avec \`action: inbox\` pour lister les messages disponibles`;
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`;
   }
 
   // #2307 Phase 4: Message was auto-archived between listing and this call
@@ -149,9 +149,9 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
 
 ## 💡 Actions disponibles
 
-- 📦 **Archiver** : Utilisez \`roosync_manage\` avec \`action: archive\`
-- 💬 **Répondre** : Utilisez \`roosync_send\` avec \`action: reply\`
-- 📋 **Voir détails** : Utilisez \`roosync_read\` avec \`action: message\``;
+- 📦 **Archiver** : Utilisez \`roosync_messages\` avec \`action: "archive"\`
+- 💬 **Répondre** : Utilisez \`roosync_messages\` avec \`action: "reply"\`
+- 📋 **Voir détails** : Utilisez \`roosync_messages\` avec \`action: "message"\``;
 
   logger.info('✅ Message marked as read successfully', { messageId: args.message_id });
   return result;
@@ -197,7 +197,7 @@ Le message n'a pas été trouvé dans :
 **Suggestions :**
 - Vérifiez que l'ID du message est correct
 - Le message a peut-être été supprimé
-- Utilisez \`roosync_read\` avec \`action: inbox\` pour lister les messages disponibles`;
+- Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour lister les messages disponibles`;
   }
 
   // Vérifier si déjà archivé
@@ -214,7 +214,7 @@ Le message n'a pas été trouvé dans :
 Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/\`.
 
 **Actions disponibles :**
-- 📋 Utilisez \`roosync_read\` avec \`action: message\` pour voir le contenu complet`;
+- 📋 Utilisez \`roosync_messages\` avec \`action: "message"\` pour voir le contenu complet`;
   }
 
   // Archiver le message
@@ -250,13 +250,13 @@ Le message est déjà archivé. Il se trouve dans le dossier \`messages/archive/
 Le message a été déplacé vers :
 \`messages/archive/${args.message_id}.json\`
 
-Il n'apparaîtra plus dans la boîte de réception (\`roosync_read\`).
+Il n'apparaîtra plus dans la boîte de réception (\`roosync_messages\` avec \`action: "inbox"\`).
 
 ---
 
 ## 💡 Actions disponibles
 
-- 📋 **Voir détails** : Utilisez \`roosync_read\` avec \`action: message\` et \`message_id: ${args.message_id}\``;
+- 📋 **Voir détails** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id: ${args.message_id}\``;
 
   if (message.thread_id) {
     result += `\n- 🔗 **Voir le thread** : Filtrez les messages par thread_id \`${message.thread_id}\``;
@@ -490,9 +490,9 @@ ${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).map(([s, c]) => `|
 ---
 
 **Actions disponibles :**
-- \`roosync_manage(action: "cleanup")\` - Nettoyage automatique
-- \`roosync_manage(action: "bulk_mark_read", from: "test")\` - Marquer test messages
-- \`roosync_manage(action: "bulk_archive", before_date: "2026-02-01")\` - Archiver anciens`;
+- \`roosync_messages(action: "cleanup")\` - Nettoyage automatique
+- \`roosync_messages(action: "bulk_mark_read", from: "test")\` - Marquer test messages
+- \`roosync_messages(action: "bulk_archive", before_date: "2026-02-01")\` - Archiver anciens`;
 }
 
 /**
