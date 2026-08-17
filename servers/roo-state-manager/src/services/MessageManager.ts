@@ -1471,13 +1471,33 @@ export class MessageManager {
    * Moves old read messages from inbox/ to archive/ to keep inbox small.
    * Called opportunistically during inbox reads (#638 Phase 3).
    *
-   * @param maxAgeDays Maximum age in days before auto-archiving (default: 30)
-   * @param onlyRead If true, only archive read messages (default: true)
+   * #3150: `onlyRead` alone never fires on a shared inbox. `inbox/` is a single
+   * folder shared by the whole fleet, so a message addressed to another machine
+   * stays `unread` forever — no machine can mark someone else's mail read. Those
+   * messages accumulated (1059 of them older than 15 days, May-July 2026) and were
+   * re-read in full on every cold cache rebuild. The `unreadMaxAgeDays` lane
+   * archives them past a much longer horizon: a message nobody opened in 90 days
+   * will not be opened. Nothing is deleted — `archiveMessage` moves inbox/ ->
+   * archive/, keeps the sent/ copy, and `getMessage` still resolves archived ids.
+   *
+   * @param maxAgeDays Maximum age in days before auto-archiving read messages (default: 30)
+   * @param onlyRead If true, unread messages are spared until `unreadMaxAgeDays` (default: true)
+   * @param unreadMaxAgeDays Age past which unread messages are archived too. 0 disables
+   *                         the lane, restoring the pre-#3150 behaviour (default: 90)
    * @returns Number of messages archived
    */
-  async autoArchiveOld(maxAgeDays: number = 30, onlyRead: boolean = true): Promise<number> {
-    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-    logger.info(`Auto-archiving messages older than ${maxAgeDays} days (onlyRead=${onlyRead})`);
+  async autoArchiveOld(
+    maxAgeDays: number = 30,
+    onlyRead: boolean = true,
+    unreadMaxAgeDays: number = 90
+  ): Promise<number> {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - maxAgeDays * DAY_MS;
+    const unreadCutoff = Date.now() - unreadMaxAgeDays * DAY_MS;
+    logger.info(
+      `Auto-archiving messages older than ${maxAgeDays} days ` +
+      `(onlyRead=${onlyRead}, unreadMaxAgeDays=${unreadMaxAgeDays})`
+    );
 
     const { items, full } = await this.ensureInboxCache();
     const toArchive: string[] = [];
@@ -1488,7 +1508,9 @@ export class MessageManager {
 
       if (onlyRead) {
         const message = full.get(item.id);
-        if (!message || message.status === 'unread') continue;
+        const isUnread = !message || message.status === 'unread';
+        // Unread messages are spared until the much longer abandoned horizon (#3150).
+        if (isUnread && (unreadMaxAgeDays <= 0 || msgTime >= unreadCutoff)) continue;
       }
 
       toArchive.push(item.id);
@@ -1522,10 +1544,19 @@ export class MessageManager {
    * - Fire-and-forget: errors log but don't crash the server
    * - Idempotent: noop if daemon already running
    *
+   * Concurrency: every machine in the fleet runs this daemon against the same
+   * shared inbox/. That is safe — `archiveMessage` treats an already-archived id
+   * as success, so a race between two machines converges instead of failing.
+   *
    * @param maxAgeDays Archive read messages older than N days (default 30)
    * @param intervalHours Re-run interval in hours (default 6)
+   * @param unreadMaxAgeDays Archive unread messages older than N days (#3150, default 90)
    */
-  startAutoArchiveDaemon(maxAgeDays: number = 30, intervalHours: number = 6): void {
+  startAutoArchiveDaemon(
+    maxAgeDays: number = 30,
+    intervalHours: number = 6,
+    unreadMaxAgeDays: number = 90
+  ): void {
     if (this.autoArchiveTimer !== null) {
       logger.warn('AutoArchive daemon already running, ignoring duplicate start');
       return;
@@ -1533,9 +1564,12 @@ export class MessageManager {
 
     const runOnce = async () => {
       try {
-        const archived = await this.autoArchiveOld(maxAgeDays, true);
+        const archived = await this.autoArchiveOld(maxAgeDays, true, unreadMaxAgeDays);
         if (archived > 0) {
-          logger.info(`[AutoArchive] Archived ${archived} messages older than ${maxAgeDays}d`);
+          logger.info(
+            `[AutoArchive] Archived ${archived} messages ` +
+            `(read >${maxAgeDays}d, unread >${unreadMaxAgeDays}d)`
+          );
         }
       } catch (err) {
         logger.error('[AutoArchive] Run failed', err as Record<string, any>);
