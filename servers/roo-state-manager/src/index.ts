@@ -438,11 +438,15 @@ class RooStateManagerServer {
             // Volume grew x100 between Jan and May 2026 (~30/month → ~140/day),
             // causing 2m+ cold scans on 4000-file inboxes. Daemon archives read
             // messages older than maxAgeDays every intervalHours.
+            // #3150: the read-only criterion never fired — inbox/ is shared fleet-wide,
+            // so mail addressed to another machine stays unread forever. Messages nobody
+            // opened in UNREAD_MAX_AGE_DAYS are archived too (moved, never deleted).
             const autoArchiveEnabled = process.env.MESSAGE_AUTO_ARCHIVE_ENABLED !== 'false';
             if (autoArchiveEnabled) {
                 const maxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_MAX_AGE_DAYS || '30', 10);
                 const intervalHours = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_INTERVAL_HOURS || '6', 10);
-                messageManager.startAutoArchiveDaemon(maxAgeDays, intervalHours);
+                const unreadMaxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_UNREAD_MAX_AGE_DAYS || '90', 10);
+                messageManager.startAutoArchiveDaemon(maxAgeDays, intervalHours, unreadMaxAgeDays);
             }
 
             const minPriority = process.env.NOTIFICATIONS_MIN_PRIORITY || 'MEDIUM';

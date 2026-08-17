@@ -1223,6 +1223,105 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('autoArchiveOld — abandoned unread lane (#3150)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    /**
+     * Writes a message straight into inbox/ with a controlled age. sendMessage()
+     * always stamps "now", and the whole point here is what happens to old mail.
+     */
+    const seedInboxMessage = async (
+      id: string,
+      ageDays: number,
+      status: 'unread' | 'read'
+    ): Promise<void> => {
+      const message = {
+        id,
+        from: 'myia-po-2025:roo-extensions',
+        to: 'myia-po-2026:roo-extensions',
+        subject: `seeded ${id}`,
+        body: 'body',
+        priority: 'MEDIUM',
+        timestamp: new Date(Date.now() - ageDays * DAY_MS).toISOString(),
+        status,
+        tags: []
+      };
+      await fs.writeFile(
+        join(testSharedStatePath, 'messages/inbox', `${id}.json`),
+        JSON.stringify(message, null, 2),
+        'utf-8'
+      );
+    };
+
+    const inInbox = (id: string) =>
+      existsSync(join(testSharedStatePath, 'messages/inbox', `${id}.json`));
+    const inArchive = (id: string) =>
+      existsSync(join(testSharedStatePath, 'messages/archive', `${id}.json`));
+
+    test('archives an unread message past the abandoned horizon', async () => {
+      // inbox/ is shared fleet-wide: mail addressed to another machine stays
+      // unread forever, because no machine can mark someone else's mail read.
+      await seedInboxMessage('msg-abandoned', 120, 'unread');
+
+      const archived = await messageManager.autoArchiveOld(30, true, 90);
+
+      expect(archived).toBe(1);
+      expect(inInbox('msg-abandoned')).toBe(false);
+      expect(inArchive('msg-abandoned')).toBe(true);
+    });
+
+    test('archiving moves the message — it stays readable, nothing is deleted', async () => {
+      await seedInboxMessage('msg-preserved', 120, 'unread');
+
+      await messageManager.autoArchiveOld(30, true, 90);
+
+      const recovered = await messageManager.getMessage('msg-preserved');
+      expect(recovered).not.toBeNull();
+      expect(recovered!.body).toBe('body');
+      expect(recovered!.status).toBe('archived');
+    });
+
+    test('spares an unread message that has not reached the abandoned horizon', async () => {
+      // 45 days is past the read threshold but well short of the unread one:
+      // a peer machine may still be catching up on its mail.
+      await seedInboxMessage('msg-recent-unread', 45, 'unread');
+
+      const archived = await messageManager.autoArchiveOld(30, true, 90);
+
+      expect(archived).toBe(0);
+      expect(inInbox('msg-recent-unread')).toBe(true);
+    });
+
+    test('unreadMaxAgeDays=0 restores the pre-#3150 behaviour', async () => {
+      // Pins that the new lane is what does the work: with it disabled, the very
+      // same 120-day-old unread message is left untouched, exactly as before.
+      await seedInboxMessage('msg-lane-off', 120, 'unread');
+
+      const archived = await messageManager.autoArchiveOld(30, true, 0);
+
+      expect(archived).toBe(0);
+      expect(inInbox('msg-lane-off')).toBe(true);
+    });
+
+    test('still archives read messages on the original threshold', async () => {
+      await seedInboxMessage('msg-old-read', 45, 'read');
+
+      const archived = await messageManager.autoArchiveOld(30, true, 90);
+
+      expect(archived).toBe(1);
+      expect(inArchive('msg-old-read')).toBe(true);
+    });
+
+    test('leaves messages younger than the read threshold alone', async () => {
+      await seedInboxMessage('msg-fresh', 5, 'read');
+
+      const archived = await messageManager.autoArchiveOld(30, true, 90);
+
+      expect(archived).toBe(0);
+      expect(inInbox('msg-fresh')).toBe(true);
+    });
+  });
+
   describe('workspace filtering (#2287)', () => {
     test('getMessage: allows reading messages targeted to caller machine', async () => {
       const msg = await messageManager.sendMessage(
