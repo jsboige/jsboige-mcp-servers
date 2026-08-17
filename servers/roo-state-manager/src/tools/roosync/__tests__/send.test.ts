@@ -327,6 +327,22 @@ describe('roosyncSend', () => {
       expect((result.content[0] as any).text).toContain('Correction de typo');
     });
 
+    test('footers must not recommend retired tool names (#3139)', async () => {
+      const cases = await Promise.all([
+        roosyncSend({ action: 'send', to: 'test-machine', subject: 'Guard', body: 'send footer' }),
+        roosyncSend({ action: 'reply', message_id: sentMessageId, body: 'reply footer' }),
+        roosyncSend({ action: 'amend', message_id: sentMessageId, new_content: 'amend footer' })
+      ]);
+
+      for (const result of cases) {
+        const text = (result.content[0] as any).text as string;
+
+        for (const dead of ['roosync_read_inbox', 'roosync_get_message', 'roosync_archive_message', 'roosync_reply_message', 'roosync_send_message']) {
+          expect(text).not.toMatch(new RegExp(`\\b${dead}\\b`));
+        }
+      }
+    });
+
     test('should return error when message_id is missing', async () => {
       const result = await roosyncSend({
         action: 'amend',
