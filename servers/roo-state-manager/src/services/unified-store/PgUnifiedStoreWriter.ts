@@ -23,6 +23,9 @@ import type {
   ConversationBundle,
   ConversationRow,
   MessageRow,
+  RooSyncAttachmentRow,
+  RooSyncMessageRow,
+  RooSyncMessageUpdate,
 } from './types.js';
 import type { IUnifiedStoreWriter, UnifiedStoreWriterConfig } from './UnifiedStoreWriter.js';
 
@@ -205,6 +208,102 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       const client = await this.pool.connect();
       try {
         await this.upsertMessagesRows(client, rows);
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  // ─── RooSync Channel Operations (#3151 Phase A) ────────────────
+
+  async insertRooSyncMessage(row: RooSyncMessageRow): Promise<void> {
+    await this.withRetry('insertRooSyncMessage', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        const sql = `
+          INSERT INTO roosync_messages
+            (id, thread_id, from_machine, from_workspace, to_machine, to_workspace,
+             subject, body, priority, status, tags, attachment_refs, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          ON CONFLICT (id) DO NOTHING
+        `;
+        const params = [
+          row.id,
+          row.thread_id ?? null,
+          row.from_machine,
+          row.from_workspace,
+          row.to_machine,
+          row.to_workspace,
+          row.subject,
+          row.body,
+          row.priority,
+          row.status,
+          // jsonb params must be stringified (pg does not auto-cast objects)
+          JSON.stringify(row.tags ?? []),
+          JSON.stringify(row.attachment_refs ?? []),
+          row.created_at,
+        ];
+        await client.query(sql, params);
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  async updateRooSyncMessage(
+    id: string,
+    fields: RooSyncMessageUpdate
+  ): Promise<void> {
+    // Nothing to update — skip before self-init (a no-op must not open a connection)
+    if (fields.body === undefined && fields.attachment_refs === undefined) return;
+    await this.withRetry('updateRooSyncMessage', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        if (fields.body !== undefined) {
+          params.push(fields.body);
+          sets.push(`body = $${params.length}`);
+        }
+        if (fields.attachment_refs !== undefined) {
+          params.push(JSON.stringify(fields.attachment_refs));
+          sets.push(`attachment_refs = $${params.length}`);
+        }
+        if (sets.length === 0) return; // nothing to update
+        params.push(id);
+        await client.query(
+          `UPDATE roosync_messages SET ${sets.join(', ')} WHERE id = $${params.length}`,
+          params as never[]
+        );
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  async insertRooSyncAttachment(row: RooSyncAttachmentRow): Promise<void> {
+    await this.withRetry('insertRooSyncAttachment', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        const sql = `
+          INSERT INTO roosync_attachments (id, filename, mime, size, sha256, payload)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (id) DO NOTHING
+        `;
+        await client.query(sql, [
+          row.id,
+          row.filename,
+          row.mime,
+          row.size,
+          row.sha256,
+          row.payload, // pg serializes Buffer to bytea
+        ]);
       } finally {
         client.release();
       }

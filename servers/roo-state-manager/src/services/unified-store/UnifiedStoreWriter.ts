@@ -26,6 +26,9 @@ import type {
   ConversationBundle,
   ConversationRow,
   MessageRow,
+  RooSyncAttachmentRow,
+  RooSyncMessageRow,
+  RooSyncMessageUpdate,
 } from './types.js';
 
 export interface UnifiedStoreWriterConfig {
@@ -52,6 +55,15 @@ export interface IUnifiedStoreWriter {
   upsertConversationOnly(row: ConversationRow): Promise<void>;
   /** Batched message upsert. */
   upsertMessages(rows: MessageRow[]): Promise<void>;
+  /**
+   * RooSync channel (#3151 Phase A) — INSERT ON CONFLICT (id) DO NOTHING.
+   * Idempotent by message id; a retry never duplicates or overwrites.
+   */
+  insertRooSyncMessage(row: RooSyncMessageRow): Promise<void>;
+  /** RooSync channel — partial update for amend / attachment-ref refresh. */
+  updateRooSyncMessage(id: string, fields: RooSyncMessageUpdate): Promise<void>;
+  /** RooSync channel — attachment payload as bytea, ON CONFLICT (id) DO NOTHING. */
+  insertRooSyncAttachment(row: RooSyncAttachmentRow): Promise<void>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
@@ -66,5 +78,8 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async upsertConversation(_bundle: ConversationBundle): Promise<void> {}
   async upsertConversationOnly(_row: ConversationRow): Promise<void> {}
   async upsertMessages(_rows: MessageRow[]): Promise<void> {}
+  async insertRooSyncMessage(_row: RooSyncMessageRow): Promise<void> {}
+  async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
+  async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
   async ping(): Promise<boolean> { return false; }
 }

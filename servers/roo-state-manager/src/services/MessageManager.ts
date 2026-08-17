@@ -17,6 +17,12 @@ import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalize
 // Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
 // cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
+// #3151 Phase A — RooSync channel dual-write (write-side only, env-gated, never throws)
+import {
+  dualWriteRooSyncMessageToStore,
+  dualWriteRooSyncMessageAmendment,
+  dualWriteRooSyncAttachmentRefs,
+} from './unified-store/roosync-channel-dual-write.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -543,6 +549,8 @@ export class MessageManager {
       logger.info(`Message saved to sent: ${sentFile}`);
 
       this.addToCache(message);
+      // #3151 Phase A: dual-write to PG (fire-and-forget, env-gated, never blocks GDrive)
+      dualWriteRooSyncMessageToStore(message).catch(() => {});
       logger.info(`Message sent successfully: ${message.id}`);
       return message;
     } catch (error) {
@@ -589,6 +597,8 @@ export class MessageManager {
         } catch { /* non-critical */ }
       }
     }
+    // #3151 Phase A: refresh attachment_refs on the PG copy (fire-and-forget)
+    dualWriteRooSyncAttachmentRefs(messageId, attachments).catch(() => {});
   }
 
   /**
@@ -1286,6 +1296,8 @@ export class MessageManager {
       }
 
       this.updateInCache(messageId, message);
+      // #3151 Phase A: propagate the amended body to PG (same id, fire-and-forget)
+      dualWriteRooSyncMessageAmendment(message).catch(() => {});
       logger.info('Message amended successfully');
 
       return {
