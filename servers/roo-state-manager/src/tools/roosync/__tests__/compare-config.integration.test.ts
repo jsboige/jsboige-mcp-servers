@@ -17,11 +17,21 @@
  * Type: Intégration (RooSyncService réel, opérations filesystem réelles)
  *
  * @module roosync/compare-config.integration.test
- * @version 1.0.0 (#564 Phase 2)
+ * @version 2.0.0 (#833 P1 hardening — Grade D → B : assertions de contenu)
+ *
+ * Hardening (#833) : chaque scénario vérifie désormais le CONTENU du résultat
+ * (diffs attendus par path/severity, summary cohérent), pas seulement
+ * `toBeDefined()`. Les assertions ont été calibrées sur le comportement réel
+ * observé (probe empirique) — pas sur une supposition.
+ *
+ * Isolation env : ROO_FLEET_ROSTER est aligné sur le dashboard de test dans
+ * beforeEach. Sans cela, le diff `env.ROO_FLEET_ROSTER` (roster drift #2570)
+ * apparaissait selon l'env de la machine hôte — fuite d'état hôte qui rendait
+ * les comptes de summary non déterministes.
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 // Mock process.env pour les tests de variables d'environnement
@@ -41,8 +51,28 @@ vi.unmock('../../../services/BaselineService.js');
 vi.unmock('../../../services/ConfigService.js');
 
 // Import après les mocks
-import { roosyncCompareConfig } from '../compare-config.js';
+import { roosyncCompareConfig, CompareConfigResult } from '../compare-config.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
+
+/** Diff paths qui dépendent de la granularité demandée (exclut les checks env/roster globaux). */
+function configDiffs(result: CompareConfigResult): CompareConfigResult['differences'] {
+  return result.differences.filter(d => d.path.startsWith('inventory.'));
+}
+
+function findDiff(result: CompareConfigResult, pathSubstring: string) {
+  return result.differences.find(d => d.path.includes(pathSubstring));
+}
+
+/** Invariant structurel : le summary reflète exactement le tableau differences. */
+function expectSummaryCoherent(result: CompareConfigResult): void {
+  const { summary, differences } = result;
+  expect(summary.total).toBe(differences.length);
+  const bySeverity = (sev: string) => differences.filter(d => d.severity === sev).length;
+  expect(summary.critical).toBe(bySeverity('CRITICAL'));
+  expect(summary.important).toBe(bySeverity('IMPORTANT'));
+  expect(summary.warning).toBe(bySeverity('WARNING'));
+  expect(summary.info).toBe(bySeverity('INFO'));
+}
 
 describe('roosyncCompareConfig (integration)', () => {
   const originalEnv = process.env;
@@ -54,6 +84,21 @@ describe('roosyncCompareConfig (integration)', () => {
     process.env.NODE_ENV = 'test';
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
+    // #833 isolation : aligner le roster sur le dashboard de test, sinon le
+    // check de partition drift (#2570) émet un CRITICAL env.ROO_FLEET_ROSTER
+    // selon l'env de la machine hôte (résultats non déterministes). Roster
+    // aligné → le check émet un diff INFO « consistant » (signal positif).
+    process.env.ROO_FLEET_ROSTER = 'remote-machine,test-machine';
+    // #833 isolation : les 6 vars EMBEDDING_*/QDRANT_* pilotent des diffs
+    // `env.*` dans TOUTES les granularités (pas seulement 'full') — les setter
+    // à des valeurs de test rend les comptes déterministes. Les tests #495
+    // les suppriment explicitement pour exercer les chemins « manquante ».
+    process.env.EMBEDDING_MODEL = 'test-model';
+    process.env.EMBEDDING_DIMENSIONS = '2560';
+    process.env.EMBEDDING_API_BASE_URL = 'http://test-url';
+    process.env.EMBEDDING_API_KEY = 'test-key';
+    process.env.QDRANT_URL = 'http://qdrant-test';
+    process.env.QDRANT_API_KEY = 'qdrant-key';
 
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
@@ -83,72 +128,9 @@ describe('roosyncCompareConfig (integration)', () => {
     }));
 
     // Créer un inventory factice (format MachineInventory baseline requis par InventoryCollector)
-    writeFileSync(join(testSharedStatePath, 'inventories/test-machine.json'), JSON.stringify({
-      machineId: 'test-machine',
-      timestamp: Date.now(),
-      system: {
-        hostname: 'test-machine',
-        os: 'linux',
-        architecture: 'x64',
-        uptime: 123456
-      },
-      hardware: {
-        cpu: { name: 'Test CPU', cores: 4, threads: 8 },
-        memory: { total: 16000000000, available: 8000000000 },
-        disks: []
-      },
-      software: {
-        powershell: '5.1',
-        node: 'v18.0.0'
-      },
-      roo: {
-        mcpServers: [
-          { name: 'test-mcp', enabled: true, command: 'test', transportType: 'stdio' }
-        ],
-        modes: [
-          { slug: 'test-mode', name: 'Test Mode', tools: [] }
-        ]
-      },
-      paths: {
-        rooExtensions: '/fake/roo-extensions',
-        mcpSettings: '/fake/mcp_settings.json',
-        rooConfig: '/fake/roo-config'
-      }
-    }));
-
+    writeFileSync(join(testSharedStatePath, 'inventories/test-machine.json'), JSON.stringify(makeInventory('test-machine', 'test-mcp', 'test', 'test-mode', 'Test Mode')));
     // Créer un inventory pour une machine "remote"
-    writeFileSync(join(testSharedStatePath, 'inventories/remote-machine.json'), JSON.stringify({
-      machineId: 'remote-machine',
-      timestamp: Date.now(),
-      system: {
-        hostname: 'remote-machine',
-        os: 'linux',
-        architecture: 'x64',
-        uptime: 123456
-      },
-      hardware: {
-        cpu: { name: 'Test CPU', cores: 4, threads: 8 },
-        memory: { total: 16000000000, available: 8000000000 },
-        disks: []
-      },
-      software: {
-        powershell: '5.1',
-        node: 'v18.0.0'
-      },
-      roo: {
-        mcpServers: [
-          { name: 'remote-mcp', enabled: true, command: 'remote', transportType: 'stdio' }
-        ],
-        modes: [
-          { slug: 'remote-mode', name: 'Remote Mode', tools: [] }
-        ]
-      },
-      paths: {
-        rooExtensions: '/fake/roo-extensions-remote',
-        mcpSettings: '/fake/mcp_settings_remote.json',
-        rooConfig: '/fake/roo-config-remote'
-      }
-    }));
+    writeFileSync(join(testSharedStatePath, 'inventories/remote-machine.json'), JSON.stringify(makeInventory('remote-machine', 'remote-mcp', 'remote', 'remote-mode', 'Remote Mode')));
 
     // Créer un dashboard factice pour que getDefaultTargetMachine() fonctionne
     // Le dashboard est lu par service.loadDashboard() dans getDefaultTargetMachine()
@@ -202,8 +184,35 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('mcp');
+      expect(result.source).toBe('test-machine');
+      expect(result.target).toBe('remote-machine');
+
+      // Le diff MCP remote est signalé comme ajouté (présent cible, absent source)
+      const added = findDiff(result, 'mcpServers..remote-mcp');
+      expect(added).toBeDefined();
+      expect(added!.severity).toBe('INFO');
+      expect(added!.description).toContain('remote-mcp');
+      expect(added!.target_value).toContain('"command":"remote"');
+      expect(added!.source_value).toBeUndefined();
+
+      // Le diff MCP test est signalé comme supprimé (présent source, absent cible)
+      const removed = findDiff(result, 'mcpServers..test-mcp');
+      expect(removed).toBeDefined();
+      expect(removed!.severity).toBe('WARNING');
+      expect(removed!.source_value).toContain('"command":"test"');
+      expect(removed!.target_value).toBeUndefined();
+
+      // Roster aligné + fixtures : exactement 2 diffs MCP + 1 diff INFO roster
+      // « consistant » (signal positif #2570), aucun CRITICAL
+      expect(configDiffs(result)).toHaveLength(2);
+      const rosterInfo = findDiff(result, 'env.ROO_FLEET_ROSTER');
+      expect(rosterInfo).toBeDefined();
+      expect(rosterInfo!.severity).toBe('INFO');
+      expect(rosterInfo!.description).toContain('consistant');
+      expect(result.summary.critical).toBe(0);
+      expect(result.summary.total).toBe(3);
+      expectSummaryCoherent(result);
     });
 
     test('should filter MCP configs when filter is provided', async () => {
@@ -212,8 +221,14 @@ describe('roosyncCompareConfig (integration)', () => {
         filter: 'jupyter'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('mcp');
+      // Aucun diff MCP ne matche 'jupyter' → seuls les diffs d'env globaux
+      // (roster INFO consistant) survivent au filtre
+      expect(findDiff(result, 'mcpServers')).toBeUndefined();
+      expect(result.differences.filter(d => d.path !== 'env.ROO_FLEET_ROSTER')).toHaveLength(0);
+      expect(result.harmonization_candidates).toBeDefined();
+      expect(result.harmonization_candidates!.summary.total).toBe(0);
+      expectSummaryCoherent(result);
     });
 
     test('should compare with custom source and target', async () => {
@@ -223,8 +238,12 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'remote-machine'
       });
 
-      expect(result).toBeDefined();
-      expect(result.granularity).toBe('mcp');
+      expect(result.source).toBe('test-machine');
+      expect(result.target).toBe('remote-machine');
+      // Même comparaison que le défaut — les 2 diffs MCP doivent être là
+      expect(findDiff(result, 'remote-mcp')).toBeDefined();
+      expect(findDiff(result, 'test-mcp')).toBeDefined();
+      expect(configDiffs(result)).toHaveLength(2);
     });
 
     test('should handle missing MCP configurations gracefully', async () => {
@@ -235,7 +254,13 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
+      // La comparaison granularity 'mcp' est pilotée par les INVENTAIRES,
+      // pas par les fichiers roo-config/mcp/*.json : la suppression du
+      // fichier ne doit ni crasher ni faire disparaître les diffs d'inventaire.
+      expect(result.granularity).toBe('mcp');
+      expect(findDiff(result, 'remote-mcp')).toBeDefined();
+      expect(findDiff(result, 'test-mcp')).toBeDefined();
+      expectSummaryCoherent(result);
     });
   });
 
@@ -249,8 +274,19 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mode'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('mode');
+      const added = findDiff(result, 'rooModes..Remote Mode');
+      expect(added).toBeDefined();
+      expect(added!.severity).toBe('INFO');
+      expect(added!.target_value).toContain('"slug":"remote-mode"');
+
+      const removed = findDiff(result, 'rooModes..Test Mode');
+      expect(removed).toBeDefined();
+      expect(removed!.severity).toBe('WARNING');
+      expect(removed!.source_value).toContain('"slug":"test-mode"');
+
+      expect(configDiffs(result)).toHaveLength(2);
+      expectSummaryCoherent(result);
     });
 
     test('should detect mode differences', async () => {
@@ -266,8 +302,12 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'remote-machine'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('mode');
+      // Les différences de modes proviennent des inventaires : ajout/suppression
+      // des modes distincts des deux machines.
+      expect(findDiff(result, 'Remote Mode')).toBeDefined();
+      expect(findDiff(result, 'Test Mode')).toBeDefined();
+      expectSummaryCoherent(result);
     });
 
     test('should handle missing modes gracefully', async () => {
@@ -277,7 +317,10 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mode'
       });
 
-      expect(result).toBeDefined();
+      expect(result.granularity).toBe('mode');
+      // Les inventaires pilotent la comparaison — les diffs restent présents
+      expect(configDiffs(result)).toHaveLength(2);
+      expectSummaryCoherent(result);
     });
   });
 
@@ -291,8 +334,9 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'settings'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('settings');
+      expect(Array.isArray(result.differences)).toBe(true);
+      expectSummaryCoherent(result);
     });
 
     test('should detect settings differences', async () => {
@@ -313,8 +357,11 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'remote-machine'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('settings');
+      // compareSettings labelise la source publiée GDrive « (published) »
+      expect(result.source).toContain('test-machine');
+      expect(result.target).toContain('remote-machine');
+      expectSummaryCoherent(result);
     });
 
     test('should handle missing settings files', async () => {
@@ -322,8 +369,10 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'settings'
       });
 
-      expect(result).toBeDefined();
       // Devrait retourner un résultat même si les settings n'existent pas
+      expect(result.granularity).toBe('settings');
+      expect(Array.isArray(result.differences)).toBe(true);
+      expectSummaryCoherent(result);
     });
   });
 
@@ -337,8 +386,14 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
       expect(result.granularity).toBe('full');
+      // Les paths factices divergent entre les deux inventaires → diff IMPORTANT
+      const pathDiff = findDiff(result, 'paths.rooExtensions');
+      expect(pathDiff).toBeDefined();
+      expect(pathDiff!.severity).toBe('IMPORTANT');
+      expect(pathDiff!.source_value).toBe('"/fake/roo-extensions"');
+      expect(pathDiff!.target_value).toBe('"/fake/roo-extensions-remote"');
+      expectSummaryCoherent(result);
     });
 
     test('should include all comparison types in full mode', async () => {
@@ -346,8 +401,11 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
-      // Devrait inclure config, environment, hardware, software, system
+      // Devrait inclure config (array), nested (paths), environment (env vars absentes)
+      const categories = new Set(result.differences.map(d => d.category));
+      expect(categories.has('array')).toBe(true);      // roo.mcpServers / roo.modes
+      expect(categories.has('nested')).toBe(true);     // paths.*
+      expect(categories.has('environment')).toBe(true); // env.EMBEDDING_* (absentes en beforeEach)
     });
 
     test('should use GranularDiffDetector in full mode', async () => {
@@ -355,8 +413,19 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
-      expect(result.granularity).toBe('full');
+      // Le GranularDiffDetector produit des diffs avec valeurs formatées + le
+      // grouping harmonization (#3044). Les champs machineId/hostname sont
+      // downgradés INFO avec le préfixe [EXPECTED] (#2307).
+      const machineIdDiff = findDiff(result, 'machineId');
+      expect(machineIdDiff).toBeDefined();
+      expect(machineIdDiff!.severity).toBe('INFO');
+      expect(machineIdDiff!.description).toContain('[EXPECTED]');
+
+      expect(result.harmonization_candidates).toBeDefined();
+      expect(result.harmonization_candidates!.divergent_value.length).toBeGreaterThan(0);
+      expect(result.harmonization_candidates!.present_absent.length).toBeGreaterThan(0);
+      const hc = result.harmonization_candidates!;
+      expect(hc.summary.total).toBe(hc.present_absent.length + hc.divergent_value.length);
     });
   });
 
@@ -371,8 +440,11 @@ describe('roosyncCompareConfig (integration)', () => {
         force_refresh: true
       });
 
-      expect(result).toBeDefined();
-      // Le cache devrait être invalidé et les données rechargées
+      // Le cache devrait être invalidé et les données rechargées :
+      // même comparaison que le défaut sur fixtures statiques.
+      expect(result.granularity).toBe('mcp');
+      expect(configDiffs(result)).toHaveLength(2);
+      expectSummaryCoherent(result);
     });
 
     test('should use cache when force_refresh is false', async () => {
@@ -381,7 +453,9 @@ describe('roosyncCompareConfig (integration)', () => {
         force_refresh: false
       });
 
-      expect(result).toBeDefined();
+      expect(result.granularity).toBe('mcp');
+      expect(configDiffs(result)).toHaveLength(2);
+      expectSummaryCoherent(result);
     });
 
     test('should default to using cache when force_refresh not specified', async () => {
@@ -389,8 +463,10 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
-      // force_refresh devrait être false par défaut
+      // force_refresh devrait être false par défaut — comportement identique
+      expect(result.granularity).toBe('mcp');
+      expect(configDiffs(result)).toHaveLength(2);
+      expectSummaryCoherent(result);
     });
   });
 
@@ -400,7 +476,7 @@ describe('roosyncCompareConfig (integration)', () => {
 
   describe('environment variables checking (#495)', () => {
     test('should check for CRITICAL_ENV_VARS', async () => {
-      // Supprimer toutes les variables d'environnement critiques
+      // Toutes les variables critiques absentes (setter en beforeEach, delete ici)
       delete process.env.EMBEDDING_MODEL;
       delete process.env.EMBEDDING_DIMENSIONS;
       delete process.env.EMBEDDING_API_BASE_URL;
@@ -412,8 +488,26 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
-      // Devrait signaler les variables manquantes avec le bon severity (CRITICAL/WARNING)
+      const missingEnvDiffs = result.differences.filter(d => d.description.includes('manquante'));
+      // 4 WARNING (EMBEDDING_*) + 2 CRITICAL (QDRANT_*)
+      expect(missingEnvDiffs).toHaveLength(6);
+      expect(missingEnvDiffs.filter(d => d.severity === 'WARNING').map(d => d.path).sort()).toEqual([
+        'env.EMBEDDING_API_BASE_URL',
+        'env.EMBEDDING_API_KEY',
+        'env.EMBEDDING_DIMENSIONS',
+        'env.EMBEDDING_MODEL'
+      ]);
+      expect(missingEnvDiffs.filter(d => d.severity === 'CRITICAL').map(d => d.path).sort()).toEqual([
+        'env.QDRANT_API_KEY',
+        'env.QDRANT_URL'
+      ]);
+      for (const d of missingEnvDiffs) {
+        expect(d.category).toBe('environment');
+        expect(d.action).toContain('Ajouter');
+      }
+      // Le roster reste aligné → signal INFO positif distinct des « manquantes »
+      expect(findDiff(result, 'env.ROO_FLEET_ROSTER')!.severity).toBe('INFO');
+      expectSummaryCoherent(result);
     });
 
     test('should detect missing EMBEDDING_MODEL (WARNING)', async () => {
@@ -423,7 +517,9 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
+      const model = findDiff(result, 'env.EMBEDDING_MODEL');
+      expect(model).toBeDefined();
+      expect(model!.severity).toBe('WARNING');
     });
 
     test('should detect missing QDRANT_URL (CRITICAL)', async () => {
@@ -433,7 +529,9 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
+      const qdrant = findDiff(result, 'env.QDRANT_URL');
+      expect(qdrant).toBeDefined();
+      expect(qdrant!.severity).toBe('CRITICAL');
     });
 
     test('should pass when all CRITICAL_ENV_VARS are set', async () => {
@@ -448,7 +546,11 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
+      // Aucune var manquante ; seul subsiste le signal INFO roster (consistant)
+      expect(result.differences.filter(d => d.description.includes('manquante'))).toHaveLength(0);
+      const roster = result.differences.filter(d => d.path === 'env.ROO_FLEET_ROSTER');
+      expect(roster).toHaveLength(1);
+      expect(roster[0].severity).toBe('INFO');
     });
   });
 
@@ -470,7 +572,8 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
+      expect(result.granularity).toBe('full');
+      expectSummaryCoherent(result);
     });
 
     test('should handle missing model-configs.json', async () => {
@@ -478,8 +581,10 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
       // Devrait gérer l'absence de model-configs.json gracieusement
+      expect(result.granularity).toBe('full');
+      expect(Array.isArray(result.differences)).toBe(true);
+      expectSummaryCoherent(result);
     });
 
     test('should detect profile differences between machines', async () => {
@@ -494,7 +599,8 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'full'
       });
 
-      expect(result).toBeDefined();
+      expect(result.granularity).toBe('full');
+      expectSummaryCoherent(result);
     });
   });
 
@@ -509,8 +615,13 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'profile:dev'
       });
 
-      expect(result).toBeDefined();
-      // La comparaison devrait se faire contre un profil au lieu d'une machine
+      // Aucun profil 'dev' publié dans les fixtures → fallback gestion gracieuse
+      // avec un CRITICAL inventory pointant la cible demandée (pas de crash).
+      expect(result.target).toBe('profile:dev');
+      const inv = findDiff(result, 'inventory');
+      expect(inv).toBeDefined();
+      expect(inv!.severity).toBe('CRITICAL');
+      expectSummaryCoherent(result);
     });
 
     test('should handle non-existent profile gracefully', async () => {
@@ -519,8 +630,13 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'profile:nonexistent'
       });
 
-      expect(result).toBeDefined();
-      // Devrait gérer les profils inexistants gracieusement
+      expect(result.target).toBe('profile:nonexistent');
+      const inv = findDiff(result, 'inventory');
+      expect(inv).toBeDefined();
+      expect(inv!.severity).toBe('CRITICAL');
+      expect(inv!.description).toContain('profile:nonexistent');
+      expect(inv!.action).toContain('Générer l\'inventaire');
+      expectSummaryCoherent(result);
     });
   });
 
@@ -537,8 +653,15 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
-      // Devrait retourner un résultat même sans inventory
+      // Un seul diff CRITICAL listant les deux machines manquantes
+      expect(result.differences).toHaveLength(1);
+      const inv = result.differences[0];
+      expect(inv.category).toBe('inventory');
+      expect(inv.severity).toBe('CRITICAL');
+      expect(inv.description).toContain('test-machine');
+      expect(inv.description).toContain('remote-machine');
+      expect(inv.action).toBe('Générer les inventaires des deux machines');
+      expectSummaryCoherent(result);
     });
 
     test('should handle corrupted inventory files', async () => {
@@ -549,8 +672,12 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
-      // Devrait ignorer les fichiers corrompus
+      // Le fichier corrompu est ignoré (aucun diff ne le mentionne) et la
+      // comparaison continue sur les inventaires valides.
+      expect(result.differences.some(d => d.description.includes('corrupted'))).toBe(false);
+      expect(findDiff(result, 'remote-mcp')).toBeDefined();
+      expect(findDiff(result, 'test-mcp')).toBeDefined();
+      expectSummaryCoherent(result);
     });
 
     test('should handle missing shared state directory gracefully', async () => {
@@ -563,12 +690,15 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
-      // Soit on a une erreur CRITICAL (inventaires manquants), soit pas de machine cible
-      expect(
-        result.differences.some(d => d.severity === 'CRITICAL') ||
-        result.differences.some(d => d.description.includes('Aucune autre machine'))
-      ).toBe(true);
+      expect(result.source).toBe('local-machine');
+      expect(result.target).toBe('unknown');
+      expect(result.differences).toHaveLength(1);
+      const infra = result.differences[0];
+      expect(infra.category).toBe('infrastructure');
+      expect(infra.severity).toBe('CRITICAL');
+      expect(infra.path).toBe('roo-sync.infrastructure');
+      expect(infra.action).toContain('ROOSYNC_SHARED_PATH');
+      expectSummaryCoherent(result);
     });
   });
 
@@ -579,32 +709,26 @@ describe('roosyncCompareConfig (integration)', () => {
   describe('integration scenarios', () => {
     test('should handle complete comparison workflow: mcp → mode → settings → full', async () => {
       // Step 1: MCP comparison
-      const mcpResult = await roosyncCompareConfig({
-        granularity: 'mcp'
-      });
-      expect(mcpResult).toBeDefined();
+      const mcpResult = await roosyncCompareConfig({ granularity: 'mcp' });
       expect(mcpResult.granularity).toBe('mcp');
+      expect(configDiffs(mcpResult)).toHaveLength(2);
 
       // Step 2: Mode comparison
-      const modeResult = await roosyncCompareConfig({
-        granularity: 'mode'
-      });
-      expect(modeResult).toBeDefined();
+      const modeResult = await roosyncCompareConfig({ granularity: 'mode' });
       expect(modeResult.granularity).toBe('mode');
+      expect(configDiffs(modeResult)).toHaveLength(2);
 
       // Step 3: Settings comparison
-      const settingsResult = await roosyncCompareConfig({
-        granularity: 'settings'
-      });
-      expect(settingsResult).toBeDefined();
+      const settingsResult = await roosyncCompareConfig({ granularity: 'settings' });
       expect(settingsResult.granularity).toBe('settings');
+      expectSummaryCoherent(settingsResult);
 
       // Step 4: Full comparison
-      const fullResult = await roosyncCompareConfig({
-        granularity: 'full'
-      });
-      expect(fullResult).toBeDefined();
+      const fullResult = await roosyncCompareConfig({ granularity: 'full' });
       expect(fullResult.granularity).toBe('full');
+      // Le mode full voit strictement plus de catégories que les modes ciblés
+      expect(fullResult.differences.length).toBeGreaterThan(configDiffs(mcpResult).length);
+      expect(findDiff(fullResult, 'paths.rooExtensions')).toBeDefined();
     });
 
     test('should persist singleton state across calls', async () => {
@@ -616,9 +740,9 @@ describe('roosyncCompareConfig (integration)', () => {
 
       const instance2 = RooSyncService.getInstance({ enabled: false });
 
-      // Les instances devraient être les mêmes (singleton)
-      expect(instance1).toBeDefined();
-      expect(instance2).toBeDefined();
+      // RooSyncService est un singleton : les deux handles désignent la
+      // MÊME instance (le second appel ne doit pas recréer le service).
+      expect(instance1).toBe(instance2);
     });
 
     test('should handle comparison with force refresh after initial comparison', async () => {
@@ -627,14 +751,21 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp',
         force_refresh: false
       });
-      expect(result1).toBeDefined();
+      expect(configDiffs(result1)).toHaveLength(2);
 
-      // Second comparison with refresh (invalidates cache)
+      // Mutate la machine remote : son MCP devient partagé avec la source
+      const remote = JSON.parse(readFileSync(join(testSharedStatePath, 'inventories/remote-machine.json'), 'utf-8'));
+      remote.roo.mcpServers = [{ name: 'test-mcp', enabled: true, command: 'test', transportType: 'stdio' }];
+      writeFileSync(join(testSharedStatePath, 'inventories/remote-machine.json'), JSON.stringify(remote));
+
+      // Second comparison with refresh (invalidates cache) : doit refléter
+      // le nouvel état — plus aucun diff mcpServers (les 2 machines alignées).
       const result2 = await roosyncCompareConfig({
         granularity: 'mcp',
         force_refresh: true
       });
-      expect(result2).toBeDefined();
+      expect(findDiff(result2, 'mcpServers')).toBeUndefined();
+      expectSummaryCoherent(result2);
     });
   });
 
@@ -649,8 +780,11 @@ describe('roosyncCompareConfig (integration)', () => {
         filter: 'jupyter'
       });
 
-      expect(result).toBeDefined();
-      // Les résultats ne devraient inclure que les paths correspondant au filtre
+      // Les résultats ne devraient inclure que les paths correspondant au filtre :
+      // 'jupyter' ne matche aucun path des fixtures → seuls les diffs d'env globaux
+      // (roster INFO) survivent
+      expect(result.differences.filter(d => d.path !== 'env.ROO_FLEET_ROSTER')).toHaveLength(0);
+      expect(result.harmonization_candidates!.summary.total).toBe(0);
     });
 
     test('should handle empty filter (no filtering)', async () => {
@@ -659,8 +793,9 @@ describe('roosyncCompareConfig (integration)', () => {
         filter: ''
       });
 
-      expect(result).toBeDefined();
-      // Filtre vide = pas de filtrage
+      // Filtre vide = pas de filtrage → les 2 diffs MCP sont retournés
+      expect(configDiffs(result)).toHaveLength(2);
+      expectSummaryCoherent(result);
     });
 
     test('should handle filter with no matches', async () => {
@@ -669,8 +804,8 @@ describe('roosyncCompareConfig (integration)', () => {
         filter: 'nonexistent-mcp-name'
       });
 
-      expect(result).toBeDefined();
-      // Devrait retourner des résultats vides pour ce filtre
+      expect(result.differences.filter(d => d.path !== 'env.ROO_FLEET_ROSTER')).toHaveLength(0);
+      expect(result.harmonization_candidates!.summary.total).toBe(0);
     });
   });
 
@@ -684,8 +819,9 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
-      // source devrait être 'local_machine' par défaut
+      // source devrait être 'local_machine' par défaut → résolu vers
+      // ROOSYNC_MACHINE_ID ('test-machine')
+      expect(result.source).toBe('test-machine');
     });
 
     test('should default target to remote_machine when not specified', async () => {
@@ -693,8 +829,9 @@ describe('roosyncCompareConfig (integration)', () => {
         granularity: 'mcp'
       });
 
-      expect(result).toBeDefined();
-      // target devrait être 'remote_machine' par défaut
+      // target devrait être 'remote_machine' par défaut → première autre
+      // machine du dashboard ('remote-machine')
+      expect(result.target).toBe('remote-machine');
     });
 
     test('should use custom source when provided', async () => {
@@ -703,7 +840,11 @@ describe('roosyncCompareConfig (integration)', () => {
         source: 'custom-source-machine'
       });
 
-      expect(result).toBeDefined();
+      // Machine inconnue → CRITICAL inventory identifiant explicitement la source
+      expect(result.source).toBe('custom-source-machine');
+      const inv = findDiff(result, 'inventory');
+      expect(inv).toBeDefined();
+      expect(inv!.description).toContain('source "custom-source-machine"');
     });
 
     test('should use custom target when provided', async () => {
@@ -712,7 +853,10 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'custom-target-machine'
       });
 
-      expect(result).toBeDefined();
+      expect(result.target).toBe('custom-target-machine');
+      const inv = findDiff(result, 'inventory');
+      expect(inv).toBeDefined();
+      expect(inv!.description).toContain('target "custom-target-machine"');
     });
 
     test('should compare two specific machines when both provided', async () => {
@@ -722,7 +866,51 @@ describe('roosyncCompareConfig (integration)', () => {
         target: 'remote-machine'
       });
 
-      expect(result).toBeDefined();
+      expect(result.source).toBe('test-machine');
+      expect(result.target).toBe('remote-machine');
+      expect(configDiffs(result)).toHaveLength(2);
     });
   });
 });
+
+/** Fabrique un inventory factice au format MachineInventory. */
+function makeInventory(
+  machineId: string,
+  mcpName: string,
+  mcpCommand: string,
+  modeSlug: string,
+  modeName: string
+) {
+  return {
+    machineId,
+    timestamp: Date.now(),
+    system: {
+      hostname: machineId,
+      os: 'linux',
+      architecture: 'x64',
+      uptime: 123456
+    },
+    hardware: {
+      cpu: { name: 'Test CPU', cores: 4, threads: 8 },
+      memory: { total: 16000000000, available: 8000000000 },
+      disks: []
+    },
+    software: {
+      powershell: '5.1',
+      node: 'v18.0.0'
+    },
+    roo: {
+      mcpServers: [
+        { name: mcpName, enabled: true, command: mcpCommand, transportType: 'stdio' }
+      ],
+      modes: [
+        { slug: modeSlug, name: modeName, tools: [] }
+      ]
+    },
+    paths: {
+      rooExtensions: `/fake/roo-extensions${machineId === 'test-machine' ? '' : '-remote'}`,
+      mcpSettings: `/fake/mcp_settings${machineId === 'test-machine' ? '.json' : '_remote.json'}`,
+      rooConfig: `/fake/roo-config${machineId === 'test-machine' ? '' : '-remote'}`
+    }
+  };
+}
