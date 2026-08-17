@@ -18,6 +18,8 @@ import { existsSync, promises as fs, mkdirSync } from 'fs';
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../utils/logger.js';
+// #3151 Phase A — attachment payload dual-write to PG (bytea, env-gated, never throws)
+import { dualWriteRooSyncAttachmentToStore } from '../unified-store/roosync-channel-dual-write.js';
 
 const logger = createLogger('AttachmentManager');
 
@@ -298,6 +300,11 @@ export class AttachmentManager {
 
     const metadataPath = join(attachmentDir, 'metadata.json');
     await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
+
+    // #3151 Phase A: ship the payload bytes to PG as bytea (fire-and-forget,
+    // env-gated — a PG failure never blocks the GDrive upload)
+    dualWriteRooSyncAttachmentToStore(uuid, targetFilePath, resolvedFilename, metadata.mimeType)
+      .catch(() => {});
 
     logger.info('📎 Attachment uploaded', { uuid, filename: resolvedFilename, sizeBytes });
 

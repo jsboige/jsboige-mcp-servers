@@ -54,6 +54,39 @@ export interface ConversationBundle {
   messages: MessageRow[];
 }
 
+/** A row of `roosync_messages` (migrations/002_roosync_channel.sql, #3151 Phase A). */
+export interface RooSyncMessageRow {
+  id: string;
+  thread_id: string | null;
+  from_machine: string;
+  from_workspace: string;
+  to_machine: string;
+  to_workspace: string;
+  subject: string;
+  body: string;
+  priority: string;
+  status: 'unread' | 'read' | 'archived';
+  tags: string[];
+  attachment_refs: Array<{ uuid: string; filename: string; sizeBytes: number }>;
+  created_at: string;
+}
+
+/** Mutable fields of `roosync_messages` after insert (amend / attachment-ref update). */
+export interface RooSyncMessageUpdate {
+  body?: string;
+  attachment_refs?: Array<{ uuid: string; filename: string; sizeBytes: number }>;
+}
+
+/** A row of `roosync_attachments` (payload stored as bytea, #3151 D2). */
+export interface RooSyncAttachmentRow {
+  id: string;
+  filename: string;
+  mime: string | null;
+  size: number;
+  sha256: string | null;
+  payload: Buffer;
+}
+
 /** Search filters for the reader (Phase C). */
 export interface UnifiedStoreSearchFilters {
   workspace?: string;
