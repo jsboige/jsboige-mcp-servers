@@ -12,7 +12,12 @@
  * Type: Intégration (RooSyncService réel, opérations filesystem réelles)
  *
  * @module conversation/conversation-browser.integration.test
- * @version 1.0.0 (#564 Phase 3)
+ * @version 2.0.0 (#833 P1 hardening — Grade D → B : assertions de contenu)
+ *
+ * Hardening (#833) : chaque scénario vérifie désormais le CONTENU de la
+ * réponse (champs du JSON, ordre de tri, structure de pagination, messages
+ * attendus) au lieu de `toBeDefined()` seul. Assertions calibrées sur le
+ * comportement réel observé (probe empirique).
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -129,6 +134,9 @@ describe('conversation_browser (integration)', () => {
     }
   });
 
+  /** Parse la payload JSON d'une réponse text. */
+  const parseJson = (result: any) => JSON.parse(result.content[0].text);
+
   // ============================================================
   // Tests pour action: 'list'
   // ============================================================
@@ -141,14 +149,31 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
+      const response = parseJson(result);
+      expect(Array.isArray(response.conversations)).toBe(true);
+      // Seule la racine task-001 est listée ; task-002 (enfant) est nested
+      expect(response.conversations).toHaveLength(1);
+      const root = response.conversations[0];
+      expect(root.taskId).toBe('task-001');
+      expect(root.source).toBe('roo');
+      expect(root.firstUserMessage).toBe('First message');
+      expect(root.lastMessage).toBe('Response');
+      expect(root.lastMessageRole).toBe('assistant');
+      expect(root.metadata.messageCount).toBe(2);
+      expect(root.metadata.mode).toBe('code-simple');
+      expect(root.children).toHaveLength(1);
+      expect(root.children[0].taskId).toBe('task-002');
+      expect(root.childrenCount).toBe(1);
+      // Pagination : defaults page 1 / per_page 10
+      expect(response.pagination).toEqual({
+        page: 1, per_page: 10, total_count: 1, total_pages: 1, has_next: false
+      });
     });
 
     test('should limit results with limit parameter', async () => {
@@ -159,14 +184,16 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
-      expect(output.length).toBeLessThanOrEqual(1);
+      const response = parseJson(result);
+      expect(Array.isArray(response.conversations)).toBe(true);
+      expect(response.conversations.length).toBeLessThanOrEqual(1);
+      // Le paramètre limit se propage dans la pagination
+      expect(response.pagination.per_page).toBe(1);
     });
 
     test('should sort by lastActivity descending by default', async () => {
@@ -178,13 +205,15 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
+      const response = parseJson(result);
+      // task-001 est plus récente que task-002 (59m vs 2h) → première
+      expect(response.conversations[0].taskId).toBe('task-001');
+      expect(response.conversations[0].metadata.ago).toContain('59m');
     });
 
     test('should sort by messageCount ascending', async () => {
@@ -196,30 +225,40 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
+      const response = parseJson(result);
+      // Seule la racine est listée (les enfants sont nested) — l'ordre
+      // ascendant s'applique aux entrées listées
+      expect(response.conversations).toHaveLength(1);
+      expect(response.conversations[0].taskId).toBe('task-001');
     });
 
     test('should filter by contentPattern', async () => {
       const result = await handleConversationBrowser(
         {
           action: 'list',
-          contentPattern: 'Test task'
+          contentPattern: 'Second'
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
+      const response = parseJson(result);
+      // Seule task-002 contient « Second message » — elle est retournée
+      // comme entrée top-level avec sa référence de parent
+      expect(response.conversations).toHaveLength(1);
+      expect(response.conversations[0].taskId).toBe('task-002');
+      expect(response.conversations[0].parentTaskId).toBe('task-001');
+      expect(response.conversations[0].firstUserMessage).toBe('Second message');
+      expect(response.conversations[0].metadata.messageCount).toBe(1);
+      expect(response.pagination.total_count).toBe(1);
     });
 
     test('should filter pendingSubtaskOnly', async () => {
@@ -230,13 +269,16 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
+      const response = parseJson(result);
+      // Aucune conversation des fixtures n'a de sous-tâche EN ATTENTE
+      expect(response.conversations).toHaveLength(0);
+      expect(response.pagination.total_count).toBe(0);
+      expect(response.pagination.total_pages).toBe(0);
     });
   });
 
@@ -253,11 +295,23 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
+      const response = parseJson(result);
+      expect(response.conversation_id).toBe('task-001');
+      expect(response.root_task.taskId).toBe('task-001');
+      expect(response.root_task.metadata.childrenCount).toBe(1);
+      // L'enfant task-002 apparaît dans l'arbre à profondeur 1
+      expect(response.tree).toHaveLength(1);
+      expect(response.tree[0].taskId).toBe('task-001');
+      expect(response.tree[0].children[0].taskId).toBe('task-002');
+      expect(response.tree[0].children[0].parentId).toBe('task-001');
+      expect(response.metadata.total_nodes).toBe(2);
+      expect(response.metadata.max_depth).toBe(1);
     });
 
     test('should support ascii-tree output format', async () => {
@@ -269,12 +323,18 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       const output = result.content[0].text;
-      expect(output).toBeDefined();
+      // Rendu arborescent ASCII avec les deux tâches et les stats
+      expect(output).toContain('task-001');
+      expect(output).toContain('task-002');
+      expect(output).toContain('└─');
+      expect(output).toContain('Nombre total de tâches: 2');
+      expect(output).toContain('Profondeur maximale atteinte: 1');
     });
 
     test('should support markdown output format', async () => {
@@ -286,10 +346,14 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('task-001');
+      expect(result.content[0].text).toContain('task-002');
     });
 
     test('should respect max_depth parameter', async () => {
@@ -301,10 +365,17 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      const response = parseJson(result);
+      // max_depth: 1 n'autorise que la racine (profondeur 0) — l'enfant
+      // (profondeur 1) est coupé
+      expect(response.tree[0].children).toBeUndefined();
+      expect(response.metadata.total_nodes).toBe(1);
+      expect(response.metadata.max_depth).toBe(0);
     });
 
     test('should include siblings by default', async () => {
@@ -316,10 +387,15 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      const response = parseJson(result);
+      expect(response.metadata.include_siblings).toBe(true);
+      // L'arbre complet reste rendu avec l'enfant
+      expect(response.metadata.total_nodes).toBe(2);
     });
 
     test('should show metadata when requested', async () => {
@@ -331,10 +407,16 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      const response = parseJson(result);
+      // Chaque node porte son bloc metadata complet
+      expect(response.tree[0].metadata.messageCount).toBe(2);
+      expect(response.tree[0].metadata.mode).toBe('code-simple');
+      expect(response.tree[0].children[0].metadata.messageCount).toBe(1);
     });
 
     test('should truncate instruction length', async () => {
@@ -346,10 +428,14 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      // Le rendu reste fonctionnel avec la troncature demandée
+      expect(result.content[0].text).toContain('task-001');
+      expect(result.content[0].text).toContain('task-002');
     });
   });
 
@@ -365,11 +451,20 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
+      const response = parseJson(result);
+      // La tâche la plus récente des fixtures (task-001, il y a 59 min)
+      expect(response.task_id).toBe('task-001');
+      expect(response.message_count).toBe(2);
+      expect(response.action_count).toBe(0);
+      expect(response.total_size).toBe(100);
+      expect(response.mode).toBe('code-simple');
+      expect(response.workspace_path).toBe('roo-extensions');
     });
 
     test('should use default workspace when not specified', async () => {
@@ -382,7 +477,11 @@ describe('conversation_browser (integration)', () => {
         undefined // Auto-detect workspace
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].type).toBe('text');
+      // Sans workspace explicite et sans détection possible (env de test),
+      // l'outil dégrade gracieusement en erreur actionnable — pas de crash
+      expect(result.content[0].text).toContain('Workspace non fourni');
+      expect(result.isError).toBe(true);
     });
 
     test('should use specified workspace parameter', async () => {
@@ -392,10 +491,13 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
+      expect(result.content[0].text).toContain('roo-extensions');
     });
   });
 
@@ -413,11 +515,20 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
+      const text = result.content[0].text;
+      // Mode chain + rendu squelette : rôles et contenus inline
+      expect(text).toContain('Mode: chain, Detail: skeleton');
+      expect(text).toContain('Task: task-001');
+      expect(text).toContain('Messages: 2');
+      expect(text).toContain('[👤 User]: First message');
+      expect(text).toContain('[🤖 Assistant]: Response');
+      expect(text).not.toContain('| First message'); // format bloc = full, pas skeleton
     });
 
     test('should view with summary detail level', async () => {
@@ -429,10 +540,13 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('Task: task-001');
+      expect(result.content[0].text).toContain('Messages: 2');
     });
 
     test('should view with full detail level', async () => {
@@ -444,10 +558,18 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      const text = result.content[0].text;
+      expect(text).toContain('Mode: chain, Detail: full');
+      // Format bloc : le contenu est sur sa propre ligne après le pipe
+      expect(text).toContain('[👤 User]:');
+      expect(text).toContain('| First message');
+      expect(text).toContain('[🤖 Assistant]:');
+      expect(text).toContain('| Response');
     });
 
     test('should support smart truncation', async () => {
@@ -460,10 +582,15 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      // Les diagnostics de smart truncation sont rendus avec le budget demandé
+      expect(result.content[0].text).toContain('Smart Truncation Diagnostics');
+      expect(result.content[0].text).toContain('Limite: 10000');
+      expect(result.content[0].text).toContain('First message');
     });
 
     test('should support chain view mode', async () => {
@@ -476,10 +603,13 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('Mode: chain');
+      expect(result.content[0].text).toContain('First message');
     });
 
     test('should support cluster view mode', async () => {
@@ -492,10 +622,12 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
     });
 
     test('should apply truncation when specified', async () => {
@@ -507,10 +639,14 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      // Le rendu reste complet (fixtures < seuil) avec les contenus présents
+      expect(result.content[0].text).toContain('First message');
+      expect(result.content[0].text).toContain('Response');
     });
   });
 
@@ -534,10 +670,16 @@ describe('conversation_browser (integration)', () => {
         findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
-      const output = JSON.parse(result.content[0].text);
+      const output = parseJson(result);
       expect(output).toHaveProperty('type', 'trace');
+      // Stats agrégées sur les fixtures : 2 messages, 100 octets
+      expect(output.summary.totalConversations).toBe(1);
+      expect(output.summary.totalMessages).toBe(2);
+      expect(output.summary.totalSize).toBe(100);
+      expect(output.conversations[0].taskId).toBe('task-001');
+      expect(output.conversations[0].firstUserMessage).toBe('First message');
+      expect(output.conversations[0].messageCount).toBe(2);
     });
 
     test('should generate cluster summary', async () => {
@@ -555,7 +697,6 @@ describe('conversation_browser (integration)', () => {
         findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
       // cluster summarize may return an error string for mock/test data
       // rather than valid JSON, so just verify we got a non-empty text response
@@ -571,10 +712,13 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('task-001');
     });
 
     test('should support JSON output format', async () => {
@@ -587,10 +731,14 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      const output = parseJson(result);
+      expect(output.type).toBe('trace');
+      expect(output.summary.totalMessages).toBe(2);
     });
 
     test('should apply detail level parameter', async () => {
@@ -603,10 +751,12 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
     });
 
     test('should apply truncation when specified', async () => {
@@ -619,10 +769,12 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
     });
 
     test('should support compact stats', async () => {
@@ -635,10 +787,12 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
     });
 
     test('should generate TOC when requested', async () => {
@@ -651,10 +805,12 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
     });
   });
 
@@ -672,10 +828,16 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      // Fallback sur le cache en mémoire : les conversations restent listées
+      const response = parseJson(result);
+      expect(response.conversations).toHaveLength(1);
+      expect(response.conversations[0].taskId).toBe('task-001');
+      expect(response.isError).toBeUndefined();
     });
 
     test('should handle non-existent conversation gracefully', async () => {
@@ -686,10 +848,15 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      // Erreur MCP structurée : isError + message actionnable
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('non-existent-id');
+      expect(result.content[0].text).toContain('not found');
     });
 
     test('should handle invalid action gracefully', async () => {
@@ -699,10 +866,15 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      // Erreur MCP structurée listant les actions valides
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Action invalide');
+      expect(result.content[0].text).toContain('list, tree, current, view, summarize');
     });
   });
 
@@ -720,9 +892,11 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
-      expect(listResult).toBeDefined();
+      expect(parseJson(listResult).conversations[0].taskId).toBe('task-001');
 
       // Step 2: Current
       const currentResult = await handleConversationBrowser(
@@ -731,9 +905,11 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
-      expect(currentResult).toBeDefined();
+      expect(parseJson(currentResult).task_id).toBe('task-001');
 
       // Step 3: Tree
       const treeResult = await handleConversationBrowser(
@@ -744,9 +920,11 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
-      expect(treeResult).toBeDefined();
+      expect(treeResult.content[0].text).toContain('└─ task-002');
 
       // Step 4: View
       const viewResult = await handleConversationBrowser(
@@ -757,9 +935,11 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
-      expect(viewResult).toBeDefined();
+      expect(viewResult.content[0].text).toContain('[👤 User]: First message');
     });
 
     test('should persist cache across operations', async () => {
@@ -770,7 +950,9 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
       // Second call uses cache
@@ -782,11 +964,14 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(conversationCache.has('task-001')).toBe(true);
+      expect(conversationCache.has('task-002')).toBe(true);
+      expect(result.content[0].text).toContain('First message');
     });
   });
 
@@ -802,14 +987,15 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
-      const _response = JSON.parse(result.content[0].text);
-      const output = _response.conversations ?? _response;
-      expect(Array.isArray(output)).toBe(true);
+      const response = parseJson(result);
+      expect(Array.isArray(response.conversations)).toBe(true);
+      expect(response.conversations[0].taskId).toBe('task-001');
     });
 
     test('should return hierarchical format for tree action', async () => {
@@ -821,10 +1007,13 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
+      expect(result.content[0].text).toContain('task-001');
+      expect(result.content[0].text).toContain('task-002');
     });
 
     test('should return markdown format for summarize', async () => {
@@ -837,11 +1026,13 @@ describe('conversation_browser (integration)', () => {
         },
         conversationCache,
         ensureSkeletonCacheIsFreshMock,
-        'roo-extensions'
+        'roo-extensions',
+        getConversationSkeletonMock,
+        findChildTasksMock
       );
 
-      expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('task-001');
     });
   });
 });
