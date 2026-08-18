@@ -252,12 +252,38 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     });
   }
 
+  /**
+   * Column mapping for {@link RooSyncMessageUpdate}. Driving the SET clause from
+   * this table rather than from a chain of `if` blocks is deliberate: the previous
+   * shape hard-coded `body` and `attachment_refs` in BOTH the early-return guard and
+   * the builder, so adding a field meant editing two places and silently writing
+   * nothing if you forgot one. Adding a column here is now the whole change.
+   *
+   * `jsonb` values are stringified before binding (node-postgres would otherwise
+   * send a JS array as a Postgres array literal).
+   */
+  private static readonly ROOSYNC_MESSAGE_UPDATE_COLUMNS: ReadonlyArray<
+    readonly [keyof RooSyncMessageUpdate, string, boolean]
+  > = [
+    ['body', 'body', false],
+    ['attachment_refs', 'attachment_refs', true],
+    ['status', 'status', false],
+    ['read_at', 'read_at', false],
+    ['archived_at', 'archived_at', false],
+    ['destroyed_at', 'destroyed_at', false],
+    ['destroyed_reason', 'destroyed_reason', false],
+    ['reminder_sent_at', 'reminder_sent_at', false],
+  ];
+
   async updateRooSyncMessage(
     id: string,
     fields: RooSyncMessageUpdate
   ): Promise<void> {
+    const updates = PgUnifiedStoreWriter.ROOSYNC_MESSAGE_UPDATE_COLUMNS.filter(
+      ([key]) => fields[key] !== undefined
+    );
     // Nothing to update — skip before self-init (a no-op must not open a connection)
-    if (fields.body === undefined && fields.attachment_refs === undefined) return;
+    if (updates.length === 0) return;
     await this.withRetry('updateRooSyncMessage', async () => {
       if (!this.pool) await this.init();
       if (!this.pool) throw new Error('Pool not initialized');
@@ -265,20 +291,37 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       try {
         const sets: string[] = [];
         const params: unknown[] = [];
-        if (fields.body !== undefined) {
-          params.push(fields.body);
-          sets.push(`body = $${params.length}`);
+        for (const [key, column, isJson] of updates) {
+          const value = fields[key];
+          params.push(isJson ? JSON.stringify(value) : value);
+          sets.push(`${column} = $${params.length}`);
         }
-        if (fields.attachment_refs !== undefined) {
-          params.push(JSON.stringify(fields.attachment_refs));
-          sets.push(`attachment_refs = $${params.length}`);
-        }
-        if (sets.length === 0) return; // nothing to update
         params.push(id);
         await client.query(
           `UPDATE roosync_messages SET ${sets.join(', ')} WHERE id = $${params.length}`,
           params as never[]
         );
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  /**
+   * Delete an attachment payload (#3151 Phase A.2).
+   *
+   * The counterpart of `insertRooSyncAttachment`, called when `destroyMessage`
+   * purges the blob on GDrive. Without it the bytea copy — which is the whole
+   * point of D2 — would survive its own destruction, and `destroy_after` would
+   * bound nothing again, one storage layer lower.
+   */
+  async deleteRooSyncAttachment(uuid: string): Promise<void> {
+    await this.withRetry('deleteRooSyncAttachment', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        await client.query('DELETE FROM roosync_attachments WHERE id = $1', [uuid]);
       } finally {
         client.release();
       }

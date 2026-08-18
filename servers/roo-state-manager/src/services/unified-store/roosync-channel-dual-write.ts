@@ -11,8 +11,21 @@
  * in Phase A). Call sites attach `.catch(() => {})` for floating-promise
  * linting, matching the conversation dual-write convention.
  *
- * Write-side only: send / reply / amend / attachment upload. Status transitions
- * (markRead / archive) stay GDrive-only until Phase B reads from PG.
+ * Phase A covered creation: send / reply / amend / attachment upload.
+ * Phase A.2 covers what happens to a message afterwards — read, archived,
+ * destroyed — for two independent reasons:
+ *
+ *  - **Correctness.** The 002 schema already had `status` / `read_at` /
+ *    `archived_at`, but nothing ever wrote them after the INSERT, so every PG
+ *    row stayed `unread` forever while the GDrive inbox was being drained by the
+ *    auto-archive (#3150). A Phase B mailbox read would have returned every
+ *    message ever sent — the very unbounded read this epic exists to remove.
+ *  - **Secret lifetime.** `destroyMessage` bounds how long a secret lives: it
+ *    wipes the body and deletes the attachment blob. Phase A copies both into
+ *    PG and had no purge path, so a destroyed message survived its own
+ *    destruction one storage layer down. Its own source comment warns against
+ *    exactly this shape ("the one payload that had to be purged was the only one
+ *    that never was").
  */
 
 import type { Message } from '../MessageManager.js';
@@ -87,6 +100,94 @@ export async function dualWriteRooSyncAttachmentRefs(
     });
   } catch {
     // Swallow — never block the GDrive path.
+  }
+}
+
+/**
+ * Dual-write a read transition (markAsRead).
+ *
+ * Only called for targeted messages. Broadcasts deliberately keep their global
+ * status on GDrive — per-machine filtering there uses `read_by`, which has no
+ * column in the 002 schema — so mirroring a broadcast as globally `read` would
+ * hide it from the five machines that have not read it yet. Until Phase B
+ * models `read_by`, a broadcast stays `unread` in PG, which is the safe error:
+ * it over-shows rather than under-shows.
+ */
+export async function dualWriteRooSyncMessageRead(messageId: string): Promise<void> {
+  try {
+    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+      status: 'read',
+      read_at: new Date().toISOString(),
+    });
+  } catch {
+    // Swallow — never block the GDrive markAsRead path.
+  }
+}
+
+/**
+ * Dual-write an archive transition (archiveMessage — manual or auto #3150).
+ *
+ * This is the one that keeps a Phase B mailbox read bounded: on GDrive the file
+ * leaves `inbox/`, and this is its PG equivalent.
+ */
+export async function dualWriteRooSyncMessageArchived(messageId: string): Promise<void> {
+  try {
+    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+      status: 'archived',
+      archived_at: new Date().toISOString(),
+    });
+  } catch {
+    // Swallow — never block the GDrive archive path.
+  }
+}
+
+/**
+ * Dual-write an expiry-reminder stamp (sendExpiryReminders).
+ *
+ * The reminder itself is a new message and already reaches PG through the send
+ * path; what was missing is the flag on the *original* message that stops the
+ * sweep from reminding twice. Unmirrored, a Phase B sweep would re-send a
+ * reminder for the same message on every pass.
+ */
+export async function dualWriteRooSyncMessageReminderSent(
+  messageId: string
+): Promise<void> {
+  try {
+    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+      reminder_sent_at: new Date().toISOString(),
+    });
+  } catch {
+    // Swallow — never block the GDrive reminder path.
+  }
+}
+
+/**
+ * Dual-write a destruction (destroyMessage): wipe the body, stamp the reason,
+ * and purge every attachment payload from `roosync_attachments`.
+ *
+ * Ordering mirrors `destroyMessage` itself — payloads first, stamp second — so a
+ * partial failure cannot report a destroyed message whose bytes are still in the
+ * table. Unlike the GDrive path this one cannot signal failure upstream (the
+ * dual-write must never break the caller), so it purges payloads individually
+ * and lets `withRetry` in the writer handle transient errors.
+ */
+export async function dualWriteRooSyncMessageDestroyed(
+  messageId: string,
+  reason: string,
+  attachmentUuids: string[]
+): Promise<void> {
+  try {
+    const writer = getUnifiedStoreWriter();
+    for (const uuid of attachmentUuids) {
+      await writer.deleteRooSyncAttachment(uuid);
+    }
+    await writer.updateRooSyncMessage(messageId, {
+      body: '[DESTROYED]',
+      destroyed_at: new Date().toISOString(),
+      destroyed_reason: reason,
+    });
+  } catch {
+    // Swallow — never block the GDrive destruction path.
   }
 }
 

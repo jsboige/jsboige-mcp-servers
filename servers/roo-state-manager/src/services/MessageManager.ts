@@ -17,11 +17,16 @@ import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalize
 // Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
 // cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
-// #3151 Phase A — RooSync channel dual-write (write-side only, env-gated, never throws)
+// #3151 Phase A/A.2 — RooSync channel dual-write (env-gated, never throws).
+// A: creation (send/reply/amend/attachments). A.2: state transitions and destruction.
 import {
   dualWriteRooSyncMessageToStore,
   dualWriteRooSyncMessageAmendment,
   dualWriteRooSyncAttachmentRefs,
+  dualWriteRooSyncMessageRead,
+  dualWriteRooSyncMessageArchived,
+  dualWriteRooSyncMessageDestroyed,
+  dualWriteRooSyncMessageReminderSent,
 } from './unified-store/roosync-channel-dual-write.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
@@ -888,6 +893,12 @@ export class MessageManager {
 
       await fs.writeFile(filePath, JSON.stringify(message, null, 2), 'utf-8');
 
+      // #3151 Phase A.2 — mirror the read transition. Broadcasts are excluded on
+      // purpose: their per-machine state lives in read_by, which PG does not model yet.
+      if (!isBroadcast) {
+        dualWriteRooSyncMessageRead(messageId).catch(() => {});
+      }
+
       // Also update sent/ directory if message was sent from this machine
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
@@ -1034,6 +1045,16 @@ export class MessageManager {
         await fs.writeFile(archivePath, JSON.stringify(message, null, 2), 'utf-8');
       }
 
+      // #3151 Phase A.2 — propagate destruction to PG: wipe the body there too and
+      // purge the bytea payloads. Reached only after every GDrive blob was purged
+      // (the `survivors` guard above returns early otherwise), so PG is never wiped
+      // for a message whose secret is still readable on the share.
+      dualWriteRooSyncMessageDestroyed(
+        messageId,
+        reason,
+        attachmentRefs.map((ref) => ref.uuid)
+      ).catch(() => {});
+
       this.updateInCache(messageId, message);
       logger.info(`Message ${messageId} destroyed (${reason})`);
       return true;
@@ -1127,6 +1148,9 @@ export class MessageManager {
           // Non-critical: cache is updated, file write may fail
         }
 
+        // #3151 Phase A.2 — mirror the flag so a PG-side sweep does not remind twice.
+        dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
+
         // Also update sent copy if exists
         const sentFile = join(this.sentPath, msgFileName);
         if (existsSync(sentFile)) {
@@ -1186,6 +1210,10 @@ export class MessageManager {
 
       // Supprimer de inbox
       await fs.unlink(inboxFile);
+
+      // #3151 Phase A.2 — PG equivalent of leaving inbox/. Without it a Phase B
+      // mailbox read would keep returning messages the GDrive inbox has already drained.
+      dualWriteRooSyncMessageArchived(messageId).catch(() => {});
 
       // Also update sent/ directory if message was sent from this machine
       const sentPath = join(this.sentPath, `${messageId}.json`);
