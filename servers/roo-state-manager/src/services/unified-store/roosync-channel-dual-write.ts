@@ -29,7 +29,7 @@
  */
 
 import type { Message } from '../MessageManager.js';
-import type { RooSyncMessageRow } from './types.js';
+import type { RooSyncMessageOptions, RooSyncMessageRow } from './types.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { parseMachineWorkspace } from '../../utils/message-helpers.js';
 import { createHash } from 'crypto';
@@ -40,6 +40,10 @@ import { readFile } from 'fs/promises';
  * "machine:workspace" ids split into the two columns; a bare machine id gets
  * an empty workspace (schema NOT NULL — empty = all workspaces, matching the
  * GDrive inbox semantics where recipient matching is machine-first).
+ *
+ * #3151 Phase B: `reply_to` / `read_by` / `options` (migrations/005) make the
+ * row a full-fidelity mirror, so the PG read path can reconstruct the Message
+ * without consulting GDrive.
  */
 export function mapMessageToRow(message: Message): RooSyncMessageRow {
   const from = parseMachineWorkspace(message.from);
@@ -58,7 +62,23 @@ export function mapMessageToRow(message: Message): RooSyncMessageRow {
     tags: message.tags ?? [],
     attachment_refs: message.attachments ?? [],
     created_at: message.timestamp,
+    reply_to: message.reply_to ?? null,
+    read_by: message.read_by ?? [],
+    options: mapMessageOptions(message),
   };
+}
+
+/** Extract the payload fields carried by the `options` JSONB column (005). */
+function mapMessageOptions(message: Message): RooSyncMessageOptions {
+  const options: RooSyncMessageOptions = {};
+  if (message.auto_destruct !== undefined) options.auto_destruct = message.auto_destruct;
+  if (message.destruct_after_read_by !== undefined) options.destruct_after_read_by = message.destruct_after_read_by;
+  if (message.destruct_after !== undefined) options.destruct_after = message.destruct_after;
+  if (message.expires_at !== undefined) options.expires_at = message.expires_at;
+  if (message.acknowledged_at !== undefined) options.acknowledged_at = message.acknowledged_at;
+  if (message.metadata !== undefined) options.metadata = message.metadata;
+  if (message.reminder_sent !== undefined) options.reminder_sent = message.reminder_sent;
+  return options;
 }
 
 /**
@@ -106,18 +126,38 @@ export async function dualWriteRooSyncAttachmentRefs(
 /**
  * Dual-write a read transition (markAsRead).
  *
- * Only called for targeted messages. Broadcasts deliberately keep their global
- * status on GDrive — per-machine filtering there uses `read_by`, which has no
- * column in the 002 schema — so mirroring a broadcast as globally `read` would
- * hide it from the five machines that have not read it yet. Until Phase B
- * models `read_by`, a broadcast stays `unread` in PG, which is the safe error:
- * it over-shows rather than under-shows.
+ * Only called for targeted messages. Broadcasts keep their global status
+ * untouched and instead mirror `read_by` (below) — mirroring a broadcast as
+ * globally `read` would hide it from the five machines that have not read it
+ * yet. Over-show is the safe error, under-show is not.
  */
 export async function dualWriteRooSyncMessageRead(messageId: string): Promise<void> {
   try {
     await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       status: 'read',
       read_at: new Date().toISOString(),
+    });
+  } catch {
+    // Swallow — never block the GDrive markAsRead path.
+  }
+}
+
+/**
+ * Dual-write per-machine broadcast read tracking (markAsRead on a broadcast,
+ * #3151 Phase B + migrations/005).
+ *
+ * Whole-array replace: the GDrive path is read-modify-write of the same array,
+ * so the file's resulting array is the authority — sending it wholesale is
+ * self-healing for readers missed by an older partial write. The global
+ * `status` of a broadcast is deliberately left `unread`.
+ */
+export async function dualWriteRooSyncMessageBroadcastRead(
+  messageId: string,
+  readBy: string[]
+): Promise<void> {
+  try {
+    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+      read_by: readBy,
     });
   } catch {
     // Swallow — never block the GDrive markAsRead path.

@@ -94,6 +94,10 @@ describe('roosync-channel-dual-write (mapping parity)', () => {
       tags: ['TASK', 'claude-interactive'],
       attachment_refs: [],
       created_at: '2026-08-17T12:00:00.000Z',
+      // #3151 Phase B — full-fidelity columns (migrations/005).
+      reply_to: 'msg-20260816T000000-aaaaaa',
+      read_by: [],
+      options: {},
     });
   });
 

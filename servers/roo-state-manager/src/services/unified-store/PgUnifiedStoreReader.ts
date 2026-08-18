@@ -20,6 +20,7 @@ import type {
   UnifiedStoreSearchHit,
   ConversationRow,
   MessageRow,
+  RooSyncMessageRow,
 } from './types.js';
 import type { IUnifiedStoreReader, UnifiedStoreReaderConfig } from './UnifiedStoreReader.js';
 
@@ -80,6 +81,62 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
   }
 
   isNull(): boolean { return false; }
+
+  // ─── RooSync channel reads (#3151 Phase B) ─────────────────────
+
+  async getRooSyncMailbox(machineId: string): Promise<RooSyncMessageRow[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      `SELECT * FROM roosync_messages
+       WHERE status <> 'archived'
+         AND (to_machine = $1 OR to_machine IN ('all', 'All'))
+       ORDER BY created_at DESC`,
+      [machineId],
+    );
+
+    return result.rows.map(row => this.mapRooSyncMessageRow(row));
+  }
+
+  async getRooSyncMessageById(id: string): Promise<RooSyncMessageRow | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      'SELECT * FROM roosync_messages WHERE id = $1',
+      [id],
+    );
+
+    if (result.rows.length === 0) return null;
+    return this.mapRooSyncMessageRow(result.rows[0]);
+  }
+
+  private mapRooSyncMessageRow(row: pg.QueryResult['rows'][0]): RooSyncMessageRow {
+    return {
+      id: row.id,
+      thread_id: row.thread_id ?? null,
+      from_machine: row.from_machine,
+      from_workspace: row.from_workspace ?? '',
+      to_machine: row.to_machine,
+      to_workspace: row.to_workspace ?? '',
+      subject: row.subject ?? '',
+      body: row.body ?? '',
+      priority: row.priority ?? 'MEDIUM',
+      status: row.status ?? 'unread',
+      tags: row.tags ?? [],
+      attachment_refs: row.attachment_refs ?? [],
+      created_at: row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : String(row.created_at),
+      reply_to: row.reply_to ?? null,
+      read_by: row.read_by ?? [],
+      options: row.options ?? {},
+      destroyed_at: row.destroyed_at ?? null,
+      destroyed_reason: row.destroyed_reason ?? null,
+      reminder_sent_at: row.reminder_sent_at ?? null,
+    };
+  }
 
   // ─── Single lookups ────────────────────────────────────────────
 

@@ -26,6 +26,7 @@ import type {
   UnifiedStoreSearchHit,
   ConversationRow,
   MessageRow,
+  RooSyncMessageRow,
 } from './types.js';
 
 export interface UnifiedStoreReaderConfig {
@@ -53,6 +54,19 @@ export interface IUnifiedStoreReader {
   ping(): Promise<boolean>;
   /** Returns true if this is a NullUnifiedStoreReader (env-gate OFF). */
   isNull(): boolean;
+
+  // ─── RooSync channel reads (#3151 Phase B) ──────────────────────
+
+  /**
+   * Mailbox candidates for a machine: non-archived rows addressed to the
+   * machine or broadcast ('all'), newest first. Workspace matching and
+   * per-machine broadcast status are applied by the caller (JS) for exact
+   * parity with the GDrive `matchesRecipient` semantics — the query's job is
+   * to bound the candidate set via the mailbox index (D5).
+   */
+  getRooSyncMailbox(machineId: string): Promise<RooSyncMessageRow[]>;
+  /** Full-fidelity lookup of one channel message by id (any status). */
+  getRooSyncMessageById(id: string): Promise<RooSyncMessageRow | null>;
 }
 
 /** Null object for opt-out read path. */
@@ -69,4 +83,6 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   }
   async ping(): Promise<boolean> { return false; }
   isNull(): boolean { return true; }
+  async getRooSyncMailbox(_machineId: string): Promise<RooSyncMessageRow[]> { return []; }
+  async getRooSyncMessageById(_id: string): Promise<RooSyncMessageRow | null> { return null; }
 }
