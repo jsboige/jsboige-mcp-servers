@@ -809,7 +809,17 @@ export class MessageManager {
 
     // #3151 Phase B — PG-primary lookup. null = PG unavailable OR unknown id;
     // both fall through to the GDrive paths (a miss is a miss on either side).
-    const pgReader = getChannelPgReader();
+    //
+    // Requires a callerId. On GDrive the filesystem itself was the access
+    // boundary — a message addressed elsewhere is simply not in this machine's
+    // inbox/sent/archive — which is why `callerCanAccessMessage` can allow a
+    // caller that provides no id. `roosync_messages` holds the whole fleet's
+    // mail in one table, so that same allowance would hand a foreign message to
+    // the five entry points that omit callerId (archive_message,
+    // mark_message_read, reply_message, send threading, ToolUsageInterceptor) —
+    // all of which read "found" as "it is in my mailbox". Those keep the
+    // file-bounded path; only callers that identify themselves get the fast one.
+    const pgReader = callerId ? getChannelPgReader() : null;
     if (pgReader) {
       const pgMessage = await getChannelMessageFromPg(pgReader, messageId);
       if (pgMessage) {

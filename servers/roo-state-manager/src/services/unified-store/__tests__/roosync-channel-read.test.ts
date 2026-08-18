@@ -391,6 +391,33 @@ describe('MessageManager PG-first reads (#3151 Phase B)', () => {
     })
   );
 
+  // On GDrive the filesystem *was* the access boundary: a message addressed to
+  // another machine simply is not in this machine's inbox/sent/archive, so the
+  // `!callerId → allow` branch of the #2287 check could never leak anything.
+  // `roosync_messages` holds the whole fleet's mail in one table, so that same
+  // branch would hand a foreign message to any caller that omits callerId — and
+  // five entry points do (archive_message, mark_message_read, reply_message,
+  // send threading, ToolUsageInterceptor), using "found" as "it is in my box".
+  // Keep the PG branch reachable without a callerId and THIS test fails.
+  test(
+    'getMessage without callerId never reaches PG (foreign mail stays file-bounded)',
+    withReadGate(async () => {
+      mockGetRooSyncMessageById.mockResolvedValue(
+        sampleRow({
+          from_machine: 'myia-web1',
+          to_machine: 'myia-po-2023',
+          to_workspace: 'roo-extensions',
+          body: 'secret addressed to another machine',
+        })
+      );
+
+      const msg = await messageManager.getMessage('msg-20260818T100000-aaaaaa');
+
+      expect(msg).toBeNull();
+      expect(mockGetRooSyncMessageById).not.toHaveBeenCalled();
+    })
+  );
+
   test(
     'getMessage PG miss falls back to the GDrive paths',
     withReadGate(async () => {
