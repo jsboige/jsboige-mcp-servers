@@ -59,6 +59,12 @@ export interface HealthViewResult {
     machinesUnknown: number;
     machinesTotal: number;
     flags: string[];
+    /**
+     * #3160: last dashboard append seen per machine, from this observer's GDrive
+     * mirror. `null` = in registry but never seen here — distinguishes a stale
+     * observer mirror (SUPPOSÉ) from a real outage when reading UNKNOWN/STALE flags.
+     */
+    lastSeenByMachine: Record<string, string | null>;
   };
   capabilities: {
     sharedPath: boolean;
@@ -113,6 +119,12 @@ async function collectSystemHealth(): Promise<{
   unknownCount: number;
   totalCount: number;
   flags: string[];
+  // #3160: last dashboard append seen per machine, from THIS observer's GDrive mirror.
+  // `null` = machine in registry but never seen on any dashboard here — the
+  // strongest tell that the verdict may reflect mirror staleness, not an outage.
+  lastSeenByMachine: Record<string, string | null>;
+  // #3160: registry machines NOT counted online — the ones behind UNKNOWN flags.
+  unknownMachines: string[];
 }> {
   // #2546: Unified machine presence — uses the same dashboard-activity utilities
   // and thresholds as get-status.ts to eliminate contradictory readings.
@@ -122,12 +134,18 @@ async function collectSystemHealth(): Promise<{
   let onlineCount = 0;
   let unknownCount = 0;
   const flags: string[] = [];
+  const unknownMachines: string[] = [];
+  // #3160: raw per-machine lastSeen, populated in the try block below.
+  const lastSeenByMachine: Record<string, string | null> = {};
   const ONE_DAY = 24 * 60 * 60 * 1000;
 
   try {
     const dashboardsDir = join(sharedPath, 'dashboards');
     if (!existsSync(dashboardsDir)) {
-      return { onlineCount: 0, unknownCount: 0, totalCount: 0, flags: ['DASHBOARDS_DIR_MISSING'] };
+      return {
+        onlineCount: 0, unknownCount: 0, totalCount: 0,
+        flags: ['DASHBOARDS_DIR_MISSING'], lastSeenByMachine: {}, unknownMachines: [],
+      };
     }
 
     const dashboardFiles = readdirSync(dashboardsDir).filter(f => f.endsWith('.md'));
@@ -170,9 +188,10 @@ async function collectSystemHealth(): Promise<{
     }
 
     for (const mid of registryMachineIds) {
+      const lastSeen = activity.get(mid.toLowerCase());
+      lastSeenByMachine[mid] = lastSeen ?? null;
       if (!seenSet.has(mid.toLowerCase())) {
         // Check if this machine has ANY dashboard activity at all (even stale)
-        const lastSeen = activity.get(mid.toLowerCase());
         if (lastSeen) {
           const lastSeenMs = new Date(lastSeen).getTime();
           if (Date.now() - lastSeenMs > ONE_DAY) {
@@ -183,6 +202,15 @@ async function collectSystemHealth(): Promise<{
           flags.push(`SYNC_STALE:${mid}`);
         }
         unknownCount++;
+        unknownMachines.push(mid);
+      }
+    }
+
+    // Machines with dashboard activity but outside the registry (test artifacts,
+    // retired machines) don't get a verdict — still surfaced for observability.
+    for (const [machineId, lastSeen] of activity.entries()) {
+      if (!(machineId in lastSeenByMachine) && isKnownMachine(machineId)) {
+        lastSeenByMachine[machineId] = lastSeen;
       }
     }
   } catch (error) {
@@ -195,6 +223,8 @@ async function collectSystemHealth(): Promise<{
     unknownCount,
     totalCount: onlineCount + unknownCount,
     flags,
+    lastSeenByMachine,
+    unknownMachines,
   };
 }
 
@@ -462,7 +492,10 @@ function generateRecommendations(
   totalCount: number,
   capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean; qdrantProbe?: QdrantProbeResult },
   drift: { checked: boolean; critical: number; important: number; items: DriftItem[] },
-  envMissing: Array<{ name: string; severity: string }>
+  envMissing: Array<{ name: string; severity: string }>,
+  // #3160: registry machines not online, with the last append this observer saw.
+  // Lets a human tell "no activity for 8h" from "never seen on my mirror".
+  offlineMachines: Array<{ machineId: string; lastSeen: string | null }>
 ): string[] {
   const recs: string[] = [];
 
@@ -491,7 +524,13 @@ function generateRecommendations(
 
   if (totalCount > 0 && onlineCount < totalCount) {
     const offline = totalCount - onlineCount;
-    recs.push(`${offline} machine(s) offline — check dashboard intercom for [WAKE] signals`);
+    // #3160: name the machines + their last seen append (null = never on this
+    // observer's mirror) so a false UNKNOWN from a stale GDrive mirror is
+    // recognized without a diagnostic round-trip.
+    const detail = offlineMachines.length > 0
+      ? ` (${offlineMachines.map(m => `${m.machineId} last-seen ${m.lastSeen ?? 'never'}`).join(', ')})`
+      : '';
+    recs.push(`${offline} machine(s) offline${detail} — check dashboard intercom for [WAKE] signals`);
   }
 
   if (recs.length === 0) {
@@ -621,7 +660,11 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
     systemHealth.totalCount,
     enrichedCapabilities,
     drift,
-    envCheck.missing
+    envCheck.missing,
+    systemHealth.unknownMachines.map(mid => ({
+      machineId: mid,
+      lastSeen: systemHealth.lastSeenByMachine[mid] ?? null,
+    }))
   );
 
   const result: HealthViewResult = {
@@ -634,6 +677,7 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
       machinesUnknown: systemHealth.unknownCount,
       machinesTotal: systemHealth.totalCount,
       flags: systemHealth.flags,
+      lastSeenByMachine: systemHealth.lastSeenByMachine,
     },
     capabilities: enrichedCapabilities,
     drift,
