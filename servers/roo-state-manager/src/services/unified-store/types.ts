@@ -88,6 +88,7 @@ export interface RooSyncMessageUpdate {
   archived_at?: string;
   destroyed_at?: string;
   destroyed_reason?: string;
+  reminder_sent_at?: string;
 }
 
 /** A row of `roosync_attachments` (payload stored as bytea, #3151 D2). */

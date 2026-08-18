@@ -26,6 +26,7 @@ import {
   dualWriteRooSyncMessageRead,
   dualWriteRooSyncMessageArchived,
   dualWriteRooSyncMessageDestroyed,
+  dualWriteRooSyncMessageReminderSent,
 } from './unified-store/roosync-channel-dual-write.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
@@ -1146,6 +1147,9 @@ export class MessageManager {
         } catch {
           // Non-critical: cache is updated, file write may fail
         }
+
+        // #3151 Phase A.2 — mirror the flag so a PG-side sweep does not remind twice.
+        dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
 
         // Also update sent copy if exists
         const sentFile = join(this.sentPath, msgFileName);

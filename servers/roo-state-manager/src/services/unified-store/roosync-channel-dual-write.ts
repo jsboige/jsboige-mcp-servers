@@ -142,6 +142,26 @@ export async function dualWriteRooSyncMessageArchived(messageId: string): Promis
 }
 
 /**
+ * Dual-write an expiry-reminder stamp (sendExpiryReminders).
+ *
+ * The reminder itself is a new message and already reaches PG through the send
+ * path; what was missing is the flag on the *original* message that stops the
+ * sweep from reminding twice. Unmirrored, a Phase B sweep would re-send a
+ * reminder for the same message on every pass.
+ */
+export async function dualWriteRooSyncMessageReminderSent(
+  messageId: string
+): Promise<void> {
+  try {
+    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+      reminder_sent_at: new Date().toISOString(),
+    });
+  } catch {
+    // Swallow — never block the GDrive reminder path.
+  }
+}
+
+/**
  * Dual-write a destruction (destroyMessage): wipe the body, stamp the reason,
  * and purge every attachment payload from `roosync_attachments`.
  *

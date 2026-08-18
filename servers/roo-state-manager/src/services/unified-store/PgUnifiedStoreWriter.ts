@@ -272,6 +272,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     ['archived_at', 'archived_at', false],
     ['destroyed_at', 'destroyed_at', false],
     ['destroyed_reason', 'destroyed_reason', false],
+    ['reminder_sent_at', 'reminder_sent_at', false],
   ];
 
   async updateRooSyncMessage(

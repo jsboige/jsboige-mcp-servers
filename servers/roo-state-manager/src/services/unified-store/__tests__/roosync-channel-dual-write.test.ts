@@ -187,6 +187,7 @@ describe('PgUnifiedStoreWriter SQL shape (idempotence)', () => {
     ['status only', { status: 'read' as const }, 'status = $1'],
     ['archived_at only', { archived_at: '2026-08-18T00:00:00.000Z' }, 'archived_at = $1'],
     ['destroyed_reason only', { destroyed_reason: 'ttl_expired' }, 'destroyed_reason = $1'],
+    ['reminder_sent_at only', { reminder_sent_at: '2026-08-18T00:00:00.000Z' }, 'reminder_sent_at = $1'],
   ])('updateRooSyncMessage writes a %s update (not swallowed by the no-op guard)',
     async (_label, fields, expectedSet) => {
       const writer = new PgUnifiedStoreWriter({
@@ -438,6 +439,34 @@ describe('state transitions and destruction (#3151 Phase A.2)', () => {
     await messageManager.destroyMessage(msg.id, 'read_by_recipient');
 
     await vi.waitFor(() => expect(order).toEqual(['delete', 'stamp']));
+  });
+
+  // Third and last mutation path on a message. `cleanupExpiredMessages` needs no
+  // hook of its own: it destroys through `destroyMessage`, which is covered above.
+  test('sendExpiryReminders mirrors the reminder flag so a PG sweep cannot remind twice', async () => {
+    const msg = await messageManager.sendMessage(
+      'myia-po-2023:roo-extensions',
+      'myia-ai-01:roo-extensions',
+      'Secret',
+      'Corps',
+      'HIGH',
+      undefined,
+      undefined,
+      undefined,
+      { auto_destruct: true, destruct_after: '5m' }
+    );
+    updateRooSyncMessage.mockClear();
+
+    await expect(messageManager.sendExpiryReminders()).resolves.toBe(1);
+
+    await vi.waitFor(() => {
+      const call = updateRooSyncMessage.mock.calls.find(
+        (c) => c[1]?.reminder_sent_at !== undefined
+      );
+      expect(call).toBeDefined();
+      expect(call![0]).toBe(msg.id);
+      expect(call![1].reminder_sent_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
   });
 
   test('PG failure never blocks archive or destroy on GDrive', async () => {
