@@ -60,10 +60,15 @@ export interface IUnifiedStoreWriter {
    * Idempotent by message id; a retry never duplicates or overwrites.
    */
   insertRooSyncMessage(row: RooSyncMessageRow): Promise<void>;
-  /** RooSync channel — partial update for amend / attachment-ref refresh. */
+  /**
+   * RooSync channel — partial update: amend, attachment-ref refresh, and the
+   * read / archived / destroyed state transitions (Phase A.2).
+   */
   updateRooSyncMessage(id: string, fields: RooSyncMessageUpdate): Promise<void>;
   /** RooSync channel — attachment payload as bytea, ON CONFLICT (id) DO NOTHING. */
   insertRooSyncAttachment(row: RooSyncAttachmentRow): Promise<void>;
+  /** RooSync channel — purge an attachment payload when the message is destroyed. */
+  deleteRooSyncAttachment(uuid: string): Promise<void>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
@@ -81,5 +86,6 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async insertRooSyncMessage(_row: RooSyncMessageRow): Promise<void> {}
   async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
   async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
+  async deleteRooSyncAttachment(_uuid: string): Promise<void> {}
   async ping(): Promise<boolean> { return false; }
 }

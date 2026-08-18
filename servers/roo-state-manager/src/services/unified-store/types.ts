@@ -71,10 +71,23 @@ export interface RooSyncMessageRow {
   created_at: string;
 }
 
-/** Mutable fields of `roosync_messages` after insert (amend / attachment-ref update). */
+/**
+ * Mutable fields of `roosync_messages` after insert.
+ *
+ * Phase A covered amend (`body`) and attachment refs. Phase A.2 adds the state
+ * transitions the 002 schema already had columns for but nothing wrote —
+ * without them a PG row stays `unread` forever, so a Phase B mailbox read would
+ * return every message ever sent — and the destruction stamps, without which a
+ * destroyed message's body outlives its own purge in PG.
+ */
 export interface RooSyncMessageUpdate {
   body?: string;
   attachment_refs?: Array<{ uuid: string; filename: string; sizeBytes: number }>;
+  status?: 'unread' | 'read' | 'archived';
+  read_at?: string;
+  archived_at?: string;
+  destroyed_at?: string;
+  destroyed_reason?: string;
 }
 
 /** A row of `roosync_attachments` (payload stored as bytea, #3151 D2). */

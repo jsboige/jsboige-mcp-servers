@@ -1,5 +1,5 @@
 /**
- * Tests for the RooSync channel dual-write (#3151 Phase A).
+ * Tests for the RooSync channel dual-write (#3151 Phase A and A.2).
  *
  * Covers the spec acceptance points:
  *   - mapping parity GDrive Message ↔ PG row (same fields)
@@ -8,6 +8,8 @@
  *   - send with attachment: payload bytea + attachment_refs refresh
  *   - amend propagates the new body under the same id
  *   - env-gate off → Null writer (zero PG calls)
+ *   - Phase A.2: read / archived transitions mirrored, broadcast deliberately
+ *     excluded, destruction purges bytea payloads before stamping the body
  *
  * The writer factory is mocked so no Postgres is needed; SQL shape is asserted
  * against the captured query text.
@@ -33,12 +35,14 @@ vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 const insertRooSyncMessage = vi.fn().mockResolvedValue(undefined);
 const updateRooSyncMessage = vi.fn().mockResolvedValue(undefined);
 const insertRooSyncAttachment = vi.fn().mockResolvedValue(undefined);
+const deleteRooSyncAttachment = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../writer-factory.js', () => ({
   getUnifiedStoreWriter: () => ({
     insertRooSyncMessage,
     updateRooSyncMessage,
     insertRooSyncAttachment,
+    deleteRooSyncAttachment,
   }),
   resetWriterInstance: vi.fn(),
 }));
@@ -174,6 +178,59 @@ describe('PgUnifiedStoreWriter SQL shape (idempotence)', () => {
     await writer.updateRooSyncMessage('msg-1', {});
     expect(mockQuery).not.toHaveBeenCalled();
   });
+
+  // #3151 Phase A.2 — regression guard. The early-return used to be hard-coded to
+  // `body`/`attachment_refs`, so a state-only update looked like a no-op and was
+  // silently dropped before ever reaching SQL. Revert the guard to that shape and
+  // THIS test fails while every other one still passes.
+  test.each([
+    ['status only', { status: 'read' as const }, 'status = $1'],
+    ['archived_at only', { archived_at: '2026-08-18T00:00:00.000Z' }, 'archived_at = $1'],
+    ['destroyed_reason only', { destroyed_reason: 'ttl_expired' }, 'destroyed_reason = $1'],
+  ])('updateRooSyncMessage writes a %s update (not swallowed by the no-op guard)',
+    async (_label, fields, expectedSet) => {
+      const writer = new PgUnifiedStoreWriter({
+        connectionString: 'postgres://t:t@localhost:5432/x',
+      });
+      await writer.updateRooSyncMessage('msg-1', fields);
+
+      const [sql] = targetCall('UPDATE roosync_messages');
+      expect(sql).toContain(expectedSet);
+      expect(sql).toContain('WHERE id = $2');
+    });
+
+  test('updateRooSyncMessage combines several state fields in one SET', async () => {
+    const writer = new PgUnifiedStoreWriter({
+      connectionString: 'postgres://t:t@localhost:5432/x',
+    });
+    await writer.updateRooSyncMessage('msg-1', {
+      body: '[DESTROYED]',
+      destroyed_at: '2026-08-18T00:00:00.000Z',
+      destroyed_reason: 'ttl_expired',
+    });
+
+    const [sql, params] = targetCall('UPDATE roosync_messages');
+    expect(sql).toContain('body = $1');
+    expect(sql).toContain('destroyed_at = $2');
+    expect(sql).toContain('destroyed_reason = $3');
+    expect(params).toEqual([
+      '[DESTROYED]',
+      '2026-08-18T00:00:00.000Z',
+      'ttl_expired',
+      'msg-1',
+    ]);
+  });
+
+  test('deleteRooSyncAttachment removes the bytea payload by id', async () => {
+    const writer = new PgUnifiedStoreWriter({
+      connectionString: 'postgres://t:t@localhost:5432/x',
+    });
+    await writer.deleteRooSyncAttachment('u1');
+
+    const [sql, params] = targetCall('DELETE FROM roosync_attachments');
+    expect(sql).toContain('WHERE id = $1');
+    expect(params).toEqual(['u1']);
+  });
 });
 
 describe('MessageManager hooks (GDrive never blocked by PG)', () => {
@@ -281,6 +338,121 @@ describe('MessageManager hooks (GDrive never blocked by PG)', () => {
   });
 });
 
+describe('state transitions and destruction (#3151 Phase A.2)', () => {
+  let messageManager: MessageManager;
+  let testPath: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    testPath = join(tmpdir(), `rsm-a2-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    for (const d of ['messages/inbox', 'messages/sent', 'messages/archive']) {
+      mkdirSync(join(testPath, d), { recursive: true });
+    }
+    messageManager = new MessageManager(testPath);
+  });
+
+  afterEach(() => {
+    if (existsSync(testPath)) rmSync(testPath, { recursive: true, force: true });
+  });
+
+  async function send(to = 'myia-ai-01:roo-extensions'): Promise<Message> {
+    return messageManager.sendMessage(
+      'myia-po-2023:roo-extensions',
+      to,
+      'Sujet',
+      'Corps'
+    );
+  }
+
+  test('markAsRead mirrors status=read with a read_at stamp', async () => {
+    const msg = await send();
+    await messageManager.markAsRead(msg.id, 'myia-ai-01:roo-extensions');
+
+    await vi.waitFor(() => {
+      const call = updateRooSyncMessage.mock.calls.find((c) => c[1]?.status === 'read');
+      expect(call).toBeDefined();
+      expect(call![0]).toBe(msg.id);
+      expect(call![1].read_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+  });
+
+  // The exclusion is deliberate, so it is asserted rather than left to reading the
+  // code: a broadcast marked globally `read` in PG would vanish from the mailbox of
+  // the five machines that have not read it.
+  test('markAsRead on a broadcast does NOT mirror a global read status', async () => {
+    const msg = await send('all');
+    await messageManager.markAsRead(msg.id, 'myia-ai-01:roo-extensions');
+
+    // Give any floating dual-write a chance to land before asserting absence.
+    await new Promise((r) => setTimeout(r, 50));
+    const statusCalls = updateRooSyncMessage.mock.calls.filter((c) => c[1]?.status !== undefined);
+    expect(statusCalls).toEqual([]);
+  });
+
+  test('archiveMessage mirrors status=archived — the PG equivalent of leaving inbox/', async () => {
+    const msg = await send();
+    await messageManager.archiveMessage(msg.id);
+
+    expect(existsSync(join(testPath, 'messages/inbox', `${msg.id}.json`))).toBe(false);
+    await vi.waitFor(() => {
+      const call = updateRooSyncMessage.mock.calls.find((c) => c[1]?.status === 'archived');
+      expect(call).toBeDefined();
+      expect(call![0]).toBe(msg.id);
+      expect(call![1].archived_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+  });
+
+  test('destroyMessage purges the PG attachment payloads and wipes the body', async () => {
+    const msg = await send();
+    await messageManager.updateMessageAttachments(msg.id, [
+      { uuid: 'u1', filename: 'secret.env', sizeBytes: 12 },
+      { uuid: 'u2', filename: 'key.txt', sizeBytes: 8 },
+    ]);
+    updateRooSyncMessage.mockClear();
+
+    const ok = await messageManager.destroyMessage(msg.id, 'ttl_expired');
+    expect(ok).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(deleteRooSyncAttachment).toHaveBeenCalledWith('u1');
+      expect(deleteRooSyncAttachment).toHaveBeenCalledWith('u2');
+      const call = updateRooSyncMessage.mock.calls.find((c) => c[1]?.destroyed_at !== undefined);
+      expect(call).toBeDefined();
+      expect(call![0]).toBe(msg.id);
+      expect(call![1].body).toBe('[DESTROYED]');
+      expect(call![1].destroyed_reason).toBe('ttl_expired');
+    });
+  });
+
+  test('payloads are purged BEFORE the body is stamped destroyed', async () => {
+    const order: string[] = [];
+    deleteRooSyncAttachment.mockImplementation(async () => { order.push('delete'); });
+    updateRooSyncMessage.mockImplementation(async (_id: string, f: Record<string, unknown>) => {
+      if (f.destroyed_at !== undefined) order.push('stamp');
+    });
+
+    const msg = await send();
+    await messageManager.updateMessageAttachments(msg.id, [
+      { uuid: 'u1', filename: 'secret.env', sizeBytes: 12 },
+    ]);
+    await messageManager.destroyMessage(msg.id, 'read_by_recipient');
+
+    await vi.waitFor(() => expect(order).toEqual(['delete', 'stamp']));
+  });
+
+  test('PG failure never blocks archive or destroy on GDrive', async () => {
+    updateRooSyncMessage.mockRejectedValue(new Error('PG down'));
+    deleteRooSyncAttachment.mockRejectedValue(new Error('PG down'));
+
+    const archived = await send();
+    await expect(messageManager.archiveMessage(archived.id)).resolves.toBe(true);
+    expect(existsSync(join(testPath, 'messages/archive', `${archived.id}.json`))).toBe(true);
+
+    const destroyed = await send();
+    await expect(messageManager.destroyMessage(destroyed.id, 'ttl_expired')).resolves.toBe(true);
+  });
+});
+
 describe('env-gate (flag off → Null writer)', () => {
   test('NullUnifiedStoreWriter RooSync methods are no-ops', async () => {
     // Direct instantiation keeps the test independent of process.env at import time.
@@ -302,5 +474,6 @@ describe('env-gate (flag off → Null writer)', () => {
         payload: Buffer.alloc(0),
       })
     ).resolves.toBeUndefined();
+    await expect(nullWriter.deleteRooSyncAttachment('u')).resolves.toBeUndefined();
   });
 });
