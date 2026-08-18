@@ -119,6 +119,12 @@ let processed = 0;
 let skipped = 0;
 let errors = 0;
 let applied = 0;
+// Which files failed, not just how many. A count alone cannot tell the operator
+// whether the store is complete, and "complete" is the precondition for turning
+// the read flag on — DriveFS read failures are expected here (4.8 s/file cold,
+// inbox/ times out at 120 s on ai-01), so this list is the difference between
+// re-running a known subset and re-running 21.8 K files blind.
+const failures = [];
 
 outer: for (const dir of DIRS) {
   const dirPath = path.join(messagesRoot, dir);
@@ -152,8 +158,9 @@ outer: for (const dir of DIRS) {
       await writer.insertRooSyncMessage(mapMessageToRow(message));
       processed++;
       applied++;
-    } catch {
+    } catch (err) {
       errors++;
+      failures.push(`${dir}/${file}: ${err?.message ?? String(err)}`);
     }
   }
 }
@@ -164,6 +171,12 @@ console.log(`  total:     ${total}`);
 console.log(`  processed: ${processed}`);
 console.log(`  skipped:   ${skipped}  (no id / name-id mismatch)`);
 console.log(`  errors:    ${errors}`);
+if (failures.length > 0) {
+  console.log('');
+  console.log('  failed files (re-run these before enabling the read flag):');
+  for (const f of failures.slice(0, 50)) console.log(`    - ${f}`);
+  if (failures.length > 50) console.log(`    ... and ${failures.length - 50} more`);
+}
 console.log('');
 if (!liveMode) {
   console.log('DRY RUN complete — 0 rows persisted (NullUnifiedStoreWriter).');
@@ -172,4 +185,14 @@ if (!liveMode) {
   console.log('LIVE backfill complete (ON CONFLICT DO NOTHING — existing PG rows untouched).');
   console.log('Validate: psql -c "SELECT status, count(*) FROM roosync_messages GROUP BY status;"');
   console.log('Only after the store is complete, enable UNIFIED_STORE_CHANNEL_READ_PG=1.');
+}
+
+// Exit non-zero on any failure so an incomplete backfill cannot be mistaken for
+// a complete one by a caller that only checks the exit code. The store being
+// complete is the precondition of the read flag; under-show is the one failure
+// this channel cannot tolerate.
+if (errors > 0) {
+  console.log('');
+  console.log(`INCOMPLETE — ${errors} file(s) failed. Do NOT enable UNIFIED_STORE_CHANNEL_READ_PG until they import.`);
+  process.exit(1);
 }
