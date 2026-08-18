@@ -24,10 +24,18 @@ import {
   dualWriteRooSyncMessageAmendment,
   dualWriteRooSyncAttachmentRefs,
   dualWriteRooSyncMessageRead,
+  dualWriteRooSyncMessageBroadcastRead,
   dualWriteRooSyncMessageArchived,
   dualWriteRooSyncMessageDestroyed,
   dualWriteRooSyncMessageReminderSent,
 } from './unified-store/roosync-channel-dual-write.js';
+// #3151 Phase B — PG-primary channel reads (env-gated, GDrive fallback).
+import {
+  getChannelPgReader,
+  readChannelInboxFromPg,
+  countChannelInboxFromPg,
+  getChannelMessageFromPg,
+} from './unified-store/roosync-channel-read.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -634,6 +642,21 @@ export class MessageManager {
     const effectiveWorkspaceId = workspaceId;
     logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`);
 
+    // #3151 Phase B — PG-primary read (env-gated). null = PG unavailable →
+    // dégradation gracieuse vers GDrive ci-dessous.
+    const pgReader = getChannelPgReader();
+    if (pgReader) {
+      const startedAt = Date.now();
+      const pgItems = await readChannelInboxFromPg(pgReader, machineId, status, effectiveWorkspaceId);
+      if (pgItems !== null) {
+        logger.info(
+          `[channel-pg] inbox served from PG in ${Date.now() - startedAt}ms (${pgItems.length} items)`
+        );
+        return this.paginateItems(pgItems, limit, page, perPage);
+      }
+      logger.warn('[channel-pg] PG mailbox read failed — falling back to GDrive');
+    }
+
     try {
       // Use cached data (#638 perf optimization)
       const { items, full } = await this.ensureInboxCache();
@@ -681,15 +704,7 @@ export class MessageManager {
       }
 
       // Apply pagination (#638)
-      let result: MessageListItem[];
-      if (page !== undefined && perPage !== undefined && perPage > 0) {
-        const startIdx = (page - 1) * perPage;
-        result = filtered.slice(startIdx, startIdx + perPage);
-      } else if (limit) {
-        result = filtered.slice(0, limit);
-      } else {
-        result = filtered;
-      }
+      const result = this.paginateItems(filtered, limit, page, perPage);
 
       logger.info(`Returning ${result.length}/${filtered.length} messages (cached)`);
       return result;
@@ -697,6 +712,26 @@ export class MessageManager {
       logger.error('Error reading inbox', error);
       return [];
     }
+  }
+
+  /**
+   * Shared pagination for the inbox read paths (#638 semantics, unchanged):
+   * explicit page/perPage first, then limit, then everything.
+   */
+  private paginateItems(
+    items: MessageListItem[],
+    limit?: number,
+    page?: number,
+    perPage?: number
+  ): MessageListItem[] {
+    if (page !== undefined && perPage !== undefined && perPage > 0) {
+      const startIdx = (page - 1) * perPage;
+      return items.slice(startIdx, startIdx + perPage);
+    }
+    if (limit) {
+      return items.slice(0, limit);
+    }
+    return items;
   }
 
   /**
@@ -709,6 +744,15 @@ export class MessageManager {
     workspaceId?: string
   ): Promise<{ total: number; unread: number; read: number }> {
     const effectiveWorkspaceId = workspaceId;
+
+    // #3151 Phase B — PG-primary count, GDrive fallback.
+    const pgReader = getChannelPgReader();
+    if (pgReader) {
+      const pgCounts = await countChannelInboxFromPg(pgReader, machineId, effectiveWorkspaceId);
+      if (pgCounts !== null) return pgCounts;
+      logger.warn('[channel-pg] PG mailbox count failed — falling back to GDrive');
+    }
+
     const { items, full } = await this.ensureInboxCache();
 
     let total = 0;
@@ -738,9 +782,22 @@ export class MessageManager {
   }
 
   /**
+   * #2287 access check shared by the PG and GDrive read paths of `getMessage`:
+   * allow if the caller is the recipient (workspace-aware) or the sender.
+   * No callerId → allow (backward compat, matches the original behavior).
+   */
+  private callerCanAccessMessage(message: Message, callerId?: string): boolean {
+    if (!callerId) return true;
+    const caller = parseMachineWorkspace(callerId);
+    const isRecipient = matchesRecipient(message.to, caller.machineId, caller.workspaceId);
+    const isSender = parseMachineWorkspace(message.from).machineId === caller.machineId;
+    return isRecipient || isSender;
+  }
+
+  /**
    * Obtient un message spécifique par son ID
    *
-   * Cherche dans inbox, sent, puis archive.
+   * Cherche dans PG (Phase B, env-gated) puis inbox, sent, puis archive.
    * Vérifie que le message est destiné au caller (machine + workspace) (#2287).
    *
    * @param messageId ID du message à récupérer
@@ -749,6 +806,32 @@ export class MessageManager {
    */
   async getMessage(messageId: string, callerId?: string): Promise<Message | null> {
     logger.info(`Getting message: ${messageId}`);
+
+    // #3151 Phase B — PG-primary lookup. null = PG unavailable OR unknown id;
+    // both fall through to the GDrive paths (a miss is a miss on either side).
+    //
+    // Requires a callerId. On GDrive the filesystem itself was the access
+    // boundary — a message addressed elsewhere is simply not in this machine's
+    // inbox/sent/archive — which is why `callerCanAccessMessage` can allow a
+    // caller that provides no id. `roosync_messages` holds the whole fleet's
+    // mail in one table, so that same allowance would hand a foreign message to
+    // the five entry points that omit callerId (archive_message,
+    // mark_message_read, reply_message, send threading, ToolUsageInterceptor) —
+    // all of which read "found" as "it is in my mailbox". Those keep the
+    // file-bounded path; only callers that identify themselves get the fast one.
+    const pgReader = callerId ? getChannelPgReader() : null;
+    if (pgReader) {
+      const pgMessage = await getChannelMessageFromPg(pgReader, messageId);
+      if (pgMessage) {
+        if (!this.callerCanAccessMessage(pgMessage, callerId)) {
+          logger.warn(`Access denied: message ${messageId} targets ${pgMessage.to}, caller is ${callerId}`);
+          return null;
+        }
+        logger.info(`Message served from PG: ${messageId}`);
+        return pgMessage;
+      }
+      logger.info(`[channel-pg] message not in PG (or PG down) — trying GDrive paths: ${messageId}`);
+    }
 
     const searchPaths = [
       join(this.inboxPath, `${messageId}.json`),
@@ -764,16 +847,9 @@ export class MessageManager {
           logger.info(`Message found in: ${filePath}`);
 
           // #2287: Verify workspace access — allow if caller is recipient OR sender
-          if (callerId) {
-            const caller = parseMachineWorkspace(callerId);
-            const isRecipient = matchesRecipient(message.to, caller.machineId, caller.workspaceId);
-            const isSender = parseMachineWorkspace(message.from).machineId === caller.machineId;
-            if (!isRecipient && !isSender) {
-              logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
-              return null;
-            }
-          } else {
-            // Backward compat: no callerId → skip workspace check (matches old behavior)
+          if (!this.callerCanAccessMessage(message, callerId)) {
+            logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
+            return null;
           }
 
           return message;
@@ -893,9 +969,12 @@ export class MessageManager {
 
       await fs.writeFile(filePath, JSON.stringify(message, null, 2), 'utf-8');
 
-      // #3151 Phase A.2 — mirror the read transition. Broadcasts are excluded on
-      // purpose: their per-machine state lives in read_by, which PG does not model yet.
-      if (!isBroadcast) {
+      // #3151 Phase A.2/B — mirror the read transition. Targeted messages flip
+      // status=read; broadcasts mirror `read_by` instead (migrations/005), since
+      // a global 'read' would hide them from machines that have not read them.
+      if (isBroadcast) {
+        dualWriteRooSyncMessageBroadcastRead(messageId, message.read_by ?? []).catch(() => {});
+      } else {
         dualWriteRooSyncMessageRead(messageId).catch(() => {});
       }
 

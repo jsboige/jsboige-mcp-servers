@@ -225,8 +225,9 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
         const sql = `
           INSERT INTO roosync_messages
             (id, thread_id, from_machine, from_workspace, to_machine, to_workspace,
-             subject, body, priority, status, tags, attachment_refs, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             subject, body, priority, status, tags, attachment_refs, created_at,
+             reply_to, read_by, options)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
           ON CONFLICT (id) DO NOTHING
         `;
         const params = [
@@ -244,6 +245,9 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
           JSON.stringify(row.tags ?? []),
           JSON.stringify(row.attachment_refs ?? []),
           row.created_at,
+          row.reply_to ?? null,
+          JSON.stringify(row.read_by ?? []),
+          JSON.stringify(row.options ?? {}),
         ];
         await client.query(sql, params);
       } finally {
@@ -273,6 +277,8 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     ['destroyed_at', 'destroyed_at', false],
     ['destroyed_reason', 'destroyed_reason', false],
     ['reminder_sent_at', 'reminder_sent_at', false],
+    // Phase B (#3151) — per-machine broadcast read tracking (migrations/005).
+    ['read_by', 'read_by', true],
   ];
 
   async updateRooSyncMessage(

@@ -54,7 +54,31 @@ export interface ConversationBundle {
   messages: MessageRow[];
 }
 
-/** A row of `roosync_messages` (migrations/002_roosync_channel.sql, #3151 Phase A). */
+/**
+ * Channel-message payload fields with no dedicated column
+ * (migrations/005_roosync_channel_read.sql, #3151 Phase B).
+ *
+ * Read back verbatim by the PG read path to restore full `Message`
+ * fidelity; never filtered on in SQL.
+ */
+export interface RooSyncMessageOptions {
+  auto_destruct?: boolean;
+  destruct_after_read_by?: string[];
+  destruct_after?: string;
+  expires_at?: string;
+  /** machineId → ISO timestamp of first read. */
+  acknowledged_at?: Record<string, string>;
+  metadata?: {
+    amended?: boolean;
+    original_content?: string;
+    amendment_reason?: string;
+    amendment_timestamp?: string;
+  };
+  /** Legacy boolean flag — the column `reminder_sent_at` is the source of truth. */
+  reminder_sent?: boolean;
+}
+
+/** A row of `roosync_messages` (migrations/002 + 005, #3151 Phases A/B). */
 export interface RooSyncMessageRow {
   id: string;
   thread_id: string | null;
@@ -69,6 +93,17 @@ export interface RooSyncMessageRow {
   tags: string[];
   attachment_refs: Array<{ uuid: string; filename: string; sizeBytes: number }>;
   created_at: string;
+  /** #3151 Phase B — full-fidelity read path (migrations/005). */
+  reply_to: string | null;
+  read_by: string[];
+  options: RooSyncMessageOptions;
+  /**
+   * Stamps written by the update path only (migrations/003/004) — absent on
+   * freshly inserted rows, hence optional. Present when read back.
+   */
+  destroyed_at?: string | null;
+  destroyed_reason?: string | null;
+  reminder_sent_at?: string | null;
 }
 
 /**
@@ -89,6 +124,8 @@ export interface RooSyncMessageUpdate {
   destroyed_at?: string;
   destroyed_reason?: string;
   reminder_sent_at?: string;
+  /** Phase B — per-machine broadcast read tracking (whole-array replace). */
+  read_by?: string[];
 }
 
 /** A row of `roosync_attachments` (payload stored as bytea, #3151 D2). */
