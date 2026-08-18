@@ -115,6 +115,15 @@ export const GetStatusResultSchema = z.object({
   flags: z.array(z.string())
     .describe('Flags actionnables (ex: HEARTBEAT_STALE:myia-po-2025)'),
 
+  // #3160: provenance for presence flags. An UNKNOWN:<mid> flag means "this
+  // observer's dashboards show no append from <mid> within 8h" — which can be a
+  // real outage OR a stale GDrive mirror on the observing side. The last-seen
+  // timestamp (and `null` = never seen by this observer) lets the receiver tell
+  // the two apart without a round-trip diagnostic.
+  machineLastSeen: z.record(z.string().nullable())
+    .describe('Dernier append dashboard vu par CET observateur, par machine (null = jamais vu). Base de preuve des flags UNKNOWN:* / HEARTBEAT_STALE:* (#3160)')
+    .optional(),
+
   lastUpdated: z.string()
     .describe('Timestamp ISO 8601 du snapshot'),
 
@@ -330,6 +339,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     let filteredUnknownMachines: string[] = [];
     let filteredIdleMachines: string[] = [];
     let dashboardOverrides: string[] = [];
+    // #3160: last dashboard append seen per machine, from THIS observer's GDrive mirror.
+    const machineLastSeen: Record<string, string | null> = {};
 
     try {
       const { extractMachineActivity, isRecentlyActive } = await import('../../utils/dashboard-activity.js');
@@ -353,11 +364,26 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           filteredUnknownMachines.push(mid);
         }
       }
+
+      // #3160: presence provenance — lastSeen per machine as THIS observer sees it.
+      // Registry machines absent from the activity map get null ("never seen here"),
+      // the strongest mirror-staleness tell.
+      for (const mid of registryMachineIds) {
+        machineLastSeen[mid] = activity.get(mid.toLowerCase()) ?? null;
+      }
+      for (const [mid, lastSeen] of activity.entries()) {
+        if (isKnownMachine(mid) && !(mid in machineLastSeen)) {
+          machineLastSeen[mid] = lastSeen;
+        }
+      }
     } catch (err) {
       logger.debug('Dashboard activity extraction skipped', { error: String(err) });
       // Fallback: use registry machines as unknown if dashboard parsing fails
       const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
       filteredUnknownMachines = registryMachineIds;
+      for (const mid of registryMachineIds) {
+        machineLastSeen[mid] = null;
+      }
     }
 
     const filteredDashboardMachines = machines.filter(m => isKnownMachine(m.id));
@@ -429,6 +455,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       dashboards: { active: activeDashboards },
       ...(Object.keys(schedulerMetrics).length > 0 ? { schedulerMetrics } : {}),
       flags,
+      // #3160: only meaningful when flags carry presence data — omit when nothing was classified
+      ...(Object.keys(machineLastSeen).length > 0 ? { machineLastSeen } : {}),
       lastUpdated: now,
       // #1855 HUD: extended data when detail="full"
       ...(args.detail === 'full' ? await (async () => {

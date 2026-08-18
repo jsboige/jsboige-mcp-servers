@@ -381,4 +381,52 @@ describe('get-status (Option B)', () => {
       expect(result.flags).not.toContain('UNKNOWN:test-machine');
     });
   });
+
+  describe('#3160 presence provenance — machineLastSeen', () => {
+    test('records the last dashboard append seen per machine', async () => {
+      const t = new Date().toISOString();
+      const map = new Map<string, string>();
+      map.set('myia-ai-01', t);
+      map.set('myia-web1', t);
+      mockExtractMachineActivity.mockReturnValue(map);
+
+      const result = await roosyncGetStatus({});
+
+      expect(result.machineLastSeen).toBeDefined();
+      // All 6 registry machines present; the 4 without activity are null ("never seen here")
+      expect(result.machineLastSeen!['myia-ai-01']).toBe(t);
+      expect(result.machineLastSeen!['myia-web1']).toBe(t);
+      expect(result.machineLastSeen!['myia-po-2023']).toBeNull();
+      expect(result.machineLastSeen!['myia-po-2026']).toBeNull();
+    });
+
+    test('marks a machine as null when it drives an UNKNOWN flag', async () => {
+      // Same scenario as "still detects real unknown machines correctly":
+      // po-2025 is in the registry but absent from THIS observer's dashboards.
+      const map = new Map<string, string>();
+      map.set('myia-ai-01', new Date().toISOString());
+      mockExtractMachineActivity.mockReturnValue(map);
+
+      const result = await roosyncGetStatus({});
+
+      expect(result.flags).toContain('UNKNOWN:myia-po-2025');
+      // null = never seen on this observer's mirror — the key staleness tell (#3160)
+      expect(result.machineLastSeen!['myia-po-2025']).toBeNull();
+      expect(result.machineLastSeen!['myia-ai-01']).not.toBeNull();
+    });
+
+    test('passes schema validation with null entries', () => {
+      const parsed = GetStatusResultSchema.parse({
+        status: 'CRITICAL',
+        machines: { online: 1, unknown: 5, total: 6 },
+        inbox: { unread: 0, urgent: 0 },
+        decisions: { pending: 0 },
+        dashboards: { active: 1 },
+        flags: ['UNKNOWN:myia-po-2025'],
+        machineLastSeen: { 'myia-ai-01': '2026-08-18T00:00:00.000Z', 'myia-po-2025': null },
+        lastUpdated: '2026-08-18T00:00:00Z'
+      });
+      expect(parsed.machineLastSeen!['myia-po-2025']).toBeNull();
+    });
+  });
 });

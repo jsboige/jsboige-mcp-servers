@@ -19,6 +19,8 @@
  * contract (#815 scepticism method) — never fabricated.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 
 // --- Mocks (relative to this test file; resolve to the same modules the source imports) ---
 
@@ -47,8 +49,20 @@ vi.mock('../compare-config.js', () => ({
 
 // shared-state-path: point collectSystemHealth at a non-existent dashboards dir
 // so it short-circuits to {0,0,0,['DASHBOARDS_DIR_MISSING']} (no machine deduction).
+// Hoisted so tests can re-point it at a real temp dashboards dir (#3160).
+const { mockGetSharedStatePath } = vi.hoisted(() => ({
+  mockGetSharedStatePath: vi.fn(() => '/tmp/health-view-test-nonexistent-shared'),
+}));
 vi.mock('../../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: () => '/tmp/health-view-test-nonexistent-shared',
+  getSharedStatePath: mockGetSharedStatePath,
+}));
+
+// Registry source for collectSystemHealth (#3160): lazy-roosync's getRooSyncService.
+const { mockGetRooSyncService } = vi.hoisted(() => ({
+  mockGetRooSyncService: vi.fn(),
+}));
+vi.mock('../../../services/lazy-roosync.js', () => ({
+  getRooSyncService: mockGetRooSyncService,
 }));
 
 // Stable localMachineId (os.hostname varies by runner). Partial mock: keep the
@@ -71,6 +85,8 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockEmbeddingsCreate.mockReset();
   mockCompareConfig.mockReset();
+  mockGetSharedStatePath.mockReturnValue('/tmp/health-view-test-nonexistent-shared');
+  mockGetRooSyncService.mockReset();
   // Default: everything configured & available; drift clean.
   mockIsAvailable.mockImplementation((cap: string) => cap === 'sharedPath' || cap === 'qdrant' || cap === 'embeddings');
   mockCompareConfig.mockResolvedValue({
@@ -100,7 +116,15 @@ afterEach(() => {
     'EMBEDDING_MODEL', 'EMBEDDING_DIMENSIONS', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_API_KEY',
   ];
   for (const k of envKeys) delete process.env[k];
+  // Clean up temp dashboards dirs created by #3160 tests.
+  if (tempDashboardsDir) {
+    rmSync(tempDashboardsDir, { recursive: true, force: true });
+    tempDashboardsDir = undefined;
+  }
 });
+
+// Temp dashboards dir for the #3160 real-dir test (cleaned up in afterEach).
+let tempDashboardsDir: string | undefined;
 
 // ============================================================
 // Part A — probeQdrantBackend (#2628 regression suite)
@@ -202,7 +226,7 @@ describe('formatMarkdown', () => {
     score: 100,
     timestamp: '2026-07-01T00:00:00.000Z',
     localMachine: 'myia-test',
-    systemHealth: { machinesOnline: 6, machinesUnknown: 0, machinesTotal: 6, flags: [] },
+    systemHealth: { machinesOnline: 6, machinesUnknown: 0, machinesTotal: 6, flags: [], lastSeenByMachine: {} },
     capabilities: { sharedPath: true, qdrant: true, embeddings: true },
     drift: { checked: true, baselineSource: 'remote (via GDrive inventory)', critical: 0, important: 0, warning: 0, info: 0, items: [] },
     envCheck: { checked: true, missing: [], present: ['QDRANT_URL'] },
@@ -350,5 +374,40 @@ describe('roosyncHealthView orchestration + scoring', () => {
     );
     // 2 critical env missing → -20. Score must reflect the deduction.
     expect(result.score).toBeLessThanOrEqual(80);
+  });
+
+  it('#3160: surfaces lastSeenByMachine + offline detail from a real dashboards dir', async () => {
+    // Real dashboards dir: ai-01 fresh (<8h), po-2025 stale (>8h), web1 never seen.
+    const dir = mkdtempSync(tmpdir() + '/health-view-3160-');
+    tempDashboardsDir = dir;
+    mkdirSync(dir + '/dashboards', { recursive: true });
+    const fresh = new Date().toISOString();
+    const stale = new Date(Date.now() - 28 * 3600 * 1000).toISOString();
+    writeFileSync(dir + '/dashboards/workspace-test.md',
+      `## Intercom\n` +
+      `### [${fresh}] myia-ai-01|roo-extensions\nfresh message\n` +
+      `### [${stale}] myia-po-2025|roo-extensions\nstale message\n`
+    );
+    mockGetSharedStatePath.mockReturnValue(dir);
+    mockGetRooSyncService.mockResolvedValue({
+      getKnownMachineIds: () => ['myia-ai-01', 'myia-po-2025', 'myia-web1'],
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+
+    const result = await roosyncHealthView({});
+
+    // Presence: ai-01 online; po-2025 stale (>8h); web1 never seen.
+    expect(result.systemHealth.machinesOnline).toBe(1);
+    expect(result.systemHealth.machinesUnknown).toBe(2);
+    // Provenance per machine — the #3160 diagnostic payload.
+    expect(result.systemHealth.lastSeenByMachine['myia-ai-01']).toBe(fresh);
+    expect(result.systemHealth.lastSeenByMachine['myia-po-2025']).toBe(stale);
+    expect(result.systemHealth.lastSeenByMachine['myia-web1']).toBeNull();
+    // Recommendation names the machines and their last-seen (null → "never").
+    const offlineRec = result.recommendations.find(r => r.includes('machine(s) offline'));
+    expect(offlineRec).toBeDefined();
+    expect(offlineRec).toContain('myia-po-2025 last-seen');
+    expect(offlineRec).toContain('myia-web1 last-seen never');
   });
 });
