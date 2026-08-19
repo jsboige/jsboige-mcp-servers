@@ -656,6 +656,92 @@ describe('search-codebase.tool', () => {
 		});
 
 		// ============================================================
+		// #3172 — fixture-file re-ranking (follow-up of tests-rank-reranking)
+		// tests/fixtures/** captures embed source code as JSON strings, so they match
+		// code queries as well as the code itself and outrank the original (measured
+		// ai-01 2026-08-19: fixture 0.702 / test 0.696 / fixture 0.696 all above the
+		// real source). Fixture malus ×0.8 (stronger than test ×0.95 — a fixture is
+		// never the actionable answer), multiplicative when both classifications hit,
+		// and the JSON-container line fields ("1-1") are omitted as non-navigable.
+		// ============================================================
+
+		describe('handleCodebaseSearch - fixture-file re-ranking (#3172)', () => {
+			test('repro — two fixtures + a test outranking the source all sink below it after the malus', async () => {
+				// Exact shape of the ai-01 repro (limit 3): fixture 0.702 and 0.696 embed the
+				// source as JSON, test 0.6961 describes it, source sits at 0.65. Adjusted:
+				// test 0.6613 > source 0.65 > fixture 0.5616 — the source must rank ABOVE
+				// both fixtures, which the raw cosine ordering denied.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.702, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\tests\\fixtures\\real-tasks\\ac8aa7b4\\api_conversation_history.json', codeChunk: '876 | truncate = Math.max(2, Math.floor(max_output_length / estimatedSize))', startLine: 1, endLine: 1 } },
+						{ score: 0.6961, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\smart-truncation\\__tests__\\content-truncator.test.ts', codeChunk: "test('formatTruncatedOutput - ratio', () => {})", startLine: 427, endLine: 427 } },
+						{ score: 0.696, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\tests\\fixtures\\real-tasks\\ac8aa7b4\\ui_messages.json', codeChunk: 'n876 | truncate = Math.max(2, ...)', startLine: 1, endLine: 1 } },
+						{ score: 0.65, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\view-conversation-tree.ts', codeChunk: 'truncate = Math.max(2, Math.floor(max_output_length / (estimatedSize / Math.max(1, totalMessages * 20))));', startLine: 749, endLine: 749 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'smart truncation compute final output size ratio', workspace: '/ws', limit: 3 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				const paths = parsed.results.map((r: any) => r.file_path);
+				// Source ranks above both fixtures (rank 2 here, behind the malused test).
+				const sourceIdx = paths.indexOf('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\view-conversation-tree.ts');
+				expect(sourceIdx).toBe(1);
+				expect(paths.indexOf('mcps\\internal\\servers\\roo-state-manager\\tests\\fixtures\\real-tasks\\ac8aa7b4\\api_conversation_history.json')).toBe(2);
+				// The second fixture (0.696 × 0.8 = 0.5568) falls off the limit-3 slice.
+				expect(paths).not.toContain('mcps\\internal\\servers\\roo-state-manager\\tests\\fixtures\\real-tasks\\ac8aa7b4\\ui_messages.json');
+				// Adjusted scores surface: fixture 0.702 × 0.8 = 0.5616.
+				expect(parsed.results[2].score).toBeCloseTo(0.5616, 5);
+				expect(parsed.fixture_malus_applied).toBe(1);
+				expect(parsed.test_file_malus_applied).toBe(1);
+			});
+
+			test('fixture hits omit the non-navigable JSON-container line fields — never "1-1"', async () => {
+				// A fixture chunk stores startLine/endLine of the one-line JSON container,
+				// not of the embedded code shown in the snippet. Rendering "1-1" sends the
+				// caller to a line that leads nowhere — the fields must be absent instead.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.70, payload: { filePath: 'tests/fixtures/real-tasks/abc/ui_messages.json', codeChunk: '876 | truncate = Math.max(2, ...)', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'truncate ratio', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.results[0].file_path).toBe('tests/fixtures/real-tasks/abc/ui_messages.json');
+				expect(parsed.results[0].score).toBeCloseTo(0.56, 5);
+				expect(parsed.results[0]).not.toHaveProperty('lines');
+				expect(parsed.results[0]).not.toHaveProperty('start_line');
+				expect(parsed.results[0]).not.toHaveProperty('end_line');
+				expect(parsed.fixture_malus_applied).toBe(1);
+				expect(parsed.test_file_malus_applied).toBeUndefined();
+			});
+
+			test('min_score is re-applied on the post-fixture-malus score — a borderline fixture is dropped', async () => {
+				// Same invariant as the test-file malus: no returned result may contradict
+				// its own announced min_score_used. Fixture raw 0.58 passes a 0.5 raw
+				// threshold but lands at 0.464 after ×0.8 → absent; source 0.52 remains.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.58, payload: { filePath: 'tests\\fixtures\\real-tasks\\abc\\api_conversation_history.json', codeChunk: 'embedded code', startLine: 1, endLine: 1 } },
+						{ score: 0.52, payload: { filePath: 'src/tools/view-conversation-tree.ts', codeChunk: 'export function buildTree() {}', startLine: 10, endLine: 20 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'build tree', workspace: '/ws', min_score: 0.5 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.min_score_used).toBe(0.5);
+				const paths = parsed.results.map((r: any) => r.file_path);
+				expect(paths).not.toContain('tests\\fixtures\\real-tasks\\abc\\api_conversation_history.json');
+				expect(paths).toContain('src/tools/view-conversation-tree.ts');
+				for (const r of parsed.results) {
+					expect(r.score).toBeGreaterThanOrEqual(0.5);
+				}
+			});
+		});
+
+		// ============================================================
 		// #2609/#2554 L1 — content-based collection matching (hash-mismatch fallback)
 		// Root cause: the workspace path hash is fragile cross-agent; when no hash variant
 		// matches, the right ws-* collection is identified by its indexed top-level dirs vs
