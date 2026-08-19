@@ -19,6 +19,7 @@ import { roosyncRead } from './read.js';
 import { roosyncManage } from './manage.js';
 import { roosyncAttachments } from './roosync-attachments.tool.js';
 import { createLogger } from '../../utils/logger.js';
+import { StateManagerError } from '../../types/errors.js';
 
 const logger = createLogger('RooSyncMessagesTool');
 
@@ -129,10 +130,15 @@ export async function roosyncMessages(args: MessagesArgs) {
     .map((k) => KNOWN_ALIAS_HINTS[k])
     .filter(Boolean)[0];
   if (aliasHint) {
-    throw new Error(
+    // StateManagerError/VALIDATION_FAILED pour la cohérence avec la garde #3173
+    // conversation_browser (rejectedParam/expectedParam), pas un Error brut.
+    throw new StateManagerError(
       `Paramètre(s) inconnu(s) pour roosync_messages : ${unknownKeys.join(', ')}. ` +
       `Vouliez-vous "${aliasHint.realParam}" (${aliasHint.note}) ? ` +
-      `Un paramètre fourni doit être honoré, jamais ignoré silencieusement (#3173/#3177).`
+      `Un paramètre fourni doit être honoré, jamais ignoré silencieusement (#3173/#3177).`,
+      'VALIDATION_FAILED',
+      'RooSyncMessagesTool',
+      { rejectedParams: unknownKeys, expectedParam: aliasHint.realParam }
     );
   }
 

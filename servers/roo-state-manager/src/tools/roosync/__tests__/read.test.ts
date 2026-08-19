@@ -312,6 +312,26 @@ describe.sequential('roosyncRead', () => {
       expect(text).toContain('Po2023 msg');
     });
 
+    // #3177 follow-up: deux identités de machine DIFFÉRENTES = erreur explicite,
+    // jamais to_machine-wins silencieux (identifiant fourni puis ignoré).
+    test('#3177 follow-up conflicting to_machine vs workspace machine prefix fails loudly', async () => {
+      await messageManager.sendMessage(
+        'sender', 'myia-po-2023:roo-extensions', 'Should not leak', 'Body', 'MEDIUM'
+      );
+
+      const res = await roosyncRead({
+        mode: 'inbox',
+        to_machine: 'myia-po-2023',
+        workspace: 'myia-po-2026:roo-extensions'
+      });
+      const text = (res.content[0] as any).text;
+      expect(text).toContain('Erreur');
+      expect(text).toContain('Conflit');
+      expect(text).toContain('myia-po-2026');
+      // Aucune inbox rendue — pas de repli silencieux vers une des deux identités
+      expect(text).not.toContain('Boîte de Réception');
+    });
+
     test('#3177 plain workspace (no colon) unchanged — no regression on #1498 scheduler use-case', async () => {
       await messageManager.sendMessage(
         'sender', 'test-machine:workspace-a', 'Plain ws', 'Body', 'MEDIUM'
