@@ -221,7 +221,7 @@ export const conversationBrowserTool: Tool = {
             // --- Arguments tree ---
             conversation_id: {
                 type: 'string',
-                description: '[tree] Conversation ID for task tree.'
+                description: '[tree only] Conversation ID for task tree. ⚠️ Do NOT pass to action="view" or "summarize" — those use task_id. A conversation_id passed to view is silently dropped (#3173) and the tool falls back to findLatestTask(), rendering a different session depending on the machine.'
             },
             max_depth: {
                 type: 'number',
@@ -278,7 +278,7 @@ export const conversationBrowserTool: Tool = {
             // --- Arguments view ---
             task_id: {
                 type: 'string',
-                description: '[view/summarize] Task ID to inspect. Use "list" first to discover IDs.'
+                description: '[view/summarize] Task ID to inspect. Use "list" first to discover IDs. Distinct from conversation_id (used by action="tree") — passing conversation_id to view is rejected (#3173).'
             },
             view_mode: {
                 type: 'string',
@@ -505,6 +505,39 @@ function validateArgs(args: ConversationBrowserArgs): void {
             'VALIDATION_FAILED',
             'ConversationBrowserTool',
             { action: args.action, missingParam: 'conversation_id' }
+        );
+    }
+
+    // #3173: Identifier provided but not honored must fail explicitly.
+    // Before this guard, `conversation_browser(action:"view", conversation_id:"...")`
+    // silently dropped the param (`viewConversationTree` only consumes `task_id`)
+    // and fell through to `findLatestTask(conversationCache, workspace)` — which
+    // renders a different session depending on the machine (current session on
+    // po-2023, latest session from another workspace on ai-01). A grounding tool
+    // returning a credible-but-wrong session is worse than an explicit error.
+    if (args.action !== 'tree' && args.conversation_id !== undefined) {
+        const hint = args.action === 'view' || args.action === 'summarize'
+            ? ' Pour cibler une session depuis "view" ou "summarize", utilisez "task_id".'
+            : ` Le paramètre "conversation_id" est spécifique à l'action "tree" (paramètre de conversation_id="conversation_id", pas task_id).`;
+        throw new StateManagerError(
+            `Le paramètre "conversation_id" est ignoré par l'action "${args.action}".${hint}`,
+            'VALIDATION_FAILED',
+            'ConversationBrowserTool',
+            { providedParam: 'conversation_id', action: args.action, owningAction: 'tree' }
+        );
+    }
+
+    // #3173 generalization: same pattern for `summarize_type` outside "summarize".
+    // `summarize_type` is the action-discriminating param of "summarize" — providing
+    // it elsewhere is the same silent-drop pattern (the param is read only by the
+    // summarize switch case).
+    if (args.action !== 'summarize' && args.summarize_type !== undefined) {
+        throw new StateManagerError(
+            `Le paramètre "summarize_type" est ignoré par l'action "${args.action}". ` +
+            `Le paramètre "summarize_type" est spécifique à l'action "summarize".`,
+            'VALIDATION_FAILED',
+            'ConversationBrowserTool',
+            { providedParam: 'summarize_type', action: args.action, owningAction: 'summarize' }
         );
     }
 

@@ -139,6 +139,104 @@ describe('conversation_browser', () => {
 			);
 			expect(result.isError).toBeFalsy();
 		});
+
+		// #3173: Foreign-identifier guards.
+		// Before the fix, `conversation_id` (a "tree" identifier) was silently
+		// dropped by action="view", letting the call fall through to
+		// `findLatestTask(conversationCache, workspace)` and rendering a wrong
+		// session depending on the machine.
+		describe('#3173 foreign-identifier validation', () => {
+			test('view + conversation_id fails explicitly, naming task_id', async () => {
+				const result = await handleConversationBrowser(
+					{
+						action: 'view',
+						conversation_id: 'claude-d--roo-extensions--7ff15743-test'
+					} as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(result.isError).toBe(true);
+				const text = getTextContent(result);
+				expect(text).toContain('conversation_id');
+				expect(text).toContain('view');
+				expect(text).toContain('task_id');
+				expect(text).toContain('ignor'); // "est ignoré"
+			});
+
+			test('summarize + conversation_id fails explicitly', async () => {
+				const result = await handleConversationBrowser(
+					{
+						action: 'summarize',
+						conversation_id: 'claude-d--roo-extensions--7ff15743-test'
+					} as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(result.isError).toBe(true);
+				const text = getTextContent(result);
+				expect(text).toContain('conversation_id');
+				expect(text).toContain('summarize');
+				expect(text).toContain('task_id');  // hint names task_id for view/summarize
+			});
+
+			test('list + conversation_id fails explicitly', async () => {
+				const result = await handleConversationBrowser(
+					{
+						action: 'list',
+						conversation_id: 'any-conv'
+					} as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(result.isError).toBe(true);
+				expect(getTextContent(result)).toContain('conversation_id');
+			});
+
+			test('current + conversation_id fails explicitly', async () => {
+				const result = await handleConversationBrowser(
+					{
+						action: 'current',
+						conversation_id: 'any-conv'
+					} as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(result.isError).toBe(true);
+				expect(getTextContent(result)).toContain('conversation_id');
+			});
+
+			test('view + summarize_type fails explicitly (pattern generalization)', async () => {
+				const result = await handleConversationBrowser(
+					{
+						action: 'view',
+						summarize_type: 'trace'
+					} as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(result.isError).toBe(true);
+				expect(getTextContent(result)).toContain('summarize_type');
+			});
+
+			test('view + task_id is honored (does not trigger foreign-id guard)', async () => {
+				// Regression check: the same shape with the correct param still works.
+				await handleConversationBrowser(
+					{ action: 'view', task_id: 'a-valid-task' } as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(mockViewHandler).toHaveBeenCalled();
+			});
+
+			test('tree + conversation_id is honored (not subject to foreign-id guard)', async () => {
+				await handleConversationBrowser(
+					{ action: 'tree', conversation_id: 'conv-ok' } as ConversationBrowserArgs,
+					mockCache,
+					mockEnsureCache
+				);
+				expect(mockHandleTaskBrowse).toHaveBeenCalled();
+			});
+		});
 	});
 
 	// ============================================================
