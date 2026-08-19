@@ -312,4 +312,36 @@ describe('roosync_messages dispatcher', () => {
       expect(result).toBe('CUSTOM_MANAGE_RESULT');
     });
   });
+
+  // ============================================================
+  // #3177 — unknown params must fail loudly, not resolve to server identity
+  // ============================================================
+  describe('unknown param guard (#3177)', () => {
+    test('inbox with machineId throws naming the real param to_machine', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', machineId: 'myia-po-2026' } as any)
+      ).rejects.toThrow(/machineId.*to_machine/);
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('inbox with machine_id (snake) also throws with to_machine hint', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', machine_id: 'myia-po-2026' } as any)
+      ).rejects.toThrow(/to_machine/);
+    });
+
+    test('any other unknown param throws ZodError (strict schema)', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', machineFilter: 'x' } as any)
+      ).rejects.toThrow();
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('valid inbox call still routes (no false positive)', async () => {
+      await roosyncMessages({ action: 'inbox', to_machine: 'myia-po-2023', workspace: 'roo-extensions' });
+      expect(mockRead).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'inbox', to_machine: 'myia-po-2023', workspace: 'roo-extensions'
+      }));
+    });
+  });
 });

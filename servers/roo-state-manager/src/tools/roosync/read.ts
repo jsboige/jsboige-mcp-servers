@@ -85,8 +85,19 @@ async function readInboxMode(
 ): Promise<string> {
   // #1498: allow explicit override of machine + workspace filters so a single
   // dashboard-watcher process can poll inboxes for every workspace on a machine.
-  const effectiveMachineId = args.to_machine || getLocalMachineId();
-  const effectiveWorkspaceId = args.workspace || getLocalWorkspaceId();
+  // #3177: un workspace passé en forme "machine:workspace" désigne une identité
+  // complète — la partie machine est extraite et SUBSTITUÉE, jamais concaténée
+  // (l'ancien rendu affichait "myia-po-2025:myia-po-2023:roo-extensions",
+  // une identité-valise inconnue de la flotte, avec une inbox vide à la clé).
+  let machineOverride = args.to_machine;
+  let workspaceOverride = args.workspace;
+  if (workspaceOverride && workspaceOverride.includes(':')) {
+    const [machinePart, ...workspaceParts] = workspaceOverride.split(':');
+    if (!machineOverride) machineOverride = machinePart;
+    workspaceOverride = workspaceParts.join(':');
+  }
+  const effectiveMachineId = machineOverride || getLocalMachineId();
+  const effectiveWorkspaceId = workspaceOverride || getLocalWorkspaceId();
   const status = args.status || 'all';
   const limit = args.limit;
   const page = args.page;
