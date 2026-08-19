@@ -53,6 +53,16 @@ export interface SummaryResult {
 
 /**
  * Statistiques calculées sur le contenu
+ *
+ * Champs de pourcentage :
+ * - `userSizePercentage` / `assistantSizePercentage` / `toolResultsSizePercentage` : parts de TAILLE
+ *   (userContentSize / totalContentSize, etc.). Représentent le budget contexte consommé.
+ * - `userMessagePercentage` / `assistantMessagePercentage` / `toolResultsMessagePercentage` : parts
+ *   de COMPTAGE (userMessages / totalSections, etc.). Représentent la distribution des messages.
+ *
+ * Avant #3178, seul `userPercentage` existait et était silencieusement une part de TAILLE posée à
+ * côté d'une colonne « Valeur » en comptage (messages), ce qui était trompeur. Les deux sémantiques
+ * sont désormais explicites et distinctes.
  */
 export interface SummaryStatistics {
     totalSections: number;
@@ -63,9 +73,18 @@ export interface SummaryStatistics {
     assistantContentSize: number;
     toolResultsSize: number;
     totalContentSize: number;
-    userPercentage: number;
-    assistantPercentage: number;
-    toolResultsPercentage: number;
+    /** % de TAILLE (userContentSize / totalContentSize). Anciennement `userPercentage` (#3178). */
+    userSizePercentage: number;
+    /** % de TAILLE (assistantContentSize / totalContentSize). Anciennement `assistantPercentage` (#3178). */
+    assistantSizePercentage: number;
+    /** % de TAILLE (toolResultsSize / totalContentSize). Anciennement `toolResultsPercentage` (#3178). */
+    toolResultsSizePercentage: number;
+    /** % de COMPTAGE (userMessages / totalSections). Ajouté #3178. */
+    userMessagePercentage: number;
+    /** % de COMPTAGE (assistantMessages / totalSections). Ajouté #3178. */
+    assistantMessagePercentage: number;
+    /** % de COMPTAGE (toolResults / totalSections). Ajouté #3178. */
+    toolResultsMessagePercentage: number;
     compressionRatio?: number;
 }
 

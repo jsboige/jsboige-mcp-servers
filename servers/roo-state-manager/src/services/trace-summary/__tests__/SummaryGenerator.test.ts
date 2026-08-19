@@ -89,9 +89,14 @@ describe('SummaryGenerator', () => {
 			];
 			const stats = generator.calculateStatistics(content);
 			expect(stats.totalContentSize).toBe(100);
-			expect(stats.userPercentage).toBe(50);
-			expect(stats.assistantPercentage).toBe(30);
-			expect(stats.toolResultsPercentage).toBe(20);
+			// Parts de TAILLE (#3178)
+			expect(stats.userSizePercentage).toBe(50);
+			expect(stats.assistantSizePercentage).toBe(30);
+			expect(stats.toolResultsSizePercentage).toBe(20);
+			// Parts de COMPTAGE (#3178) — 1/3, 1/3, 1/3 → 33.3%
+			expect(stats.userMessagePercentage).toBe(33.3);
+			expect(stats.assistantMessagePercentage).toBe(33.3);
+			expect(stats.toolResultsMessagePercentage).toBe(33.3);
 		});
 
 		test('returns zeros for empty array', () => {
@@ -102,7 +107,8 @@ describe('SummaryGenerator', () => {
 			expect(stats.assistantMessages).toBe(0);
 			expect(stats.toolResults).toBe(0);
 			expect(stats.totalContentSize).toBe(0);
-			expect(stats.userPercentage).toBe(0);
+			expect(stats.userSizePercentage).toBe(0);
+			expect(stats.userMessagePercentage).toBe(0);
 		});
 
 		test('totalSections matches array length', () => {
@@ -128,7 +134,8 @@ describe('SummaryGenerator', () => {
 			expect(opts.detailLevel).toBe('Full');
 			expect(opts.truncationChars).toBe(0);
 			expect(opts.compactStats).toBe(false);
-			expect(opts.includeCss).toBe(true);
+			// #3178 — includeCss défaut false (opt-in)
+			expect(opts.includeCss).toBe(false);
 			expect(opts.generateToc).toBe(true);
 			expect(opts.outputFormat).toBe('markdown');
 			expect(opts.enableDetailLevels).toBe(true);
@@ -193,9 +200,12 @@ describe('SummaryGenerator', () => {
 			expect(stats.assistantContentSize).toBe(0);
 			expect(stats.toolResultsSize).toBe(0);
 			expect(stats.totalContentSize).toBe(0);
-			expect(stats.userPercentage).toBe(0);
-			expect(stats.assistantPercentage).toBe(0);
-			expect(stats.toolResultsPercentage).toBe(0);
+			expect(stats.userSizePercentage).toBe(0);
+			expect(stats.assistantSizePercentage).toBe(0);
+			expect(stats.toolResultsSizePercentage).toBe(0);
+			expect(stats.userMessagePercentage).toBe(0);
+			expect(stats.assistantMessagePercentage).toBe(0);
+			expect(stats.toolResultsMessagePercentage).toBe(0);
 		});
 	});
 

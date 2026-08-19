@@ -128,15 +128,19 @@ describe('SummaryGenerator — coverage complement', () => {
   describe('calculateStatistics — rounding + zero-category edges', () => {
     test('rounds non-clean percentages to 1 decimal (L160-162 `Math.round(x*100*10)/10`)', () => {
       // userContentSize=1, assistantContentSize=2 → total=3
-      // userPercentage = round(33.333.. *10)/10 = 33.3
+      // userSizePercentage = round(33.333.. *10)/10 = 33.3 (#3178)
       const content: ClassifiedContent[] = [
         makeClassified('UserMessage', 'A', 'User'),          // size 1
         makeClassified('Completion', 'BB', 'Assistant'),     // size 2
       ];
       const stats = generator.calculateStatistics(content);
       expect(stats.totalContentSize).toBe(3);
-      expect(stats.userPercentage).toBe(33.3);
-      expect(stats.assistantPercentage).toBe(66.7);
+      // Parts de TAILLE (#3178)
+      expect(stats.userSizePercentage).toBe(33.3);
+      expect(stats.assistantSizePercentage).toBe(66.7);
+      // Parts de COMPTAGE (#3178) — 1 message user, 1 message assistant → 50/50
+      expect(stats.userMessagePercentage).toBe(50);
+      expect(stats.assistantMessagePercentage).toBe(50);
     });
 
     test('reports 0 percentage for an absent category when total > 0', () => {
@@ -146,9 +150,14 @@ describe('SummaryGenerator — coverage complement', () => {
       ];
       const stats = generator.calculateStatistics(content);
       expect(stats.totalContentSize).toBe(5);
-      expect(stats.userPercentage).toBe(100);
-      expect(stats.assistantPercentage).toBe(0);
-      expect(stats.toolResultsPercentage).toBe(0);
+      // Parts de TAILLE (#3178)
+      expect(stats.userSizePercentage).toBe(100);
+      expect(stats.assistantSizePercentage).toBe(0);
+      expect(stats.toolResultsSizePercentage).toBe(0);
+      // Parts de COMPTAGE (#3178)
+      expect(stats.userMessagePercentage).toBe(100);
+      expect(stats.assistantMessagePercentage).toBe(0);
+      expect(stats.toolResultsMessagePercentage).toBe(0);
     });
   });
 

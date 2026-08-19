@@ -65,7 +65,7 @@ export const conversationBrowserDefinition = {
             detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly'], default: 'Full' },
             truncationChars: { type: 'number', description: '0 = no truncation.', default: 0 },
             compactStats: { type: 'boolean', default: false },
-            includeCss: { type: 'boolean', default: true },
+            includeCss: { type: 'boolean', default: false, description: 'Opt-in (#3178, défaut false).' },
             generateToc: { type: 'boolean', default: true },
             startIndex: { type: 'number', description: '1-based.' },
             endIndex: { type: 'number' },

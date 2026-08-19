@@ -574,6 +574,11 @@ export class TraceSummaryService {
 
     /**
      * Calcule les statistiques pour les formats JSON/CSV
+     *
+     * #3178 — Calcul des vraies tailles par rôle (userContentSize/assistantContentSize/
+     * toolResultsSize) au lieu des estimations constantes `totalSize * 0.4/0.4/0.2` qui
+     * produisaient des % dJSON figés 40/40/20 quel que soit le contenu. Les % de taille
+     * dérivent désormais des vraies sommes, et les % de comptage sont ajoutés.
      */
     private calculateJsonStatistics(conversations: ConversationSkeleton[]): SummaryStatistics {
         let totalMessages = 0;
@@ -581,6 +586,9 @@ export class TraceSummaryService {
         let userMessages = 0;
         let assistantMessages = 0;
         let toolResults = 0;
+        let userContentSize = 0;
+        let assistantContentSize = 0;
+        let toolResultsSize = 0;
 
         for (const conv of conversations) {
             totalMessages += conv.metadata.messageCount;
@@ -591,30 +599,41 @@ export class TraceSummaryService {
             ) as MessageSkeleton[];
 
             for (const message of messages) {
+                const contentSize = (message.content ?? '').length;
                 if (message.role === 'user') {
                     if (this.classifier.isToolResult(message.content)) {
                         toolResults++;
+                        toolResultsSize += contentSize;
                     } else {
                         userMessages++;
+                        userContentSize += contentSize;
                     }
                 } else if (message.role === 'assistant') {
                     assistantMessages++;
+                    assistantContentSize += contentSize;
                 }
             }
         }
 
+        const totalSections = totalMessages;
+
         return {
-            totalSections: totalMessages,
-            userMessages: userMessages,
-            assistantMessages: assistantMessages,
-            toolResults: toolResults,
-            userContentSize: Math.round(totalSize * 0.4), // Estimation
-            assistantContentSize: Math.round(totalSize * 0.4), // Estimation
-            toolResultsSize: Math.round(totalSize * 0.2), // Estimation
+            totalSections,
+            userMessages,
+            assistantMessages,
+            toolResults,
+            userContentSize,
+            assistantContentSize,
+            toolResultsSize,
             totalContentSize: totalSize,
-            userPercentage: totalSize > 0 ? Math.round((totalSize * 0.4 / totalSize) * 100 * 10) / 10 : 0,
-            assistantPercentage: totalSize > 0 ? Math.round((totalSize * 0.4 / totalSize) * 100 * 10) / 10 : 0,
-            toolResultsPercentage: totalSize > 0 ? Math.round((totalSize * 0.2 / totalSize) * 100 * 10) / 10 : 0
+            // Parts de TAILLE
+            userSizePercentage: totalSize > 0 ? Math.round((userContentSize / totalSize) * 100 * 10) / 10 : 0,
+            assistantSizePercentage: totalSize > 0 ? Math.round((assistantContentSize / totalSize) * 100 * 10) / 10 : 0,
+            toolResultsSizePercentage: totalSize > 0 ? Math.round((toolResultsSize / totalSize) * 100 * 10) / 10 : 0,
+            // Parts de COMPTAGE
+            userMessagePercentage: totalSections > 0 ? Math.round((userMessages / totalSections) * 100 * 10) / 10 : 0,
+            assistantMessagePercentage: totalSections > 0 ? Math.round((assistantMessages / totalSections) * 100 * 10) / 10 : 0,
+            toolResultsMessagePercentage: totalSections > 0 ? Math.round((toolResults / totalSections) * 100 * 10) / 10 : 0
         };
     }
 
@@ -626,7 +645,7 @@ export class TraceSummaryService {
             detailLevel: options.detailLevel || 'Full',
             truncationChars: options.truncationChars || 0,
             compactStats: options.compactStats || false,
-            includeCss: options.includeCss !== undefined ? options.includeCss : true,
+            includeCss: options.includeCss !== undefined ? options.includeCss : false,
             generateToc: options.generateToc !== undefined ? options.generateToc : true,
             outputFormat: options.outputFormat || 'markdown',
             jsonVariant: options.jsonVariant,
@@ -673,9 +692,12 @@ export class TraceSummaryService {
             assistantContentSize: 0,
             toolResultsSize: 0,
             totalContentSize: 0,
-            userPercentage: 0,
-            assistantPercentage: 0,
-            toolResultsPercentage: 0
+            userSizePercentage: 0,
+            assistantSizePercentage: 0,
+            toolResultsSizePercentage: 0,
+            userMessagePercentage: 0,
+            assistantMessagePercentage: 0,
+            toolResultsMessagePercentage: 0
         };
     }
 }

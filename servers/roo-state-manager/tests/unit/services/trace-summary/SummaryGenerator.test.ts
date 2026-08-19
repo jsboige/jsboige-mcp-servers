@@ -138,7 +138,7 @@ describe('SummaryGenerator', () => {
 
             expect(stats.totalSections).toBe(0);
             expect(stats.totalContentSize).toBe(0);
-            expect(stats.userPercentage).toBe(0);
+            expect(stats.userSizePercentage).toBe(0);
         });
     });
 
@@ -147,7 +147,8 @@ describe('SummaryGenerator', () => {
             const options = generator.mergeWithDefaultOptions({});
 
             expect(options.detailLevel).toBe('Full');
-            expect(options.includeCss).toBe(true);
+            // #3178 — includeCss default false (opt-in)
+            expect(options.includeCss).toBe(false);
             expect(options.outputFormat).toBe('markdown');
         });
 

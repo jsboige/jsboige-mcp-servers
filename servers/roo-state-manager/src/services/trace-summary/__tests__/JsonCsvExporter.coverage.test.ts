@@ -73,7 +73,9 @@ const defaultJsonHelpers = {
     getEmptyStatistics: (): SummaryStatistics => ({
         totalSections: 0, userMessages: 0, assistantMessages: 0, toolResults: 0,
         userContentSize: 0, assistantContentSize: 0, toolResultsSize: 0,
-        totalContentSize: 0, userPercentage: 0, assistantPercentage: 0, toolResultsPercentage: 0,
+        totalContentSize: 0,
+        userSizePercentage: 0, assistantSizePercentage: 0, toolResultsSizePercentage: 0,
+        userMessagePercentage: 0, assistantMessagePercentage: 0, toolResultsMessagePercentage: 0,
     }),
     getOriginalContentSize: (conv: ConversationSkeleton) => conv.metadata.totalSize,
     calculateCompressionRatio: (original: number, final: number) =>

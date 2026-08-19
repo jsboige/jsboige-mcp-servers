@@ -95,8 +95,8 @@ export const generateClusterSummaryTool: Tool = {
             },
             includeCss: {
                 type: "boolean",
-                description: "Inclure le CSS embarqué pour le styling",
-                default: true
+                description: "Inclure le CSS embarqué pour le styling (opt-in, #3178, défaut false)",
+                default: false
             },
             generateToc: {
                 type: "boolean",
@@ -215,7 +215,7 @@ export async function handleGenerateClusterSummary(
             outputFormat: args.outputFormat || 'markdown',
             truncationChars: args.truncationChars || 0,
             compactStats: args.compactStats || false,
-            includeCss: args.includeCss !== undefined ? args.includeCss : true,
+            includeCss: args.includeCss !== undefined ? args.includeCss : false,
             generateToc: args.generateToc !== undefined ? args.generateToc : true,
             
             // Options spécifiques aux grappes

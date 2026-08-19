@@ -147,9 +147,10 @@ export class SummaryGenerator {
         }
 
         const totalContentSize = userContentSize + assistantContentSize + toolResultsSize;
+        const totalSections = classifiedContent.length;
 
         return {
-            totalSections: classifiedContent.length,
+            totalSections,
             userMessages,
             assistantMessages,
             toolResults,
@@ -157,9 +158,14 @@ export class SummaryGenerator {
             assistantContentSize,
             toolResultsSize,
             totalContentSize,
-            userPercentage: totalContentSize > 0 ? Math.round((userContentSize / totalContentSize) * 100 * 10) / 10 : 0,
-            assistantPercentage: totalContentSize > 0 ? Math.round((assistantContentSize / totalContentSize) * 100 * 10) / 10 : 0,
-            toolResultsPercentage: totalContentSize > 0 ? Math.round((toolResultsSize / totalContentSize) * 100 * 10) / 10 : 0
+            // Parts de TAILLE (utiles pour le budget contexte)
+            userSizePercentage: totalContentSize > 0 ? Math.round((userContentSize / totalContentSize) * 100 * 10) / 10 : 0,
+            assistantSizePercentage: totalContentSize > 0 ? Math.round((assistantContentSize / totalContentSize) * 100 * 10) / 10 : 0,
+            toolResultsSizePercentage: totalContentSize > 0 ? Math.round((toolResultsSize / totalContentSize) * 100 * 10) / 10 : 0,
+            // Parts de COMPTAGE (utiles pour la distribution des messages)
+            userMessagePercentage: totalSections > 0 ? Math.round((userMessages / totalSections) * 100 * 10) / 10 : 0,
+            assistantMessagePercentage: totalSections > 0 ? Math.round((assistantMessages / totalSections) * 100 * 10) / 10 : 0,
+            toolResultsMessagePercentage: totalSections > 0 ? Math.round((toolResults / totalSections) * 100 * 10) / 10 : 0
         };
     }
 
@@ -171,7 +177,7 @@ export class SummaryGenerator {
             detailLevel: options.detailLevel || 'Full',
             truncationChars: options.truncationChars || 0,
             compactStats: options.compactStats || false,
-            includeCss: options.includeCss !== undefined ? options.includeCss : true,
+            includeCss: options.includeCss !== undefined ? options.includeCss : false,
             generateToc: options.generateToc !== undefined ? options.generateToc : true,
             outputFormat: options.outputFormat || 'markdown',
             jsonVariant: options.jsonVariant,
@@ -218,9 +224,12 @@ export class SummaryGenerator {
             assistantContentSize: 0,
             toolResultsSize: 0,
             totalContentSize: 0,
-            userPercentage: 0,
-            assistantPercentage: 0,
-            toolResultsPercentage: 0
+            userSizePercentage: 0,
+            assistantSizePercentage: 0,
+            toolResultsSizePercentage: 0,
+            userMessagePercentage: 0,
+            assistantMessagePercentage: 0,
+            toolResultsMessagePercentage: 0
         };
     }
 }

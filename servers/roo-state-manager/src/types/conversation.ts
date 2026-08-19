@@ -183,9 +183,12 @@ export interface ClusterSummaryStatistics {
     assistantContentSize: number;
     toolResultsSize: number;
     totalContentSize: number;
-    userPercentage: number;
-    assistantPercentage: number;
-    toolResultsPercentage: number;
+    userSizePercentage: number;
+    assistantSizePercentage: number;
+    toolResultsSizePercentage: number;
+    userMessagePercentage: number;
+    assistantMessagePercentage: number;
+    toolResultsMessagePercentage: number;
     compressionRatio?: number;
     
     // Métriques spécifiques aux grappes

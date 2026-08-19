@@ -435,6 +435,9 @@ export class JsonCsvExporter {
         let userMessages = 0;
         let assistantMessages = 0;
         let toolResults = 0;
+        let userContentSize = 0;
+        let assistantContentSize = 0;
+        let toolResultsSize = 0;
 
         for (const conv of conversations) {
             totalMessages += conv.metadata.messageCount;
@@ -445,30 +448,41 @@ export class JsonCsvExporter {
             ) as MessageSkeleton[];
 
             for (const message of messages) {
+                const contentSize = (message.content ?? '').length;
                 if (message.role === 'user') {
                     if (classifier.isToolResult(message.content)) {
                         toolResults++;
+                        toolResultsSize += contentSize;
                     } else {
                         userMessages++;
+                        userContentSize += contentSize;
                     }
                 } else if (message.role === 'assistant') {
                     assistantMessages++;
+                    assistantContentSize += contentSize;
                 }
             }
         }
 
+        const totalSections = totalMessages;
+
         return {
-            totalSections: totalMessages,
-            userMessages: userMessages,
-            assistantMessages: assistantMessages,
-            toolResults: toolResults,
-            userContentSize: Math.round(totalSize * 0.4),
-            assistantContentSize: Math.round(totalSize * 0.4),
-            toolResultsSize: Math.round(totalSize * 0.2),
+            totalSections,
+            userMessages,
+            assistantMessages,
+            toolResults,
+            userContentSize,
+            assistantContentSize,
+            toolResultsSize,
             totalContentSize: totalSize,
-            userPercentage: totalSize > 0 ? Math.round((totalSize * 0.4 / totalSize) * 100 * 10) / 10 : 0,
-            assistantPercentage: totalSize > 0 ? Math.round((totalSize * 0.4 / totalSize) * 100 * 10) / 10 : 0,
-            toolResultsPercentage: totalSize > 0 ? Math.round((totalSize * 0.2 / totalSize) * 100 * 10) / 10 : 0
+            // Parts de TAILLE (#3178: vraies tailles au lieu de `totalSize * 0.4/0.4/0.2`)
+            userSizePercentage: totalSize > 0 ? Math.round((userContentSize / totalSize) * 100 * 10) / 10 : 0,
+            assistantSizePercentage: totalSize > 0 ? Math.round((assistantContentSize / totalSize) * 100 * 10) / 10 : 0,
+            toolResultsSizePercentage: totalSize > 0 ? Math.round((toolResultsSize / totalSize) * 100 * 10) / 10 : 0,
+            // Parts de COMPTAGE (#3178)
+            userMessagePercentage: totalSections > 0 ? Math.round((userMessages / totalSections) * 100 * 10) / 10 : 0,
+            assistantMessagePercentage: totalSections > 0 ? Math.round((assistantMessages / totalSections) * 100 * 10) / 10 : 0,
+            toolResultsMessagePercentage: totalSections > 0 ? Math.round((toolResults / totalSections) * 100 * 10) / 10 : 0
         };
     }
 }

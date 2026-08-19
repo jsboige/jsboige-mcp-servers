@@ -149,9 +149,14 @@ describe('ExportRenderer', () => {
                 userMessages: 5,
                 assistantMessages: 3,
                 toolResults: 2,
-                userPercentage: 50,
-                assistantPercentage: 30,
-                toolResultsPercentage: 20,
+                // #3178 — parts de TAILLE
+                userSizePercentage: 50,
+                assistantSizePercentage: 30,
+                toolResultsSizePercentage: 20,
+                // #3178 — parts de COMPTAGE
+                userMessagePercentage: 50,
+                assistantMessagePercentage: 30,
+                toolResultsMessagePercentage: 20,
                 userContentSize: 1024,
                 assistantContentSize: 512,
                 toolResultsSize: 512
@@ -175,7 +180,10 @@ describe('ExportRenderer', () => {
             const statistics = {
                 totalContentSize: 0, totalSections: 0,
                 userMessages: 0, assistantMessages: 0, toolResults: 0,
-                userPercentage: 0, assistantPercentage: 0, toolResultsPercentage: 0,
+                // #3178 — parts de TAILLE
+                userSizePercentage: 0, assistantSizePercentage: 0, toolResultsSizePercentage: 0,
+                // #3178 — parts de COMPTAGE
+                userMessagePercentage: 0, assistantMessagePercentage: 0, toolResultsMessagePercentage: 0,
                 userContentSize: 0, assistantContentSize: 0, toolResultsSize: 0
             } as SummaryStatistics;
 
@@ -215,9 +223,14 @@ describe('ExportRenderer', () => {
             userMessages: 8,
             assistantMessages: 7,
             toolResults: 5,
-            userPercentage: 40,
-            assistantPercentage: 35,
-            toolResultsPercentage: 25,
+            // #3178 — parts de TAILLE (tailleBytes / totalBytes)
+            userSizePercentage: 40,
+            assistantSizePercentage: 35,
+            toolResultsSizePercentage: 25,
+            // #3178 — parts de COMPTAGE (messages / totalSections)
+            userMessagePercentage: 40,
+            assistantMessagePercentage: 35,
+            toolResultsMessagePercentage: 25,
             userContentSize: 4096,
             assistantContentSize: 3584,
             toolResultsSize: 2560
