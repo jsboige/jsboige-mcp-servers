@@ -221,7 +221,7 @@ export const conversationBrowserTool: Tool = {
             // --- Arguments tree ---
             conversation_id: {
                 type: 'string',
-                description: '[tree] Conversation ID for task tree.'
+                description: '[tree ONLY] Conversation ID for the tree action. view/summarize require task_id instead — passing conversation_id there is rejected (#3173).'
             },
             max_depth: {
                 type: 'number',
@@ -278,7 +278,7 @@ export const conversationBrowserTool: Tool = {
             // --- Arguments view ---
             task_id: {
                 type: 'string',
-                description: '[view/summarize] Task ID to inspect. Use "list" first to discover IDs.'
+                description: '[view/summarize] Task ID to inspect (distinct from the tree-only conversation_id). Use "list" first to discover IDs.'
             },
             view_mode: {
                 type: 'string',
