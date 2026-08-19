@@ -723,14 +723,24 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		//     of a test outranks it. Tests stay visible (degraded, not removed).
 		// A — per-file diversification: a single noisy file can otherwise occupy most slots
 		//     (measured: task-indexer.test.ts = 5/8). Cap at 2 chunks/file, backfill by score.
+		// #3172 — fixture-file malus (×0.8): tests/fixtures/** captures embed source code as
+		//     JSON strings, so they match code queries as well as the code itself and outrank
+		//     the original (measured ai-01: fixture 0.702 above source, 2026-08-19). A fixture
+		//     is never the actionable answer to "find the code that does X" — stronger malus
+		//     than tests, still visible (degraded, not removed), multiplicative if both apply.
 		const TEST_FILE_RE = /[\\/]__tests__[\\/]|\.test\.|\.spec\./;
 		const TEST_FILE_MALUS = 0.95;
+		const FIXTURE_FILE_RE = /(^|[\\/])tests[\\/]fixtures[\\/]/;
+		const FIXTURE_FILE_MALUS = 0.8;
 		const MAX_CHUNKS_PER_FILE = 2;
 
 		const adjusted: { point: any; score: number }[] = finalHits
 			.map((point: any) => {
-				const isTestFile = TEST_FILE_RE.test(String(point.payload.filePath || ''));
-				return { point, score: isTestFile ? point.score * TEST_FILE_MALUS : point.score };
+				const fp = String(point.payload.filePath || '');
+				let score = point.score;
+				if (TEST_FILE_RE.test(fp)) score *= TEST_FILE_MALUS;
+				if (FIXTURE_FILE_RE.test(fp)) score *= FIXTURE_FILE_MALUS;
+				return { point, score };
 			})
 			// Re-apply min_score on the ADJUSTED (post-malus) score. Qdrant already filters on
 			// the RAW score (score_threshold above), but a test file at raw 0.71 passes a 0.70
@@ -760,24 +770,37 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		}
 		const rankedHits = picked.slice(0, effectiveLimit);
 		let testFileMalusApplied = 0;
+		let fixtureMalusApplied = 0;
 
 		const results = rankedHits.map((point: any) => {
-			const isTestFile = TEST_FILE_RE.test(String(point.payload.filePath || ''));
+			const fp = String(point.payload.filePath || '');
+			const isTestFile = TEST_FILE_RE.test(fp);
+			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
 			if (isTestFile) testFileMalusApplied++;
+			if (isFixtureFile) fixtureMalusApplied++;
 			// Expose the adjusted (post-malus) score so the value matches the rank order;
 			// an unadjusted test at 0.72 ranked below a source at 0.68 would otherwise read
 			// as a contradiction. The raw cosine is not surfaced (the order is the signal).
-			const adjustedScore = isTestFile ? point.score * TEST_FILE_MALUS : point.score;
-			return {
-				file_path: point.payload.filePath,
-				score: adjustedScore,
-				relevance: interpretScore(adjustedScore),
-				snippet: extractSnippet(point.payload.codeChunk || '', query),
+			const adjustedScore = point.score
+				* (isTestFile ? TEST_FILE_MALUS : 1)
+				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1);
+			// #3172: a fixture chunk embeds source code inside a JSON capture — the stored
+			// startLine/endLine point at the single-line JSON container, not at the embedded
+			// code shown in the snippet ("1-1" navigates to nothing). Omit the line fields
+			// rather than render numbers that lead nowhere; the snippet keeps the real line.
+			const lineFields = isFixtureFile ? {} : {
 				start_line: point.payload.startLine,
 				end_line: point.payload.endLine,
 				lines: point.payload.startLine && point.payload.endLine
 					? `${point.payload.startLine}-${point.payload.endLine}`
 					: undefined
+			};
+			return {
+				file_path: point.payload.filePath,
+				score: adjustedScore,
+				relevance: interpretScore(adjustedScore),
+				snippet: extractSnippet(point.payload.codeChunk || '', query),
+				...lineFields
 			};
 		});
 
@@ -809,6 +832,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// tests-rank-reranking: test-file re-ranking observability — how many returned hits had the
 			// ×0.95 malus applied (tests ranked above source by raw cosine; see block above).
 			...(testFileMalusApplied > 0 ? { test_file_malus_applied: testFileMalusApplied } : {}),
+			// #3172: fixture-file malus observability — hits from tests/fixtures/** demoted ×0.8.
+			...(fixtureMalusApplied > 0 ? { fixture_malus_applied: fixtureMalusApplied } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results
