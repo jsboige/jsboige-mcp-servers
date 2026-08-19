@@ -105,9 +105,12 @@ const defaultSummaryResult = {
         assistantContentSize: 80,
         toolResultsSize: 50,
         totalContentSize: 230,
-        userPercentage: 43,
-        assistantPercentage: 35,
-        toolResultsPercentage: 22,
+        userSizePercentage: 43,
+        assistantSizePercentage: 35,
+        toolResultsSizePercentage: 22,
+        userMessagePercentage: 40,
+        assistantMessagePercentage: 40,
+        toolResultsMessagePercentage: 20,
     },
 };
 

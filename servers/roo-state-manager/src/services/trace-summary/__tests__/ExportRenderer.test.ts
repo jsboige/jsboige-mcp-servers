@@ -68,9 +68,14 @@ function makeStatistics(overrides: Partial<SummaryStatistics> = {}): SummaryStat
         assistantContentSize: 4096,
         toolResultsSize: 2048,
         totalContentSize: 7168,
-        userPercentage: 14.3,
-        assistantPercentage: 57.1,
-        toolResultsPercentage: 28.6,
+        // Parts de TAILLE (#3178, anciennement userPercentage/assistantPercentage/toolResultsPercentage)
+        userSizePercentage: 14.3,
+        assistantSizePercentage: 57.1,
+        toolResultsSizePercentage: 28.6,
+        // Parts de COMPTAGE (#3178)
+        userMessagePercentage: 30,
+        assistantMessagePercentage: 50,
+        toolResultsMessagePercentage: 20,
         ...overrides
     };
 }
@@ -483,7 +488,7 @@ describe('ExportRenderer - generateStatistics', () => {
     });
 
     it('should format percentages with one decimal', () => {
-        const stats = makeStatistics({ userPercentage: 33.333 });
+        const stats = makeStatistics({ userMessagePercentage: 33.333 });
         const result = renderer.generateStatistics(stats, true);
         expect(result).toContain('33.3%');
     });
@@ -494,20 +499,20 @@ describe('ExportRenderer - generateStatistics', () => {
         expect(result).toContain('25');
     });
 
-    it('compact table should have 3 data columns (Metrique, Valeur, %)', () => {
+    it('compact table should have 3 data columns (Metrique, Valeur, % msgs)', () => {
         const stats = makeStatistics();
         const result = renderer.generateStatistics(stats, true);
-        expect(result).toContain('| Metrique | Valeur | % |');
+        expect(result).toContain('| Metrique | Valeur | % msgs |');
     });
 
-    it('detailed table should have 4 data columns (Metrique, Valeur, Taille, %)', () => {
+    it('detailed table should have 5 data columns (Metrique, Valeur, Taille, % msgs, % taille)', () => {
         const stats = makeStatistics();
         const result = renderer.generateStatistics(stats, false);
-        expect(result).toContain('| Metrique | Valeur | Taille | % |');
+        expect(result).toContain('| Metrique | Valeur | Taille | % msgs | % taille |');
     });
 
     it('should show correct tool results percentage in compact mode', () => {
-        const stats = makeStatistics({ toolResultsPercentage: 42.7 });
+        const stats = makeStatistics({ toolResultsMessagePercentage: 42.7 });
         const result = renderer.generateStatistics(stats, true);
         expect(result).toContain('42.7%');
     });

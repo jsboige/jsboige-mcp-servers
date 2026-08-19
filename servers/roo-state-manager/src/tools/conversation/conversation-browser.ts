@@ -372,8 +372,8 @@ export const conversationBrowserTool: Tool = {
             },
             includeCss: {
                 type: 'boolean',
-                description: '[summarize] Include embedded CSS.',
-                default: true
+                description: '[summarize] Include embedded CSS. Opt-in (#3178, défaut false).',
+                default: false
             },
             generateToc: {
                 type: 'boolean',

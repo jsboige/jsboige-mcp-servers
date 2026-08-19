@@ -243,8 +243,8 @@ describe('TraceSummaryService — branch coverage (#833 C3, source-grounded)', (
             expect(merged.truncationChars).toBe(0);
             // L628 compactStats || false
             expect(merged.compactStats).toBe(false);
-            // L629 includeCss !== undefined ? ... : true → undefined arm → true
-            expect(merged.includeCss).toBe(true);
+            // L629 includeCss !== undefined ? ... : false → undefined arm → false (#3178)
+            expect(merged.includeCss).toBe(false);
             // L630 generateToc !== undefined ? ... : true → undefined arm → true
             expect(merged.generateToc).toBe(true);
             // L631 outputFormat || 'markdown'
@@ -359,9 +359,12 @@ describe('TraceSummaryService — branch coverage (#833 C3, source-grounded)', (
                 assistantContentSize: 0,
                 toolResultsSize: 0,
                 totalContentSize: 0,
-                userPercentage: 0,
-                assistantPercentage: 0,
-                toolResultsPercentage: 0,
+                userSizePercentage: 0,
+                assistantSizePercentage: 0,
+                toolResultsSizePercentage: 0,
+                userMessagePercentage: 0,
+                assistantMessagePercentage: 0,
+                toolResultsMessagePercentage: 0,
             });
         });
     });

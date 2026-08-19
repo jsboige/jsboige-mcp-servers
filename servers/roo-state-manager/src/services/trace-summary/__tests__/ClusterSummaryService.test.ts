@@ -76,9 +76,12 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
                 assistantContentSize: 100,
                 toolResultsSize: 0,
                 totalContentSize: 200,
-                userPercentage: 50,
-                assistantPercentage: 50,
-                toolResultsPercentage: 0
+                userSizePercentage: 50,
+                assistantSizePercentage: 50,
+                toolResultsSizePercentage: 0,
+                userMessagePercentage: 50,
+                assistantMessagePercentage: 50,
+                toolResultsMessagePercentage: 0
             },
             format: 'markdown',
             size: content.length

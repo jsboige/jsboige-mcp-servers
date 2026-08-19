@@ -462,6 +462,11 @@ export class ExportRenderer {
 
     /**
      * Génère les statistiques détaillées
+     *
+     * #3178 — Distingue explicitement les parts de TAILLE et de COMPTAGE. Avant #3178, le
+     * tableau affichait `userPercentage` (parts de taille) à côté de `userMessages` (valeur
+     * en comptage), ce qui était trompeur. Deux colonnes % sont maintenant rendues et
+     * étiquetées explicitement.
      */
     public generateStatistics(statistics: SummaryStatistics, compact: boolean): string {
         const header = compact ? "## STATISTIQUES" : "## STATISTIQUES DETAILLEES";
@@ -469,21 +474,21 @@ export class ExportRenderer {
         if (compact) {
             return `${header}
 
-| Metrique | Valeur | % |
-|----------|--------|---|
-| Messages User | ${statistics.userMessages} | ${statistics.userPercentage.toFixed(1)}% |
-| Reponses Assistant | ${statistics.assistantMessages} | ${statistics.assistantPercentage.toFixed(1)}% |
-| Resultats d'outils | ${statistics.toolResults} | ${statistics.toolResultsPercentage.toFixed(1)}% |
+| Metrique | Valeur | % msgs |
+|----------|--------|--------|
+| Messages User | ${statistics.userMessages} | ${statistics.userMessagePercentage.toFixed(1)}% |
+| Reponses Assistant | ${statistics.assistantMessages} | ${statistics.assistantMessagePercentage.toFixed(1)}% |
+| Resultats d'outils | ${statistics.toolResults} | ${statistics.toolResultsMessagePercentage.toFixed(1)}% |
 | Total echanges | ${statistics.totalSections} | 100% |`;
         } else {
             return `${header}
 
-| Metrique | Valeur | Taille | % |
-|----------|--------|--------|---|
-| Messages User | ${statistics.userMessages} | ${Math.round(statistics.userContentSize/1024 * 10)/10} KB | ${statistics.userPercentage.toFixed(1)}% |
-| Reponses Assistant | ${statistics.assistantMessages} | ${Math.round(statistics.assistantContentSize/1024 * 10)/10} KB | ${statistics.assistantPercentage.toFixed(1)}% |
-| Resultats d'outils | ${statistics.toolResults} | ${Math.round(statistics.toolResultsSize/1024 * 10)/10} KB | ${statistics.toolResultsPercentage.toFixed(1)}% |
-| **Total echanges** | **${statistics.totalSections}** | **${Math.round(statistics.totalContentSize/1024 * 10)/10} KB** | **100%** |`;
+| Metrique | Valeur | Taille | % msgs | % taille |
+|----------|--------|--------|--------|----------|
+| Messages User | ${statistics.userMessages} | ${Math.round(statistics.userContentSize/1024 * 10)/10} KB | ${statistics.userMessagePercentage.toFixed(1)}% | ${statistics.userSizePercentage.toFixed(1)}% |
+| Reponses Assistant | ${statistics.assistantMessages} | ${Math.round(statistics.assistantContentSize/1024 * 10)/10} KB | ${statistics.assistantMessagePercentage.toFixed(1)}% | ${statistics.assistantSizePercentage.toFixed(1)}% |
+| Resultats d'outils | ${statistics.toolResults} | ${Math.round(statistics.toolResultsSize/1024 * 10)/10} KB | ${statistics.toolResultsMessagePercentage.toFixed(1)}% | ${statistics.toolResultsSizePercentage.toFixed(1)}% |
+| **Total echanges** | **${statistics.totalSections}** | **${Math.round(statistics.totalContentSize/1024 * 10)/10} KB** | **100%** | **100%** |`;
         }
     }
 
