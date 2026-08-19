@@ -31,28 +31,72 @@ function truncateMessage(message: string, truncate: number): string {
 /**
  * #1244 Couche 2.5 — Hard cap final sur la sortie complete d'un handler view.
  *
- * Filet de securite : applique `ContentTruncator.hardCapString` au texte du
- * premier item de contenu si sa taille depasse `maxChars`. Garantit le respect
- * strict de `max_output_length` peu importe les fuites du legacy path,
- * les bugs d'estimation, ou les depassements du gradient engine.
+ * Filet de securite : borne la SOMME des blocs texte de la reponse a `maxChars`.
+ * Garantit le respect strict de `max_output_length` peu importe les fuites du
+ * legacy path, les bugs d'estimation, ou les depassements du gradient engine.
  *
- * Preserve les autres items de contenu tels quels (cas sauvegarde fichier,
- * messages d'erreur multi-content, etc).
+ * #3171 — L'implementation initiale ne mesurait/coupait que `content[0]` :
+ * les blocs suivants etaient rattaches intacts et sortaient hors budget
+ * (mesure ai-01 : cap "mordu" sur le premier bloc, 256 Ko rendus quand meme
+ * pour 4000 demandes). La borne porte desormais sur la somme de tous les blocs
+ * texte ; les blocs non-texte (binaire) ne sont ni comptes ni modifies.
+ * Budget reparti proportionnellement a la taille de chaque bloc ; le premier
+ * conserve la semantique headerKeep (metadata/titre) via hardCapString.
+ *
+ * Exporte pour tests unitaires (garantie testee isolement du handler).
  */
-function applyHardCap(result: CallToolResult, maxChars: number): CallToolResult {
+export function applyHardCap(result: CallToolResult, maxChars: number): CallToolResult {
     if (!result.content || result.content.length === 0) return result;
-    const first = result.content[0];
-    if (first.type !== 'text' || typeof first.text !== 'string') return result;
-    if (first.text.length <= maxChars) return result;
 
-    const capped = ContentTruncator.hardCapString(first.text, maxChars, { headerKeepChars: 2000 });
-    return {
-        ...result,
-        content: [
-            { ...first, text: capped },
-            ...result.content.slice(1)
-        ]
-    };
+    const textIndexes: number[] = [];
+    let totalLen = 0;
+    result.content.forEach((cRaw: any, i: number) => {
+        if (cRaw && cRaw.type === 'text' && typeof cRaw.text === 'string') {
+            textIndexes.push(i);
+            totalLen += cRaw.text.length;
+        }
+    });
+    if (totalLen <= maxChars || textIndexes.length === 0) return result;
+
+    const newContent: any[] = [...result.content as any[]];
+    if (textIndexes.length === 1) {
+        const i = textIndexes[0];
+        const capped = ContentTruncator.hardCapString(newContent[i].text, maxChars, { headerKeepChars: 2000 });
+        newContent[i] = { ...newContent[i], text: capped };
+    } else {
+        let allocated = 0;
+        textIndexes.forEach((idx: number, rank: number) => {
+            const isLast = rank === textIndexes.length - 1;
+            const share = isLast
+                ? Math.max(0, maxChars - allocated)
+                : Math.floor(maxChars * (newContent[idx].text.length / totalLen));
+            allocated += share;
+            const capped = ContentTruncator.hardCapString(newContent[idx].text, share, {
+                headerKeepChars: Math.min(2000, share)
+            });
+            newContent[idx] = { ...newContent[idx], text: capped };
+        });
+    }
+
+    // Passe finale de garantie : un marqueur hard-cap peut dépasser la part d'un
+    // petit bloc (le marker coûte ~50 chars). Tant que la somme dépasse maxChars,
+    // on rogne le bloc le plus long de l'excédent. Termine toujours : chaque
+    // itération réduit strictement la longueur totale.
+    let currentTotal = textIndexes.reduce((s, i) => s + newContent[i].text.length, 0);
+    while (currentTotal > maxChars) {
+        const over = currentTotal - maxChars;
+        let biggest = textIndexes[0];
+        for (const i of textIndexes) {
+            if (newContent[i].text.length > newContent[biggest].text.length) biggest = i;
+        }
+        if (newContent[biggest].text.length === 0) break; // plus rien à rogner
+        const cut = Math.max(0, newContent[biggest].text.length - over);
+        newContent[biggest] = { ...newContent[biggest], text: newContent[biggest].text.substring(0, cut) };
+        const next = textIndexes.reduce((s, i) => s + newContent[i].text.length, 0);
+        if (next >= currentTotal) break; // sécurité anti-boucle
+        currentTotal = next;
+    }
+    return { ...result, content: newContent };
 }
 
 /**

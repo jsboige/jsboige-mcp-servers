@@ -117,23 +117,65 @@ describe('SmartTruncation Engine', () => {
             expect(lastPlan.preservationWeight).toBeGreaterThan(middlePlan.preservationWeight);
         });
 
-        test('should respect maxTruncationRate', () => {
+        test('should respect maxTruncationRate (multi-tâches)', () => {
             const engine = new SmartTruncationEngine({
                 ...mockConfig,
                 maxOutputLength: 1000,
                 maxTruncationRate: 0.5
             });
-            const tasks = [createMockTask('task1', 5)];
+            // #3171: le cap maxTruncationRate est une préférence de RÉPARTITION entre
+            // tâches — il se vérifie en multi-tâches. En single-task le budget est la
+            // borne (voir tests #3171 ci-dessous) : une limite < 30% de la source doit
+            // rester atteignable.
+            const tasks = [createMockTask('task1', 5), createMockTask('task2', 5)];
             const result = engine.apply(tasks);
 
-            if (result.taskPlans.length > 0 && result.taskPlans[0].truncationBudget > 0) {
-                const plan = result.taskPlans[0];
-                const truncationRate = plan.truncationBudget / plan.originalSize;
-
-                // FIX P0-1b follow-up: minPreservationRate contrainte retirée (contradictoire)
-                // Seule maxTruncationRate s'applique maintenant, gradient gère la préservation
-                expect(truncationRate).toBeLessThanOrEqual(0.5);
+            for (const plan of result.taskPlans) {
+                if (plan.truncationBudget > 0) {
+                    const truncationRate = plan.truncationBudget / plan.originalSize;
+                    expect(truncationRate).toBeLessThanOrEqual(0.5);
+                }
             }
+        });
+
+        // ============================================================
+        // #3171 — single task : le budget dérive de maxOutputLength,
+        // pas de la constante 0.3 (plancher 30% de la source)
+        // ============================================================
+
+        test('#3171 single task: finalTotalSize honore maxOutputLength (pas de plancher 30%)', () => {
+            // Reproduit la mesure ai-01 : source ~853K, limite 4000
+            // Avant fix: poids 0.3 en dur → targetSize = 0.3 × total = 255 908 (hors budget)
+            const engine = new SmartTruncationEngine({ maxOutputLength: 4000 });
+            const tasks = [createMockTask('solo', 1400)]; // ~1400 × 600 + 200 ≈ 860K
+            const result = engine.apply(tasks);
+
+            expect(result.taskPlans).toHaveLength(1);
+            expect(result.metrics.originalTotalSize).toBeGreaterThan(800_000);
+            // CONTRE-ÉPREUVE: échoue si la constante 0.3 est restaurée (255 908 > 4000)
+            expect(result.metrics.finalTotalSize).toBeLessThanOrEqual(4000);
+            expect(result.taskPlans[0].truncationBudget).toBe(
+                result.metrics.originalTotalSize - 4000
+            );
+        });
+
+        test('#3171 single task: poids de préservation = maxOutputLength / totalSize', () => {
+            const engine = new SmartTruncationEngine({ maxOutputLength: 2000 });
+            const tasks = [createMockTask('solo', 10)]; // 10 × 600 + 200 = 6200
+            const result = engine.apply(tasks);
+
+            const total = result.metrics.originalTotalSize; // 6200
+            expect(result.taskPlans[0].preservationWeight).toBeCloseTo(2000 / total, 5);
+        });
+
+        test('#3171 single task dans le budget: aucune troncature, poids 1', () => {
+            const engine = new SmartTruncationEngine({ maxOutputLength: 100_000 });
+            const tasks = [createMockTask('solo', 5)]; // ~3200
+            const result = engine.apply(tasks);
+
+            expect(result.taskPlans[0].truncationBudget).toBe(0);
+            expect(result.taskPlans[0].preservationWeight).toBe(1);
+            expect(result.metrics.finalTotalSize).toBe(result.metrics.originalTotalSize);
         });
 
         test('should include diagnostics', () => {
