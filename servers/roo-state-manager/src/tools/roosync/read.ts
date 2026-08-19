@@ -10,7 +10,7 @@
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode, StateManagerError } from '../../types/errors.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import {
   formatDate,
@@ -85,8 +85,21 @@ async function readInboxMode(
 ): Promise<string> {
   // #1498: allow explicit override of machine + workspace filters so a single
   // dashboard-watcher process can poll inboxes for every workspace on a machine.
-  const effectiveMachineId = args.to_machine || getLocalMachineId();
-  const effectiveWorkspaceId = args.workspace || getLocalWorkspaceId();
+  // #3177: a workspace given as a full identity "machine:workspace" must resolve
+  // the requested pair, never concatenate the local identity onto the string —
+  // that rendered a nonexistent inbox ("myia-po-2025:myia-po-2023:roo-extensions",
+  // empty intersection) with no error.
+  const identityMatch = args.workspace?.match(/^(myia-[a-z0-9-]+):(.+)$/);
+  if (identityMatch && args.to_machine && args.to_machine !== identityMatch[1]) {
+    throw new StateManagerError(
+      `Conflit d'identité : workspace="${args.workspace}" désigne la machine "${identityMatch[1]}" mais to_machine="${args.to_machine}" — un seul des deux.`,
+      'VALIDATION_FAILED',
+      'RooSyncReadTool',
+      { rejectedParam: 'to_machine', expectedParam: `workspace="${identityMatch[1]}:…"` }
+    );
+  }
+  const effectiveMachineId = identityMatch ? identityMatch[1] : (args.to_machine || getLocalMachineId());
+  const effectiveWorkspaceId = identityMatch ? identityMatch[2] : (args.workspace || getLocalWorkspaceId());
   const status = args.status || 'all';
   const limit = args.limit;
   const page = args.page;

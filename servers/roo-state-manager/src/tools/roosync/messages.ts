@@ -19,6 +19,7 @@ import { roosyncRead } from './read.js';
 import { roosyncManage } from './manage.js';
 import { roosyncAttachments } from './roosync-attachments.tool.js';
 import { createLogger } from '../../utils/logger.js';
+import { StateManagerError } from '../../types/errors.js';
 
 const logger = createLogger('RooSyncMessagesTool');
 
@@ -110,6 +111,26 @@ export async function roosyncMessages(args: MessagesArgs) {
   // not just a type source (z.infer). Throws ZodError on genuinely malformed input;
   // valid input passes through unchanged (handler cherry-picks known keys downstream).
   MessagesArgsSchema.parse(args);
+
+  // #3177 — a parameter absent from the schema (e.g. "machineId") must fail loudly,
+  // never be ignored in silence: inbox machineId=po-2026 rendered the server's own
+  // identity with no error. Mirror of the #3173 rejectedParam guard.
+  const schemaKeys = new Set(Object.keys(MessagesArgsSchema.shape));
+  const unknownKeys = Object.keys(args as Record<string, unknown>).filter(k => !schemaKeys.has(k));
+  if (unknownKeys.length > 0) {
+    const suggestions: Record<string, string> = { machineId: 'to_machine' };
+    const rejected = unknownKeys[0];
+    const expected = suggestions[rejected];
+    throw new StateManagerError(
+      expected
+        ? `Le paramètre "${rejected}" n'existe pas dans roosync_messages — param réel : "${expected}". Un paramètre fourni doit être honoré, jamais ignoré silencieusement.`
+        : `Paramètre inconnu : "${rejected}" n'existe pas dans le schéma roosync_messages (inconnus : ${unknownKeys.map(k => `"${k}"`).join(', ')}).`,
+      'VALIDATION_FAILED',
+      'RooSyncMessagesTool',
+      { rejectedParam: rejected, expectedParam: expected ?? null, unknownKeys }
+    );
+  }
+
   const { action } = args;
 
   switch (action) {
