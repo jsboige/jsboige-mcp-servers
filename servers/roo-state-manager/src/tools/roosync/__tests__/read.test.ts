@@ -278,6 +278,50 @@ describe.sequential('roosyncRead', () => {
       expect(text).toContain('Aucun message');
       expect(text).toContain('workspace-nonexistent');
     });
+
+    // ============================================================
+    // #3177 — workspace "machine:workspace" = substitution, pas concaténation
+    // ============================================================
+    test('#3177 workspace "machine:workspace" renders the requested pair, never a franken-identity', async () => {
+      await messageManager.sendMessage(
+        'sender', 'myia-po-2023:roo-extensions', 'Remote msg', 'Body', 'MEDIUM'
+      );
+
+      const res = await roosyncRead({ mode: 'inbox', workspace: 'myia-po-2023:roo-extensions' });
+      const text = (res.content[0] as any).text;
+      // Header must show the requested identity exactly once — NOT
+      // "test-machine:myia-po-2023:roo-extensions" (concatenated local + override)
+      expect(text).toContain('myia-po-2023:roo-extensions');
+      expect(text).not.toContain('test-machine:myia-po-2023');
+      // And the message addressed to that pair must be found (empty-inbox trap)
+      expect(text).toContain('Remote msg');
+    });
+
+    test('#3177 explicit to_machine takes precedence over the machine part of workspace', async () => {
+      await messageManager.sendMessage(
+        'sender', 'myia-po-2023:roo-extensions', 'Po2023 msg', 'Body', 'MEDIUM'
+      );
+
+      const res = await roosyncRead({
+        mode: 'inbox',
+        to_machine: 'myia-po-2023',
+        workspace: 'myia-po-2023:roo-extensions'
+      });
+      const text = (res.content[0] as any).text;
+      expect(text).toContain('myia-po-2023:roo-extensions');
+      expect(text).toContain('Po2023 msg');
+    });
+
+    test('#3177 plain workspace (no colon) unchanged — no regression on #1498 scheduler use-case', async () => {
+      await messageManager.sendMessage(
+        'sender', 'test-machine:workspace-a', 'Plain ws', 'Body', 'MEDIUM'
+      );
+
+      const res = await roosyncRead({ mode: 'inbox', workspace: 'workspace-a' });
+      const text = (res.content[0] as any).text;
+      expect(text).toContain('test-machine:workspace-a');
+      expect(text).toContain('Plain ws');
+    });
   });
 
   // ============================================================

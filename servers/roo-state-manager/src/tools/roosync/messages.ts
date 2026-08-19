@@ -82,8 +82,8 @@ export const MessagesArgsSchema = z.object({
   page: z.number().optional().describe('Numero de page (1-based, requiert per_page)'),
   per_page: z.number().optional().describe('Messages par page (requiert page)'),
   mark_as_read: z.boolean().optional().describe('Marquer comme lu (mode message, defaut: false)'),
-  workspace: z.string().optional().describe('Override workspace filter (#1498)'),
-  to_machine: z.string().optional().describe('Override machine filter (#1498, avance)'),
+  workspace: z.string().optional().describe('Override workspace filter (#1498). Identifiant de workspace SEUL — la machine reste la vôtre (ou to_machine). Passer "machine:workspace" ici produit une identité-valise inconnue de la flotte (#3177)'),
+  to_machine: z.string().optional().describe('Override machine filter (#1498, avance). NB: pas "machineId" — ce param n existe pas et est rejeté depuis #3177'),
 
   // --- Manage bulk params ---
   from: z.string().optional().describe('Filtrer par expediteur (bulk)'),
@@ -105,11 +105,39 @@ export type MessagesArgs = z.infer<typeof MessagesArgsSchema>;
 // IMPLEMENTATION
 // ====================================================================
 
+// #3173/#3177 — Identifiants plausibles mais absents du schéma. Un appel inbox
+// avec `machineId` rendait l'inbox de l'identité serveur sans erreur ni mention
+// du param ignoré (mesuré po-2026 c.252 escaladé à tort en « filtrage cassé »,
+// root-causé po-2025 #3177). Zod .strict() rejette toute clé inconnue, mais le
+// message générique ne nomme pas le param réel — cette table le fait.
+const KNOWN_ALIAS_HINTS: Record<string, { realParam: string; note: string }> = {
+  machineId: { realParam: 'to_machine', note: 'override machine filter (avancé)' },
+  machine_id: { realParam: 'to_machine', note: 'override machine filter (avancé)' },
+};
+
 export async function roosyncMessages(args: MessagesArgs) {
   // #3029 AC-4: MessagesArgsSchema consumed at runtime as the active validation layer,
   // not just a type source (z.infer). Throws ZodError on genuinely malformed input;
   // valid input passes through unchanged (handler cherry-picks known keys downstream).
-  MessagesArgsSchema.parse(args);
+  // #3177: .strict() — un param inconnu (ex: machineId) doit échouer l'appel,
+  // jamais être strippe silencieusement puis résolu en identité serveur.
+  // La détection d'alias précède le parse pour nommer le param réel dans le message.
+  const unknownKeys = Object.keys(args).filter(
+    (k) => !(k in MessagesArgsSchema.shape)
+  );
+  const aliasHint = unknownKeys
+    .map((k) => KNOWN_ALIAS_HINTS[k])
+    .filter(Boolean)[0];
+  if (aliasHint) {
+    throw new Error(
+      `Paramètre(s) inconnu(s) pour roosync_messages : ${unknownKeys.join(', ')}. ` +
+      `Vouliez-vous "${aliasHint.realParam}" (${aliasHint.note}) ? ` +
+      `Un paramètre fourni doit être honoré, jamais ignoré silencieusement (#3173/#3177).`
+    );
+  }
+
+  const parsed = MessagesArgsSchema.strict().parse(args);
+  args = parsed;
   const { action } = args;
 
   switch (action) {
