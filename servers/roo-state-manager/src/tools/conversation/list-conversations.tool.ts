@@ -311,9 +311,14 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
         meta.totalSize = node.metadata.totalSize;
         const sizeHuman = formatBytes(node.metadata.totalSize);
         if (sizeHuman) meta.sizeHuman = sizeHuman;
-        // #1608 R2: Warn agents about large sessions that can saturate GLM context
+        // #1608 R2: Warn agents about large sessions that can saturate GLM context.
+        // #3174: name BOTH bounds, not only the character budget. max_output_length caps
+        // characters (honored since #3171); messageStart/messageEnd caps how many messages
+        // are rendered — the only bound a caller can reason about BEFORE the call, since the
+        // char cost of a session is unknown until it is read. Naming one and not the other
+        // is what sends the caller back for a second view call.
         if (node.metadata.totalSize > 10_000_000) { // >10 MB
-            summary.sizeWarning = `Session is ${sizeHuman} — use smart_truncation: true with max_output_length: 50000 when viewing`;
+            summary.sizeWarning = `Session is ${sizeHuman} — use smart_truncation: true with max_output_length: 50000, and messageStart/messageEnd to bound how many messages are rendered`;
         }
     }
     if (node.metadata.mode) meta.mode = node.metadata.mode;

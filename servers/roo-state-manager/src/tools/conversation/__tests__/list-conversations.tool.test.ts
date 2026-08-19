@@ -691,6 +691,57 @@ describe('list-conversations', () => {
     });
   });
 
+  // ============================================================
+  // #3174 — sizeWarning names both bounds (usability, successor of #3171)
+  // The warning is the only guidance a caller gets BEFORE paying for a view call.
+  // It was recommending max_output_length alone; messageStart/messageEnd is the bound
+  // a caller can reason about without knowing the session's character cost.
+  // The field had NO test coverage before this block — the threshold and the wording
+  // were both free to drift silently.
+  // ============================================================
+  describe('handler - sizeWarning (#3174)', () => {
+    const bigSession = (totalSize: number) => new Map<string, any>([
+      ['task-big', {
+        taskId: 'task-big',
+        metadata: {
+          lastActivity: '2025-01-01T12:00:00.000Z',
+          createdAt: '2025-01-01T12:00:00.000Z',
+          messageCount: 10,
+          actionCount: 5,
+          totalSize,
+          workspace: 'test-workspace'
+        }
+      }]
+    ]);
+
+    const firstEntry = (result: any) => {
+      const response = JSON.parse(result.content[0].text as string);
+      const parsed = response.conversations ?? response;
+      return parsed[0];
+    };
+
+    it('names BOTH bounds — the char budget and the message range', async () => {
+      const result = await listConversationsTool.handler({}, bigSession(12_000_000));
+      const warning = firstEntry(result).sizeWarning;
+
+      expect(warning).toBeDefined();
+      // Both instruments must be named: one caps characters, the other caps messages.
+      expect(warning).toContain('max_output_length');
+      expect(warning).toContain('messageStart/messageEnd');
+      expect(warning).toContain('smart_truncation: true');
+    });
+
+    it('fires above 10 MB and stays silent at or below it', async () => {
+      const above = firstEntry(await listConversationsTool.handler({}, bigSession(10_000_001)));
+      const at = firstEntry(await listConversationsTool.handler({}, bigSession(10_000_000)));
+      const below = firstEntry(await listConversationsTool.handler({}, bigSession(1_000)));
+
+      expect(above.sizeWarning).toBeDefined();
+      expect(at.sizeWarning).toBeUndefined();
+      expect(below.sizeWarning).toBeUndefined();
+    });
+  });
+
   describe('result structure validation', () => {
     it('should return valid JSON structure', async () => {
       const result = await listConversationsTool.handler({}, mockConversationCache);
