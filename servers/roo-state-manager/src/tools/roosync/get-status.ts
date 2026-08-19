@@ -113,7 +113,7 @@ export const GetStatusResultSchema = z.object({
   })).describe('Per-machine scheduler execution metrics (#1442)').optional(),
 
   flags: z.array(z.string())
-    .describe('Flags actionnables (ex: HEARTBEAT_STALE:myia-po-2025)'),
+    .describe('Flags actionnables. UNKNOWN:<mid> = aucun append dashboard de <mid> vu par CET observateur depuis 8h — absence de signal observée, PAS une panne confirmée (croiser machineLastSeen + listener heartbeats avant toute escalade, #3160)'),
 
   // #3160: provenance for presence flags. An UNKNOWN:<mid> flag means "this
   // observer's dashboards show no append from <mid> within 8h" — which can be a

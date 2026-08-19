@@ -404,10 +404,15 @@ describe('roosyncHealthView orchestration + scoring', () => {
     expect(result.systemHealth.lastSeenByMachine['myia-ai-01']).toBe(fresh);
     expect(result.systemHealth.lastSeenByMachine['myia-po-2025']).toBe(stale);
     expect(result.systemHealth.lastSeenByMachine['myia-web1']).toBeNull();
-    // Recommendation names the machines and their last-seen (null → "never").
-    const offlineRec = result.recommendations.find(r => r.includes('machine(s) offline'));
+    // #3160: recommendation says UNKNOWN (unobserved), NOT "offline"/"down",
+    // names the machines and their last-seen (null → "never"), and gates
+    // escalation behind a re-read instead of suggesting [WAKE].
+    const offlineRec = result.recommendations.find(r => r.includes('machine(s) UNKNOWN'));
     expect(offlineRec).toBeDefined();
+    expect(offlineRec).toContain('NOT confirmed down');
     expect(offlineRec).toContain('myia-po-2025 last-seen');
     expect(offlineRec).toContain('myia-web1 last-seen never');
+    expect(offlineRec).toContain('stale GDrive mirror');
+    expect(offlineRec).not.toContain('machine(s) offline');
   });
 });
