@@ -530,7 +530,17 @@ function generateRecommendations(
     const detail = offlineMachines.length > 0
       ? ` (${offlineMachines.map(m => `${m.machineId} last-seen ${m.lastSeen ?? 'never'}`).join(', ')})`
       : '';
-    recs.push(`${offline} machine(s) offline${detail} — check dashboard intercom for [WAKE] signals`);
+    // #3160 (c.237 arbitration): UNKNOWN means "unobserved by this observer",
+    // NOT "confirmed down" — the old wording ("machine(s) offline — check
+    // dashboard intercom for [WAKE] signals") invited HIGH escalations on
+    // machines that were simply quiet or off voluntarily. Name the semantics,
+    // keep the per-machine last-seen provenance (null = never on this
+    // observer's mirror → possible stale GDrive mirror), and gate escalation
+    // behind a re-read + listener-heartbeat check instead of suggesting it.
+    recs.push(
+      `${offline} machine(s) UNKNOWN — no dashboard append within 8h as seen by THIS observer (unobserved, NOT confirmed down)${detail}. ` +
+      `Before escalating ([WAKE]/[ASK]): re-read the dashboard and check listener heartbeats; last-seen "never" may be a stale GDrive mirror on the observing side (#3160)`
+    );
   }
 
   if (recs.length === 0) {
