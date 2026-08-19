@@ -1184,6 +1184,53 @@ describe('roosync_dashboard', () => {
       expect(result.data?.intercom?.messages[1].content).toContain('@test-machine');
     });
 
+    it('returns mentions older than the intercomLimit boundary (#3179)', async () => {
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: '@test-machine old task beyond the limit'
+      });
+
+      for (let i = 1; i <= 5; i++) {
+        await roosyncDashboard({
+          action: 'append',
+          type: 'global',
+          content: `filler message ${i} for other machines`
+        });
+      }
+
+      const result = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+        mentionsOnly: true,
+        intercomLimit: 3
+      });
+
+      const messages = result.data?.intercom?.messages || [];
+      expect(messages.length).toBe(1);
+      expect(messages[0].content).toContain('old task beyond the limit');
+
+      // intercomLimit bounds the FILTERED set: several mentions keep only the last N
+      await roosyncDashboard({
+        action: 'append',
+        type: 'global',
+        content: '@test-machine newer task'
+      });
+
+      const bounded = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section: 'intercom',
+        mentionsOnly: true,
+        intercomLimit: 1
+      });
+
+      const boundedMessages = bounded.data?.intercom?.messages || [];
+      expect(boundedMessages.length).toBe(1);
+      expect(boundedMessages[0].content).toContain('newer task');
+    });
+
     it('handles multiple mentions in single message', async () => {
       await roosyncDashboard({
         action: 'append',

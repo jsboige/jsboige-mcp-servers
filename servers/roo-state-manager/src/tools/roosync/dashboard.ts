@@ -2847,16 +2847,19 @@ async function handleRead(
     data.status = dashboard.status;
   }
   if (readSection === 'intercom' || readSection === 'all') {
-    let messages = intercomLimit
-      ? dashboard.intercom.messages.slice(-intercomLimit)
-      : dashboard.intercom.messages;
+    let messages = dashboard.intercom.messages;
 
-    // Filter by mentionsOnly if requested
+    // mentionsOnly must filter the full history BEFORE the slice, otherwise
+    // intercomLimit takes the raw tail and older mentions vanish silently.
     if (args.mentionsOnly) {
       messages = messages.filter(msg => {
         const mentions = parseMentions(msg.content);
         return isMentioned(mentions, resolvedMachineId, resolvedWorkspace);
       });
+    }
+
+    if (intercomLimit) {
+      messages = messages.slice(-intercomLimit);
     }
 
     data.intercom = {
