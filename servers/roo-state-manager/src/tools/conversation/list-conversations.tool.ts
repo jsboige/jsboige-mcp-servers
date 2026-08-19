@@ -312,8 +312,12 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
         const sizeHuman = formatBytes(node.metadata.totalSize);
         if (sizeHuman) meta.sizeHuman = sizeHuman;
         // #1608 R2: Warn agents about large sessions that can saturate GLM context
+        // FIX #3171: ne plus recommander max_output_length comme contournement unique —
+        // il était inefficace (le gradient engine ne l'utilisait pas pour 1 tâche).
+        // La borne fiable est messageStart/messageEnd (comptage de messages).
         if (node.metadata.totalSize > 10_000_000) { // >10 MB
-            summary.sizeWarning = `Session is ${sizeHuman} — use smart_truncation: true with max_output_length: 50000 when viewing`;
+            const safeMax = Math.min(50000, node.metadata.totalSize / 20); // 5% de la taille
+            summary.sizeWarning = `Session is ${sizeHuman} — use smart_truncation: true with max_output_length: ${Math.round(safeMax)} et messageStart/messageEnd pour borner le nombre de messages`;
         }
     }
     if (node.metadata.mode) meta.mode = node.metadata.mode;

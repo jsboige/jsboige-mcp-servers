@@ -39,11 +39,32 @@ function truncateMessage(message: string, truncate: number): string {
  * Preserve les autres items de contenu tels quels (cas sauvegarde fichier,
  * messages d'erreur multi-content, etc).
  */
+/**
+ * #1244 Couche 2.5 — Hard cap final sur la sortie complete d'un handler view.
+ *
+ * Filet de securite : mesure la TAILLE TOTALE de tous les blocs text[] et applique
+ * ContentTruncator.hardCapString au premier bloc si le total depasse maxChars.
+ * Garantit le respect strict de max_output_length peu importe les fuites du legacy path,
+ * les bugs d'estimation, ou les depassements du gradient engine.
+ *
+ * FIX #3171 : mesurait auparavant content[0] seul, laissant passer le reste intact.
+ */
 function applyHardCap(result: CallToolResult, maxChars: number): CallToolResult {
     if (!result.content || result.content.length === 0) return result;
+
+    // FIX #3171: mesurer la somme de TOUS les blocs text, pas seulement content[0]
+    let totalTextLength = 0;
+    for (const item of result.content) {
+        if (item.type === 'text' && typeof item.text === 'string') {
+            totalTextLength += item.text.length;
+        }
+    }
+
+    if (totalTextLength <= maxChars) return result;
+
+    // Appliquer le hard cap au premier bloc text
     const first = result.content[0];
     if (first.type !== 'text' || typeof first.text !== 'string') return result;
-    if (first.text.length <= maxChars) return result;
 
     const capped = ContentTruncator.hardCapString(first.text, maxChars, { headerKeepChars: 2000 });
     return {
