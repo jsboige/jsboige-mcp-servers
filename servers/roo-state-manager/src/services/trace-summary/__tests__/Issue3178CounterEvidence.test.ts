@@ -17,6 +17,7 @@ import { JsonCsvExporter } from '../JsonCsvExporter.js';
 import { ContentClassifier } from '../ContentClassifier.js';
 import type { ClassifiedContent } from '../ContentClassifier.js';
 import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
+import { handleRooSyncSummarize } from '../../../tools/summary/roosync-summarize.tool.js';
 
 describe('Issue #3178 — contre-épreuves', () => {
     describe('(a) CSS opt-in par défaut', () => {
@@ -218,11 +219,76 @@ describe('Issue #3178 — contre-épreuves', () => {
             expect(stats.toolResultsSizePercentage).toBe(0);
         });
     });
+
+    describe('(d) cluster outputFormat json — enveloppe parsable de bout en bout (ai-01, #3178)', () => {
+        const getSkeleton = async (id: string): Promise<ConversationSkeleton | null> => {
+            if (id === 'root-3178') return makeClusterConversation('root-3178', undefined);
+            if (id === 'child-3178-a') return makeClusterConversation('child-3178-a', 'root-3178');
+            return null;
+        };
+        const findChildTasks = async (rootId: string): Promise<ConversationSkeleton[]> =>
+            rootId === 'root-3178' ? [makeClusterConversation('child-3178-a', 'root-3178')] : [];
+
+        test('la sortie ENTIÈRE passe JSON.parse (repro ai-01 : Unexpected token "<")', async () => {
+            const out = await handleRooSyncSummarize(
+                {
+                    type: 'cluster',
+                    taskId: 'root-3178',
+                    childTaskIds: ['child-3178-a'],
+                    outputFormat: 'json'
+                },
+                getSkeleton,
+                findChildTasks
+            );
+
+            // Contre-épreuve demandée par ai-01 (comment #3178) : la sortie entière
+            // doit passer JSON.parse — avant le fix elle commençait par "<!-- Résum…"
+            const parsed = JSON.parse(out);
+            expect(parsed.type).toBe('cluster');
+            expect(parsed.clusterMetadata.rootTaskId).toBe('root-3178');
+            expect(parsed.clusterMetadata.totalTasks).toBe(2);
+            expect(out.startsWith('<!--')).toBe(false);
+        });
+
+        test('markdown conserve la bannière de métadonnées (pas de régression)', async () => {
+            const out = await handleRooSyncSummarize(
+                {
+                    type: 'cluster',
+                    taskId: 'root-3178',
+                    childTaskIds: ['child-3178-a'],
+                    outputFormat: 'markdown'
+                },
+                getSkeleton,
+                findChildTasks
+            );
+            expect(out.startsWith('<!-- Résumé de grappe')).toBe(true);
+        });
+    });
 });
 
 // ============================================================
 // Helpers
 // ============================================================
+
+function makeClusterConversation(taskId: string, parentTaskId: string | undefined): ConversationSkeleton {
+    return {
+        taskId,
+        parentTaskId,
+        metadata: {
+            title: `Tache ${taskId}`,
+            createdAt: '2026-08-19T08:00:00Z',
+            lastActivity: '2026-08-19T09:00:00Z',
+            messageCount: 2,
+            actionCount: 0,
+            totalSize: 120,
+            mode: 'code'
+        },
+        sequence: [
+            { role: 'user', content: `Question pour ${taskId}`, timestamp: '2026-08-19T08:00:01Z', isTruncated: false },
+            { role: 'assistant', content: `Reponse pour ${taskId}`, timestamp: '2026-08-19T08:00:02Z', isTruncated: false }
+        ]
+    };
+}
 
 function makeClassified(
     subType: 'UserMessage' | 'Completion' | 'ToolResult',

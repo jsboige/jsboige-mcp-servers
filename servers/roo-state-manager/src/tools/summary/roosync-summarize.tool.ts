@@ -52,7 +52,7 @@ export interface RooSyncSummarizeArgs {
     /** Chemin optionnel pour sauvegarder le fichier */
     filePath?: string;
 
-    /** Format de sortie (markdown/html pour trace/cluster, json/markdown pour synthesis) */
+    /** Format de sortie (markdown/html/json pour trace et cluster, json/markdown pour synthesis) */
     outputFormat?: 'markdown' | 'html' | 'json';
 
     // ===== Options communes trace/cluster =====
@@ -139,7 +139,7 @@ export const roosyncSummarizeTool: Tool = {
             outputFormat: {
                 type: "string",
                 enum: ["markdown", "html", "json"],
-                description: "Format de sortie (markdown/html pour trace/cluster, json/markdown pour synthesis)",
+                description: "Format de sortie. trace: markdown/html/json. cluster: markdown/html/json (enveloppe clusterMetadata+statistics+content). synthesis: json/markdown",
                 default: "markdown"
             },
 
@@ -468,7 +468,7 @@ async function dispatchClusterHandler(
         rootTaskId: args.taskId,
         childTaskIds: args.childTaskIds,
         detailLevel: args.detailLevel,
-        outputFormat: args.outputFormat as 'markdown' | 'html' | undefined,
+        outputFormat: args.outputFormat as 'markdown' | 'html' | 'json' | undefined,
         truncationChars: args.truncationChars,
         compactStats: args.compactStats,
         includeCss: args.includeCss,

@@ -139,7 +139,7 @@ export interface ClusterSummaryOptions {
     compactStats?: boolean;
     includeCss?: boolean;
     generateToc?: boolean;
-    outputFormat?: 'markdown' | 'html';
+    outputFormat?: 'markdown' | 'html' | 'json';
     
     // Mode de génération de grappe
     clusterMode?: 'aggregated' | 'detailed' | 'comparative';
