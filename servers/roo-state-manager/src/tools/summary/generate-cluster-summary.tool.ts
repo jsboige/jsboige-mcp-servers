@@ -22,7 +22,7 @@ export interface GenerateClusterSummaryArgs {
     /** Niveau de détail du résumé */
     detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     /** Format de sortie */
-    outputFormat?: 'markdown' | 'html';
+    outputFormat?: 'markdown' | 'html' | 'json';
     /** Nombre max de caractères avant troncature (0 = pas de troncature) */
     truncationChars?: number;
     /** Utiliser un format compact pour les statistiques */
@@ -79,8 +79,8 @@ export const generateClusterSummaryTool: Tool = {
             },
             outputFormat: {
                 type: "string",
-                enum: ["markdown", "html"],
-                description: "Format de sortie (défaut: markdown)",
+                enum: ["markdown", "html", "json"],
+                description: "Format de sortie (défaut: markdown). json = enveloppe parsable (clusterMetadata + statistics + content markdown)",
                 default: "markdown"
             },
             truncationChars: {
@@ -245,6 +245,20 @@ export async function handleGenerateClusterSummary(
                 'GenerateClusterSummaryTool',
                 { rootTaskId: args.rootTaskId, error: result.error }
             );
+        }
+
+        // Format JSON : enveloppe parsable de bout en bout — le dispatch fait
+        // JSON.parse sur cette sortie, la bannière <!-- --> la casserait (#3178)
+        if (args.outputFormat === 'json') {
+            return JSON.stringify({
+                rootTaskId: args.rootTaskId,
+                clusterMetadata: result.clusterMetadata,
+                taskIndex: result.taskIndex,
+                statistics: result.statistics,
+                format: result.format,
+                size: result.size,
+                content: result.content
+            }, null, 2);
         }
 
         // Construction du résultat final avec métadonnées
