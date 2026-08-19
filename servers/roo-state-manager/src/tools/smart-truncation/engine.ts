@@ -41,11 +41,20 @@ class GradientCalculator {
     static calculatePreservationWeight(
         position: number,
         totalTasks: number,
-        gradientStrength: number
+        gradientStrength: number,
+        sizeContext?: { totalSize: number; maxOutputLength: number }
     ): number {
-        // FIX P0-1c: Pour une seule tâche, permettre la troncature (poids 0.3 = 70% de troncature possible)
-        // Le gradient est conçu pour répartir entre plusieurs tâches
-        if (totalTasks <= 1) return 0.3;
+        // FIX #3171: Pour une seule tâche, le poids dérive du budget réel
+        // (maxOutputLength / totalSize) au lieu de la constante 0.3. Un poids de
+        // gradient sert à répartir un budget ENTRE tâches ; avec une seule tâche,
+        // ce qui compte est d'honorer maxOutputLength. La constante 0.3 produisait
+        // un plancher à 30% de la source quelle que soit la limite demandée.
+        if (totalTasks <= 1) {
+            if (sizeContext && sizeContext.totalSize > 0) {
+                return Math.max(0, Math.min(1, sizeContext.maxOutputLength / sizeContext.totalSize));
+            }
+            return 0.3; // legacy: pas de contexte de taille (appels directs)
+        }
 
         // Position normalisée du centre [0,1]
         const center = (totalTasks - 1) / 2;
@@ -137,11 +146,15 @@ class BudgetAllocator {
         }
         
         // Calcul des poids de préservation
-        const weights = tasks.map((_, index) => 
+        // #3171: fournir le contexte de taille pour que le cas single-task dérive
+        // son poids du budget au lieu de la constante 0.3
+        const totalSize = tasks.reduce((sum, task) => sum + SizeCalculator.calculateTaskSize(task), 0);
+        const weights = tasks.map((_, index) =>
             GradientCalculator.calculatePreservationWeight(
-                index, 
-                tasks.length, 
-                config.gradientStrength
+                index,
+                tasks.length,
+                config.gradientStrength,
+                { totalSize, maxOutputLength: config.maxOutputLength }
             )
         );
         
@@ -161,7 +174,14 @@ class BudgetAllocator {
             }
             
             // Contraindre selon les limites de configuration
-            const maxAllowedTruncation = originalSize * config.maxTruncationRate;
+            // FIX #3171: pour une seule tâche, le budget EST la borne — maxTruncationRate
+            // est une préférence de répartition du gradient ENTRE tâches ; appliqué au cas
+            // single-task, il plafonnait la sortie à 30% de la source (0.7 de troncature max)
+            // quelle que soit la limite demandée. Une limite < 30% de la source devenait
+            // inatteignable côté planification.
+            const maxAllowedTruncation = tasks.length <= 1
+                ? originalSize
+                : originalSize * config.maxTruncationRate;
 
             // FIX P0-1b: Retirer contrainte minPreservationRate (contradictoire avec maxTruncationRate)
             // Le gradient exponentiel s'occupe déjà de préserver les extrêmes
@@ -217,10 +237,13 @@ export class SmartTruncationEngine {
             const taskPlans = BudgetAllocator.allocateTruncationBudget(tasks, excessSize, this.config);
             
             // Étape 3 : Planification détaillée par élément (pour l'instant, simplifiée)
+            // #3171: single-task — chaque élément peut absorber jusqu'à 100% de son budget
+            // (le cap 0.7 est une protection de répartition multi-tâches)
+            const maxElementRate = taskPlans.length <= 1 ? 1.0 : 0.7;
             for (const plan of taskPlans) {
                 const task = tasks.find(t => t.taskId === plan.taskId);
                 if (task && plan.truncationBudget > 0) {
-                    plan.elementPlans = this.planElementTruncation(task, plan.truncationBudget);
+                    plan.elementPlans = this.planElementTruncation(task, plan.truncationBudget, maxElementRate);
                 }
             }
             
@@ -259,7 +282,7 @@ export class SmartTruncationEngine {
     /**
      * Planifie la troncature des éléments d'une tâche
      */
-    private planElementTruncation(task: ConversationSkeleton, truncationBudget: number): ElementTruncationPlan[] {
+    private planElementTruncation(task: ConversationSkeleton, truncationBudget: number, maxElementRate: number = 0.7): ElementTruncationPlan[] {
         const plans: ElementTruncationPlan[] = [];
         let remainingBudget = truncationBudget;
 
@@ -283,7 +306,7 @@ export class SmartTruncationEngine {
         for (const element of elements) {
             if (remainingBudget <= 0) break;
 
-            const truncationAmount = Math.min(remainingBudget, element.size * 0.7); // Max 70% de troncature
+            const truncationAmount = Math.min(remainingBudget, element.size * maxElementRate);
 
             // FIX P0-1: Accepter toute troncature >= 1 char pour atteindre le budget
             // (seuil abaissé de 10 → 1 pour éviter 0% compression)

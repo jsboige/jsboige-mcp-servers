@@ -508,6 +508,36 @@ function validateArgs(args: ConversationBrowserArgs): void {
         );
     }
 
+    // #3173 — Un identifiant fourni mais non honoré par l'action fait échouer l'appel,
+    // jamais de repli silencieux : view+conversation_id rendait la session courante ou
+    // une session d'un autre workspace sans avertissement (mesuré po-2023 et ai-01).
+    if (args.action === 'view') {
+        if (args.conversation_id) {
+            throw new StateManagerError(
+                'Le paramètre "conversation_id" n\'est pas honoré par l\'action "view" — utilisez "task_id". Un identifiant fourni doit être honoré, jamais ignoré silencieusement.',
+                'VALIDATION_FAILED',
+                'ConversationBrowserTool',
+                { action: args.action, rejectedParam: 'conversation_id', expectedParam: 'task_id' }
+            );
+        }
+        if (args.taskId) {
+            throw new StateManagerError(
+                'Le paramètre "taskId" (alias de summarize) n\'est pas honoré par l\'action "view" — utilisez "task_id".',
+                'VALIDATION_FAILED',
+                'ConversationBrowserTool',
+                { action: args.action, rejectedParam: 'taskId', expectedParam: 'task_id' }
+            );
+        }
+    }
+    if (args.action === 'tree' && args.task_id) {
+        throw new StateManagerError(
+            'Le paramètre "task_id" n\'est pas honoré par l\'action "tree" — utilisez "conversation_id".',
+            'VALIDATION_FAILED',
+            'ConversationBrowserTool',
+            { action: args.action, rejectedParam: 'task_id', expectedParam: 'conversation_id' }
+        );
+    }
+
     if (args.action === 'summarize') {
         if (!args.summarize_type) {
             throw new StateManagerError(

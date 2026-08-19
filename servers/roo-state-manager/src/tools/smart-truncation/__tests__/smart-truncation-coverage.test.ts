@@ -63,18 +63,34 @@ describe('SmartTruncation Coverage Tests', () => {
             maxOutputLength: 500,
             gradientStrength: 2.0,
             minPreservationRate: 0.9,
-            maxTruncationRate: 0.8 // Allow up to 80% truncation
+            maxTruncationRate: 0.8
         });
 
         const tasks = [createMockTask('task1', 5)]; // Large task
 
         const result = engine.apply(tasks);
 
-        // Vérifier que la troncature respecte le maximum
-        if (result.taskPlans.length > 0 && result.taskPlans[0].truncationBudget > 0) {
-            const plan = result.taskPlans[0];
-            const truncationRate = plan.truncationBudget / plan.originalSize;
-            expect(truncationRate).toBeLessThanOrEqual(0.8);
+        // #3171: en single-task, maxTruncationRate (préférence de répartition
+        // multi-tâches) ne bride PAS le budget — la limite demandée (500) doit être
+        // atteignable même si elle requiert > 80% de troncature de la source.
+        // Ancien comportement (cap 0.8): finalTotalSize = 640 > 500, budget violé.
+        const plan = result.taskPlans[0];
+        expect(plan.truncationBudget).toBeGreaterThan(0);
+        expect(plan.truncationBudget / plan.originalSize).toBeGreaterThan(0.8); // 0.84: le budget exige plus que le cap
+        expect(result.metrics.finalTotalSize).toBeLessThanOrEqual(500);
+
+        // En multi-tâches, le cap par tâche reste respecté
+        const multiEngine = new SmartTruncationEngine({
+            maxOutputLength: 500,
+            gradientStrength: 2.0,
+            minPreservationRate: 0.9,
+            maxTruncationRate: 0.8
+        });
+        const multi = multiEngine.apply([createMockTask('t1', 5), createMockTask('t2', 5)]);
+        for (const p of multi.taskPlans) {
+            if (p.truncationBudget > 0) {
+                expect(p.truncationBudget / p.originalSize).toBeLessThanOrEqual(0.8);
+            }
         }
     });
 

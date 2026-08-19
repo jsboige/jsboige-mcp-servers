@@ -102,6 +102,62 @@ describe('conversation_browser', () => {
 			expect(getTextContent(result)).toContain('conversation_id');
 		});
 
+		// ============================================================
+		// #3173 — identifiant fourni mais non honoré => erreur explicite,
+		// jamais de repli silencieux sur une autre session
+		// ============================================================
+
+		test('#3173 view + conversation_id fails explicitly naming task_id', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', conversation_id: 'conv-target' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('conversation_id');
+			expect(getTextContent(result)).toContain('task_id');
+			// Le handler délégué ne doit JAMAIS être appelé (pas de rendu d'une autre session)
+			expect(mockViewHandler).not.toHaveBeenCalled();
+		});
+
+		test('#3173 view + taskId (alias summarize) fails explicitly naming task_id', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', taskId: 'task-target' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('task_id');
+			expect(mockViewHandler).not.toHaveBeenCalled();
+		});
+
+		test('#3173 tree + task_id (les deux fournis) fails explicitly naming conversation_id', async () => {
+			// Cas dangereux : conversation_id présent → le check "requis" passe,
+			// et sans guard le task_id serait ignoré en silence
+			const result = await handleConversationBrowser(
+				{ action: 'tree', conversation_id: 'conv-1', task_id: 'task-target' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('task_id');
+			expect(getTextContent(result)).toContain('conversation_id');
+			expect(mockHandleTaskBrowse).not.toHaveBeenCalled();
+		});
+
+		test('#3173 view with task_id (paramètre correct) n\'est pas rejeté', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', task_id: 'task-target' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBeFalsy();
+			expect(mockViewHandler).toHaveBeenCalledWith(
+				expect.objectContaining({ task_id: 'task-target' }),
+				mockCache
+			);
+		});
+
 		test('summarize requires summarize_type', async () => {
 			const result = await handleConversationBrowser(
 				{ action: 'summarize', taskId: 'task-1' } as ConversationBrowserArgs,
