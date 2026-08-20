@@ -93,6 +93,17 @@ async function readInboxMode(
   let workspaceOverride = args.workspace;
   if (workspaceOverride && workspaceOverride.includes(':')) {
     const [machinePart, ...workspaceParts] = workspaceOverride.split(':');
+    // #3177 follow-up: deux identités de machine DIFFÉRENTES fournies = conflit
+    // explicite, jamais to_machine-wins silencieux (la partie machine du workspace
+    // serait un identifiant fourni puis ignoré — le pattern exact que #3177 combat).
+    // Le cas redondant-consistant (même machine des deux côtés) reste accepté.
+    if (machineOverride && machineOverride !== machinePart) {
+      throw new MessageManagerError(
+        `Conflit d'identité : to_machine="${machineOverride}" mais workspace="${workspaceOverride}" désigne la machine "${machinePart}". Fournissez UNE identité de machine — un identifiant fourni doit être honoré, jamais ignoré (#3177).`,
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { to_machine: machineOverride, workspace: workspaceOverride, machineFromWorkspace: machinePart }
+      );
+    }
     if (!machineOverride) machineOverride = machinePart;
     workspaceOverride = workspaceParts.join(':');
   }
