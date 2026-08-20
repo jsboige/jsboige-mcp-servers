@@ -528,6 +528,17 @@ function validateArgs(args: ConversationBrowserArgs): void {
                 { action: args.action, rejectedParam: 'taskId', expectedParam: 'task_id' }
             );
         }
+        // #3174 — detailLevel (vocabulaire summarize, enum Full/Summary/…) était ignoré
+        // en silence sur view : l'appelant demandait un rendu Summary et recevait le
+        // défaut skeleton sans avertissement (mesuré po-2026 c.251 sur build 52603929).
+        if (args.detailLevel !== undefined) {
+            throw new StateManagerError(
+                'Le paramètre "detailLevel" (vocabulaire de summarize) n\'est pas honoré par l\'action "view" — utilisez "detail_level". Un paramètre fourni doit être honoré, jamais ignoré silencieusement.',
+                'VALIDATION_FAILED',
+                'ConversationBrowserTool',
+                { action: args.action, rejectedParam: 'detailLevel', expectedParam: 'detail_level' }
+            );
+        }
     }
     if (args.action === 'tree' && args.task_id) {
         throw new StateManagerError(

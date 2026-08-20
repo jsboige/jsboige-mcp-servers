@@ -198,6 +198,20 @@ describe('conversation_browser', () => {
 			);
 		});
 
+		// #3174 — detailLevel (summarize) ignoré en silence sur view : l'appelant
+		// demandait Summary et recevait le défaut skeleton sans avertissement (po-2026 c.251)
+		test('#3174 view + detailLevel (camelCase summarize) fails explicitly, no silent skeleton fallback', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', task_id: 'task-target', detailLevel: 'Summary' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('detailLevel');
+			expect(getTextContent(result)).toContain('detail_level');
+			expect(mockViewHandler).not.toHaveBeenCalled();
+		});
+
 		test('summarize requires summarize_type', async () => {
 			const result = await handleConversationBrowser(
 				{ action: 'summarize', taskId: 'task-1' } as ConversationBrowserArgs,
