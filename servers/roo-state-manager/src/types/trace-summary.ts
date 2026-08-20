@@ -24,7 +24,8 @@ export type CsvVariant = 'conversations' | 'messages' | 'tools';
  * Options de configuration pour la génération de résumé
  */
 export interface SummaryOptions {
-    detailLevel: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    // #3196: 8 valeurs alignées sur DetailLevelStrategyFactory (Compact, NoToolParams atteignables)
+    detailLevel: 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     truncationChars: number;
     compactStats: boolean;
     includeCss: boolean;

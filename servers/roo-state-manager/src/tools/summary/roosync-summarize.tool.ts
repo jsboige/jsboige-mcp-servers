@@ -57,8 +57,8 @@ export interface RooSyncSummarizeArgs {
 
     // ===== Options communes trace/cluster =====
 
-    /** Niveau de détail du résumé */
-    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    /** Niveau de détail du résumé (#3196: Compact et NoToolParams exposés) */
+    detailLevel?: 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
 
     /** Nombre max de caractères avant troncature (0 = pas de troncature) */
     truncationChars?: number;
@@ -146,8 +146,8 @@ export const roosyncSummarizeTool: Tool = {
             // Options communes trace/cluster
             detailLevel: {
                 type: "string",
-                enum: ["Full", "NoTools", "NoResults", "Messages", "Summary", "UserOnly"],
-                description: "Niveau de détail du résumé (défaut: Full)",
+                enum: ["Full", "NoTools", "NoToolParams", "Compact", "NoResults", "Messages", "Summary", "UserOnly"],
+                description: "Niveau de détail du résumé (défaut: Full). NoTools = alias de Compact ; NoToolParams = params masqués, résultats conservés (debug)",
                 default: "Full"
             },
             truncationChars: {
