@@ -538,6 +538,28 @@ function validateArgs(args: ConversationBrowserArgs): void {
         );
     }
 
+    // #3187 — Une valeur d'enum inconnue ne doit pas changer le comportement en silence :
+    // view_mode invalide rendait un arbre VIDE (switch sans default view-conversation-tree.ts:493/638),
+    // detail_level invalide rendait le contenu COMPLET. Même convention que la garde #3173.
+    if (args.action === 'view') {
+        if (args.view_mode !== undefined && !['single', 'chain', 'cluster'].includes(args.view_mode)) {
+            throw new StateManagerError(
+                `Valeur invalide pour "view_mode" : "${args.view_mode}". Valeurs acceptées : single, chain, cluster.`,
+                'VALIDATION_FAILED',
+                'ConversationBrowserTool',
+                { action: args.action, rejectedValue: args.view_mode, acceptedValues: ['single', 'chain', 'cluster'] }
+            );
+        }
+        if (args.detail_level !== undefined && !['skeleton', 'summary', 'full'].includes(args.detail_level)) {
+            throw new StateManagerError(
+                `Valeur invalide pour "detail_level" : "${args.detail_level}". Valeurs acceptées : skeleton, summary, full.`,
+                'VALIDATION_FAILED',
+                'ConversationBrowserTool',
+                { action: args.action, rejectedValue: args.detail_level, acceptedValues: ['skeleton', 'summary', 'full'] }
+            );
+        }
+    }
+
     if (args.action === 'summarize') {
         if (!args.summarize_type) {
             throw new StateManagerError(

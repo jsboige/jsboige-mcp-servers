@@ -158,6 +158,46 @@ describe('conversation_browser', () => {
 			);
 		});
 
+		// #3187 — valeur d'enum inconnue => erreur explicite, jamais de changement
+		// de comportement silencieux (view_mode invalide rendait un arbre VIDE,
+		// detail_level invalide rendait le contenu COMPLET — probes web1 c.294)
+		test('#3187 view + view_mode invalide ("skeleton") fails explicitly, no silent empty tree', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', task_id: 'task-target', view_mode: 'skeleton' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('view_mode');
+			expect(getTextContent(result)).toContain('skeleton');
+			// Le handler délégué ne doit JAMAIS être appelé (pas d'arbre vide rendu)
+			expect(mockViewHandler).not.toHaveBeenCalled();
+		});
+
+		test('#3187 view + detail_level invalide fails explicitly, no silent full render', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', task_id: 'task-target', detail_level: 'bogus' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('detail_level');
+			expect(mockViewHandler).not.toHaveBeenCalled();
+		});
+
+		test('#3187 view + enums valides inchangés (single + full ne sont pas rejetés)', async () => {
+			const result = await handleConversationBrowser(
+				{ action: 'view', task_id: 'task-target', view_mode: 'single', detail_level: 'full' } as ConversationBrowserArgs,
+				mockCache,
+				mockEnsureCache
+			);
+			expect(result.isError).toBeFalsy();
+			expect(mockViewHandler).toHaveBeenCalledWith(
+				expect.objectContaining({ view_mode: 'single', detail_level: 'full' }),
+				mockCache
+			);
+		});
+
 		test('summarize requires summarize_type', async () => {
 			const result = await handleConversationBrowser(
 				{ action: 'summarize', taskId: 'task-1' } as ConversationBrowserArgs,
