@@ -133,8 +133,8 @@ export interface StorageStats {
  * Options étendues pour la génération de résumés de grappes de tâches
  */
 export interface ClusterSummaryOptions {
-    // Options héritées des résumés standards
-    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    // Options héritées des résumés standards (#3196: 8 valeurs alignées sur la factory)
+    detailLevel?: 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     truncationChars?: number;
     compactStats?: boolean;
     includeCss?: boolean;

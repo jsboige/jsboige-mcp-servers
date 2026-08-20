@@ -62,7 +62,7 @@ export const conversationBrowserDefinition = {
             source: { type: 'string', enum: ['roo', 'claude', 'all'], default: 'roo' },
             filePath: { type: 'string' },
             summarize_output_format: { type: 'string', enum: ['markdown', 'html', 'json'], default: 'markdown' },
-            detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly'], default: 'Full' },
+            detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'Messages', 'Summary', 'UserOnly'], default: 'Full', description: 'NoTools = alias of Compact (#881). NoToolParams = tool params masked, results kept (debug).' },
             truncationChars: { type: 'number', description: '0 = no truncation.', default: 0 },
             compactStats: { type: 'boolean', default: false },
             includeCss: { type: 'boolean', default: false, description: 'Opt-in (#3178, défaut false).' },

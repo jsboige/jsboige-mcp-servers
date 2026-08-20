@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { DetailLevelStrategyFactory } from '../../services/reporting/DetailLevelStrategyFactory.js';
 import {
     allToolDefinitions,
     conversationBrowserDefinition,
@@ -189,6 +190,18 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(actions).toContain('view');
             expect(actions).toContain('summarize');
             expect(actions).toContain('rebuild');
+        });
+
+        // #3196: drift guard — the registered detailLevel enum must expose exactly the levels
+        // the factory registers. Before #3196 the schema exposed 6 while the factory had 8,
+        // leaving Compact and NoToolParams unreachable via the tool.
+        it('conversation_browser detailLevel enum must match DetailLevelStrategyFactory registrations (#3196)', () => {
+            const detailLevelProp = conversationBrowserDefinition.inputSchema.properties.detailLevel as Record<string, unknown>;
+            const schemaEnum = (detailLevelProp.enum as string[]).slice().sort();
+            const factoryLevels = DetailLevelStrategyFactory.getSupportedDetailLevels().slice().sort();
+            expect(schemaEnum).toEqual(factoryLevels);
+            expect(schemaEnum).toContain('Compact');
+            expect(schemaEnum).toContain('NoToolParams');
         });
 
         it('roosync_search should support semantic, text, and diagnose', () => {

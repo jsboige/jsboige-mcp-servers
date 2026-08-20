@@ -121,8 +121,8 @@ export interface ConversationBrowserArgs {
     filePath?: string;
     /** [summarize] Format de sortie */
     summarize_output_format?: 'markdown' | 'html' | 'json';
-    /** [summarize] Niveau de détail */
-    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    /** [summarize] Niveau de détail (#3196: Compact et NoToolParams exposés — 8 valeurs, alignées sur la factory) */
+    detailLevel?: 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     /** [summarize] Chars max avant troncature */
     truncationChars?: number;
     /** [summarize] Format compact pour stats */
@@ -356,8 +356,8 @@ export const conversationBrowserTool: Tool = {
             },
             detailLevel: {
                 type: 'string',
-                enum: ['Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly'],
-                description: '[summarize] Detail level.',
+                enum: ['Full', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'Messages', 'Summary', 'UserOnly'],
+                description: '[summarize] Detail level. NoTools = alias of Compact (#881). NoToolParams = tool params masked, results kept (debug).',
                 default: 'Full'
             },
             truncationChars: {

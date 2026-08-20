@@ -19,8 +19,8 @@ export interface GenerateClusterSummaryArgs {
     rootTaskId: string;
     /** Liste des IDs des tâches enfantes (optionnel, peut être auto-détecté) */
     childTaskIds?: string[];
-    /** Niveau de détail du résumé */
-    detailLevel?: 'Full' | 'NoTools' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
+    /** Niveau de détail du résumé (#3196: Compact et NoToolParams exposés) */
+    detailLevel?: 'Full' | 'NoTools' | 'NoToolParams' | 'Compact' | 'NoResults' | 'Messages' | 'Summary' | 'UserOnly';
     /** Format de sortie */
     outputFormat?: 'markdown' | 'html' | 'json';
     /** Nombre max de caractères avant troncature (0 = pas de troncature) */
@@ -73,8 +73,8 @@ export const generateClusterSummaryTool: Tool = {
             },
             detailLevel: {
                 type: "string",
-                enum: ["Full", "NoTools", "NoResults", "Messages", "Summary", "UserOnly"],
-                description: "Niveau de détail du résumé (défaut: Full)",
+                enum: ["Full", "NoTools", "NoToolParams", "Compact", "NoResults", "Messages", "Summary", "UserOnly"],
+                description: "Niveau de détail du résumé (défaut: Full). NoTools = alias de Compact ; NoToolParams = params masqués, résultats conservés (debug)",
                 default: "Full"
             },
             outputFormat: {

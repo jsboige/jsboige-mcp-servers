@@ -410,14 +410,14 @@ Génère un résumé intelligent et formaté d'une trace de conversation Roo ave
 **Fonctionnalités principales :**
 - **Contenu conversationnel complet** : Rendu de tous les messages (user, assistant, tools)
 - **Progressive Disclosure Pattern** : Sections `<details>/<summary>` pour les environment_details et blocs techniques
-- **6 modes de détail** : Full, NoTools, NoResults, Messages, Summary, UserOnly
+- **8 modes de détail** (#3196) : Full, NoTools, NoToolParams, Compact, NoResults, Messages, Summary, UserOnly
 - **CSS intégré** : Styling avancé avec classes pour chaque type de message
 - **Navigation interactive** : Table des matières et liens de retour
 - **Architecture modulaire** : Service TypeScript robuste et extensible
 
 **Paramètres :**
 - `taskId` (string) : ID de la tâche (ou "current" pour la tâche actuelle)
-- `detailLevel` (string, optionnel) : Mode de rendu ('Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly')
+- `detailLevel` (string, optionnel) : Mode de rendu ('Full', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'Messages', 'Summary', 'UserOnly') — NoTools = alias de Compact, NoToolParams = params masqués + résultats conservés (#881, exposés #3196)
 - `outputFormat` (string, optionnel) : Format de sortie ('markdown', 'html')
 - `truncationChars` (number, optionnel) : Limite de troncature (0 = pas de limite)
 - `compactStats` (boolean, optionnel) : Utiliser format compact pour statistiques
@@ -811,7 +811,7 @@ Génère un résumé intelligent et formaté d'une grappe (groupe) de tâches Ro
 **Paramètres :**
 - `rootTaskId` (string) : ID de la tâche racine (parent principal) de la grappe
 - `childTaskIds` (array[string], optionnel) : Liste des IDs des tâches enfantes (auto-détecté via parentTaskId si non fourni)
-- `detailLevel` (string, optionnel) : Mode de rendu ('Full', 'NoTools', 'NoResults', 'Messages', 'Summary', 'UserOnly')
+- `detailLevel` (string, optionnel) : Mode de rendu ('Full', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'Messages', 'Summary', 'UserOnly')
 - `outputFormat` (string, optionnel) : Format de sortie ('markdown', 'html')
 - `truncationChars` (number, optionnel) : Limite de troncature globale (0 = pas de limite)
 - `compactStats` (boolean, optionnel) : Utiliser format compact pour statistiques
