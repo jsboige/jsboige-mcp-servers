@@ -142,3 +142,94 @@ describe('MessageManager — cloud-only inbox read timeout (#818 class, #2267)',
     expect(mocks.error.mock.calls.length).toBeGreaterThanOrEqual(2);
   }, 10_000);
 });
+
+describe('MessageManager — negative cache for unreadable inbox files (#3205)', () => {
+  let sharedState: string;
+
+  beforeEach(() => {
+    sharedState = makeTempSharedState();
+    mocks.error.mockClear();
+    mocks.readFile.mockClear();
+    mocks.readFile.mockImplementation(realReadFile as never);
+  });
+
+  afterEach(() => {
+    rmSync(sharedState, { recursive: true, force: true });
+  });
+
+  // Long enough that the entry persists across two builds in the same test run.
+  const LONG_NEG_TTL_MS = 60_000;
+
+  test('skips a failed-to-read file on a subsequent rebuild within the negative-cache window', async () => {
+    const goodId = 'msg-neg-good-aaaaaaaa';
+    const badId = 'msg-neg-bad-bbbbbbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    // badId read rejects; everything else passes through.
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(badId)) {
+        throw new Error('Simulated EIO read failure');
+      }
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new MessageManager(sharedState, TEST_TIMEOUT_MS, LONG_NEG_TTL_MS);
+
+    // 1st build: bad file fails → excluded from results, recorded in negative cache.
+    const first = await manager.readInbox('myia-po-2025', 'all');
+    expect(first.map(m => m.id)).toContain(goodId);
+    expect(first.map(m => m.id)).not.toContain(badId);
+    expect(mocks.readFile.mock.calls.filter(c => c[0].includes(badId)).length).toBe(1);
+
+    // Force a rebuild via invalidateCache (the cache-TTL fast path would
+    // otherwise short-circuit within 5 min). A new file proves it's a real
+    // rebuild, not a fast-path return.
+    const newId = 'msg-neg-new-cccccccc';
+    seedInboxMessage(sharedState, newId, 'myia-po-2025', 'myia-po-2025');
+    manager.invalidateCache();
+
+    const second = await manager.readInbox('myia-po-2025', 'all');
+    expect(second.map(m => m.id)).toContain(goodId);
+    expect(second.map(m => m.id)).toContain(newId);
+    expect(second.map(m => m.id)).not.toContain(badId);
+
+    // badId NOT re-read on the rebuild (still inside the negative-cache window).
+    expect(mocks.readFile.mock.calls.filter(c => c[0].includes(badId)).length).toBe(1);
+  }, 10_000);
+
+  test('retries a previously-failed file once its negative-cache window expires', async () => {
+    const goodId = 'msg-neg-exp-good-aaaa';
+    const badId = 'msg-neg-exp-bad-bbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    // badId fails on the FIRST attempt only, then succeeds (simulates hydration).
+    let failBad = true;
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(badId) && failBad) {
+        throw new Error('Simulated EIO read failure');
+      }
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const manager = new MessageManager(sharedState, TEST_TIMEOUT_MS, 50);
+
+    const first = await manager.readInbox('myia-po-2025', 'all');
+    expect(first.map(m => m.id)).not.toContain(badId);
+
+    // Let the negative-cache window elapse, then hydrate the file.
+    await new Promise(resolve => setTimeout(resolve, 70));
+    failBad = false;
+
+    // Force a rebuild via invalidateCache (cache-TTL fast path would short-circuit).
+    const newId = 'msg-neg-exp-new-cccc';
+    seedInboxMessage(sharedState, newId, 'myia-po-2025', 'myia-po-2025');
+    manager.invalidateCache();
+
+    const second = await manager.readInbox('myia-po-2025', 'all');
+    // badId retried after expiry and now reads successfully.
+    expect(second.map(m => m.id)).toContain(badId);
+    expect(second.map(m => m.id)).toContain(newId);
+  }, 10_000);
+});

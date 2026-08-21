@@ -209,8 +209,17 @@ export class MessageManager {
   private static readonly INBOX_READ_TIMEOUT_MS = 10_000;
   /** Per-file read timeout (overridable for tests; production = INBOX_READ_TIMEOUT_MS) */
   private readonly readTimeoutMs: number;
+  /** Negative-cache TTL (overridable for tests; production = NEGATIVE_CACHE_TTL_MS) */
+  private readonly negativeCacheTtlMs: number;
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
+  /** Files that failed to read during a cache build, mapped to failure timestamp.
+   *  Skipped on rebuild while unexpired so a cloud-only GDrive file that times out
+   *  once isn't re-read (~10s each) every 5-min rebuild (#3205). */
+  private negativeCache: Map<string, number> = new Map();
+  /** Negative-cache TTL in ms (15 min — long enough to skip repeated dead reads,
+   *  short enough to retry once a file hydrates). */
+  private static readonly NEGATIVE_CACHE_TTL_MS = 900_000;
 
   /** Auto-archive daemon timer (#809 — prevents inbox unbounded growth) */
   private autoArchiveTimer: NodeJS.Timeout | null = null;
@@ -222,9 +231,14 @@ export class MessageManager {
    * @param readTimeoutMs Per-file read timeout for inbox cache build (tests).
    *   Defaults to INBOX_READ_TIMEOUT_MS (10s).
    */
-  constructor(sharedStatePath: string, readTimeoutMs: number = MessageManager.INBOX_READ_TIMEOUT_MS) {
+  constructor(
+    sharedStatePath: string,
+    readTimeoutMs: number = MessageManager.INBOX_READ_TIMEOUT_MS,
+    negativeCacheTtlMs: number = MessageManager.NEGATIVE_CACHE_TTL_MS,
+  ) {
     this.sharedStatePath = sharedStatePath;
     this.readTimeoutMs = readTimeoutMs;
+    this.negativeCacheTtlMs = negativeCacheTtlMs;
     this.messagesPath = join(sharedStatePath, 'messages');
     this.inboxPath = join(this.messagesPath, 'inbox');
     this.sentPath = join(this.messagesPath, 'sent');
@@ -267,6 +281,26 @@ export class MessageManager {
     this.inboxFullCache.clear();
     this.cacheBuiltAt = 0;
     this.lastInboxFileCount = -1;
+  }
+
+  /** Prune expired negative-cache entries. Returns true if any were pruned
+   *  (signals a forced rebuild so hydrated files are retried — the count-only
+   *  fast path alone would never re-read them, #3205). */
+  private pruneNegativeCache(): boolean {
+    let pruned = false;
+    const now = Date.now();
+    for (const [file, failedAt] of this.negativeCache) {
+      if (now - failedAt >= this.negativeCacheTtlMs) {
+        this.negativeCache.delete(file);
+        pruned = true;
+      }
+    }
+    return pruned;
+  }
+
+  /** True if the file is in the negative cache (unexpired — pruning happens at build start). */
+  private isNegativelyCached(file: string): boolean {
+    return this.negativeCache.has(file);
   }
 
   /**
@@ -357,22 +391,33 @@ export class MessageManager {
     // TTL expired — check file count for external changes
     const files = (await fs.readdir(this.inboxPath)).filter(f => f.endsWith('.json'));
 
+    // Prune expired negative-cache entries; a prune forces a rebuild so hydrated
+    // files are retried (count alone would never trigger one, #3205).
+    const negativePruned = this.pruneNegativeCache();
+
     // If count unchanged and cache exists, refresh TTL without re-reading files
     if (
       this.inboxCache !== null &&
-      files.length === this.lastInboxFileCount
+      files.length === this.lastInboxFileCount &&
+      !negativePruned
     ) {
       this.cacheBuiltAt = now;
       return { items: this.inboxCache, full: this.inboxFullCache };
     }
 
-    logger.info(`Building inbox cache (${files.length} files, concurrency=${MessageManager.READ_CONCURRENCY})`);
+    // Skip files that failed a recent read (negative cache): a cloud-only GDrive
+    // file that timed out once will usually time out again for a while, and
+    // re-reading it every 5-min rebuild burns ~10s on a read that can't succeed.
+    const readableFiles = files.filter(f => !this.isNegativelyCached(f));
+    const skippedCount = files.length - readableFiles.length;
+
+    logger.info(`Building inbox cache (${readableFiles.length} files${skippedCount ? `, ${skippedCount} skipped (negative cache)` : ''}, concurrency=${MessageManager.READ_CONCURRENCY})`);
     const items: MessageListItem[] = [];
     const full = new Map<string, Message>();
 
     // Parallel chunked reads — 50 concurrent instead of serial (84s → ~2s on GDrive)
-    for (let i = 0; i < files.length; i += MessageManager.READ_CONCURRENCY) {
-      const chunk = files.slice(i, i + MessageManager.READ_CONCURRENCY);
+    for (let i = 0; i < readableFiles.length; i += MessageManager.READ_CONCURRENCY) {
+      const chunk = readableFiles.slice(i, i + MessageManager.READ_CONCURRENCY);
       const results = await Promise.allSettled(
         chunk.map(async file => {
           // Bound each read against GDrive cloud-only hangs: allSettled waits
@@ -396,6 +441,9 @@ export class MessageManager {
         const result = results[r];
         if (result.status === 'fulfilled') {
           const message = result.value;
+          // Read succeeded — clear any negative-cache entry so a recovered file is
+          // not skipped on the next build (#3205).
+          this.negativeCache.delete(chunk[r]);
           // Phantom-message guard: the inbox is LISTED by each file's internal `id`,
           // but every mutation (getMessage/markAsRead/archiveMessage/destroyMessage)
           // locates the file by reconstructing `inbox/${id}.json`. A file whose name
@@ -420,6 +468,11 @@ export class MessageManager {
           });
         } else {
           const failedFile = chunk[r] ? join(this.inboxPath, chunk[r]) : 'unknown';
+          // Record the read failure so the file is skipped on subsequent rebuilds
+          // until the window elapses (or it reads successfully), #3205.
+          if (chunk[r]) {
+            this.negativeCache.set(chunk[r], Date.now());
+          }
           logger.error(`Error reading message file during parallel cache build: ${failedFile}`, result.reason);
         }
       }
