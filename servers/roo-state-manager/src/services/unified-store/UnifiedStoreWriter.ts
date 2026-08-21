@@ -29,6 +29,8 @@ import type {
   RooSyncAttachmentRow,
   RooSyncMessageRow,
   RooSyncMessageUpdate,
+  RooSyncDashboardRow,
+  RooSyncDashboardMessageRow,
 } from './types.js';
 
 export interface UnifiedStoreWriterConfig {
@@ -69,6 +71,24 @@ export interface IUnifiedStoreWriter {
   insertRooSyncAttachment(row: RooSyncAttachmentRow): Promise<void>;
   /** RooSync channel — purge an attachment payload when the message is destroyed. */
   deleteRooSyncAttachment(uuid: string): Promise<void>;
+  /**
+   * RooSync dashboards (#3151 Phase C) — transactional sync of one dashboard
+   * row + its active journal rows: upsert the row, upsert the message rows
+   * (idempotent on (dashboard_key, message_id)), stamp `archived_at` on active
+   * journal rows absent from the sync set (condensation).
+   *
+   * `opts.backfill` switches to the one-time-import semantics of
+   * backfill-roosync-dashboards.mjs: INSERT-only everywhere (DO NOTHING),
+   * no archive stamping — a file read at T0 racing a live sync at T1 must
+   * never overwrite the fresher PG state or archive its messages.
+   */
+  syncRooSyncDashboard(
+    row: RooSyncDashboardRow,
+    messages: RooSyncDashboardMessageRow[],
+    opts?: { backfill?: boolean }
+  ): Promise<void>;
+  /** RooSync dashboards — drop dashboard + journal (cascade) when the GDrive file is deleted. */
+  deleteRooSyncDashboard(key: string): Promise<void>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
@@ -87,5 +107,11 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
   async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
   async deleteRooSyncAttachment(_uuid: string): Promise<void> {}
+  async syncRooSyncDashboard(
+    _row: RooSyncDashboardRow,
+    _messages: RooSyncDashboardMessageRow[],
+    _opts?: { backfill?: boolean }
+  ): Promise<void> {}
+  async deleteRooSyncDashboard(_key: string): Promise<void> {}
   async ping(): Promise<boolean> { return false; }
 }

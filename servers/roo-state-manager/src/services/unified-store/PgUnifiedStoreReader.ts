@@ -21,6 +21,8 @@ import type {
   ConversationRow,
   MessageRow,
   RooSyncMessageRow,
+  RooSyncDashboardRow,
+  RooSyncDashboardMessageRow,
 } from './types.js';
 import type { IUnifiedStoreReader, UnifiedStoreReaderConfig } from './UnifiedStoreReader.js';
 
@@ -110,6 +112,70 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
     if (result.rows.length === 0) return null;
     return this.mapRooSyncMessageRow(result.rows[0]);
+  }
+
+  // ─── RooSync dashboard reads (#3151 Phase C) ─────────────────────
+
+  async getRooSyncDashboard(key: string): Promise<{
+    dashboard: RooSyncDashboardRow;
+    messages: RooSyncDashboardMessageRow[];
+  } | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const dashResult = await this.pool.query(
+      'SELECT * FROM roosync_dashboards WHERE key = $1',
+      [key],
+    );
+    if (dashResult.rows.length === 0) return null;
+
+    const msgResult = await this.pool.query(
+      `SELECT * FROM roosync_dashboard_messages
+       WHERE dashboard_key = $1 AND archived_at IS NULL
+       ORDER BY created_at ASC, id ASC`,
+      [key],
+    );
+
+    return {
+      dashboard: this.mapRooSyncDashboardRow(dashResult.rows[0]),
+      messages: msgResult.rows.map(r => this.mapRooSyncDashboardMessageRow(r)),
+    };
+  }
+
+  private mapRooSyncDashboardRow(row: pg.QueryResult['rows'][0]): RooSyncDashboardRow {
+    return {
+      key: row.key,
+      type: row.type,
+      machine_id: row.machine_id ?? null,
+      workspace: row.workspace ?? null,
+      content: row.content ?? '',
+      status_json: row.status_json ?? { lastModified: '', lastModifiedBy: { machineId: '', workspace: '' } },
+      updated_at: row.updated_at instanceof Date
+        ? row.updated_at.toISOString()
+        : (row.updated_at ? String(row.updated_at) : undefined),
+      version: row.version,
+    };
+  }
+
+  private mapRooSyncDashboardMessageRow(row: pg.QueryResult['rows'][0]): RooSyncDashboardMessageRow {
+    return {
+      id: row.id,
+      dashboard_key: row.dashboard_key,
+      message_id: row.message_id ?? null,
+      author_machine: row.author_machine,
+      author_workspace: row.author_workspace,
+      content: row.content ?? '',
+      tags: row.tags ?? [],
+      team_stage: row.team_stage ?? null,
+      reply_to: row.reply_to ?? null,
+      acknowledged_at: row.acknowledged_at ?? null,
+      archived_at: row.archived_at instanceof Date
+        ? row.archived_at.toISOString()
+        : (row.archived_at ? String(row.archived_at) : null),
+      created_at: row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : String(row.created_at),
+    };
   }
 
   private mapRooSyncMessageRow(row: pg.QueryResult['rows'][0]): RooSyncMessageRow {
