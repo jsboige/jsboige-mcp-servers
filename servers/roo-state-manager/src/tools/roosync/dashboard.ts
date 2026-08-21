@@ -797,7 +797,11 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
 /**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
-async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<void> {
+async function writeDashboardFile(
+  key: string,
+  dashboard: Dashboard,
+  opts?: { condensed?: boolean }
+): Promise<void> {
   const dir = getDashboardsDir();
   await fs.mkdir(dir, { recursive: true });
   const filePath = getDashboardPath(key);
@@ -856,7 +860,11 @@ ${intercomSection}
   // consistent before the caller returns. A hard PG failure still degrades to
   // the GDrive-only behavior (dualWriteDashboardSync swallows its errors and
   // the writer's circuit breaker caps the retry cost).
-  await dualWriteDashboardSync(dashboard);
+  // `opts.condensed` (threaded from applyCondensedWithMerge) is the only mode
+  // allowed to stamp archived_at — a plain write's snapshot can lag concurrent
+  // appends from the other machines (GDrive parity: condensation is the sole
+  // operation that removes intercom messages).
+  await dualWriteDashboardSync(dashboard, opts);
 }
 
 /**
@@ -874,7 +882,7 @@ async function applyCondensedWithMerge(
 ): Promise<void> {
   const current = await readDashboardFile(key);
   if (!current) {
-    await writeDashboardFile(key, condensedDashboard);
+    await writeDashboardFile(key, condensedDashboard, { condensed: true });
     return;
   }
 
@@ -894,7 +902,7 @@ async function applyCondensedWithMerge(
   const delta = current.intercom.messages.filter(m => !seen.has(m.id));
 
   if (delta.length === 0) {
-    await writeDashboardFile(key, condensedDashboard);
+    await writeDashboardFile(key, condensedDashboard, { condensed: true });
     return;
   }
 
@@ -913,7 +921,7 @@ async function applyCondensedWithMerge(
       lastCondensedAt: condensedDashboard.intercom.lastCondensedAt,
     },
   };
-  await writeDashboardFile(key, merged);
+  await writeDashboardFile(key, merged, { condensed: true });
 }
 
 /**

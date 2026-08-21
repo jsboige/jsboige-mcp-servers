@@ -74,8 +74,12 @@ export interface IUnifiedStoreWriter {
   /**
    * RooSync dashboards (#3151 Phase C) — transactional sync of one dashboard
    * row + its active journal rows: upsert the row, upsert the message rows
-   * (idempotent on (dashboard_key, message_id)), stamp `archived_at` on active
-   * journal rows absent from the sync set (condensation).
+   * (idempotent on (dashboard_key, message_id)).
+   *
+   * `archived_at` is stamped ONLY when `opts.condensed` is set: on GDrive,
+   * condensation is the only operation that removes intercom messages, so a
+   * plain sync or append (whose snapshot may lag concurrent appends from the
+   * other machines) must never archive rows it simply hasn't seen.
    *
    * `opts.backfill` switches to the one-time-import semantics of
    * backfill-roosync-dashboards.mjs: INSERT-only everywhere (DO NOTHING),
@@ -85,7 +89,7 @@ export interface IUnifiedStoreWriter {
   syncRooSyncDashboard(
     row: RooSyncDashboardRow,
     messages: RooSyncDashboardMessageRow[],
-    opts?: { backfill?: boolean }
+    opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<void>;
   /** RooSync dashboards — drop dashboard + journal (cascade) when the GDrive file is deleted. */
   deleteRooSyncDashboard(key: string): Promise<void>;
@@ -110,7 +114,7 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async syncRooSyncDashboard(
     _row: RooSyncDashboardRow,
     _messages: RooSyncDashboardMessageRow[],
-    _opts?: { backfill?: boolean }
+    _opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<void> {}
   async deleteRooSyncDashboard(_key: string): Promise<void> {}
   async ping(): Promise<boolean> { return false; }

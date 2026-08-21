@@ -9,7 +9,9 @@
  *     back to the GDrive file — dégradation gracieuse); key miss → null
  *     (under-show protection, same contract as the Phase B message channel)
  *   - dualWriteDashboardSync / dualWriteDashboardDelete / backfill: never
- *     throw, correct writer calls, backfill mode flag
+ *     throw, correct writer calls, backfill mode flag, condensed mode flag
+ *     (archived_at stamps ONLY on condensation — CRITICAL 1) and failure
+ *     warns (divergence observable — CRITICAL 2)
  *   - SQL shape of the concrete PgUnifiedStoreWriter.syncRooSyncDashboard
  *     (sync vs backfill modes) and PgUnifiedStoreReader.getRooSyncDashboard
  *     (active-set filter, ordering) — asserted against captured query text
@@ -58,6 +60,17 @@ const mockConnect = vi.fn().mockResolvedValue({ query: mockQuery, release: vi.fn
 const mockPool = { connect: mockConnect, query: mockQuery, end: vi.fn() };
 
 vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
+
+// ─── Logger mock (dual-write failure warns must be observable) ──────
+// vi.hoisted: the store calls createLogger at module scope, so the factory
+// runs at import time — before const declarations. Same lazy-call reason
+// the reader/writer factories below survive hoisting without it.
+
+const { mockLoggerWarn } = vi.hoisted(() => ({ mockLoggerWarn: vi.fn() }));
+
+vi.mock('../../../utils/logger.js', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: mockLoggerWarn, error: vi.fn() }),
+}));
 
 // Import AFTER the factory mocks are registered.
 import {
@@ -291,13 +304,26 @@ describe('dualWriteDashboardSync / Delete / Backfill', () => {
     const [row, messages] = mockSyncRooSyncDashboard.mock.calls[0];
     expect(row.key).toBe('workspace-roo-extensions');
     expect(messages).toHaveLength(2);
-    // no backfill flag on the live path
+    // no flags on the plain live path — no stamping (CRITICAL 1)
     expect(mockSyncRooSyncDashboard.mock.calls[0][2]).toBeUndefined();
   });
 
-  test('sync never throws on writer failure', async () => {
+  test('condensed sync forwards the condensed flag (the only stamping mode)', async () => {
+    await dualWriteDashboardSync(sampleDashboard(), { condensed: true });
+    expect(mockSyncRooSyncDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'workspace-roo-extensions' }),
+      expect.any(Array),
+      { condensed: true }
+    );
+  });
+
+  test('sync never throws on writer failure and warns (CRITICAL 2 — divergence must be observable)', async () => {
     mockSyncRooSyncDashboard.mockRejectedValueOnce(new Error('PG down'));
     await expect(dualWriteDashboardSync(sampleDashboard())).resolves.toBeUndefined();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('dual-write sync failed'),
+      expect.objectContaining({ key: 'workspace-roo-extensions', condensed: false })
+    );
   });
 
   test('delete forwards the key and never throws', async () => {
@@ -305,6 +331,10 @@ describe('dualWriteDashboardSync / Delete / Backfill', () => {
     expect(mockDeleteRooSyncDashboard).toHaveBeenCalledWith('workspace-roo-extensions');
     mockDeleteRooSyncDashboard.mockRejectedValueOnce(new Error('PG down'));
     await expect(dualWriteDashboardDelete('workspace-roo-extensions')).resolves.toBeUndefined();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('dual-write delete failed'),
+      expect.objectContaining({ key: 'workspace-roo-extensions' })
+    );
   });
 
   test('backfill passes the backfill mode flag', async () => {
@@ -326,7 +356,7 @@ describe('PgUnifiedStoreWriter.syncRooSyncDashboard SQL shape', () => {
     return mockQuery.mock.calls.map(c => String(c[0]));
   }
 
-  test('sync mode: transactional upsert + journal upsert + archive stamp', async () => {
+  test('plain sync: transactional upserts, NO archive stamp (CRITICAL 1)', async () => {
     await writer.syncRooSyncDashboard(sampleDashboardRow(), [sampleMessageRow()]);
     const sql = queries().join('\n---\n');
     expect(sql).toContain('BEGIN');
@@ -334,6 +364,26 @@ describe('PgUnifiedStoreWriter.syncRooSyncDashboard SQL shape', () => {
     expect(sql).toContain('ON CONFLICT (key) DO UPDATE SET');
     expect(sql).toContain('version = roosync_dashboards.version + 1');
     expect(sql).toContain('INSERT INTO roosync_dashboard_messages');
+    expect(sql).toContain('ON CONFLICT (dashboard_key, message_id) DO UPDATE SET');
+    expect(sql).toContain('COMMIT');
+    // A plain write's snapshot can lag concurrent appends from the other
+    // machines — stamping here would archive messages still live on GDrive.
+    expect(sql).not.toContain('SET archived_at');
+  });
+
+  test('plain sync with an EMPTY message list: NO stamp (stale-empty snapshot must not archive everything)', async () => {
+    await writer.syncRooSyncDashboard(sampleDashboardRow(), []);
+    const stampCall = mockQuery.mock.calls.find(c =>
+      String(c[0]).includes('SET archived_at')
+    );
+    expect(stampCall).toBeUndefined();
+  });
+
+  test('condensed sync: transactional upserts + archive stamp', async () => {
+    await writer.syncRooSyncDashboard(sampleDashboardRow(), [sampleMessageRow()], { condensed: true });
+    const sql = queries().join('\n---\n');
+    expect(sql).toContain('BEGIN');
+    expect(sql).toContain('ON CONFLICT (key) DO UPDATE SET');
     expect(sql).toContain('ON CONFLICT (dashboard_key, message_id) DO UPDATE SET');
     expect(sql).toContain('SET archived_at = COALESCE(archived_at, NOW())');
     expect(sql).toContain('AND NOT (message_id = ANY($2))');
@@ -363,8 +413,8 @@ describe('PgUnifiedStoreWriter.syncRooSyncDashboard SQL shape', () => {
     expect(sql).not.toContain('SET archived_at');
   });
 
-  test('empty message list: no journal insert, stamp uses the sentinel (archives everything active)', async () => {
-    await writer.syncRooSyncDashboard(sampleDashboardRow(), []);
+  test('condensed sync with an empty message list: stamp uses the sentinel (condensation archived everything)', async () => {
+    await writer.syncRooSyncDashboard(sampleDashboardRow(), [], { condensed: true });
     const journalCall = mockQuery.mock.calls.find(c =>
       String(c[0]).includes('INSERT INTO roosync_dashboard_messages')
     );

@@ -372,9 +372,12 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
    *    new appends, DO UPDATE for content freshness of known ids. Rows with a
    *    NULL message_id cannot be made idempotent (006 D1) and are skipped.
    * 3. Stamp `archived_at` on active journal rows whose message_id is absent
-   *    from the sync set — that is condensation, the PG equivalent of the
-   *    GDrive path deleting condensed messages from the markdown (006 D3).
-   *    COALESCE keeps the original stamp if a later sync re-archives.
+   *    from the sync set — ONLY when `opts.condensed` is set (the write is a
+   *    condensation, the PG equivalent of the GDrive path deleting condensed
+   *    messages from the markdown, 006 D3). A plain sync or append never
+   *    stamps: its snapshot can legitimately lag concurrent appends from the
+   *    other machines. COALESCE keeps the original stamp if a later
+   *    condensation re-archives.
    *
    * Everything in ONE transaction so a crash between the row upsert and the
    * journal reconciliation cannot leave a dashboard whose content claims a
@@ -383,12 +386,15 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
   async syncRooSyncDashboard(
     row: RooSyncDashboardRow,
     messages: RooSyncDashboardMessageRow[],
-    opts?: { backfill?: boolean }
+    opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<void> {
     // Backfill mode: pure INSERT DO NOTHING everywhere, no archive stamping —
     // see the interface doc. A file snapshot racing a live sync must never
     // overwrite fresher PG state or archive live messages.
     const backfill = opts?.backfill === true;
+    // Condensation write: the only caller allowed to stamp archived_at — see
+    // the interface doc and the stamp block below.
+    const condensed = opts?.condensed === true;
     await this.withRetry('syncRooSyncDashboard', async () => {
       if (!this.pool) await this.init();
       if (!this.pool) throw new Error('Pool not initialized');
@@ -453,10 +459,14 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
           );
         }
 
-        // Condensation stamp: active rows NOT in the sync set leave the active
-        // window. Skipped in backfill mode — an old file snapshot must not
-        // archive messages a live sync just wrote.
-        if (!backfill) {
+        // Condensation stamp — ONLY on a condensation write (`opts.condensed`,
+        // threaded from applyCondensedWithMerge). On GDrive, condensation is
+        // the sole operation that removes intercom messages, so a plain sync
+        // or append must never archive rows absent from a snapshot that can
+        // legitimately lag concurrent appends from the other machines.
+        // Skipped in backfill mode — an old file snapshot must not archive
+        // messages a live sync just wrote.
+        if (condensed && !backfill) {
           const currentIds = syncable.map(m => m.message_id);
           await client.query(
             `UPDATE roosync_dashboard_messages

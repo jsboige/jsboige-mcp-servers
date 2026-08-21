@@ -191,18 +191,32 @@ export async function readDashboardFromPg(key: string): Promise<Dashboard | null
 }
 
 /**
- * Dual-write a dashboard to PG (sync semantics: row upsert + journal upsert +
- * condensation stamps — see PgUnifiedStoreWriter.syncRooSyncDashboard).
+ * Dual-write a dashboard to PG (sync semantics: row upsert + journal upsert —
+ * see PgUnifiedStoreWriter.syncRooSyncDashboard).
+ *
+ * `opts.condensed` marks a condensation write, the only caller allowed to
+ * stamp `archived_at` (GDrive parity: condensation is the sole operation
+ * that removes intercom messages). Threaded from applyCondensedWithMerge.
  *
  * Never throws: a PG failure must not block the GDrive path. Callers await
  * this so the PG mirror is consistent before the tool call returns.
  */
-export async function dualWriteDashboardSync(dashboard: Dashboard): Promise<void> {
+export async function dualWriteDashboardSync(
+  dashboard: Dashboard,
+  opts?: { condensed?: boolean }
+): Promise<void> {
   try {
     const { row, messages } = mapDashboardToRows(dashboard);
-    await getUnifiedStoreWriter().syncRooSyncDashboard(row, messages);
-  } catch {
-    // Swallow — never block the GDrive write path.
+    await getUnifiedStoreWriter().syncRooSyncDashboard(row, messages, opts);
+  } catch (error) {
+    // Swallow the throw — never block the GDrive write path — but NEVER in
+    // silence: with PG read-primary, "file ahead of PG" is the divergence
+    // state, and it must be observable (parity with readDashboardFromPg).
+    logger.warn('[dashboard-pg] dual-write sync failed — GDrive write stands, PG mirror diverges', {
+      key: dashboard.key,
+      condensed: opts?.condensed === true,
+      error: String(error),
+    });
   }
 }
 
@@ -212,8 +226,11 @@ export async function dualWriteDashboardSync(dashboard: Dashboard): Promise<void
 export async function dualWriteDashboardDelete(key: string): Promise<void> {
   try {
     await getUnifiedStoreWriter().deleteRooSyncDashboard(key);
-  } catch {
-    // Swallow — never block the GDrive delete path.
+  } catch (error) {
+    logger.warn('[dashboard-pg] dual-write delete failed — GDrive delete stands, PG row remains', {
+      key,
+      error: String(error),
+    });
   }
 }
 
