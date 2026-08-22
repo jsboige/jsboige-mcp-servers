@@ -5,7 +5,7 @@
  * semantique Qdrant : connectivite, collection, OpenAI, variables d'env.
  *
  * Statuts possibles: 'healthy', 'empty_collection', 'missing_collection',
- *                    'collection_error', 'connection_failed', 'unknown'
+ *                    'degraded', 'connection_failed', 'unknown'
  *
  * Framework: Vitest
  */
@@ -422,7 +422,7 @@ describe('handleDiagnoseSemanticIndex', () => {
     // ============================================================
 
     describe('collection error', () => {
-        it('should return collection_error when getCollection throws', async () => {
+        it('should return degraded, not collection_error, when getCollection throws (#3217)', async () => {
             const mockQdrant = createMockQdrant({
                 getCollections: vi.fn().mockResolvedValue({
                     collections: [{ name: 'roo_tasks_semantic_index' }]
@@ -434,7 +434,11 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            expect(diag.status).toBe('collection_error');
+            // Existence was confirmed by getCollections() — the collection is alive,
+            // only the heavy info/counts call failed (#3217).
+            expect(diag.status).toBe('degraded');
+            expect(diag.details.collection_exists).toBe(true);
+            expect(diag.details.collection_info_unavailable).toBe(true);
         });
 
         it('should include the error message in diagnostics', async () => {
@@ -454,7 +458,7 @@ describe('handleDiagnoseSemanticIndex', () => {
             expect(errorText).toContain('Timeout reading collection');
         });
 
-        it('should return collection_error when getCollections succeeds but getCollection fails', async () => {
+        it('should return degraded when getCollections succeeds but getCollection fails (#3217)', async () => {
             const mockQdrant = createMockQdrant({
                 getCollections: vi.fn().mockResolvedValue({
                     collections: [{ name: 'roo_tasks_semantic_index' }]
@@ -466,8 +470,11 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            expect(diag.status).toBe('collection_error');
+            // Connection proven (listing OK) + existence confirmed — the collection
+            // is alive but not measurable within budget: degraded, not collection_error.
+            expect(diag.status).toBe('degraded');
             expect(diag.details.qdrant_connection).toBe('success');
+            expect(diag.recommendations.some((r: string) => r.includes('NE PAS reset/rebuild'))).toBe(true);
         });
 
         it('should return connection_failed when getCollections throws', async () => {

@@ -73,7 +73,7 @@ describe('diagnose_index (integration)', () => {
       expect(typeof parsed.status).toBe('string');
       expect([
         'unknown', 'healthy', 'missing_collection', 'empty_collection',
-        'collection_error', 'connection_failed'
+        'degraded', 'connection_failed'
       ]).toContain(parsed.status);
     });
 

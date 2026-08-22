@@ -205,7 +205,13 @@ export async function handleDiagnoseSemanticIndex(
                 }
             } catch (collectionInfoError: any) {
                 diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
-                diagnostics.status = 'collection_error';
+                // #3217: reaching this catch means getCollections() succeeded and the collection
+                // is listed (collection_exists=true above) — it is alive. Only the heavy
+                // info/counts call failed, typically the point count on a very large collection
+                // exceeding the client timeout while a limit-bounded search() still traverses it.
+                // Report the real state instead of a false "collection_error".
+                diagnostics.details.collection_info_unavailable = true;
+                diagnostics.status = 'degraded';
             }
         } else if (getCollectionsSucceeded) {
             // Only set missing_collection if getCollections succeeded but collection wasn't found
@@ -423,6 +429,15 @@ export async function handleDiagnoseSemanticIndex(
     }
     if (diagnostics.status === 'empty_collection') {
         recommendations.push('La collection existe mais est vide. Lancez rebuild_task_index pour l\'indexer');
+    }
+    if (diagnostics.details.collection_info_unavailable) {
+        // #3217: keyed on the detail flag, not on status — 'degraded' is shared with the
+        // #2547 embedding-unreachable downgrade, which carries its own recommendation.
+        recommendations.push(
+            'Infos/comptage de la collection indisponibles (appel lourd hors budget — typiquement ' +
+            'le comptage de points sur une très grande collection). La collection est listée et vivante : ' +
+            'une recherche bornée (limit) reste utilisable. NE PAS reset/rebuild sur ce seul diagnostic.'
+        );
     }
     if (diagnostics.details.openai_connection === 'failed') {
         // #2766: route the recommendation by root cause to kill the false-positive
