@@ -205,7 +205,25 @@ export async function handleDiagnoseSemanticIndex(
                 }
             } catch (collectionInfoError: any) {
                 diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
-                diagnostics.status = 'collection_error';
+                // #3217 — getCollection() triggers an exhaustive point count that can
+                // exceed the client timeout on large collections ("This operation was
+                // aborted"), reporting collection_error for a collection a real search
+                // traverses in under a second. Ground truth before declaring error:
+                // probe with a bounded read (scroll limit 1 — no vector, so no
+                // dependency on the embedding backend).
+                try {
+                    await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: false });
+                    diagnostics.status = 'degraded';
+                    diagnostics.details.collection_probe = 'readable';
+                    diagnostics.errors.push(
+                        'Statut rétrogradé collection_error→degraded : lecture de test réussie — ' +
+                        "seul l'appel de métadonnées (comptage exhaustif) a échoué, la collection reste accessible."
+                    );
+                } catch (probeError: any) {
+                    diagnostics.status = 'collection_error';
+                    diagnostics.details.collection_probe = 'unreadable';
+                    diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                }
             }
         } else if (getCollectionsSucceeded) {
             // Only set missing_collection if getCollections succeeded but collection wasn't found
@@ -423,6 +441,19 @@ export async function handleDiagnoseSemanticIndex(
     }
     if (diagnostics.status === 'empty_collection') {
         recommendations.push('La collection existe mais est vide. Lancez rebuild_task_index pour l\'indexer');
+    }
+    if (diagnostics.status === 'collection_error') {
+        recommendations.push(
+            'La collection est réellement inaccessible (lecture de test échouée). ' +
+            "Vérifiez l'état du service Qdrant (logs, redémarrage) ; si la collection est corrompue, " +
+            'roosync_indexing action=reset puis rebuild_task_index.'
+        );
+    }
+    if (diagnostics.details.collection_probe === 'readable') {
+        recommendations.push(
+            "L'appel de métadonnées (comptage exhaustif des points) a échoué, mais une lecture réelle " +
+            'réussit — la recherche sémantique reste opérationnelle, aucune action requise sur la collection.'
+        );
     }
     if (diagnostics.details.openai_connection === 'failed') {
         // #2766: route the recommendation by root cause to kill the false-positive
