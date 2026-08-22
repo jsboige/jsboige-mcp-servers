@@ -315,7 +315,7 @@ describe('diagnose-index.tool (unit tests)', () => {
 		});
 	});
 
-	describe('collection access error scenario', () => {
+	describe('collection info unavailable scenario (#3217 — heavy info call fails on live collection)', () => {
 		beforeEach(() => {
 			// Set up this scenario's mocks (override defaults)
 			mockQdrantClient.getCollections.mockResolvedValue({
@@ -323,14 +323,25 @@ describe('diagnose-index.tool (unit tests)', () => {
 					{ name: 'test-roo-state-manager' }
 				]
 			});
-			mockQdrantClient.getCollection.mockRejectedValue(new Error('Permission denied'));
+			// #3217: the real error observed on a 793k-2M point collection — the abort
+			// fires on the info/counts call while existence was already confirmed.
+			mockQdrantClient.getCollection.mockRejectedValue(new Error('This operation was aborted'));
 		});
 
-		it('should return collection_error status', async () => {
+		it('should return degraded status, not collection_error (#3217)', async () => {
 			const result = await handleDiagnoseSemanticIndex(conversationCache);
 
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('collection_error');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.status).not.toBe('collection_error');
+		});
+
+		it('should keep collection_exists=true and flag collection_info_unavailable', async () => {
+			const result = await handleDiagnoseSemanticIndex(conversationCache);
+
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.details.collection_exists).toBe(true);
+			expect(parsed.details.collection_info_unavailable).toBe(true);
 		});
 
 		it('should include collection access error in errors', async () => {
@@ -338,6 +349,13 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.errors.some(e => e.includes('Erreur lors de l\'accès à la collection'))).toBe(true);
+		});
+
+		it('should recommend NOT resetting the collection (#3217)', async () => {
+			const result = await handleDiagnoseSemanticIndex(conversationCache);
+
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.recommendations.some(r => r.includes('NE PAS reset/rebuild'))).toBe(true);
 		});
 	});
 
