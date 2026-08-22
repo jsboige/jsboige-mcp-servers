@@ -324,6 +324,10 @@ describe('diagnose-index.tool (unit tests)', () => {
 				]
 			});
 			mockQdrantClient.getCollection.mockRejectedValue(new Error('Permission denied'));
+			// #3217: collection_error now requires the bounded probe read to fail too.
+			// Without this, the unmocked vi.fn() resolves undefined and the probe
+			// would succeed → status would degrade to 'degraded', not 'collection_error'.
+			mockQdrantClient.scroll.mockRejectedValue(new Error('Permission denied'));
 		});
 
 		it('should return collection_error status', async () => {
@@ -338,6 +342,75 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.errors.some(e => e.includes('Erreur lors de l\'accès à la collection'))).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// #3217 — getCollection failure is probe-gated (no false negative).
+	// getCollection() aborts on large collections (exhaustive point count >
+	// client timeout, "This operation was aborted") while a real read succeeds
+	// in under a second — diagnose must not report collection_error for a
+	// collection that is actually readable.
+	// ============================================================
+
+	describe('#3217 — probe-gated collection status', () => {
+		beforeEach(() => {
+			mockQdrantClient.getCollections.mockResolvedValue({
+				collections: [{ name: 'test-roo-state-manager' }]
+			});
+			// The ai-01 incident signature (2026-08-22T10:55:38Z): AbortController timeout.
+			mockQdrantClient.getCollection.mockRejectedValue(new Error('This operation was aborted'));
+		});
+
+		it('downgrades to degraded when a bounded real read succeeds (metadata timeout, collection fine)', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.details.collection_probe).toBe('readable');
+			// Self-consistency restored: no more collection_error while the connection
+			// succeeded and the collection exists.
+			expect(parsed.details.qdrant_connection).toBe('success');
+			expect(parsed.details.collection_exists).toBe(true);
+			expect(parsed.errors.some((e: string) => e.includes('collection_error→degraded'))).toBe(true);
+		});
+
+		it('probes with a bounded scroll (limit 1, no payload, no vector)', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+			await handleDiagnoseSemanticIndex(conversationCache);
+
+			expect(mockQdrantClient.scroll).toHaveBeenCalledWith(
+				'test-roo-state-manager',
+				{ limit: 1, with_payload: false, with_vector: false }
+			);
+		});
+
+		it('keeps collection_error when the probe read ALSO fails (genuinely inaccessible)', async () => {
+			mockQdrantClient.scroll.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('collection_error');
+			expect(parsed.details.collection_probe).toBe('unreadable');
+			expect(parsed.errors.some((e: string) => e.includes('Lecture de test échouée'))).toBe(true);
+		});
+
+		it('recommends no collection action when readable despite metadata failure', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.recommendations.some((r: string) => r.includes('recherche sémantique reste opérationnelle'))).toBe(true);
+		});
+
+		it('recommends Qdrant-side action when genuinely unreadable', async () => {
+			mockQdrantClient.scroll.mockRejectedValue(new Error('boom'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.recommendations.some((r: string) => r.includes('réellement inaccessible'))).toBe(true);
 		});
 	});
 
