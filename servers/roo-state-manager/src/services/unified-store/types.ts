@@ -138,6 +138,69 @@ export interface RooSyncAttachmentRow {
   payload: Buffer;
 }
 
+/**
+ * Frontmatter metadata persisted as `roosync_dashboards.status_json`
+ * (#3151 Phase C). Mirrors `DashboardFrontmatter` + `lastDiffCommit`, which
+ * the GDrive markdown keeps in YAML frontmatter.
+ */
+export interface RooSyncDashboardStatus {
+  lastModified: string;
+  lastModifiedBy: {
+    machineId: string;
+    workspace: string;
+    worktree?: string;
+  };
+  totalMessages?: number;
+  lastCondensedAt?: string;
+  lastDiffCommit?: string;
+}
+
+/**
+ * A row of `roosync_dashboards` (migrations/002 + 006, #3151 Phase C).
+ *
+ * `content` holds the Status section markdown; the intercom journal lives in
+ * `roosync_dashboard_messages` rows referencing this key.
+ */
+export interface RooSyncDashboardRow {
+  key: string;
+  type: 'global' | 'machine' | 'workspace';
+  /** Machine id for type='machine' (prefix stripped), else null. */
+  machine_id: string | null;
+  /** Workspace name for type='workspace' (collapsed basename), else null. */
+  workspace: string | null;
+  /** Status section markdown ('' when never written). */
+  content: string;
+  status_json: RooSyncDashboardStatus;
+  /** Set by Postgres on write; ISO 8601 on read. */
+  updated_at?: string;
+  /** Set by Postgres (DEFAULT 1, incremented by the sync writer). */
+  version?: number;
+}
+
+/**
+ * A row of `roosync_dashboard_messages` — the intercom journal
+ * (migrations/002 + 006, #3151 Phase C).
+ */
+export interface RooSyncDashboardMessageRow {
+  /** BIGSERIAL — set by Postgres on insert, present on read. */
+  id?: number;
+  dashboard_key: string;
+  /** IntercomMessage id (`machine:workspace:ic-…`). Null only for hand-inserted legacy rows. */
+  message_id: string | null;
+  author_machine: string;
+  author_workspace: string;
+  content: string;
+  /** Unused since tags were removed from the message format (2026-04) — kept []. */
+  tags: string[];
+  team_stage: string | null;
+  reply_to: string | null;
+  /** machineId → ISO timestamp of acknowledgment (#1956). */
+  acknowledged_at: Record<string, string> | null;
+  /** Set when condensation archived this message out of the active set (006 D3). */
+  archived_at: string | null;
+  created_at: string;
+}
+
 /** Search filters for the reader (Phase C). */
 export interface UnifiedStoreSearchFilters {
   workspace?: string;

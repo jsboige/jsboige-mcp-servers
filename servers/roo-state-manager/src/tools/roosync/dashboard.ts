@@ -49,6 +49,19 @@ import {
 } from '../../utils/dashboard-helpers.js';
 import type OpenAI from 'openai';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
+// #3151 Phase C: PG persistence for dashboards (read PG-primary, dual-write)
+import {
+  readDashboardFromPg,
+  dualWriteDashboardSync,
+  dualWriteDashboardDelete,
+} from '../../services/unified-store/roosync-dashboard-store.js';
+// #3151 Phase C: markdown parsing + message-id generation extracted to a
+// dependency-light module (backfill script imports it without pulling the LLM
+// client wiring of this tool module).
+import {
+  parseDashboardMarkdown,
+  generateMessageId,
+} from './dashboard-markdown.js';
 
 // #1470: Single source of truth schemas from dedicated module
 // No handler logic imported — safe circular-dep-free module
@@ -749,119 +762,29 @@ export async function releaseCondenseLock(key: string, holder: CondenseLockInfo)
 }
 
 /**
- * Lit un dashboard depuis le stockage Markdown. Retourne null si inexistant.
+ * Lit un dashboard : PG d'abord (#3151 Phase C, gate
+ * UNIFIED_STORE_DASHBOARD_READ_PG), puis fichier Markdown GDrive en fallback.
+ * Retourne null si inexistant partout.
  */
 async function readDashboardFile(key: string): Promise<Dashboard | null> {
+  // #3151 Phase C — PG-primary read, GDrive fallback (dégradation gracieuse).
+  // readDashboardFromPg returns null when the gate is off, PG fails, or the
+  // key has no row — all three mean "not authoritative", fall through to the
+  // file. Under-show protection mirrors the Phase B message channel: a store
+  // that was never backfilled must NOT present as an empty dashboard.
+  const pgDashboard = await readDashboardFromPg(key);
+  if (pgDashboard !== null) return pgDashboard;
+  return readDashboardFromGdrive(key);
+}
+
+/**
+ * Lit un dashboard depuis le stockage Markdown GDrive. Retourne null si inexistant.
+ */
+async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
   const filePath = getDashboardPath(key);
   try {
     const content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
-
-    // Parser le frontmatter YAML (entre --- et ---)
-    const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
-    if (!frontmatterMatch) {
-      throw new Error(`Format dashboard invalide: frontmatter manquant dans ${filePath}`);
-    }
-
-    const frontmatter: DashboardFrontmatter = yaml.load(frontmatterMatch[1]) as DashboardFrontmatter;
-
-    // Extraire le contenu markdown après le frontmatter
-    const markdownContent = content.slice(frontmatterMatch[0].length);
-
-    // Séparer les sections Status et Intercom
-    const statusMatch = markdownContent.match(/## Status\n([\s\S]+?)(?=\n## Intercom|\n*$)/);
-    const intercomMatch = markdownContent.match(/## Intercom[\s\S]*?\n\n([\s\S]+)$/);
-
-    const statusMarkdown = statusMatch ? statusMatch[1].trim() : '';
-    const intercomMarkdown = intercomMatch ? intercomMatch[1].trim() : '';
-
-    // Parser les messages intercom (format: ### [timestamp] machine|workspace\n\ncontent)
-    // Bug fix: split on message headers instead of `---` which can appear in message content
-    // Note: legacy format `### [ts] machine|workspace [TAGS]` is still parsed for backward compat,
-    // but the captured tags segment is discarded (tags removed in 2026-04).
-    const messages: IntercomMessage[] = [];
-    if (intercomMarkdown && !intercomMarkdown.includes('*Aucun message.*')) {
-      // Split on message headers (### [) while keeping the header in each block
-      const messageBlocks = intercomMarkdown.split(/(?=^### \[)/m).filter(b => b.trim());
-      for (const rawBlock of messageBlocks) {
-        // Strip trailing --- separators (leftover from write format)
-        const block = rawBlock.replace(/\n---\s*$/, '').trim();
-        // Note: machineId et workspace peuvent contenir des tirets (ex: test-machine, roo-extensions)
-        // On utilise [^|\s]+ au lieu de \w+ pour permettre les tirets
-        // Le segment optionnel `\s+\[([^\]]+)\]` est l'ancien format tags — toujours toléré, jamais réutilisé.
-        // v3 (#1363): ligne `[msg: <id>]` optionnelle immédiatement après le header, avant le contenu.
-        // #1956: optional `[reply-to: <id>]` and `[ack: <data>]` metadata lines after [msg:]
-        const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)( \[[^\]]+\])?\n([\s\S]+)/);
-        if (headerMatch) {
-          const [, timestamp, machineId, workspace, , afterHeader] = headerMatch;
-          const mid = machineId.trim();
-          const ws = workspace.trim();
-
-          // Parse metadata lines ([msg:], [reply-to:], [ack:]) then content
-          let persistedId: string | undefined;
-          let replyTo: string | undefined;
-          let ackRaw: string | undefined;
-          let remaining = afterHeader;
-
-          // [msg: <id>]
-          const msgMatch = remaining.match(/^\[msg: ([^\]]+)\]\n([\s\S]*)/);
-          if (msgMatch) {
-            persistedId = msgMatch[1];
-            remaining = msgMatch[2];
-          }
-          // [reply-to: <id>]
-          const replyMatch = remaining.match(/^\[reply-to: ([^\]]+)\]\n([\s\S]*)/);
-          if (replyMatch) {
-            replyTo = replyMatch[1];
-            remaining = replyMatch[2];
-          }
-          // [ack: machine1:ts1, machine2:ts2]
-          const ackMatch = remaining.match(/^\[ack: ([^\]]+)\]\n([\s\S]*)/);
-          if (ackMatch) {
-            ackRaw = ackMatch[1];
-            remaining = ackMatch[2];
-          }
-
-          // Content starts after optional blank line
-          const content = remaining.replace(/^\n/, '');
-          const unescapedContent = content.trim().replace(/^\\#\\#\\# \[/gm, '### [');
-
-          // Parse acknowledged_at from raw string
-          let acknowledged_at: Record<string, string> | undefined;
-          if (ackRaw) {
-            const entries = ackRaw.split(', ').map((entry: string) => {
-              const colonIdx = entry.indexOf(':');
-              return [entry.slice(0, colonIdx), entry.slice(colonIdx + 1)];
-            });
-            acknowledged_at = Object.fromEntries(entries);
-          }
-
-          const msg: IntercomMessage = {
-            id: persistedId || generateMessageId(mid, ws),
-            timestamp,
-            author: { machineId: mid, workspace: ws },
-            content: unescapedContent
-          };
-          if (replyTo) msg.reply_to = replyTo;
-          if (acknowledged_at && Object.keys(acknowledged_at).length > 0) {
-            msg.acknowledged_at = acknowledged_at;
-          }
-          messages.push(msg);
-        }
-      }
-    }
-
-    return {
-      type: frontmatter.type,
-      key,
-      lastModified: frontmatter.lastModified,
-      lastModifiedBy: frontmatter.lastModifiedBy,
-      status: { markdown: statusMarkdown },
-      intercom: {
-        messages,
-        totalMessages: frontmatter.totalMessages || messages.length,
-        lastCondensedAt: frontmatter.lastCondensedAt
-      }
-    };
+    return parseDashboardMarkdown(content, key);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -874,7 +797,11 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
 /**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
-async function writeDashboardFile(key: string, dashboard: Dashboard): Promise<void> {
+async function writeDashboardFile(
+  key: string,
+  dashboard: Dashboard,
+  opts?: { condensed?: boolean }
+): Promise<void> {
   const dir = getDashboardsDir();
   await fs.mkdir(dir, { recursive: true });
   const filePath = getDashboardPath(key);
@@ -927,6 +854,17 @@ ${intercomSection}
   await fs.writeFile(tmpPath, content, 'utf8');
   await fs.rename(tmpPath, filePath);
   logger.debug('Dashboard écrit', { key, path: filePath });
+
+  // #3151 Phase C — dual-write to PG (roosync_dashboards + journal). AWAITED,
+  // never-throwing: PG becomes the read-primary store, so the mirror must be
+  // consistent before the caller returns. A hard PG failure still degrades to
+  // the GDrive-only behavior (dualWriteDashboardSync swallows its errors and
+  // the writer's circuit breaker caps the retry cost).
+  // `opts.condensed` (threaded from applyCondensedWithMerge) is the only mode
+  // allowed to stamp archived_at — a plain write's snapshot can lag concurrent
+  // appends from the other machines (GDrive parity: condensation is the sole
+  // operation that removes intercom messages).
+  await dualWriteDashboardSync(dashboard, opts);
 }
 
 /**
@@ -944,7 +882,7 @@ async function applyCondensedWithMerge(
 ): Promise<void> {
   const current = await readDashboardFile(key);
   if (!current) {
-    await writeDashboardFile(key, condensedDashboard);
+    await writeDashboardFile(key, condensedDashboard, { condensed: true });
     return;
   }
 
@@ -964,7 +902,7 @@ async function applyCondensedWithMerge(
   const delta = current.intercom.messages.filter(m => !seen.has(m.id));
 
   if (delta.length === 0) {
-    await writeDashboardFile(key, condensedDashboard);
+    await writeDashboardFile(key, condensedDashboard, { condensed: true });
     return;
   }
 
@@ -983,7 +921,7 @@ async function applyCondensedWithMerge(
       lastCondensedAt: condensedDashboard.intercom.lastCondensedAt,
     },
   };
-  await writeDashboardFile(key, merged);
+  await writeDashboardFile(key, merged, { condensed: true });
 }
 
 /**
@@ -1044,6 +982,12 @@ async function appendDashboardIncremental(
   await fs.writeFile(tmpPath, result, 'utf8');
   await fs.rename(tmpPath, filePath);
   logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
+
+  // #3151 Phase C — dual-write the appended journal rows to PG. Same awaited,
+  // never-throwing contract as writeDashboardFile: the incremental file append
+  // stays the primary write; PG mirrors it (append-first is what makes the
+  // condense-after phase below safe to fail).
+  await dualWriteDashboardSync(dashboard);
 }
 
 /**
@@ -1068,17 +1012,6 @@ function createEmptyDashboard(
       totalMessages: 0
     }
   };
-}
-
-/**
- * Génère un ID unique pour un message intercom.
- * Format v3 (#1363): ${machineId}:${workspace}:ic-${ts}-${rand}
- * Aligné avec RooSync inbox pour permettre le référencement cross-message.
- */
-function generateMessageId(machineId: string, workspace: string): string {
-  const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 16);
-  const rand = Math.random().toString(36).substring(2, 6);
-  return `${machineId}:${workspace}:ic-${ts}-${rand}`;
 }
 
 /**
@@ -3644,6 +3577,10 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
   try {
     await fs.unlink(filePath);
     logger.info('Dashboard supprimé', { key });
+    // #3151 Phase C — mirror the deletion to PG (row + journal cascade). The
+    // pre-delete GDrive archive above keeps the legacy copy (Phase D keeps
+    // GDrive as the read-only archive tier). Never throws.
+    await dualWriteDashboardDelete(key);
     return {
       success: true,
       action: 'delete',

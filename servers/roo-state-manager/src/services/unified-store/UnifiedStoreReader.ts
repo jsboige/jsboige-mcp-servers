@@ -27,6 +27,8 @@ import type {
   ConversationRow,
   MessageRow,
   RooSyncMessageRow,
+  RooSyncDashboardRow,
+  RooSyncDashboardMessageRow,
 } from './types.js';
 
 export interface UnifiedStoreReaderConfig {
@@ -67,6 +69,18 @@ export interface IUnifiedStoreReader {
   getRooSyncMailbox(machineId: string): Promise<RooSyncMessageRow[]>;
   /** Full-fidelity lookup of one channel message by id (any status). */
   getRooSyncMessageById(id: string): Promise<RooSyncMessageRow | null>;
+
+  // ─── RooSync dashboard reads (#3151 Phase C) ─────────────────────
+
+  /**
+   * Dashboard row + ACTIVE journal rows (archived_at IS NULL, oldest first)
+   * for a key. Null when the key has no row — the caller falls back to the
+   * GDrive file (same under-show protection as the message channel).
+   */
+  getRooSyncDashboard(key: string): Promise<{
+    dashboard: RooSyncDashboardRow;
+    messages: RooSyncDashboardMessageRow[];
+  } | null>;
 }
 
 /** Null object for opt-out read path. */
@@ -85,4 +99,8 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   isNull(): boolean { return true; }
   async getRooSyncMailbox(_machineId: string): Promise<RooSyncMessageRow[]> { return []; }
   async getRooSyncMessageById(_id: string): Promise<RooSyncMessageRow | null> { return null; }
+  async getRooSyncDashboard(_key: string): Promise<{
+    dashboard: RooSyncDashboardRow;
+    messages: RooSyncDashboardMessageRow[];
+  } | null> { return null; }
 }

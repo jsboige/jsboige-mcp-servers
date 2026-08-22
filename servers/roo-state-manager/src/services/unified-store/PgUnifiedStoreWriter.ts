@@ -26,6 +26,8 @@ import type {
   RooSyncAttachmentRow,
   RooSyncMessageRow,
   RooSyncMessageUpdate,
+  RooSyncDashboardRow,
+  RooSyncDashboardMessageRow,
 } from './types.js';
 import type { IUnifiedStoreWriter, UnifiedStoreWriterConfig } from './UnifiedStoreWriter.js';
 
@@ -353,6 +355,152 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
           row.sha256,
           row.payload, // pg serializes Buffer to bytea
         ]);
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  // ─── RooSync Dashboard Operations (#3151 Phase C) ──────────────
+
+  /**
+   * Transactional sync of one dashboard + its active journal rows.
+   *
+   * 1. UPSERT `roosync_dashboards` (key) — content/status_json/updated_at,
+   *    version optimistic-increment.
+   * 2. Batch-upsert journal rows on (dashboard_key, message_id) — INSERT for
+   *    new appends, DO UPDATE for content freshness of known ids. Rows with a
+   *    NULL message_id cannot be made idempotent (006 D1) and are skipped.
+   * 3. Stamp `archived_at` on active journal rows whose message_id is absent
+   *    from the sync set — ONLY when `opts.condensed` is set (the write is a
+   *    condensation, the PG equivalent of the GDrive path deleting condensed
+   *    messages from the markdown, 006 D3). A plain sync or append never
+   *    stamps: its snapshot can legitimately lag concurrent appends from the
+   *    other machines. COALESCE keeps the original stamp if a later
+   *    condensation re-archives.
+   *
+   * Everything in ONE transaction so a crash between the row upsert and the
+   * journal reconciliation cannot leave a dashboard whose content claims a
+   * message set the journal disagrees with.
+   */
+  async syncRooSyncDashboard(
+    row: RooSyncDashboardRow,
+    messages: RooSyncDashboardMessageRow[],
+    opts?: { backfill?: boolean; condensed?: boolean }
+  ): Promise<void> {
+    // Backfill mode: pure INSERT DO NOTHING everywhere, no archive stamping —
+    // see the interface doc. A file snapshot racing a live sync must never
+    // overwrite fresher PG state or archive live messages.
+    const backfill = opts?.backfill === true;
+    // Condensation write: the only caller allowed to stamp archived_at — see
+    // the interface doc and the stamp block below.
+    const condensed = opts?.condensed === true;
+    await this.withRetry('syncRooSyncDashboard', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await client.query(
+          `INSERT INTO roosync_dashboards
+             (key, type, machine_id, workspace, content, status_json, updated_at, version)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW(), 1)
+           ${backfill
+             ? 'ON CONFLICT (key) DO NOTHING'
+             : `ON CONFLICT (key) DO UPDATE SET
+             type = EXCLUDED.type,
+             machine_id = EXCLUDED.machine_id,
+             workspace = EXCLUDED.workspace,
+             content = EXCLUDED.content,
+             status_json = EXCLUDED.status_json,
+             updated_at = NOW(),
+             version = roosync_dashboards.version + 1`}`,
+          [
+            row.key,
+            row.type,
+            row.machine_id,
+            row.workspace,
+            row.content,
+            JSON.stringify(row.status_json),
+          ]
+        );
+
+        // Only rows with a message_id participate — see method doc (006 D1).
+        const syncable = messages.filter(m => m.message_id !== null);
+        if (syncable.length > 0) {
+          await client.query(
+            `INSERT INTO roosync_dashboard_messages
+               (dashboard_key, message_id, author_machine, author_workspace,
+                content, tags, team_stage, reply_to, acknowledged_at, created_at)
+             SELECT * FROM UNNEST(
+               $1::text[], $2::text[], $3::text[], $4::text[],
+               $5::text[], $6::jsonb[], $7::text[], $8::text[], $9::jsonb[], $10::timestamptz[]
+             )
+             ${backfill
+               ? 'ON CONFLICT (dashboard_key, message_id) DO NOTHING'
+               : `ON CONFLICT (dashboard_key, message_id) DO UPDATE SET
+               content = EXCLUDED.content,
+               team_stage = EXCLUDED.team_stage,
+               reply_to = EXCLUDED.reply_to,
+               acknowledged_at = EXCLUDED.acknowledged_at`}`,
+            [
+              syncable.map(m => m.dashboard_key),
+              syncable.map(m => m.message_id),
+              syncable.map(m => m.author_machine),
+              syncable.map(m => m.author_workspace),
+              syncable.map(m => m.content),
+              syncable.map(() => '[]'),
+              syncable.map(m => m.team_stage),
+              syncable.map(m => m.reply_to),
+              syncable.map(m => (m.acknowledged_at ? JSON.stringify(m.acknowledged_at) : null)),
+              syncable.map(m => m.created_at),
+            ]
+          );
+        }
+
+        // Condensation stamp — ONLY on a condensation write (`opts.condensed`,
+        // threaded from applyCondensedWithMerge). On GDrive, condensation is
+        // the sole operation that removes intercom messages, so a plain sync
+        // or append must never archive rows absent from a snapshot that can
+        // legitimately lag concurrent appends from the other machines.
+        // Skipped in backfill mode — an old file snapshot must not archive
+        // messages a live sync just wrote.
+        if (condensed && !backfill) {
+          const currentIds = syncable.map(m => m.message_id);
+          await client.query(
+            `UPDATE roosync_dashboard_messages
+             SET archived_at = COALESCE(archived_at, NOW())
+             WHERE dashboard_key = $1
+               AND archived_at IS NULL
+               AND message_id IS NOT NULL
+               AND NOT (message_id = ANY($2))`,
+            [row.key, currentIds.length > 0 ? currentIds : ['__none__']]
+          );
+        }
+
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {}); // swallow rollback error
+        throw err;
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  /**
+   * Drop a dashboard row + its journal (FK ON DELETE CASCADE, migrations/002).
+   * Called when the GDrive file itself is deleted (handleDelete) — archives on
+   * GDrive keep the legacy copy, Phase D keeps GDrive as read-only archive.
+   */
+  async deleteRooSyncDashboard(key: string): Promise<void> {
+    await this.withRetry('deleteRooSyncDashboard', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        await client.query('DELETE FROM roosync_dashboards WHERE key = $1', [key]);
       } finally {
         client.release();
       }
