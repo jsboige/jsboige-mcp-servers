@@ -399,10 +399,19 @@ ${excerpt.substring(0, 200)}${excerpt.length > 200 ? '...' : ''}`;
         // failures don't get silently swallowed like the workspace-loss bug did.
         const msg = String(error);
         const isSelfBlock = msg.includes('Auto-message interdit');
-        (isSelfBlock ? logger.debug : logger.warn)(
-          'Failed to send structured mention notification',
-          { error: msg, messageId, from, target: qualifiedTarget, selfBlock: isSelfBlock }
-        );
+        // La méthode doit rester attachée : une référence détachée perd `this`,
+        // jette TypeError depuis l'intérieur de ce catch et masque l'erreur d'origine.
+        if (isSelfBlock) {
+          logger.debug(
+            'Failed to send structured mention notification',
+            { error: msg, messageId, from, target: qualifiedTarget, selfBlock: isSelfBlock }
+          );
+        } else {
+          logger.warn(
+            'Failed to send structured mention notification',
+            { error: msg, messageId, from, target: qualifiedTarget, selfBlock: isSelfBlock }
+          );
+        }
       }
     }
   } catch (error) {

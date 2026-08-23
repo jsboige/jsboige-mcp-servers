@@ -27,12 +27,17 @@ const {
   mockGetSharedStatePath: vi.fn(),
   mockGetLocalMachineId: vi.fn(),
   mockSendMessage: vi.fn(),
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+  // Parité avec le vrai Logger : ses méthodes lisent `this.log` — un appel
+  // détaché de l'instance (référence de méthode extraite) doit jeter pareil,
+  // ce qu'un vi.fn() nu ne reproduit pas (vu sur dashboard-helpers.ts #1472).
+  mockLogger: (() => {
+    const parity = () => vi.fn(function (this: unknown) {
+      if (this === undefined) {
+        throw new TypeError("Cannot read properties of undefined (reading 'log')");
+      }
+    });
+    return { debug: parity(), info: parity(), warn: parity(), error: parity() };
+  })(),
 }));
 
 // fs/promises — mock NAMED exports (source uses `import * as fs from 'fs/promises'`)
@@ -471,6 +476,24 @@ describe('sendStructuredMentionNotificationsAsync', () => {
       expect.stringContaining('Failed to send structured mention'),
       expect.objectContaining({ selfBlock: false })
     );
+  });
+
+  it('continues notifying remaining targets after a non-self-block failure (logger must stay bound)', async () => {
+    // Régression : une méthode logger détachée (référence extraite) jette TypeError
+    // depuis le catch interne, escapé vers le catch externe — la boucle s'arrête et
+    // les cibles suivantes ne sont jamais notifiées.
+    mockSendMessage.mockImplementation(async (from: string, to: string) => {
+      if (to.includes('myia-po-2023')) throw new Error('Network failure');
+      return { id: 'ok' };
+    });
+    const targets: UserId[] = [
+      { machineId: 'myia-po-2023', workspace: 'roo-extensions' },
+      { machineId: 'myia-po-2026', workspace: 'roo-extensions' },
+    ];
+    await sendStructuredMentionNotificationsAsync(
+      fromUserId, 'msg-s7b', targets, 'workspace-roo-extensions', 'Continue test'
+    );
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
   });
 
   it('should handle empty targets gracefully', async () => {
