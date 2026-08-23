@@ -777,21 +777,38 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
   return readDashboardFromGdrive(key);
 }
 
+// #3205 résiduel : lectures transitoires du fichier partagé (course write→rename
+// entre machines + hydratation DriveFS) — mesuré 15→22/08 : échec puis succès au
+// 2e/3e appel à 1-3 s d'intervalle. Backoff calé sur cette fenêtre observée.
+const DASHBOARD_READ_MAX_ATTEMPTS = 3;
+const DASHBOARD_READ_BACKOFF_MS = [500, 1500];
+
 /**
  * Lit un dashboard depuis le stockage Markdown GDrive. Retourne null si inexistant.
  */
 async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
   const filePath = getDashboardPath(key);
-  try {
-    const content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
-    return parseDashboardMarkdown(content, key);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return null;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= DASHBOARD_READ_MAX_ATTEMPTS; attempt++) {
+    try {
+      const content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
+      return parseDashboardMarkdown(content, key);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+      lastError = error;
+      logger.warn(`Lecture dashboard échouée (tentative ${attempt}/${DASHBOARD_READ_MAX_ATTEMPTS})`, {
+        key,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      if (attempt < DASHBOARD_READ_MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, DASHBOARD_READ_BACKOFF_MS[attempt - 1]));
+      }
     }
-    logger.error('Erreur lecture dashboard', { key, error });
-    throw error;
   }
+  logger.error('Erreur lecture dashboard', lastError, { key });
+  throw lastError;
 }
 
 /**

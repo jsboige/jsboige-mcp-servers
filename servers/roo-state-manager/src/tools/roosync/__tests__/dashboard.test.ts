@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount } from '../dashboard.js';
@@ -15,6 +16,19 @@ import { resetChatOpenAIClient } from '@/services/openai';
 // #858: Mock OpenAI chat client for LLM condensation tests
 const mockChatCreate = vi.fn();
 const mockGetChatClient = vi.fn();
+
+// #3205 résiduel : le namespace ESM de 'fs/promises' n'est pas configurable
+// (spyOn impossible, constaté 24/08) — mock module-level qui DÉLÈGUE au vrai
+// readFile par défaut ; les tests #3205 réinstallent une implémentation fautive.
+const fsReal: { readFile?: (...args: unknown[]) => Promise<unknown> } = vi.hoisted(() => ({}));
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  fsReal.readFile = actual.readFile as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    readFile: vi.fn((...args: unknown[]) => fsReal.readFile!(...args))
+  };
+});
 
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetChatClient(),
@@ -1781,5 +1795,84 @@ describe('computeKeepCount (#2598 byte-budgeted keep window)', () => {
     const msgs = mk(40, 3 * 1024);
     const floor = STATUS_CAP + keptBytes(msgs, computeKeepCount(msgs));
     expect(floor).toBeLessThan(PREEMPTIVE_THRESHOLD - 8 * 1024); // >= 8 KB headroom
+  });
+});
+
+// #3205 résiduel — lectures transitoires du fichier dashboard GDrive partagé
+// (course write→rename entre machines, hydratation DriveFS). Le backoff réel
+// (500/1500 ms) s'applique : ces tests ajoutent ~4 s à la suite.
+describe('#3205 résiduel — retry borné readDashboardFromGdrive', () => {
+  let dashReadCalls: number;
+
+  function installReadFileHandler(
+    handler: (p: string, n: number, realRead: (...a: unknown[]) => Promise<unknown>) => Promise<string>
+  ): void {
+    vi.mocked(fsp.readFile).mockImplementation((async (...args: unknown[]) => {
+      const p = String(args[0]);
+      if (p.includes(`dashboards${path.sep}`) && p.endsWith('.md')) {
+        dashReadCalls++;
+        return await handler(p, dashReadCalls, (...a: unknown[]) => fsReal.readFile!(...a));
+      }
+      return await fsReal.readFile!(...args);
+    }) as unknown as typeof fsp.readFile);
+  }
+
+  const ebusy = (): Error => {
+    const e = new Error('EBUSY: resource busy or locked, read') as NodeJS.ErrnoException;
+    e.code = 'EBUSY';
+    return e;
+  };
+
+  beforeEach(() => {
+    dashReadCalls = 0;
+  });
+
+  afterEach(() => {
+    // Restaurer la délégation par défaut pour les tests suivants de la suite.
+    vi.mocked(fsp.readFile).mockImplementation(
+      (...args: unknown[]) => fsReal.readFile!(...args) as unknown as ReturnType<typeof fsp.readFile>
+    );
+  });
+
+  it('absorbe une erreur transitoire : EBUSY × 2 puis succès au 3e essai', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed 3205' });
+
+    installReadFileHandler(async (p, n, realRead) => {
+      if (n <= 2) throw ebusy();
+      return (await realRead(p, 'utf8')) as string;
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'all' });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.status?.markdown).toBe('# Seed 3205');
+    expect(dashReadCalls).toBe(3); // 2 échecs absorbés + 1 succès — pas de 4e appel
+  });
+
+  it('échoue (reject) après 3 tentatives persistantes, puis propage l’erreur', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed persist' });
+
+    installReadFileHandler(async () => { throw ebusy(); });
+
+    await expect(
+      roosyncDashboard({ action: 'read', type: 'global', section: 'all' })
+    ).rejects.toThrow(/EBUSY/);
+    expect(dashReadCalls).toBe(3); // borné — pas de boucle infinie
+  });
+
+  it('ENOENT → absent immédiat, SANS retry (exactement 1 appel)', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed enoent' });
+
+    installReadFileHandler(async () => {
+      const e = new Error('ENOENT: no such file or directory') as NodeJS.ErrnoException;
+      e.code = 'ENOENT';
+      throw e;
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'all' });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/introuvable/);
+    expect(dashReadCalls).toBe(1); // la sémantique ENOENT→null n'est pas changée
   });
 });
