@@ -369,6 +369,20 @@ async function cleanupMessages(
     logger.error('Expiry reminders failed', error);
   }
 
+  // 0c. PG retention purge (#3151 Phase D) — opt-in, UNIFIED_STORE_CHANNEL_RETENTION_DAYS.
+  // GDrive n'est jamais touché (archive legacy en lecture seule).
+  const retentionDays = Number(process.env.UNIFIED_STORE_CHANNEL_RETENTION_DAYS ?? '0');
+  if (retentionDays > 0) {
+    try {
+      const purged = await messageManager.purgeArchivedFromStore(retentionDays);
+      results.push(`- 🗄️ Rétention PG : **${purged}** message(s) archivé(s) purgé(s) (> ${retentionDays} j, attachments inclus)`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      results.push(`- 🗄️ Rétention PG échouée : ${msg}`);
+      logger.error('PG retention purge failed', error);
+    }
+  }
+
   // 1. Mark test messages as read
   const testResult = await messageManager.bulkOperation(
     machineId, 'mark_read',

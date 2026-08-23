@@ -32,11 +32,19 @@ const logger = createLogger('roosync-channel-read');
 /**
  * Returns the channel reader when the Phase B read gate is on, else null.
  *
+ * Phase D: the write-primary gate (`UNIFIED_STORE_CHANNEL_PG_PRIMARY=1`)
+ * implies the read gate — a machine that stops writing GDrive must not keep
+ * reading it as primary, or sends from PG-primary machines would be invisible
+ * to it.
+ *
  * Read at call time (not import time) so tests and config reloads can toggle
  * it without a process restart.
  */
 export function getChannelPgReader(): IUnifiedStoreReader | null {
-  if (process.env.UNIFIED_STORE_CHANNEL_READ_PG !== '1') return null;
+  if (
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG !== '1' &&
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY !== '1'
+  ) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();
   if (reader.isNull()) return null;

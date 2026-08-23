@@ -72,6 +72,12 @@ export interface IUnifiedStoreWriter {
   /** RooSync channel — purge an attachment payload when the message is destroyed. */
   deleteRooSyncAttachment(uuid: string): Promise<void>;
   /**
+   * RooSync channel retention (#3151 Phase D) — delete archived rows older
+   * than `retentionDays` together with their attachment payloads, in one
+   * transaction. Returns the number of rows purged. 0 or negative → no-op.
+   */
+  purgeArchivedRooSyncMessages(retentionDays: number): Promise<number>;
+  /**
    * RooSync dashboards (#3151 Phase C) — transactional sync of one dashboard
    * row + its active journal rows: upsert the row, upsert the message rows
    * (idempotent on (dashboard_key, message_id)).
@@ -111,6 +117,7 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
   async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
   async deleteRooSyncAttachment(_uuid: string): Promise<void> {}
+  async purgeArchivedRooSyncMessages(_retentionDays: number): Promise<number> { return 0; }
   async syncRooSyncDashboard(
     _row: RooSyncDashboardRow,
     _messages: RooSyncDashboardMessageRow[],

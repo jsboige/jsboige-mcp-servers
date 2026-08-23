@@ -126,6 +126,13 @@ export interface RooSyncMessageUpdate {
   reminder_sent_at?: string;
   /** Phase B — per-machine broadcast read tracking (whole-array replace). */
   read_by?: string[];
+  /**
+   * Phase D — whole-object replace of the `options` JSONB payload
+   * (acknowledged_at, metadata, TTL fields). Safe only from a caller that
+   * loaded the row first (read-modify-write of the full object), which is
+   * what the PG-primary mutation paths do.
+   */
+  options?: RooSyncMessageOptions;
 }
 
 /** A row of `roosync_attachments` (payload stored as bytea, #3151 D2). */
