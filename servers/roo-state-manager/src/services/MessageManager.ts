@@ -211,6 +211,8 @@ export class MessageManager {
   private readonly readTimeoutMs: number;
   /** Negative-cache TTL (overridable for tests; production = NEGATIVE_CACHE_TTL_MS) */
   private readonly negativeCacheTtlMs: number;
+  /** Rebuild budget (overridable for tests; production = INBOX_REBUILD_BUDGET_MS) */
+  private readonly rebuildBudgetMs: number;
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
   /** Files that failed to read during a cache build, mapped to failure timestamp.
@@ -220,6 +222,18 @@ export class MessageManager {
   /** Negative-cache TTL in ms (15 min — long enough to skip repeated dead reads,
    *  short enough to retry once a file hydrates). */
   private static readonly NEGATIVE_CACHE_TTL_MS = 900_000;
+  /**
+   * Wall-clock budget for one full inbox rebuild (ms).
+   *
+   * `INBOX_READ_TIMEOUT_MS` bounds each FILE; nothing bounded the whole pass.
+   * With ~3 160 inbox files at a concurrency of 50 that is 64 chunks, and
+   * `allSettled` waits for the slowest file of each chunk — one cloud-only file
+   * per chunk is enough to cost 64 x 10s. Past this budget the pass returns what
+   * it has rather than blow through the caller's tool timeout (#3205).
+   */
+  private static readonly INBOX_REBUILD_BUDGET_MS = 60_000;
+  /** In-flight rebuild, shared by concurrent callers (#3205). */
+  private inboxRebuildInFlight: Promise<{ items: MessageListItem[]; full: Map<string, Message> }> | null = null;
 
   /** Auto-archive daemon timer (#809 — prevents inbox unbounded growth) */
   private autoArchiveTimer: NodeJS.Timeout | null = null;
@@ -235,10 +249,12 @@ export class MessageManager {
     sharedStatePath: string,
     readTimeoutMs: number = MessageManager.INBOX_READ_TIMEOUT_MS,
     negativeCacheTtlMs: number = MessageManager.NEGATIVE_CACHE_TTL_MS,
+    rebuildBudgetMs: number = MessageManager.INBOX_REBUILD_BUDGET_MS,
   ) {
     this.sharedStatePath = sharedStatePath;
     this.readTimeoutMs = readTimeoutMs;
     this.negativeCacheTtlMs = negativeCacheTtlMs;
+    this.rebuildBudgetMs = rebuildBudgetMs;
     this.messagesPath = join(sharedStatePath, 'messages');
     this.inboxPath = join(this.messagesPath, 'inbox');
     this.sentPath = join(this.messagesPath, 'sent');
@@ -405,6 +421,51 @@ export class MessageManager {
       return { items: this.inboxCache, full: this.inboxFullCache };
     }
 
+    // Past this point the per-file read phase is required, and it is the only
+    // expensive one — the readdir and the count check above stay in the foreground
+    // so external-change detection keeps its exact semantics. Two changes (#3205):
+    //   - the rebuild is DEDUPLICATED: N concurrent callers trigger one pass, not N;
+    //   - a warm cache is served IMMEDIATELY and refreshed in the background.
+    // Only a cold cache is awaited, because there is nothing else to hand back.
+    // Before this, whichever caller happened to land on an expired TTL paid the
+    // whole rebuild and hit its tool timeout, while the retry right behind it got
+    // the fast path in ~30ms — the "times out, then instantly fine" signature.
+    const rebuild = this.startInboxRebuild(files);
+    if (this.inboxCache !== null) {
+      return { items: this.inboxCache, full: this.inboxFullCache };
+    }
+    return rebuild;
+  }
+
+  /**
+   * Start a rebuild, or join the one already running (#3205).
+   *
+   * @private
+   */
+  private startInboxRebuild(files: string[]): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
+    if (this.inboxRebuildInFlight) {
+      return this.inboxRebuildInFlight;
+    }
+    const pass = this.rebuildInboxCache(files);
+    this.inboxRebuildInFlight = pass;
+    // Settle a DERIVED chain, never `pass` itself: a background refresh that
+    // rejects with nobody awaiting it is an unhandled rejection, which takes the
+    // process down. Callers awaiting `pass` still observe the original rejection.
+    void pass
+      .catch(err => { logger.error('Inbox cache rebuild failed', err); })
+      .then(() => { if (this.inboxRebuildInFlight === pass) this.inboxRebuildInFlight = null; });
+    return pass;
+  }
+
+  /**
+   * Read the inbox files and rebuild the cache. Bounded by
+   * INBOX_REBUILD_BUDGET_MS; a truncated pass never replaces a more complete cache.
+   *
+   * @private
+   */
+  private async rebuildInboxCache(files: string[]): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
+    const now = Date.now();
+
     // Skip files that failed a recent read (negative cache): a cloud-only GDrive
     // file that timed out once will usually time out again for a while, and
     // re-reading it every 5-min rebuild burns ~10s on a read that can't succeed.
@@ -416,7 +477,15 @@ export class MessageManager {
     const full = new Map<string, Message>();
 
     // Parallel chunked reads — 50 concurrent instead of serial (84s → ~2s on GDrive)
+    const deadline = now + this.rebuildBudgetMs;
+    let truncated = false;
+
     for (let i = 0; i < readableFiles.length; i += MessageManager.READ_CONCURRENCY) {
+      if (Date.now() >= deadline) {
+        truncated = true;
+        logger.warn(`Inbox cache rebuild hit its ${this.rebuildBudgetMs}ms budget after ${i}/${readableFiles.length} files - returning early (#3205)`);
+        break;
+      }
       const chunk = readableFiles.slice(i, i + MessageManager.READ_CONCURRENCY);
       const results = await Promise.allSettled(
         chunk.map(async file => {
@@ -481,10 +550,22 @@ export class MessageManager {
     // Sort by timestamp descending (most recent first) once
     items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
+    if (truncated && this.inboxCache !== null) {
+      // A truncated pass is a SUBSET. Installing it would turn a complete cache
+      // into a partial one — a regression no caller can see. Keep what we have;
+      // -1 defeats the count check so the next call rebuilds, while the TTL still
+      // throttles how often that happens.
+      this.lastInboxFileCount = -1;
+      this.cacheBuiltAt = now;
+      return { items: this.inboxCache, full: this.inboxFullCache };
+    }
+
     this.inboxCache = items;
     this.inboxFullCache = full;
     this.cacheBuiltAt = now;
-    this.lastInboxFileCount = files.length;
+    // On a cold-start truncation there is nothing better to serve, so the partial
+    // result is installed — but -1 forces the next call to finish the job.
+    this.lastInboxFileCount = truncated ? -1 : files.length;
 
     return { items, full };
   }
