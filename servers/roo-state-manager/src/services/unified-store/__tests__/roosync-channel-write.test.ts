@@ -103,11 +103,15 @@ function withPrimaryGate(fn: () => void | Promise<void>): () => Promise<void> {
   return async () => {
     process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    // Factory condition for a real PgUnifiedStoreWriter — the gate requires it
+    // (Null-writer guard, review #1030).
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     try {
       await fn();
     } finally {
       delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
       delete process.env.UNIFIED_STORE_PG_URL;
+      delete process.env.UNIFIED_STORE_DUAL_WRITE;
       delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
     }
   };
@@ -132,10 +136,22 @@ describe('isChannelPgPrimary (env gate)', () => {
     expect(isChannelPgPrimary()).toBe(false);
   });
 
-  test('flag on + URL → true', () => {
+  test('flag on + URL + DUAL_WRITE (real writer config) → true', () => {
     process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     expect(isChannelPgPrimary()).toBe(true);
+  });
+
+  // Review #1030 blocker — regression: PG_PRIMARY + PG_URL WITHOUT
+  // DUAL_WRITE hands back the Null writer, whose writes are silent no-ops.
+  // That config must NOT activate the PG-primary path (it would skip GDrive
+  // and lose the message with zero signal).
+  test('flag on + URL but DUAL_WRITE unset (Null writer) → false', () => {
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    expect(isChannelPgPrimary()).toBe(false);
   });
 
   test(

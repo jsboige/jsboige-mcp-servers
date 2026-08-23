@@ -5,10 +5,12 @@
  *
  * Phase A made the GDrive write primary and PG a fire-and-forget mirror;
  * Phase B turned reads PG-primary; this module flips the WRITE side. When
- * `UNIFIED_STORE_CHANNEL_PG_PRIMARY=1` (+ `UNIFIED_STORE_PG_URL`, non-Null
- * writer), MessageManager persists to `roosync_messages` FIRST and skips the
- * GDrive files entirely — GDrive becomes a read-only legacy archive (the
- * epic's Phase D target: "GDrive jamais sollicité sur le chemin critique").
+ * `UNIFIED_STORE_CHANNEL_PG_PRIMARY=1` (+ `UNIFIED_STORE_PG_URL` +
+ * `UNIFIED_STORE_DUAL_WRITE=1`, the factory's condition for a real
+ * PgUnifiedStoreWriter), MessageManager persists to `roosync_messages` FIRST
+ * and skips the GDrive files entirely — GDrive becomes a read-only legacy
+ * archive (the epic's Phase D target: "GDrive jamais sollicité sur le chemin
+ * critique").
  *
  * Failure contract — the inverse of the dual-write one:
  *   - dual-write (Phase A): PG failure swallowed, GDrive stands.
@@ -17,9 +19,10 @@
  *     the pre-Phase-A behavior instead of losing the message — and the
  *     backfill CLI re-syncs the divergence once PG is back.
  *
- * The flag is deliberately not checked against the Null writer here: an
- * operator who sets PG_PRIMARY without a reachable writer gets the GDrive
- * fallback on every write (logged WARN per call), not a broken channel.
+ * The DUAL_WRITE requirement is not a Phase A leftover: it is the Null-writer
+ * guard. Without it the factory hands back the Null writer, whose writes are
+ * silent no-ops — PG_PRIMARY would then report success and skip GDrive. The
+ * gate refuses that config instead of losing messages (review #1030).
  */
 
 import type { Message } from '../MessageManager.js';
@@ -35,7 +38,13 @@ const logger = createLogger('roosync-channel-write');
  * and config reloads can toggle it without a process restart.
  */
 export function isChannelPgPrimary(): boolean {
+  // DUAL_WRITE=1 is required because writer-factory only builds a real
+  // PgUnifiedStoreWriter under that flag — without it the writer is the Null
+  // writer, whose insert/update/delete are no-ops that resolve without
+  // throwing. A PG_PRIMARY gate on the Null writer reports success, skips the
+  // GDrive fallback, and loses the message with no signal (review #1030).
   return process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY === '1'
+    && process.env.UNIFIED_STORE_DUAL_WRITE === '1'
     && !!process.env.UNIFIED_STORE_PG_URL;
 }
 
