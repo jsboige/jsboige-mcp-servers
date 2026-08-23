@@ -19,6 +19,7 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
 import { createLogger } from '../utils/logger.js';
+import { getToolTimeoutMs } from '../config/tool-timeouts.js';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
 import { resolveFullConversationSkeleton } from '../utils/server-helpers.js';
@@ -49,42 +50,13 @@ async function getBackgroundServices() {
 
 const registryLogger = createLogger('ToolRegistry');
 
-// #2267: Per-tool timeout configuration (milliseconds).
-// Prevents MCP tool calls from hanging indefinitely (22h observed).
-// Default: 120s. Heavy tools get longer timeouts.
-const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
-const TOOL_TIMEOUTS: Record<string, number> = {
-    // Indexing/rebuild operations can be slow
-    roosync_indexing: 300_000,      // 5 min
-    roosync_storage_management: 180_000, // 3 min
-    codebase_search: 180_000,       // 3 min (embedding + Qdrant)
-    roosync_search: 180_000,        // 3 min
-    conversation_browser: 180_000,  // 3 min (can scan large dirs)
-    export_data: 180_000,           // 3 min (large exports)
-    // roosync_dashboard append/write/condense runs condensation: TWO LLM calls
-    // in parallel (qwen3.6-35b reasoning) — generateLLMSummary over the archived
-    // messages (~2KB out) AND generateStatusUpdate, which re-ingests the previous
-    // status (the project's long-term memory, ~18KB) + ALL messages and evolves
-    // it (~18KB out). The status call is the bottleneck: wall-time of 712s has
-    // been observed (490s for the status leg alone). The prior 60s cap (#453),
-    // then 600s, both cancelled legitimate condensations, write-blocking the
-    // fleet's main coord channel (regression — dashboards worked before #453).
-    // #2267 follow-up: reduced from 1800s to 720s (12 min). The internal per-LLM-call
-    // timeout (CONDENSE_LLM_TIMEOUT_MS, dashboard.ts) was already reduced to 720s.
-    // The wrapper timeout aligns to the internal ceiling + circuit-breaker (#1792).
-    // This ensures a true hang (stuck GDrive, dead transport) fails within 12 min
-    // instead of blocking the MCP connection for 30 min.
-    roosync_dashboard: 720_000,     // 12 min (#2267: reduced from 30 min; aligns to CONDENSE_LLM_TIMEOUT_MS)
-    roosync_compare_config: 60_000, // 1 min
-    roosync_inventory: 60_000,      // 1 min
-};
-
-// #833 C3: exported to lock the #2267 per-tool timeout contract under test
-// (matches the existing test-hook precedent at L86 `registryLogger` global
-// and L90 exported `TOOL_CAPABILITIES`).
-export function getToolTimeoutMs(toolName: string): number {
-    return TOOL_TIMEOUTS[toolName] ?? DEFAULT_TOOL_TIMEOUT_MS;
-}
+// #2267 / #3205: the per-tool table and `getToolTimeoutMs` moved to
+// ../config/tool-timeouts.js, next to the GLOBAL guard from index.ts that races
+// this one. They governed the same call from two files that never imported each
+// other, so nothing could compare them and the outer one silently preempted this
+// budget for roosync_dashboard (300s vs 720s). Re-exported here so every existing
+// importer — registry.test.ts among them — keeps resolving it from this module.
+export { getToolTimeoutMs } from '../config/tool-timeouts.js';
 
 // #1665: Export registry logger globally for tests
 (global as any).registryLogger = registryLogger;

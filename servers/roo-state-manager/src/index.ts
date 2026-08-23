@@ -147,17 +147,12 @@ import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
 import { createLogger } from './utils/logger.js';
 import { recordToolCall } from './utils/tool-call-metrics.js';
 
-// #2267: Per-MCP-call global timeout — prevents tool calls from hanging indefinitely.
-// Observed incident: roosync_dashboard hung 22h (TBXark session death + GDrive I/O stall).
-// Default: 5 min. Override via MCP_TOOL_TIMEOUT_MS env var.
-const MCP_TOOL_TIMEOUT_MS = parseInt(process.env.MCP_TOOL_TIMEOUT_MS || '300000', 10);
-// Legitimately-slow tools get a higher cap (10 min).
-const MCP_TOOL_TIMEOUT_OVERRIDES: Readonly<Record<string, number>> = {
-    export_data: 600000,
-    roosync_baseline: 600000,
-    roosync_indexing: 600000,
-    roosync_storage_management: 600000,
-};
+// #2267 / #3205: the global guard's tables moved to ./config/tool-timeouts.js,
+// next to the per-tool budget they race in the registry. Static import is safe
+// for the #1894 startup budget: that module has ZERO imports of its own, so it
+// pulls in no dependency chain (unlike registry.ts and its zod chain, which
+// stays dynamic below).
+import { getMcpToolTimeoutMs } from './config/tool-timeouts.js';
 
 const logger = createLogger('RooStateManagerServer');
 const require = createRequire(import.meta.url);
@@ -568,7 +563,7 @@ class RooStateManagerServer {
                 // on timeout return a structured error instead of hanging forever.
                 let timeoutHandle: NodeJS.Timeout | undefined;
                 try {
-                    const timeoutMs = MCP_TOOL_TIMEOUT_OVERRIDES[toolName ?? ''] ?? MCP_TOOL_TIMEOUT_MS;
+                    const timeoutMs = getMcpToolTimeoutMs(toolName ?? '');
                     const timeoutPromise = new Promise<never>((_, reject) => {
                         timeoutHandle = setTimeout(() => {
                             reject(new Error(
