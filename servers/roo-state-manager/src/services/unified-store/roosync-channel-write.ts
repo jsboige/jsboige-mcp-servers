@@ -134,7 +134,7 @@ export async function purgeArchivedChannelMessages(retentionDays: number): Promi
   try {
     return await getUnifiedStoreWriter().purgeArchivedRooSyncMessages(retentionDays);
   } catch (error) {
-    logger.error('[channel-pg] retention purge failed', { error: String(error) });
+    logger.error('[channel-pg] retention purge failed', error);
     return 0;
   }
 }
