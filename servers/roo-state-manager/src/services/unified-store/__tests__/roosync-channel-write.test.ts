@@ -450,7 +450,24 @@ describe('roosync-channel-write helpers (failure contract)', () => {
 
   test('insertRooSyncMessagePrimary resolves false (never throws) on PG failure', async () => {
     mockInsertRooSyncMessage.mockRejectedValue(new Error('PG down'));
+    const message: Message = {
+      id: 'msg-pg-down', from: 'myia-po-2023:roo-extensions', to: 'myia-ai-01',
+      subject: 's', body: 'b', priority: 'MEDIUM',
+      timestamp: '2026-08-23T10:00:00.000Z', status: 'unread',
+    };
+    // #2996 cousin: the row mapping runs BEFORE the writer call — with a
+    // well-formed message, the rejection that fires IS the mocked 'PG down'.
+    await expect(insertRooSyncMessagePrimary(message)).resolves.toBe(false);
+    expect(mockInsertRooSyncMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('insertRooSyncMessagePrimary resolves false on a malformed message (mapping throws pre-writer)', async () => {
+    // Deliberate: `{} as Message` — parseMachineWorkspace(undefined.from) throws
+    // a TypeError inside the try, the failure contract absorbs it. Documents
+    // that a malformed message degrades to the GDrive fallback, never crashes
+    // the send (#2996 indexOf cousin, root-caused 2026-08-24).
     await expect(insertRooSyncMessagePrimary({} as Message)).resolves.toBe(false);
+    expect(mockInsertRooSyncMessage).not.toHaveBeenCalled();
   });
 
   test('updateRooSyncMessagePrimary resolves false on PG failure', async () => {
