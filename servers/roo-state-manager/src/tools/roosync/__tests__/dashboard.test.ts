@@ -1823,15 +1823,29 @@ describe('#3205 résiduel — retry borné readDashboardFromGdrive', () => {
     return e;
   };
 
-  beforeEach(() => {
+  let envTmpDir: string;
+
+  beforeEach(async () => {
     dashReadCalls = 0;
+    // Ce describe est top-level : il n'hérite PAS du beforeEach du describe
+    // voisin, et le afterEach de celui-ci supprime les vars entre ses tests.
+    // Sur un runner sans .env (gitignoré), getSharedStatePath() throw sinon —
+    // exactement l'échec CI vu sur le 1er push (revue ai-01 #1032).
+    envTmpDir = await mkdtemp(testTmpBase);
+    process.env.ROOSYNC_SHARED_PATH = envTmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Restaurer la délégation par défaut pour les tests suivants de la suite.
     vi.mocked(fsp.readFile).mockImplementation(
       (...args: unknown[]) => fsReal.readFile!(...args) as unknown as ReturnType<typeof fsp.readFile>
     );
+    await rm(envTmpDir, { recursive: true, force: true });
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
   });
 
   it('absorbe une erreur transitoire : EBUSY × 2 puis succès au 3e essai', async () => {
