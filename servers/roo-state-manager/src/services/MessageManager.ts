@@ -28,6 +28,7 @@ import {
   dualWriteRooSyncMessageArchived,
   dualWriteRooSyncMessageDestroyed,
   dualWriteRooSyncMessageReminderSent,
+  mapMessageToRow,
 } from './unified-store/roosync-channel-dual-write.js';
 // #3151 Phase B — PG-primary channel reads (env-gated, GDrive fallback).
 import {
@@ -36,6 +37,17 @@ import {
   countChannelInboxFromPg,
   getChannelMessageFromPg,
 } from './unified-store/roosync-channel-read.js';
+// #3151 Phase D — PG-primary channel writes (env-gated, GDrive fallback on
+// PG failure). The dual-write above made GDrive primary and PG the mirror;
+// these invert it, so GDrive becomes the read-only legacy archive.
+import {
+  isChannelPgPrimary,
+  insertRooSyncMessagePrimary,
+  updateRooSyncMessagePrimary,
+  destroyRooSyncMessageInStore,
+  purgeArchivedChannelMessages,
+} from './unified-store/roosync-channel-write.js';
+import type { RooSyncMessageUpdate } from './unified-store/types.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -685,6 +697,16 @@ export class MessageManager {
     };
 
     try {
+      // #3151 Phase D — PG-primary write: persist to roosync_messages and
+      // skip the GDrive files entirely (GDrive = read-only legacy archive).
+      // insertRooSyncMessagePrimary returns false on PG failure, falling
+      // through to the file path below — the send is never lost.
+      if (isChannelPgPrimary() && await insertRooSyncMessagePrimary(message)) {
+        this.addToCache(message);
+        logger.info(`Message sent (PG primary): ${message.id}`);
+        return message;
+      }
+
       // Sauvegarder dans inbox du destinataire
       const inboxFile = join(this.inboxPath, `${message.id}.json`);
       await fs.writeFile(inboxFile, JSON.stringify(message, null, 2), 'utf-8');
@@ -744,8 +766,15 @@ export class MessageManager {
         } catch { /* non-critical */ }
       }
     }
-    // #3151 Phase A: refresh attachment_refs on the PG copy (fire-and-forget)
-    dualWriteRooSyncAttachmentRefs(messageId, attachments).catch(() => {});
+    // #3151 Phase A: refresh attachment_refs on the PG copy (fire-and-forget).
+    // Phase D: when PG is primary the files above are usually absent — the
+    // PG row is then the ONLY persistence, so the update is awaited. On
+    // failure the caller-visible outcome is unchanged (best-effort refs).
+    if (isChannelPgPrimary()) {
+      await updateRooSyncMessagePrimary(messageId, { attachment_refs: attachments ?? [] });
+    } else {
+      dualWriteRooSyncAttachmentRefs(messageId, attachments).catch(() => {});
+    }
   }
 
   /**
@@ -1029,6 +1058,41 @@ export class MessageManager {
   async markAsRead(messageId: string, readerId?: string): Promise<boolean> {
     logger.info(`Marking message as read: ${messageId}${readerId ? ` by ${readerId}` : ''}`);
 
+    // #3151 Phase D — PG-primary mutation: the message lives in
+    // roosync_messages (sends skip the files), so load and persist there.
+    // Falls back to the file path when the row is unknown (legacy message,
+    // GDrive-only) or when the PG update fails — for a PG-only message the
+    // fallback then surfaces "not found" and the caller retries.
+    if (isChannelPgPrimary()) {
+      const reader = getChannelPgReader();
+      if (reader) {
+        const pgMessage = await getChannelMessageFromPg(reader, messageId);
+        if (pgMessage) {
+          if (!MessageManager.applyReadTracking(pgMessage, readerId)) {
+            return false;
+          }
+          const isBroadcast = pgMessage.to === 'all' || pgMessage.to === 'All';
+          const fields: RooSyncMessageUpdate = isBroadcast
+            ? { read_by: pgMessage.read_by ?? [] }
+            : { status: 'read', read_at: new Date().toISOString() };
+          fields.options = mapMessageToRow(pgMessage).options;
+          if (await updateRooSyncMessagePrimary(messageId, fields)) {
+            this.updateInCache(messageId, pgMessage);
+            // Check auto-destruct conditions after read (#629)
+            if (pgMessage.auto_destruct) {
+              const shouldDestroy = this.checkAutoDestructCondition(pgMessage);
+              if (shouldDestroy) {
+                await this.destroyMessage(messageId, shouldDestroy);
+              }
+            }
+            logger.info('Message marked as read (PG primary)');
+            return true;
+          }
+          logger.warn(`[channel-pg] markAsRead: PG update failed for ${messageId} — trying GDrive path`);
+        }
+      }
+    }
+
     const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
       // Phantom message fix (#2307 Phase 4): message may have been auto-archived
@@ -1046,60 +1110,12 @@ export class MessageManager {
       const content = await fs.readFile(filePath, 'utf-8');
       const message: Message = JSON.parse(content);
 
-      // #2287: Workspace guard — reject if reader's workspace doesn't match message target
-      if (readerId) {
-        const readerParsed = parseMachineWorkspace(readerId);
-        const isBroadcast = message.to === 'all' || message.to === 'All';
-        if (!isBroadcast && readerParsed.workspaceId) {
-          const msgTo = message.to;
-          // Only check workspace when message targets a specific workspace
-          const targetParsed = parseMachineWorkspace(msgTo);
-          if (targetParsed.workspaceId) {
-            if (normalizeWorkspaceId(readerParsed.workspaceId) !== normalizeWorkspaceId(targetParsed.workspaceId)) {
-              logger.warn(`Workspace mismatch: reader ${readerId} tried to mark message for ${msgTo} — rejected`);
-              return false;
-            }
-          }
-        }
+      // #2287 guards + #629 per-machine tracking + targeted status flip —
+      // shared with the PG-primary branch via applyReadTracking.
+      if (!MessageManager.applyReadTracking(message, readerId)) {
+        return false;
       }
-
-      // Track per-machine read status (#629)
-      // #2287: Use full readerId for workspace-aware access check
-      if (readerId) {
-        const reader = parseMachineWorkspace(readerId);
-        const readerMachineId = reader.machineId;
-        const readerWorkspaceId = reader.workspaceId;
-
-        // #2287: Verify the caller has access to this message before marking read.
-        // Allow if: matches recipient OR is in destruct_after_read_by (auto-destruct authorized reader)
-        const isRecipient = matchesRecipient(message.to, readerMachineId, readerWorkspaceId);
-        const isAuthorizedReader = message.destruct_after_read_by?.includes(readerMachineId) ?? false;
-        if (!isRecipient && !isAuthorizedReader) {
-          logger.warn(`markAsRead denied: message ${messageId} targets ${message.to}, reader is ${readerId}`);
-          return false;
-        }
-
-        if (!message.read_by) {
-          message.read_by = [];
-        }
-        if (!message.read_by.includes(readerMachineId)) {
-          message.read_by.push(readerMachineId);
-        }
-        if (!message.acknowledged_at) {
-          message.acknowledged_at = {};
-        }
-        if (!message.acknowledged_at[readerMachineId]) {
-          message.acknowledged_at[readerMachineId] = new Date().toISOString();
-        }
-        logger.info(`Reader ${readerMachineId} tracked in read_by (${message.read_by.length} readers)`);
-      }
-
-      // For targeted messages (not broadcast), set global status to 'read'
-      // For broadcasts (to: "all"/"All"), keep status as-is — per-machine filtering uses read_by
       const isBroadcast = message.to === 'all' || message.to === 'All';
-      if (!isBroadcast) {
-        message.status = 'read';
-      }
 
       await fs.writeFile(filePath, JSON.stringify(message, null, 2), 'utf-8');
 
@@ -1135,6 +1151,68 @@ export class MessageManager {
       logger.error('Error marking message as read', error);
       return false;
     }
+  }
+
+  /**
+   * Shared read-tracking mutation for markAsRead — #2287 workspace guard,
+   * #2287/#629 access check + per-machine read_by/acknowledged_at tracking,
+   * and the targeted (non-broadcast) status flip. Applied identically
+   * whichever store the message was loaded from (GDrive file or PG row,
+   * #3151 Phase D).
+   *
+   * @returns false when the reader is denied; true with `message` mutated.
+   */
+  private static applyReadTracking(message: Message, readerId?: string): boolean {
+    if (readerId) {
+      // #2287: Workspace guard — reject if reader's workspace doesn't match message target
+      const readerParsed = parseMachineWorkspace(readerId);
+      const isBroadcast = message.to === 'all' || message.to === 'All';
+      if (!isBroadcast && readerParsed.workspaceId) {
+        const msgTo = message.to;
+        // Only check workspace when message targets a specific workspace
+        const targetParsed = parseMachineWorkspace(msgTo);
+        if (targetParsed.workspaceId) {
+          if (normalizeWorkspaceId(readerParsed.workspaceId) !== normalizeWorkspaceId(targetParsed.workspaceId)) {
+            logger.warn(`Workspace mismatch: reader ${readerId} tried to mark message for ${msgTo} — rejected`);
+            return false;
+          }
+        }
+      }
+
+      const readerMachineId = readerParsed.machineId;
+      const readerWorkspaceId = readerParsed.workspaceId;
+
+      // #2287: Verify the caller has access to this message before marking read.
+      // Allow if: matches recipient OR is in destruct_after_read_by (auto-destruct authorized reader)
+      const isRecipient = matchesRecipient(message.to, readerMachineId, readerWorkspaceId);
+      const isAuthorizedReader = message.destruct_after_read_by?.includes(readerMachineId) ?? false;
+      if (!isRecipient && !isAuthorizedReader) {
+        logger.warn(`markAsRead denied: message ${message.id} targets ${message.to}, reader is ${readerId}`);
+        return false;
+      }
+
+      if (!message.read_by) {
+        message.read_by = [];
+      }
+      if (!message.read_by.includes(readerMachineId)) {
+        message.read_by.push(readerMachineId);
+      }
+      if (!message.acknowledged_at) {
+        message.acknowledged_at = {};
+      }
+      if (!message.acknowledged_at[readerMachineId]) {
+        message.acknowledged_at[readerMachineId] = new Date().toISOString();
+      }
+      logger.info(`Reader ${readerMachineId} tracked in read_by (${message.read_by.length} readers)`);
+    }
+
+    // For targeted messages (not broadcast), set global status to 'read'
+    // For broadcasts (to: "all"/"All"), keep status as-is — per-machine filtering uses read_by
+    const isBroadcast = message.to === 'all' || message.to === 'All';
+    if (!isBroadcast) {
+      message.status = 'read';
+    }
+    return true;
   }
 
   /**
@@ -1177,6 +1255,62 @@ export class MessageManager {
     reason: 'read_by_recipient' | 'read_by_all' | 'ttl_expired'
   ): Promise<boolean> {
     logger.info(`Destroying message ${messageId} (reason: ${reason})`);
+
+    // #3151 Phase D — PG-primary mutation: destroy the PG row (payload purge
+    // first, stamp second). Legacy GDrive attachment blobs are purged too —
+    // attachments still land on GDrive until their own follow-up phase, and a
+    // secret that survives one layer down is the exact defect the survivors
+    // guard exists for. Falls back to the file path when the row is unknown
+    // or the PG write fails.
+    if (isChannelPgPrimary()) {
+      const reader = getChannelPgReader();
+      if (reader) {
+        const pgMessage = await getChannelMessageFromPg(reader, messageId);
+        if (pgMessage) {
+          if (pgMessage.destroyed_at) {
+            logger.info(`Message ${messageId} already destroyed (PG)`);
+            return true;
+          }
+          const attachmentRefs = pgMessage.attachments ?? [];
+          const survivors: string[] = [];
+          for (const ref of attachmentRefs) {
+            try {
+              // GDrive blob (legacy copies; absent = success, destruction is
+              // idempotent — same contract as the file path below)
+              const meta = await this.attachmentManager.getAttachmentMetadata(ref.uuid);
+              if (meta !== null) {
+                await this.attachmentManager.deleteAttachment(ref.uuid);
+              }
+            } catch (error) {
+              survivors.push(ref.uuid);
+              logger.error(`Failed to purge GDrive attachment ${ref.uuid} of ${messageId}`, error);
+            }
+          }
+          if (survivors.length > 0) {
+            logger.error(
+              `Message ${messageId} NOT destroyed (PG primary): ${survivors.length}/${attachmentRefs.length} ` +
+                `GDrive attachment(s) survived (${survivors.join(', ')}). Left un-stamped for retry.`
+            );
+            return false;
+          }
+          if (await destroyRooSyncMessageInStore(
+            messageId,
+            reason,
+            attachmentRefs.map((ref) => ref.uuid)
+          )) {
+            this.updateInCache(messageId, {
+              ...pgMessage,
+              body: '[DESTROYED]',
+              destroyed_at: new Date().toISOString(),
+              destroyed_reason: reason,
+            });
+            logger.info(`Message ${messageId} destroyed (PG primary, ${reason})`);
+            return true;
+          }
+          logger.warn(`[channel-pg] destroy: PG failed for ${messageId} — trying GDrive path`);
+        }
+      }
+    }
 
     const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
@@ -1400,6 +1534,32 @@ export class MessageManager {
   async archiveMessage(messageId: string): Promise<boolean> {
     logger.info(`Archiving message: ${messageId}`);
 
+    // #3151 Phase D — PG-primary mutation: the archive transition is a row
+    // update (status + archived_at), no file move. Idempotent on an already
+    // archived row. Falls back to the file path when the row is unknown
+    // (legacy message) or the PG write fails.
+    if (isChannelPgPrimary()) {
+      const reader = getChannelPgReader();
+      if (reader) {
+        const pgMessage = await getChannelMessageFromPg(reader, messageId);
+        if (pgMessage) {
+          if (pgMessage.status === 'archived') {
+            logger.info(`Message already archived (PG): ${messageId}`);
+            return true;
+          }
+          if (await updateRooSyncMessagePrimary(messageId, {
+            status: 'archived',
+            archived_at: new Date().toISOString(),
+          })) {
+            this.removeFromCache(messageId);
+            logger.info('Message archived (PG primary)');
+            return true;
+          }
+          logger.warn(`[channel-pg] archive: PG failed for ${messageId} — trying GDrive path`);
+        }
+      }
+    }
+
     const inboxFile = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(inboxFile)) {
       // Phantom message fix (#2307 Phase 4): already archived = success (idempotent)
@@ -1469,6 +1629,34 @@ export class MessageManager {
   }> {
     logger.info(`Amending message: ${messageId}`);
 
+    // #3151 Phase D — PG-primary mutation: amend against the PG row when it
+    // exists (validations identical — applyAmendment throws the same errors).
+    // Falls back to the file path when the row is unknown or PG fails.
+    if (isChannelPgPrimary()) {
+      const reader = getChannelPgReader();
+      if (reader) {
+        const pgMessage = await getChannelMessageFromPg(reader, messageId);
+        if (pgMessage) {
+          MessageManager.applyAmendment(pgMessage, senderId, newContent, reason);
+          if (await updateRooSyncMessagePrimary(messageId, {
+            body: pgMessage.body,
+            options: mapMessageToRow(pgMessage).options,
+          })) {
+            this.updateInCache(messageId, pgMessage);
+            logger.info('Message amended successfully (PG primary)');
+            return {
+              success: true,
+              message_id: pgMessage.id,
+              amended_at: pgMessage.metadata!.amendment_timestamp!,
+              reason: pgMessage.metadata!.amendment_reason!,
+              original_content_preserved: !!pgMessage.metadata!.original_content
+            };
+          }
+          logger.warn(`[channel-pg] amend: PG failed for ${messageId} — trying GDrive path`);
+        }
+      }
+    }
+
     // Rechercher le message dans sent/
     const sentFile = join(this.sentPath, `${messageId}.json`);
     
@@ -1485,46 +1673,8 @@ export class MessageManager {
       const content = await fs.readFile(sentFile, 'utf-8');
       const message: Message = JSON.parse(content);
 
-      // Validation : Vérifier que le message n'est pas lu/archivé (en premier)
-      if (message.status !== 'unread') {
-        throw new MessageManagerError(
-          `Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`,
-          MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
-          { messageId, status: message.status, expectedStatus: 'unread', action: 'amend' }
-        );
-      }
-
-      // Validation : Vérifier que l'émetteur correspond (comparaison par machineId uniquement)
-      // The sender may use a different workspace suffix (e.g., worktree vs main workspace)
-      // so we compare at the machine level, not the full "machine:workspace" string
-      const messageSender = parseMachineWorkspace(message.from);
-      const currentSender = parseMachineWorkspace(senderId);
-      if (messageSender.machineId !== currentSender.machineId) {
-        throw new MessageManagerError(
-          `Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`,
-          MessageManagerErrorCode.MESSAGE_SEND_FAILED,
-          { messageId, expectedSender: message.from, actualSender: currentSender.machineId, action: 'amend' }
-        );
-      }
-
-      // Préserver le contenu original si c'est le premier amendement
-      const isFirstAmendment = !message.metadata?.amended;
-      
-      if (isFirstAmendment) {
-        message.metadata = {
-          ...message.metadata,
-          amended: true,
-          original_content: message.body
-        };
-      }
-
-      // Mettre à jour le contenu et les métadonnées d'amendement
-      message.body = newContent;
-      message.metadata = {
-        ...message.metadata,
-        amendment_reason: reason || 'Aucune raison fournie',
-        amendment_timestamp: new Date().toISOString()
-      };
+      // Validations + mutation — partagées avec la branche PG-primaire
+      MessageManager.applyAmendment(message, senderId, newContent, reason);
 
       // Sauvegarder le message modifié dans sent/
       await fs.writeFile(sentFile, JSON.stringify(message, null, 2), 'utf-8');
@@ -1541,17 +1691,69 @@ export class MessageManager {
       dualWriteRooSyncMessageAmendment(message).catch(() => {});
       logger.info('Message amended successfully');
 
+      // applyAmendment always assigns metadata — TS can't see it across the call
+      const meta = message.metadata!;
       return {
         success: true,
         message_id: message.id,
-        amended_at: message.metadata.amendment_timestamp!,
-        reason: message.metadata.amendment_reason!,
-        original_content_preserved: !!message.metadata.original_content
+        amended_at: meta.amendment_timestamp!,
+        reason: meta.amendment_reason!,
+        original_content_preserved: !!meta.original_content
       };
     } catch (error) {
       logger.error('Error amending message', error);
       throw error;
     }
+  }
+
+  /**
+   * Shared amend validation + mutation — status must be unread, sender must
+   * match at machine level, original content preserved on first amendment.
+   * Throws the same MessageManagerErrors from whichever store the message
+   * was loaded from (GDrive file or PG row, #3151 Phase D).
+   */
+  private static applyAmendment(
+    message: Message,
+    senderId: string,
+    newContent: string,
+    reason?: string
+  ): void {
+    if (message.status !== 'unread') {
+      throw new MessageManagerError(
+        `Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`,
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { messageId: message.id, status: message.status, expectedStatus: 'unread', action: 'amend' }
+      );
+    }
+
+    // Validation : Vérifier que l'émetteur correspond (comparaison par machineId uniquement)
+    // The sender may use a different workspace suffix (e.g., worktree vs main workspace)
+    // so we compare at the machine level, not the full "machine:workspace" string
+    const messageSender = parseMachineWorkspace(message.from);
+    const currentSender = parseMachineWorkspace(senderId);
+    if (messageSender.machineId !== currentSender.machineId) {
+      throw new MessageManagerError(
+        `Permission refusée : seul l'émetteur (${message.from}) peut amender ce message.`,
+        MessageManagerErrorCode.MESSAGE_SEND_FAILED,
+        { messageId: message.id, expectedSender: message.from, actualSender: currentSender.machineId, action: 'amend' }
+      );
+    }
+
+    // Préserver le contenu original si c'est le premier amendement
+    if (!message.metadata?.amended) {
+      message.metadata = {
+        ...message.metadata,
+        amended: true,
+        original_content: message.body
+      };
+    }
+
+    message.body = newContent;
+    message.metadata = {
+      ...message.metadata,
+      amendment_reason: reason || 'Aucune raison fournie',
+      amendment_timestamp: new Date().toISOString()
+    };
   }
 
   /**
@@ -1782,6 +1984,21 @@ export class MessageManager {
 
     logger.info(`Auto-archived ${archived}/${toArchive.length} messages`);
     return archived;
+  }
+
+  /**
+   * Rétention PG du canal (#3151 Phase D) : purge des rows archivés plus
+   * vieux que `retentionDays` jours, avec leurs payloads d'attachment bytea,
+   * en une transaction. Le GDrive n'est JAMAIS touché (archive legacy en
+   * lecture seule — « pas de suppression avant preuve »).
+   *
+   * No-op silencieux tant que la fenêtre n'est pas positive ; piloté par
+   * UNIFIED_STORE_CHANNEL_RETENTION_DAYS (voir le runbook ops, §Phase D).
+   *
+   * @returns nombre de rows purgées (0 = rien à purger ou PG indisponible)
+   */
+  async purgeArchivedFromStore(retentionDays: number): Promise<number> {
+    return purgeArchivedChannelMessages(retentionDays);
   }
 
   /**

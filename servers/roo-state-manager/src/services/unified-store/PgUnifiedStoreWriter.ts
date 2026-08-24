@@ -281,6 +281,9 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     ['reminder_sent_at', 'reminder_sent_at', false],
     // Phase B (#3151) — per-machine broadcast read tracking (migrations/005).
     ['read_by', 'read_by', true],
+    // Phase D (#3151) — whole-object options replace (acknowledged_at,
+    // metadata, TTL fields) from the PG-primary mutation paths.
+    ['options', 'options', true],
   ];
 
   async updateRooSyncMessage(
@@ -334,6 +337,59 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
         client.release();
       }
     });
+  }
+
+  /**
+   * Retention sweep (#3151 Phase D): delete archived rows older than the
+   * cutoff, together with their attachment payloads — the bytea copy would
+   * otherwise outlive its message forever (destroy purges blobs, archiving
+   * does not, and Phase D makes PG the system of record for the channel).
+   *
+   * Single transaction: a purge that lost its attachment deletes halfway
+   * would leave orphan bytea with no row pointing at them, undetectable by
+   * any later sweep (the refs live on the deleted row).
+   */
+  async purgeArchivedRooSyncMessages(retentionDays: number): Promise<number> {
+    if (retentionDays <= 0) return 0;
+    let purged = 0;
+    await this.withRetry('purgeArchivedRooSyncMessages', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const { rows } = await client.query(
+          `SELECT id, attachment_refs FROM roosync_messages
+           WHERE status = 'archived'
+             AND archived_at IS NOT NULL
+             AND archived_at < now() - ($1 || ' days')::interval`,
+          [String(retentionDays)]
+        );
+        if (rows.length > 0) {
+          const uuids = rows.flatMap((r: { attachment_refs: Array<{ uuid: string }> }) =>
+            (r.attachment_refs ?? []).map((ref) => ref.uuid)
+          );
+          for (const uuid of uuids) {
+            await client.query('DELETE FROM roosync_attachments WHERE id = $1', [uuid]);
+          }
+          await client.query(
+            'DELETE FROM roosync_messages WHERE id = ANY($1::text[])',
+            [rows.map((r: { id: string }) => r.id)]
+          );
+        }
+        await client.query('COMMIT');
+        // Count only after COMMIT — withRetry swallows the throw (best-effort
+        // contract), so a rolled-back purge must surface as 0, not as the
+        // candidate row count.
+        purged = rows.length;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+    return purged;
   }
 
   async insertRooSyncAttachment(row: RooSyncAttachmentRow): Promise<void> {
