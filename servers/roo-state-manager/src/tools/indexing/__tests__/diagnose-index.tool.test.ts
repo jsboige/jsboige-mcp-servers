@@ -303,7 +303,9 @@ describe('diagnose-index', () => {
       const diagnostics = JSON.parse(text);
 
       expect(diagnostics.details.environment_variables.QDRANT_URL).toBe(false);
-      expect(diagnostics.errors).toContainEqual(
+      // #3257: env-var absence is a warning (non-blocking category) — connections
+      // above all succeeded against the mocks, so the verdict must stay healthy.
+      expect(diagnostics.warnings).toContainEqual(
         expect.stringContaining('QDRANT_URL')
       );
     });
@@ -317,7 +319,7 @@ describe('diagnose-index', () => {
       const text = result.content[0].text as string;
       const diagnostics = JSON.parse(text);
 
-      expect(diagnostics.errors).toEqual(
+      expect(diagnostics.warnings).toEqual(
         expect.arrayContaining([
           expect.stringContaining('Variables d\'environnement manquantes')
         ])

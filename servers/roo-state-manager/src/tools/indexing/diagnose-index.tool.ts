@@ -106,6 +106,79 @@ export function _classifyOpenAIError(err: any): 'auth_401' | 'network_timeout' |
 }
 
 /**
+ * #3257 — Classify a deep-diagnostics failure into a TYPED abort reason.
+ *
+ * When `deep: true` and the scroll/aggregation block fails, the raw message
+ * ("This operation was aborted") says nothing about WHY. This classifier keeps
+ * the raw error (unchanged) AND emits a typed reason so consumers can act
+ * (reduce sample_size vs check backend vs simply re-run).
+ *
+ * Typed reasons: `timeout` | `caller_cancelled` | `server_abort` |
+ * `sample_limit_rejected` | `unknown`.
+ *
+ * How internal timeout vs caller cancellation are distinguished (VERIFIED in
+ * @qdrant/js-client-rest@1.16.2 dist/cjs/api-client.js): the client's timeout
+ * middleware converts its OWN AbortError into a `QdrantClientTimeoutError`
+ * (distinctive `.name`, message preserved as "This operation was aborted").
+ * Therefore:
+ *   - `.name === 'QdrantClientTimeoutError'` → client-internal timeout (budget
+ *     exhausted against a live server);
+ *   - a RAW AbortError reaching this handler can NOT be the client's internal
+ *     timeout (the middleware would have converted it) → external abort:
+ *     caller/transport cancellation, or an AbortSignal.timeout signature in
+ *     `.cause` (then: timeout).
+ *
+ * Strategy (same phase discipline as _classifyOpenAIError): structural `.name`
+ * / `.code` first, message-substring LAST — a QdrantClientTimeoutError whose
+ * message is "This operation was aborted" must classify `timeout`, not
+ * `caller_cancelled`.
+ *
+ * @internal — exported only for unit tests.
+ */
+export function _classifyDeepDiagnosticError(
+    err: any
+): 'timeout' | 'caller_cancelled' | 'server_abort' | 'sample_limit_rejected' | 'unknown' {
+    const name = err?.name;
+    const code = err?.code ?? err?.cause?.code;
+    const status = err?.status;
+    const msg = String(err?.message ?? '').toLowerCase();
+    const causeName = err?.cause?.name;
+    const causeMsg = String(err?.cause?.message ?? '').toLowerCase();
+
+    // Phase A — structural: the client's own timeout wrapper (most reliable).
+    if (name === 'QdrantClientTimeoutError') {
+        return 'timeout';
+    }
+    // Phase B — abort shapes: external abort. A timeout signature in cause/code
+    // (AbortSignal.timeout → DOMException TimeoutError, Node ETIMEDOUT) means
+    // timeout; otherwise caller/transport cancellation.
+    if (name === 'AbortError' || code === 'ABORT_ERR' || msg.includes('operation was aborted')) {
+        if (causeName === 'TimeoutError' || code === 'ETIMEDOUT' || causeMsg.includes('timeout')) {
+            return 'timeout';
+        }
+        return 'caller_cancelled';
+    }
+    // Phase C — server-side abort: 5xx response or connection reset.
+    if (typeof status === 'number' && status >= 500) {
+        return 'server_abort';
+    }
+    if (code === 'ECONNRESET' || code === 'EPIPE' || msg.includes('socket hang up')) {
+        return 'server_abort';
+    }
+    // Phase D — sample/limit rejection: 4xx explicitly about the requested sample.
+    if (typeof status === 'number' && (status === 400 || status === 413) &&
+        (msg.includes('sample') || msg.includes('limit') || msg.includes('size'))) {
+        return 'sample_limit_rejected';
+    }
+    // Phase E — message fallback (last resort): generic timeout keywords on a
+    // plain Error (e.g. new Error('scroll timeout') from tests/older paths).
+    if (msg.includes('timeout') || msg.includes('timed out')) {
+        return 'timeout';
+    }
+    return 'unknown';
+}
+
+/**
  * Options for the diagnose tool. All optional — preserves backward compatibility.
  */
 export interface DiagnoseIndexOptions {
@@ -146,6 +219,10 @@ export async function handleDiagnoseSemanticIndex(
         collection_name: collectionName,
         status: 'unknown',
         errors: [],
+        // #3257: explicit warning category. `errors[]` is now load-bearing for the
+        // top-level verdict (any entry prevents `healthy`); purely informational
+        // findings that do not impair function belong here instead.
+        warnings: [],
         details: {},
     };
 
@@ -325,7 +402,12 @@ export async function handleDiagnoseSemanticIndex(
         .map(([varName]) => varName);
 
     if (missingEnvVars.length > 0) {
-        diagnostics.errors.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
+        // #3257: warning, not error. By the time this check runs, the connection
+        // checks above have already spoken: if a missing var actually impaired
+        // function, status is already non-healthy. Flagging it as an error here
+        // would degrade fully-working setups (e.g. unauthenticated local Qdrant
+        // with QDRANT_API_KEY unset) under the new no-false-green invariant.
+        diagnostics.warnings.push(`Variables d'environnement manquantes: ${missingEnvVars.join(', ')}`);
     }
 
     // #1244: Deep diagnostics — scroll a sample, aggregate by source/workspace_name, detect field coverage
@@ -418,8 +500,15 @@ export async function handleDiagnoseSemanticIndex(
                 );
             }
         } catch (deepError: any) {
-            diagnostics.errors.push(`Deep diagnostics failed: ${deepError.message}`);
-            diagnostics.details.deep_diagnostics = { error: deepError.message };
+            // #3257: classify the failure — "This operation was aborted" alone says
+            // nothing about whether the budget was too small (timeout), the caller
+            // cancelled, or the server dropped the connection.
+            const abortReason = _classifyDeepDiagnosticError(deepError);
+            diagnostics.errors.push(`Deep diagnostics failed (reason=${abortReason}): ${deepError.message}`);
+            diagnostics.details.deep_diagnostics = {
+                error: deepError.message,
+                abort_reason: abortReason,
+            };
         }
     }
 
@@ -433,6 +522,36 @@ export async function handleDiagnoseSemanticIndex(
             'Indexing and semantic search will fail until embedding service is restored.'
         );
     }
+
+    // #3257: no false green — generic invariant. Any non-empty `errors[]` prevents
+    // `healthy` (warnings[] is the explicit non-blocking category). Recurrence of the
+    // #2547 masking class on other branches of the reducer: deep-diagnostics aborts
+    // and dimension mismatches pushed errors while the verdict stayed `healthy`,
+    // so a consumer reading only `status` concluded the requested diagnostic was
+    // complete. The #2547 block above stays first (its message is specific); this
+    // block catches every remaining healthy-with-errors shape.
+    if (diagnostics.status === 'healthy' && diagnostics.errors.length > 0) {
+        diagnostics.status = 'degraded';
+        diagnostics.errors.push(
+            `Statut rétrogradé healthy→degraded : ${diagnostics.errors.length} erreur(s) rapportée(s) ` +
+            'alors que tous les checks passés laissaient croire au vert. ' +
+            'Le verdict healthy exige zéro erreur — voir errors[] et infrastructure_status.'
+        );
+    }
+
+    // #3257: infrastructure status stays exposed separately, so a degraded verdict
+    // never hides WHICH layer failed: a deep-diagnostics abort with qdrant=healthy
+    // and embeddings=healthy means the backends are fine — only the requested deep
+    // pass did not run to completion.
+    const infraConn = (v: unknown): 'healthy' | 'failed' | 'unknown' =>
+        v === 'success' ? 'healthy' : v === 'failed' ? 'failed' : 'unknown';
+    diagnostics.infrastructure_status = {
+        qdrant: infraConn(diagnostics.details.qdrant_connection),
+        embeddings: infraConn(diagnostics.details.openai_connection),
+        deep_diagnostics: !deep
+            ? 'skipped'
+            : (diagnostics.details.deep_diagnostics?.error ? 'failed' : 'completed'),
+    };
 
     // Recommandations basées sur le diagnostic
     const recommendations: string[] = [];
@@ -504,6 +623,37 @@ export async function handleDiagnoseSemanticIndex(
             recommendations.push(
                 'Beaucoup de points sans champ `source`. Le ChunkExtractor Roo ne le fixe pas — ' +
                 'à corriger pour permettre le filtrage source=roo vs source=claude-code.'
+            );
+        }
+    }
+    // #3257: actionable recommendation for a failed deep pass, routed by abort_reason —
+    // the pre-fix output reported `healthy` with NO recommendation at all.
+    if (deep && diagnostics.details.deep_diagnostics?.error) {
+        const reason = diagnostics.details.deep_diagnostics.abort_reason as string | undefined;
+        if (reason === 'timeout') {
+            recommendations.push(
+                `Deep diagnostics interrompus par timeout interne (QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'}). ` +
+                'Réduisez sample_size (ex. 250) ou augmentez QDRANT_TIMEOUT_MS, puis relancez deep=true. ' +
+                'Les backends restent joignables — voir infrastructure_status.'
+            );
+        } else if (reason === 'caller_cancelled') {
+            recommendations.push(
+                'Deep diagnostics annulés par l\'appelant/transport (abort sans signature timeout). ' +
+                'Relancez la diagnose hors contention MCP ; les backends restent joignables — voir infrastructure_status.'
+            );
+        } else if (reason === 'server_abort') {
+            recommendations.push(
+                'Deep diagnostics interrompus par le serveur (5xx / reset de connexion). ' +
+                "Vérifiez l'état du service Qdrant (logs, charge) puis relancez deep=true."
+            );
+        } else if (reason === 'sample_limit_rejected') {
+            recommendations.push(
+                'sample_size refusé par le serveur. Réduisez sample_size et relancez deep=true.'
+            );
+        } else {
+            recommendations.push(
+                'Deep diagnostics échoués (raison non classifiée). Relancez avec un sample_size réduit ; ' +
+                "si l'échec persiste, vérifiez le backend Qdrant."
             );
         }
     }

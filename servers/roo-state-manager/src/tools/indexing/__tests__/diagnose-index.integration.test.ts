@@ -72,7 +72,7 @@ describe('diagnose_index (integration)', () => {
       expect(parsed).toHaveProperty('status');
       expect(typeof parsed.status).toBe('string');
       expect([
-        'unknown', 'healthy', 'missing_collection', 'empty_collection',
+        'unknown', 'healthy', 'degraded', 'missing_collection', 'empty_collection',
         'collection_error', 'connection_failed'
       ]).toContain(parsed.status);
     });
@@ -141,6 +141,68 @@ describe('diagnose_index (integration)', () => {
       // Le rapport doit inclure l'état des variables d'environnement
       expect(parsed.details).toHaveProperty('environment_variables');
       expect(typeof parsed.details.environment_variables).toBe('object');
+    });
+  });
+
+  // ============================================================
+  // #3257 — coherence status / errors[] / recommendations[].
+  // Incident po-2025 (2026-08-24): status:healthy coexisted with a non-empty
+  // errors[] (deep diagnostics aborted) and an EMPTY recommendations[]. The
+  // invariants below hold regardless of whether the live services are up or
+  // down — they pin the INTERNAL consistency of the report, which is exactly
+  // what the incident broke.
+  // ============================================================
+
+  describe('#3257 — report coherence invariants', () => {
+    test('healthy verdict implies zero errors (no false green)', async () => {
+      const { handleDiagnoseSemanticIndex } = await import('../diagnose-index.tool.js');
+      const conversationCache = new Map();
+      const result = await handleDiagnoseSemanticIndex(conversationCache);
+
+      const parsed = JSON.parse(result.content[0].text);
+
+      if (parsed.status === 'healthy') {
+        expect(parsed.errors).toHaveLength(0);
+        expect(parsed.recommendations).toHaveLength(0);
+      }
+    });
+
+    test('non-empty errors[] implies a non-healthy verdict', async () => {
+      const { handleDiagnoseSemanticIndex } = await import('../diagnose-index.tool.js');
+      const conversationCache = new Map();
+      const result = await handleDiagnoseSemanticIndex(conversationCache);
+
+      const parsed = JSON.parse(result.content[0].text);
+
+      if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+        expect(parsed.status).not.toBe('healthy');
+      }
+    });
+
+    test('exposes infrastructure_status separately (qdrant / embeddings / deep_diagnostics)', async () => {
+      const { handleDiagnoseSemanticIndex } = await import('../diagnose-index.tool.js');
+      const conversationCache = new Map();
+      const result = await handleDiagnoseSemanticIndex(conversationCache);
+
+      const parsed = JSON.parse(result.content[0].text);
+
+      expect(parsed).toHaveProperty('infrastructure_status');
+      expect(parsed.infrastructure_status).toHaveProperty('qdrant');
+      expect(parsed.infrastructure_status).toHaveProperty('embeddings');
+      expect(parsed.infrastructure_status).toHaveProperty('deep_diagnostics');
+      expect(['healthy', 'failed', 'unknown']).toContain(parsed.infrastructure_status.qdrant);
+      expect(['healthy', 'failed', 'unknown']).toContain(parsed.infrastructure_status.embeddings);
+      expect(['skipped', 'completed', 'failed']).toContain(parsed.infrastructure_status.deep_diagnostics);
+    });
+
+    test('exposes a warnings[] array distinct from errors[]', async () => {
+      const { handleDiagnoseSemanticIndex } = await import('../diagnose-index.tool.js');
+      const conversationCache = new Map();
+      const result = await handleDiagnoseSemanticIndex(conversationCache);
+
+      const parsed = JSON.parse(result.content[0].text);
+
+      expect(Array.isArray(parsed.warnings)).toBe(true);
     });
   });
 
