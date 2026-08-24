@@ -175,6 +175,20 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // the merge backstop), so we err on the generous side. Env-overridable.
 const CONDENSE_LOCK_TTL_MS = Number(process.env.CONDENSE_LOCK_TTL_MS) || (CONDENSE_LLM_TIMEOUT_MS + 180000); // ~15 min
 
+// #3205 write-side: cross-process file-lock for the dashboard append read→rename
+// window. Unlike the condense lock (first-wins, others SKIP — safe, the message
+// is already persisted), an append lock holder is serializing a write that has
+// NOT happened yet: a concurrent appender must WAIT, because skipping is
+// exactly the silent last-writer-wins loss observed fleet-wide (po-2026 22/08:
+// two agents' appends, both `Tool call OK`, one message gone). Hold time is
+// ms-scale locally but DriveFS can stretch it — TTL 30s recovers a crashed
+// holder without ever stealing a live one. Env-overridable at CALL time (not
+// module load): a long-lived MCP host must pick up fleet tuning without a
+// restart, and tests shorten the budget.
+const appendLockTtlMs = (): number => Number(process.env.APPEND_LOCK_TTL_MS) || 30000;
+const appendLockAcquireBudgetMs = (): number => Number(process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS) || 5000;
+const appendLockRetryMs = (): number => Number(process.env.APPEND_LOCK_RETRY_MS) || 150;
+
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
 // 2026-05-26: thinking mode disabled at every call site (see chat_template_kwargs
@@ -761,6 +775,95 @@ export async function releaseCondenseLock(key: string, holder: CondenseLockInfo)
   }
 }
 
+// === Cross-process append file-lock (#3205 write-side) ===
+// Same lock-file family as the #2818 condense lock (wx exclusive-create, TTL
+// steal, ownership-checked release) but with WAIT semantics: a concurrent
+// appender retries until the holder releases, because skipping an append IS
+// the message loss this lock exists to prevent.
+
+/**
+ * Lock file path for a dashboard key's append window. `.append.lock` (not
+ * `.md`) so handleList / archive scans never pick it up.
+ */
+export function getAppendLockPath(key: string): string {
+  return path.join(getDashboardsDir(), `${key}.append.lock`);
+}
+
+/**
+ * Try to acquire the cross-process append lock for `key`, retrying while a
+ * fresh holder owns it.
+ *
+ * @returns true if this caller now holds the lock (and MUST release it in a
+ *   `finally`); false if the acquire budget was exhausted — the caller should
+ *   then proceed WITHOUT the lock (fail-OPEN) and MUST NOT release it. A rare
+ *   unserialized race is strictly better than a blocked append: the pre-lock
+ *   behavior is the fallback.
+ */
+export async function acquireAppendLock(key: string, holder: CondenseLockInfo): Promise<boolean> {
+  const lockPath = getAppendLockPath(key);
+  const payload = JSON.stringify(holder);
+  const deadline = Date.now() + appendLockAcquireBudgetMs();
+  for (;;) {
+    try {
+      await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'wx' });
+      return true;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        // Unexpected FS error — fail open, proceed unserialized.
+        logger.debug('Append lock acquire errored, failing open (#3205 write)', {
+          key, error: err instanceof Error ? err.message : String(err)
+        });
+        return false;
+      }
+    }
+    // Held — fresh or stale?
+    try {
+      const raw = await fs.readFile(lockPath, 'utf8');
+      const existing = JSON.parse(raw) as CondenseLockInfo;
+      const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
+      if (!(Number.isFinite(ageMs) && ageMs < appendLockTtlMs())) {
+        logger.warn('Append lock stale — stealing (holder likely crashed) (#3205 write)', {
+          key,
+          stolenFrom: `${existing.machineId}:${existing.workspace}#${existing.pid}`,
+          ageSeconds: Number.isFinite(ageMs) ? Math.round(ageMs / 1000) : 'unparseable',
+          ttlSeconds: Math.round(appendLockTtlMs() / 1000)
+        });
+        await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'w' });
+        return true;
+      }
+    } catch {
+      // Unreadable or vanished mid-check — loop: the next wx either wins the
+      // path (vanished) or re-enters the held branch (re-written). A garbage
+      // lock is recovered by the TTL steal once past APPEND_LOCK_TTL_MS.
+    }
+    if (Date.now() >= deadline) {
+      logger.warn('Append lock budget exhausted — proceeding unserialized (fail-open) (#3205 write)', {
+        key,
+        budgetMs: appendLockAcquireBudgetMs()
+      });
+      return false;
+    }
+    await new Promise(resolve => setTimeout(resolve, appendLockRetryMs()));
+  }
+}
+
+/**
+ * Release the append lock for `key`, only if still owned (same machineId +
+ * pid + acquiredAt). A failed unlink is harmless — the TTL steal recovers.
+ */
+export async function releaseAppendLock(key: string, holder: CondenseLockInfo): Promise<void> {
+  const lockPath = getAppendLockPath(key);
+  try {
+    const raw = await fs.readFile(lockPath, 'utf8');
+    const existing = JSON.parse(raw) as CondenseLockInfo;
+    if (existing.machineId === holder.machineId && existing.pid === holder.pid && existing.acquiredAt === holder.acquiredAt) {
+      await fs.unlink(lockPath);
+    }
+  } catch {
+    // Lock already gone or unreadable — nothing to release.
+  }
+}
+
 /**
  * Lit un dashboard : PG d'abord (#3151 Phase C, gate
  * UNIFIED_STORE_DASHBOARD_READ_PG), puis fichier Markdown GDrive en fallback.
@@ -957,48 +1060,66 @@ async function appendDashboardIncremental(
   const filePath = getDashboardPath(key);
   const tmpPath = `${filePath}.tmp`;
 
-  let existing: string;
-  try {
-    existing = await fs.readFile(filePath, 'utf8');
-  } catch {
-    return writeDashboardFile(key, dashboard);
-  }
-
-  const frontmatter: DashboardFrontmatter = {
-    type: dashboard.type,
-    lastModified: dashboard.lastModified,
-    lastModifiedBy: dashboard.lastModifiedBy,
-    totalMessages: dashboard.intercom.totalMessages,
-    lastCondensedAt: dashboard.intercom.lastCondensedAt
+  // #3205 write-side — the read→rename window below is the last-writer-wins
+  // race: two processes/machines appending inside the same window each succeed
+  // locally and the later rename silently drops the earlier message (`Tool
+  // call OK`, message gone — po-2026 22/08). The cross-process append lock
+  // serializes it; the PG dual-write stays OUTSIDE so the hold time is pure fs.
+  const holder: CondenseLockInfo = {
+    machineId: dashboard.lastModifiedBy?.machineId ?? 'unknown',
+    workspace: dashboard.lastModifiedBy?.workspace ?? 'unknown',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString()
   };
-  const newFm = `---\n${yaml.dump(frontmatter).trim()}\n---`;
-
-  const fmReplaced = existing.replace(/^---\n[\s\S]+?\n---/, newFm);
-
-  const escapeContent = (text: string): string =>
-    text.replace(/^### \[/gm, '\\#\\#\\# [');
-
-  const newMessages = dashboard.intercom.messages.slice(-newMessageCount);
-  const newBlock = newMessages.map(msg => {
-    let metaLines = `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]`;
-    if (msg.reply_to) metaLines += `\n[reply-to: ${msg.reply_to}]`;
-    if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
-      const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
-      metaLines += `\n[ack: ${ackStr}]`;
+  const lockOwned = await acquireAppendLock(key, holder);
+  try {
+    let existing: string;
+    try {
+      existing = await fs.readFile(filePath, 'utf8');
+    } catch {
+      return writeDashboardFile(key, dashboard);
     }
-    return `${metaLines}\n\n${escapeContent(msg.content)}`;
-  }).join('\n\n---\n\n');
 
-  let result: string;
-  if (fmReplaced.includes('*Aucun message.*')) {
-    result = fmReplaced.replace('*Aucun message.*', newBlock);
-  } else {
-    result = fmReplaced.trimEnd() + '\n\n---\n\n' + newBlock + '\n';
+    const frontmatter: DashboardFrontmatter = {
+      type: dashboard.type,
+      lastModified: dashboard.lastModified,
+      lastModifiedBy: dashboard.lastModifiedBy,
+      totalMessages: dashboard.intercom.totalMessages,
+      lastCondensedAt: dashboard.intercom.lastCondensedAt
+    };
+    const newFm = `---\n${yaml.dump(frontmatter).trim()}\n---`;
+
+    const fmReplaced = existing.replace(/^---\n[\s\S]+?\n---/, newFm);
+
+    const escapeContent = (text: string): string =>
+      text.replace(/^### \[/gm, '\\#\\#\\# [');
+
+    const newMessages = dashboard.intercom.messages.slice(-newMessageCount);
+    const newBlock = newMessages.map(msg => {
+      let metaLines = `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]`;
+      if (msg.reply_to) metaLines += `\n[reply-to: ${msg.reply_to}]`;
+      if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
+        const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
+        metaLines += `\n[ack: ${ackStr}]`;
+      }
+      return `${metaLines}\n\n${escapeContent(msg.content)}`;
+    }).join('\n\n---\n\n');
+
+    let result: string;
+    if (fmReplaced.includes('*Aucun message.*')) {
+      result = fmReplaced.replace('*Aucun message.*', newBlock);
+    } else {
+      result = fmReplaced.trimEnd() + '\n\n---\n\n' + newBlock + '\n';
+    }
+
+    await fs.writeFile(tmpPath, result, 'utf8');
+    await fs.rename(tmpPath, filePath);
+    logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
+  } finally {
+    if (lockOwned) {
+      await releaseAppendLock(key, holder);
+    }
   }
-
-  await fs.writeFile(tmpPath, result, 'utf8');
-  await fs.rename(tmpPath, filePath);
-  logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
 
   // #3151 Phase C — dual-write the appended journal rows to PG. Same awaited,
   // never-throwing contract as writeDashboardFile: the incremental file append

@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -1888,5 +1888,129 @@ describe('#3205 résiduel — retry borné readDashboardFromGdrive', () => {
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/introuvable/);
     expect(dashReadCalls).toBe(1); // la sémantique ENOENT→null n'est pas changée
+  });
+});
+
+// #3205 write-side — verrou append cross-process : la fenêtre read→rename de
+// appendDashboardIncremental est la course last-writer-wins (write perdu
+// silencieux, `Tool call OK`). Sémantique WAIT (vs SKIP du verrou condensation
+// #2818) + fail-OPEN au-delà du budget.
+describe('#3205 write-side — append lock cross-process', () => {
+  let lockTmpDir: string;
+
+  const mkHolder = (machineId: string, ageMs = 0): { machineId: string; workspace: string; pid: number; acquiredAt: string } => ({
+    machineId,
+    workspace: 'test-workspace',
+    pid: 424242,
+    acquiredAt: new Date(Date.now() - ageMs).toISOString()
+  });
+
+  // Top-level describe : isolation env propre (leçon c.180/#1032 — jamais
+  // d'héritage supposé du describe voisin).
+  beforeEach(async () => {
+    lockTmpDir = await mkdtemp(testTmpBase);
+    process.env.ROOSYNC_SHARED_PATH = lockTmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // Budget court : les tests fail-open attendent ~250 ms, pas 5 s.
+    process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS = '250';
+  });
+
+  afterEach(async () => {
+    delete process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS;
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+    await rm(lockTmpDir, { recursive: true, force: true });
+  });
+
+  it('acquire → true ; détenteur frais concurrent → false après budget (fail-open), verrou étranger intact', async () => {
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    const mine = mkHolder('machine-a');
+    const got = await acquireAppendLock('workspace-x', mine);
+    expect(got).toBe(true);
+
+    const other = mkHolder('machine-b');
+    const start = Date.now();
+    const denied = await acquireAppendLock('workspace-x', other);
+    const waited = Date.now() - start;
+    expect(denied).toBe(false); // fail-open : le caller procède SANS le verrou
+    expect(waited).toBeGreaterThanOrEqual(200); // il a bien ATTENDU (sémantique WAIT, pas skip immédiat)
+
+    // Le verrou du détenteur A n'a pas été touché par l'acquis échoué de B.
+    const raw = await fsp.readFile(path.join(lockTmpDir, 'dashboards', 'workspace-x.append.lock'), 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('machine-a');
+
+    await releaseAppendLock('workspace-x', mine);
+  });
+
+  it('verrou STALE (âge > TTL 30 s) → volé → true, payload maintenant le nôtre', async () => {
+    // Posé "il y a 60 s" par un process mort — au-delà du TTL par défaut.
+    const dead = mkHolder('dead-machine', 60_000);
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    await fsp.writeFile(
+      path.join(lockTmpDir, 'dashboards', 'workspace-y.append.lock'),
+      JSON.stringify(dead), 'utf8'
+    );
+
+    const mine = mkHolder('live-machine');
+    const got = await acquireAppendLock('workspace-y', mine);
+    expect(got).toBe(true);
+
+    const raw = await fsp.readFile(path.join(lockTmpDir, 'dashboards', 'workspace-y.append.lock'), 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('live-machine');
+    await releaseAppendLock('workspace-y', mine);
+  });
+
+  it('release ne supprime QUE son propre verrou (garde ownership)', async () => {
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    const foreignPath = path.join(lockTmpDir, 'dashboards', 'workspace-z.append.lock');
+    const foreign = mkHolder('foreign-machine');
+    await fsp.writeFile(foreignPath, JSON.stringify(foreign), 'utf8');
+
+    // Un holder différent tente de relâcher — ne doit RIEN supprimer.
+    await releaseAppendLock('workspace-z', mkHolder('other-machine'));
+
+    const raw = await fsp.readFile(foreignPath, 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('foreign-machine');
+  });
+
+  it('append réel : verrou pris puis relâché (aucun .append.lock résiduel après)', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed lock' });
+    const result = await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg append-lock' });
+
+    expect(result.success).toBe(true);
+    const locksDir = path.join(lockTmpDir, 'dashboards');
+    const leftovers = (await fsp.readdir(locksDir)).filter(f => f.endsWith('.append.lock'));
+    expect(leftovers).toEqual([]); // relâché dans le finally — pas de verrou orphelin
+    // Le message est bien là (chemin complet append → pas de régression).
+    const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    expect(read.data?.intercom?.messages.some(m => m.content === 'Msg append-lock')).toBe(true);
+  });
+
+  it('append sous verrou étranger frais → procède fail-open, message persisté, verrou étranger PAS touché', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed foreign' });
+
+    // Un autre process/machine "détient" le verrou (acquis à l'instant).
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    const foreignPath = path.join(lockTmpDir, 'dashboards', 'global.append.lock');
+    const foreign = mkHolder('other-process');
+    await fsp.writeFile(foreignPath, JSON.stringify(foreign), 'utf8');
+
+    const start = Date.now();
+    const result = await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg fail-open' });
+    const waited = Date.now() - start;
+
+    // L'append a abouti malgré le verrou (fail-open après budget), après avoir attendu.
+    expect(result.success).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(200);
+
+    // Le verrou étranger est intact — on ne relâche QUE ce qu'on possède.
+    const raw = await fsp.readFile(foreignPath, 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('other-process');
+
+    // Et le message n'est PAS perdu (le contrat même du fix).
+    const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    expect(read.data?.intercom?.messages.some(m => m.content === 'Msg fail-open')).toBe(true);
   });
 });
