@@ -819,7 +819,18 @@ export async function acquireAppendLock(key: string, holder: CondenseLockInfo): 
     // Held — fresh or stale?
     try {
       const raw = await fs.readFile(lockPath, 'utf8');
-      const existing = JSON.parse(raw) as CondenseLockInfo;
+      let existing: CondenseLockInfo;
+      try {
+        existing = JSON.parse(raw) as CondenseLockInfo;
+      } catch {
+        // Garbage holder (web1 c.318): a parsed lock is a valid holder that
+        // releaseAppendLock can clean up, but an unparsable one never will be —
+        // so the TTL comment's promise only holds if we steal it here. Otherwise
+        // every append pays the full budget, forever, until a human deletes it.
+        logger.warn('Append lock unparsable — stealing (garbage holder) (#3205 write)', { key });
+        await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'w' });
+        return true;
+      }
       const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
       if (!(Number.isFinite(ageMs) && ageMs < appendLockTtlMs())) {
         logger.warn('Append lock stale — stealing (holder likely crashed) (#3205 write)', {
@@ -832,9 +843,9 @@ export async function acquireAppendLock(key: string, holder: CondenseLockInfo): 
         return true;
       }
     } catch {
-      // Unreadable or vanished mid-check — loop: the next wx either wins the
-      // path (vanished) or re-enters the held branch (re-written). A garbage
-      // lock is recovered by the TTL steal once past APPEND_LOCK_TTL_MS.
+      // Vanished mid-check (ENOENT) or a transient read error — loop: the next
+      // wx either wins the path or re-enters the held branch. Garbage is stolen
+      // at the parse above, never here.
     }
     if (Date.now() >= deadline) {
       logger.warn('Append lock budget exhausted — proceeding unserialized (fail-open) (#3205 write)', {

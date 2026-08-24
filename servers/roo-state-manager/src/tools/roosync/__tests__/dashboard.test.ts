@@ -1975,6 +1975,28 @@ describe('#3205 write-side — append lock cross-process', () => {
     expect(JSON.parse(raw).machineId).toBe('foreign-machine');
   });
 
+  it('verrou GARBAGE (JSON corrompu) → volé immédiatement, pas après budget (fix web1 c.318)', async () => {
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    const garbagePath = path.join(lockTmpDir, 'dashboards', 'workspace-g.append.lock');
+    // Write partiel d'un process crashé — le payload n'est pas du JSON valide.
+    await fsp.writeFile(garbagePath, '{ invalid json', 'utf8');
+
+    const mine = mkHolder('live-machine');
+    const start = Date.now();
+    const got = await acquireAppendLock('workspace-g', mine);
+    const waited = Date.now() - start;
+
+    // Avant le fix : parse échouait → boucle → budget 250 ms épuisé → false
+    // (fail-open). Après : volé au premier passage, sans attendre le budget.
+    expect(got).toBe(true);
+    expect(waited).toBeLessThan(200);
+
+    // Le verrou corrompu est remplacé par notre payload.
+    const raw = await fsp.readFile(garbagePath, 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('live-machine');
+    await releaseAppendLock('workspace-g', mine);
+  });
+
   it('append réel : verrou pris puis relâché (aucun .append.lock résiduel après)', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed lock' });
     const result = await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg append-lock' });
