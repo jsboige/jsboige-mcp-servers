@@ -169,6 +169,8 @@ export interface ConversationBrowserArgs {
     reindex?: boolean;
     /** [list] #1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. */
     includeArchives?: boolean;
+    /** [list] #3255 — Attendre le chargement Tier 3 (budget 45s). Default: false = rendu local immédiat. */
+    waitForArchives?: boolean;
 }
 
 /**
@@ -470,6 +472,11 @@ export const conversationBrowserTool: Tool = {
                 type: 'boolean',
                 description: '[list] Include cross-machine GDrive archives (Tier 3). Default: true.',
                 default: true
+            },
+            wait_for_archives: {
+                type: 'boolean',
+                description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false: local results render immediately; archives are served only if the cache is already fresh (response carries tier3.status=loading otherwise).',
+                default: false
             }
         },
         required: ['action']
@@ -676,9 +683,10 @@ export async function handleConversationBrowser(
     serverState?: ServerState
 ): Promise<CallToolResult> {
     // #1262 — Hard timeout (default 30s, env-overridable).
-    // Tier 3 cold-start: includeArchives (Tier 3 GDrive) gets a larger budget (90s
-    // default) — a backstop above the list handler's 45s graceful-degradation budget.
-    const effectiveTimeoutMs = args.includeArchives
+    // #3255: only the explicit wait_for_archives opt-in needs the larger archive
+    // backstop (90s > the handler's 45s Tier-3 wait). The default fast path must
+    // stay under the standard 30s cap like every other action.
+    const effectiveTimeoutMs = args.includeArchives && args.waitForArchives
         ? CONVERSATION_BROWSER_ARCHIVE_TIMEOUT_MS
         : CONVERSATION_BROWSER_TIMEOUT_MS;
     // The inner work runs unmodified; we just race it against a timer.
@@ -770,7 +778,9 @@ async function handleConversationBrowserCore(
                         endDate: args.endDate,
                         machineId: args.machineId,
                         // #1752 Bug #3 — GDrive archive support
-                        includeArchives: args.includeArchives
+                        includeArchives: args.includeArchives,
+                        // #3255 — opt-in bounded Tier-3 wait
+                        waitForArchives: args.waitForArchives
                     },
                     conversationCache
                 );

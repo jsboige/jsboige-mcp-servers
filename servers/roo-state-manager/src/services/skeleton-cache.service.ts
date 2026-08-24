@@ -286,6 +286,15 @@ export class SkeletonCacheService {
     }
 
     /**
+     * #3255 — Age of the last completed cache refresh, for tier3_status reporting
+     * in conversation_browser list responses. Null when no refresh ever completed
+     * (cold boot, before the pre-warm lands).
+     */
+    public getCacheAgeMs(): number | null {
+        return this.lastRefreshTime > 0 ? Date.now() - this.lastRefreshTime : null;
+    }
+
+    /**
      * Charger les skeletons depuis le disque
      * FIX #623: Also creates missing skeletons for existing conversations
      */

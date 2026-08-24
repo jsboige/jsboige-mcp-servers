@@ -63,13 +63,15 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 
 // Mock SkeletonCacheService (needed for includeArchives / Bug #3 / #1752)
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
-const { mockGetCache, mockGetInstance, mockAwaitFreshness } = vi.hoisted(() => {
+const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
 	const awaitFn = vi.fn(() => Promise.resolve(true));
+	const ageFn = vi.fn(() => 1234);
 	return {
 		mockGetCache: cacheFn,
 		mockAwaitFreshness: awaitFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn }))
+		mockGetCacheAge: ageFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn }))
 	};
 });
 
@@ -537,7 +539,7 @@ describe('list-conversations', () => {
       // Re-wire after vi.restoreAllMocks() in afterEach may have cleared implementations.
       mockGetCache.mockResolvedValue(new Map());
       mockAwaitFreshness.mockResolvedValue(true);
-      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness });
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge });
     });
 
     it('should not load archives when includeArchives is false (default)', async () => {
@@ -688,6 +690,108 @@ describe('list-conversations', () => {
 
       // The archive cache was NOT read (awaitFreshnessWithBudget short-circuited).
       expect(mockGetCache).not.toHaveBeenCalled();
+    });
+
+    // ============================================================
+    // #3255 — Tier 3 must not block the local render by default.
+    // Default budget = 0 (archives served only if cache already fresh);
+    // wait_for_archives opts into the bounded 45s wait. The response carries
+    // a deterministic tier3 status instead of "Retry shortly" advice.
+    // ============================================================
+    describe('handler - tier3 fast-path (#3255)', () => {
+      // Faithful mini-reimplementation of the real awaitFreshnessWithBudget race:
+      // resolves false after exactly the budget the handler chose to pass. If the
+      // handler blocks on a long budget, the test pays that latency visibly.
+      const suspendLoader = () =>
+        mockAwaitFreshness.mockImplementation(
+          (ms: number) => new Promise<boolean>(resolve => setTimeout(() => resolve(false), ms))
+        );
+
+      it('default (no wait_for_archives): budget 0, response <2s, tier3.status=loading', async () => {
+        suspendLoader();
+        const startedAt = Date.now();
+
+        const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+        const elapsed = Date.now() - startedAt;
+        const _response = JSON.parse(result.content[0].text as string);
+
+        expect(mockAwaitFreshness).toHaveBeenCalledWith(0);
+        expect(elapsed).toBeLessThan(2000);
+        expect(_response.tier3).toBeDefined();
+        expect(_response.tier3.status).toBe('loading');
+        expect(_response.tier3).toHaveProperty('cache_age_ms');
+        // Deterministic option instead of a bare "Retry shortly".
+        expect(_response.notice).toContain('wait_for_archives=true');
+      });
+
+      it('wait_for_archives=true: passes the bounded 45s budget to the freshness race', async () => {
+        // The default test (budget 0) can afford suspendLoader; here the handler
+        // OPTS INTO 45s, which we must not actually pay. Resolve immediately and
+        // assert the budget ARG, not the wall clock. (#3255: default 0, opt-in 45000.)
+        mockAwaitFreshness.mockResolvedValue(false);
+
+        const result = await listConversationsTool.handler(
+          { includeArchives: true, waitForArchives: true },
+          new Map()
+        );
+        const _response = JSON.parse(result.content[0].text as string);
+
+        expect(mockAwaitFreshness).toHaveBeenCalledWith(45000);
+        // Cache not ready within budget -> same graceful loading degradation.
+        expect(_response.tier3.status).toBe('loading');
+        expect(_response.tier3).toHaveProperty('cache_age_ms');
+      });
+
+      it('cache fresh: tier3.status=ready with cache_age_ms, archives served in the same call', async () => {
+        const archiveSkeleton = {
+          taskId: 'ready-archive-task',
+          metadata: {
+            lastActivity: '2025-06-01T10:00:00.000Z',
+            createdAt: '2025-06-01T09:00:00.000Z',
+            messageCount: 5,
+            actionCount: 2,
+            totalSize: 500,
+            dataSource: 'gdrive-archive',
+            workspace: 'remote-machine:my-project'
+          }
+        };
+        mockAwaitFreshness.mockResolvedValue(true);
+        mockGetCache.mockResolvedValue(new Map([['ready-archive-task', archiveSkeleton]]));
+        mockGetCacheAge.mockReturnValue(4321);
+
+        const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+        const _response = JSON.parse(result.content[0].text as string);
+
+        expect(_response.tier3.status).toBe('ready');
+        expect(_response.tier3.cache_age_ms).toBe(4321);
+        const parsed = _response.conversations ?? _response;
+        expect(parsed.find((c: any) => c.taskId === 'ready-archive-task')).toBeDefined();
+      });
+
+      it('SkeletonCacheService failure: tier3.status=failed, local results still served', async () => {
+        mockGetInstance.mockImplementation(() => { throw new Error('SCS exploded'); });
+
+        const localSkeleton = {
+          taskId: 'survivor-task',
+          metadata: {
+            lastActivity: '2025-06-01T10:00:00.000Z',
+            createdAt: '2025-06-01T09:00:00.000Z',
+            messageCount: 2,
+            actionCount: 1,
+            totalSize: 200,
+            workspace: 'my-workspace'
+          }
+        };
+        const result = await listConversationsTool.handler(
+          { includeArchives: true },
+          new Map([['survivor-task', localSkeleton]])
+        );
+        const _response = JSON.parse(result.content[0].text as string);
+
+        expect(_response.tier3.status).toBe('failed');
+        const parsed = _response.conversations ?? _response;
+        expect(parsed.find((c: any) => c.taskId === 'survivor-task')).toBeDefined();
+      });
     });
   });
 

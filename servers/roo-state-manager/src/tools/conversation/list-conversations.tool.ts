@@ -550,6 +550,10 @@ export const listConversationsTool = {
                     type: 'boolean',
                     description: '#1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. Les archives sont chargees depuis ROOSYNC_SHARED_PATH/task-archive/.'
                 },
+                wait_for_archives: {
+                    type: 'boolean',
+                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais (reponse porte tier3.status=loading sinon).'
+                },
             },
         },
     },
@@ -574,7 +578,9 @@ export const listConversationsTool = {
             endDate?: string,
             machineId?: string,
             // #1752 Bug #3 — GDrive archive support
-            includeArchives?: boolean
+            includeArchives?: boolean,
+            // #3255 — opt into the bounded Tier-3 wait (pre-#3255 behavior)
+            waitForArchives?: boolean
         },
         conversationCache: Map<string, ConversationSkeleton>
     ): Promise<CallToolResult> => {
@@ -634,18 +640,26 @@ export const listConversationsTool = {
         // #1752 Bug #3 + #2033: Include GDrive cross-machine archives (Tier 3).
         // Uses SkeletonCacheService's already-loaded Tier 3 cache instead of
         // re-scanning GDrive on every call — much faster and always warm.
+        //
+        // #3255: the optional remote tier must never block the local (Tier 1/2)
+        // render by default. Default wait budget = 0: archives are served only
+        // when the cache is already fresh (the freshness probe resolves instantly
+        // either way). `wait_for_archives` opts into the bounded 45s wait — the
+        // pre-#3255 behavior — for callers who need archives in THIS response.
+        // Either way the response carries a deterministic tier3 status instead
+        // of the old "Retry shortly" advice with nothing to retry against.
+        let tier3Info: { status: 'ready' | 'loading' | 'failed'; cache_age_ms: number | null } | undefined;
         if (args.includeArchives) {
+            let tier3Status: 'ready' | 'loading' | 'failed' = 'failed';
+            let cacheAgeMs: number | null = null;
             try {
                 const scsInstance = SkeletonCacheService.getInstance();
-                // Tier 3 cold-start (Hybride): bound the archive-cache wait so the first
-                // post-boot call degrades gracefully instead of hitting the
-                // conversation_browser hard timeout. The boot pre-warm usually completes
-                // before any call; under slow GDrive we return local results + a notice
-                // (never hard-fail, never invisible-hang). Budget kept well under the
-                // outer conversation_browser includeArchives budget (90s).
                 const ARCHIVE_READY_BUDGET_MS = 45000;
-                const archiveReady = await scsInstance.awaitFreshnessWithBudget(ARCHIVE_READY_BUDGET_MS);
+                const waitBudgetMs = args.waitForArchives ? ARCHIVE_READY_BUDGET_MS : 0;
+                const archiveReady = await scsInstance.awaitFreshnessWithBudget(waitBudgetMs);
+                cacheAgeMs = scsInstance.getCacheAgeMs();
                 if (archiveReady) {
+                    tier3Status = 'ready';
                     const scsCache = await scsInstance.getCache();
                     const archiveSkeletons: ConversationSkeleton[] = [];
 
@@ -661,12 +675,16 @@ export const listConversationsTool = {
                     }
                     allSkeletons = allSkeletons.concat(archiveSkeletons);
                 } else {
-                    archiveNotice = `Tier 3 GDrive archives still loading in background (budget ${ARCHIVE_READY_BUDGET_MS}ms elapsed); showing local results only. Retry shortly for cross-machine archives.`;
+                    tier3Status = 'loading';
+                    archiveNotice = `tier3_status=loading: GDrive archive cache still warming in background; showing local results only. Deterministic options: wait_for_archives=true blocks until ready (budget ${ARCHIVE_READY_BUDGET_MS}ms), or re-call once tier3.status=ready.`;
                     console.warn(`[list_conversations] ${archiveNotice}`);
                 }
             } catch (archiveError) {
+                tier3Status = 'failed';
+                archiveNotice = `tier3_status=failed: ${archiveError instanceof Error ? archiveError.message : archiveError} (showing local results only)`;
                 console.warn('⚠️ list_conversations: Archive tier read failed (continuing without archives):', archiveError instanceof Error ? archiveError.message : archiveError);
             }
+            tier3Info = { status: tier3Status, cache_age_ms: cacheAgeMs };
         }
 
         // Filtrage par workspace
@@ -1015,6 +1033,7 @@ export const listConversationsTool = {
                 total_pages: totalPages,
                 has_next: page < totalPages,
             },
+            ...(tier3Info ? { tier3: tier3Info } : {}),
             ...(archiveNotice ? { notice: archiveNotice } : {}),
         }, null, 2);
 
