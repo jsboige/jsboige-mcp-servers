@@ -2036,3 +2036,190 @@ describe('#3205 write-side — append lock cross-process', () => {
     expect(read.data?.intercom?.messages.some(m => m.content === 'Msg fail-open')).toBe(true);
   });
 });
+
+// #3205 write-side RÉSIDUEL — les trois chemins read-modify-write restés hors
+// verrou après #1033 (status-write, Auto-ACK du read path, crossPost) : chacun
+// réécrivait le fichier complet depuis un snapshot lu AVANT, écrasant
+// silencieusement tout append concurrent dans la fenêtre. Le fix : les trois
+// prennent le verrou append (par clé) et RE- LISENT frais sous le verrou.
+describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sous verrou append', () => {
+  let rlTmpDir: string;
+  const pendingTimers: NodeJS.Timeout[] = [];
+
+  const mkHolder = (machineId: string): { machineId: string; workspace: string; pid: number; acquiredAt: string } => ({
+    machineId,
+    workspace: 'test-workspace',
+    pid: 424242,
+    acquiredAt: new Date().toISOString()
+  });
+
+  // Top-level describe : isolation env propre (leçon c.180/#1032 — jamais
+  // d'héritage supposé du describe voisin).
+  beforeEach(async () => {
+    rlTmpDir = await mkdtemp(testTmpBase);
+    process.env.ROOSYNC_SHARED_PATH = rlTmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // Budget 600 ms : les tests « chemin sérialisé » laissent le verrou partir
+    // à ~250 ms (après mutation à 150 ms) — un retry (~150 ms de période)
+    // gagne avant le deadline. Les tests fail-open attendent ~600 ms.
+    process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS = '600';
+  });
+
+  afterEach(async () => {
+    for (const t of pendingTimers.splice(0)) clearTimeout(t);
+    delete process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS;
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+    await rm(rlTmpDir, { recursive: true, force: true });
+  });
+
+  const lockPathFor = (k: string) => path.join(rlTmpDir, 'dashboards', `${k}.append.lock`);
+  const filePathFor = (k: string) => path.join(rlTmpDir, 'dashboards', `${k}.md`);
+
+  // Injecte un bloc message dans le fichier dashboard, comme le ferait une
+  // autre machine pendant la fenêtre read→write du SUT (raw fs : simule un
+  // writer qui ne passe PAS par notre process). Sur un intercom vide, un vrai
+  // append REMPLACE le placeholder `*Aucun message.*` (appendDashboardIncremental
+  // fait exactement ça) — l'injection doit suivre la même sémantique, sinon le
+  // parser ignore le bloc.
+  const injectMessageBlock = async (k: string, msgId: string, machineId: string, content: string) => {
+    const raw = await fsp.readFile(filePathFor(k), 'utf8');
+    const block = `### [${new Date().toISOString()}] ${machineId}|test-workspace\n[msg: ${msgId}]\n\n${content}`;
+    if (raw.includes('*Aucun message.*')) {
+      await fsp.writeFile(filePathFor(k), raw.replace('*Aucun message.*', block), 'utf8');
+    } else {
+      await fsp.writeFile(filePathFor(k), `${raw.trimEnd()}\n\n---\n\n${block}\n`, 'utf8');
+    }
+  };
+
+  it('status-write : verrou pris puis relâché, status persisté, aucun résiduel', async () => {
+    const result = await roosyncDashboard({ action: 'write', type: 'global', content: '# Status v1' });
+    expect(result.success).toBe(true);
+
+    const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    expect(read.data?.status?.markdown).toContain('# Status v1'); // le SUT a bien écrit
+
+    const leftovers = (await fsp.readdir(path.join(rlTmpDir, 'dashboards'))).filter(f => f.endsWith('.append.lock'));
+    expect(leftovers).toEqual([]); // relâché dans le finally
+  });
+
+  it('status-write sous verrou étranger frais → fail-open après budget, status persisté, verrou étranger intact', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed' });
+    const foreign = mkHolder('other-process');
+    await fsp.writeFile(lockPathFor('global'), JSON.stringify(foreign), 'utf8');
+
+    const start = Date.now();
+    const result = await roosyncDashboard({ action: 'write', type: 'global', content: '# Status fail-open' });
+    const waited = Date.now() - start;
+
+    expect(result.success).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(500); // a attendu le budget avant de procéder sans verrou
+
+    const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    expect(read.data?.status?.markdown).toContain('# Status fail-open');
+
+    const raw = await fsp.readFile(lockPathFor('global'), 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('other-process'); // pas touché
+  });
+
+  it('Auto-ACK : ack persisté et servi, aucun verrou résiduel', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed ack' });
+    await roosyncDashboard({ action: 'append', type: 'global', content: 'M1 de test-machine', messageId: 'm1-seed' });
+    await roosyncDashboard({
+      action: 'append', type: 'global', content: 'R1 réponse de other-machine', messageId: 'r1-seed',
+      author: { machineId: 'other-machine', workspace: 'test-workspace' },
+      mentions: [{ messageId: 'm1-seed' }]
+    });
+
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    expect(result.success).toBe(true);
+
+    const r1 = result.data?.intercom?.messages.find(m => m.id === 'r1-seed');
+    expect(r1?.reply_to).toBe('m1-seed');
+    expect(r1?.acknowledged_at?.['test-machine']).toBeDefined(); // l'ack a été posé ET servi
+
+    const leftovers = (await fsp.readdir(path.join(rlTmpDir, 'dashboards'))).filter(f => f.endsWith('.append.lock'));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('Auto-ACK préserve un append concurrent pendant la fenêtre (re-lecture fraîche sous verrou)', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed ack race' });
+    await roosyncDashboard({ action: 'append', type: 'global', content: 'M1 de test-machine', messageId: 'm1-seed' });
+    await roosyncDashboard({
+      action: 'append', type: 'global', content: 'R1 réponse de other-machine', messageId: 'r1-seed',
+      author: { machineId: 'other-machine', workspace: 'test-workspace' },
+      mentions: [{ messageId: 'm1-seed' }]
+    });
+
+    // Un autre process détient le verrou : le read (et SON ack write-back)
+    // attend. Pendant l'attente, une "autre machine" append au fichier.
+    const foreign = mkHolder('lock-holder');
+    await fsp.writeFile(lockPathFor('global'), JSON.stringify(foreign), 'utf8');
+
+    pendingTimers.push(setTimeout(() => { void injectMessageBlock('global', 'concurrent-m2', 'concurrent-machine', 'M2 append concurrent').catch(() => {}); }, 150));
+    pendingTimers.push(setTimeout(() => { void releaseAppendLock('global', foreign).catch(() => {}); }, 250));
+
+    const start = Date.now();
+    const result = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+    const waited = Date.now() - start;
+
+    expect(result.success).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(200); // le read a attendu le verrou, pas fail-open immédiat
+
+    // L'ack est posé (le but de l'auto-ACK)…
+    const r1 = result.data?.intercom?.messages.find(m => m.id === 'r1-seed');
+    expect(r1?.acknowledged_at?.['test-machine']).toBeDefined();
+
+    // …ET l'append concurrent a survécu au write-back de l'ack : pre-fix, le
+    // snapshot pré-verrou était réécrit tel quel et M2 disparaissait.
+    expect(result.data?.intercom?.messages.some(m => m.id === 'concurrent-m2')).toBe(true);
+  });
+
+  it('crossPost : message répliqué sur la cible, aucun verrou résiduel source ni cible', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed xpost' });
+    await roosyncDashboard({ action: 'write', type: 'machine', machineId: 'other-machine', content: '# Cible' });
+
+    const result = await roosyncDashboard({
+      action: 'append', type: 'global', content: 'Msg cross-posté', messageId: 'xpost-seed',
+      crossPost: [{ type: 'machine', machineId: 'other-machine' }]
+    });
+    expect(result.success).toBe(true);
+
+    const target = await roosyncDashboard({ action: 'read', type: 'machine', machineId: 'other-machine', section: 'intercom' });
+    expect(target.data?.intercom?.messages.some(m => m.id === 'xpost-seed')).toBe(true); // répliqué
+
+    const leftovers = (await fsp.readdir(path.join(rlTmpDir, 'dashboards'))).filter(f => f.endsWith('.append.lock'));
+    expect(leftovers).toEqual([]); // source ET cible relâchés
+  });
+
+  it('crossPost préserve un append concurrent sur la cible pendant la fenêtre (re-lecture fraîche sous verrou)', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed xpost race' });
+    await roosyncDashboard({ action: 'write', type: 'machine', machineId: 'other-machine', content: '# Cible race' });
+
+    // Le verrou étranger est sur la CIBLE — le cross-post attend dessus
+    // (le verrou source est déjà relâché : un seul verrou à la fois).
+    const foreign = mkHolder('lock-holder');
+    await fsp.writeFile(lockPathFor('machine-other-machine'), JSON.stringify(foreign), 'utf8');
+
+    pendingTimers.push(setTimeout(() => { void injectMessageBlock('machine-other-machine', 'concurrent-t1', 'concurrent-machine', 'T1 append concurrent cible').catch(() => {}); }, 150));
+    pendingTimers.push(setTimeout(() => { void releaseAppendLock('machine-other-machine', foreign).catch(() => {}); }, 250));
+
+    const start = Date.now();
+    const result = await roosyncDashboard({
+      action: 'append', type: 'global', content: 'Msg cross-posté race', messageId: 'xpost-race',
+      crossPost: [{ type: 'machine', machineId: 'other-machine' }]
+    });
+    const waited = Date.now() - start;
+
+    expect(result.success).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(200); // le cross-post a attendu le verrou cible
+
+    const target = await roosyncDashboard({ action: 'read', type: 'machine', machineId: 'other-machine', section: 'intercom' });
+    // Les DEUX : le message cross-posté…
+    expect(target.data?.intercom?.messages.some(m => m.id === 'xpost-race')).toBe(true);
+    // …ET l'append concurrent sur la cible (écrasé pre-fix par le full-file write du snapshot pré-verrou).
+    expect(target.data?.intercom?.messages.some(m => m.id === 'concurrent-t1')).toBe(true);
+  });
+});

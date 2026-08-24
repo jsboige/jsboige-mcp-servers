@@ -876,6 +876,27 @@ export async function releaseAppendLock(key: string, holder: CondenseLockInfo): 
 }
 
 /**
+ * #3205 résiduel write-side : sérialise une lecture-modification-écriture du
+ * dashboard sous le verrou append #1033/#1034. acquireAppendLock échoue
+ * ouvert (budget épuisé / erreur FS) — dans ce cas on exécute quand même,
+ * exactement comme un append non verrouillé d'avant le fix.
+ */
+export async function withAppendLock<T>(
+  key: string,
+  holder: CondenseLockInfo,
+  fn: () => Promise<T>
+): Promise<T> {
+  const lockOwned = await acquireAppendLock(key, holder);
+  try {
+    return await fn();
+  } finally {
+    if (lockOwned) {
+      await releaseAppendLock(key, holder);
+    }
+  }
+}
+
+/**
  * Lit un dashboard : PG d'abord (#3151 Phase C, gate
  * UNIFIED_STORE_DASHBOARD_READ_PG), puis fichier Markdown GDrive en fallback.
  * Retourne null si inexistant partout.
@@ -2873,6 +2894,39 @@ function buildMarkdownOutput(
   return parts.join('\n');
 }
 
+// #1956 + #3205 résiduel : détection/application de l'Auto-ACK isolées pour
+// être rejouables sous verrou sur un état fraîchement relu.
+function ackHasUnackedReplies(dashboard: Dashboard, resolvedMachineId: string): boolean {
+  const myMessageIds = new Set(
+    dashboard.intercom.messages
+      .filter(m => m.author.machineId === resolvedMachineId)
+      .map(m => m.id)
+  );
+  return dashboard.intercom.messages.some(
+    m => m.reply_to && myMessageIds.has(m.reply_to) &&
+      (!m.acknowledged_at || !m.acknowledged_at[resolvedMachineId])
+  );
+}
+
+function ackMark(dashboard: Dashboard, resolvedMachineId: string): boolean {
+  const myMessageIds = new Set(
+    dashboard.intercom.messages
+      .filter(m => m.author.machineId === resolvedMachineId)
+      .map(m => m.id)
+  );
+  let ackDirty = false;
+  const now = new Date().toISOString();
+  for (const msg of dashboard.intercom.messages) {
+    if (msg.reply_to && myMessageIds.has(msg.reply_to)) {
+      if (!msg.acknowledged_at || !msg.acknowledged_at[resolvedMachineId]) {
+        msg.acknowledged_at = { ...(msg.acknowledged_at || {}), [resolvedMachineId]: now };
+        ackDirty = true;
+      }
+    }
+  }
+  return ackDirty;
+}
+
 async function handleRead(
   key: string,
   args: DashboardArgs,
@@ -2880,7 +2934,7 @@ async function handleRead(
   resolvedWorkspace: string,
   requestEcho: DashboardRequestEcho
 ): Promise<DashboardResult> {
-  const dashboard = await readDashboardFile(key);
+  let dashboard = await readDashboardFile(key);
   if (!dashboard) {
     return {
       success: false,
@@ -2896,27 +2950,29 @@ async function handleRead(
   // #1935: section now includes update-specific values — narrow to read-safe values
   const readSection = (section === 'status' || section === 'intercom' || section === 'all') ? section : 'all';
 
-  // #1956: Auto-ACK — when reading intercom, mark replies to our messages as acknowledged
-  if (readSection === 'intercom' || readSection === 'all') {
-    const myMessageIds = new Set(
-      dashboard.intercom.messages
-        .filter(m => m.author.machineId === resolvedMachineId)
-        .map(m => m.id)
-    );
-    let ackDirty = false;
-    const now = new Date().toISOString();
-    for (const msg of dashboard.intercom.messages) {
-      if (msg.reply_to && myMessageIds.has(msg.reply_to)) {
-        if (!msg.acknowledged_at || !msg.acknowledged_at[resolvedMachineId]) {
-          msg.acknowledged_at = { ...(msg.acknowledged_at || {}), [resolvedMachineId]: now };
-          ackDirty = true;
+  // #1956: Auto-ACK — when reading intercom, mark replies to our messages as
+  // acknowledged. #3205 résiduel write-side : la marque s'applique sous le
+  // verrou append sur un état RELU — sinon un append concurrent entre le read
+  // initial et ce write est écrasé par le snapshot pré-verrou. On sert ensuite
+  // l'état post-ack, pas le snapshot périmé.
+  if ((readSection === 'intercom' || readSection === 'all') && ackHasUnackedReplies(dashboard, resolvedMachineId)) {
+    try {
+      const holder: CondenseLockInfo = {
+        machineId: resolvedMachineId,
+        workspace: resolvedWorkspace,
+        pid: process.pid,
+        acquiredAt: new Date().toISOString()
+      };
+      await withAppendLock(key, holder, async () => {
+        const fresh = await readDashboardFile(key);
+        if (!fresh) return; // disparu entre-temps — rien à ack-er
+        if (ackMark(fresh, resolvedMachineId)) {
+          await writeDashboardFile(key, fresh);
         }
-      }
-    }
-    if (ackDirty) {
-      await writeDashboardFile(key, dashboard).catch(err =>
-        logger.warn('Auto-ACK write failed', { key, error: String(err) })
-      );
+        dashboard = fresh; // servir l'état post-ack, pas le snapshot pré-verrou
+      });
+    } catch (err) {
+      logger.warn('Auto-ACK write failed', { key, error: String(err) });
     }
   }
   // intercomLimit is kept as an optional safety net but defaults to returning ALL messages.
@@ -2998,34 +3054,52 @@ async function handleWrite(
     machineId: resolvedMachineId,
     workspace: resolvedWorkspace
   };
+  const content = args.content;
 
-  let dashboard = await readDashboardFile(key);
-  if (!dashboard) {
-    if (!createIfNotExists) {
-      return {
-        success: false,
-        action: 'write',
-        key,
-        type: args.type!,
-        request: requestEcho,
-        message: `Dashboard '${key}' introuvable et createIfNotExists=false`
-      };
-    }
-    dashboard = createEmptyDashboard(args.type!, key, author);
-  }
-
-  const now = new Date().toISOString();
-  dashboard = {
-    ...dashboard,
-    lastModified: now,
-    lastModifiedBy: author,
-    status: {
-      markdown: args.content,
-      lastDiffCommit: dashboard.status.lastDiffCommit
-    }
+  // #3205 résiduel write-side : read-modify-write sous le verrou append —
+  // sans lui, un append concurrent entre le read et le write est écrasé
+  // (last-writer-wins), exactement la classe de perte que #1033 corrigeait
+  // pour le seul chemin append.
+  let notFound = false;
+  let dashboard: Dashboard | null = null;
+  const holder: CondenseLockInfo = {
+    machineId: author.machineId,
+    workspace: author.workspace,
+    pid: process.pid,
+    acquiredAt: new Date().toISOString()
   };
+  await withAppendLock(key, holder, async () => {
+    let current = await readDashboardFile(key);
+    if (!current) {
+      if (!createIfNotExists) {
+        notFound = true;
+        return;
+      }
+      current = createEmptyDashboard(args.type!, key, author);
+    }
+    const updated: Dashboard = {
+      ...current,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: author,
+      status: {
+        markdown: content,
+        lastDiffCommit: current.status.lastDiffCommit
+      }
+    };
+    await writeDashboardFile(key, updated);
+    dashboard = updated;
+  });
 
-  await writeDashboardFile(key, dashboard);
+  if (notFound || !dashboard) {
+    return {
+      success: false,
+      action: 'write',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: `Dashboard '${key}' introuvable et createIfNotExists=false`
+    };
+  }
 
   // #1791: Auto-register heartbeat on dashboard write (fire-and-forget)
   recordRooSyncActivityAsync('dashboard-write', { key, type: args.type });
@@ -3353,31 +3427,48 @@ async function handleAppend(
           continue;
         }
 
-        let targetDashboard = await readDashboardFile(targetKey);
-        if (!targetDashboard) {
-          if (!createIfNotExists) {
-            crossPostResults.push({
-              key: targetKey,
-              ok: false,
-              error: `Dashboard introuvable et createIfNotExists=false`
-            });
-            continue;
-          }
-          targetDashboard = createEmptyDashboard(target.type, targetKey, author);
-        }
-
-        const crossPosted: Dashboard = {
-          ...targetDashboard,
-          lastModified: now,
-          lastModifiedBy: author,
-          intercom: {
-            messages: [...targetDashboard.intercom.messages, message],
-            totalMessages: targetDashboard.intercom.totalMessages + 1,
-            lastCondensedAt: targetDashboard.intercom.lastCondensedAt
-          }
+        // #3205 résiduel write-side : read-modify-write de la cible sous le
+        // verrou append de CETTE cible (pas de nesting — le verrou source est
+        // déjà relâché ici). Sans lui, un append concurrent sur la cible entre
+        // le read et le write est écrasé.
+        const targetHolder: CondenseLockInfo = {
+          machineId: author.machineId,
+          workspace: author.workspace,
+          pid: process.pid,
+          acquiredAt: new Date().toISOString()
         };
+        let targetMissing = false;
+        await withAppendLock(targetKey, targetHolder, async () => {
+          let targetDashboard = await readDashboardFile(targetKey);
+          if (!targetDashboard) {
+            if (!createIfNotExists) {
+              targetMissing = true;
+              return;
+            }
+            targetDashboard = createEmptyDashboard(target.type, targetKey, author);
+          }
 
-        await writeDashboardFile(targetKey, crossPosted);
+          const crossPosted: Dashboard = {
+            ...targetDashboard,
+            lastModified: now,
+            lastModifiedBy: author,
+            intercom: {
+              messages: [...targetDashboard.intercom.messages, message],
+              totalMessages: targetDashboard.intercom.totalMessages + 1,
+              lastCondensedAt: targetDashboard.intercom.lastCondensedAt
+            }
+          };
+
+          await writeDashboardFile(targetKey, crossPosted);
+        });
+        if (targetMissing) {
+          crossPostResults.push({
+            key: targetKey,
+            ok: false,
+            error: `Dashboard introuvable et createIfNotExists=false`
+          });
+          continue;
+        }
         crossPostResults.push({ key: targetKey, ok: true });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
