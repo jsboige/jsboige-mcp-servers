@@ -473,7 +473,7 @@ export const conversationBrowserTool: Tool = {
                 description: '[list] Include cross-machine GDrive archives (Tier 3). Default: true.',
                 default: true
             },
-            wait_for_archives: {
+            waitForArchives: {
                 type: 'boolean',
                 description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false: local results render immediately; archives are served only if the cache is already fresh (response carries tier3.status=loading otherwise).',
                 default: false
@@ -683,7 +683,7 @@ export async function handleConversationBrowser(
     serverState?: ServerState
 ): Promise<CallToolResult> {
     // #1262 — Hard timeout (default 30s, env-overridable).
-    // #3255: only the explicit wait_for_archives opt-in needs the larger archive
+    // #3255: only the explicit waitForArchives opt-in needs the larger archive
     // backstop (90s > the handler's 45s Tier-3 wait). The default fast path must
     // stay under the standard 30s cap like every other action.
     const effectiveTimeoutMs = args.includeArchives && args.waitForArchives

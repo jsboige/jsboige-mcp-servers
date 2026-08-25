@@ -550,9 +550,9 @@ export const listConversationsTool = {
                     type: 'boolean',
                     description: '#1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. Les archives sont chargees depuis ROOSYNC_SHARED_PATH/task-archive/.'
                 },
-                wait_for_archives: {
+                waitForArchives: {
                     type: 'boolean',
-                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais (reponse porte tier3.status=loading sinon).'
+                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais (reponse porte tier3.status=loading sinon). Clé camelCase sur le wire, comme includeArchives.'
                 },
             },
         },
@@ -644,7 +644,7 @@ export const listConversationsTool = {
         // #3255: the optional remote tier must never block the local (Tier 1/2)
         // render by default. Default wait budget = 0: archives are served only
         // when the cache is already fresh (the freshness probe resolves instantly
-        // either way). `wait_for_archives` opts into the bounded 45s wait — the
+        // either way). `waitForArchives` opts into the bounded 45s wait — the
         // pre-#3255 behavior — for callers who need archives in THIS response.
         // Either way the response carries a deterministic tier3 status instead
         // of the old "Retry shortly" advice with nothing to retry against.
@@ -676,7 +676,7 @@ export const listConversationsTool = {
                     allSkeletons = allSkeletons.concat(archiveSkeletons);
                 } else {
                     tier3Status = 'loading';
-                    archiveNotice = `tier3_status=loading: GDrive archive cache still warming in background; showing local results only. Deterministic options: wait_for_archives=true blocks until ready (budget ${ARCHIVE_READY_BUDGET_MS}ms), or re-call once tier3.status=ready.`;
+                    archiveNotice = `tier3_status=loading: GDrive archive cache still warming in background; showing local results only. Deterministic options: waitForArchives=true blocks until ready (budget ${ARCHIVE_READY_BUDGET_MS}ms), or re-call once tier3.status=ready.`;
                     console.warn(`[list_conversations] ${archiveNotice}`);
                 }
             } catch (archiveError) {

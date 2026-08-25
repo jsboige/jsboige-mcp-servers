@@ -695,7 +695,8 @@ describe('list-conversations', () => {
     // ============================================================
     // #3255 — Tier 3 must not block the local render by default.
     // Default budget = 0 (archives served only if cache already fresh);
-    // wait_for_archives opts into the bounded 45s wait. The response carries
+    // wait_for_archives opts into the bounded 45s wait (wire key: waitForArchives,
+    // camelCase like includeArchives — registry dispatch passes raw args). The response carries
     // a deterministic tier3 status instead of "Retry shortly" advice.
     // ============================================================
     describe('handler - tier3 fast-path (#3255)', () => {
@@ -721,7 +722,7 @@ describe('list-conversations', () => {
         expect(_response.tier3.status).toBe('loading');
         expect(_response.tier3).toHaveProperty('cache_age_ms');
         // Deterministic option instead of a bare "Retry shortly".
-        expect(_response.notice).toContain('wait_for_archives=true');
+        expect(_response.notice).toContain('waitForArchives=true');
       });
 
       it('wait_for_archives=true: passes the bounded 45s budget to the freshness race', async () => {
