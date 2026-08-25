@@ -48,6 +48,8 @@ import {
     roosyncDashboardDefinition,
     roosyncMessagesDefinition,
 } from '../tool-definitions.js';
+// #3254 drift-guard: the zod schema is the handler contract; the static definition is the wire contract
+import { MessagesArgsSchema } from '../roosync/messages.js';
 
 const EXPECTED_TOOL_COUNT = 15; // #512 arbitrage A: lifecycle re-câblé comme action de roosync_diagnose, reste 15 outils servis
 
@@ -399,5 +401,26 @@ describe('tool-definitions.ts — Schema Validation', () => {
                 expect(def.inputSchema.additionalProperties).toBe(false);
             }
         );
+    });
+
+    // #3254 drift-guard — 3rd occurrence of the class (#1038 wait_for_archives, #3254 filename):
+    // the served schema is the STATIC tool-definitions.ts (registry.ts ListTools handler), not the
+    // zod schema in messages.ts. With additionalProperties: false, any zod key missing from the
+    // static is a silent wire rejection — the handler supports it, no conforming caller can reach it.
+    describe('#3254 drift-guard — roosync_messages wire schema parity with Zod', () => {
+        it('static inputSchema must expose exactly the keys of MessagesArgsSchema', () => {
+            const zodKeys = Object.keys(MessagesArgsSchema.shape).sort();
+            const staticKeys = Object.keys(
+                roosyncMessagesDefinition.inputSchema.properties as Record<string, unknown>
+            ).sort();
+            expect(staticKeys).toEqual(zodKeys);
+        });
+
+        it('attachments_get alternative (message_id + filename, no uuid) must be reachable on the wire (#3256/#3254)', () => {
+            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('filename');
+            expect(props).toHaveProperty('message_id');
+            expect(props).toHaveProperty('uuid');
+        });
     });
 });

@@ -680,7 +680,8 @@ export const roosyncMessagesDefinition = {
             before_date: { type: 'string', description: 'ISO date filter' },
             subject_contains: { type: 'string' },
             tag: { type: 'string' },
-            uuid: { type: 'string' },
+            uuid: { type: 'string', description: 'UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu' },
+            filename: { type: 'string', description: '#3256 — alternative a uuid pour attachments_get : nom du fichier, resolu via les refs du message_id fourni' },
             targetPath: { type: 'string' },
             format: { type: 'string', enum: ['json', 'markdown'], description: 'Output format for inbox/message actions (default: markdown)' }
         },
