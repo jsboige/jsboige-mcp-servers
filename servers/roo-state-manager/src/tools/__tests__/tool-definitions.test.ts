@@ -423,4 +423,21 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(props).toHaveProperty('uuid');
         });
     });
+
+    // #3255 drift-guard — same class as #3254: the served schema is the STATIC
+    // tool-definitions.ts, and the registry dispatch passes raw args (no key
+    // normalization). The handler reads `args.waitForArchives` (camelCase) — the
+    // wire key must exist on the served schema under that exact spelling, or the
+    // opt-in is unreachable by every conforming caller (found by po-2023 review
+    // of #1038: the PR only edited the unserved conversation-browser.ts schema).
+    describe('#3255 drift-guard — conversation_browser waitForArchives reachable on the wire', () => {
+        it('served schema must expose waitForArchives (camelCase, like includeArchives)', () => {
+            const props = conversationBrowserDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('waitForArchives');
+            expect(props).toHaveProperty('includeArchives');
+            // Pin the convention: a snake_case twin would look "documented" while
+            // remaining dead (handler reads camelCase only).
+            expect(props).not.toHaveProperty('wait_for_archives');
+        });
+    });
 });

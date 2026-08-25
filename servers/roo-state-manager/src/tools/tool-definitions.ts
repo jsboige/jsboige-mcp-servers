@@ -36,6 +36,8 @@ export const conversationBrowserDefinition = {
             endDate: { type: 'string', description: '[list] End date filter (ISO 8601 or YYYY-MM-DD).' },
             machineId: { type: 'string', description: '[list] Filter by machine ID.' },
             includeArchives: { type: 'boolean', default: true, description: '[list] Include cross-machine GDrive archives (Tier 3).' },
+            // #3255 — camelCase on the wire, like the adjacent includeArchives (registry dispatch passes raw args).
+            waitForArchives: { type: 'boolean', default: false, description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; response carries tier3.status=loading otherwise.' },
             // --- tree ---
             conversation_id: { type: 'string', description: '[tree] Conversation ID.' },
             max_depth: { type: 'number', description: '[tree] Max tree depth.' },
