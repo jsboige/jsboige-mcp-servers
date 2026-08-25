@@ -735,16 +735,21 @@ export class MessageManager {
    *
    * @param messageId ID du message à mettre à jour
    * @param attachments Liste des références d'attachments à ajouter
+   * @returns true quand les refs sont persistées dans au moins un store que la
+   *   lecture consulte (fichiers GDrive ou row PG-primary). false = refs
+   *   perdues : update PG-primary échoué ET aucun fichier écrit (#3270) —
+   *   les blobs existent dans le store mais ne sont référencés nulle part.
    */
   async updateMessageAttachments(
     messageId: string,
     attachments: Array<{ uuid: string; filename: string; sizeBytes: number }>
-  ): Promise<void> {
+  ): Promise<boolean> {
     const locations = [
       join(this.inboxPath, `${messageId}.json`),
       join(this.sentPath, `${messageId}.json`),
     ];
 
+    let filesPersisted = false;
     for (const filePath of locations) {
       if (!existsSync(filePath)) continue;
       try {
@@ -752,6 +757,7 @@ export class MessageManager {
         const msg: Message = JSON.parse(raw);
         msg.attachments = attachments;
         await fs.writeFile(filePath, JSON.stringify(msg, null, 2), 'utf-8');
+        filesPersisted = true;
       } catch (err) {
         logger.warn(`Failed to update attachments in ${filePath}`, err as Record<string, any>);
       }
@@ -768,13 +774,19 @@ export class MessageManager {
     }
     // #3151 Phase A: refresh attachment_refs on the PG copy (fire-and-forget).
     // Phase D: when PG is primary the files above are usually absent — the
-    // PG row is then the ONLY persistence, so the update is awaited. On
-    // failure the caller-visible outcome is unchanged (best-effort refs).
+    // PG row is then the ONLY copy of the refs, so the update is awaited AND
+    // its result is read (#3270): false = refs persisted nowhere. When the
+    // send fell back to the GDrive files (PG insert failed), those files
+    // carry the refs — PG failure is then a degradation, not a loss.
     if (isChannelPgPrimary()) {
-      await updateRooSyncMessagePrimary(messageId, { attachment_refs: attachments ?? [] });
-    } else {
-      dualWriteRooSyncAttachmentRefs(messageId, attachments).catch(() => {});
+      const pgPersisted = await updateRooSyncMessagePrimary(
+        messageId,
+        { attachment_refs: attachments ?? [] }
+      );
+      return pgPersisted || filesPersisted;
     }
+    dualWriteRooSyncAttachmentRefs(messageId, attachments).catch(() => {});
+    return true;
   }
 
   /**

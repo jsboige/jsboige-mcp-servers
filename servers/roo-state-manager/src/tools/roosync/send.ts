@@ -141,6 +141,7 @@ async function sendNewMessage(
 
   // Traiter les pièces jointes (#674)
   let attachmentRefs: Array<{ uuid: string; filename: string; sizeBytes: number }> = [];
+  let refsPersisted = true;
   if (args.attachments && args.attachments.length > 0) {
     const sharedStatePath = getSharedStatePath();
     const attachmentManager = new AttachmentManager(sharedStatePath);
@@ -156,11 +157,15 @@ async function sendNewMessage(
       }
     }
 
-    // Mettre à jour le message JSON avec les refs d'attachments
+    // Mettre à jour le message JSON avec les refs d'attachments.
+    // #3270 — le rapport ci-dessous dérive de l'issue de cette persistance,
+    // pas du tableau local : sous PG-primary un échec d'écriture des refs
+    // rend les blobs introuvables côté destinataire (source de vérité
+    // depuis #3256 : attachments_list lit Message.attachments[]).
     if (attachmentRefs.length > 0) {
       message.attachments = attachmentRefs;
       // Re-sauvegarder le message avec les attachments
-      await messageManager.updateMessageAttachments(message.id, attachmentRefs);
+      refsPersisted = await messageManager.updateMessageAttachments(message.id, attachmentRefs);
     }
   }
 
@@ -168,8 +173,13 @@ async function sendNewMessage(
   const autoDestructInfo = message.auto_destruct
     ? `\n**🔥 Auto-destruction :** Activée${message.destruct_after ? ` (TTL: ${message.destruct_after})` : ''}${message.destruct_after_read_by ? ` (après lecture par: ${message.destruct_after_read_by.join(', ')})` : ' (après lecture par destinataire)'}${message.expires_at ? `\n**⏰ Expire :** ${formatDateFull(message.expires_at)}` : ''}`
     : '';
+  const attachmentDetail = attachmentRefs
+    .map(a => `  - \`${a.uuid}\` → ${a.filename} (${a.sizeBytes} octets)`)
+    .join('\n');
   const attachmentInfo = attachmentRefs.length > 0
-    ? `\n**📎 Pièces jointes :** ${attachmentRefs.length} fichier(s) attaché(s)\n${attachmentRefs.map(a => `  - \`${a.uuid}\` → ${a.filename} (${a.sizeBytes} octets)`).join('\n')}`
+    ? (refsPersisted
+      ? `\n**📎 Pièces jointes :** ${attachmentRefs.length} fichier(s) attaché(s)\n${attachmentDetail}`
+      : `\n**⚠️ Pièces jointes :** ${attachmentRefs.length} fichier(s) uploadé(s), mais la persistance des RÉFÉRENCES a échoué — le destinataire ne pourra PAS les retrouver (la liste des pièces jointes sera vide pour ce message). Vérifiez la disponibilité du store principal puis renvoyez le message avec ses pièces jointes.\n${attachmentDetail}`)
     : '';
   const result = `✅ **Message envoyé avec succès**
 
