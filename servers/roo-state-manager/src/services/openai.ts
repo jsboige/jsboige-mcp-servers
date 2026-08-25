@@ -44,8 +44,11 @@ function getOpenAIClient(): OpenAI {
       baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
       // #1232: Reduce timeout and retries to prevent MCP Connection closed
       // Default OpenAI SDK retries 2x with backoff = 90s+ on 502/503.
-      // With maxRetries=1 and timeout=15s, worst case = ~30s (2 attempts × 15s).
-      timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '15000'),
+      // With maxRetries=1 and timeout=60s, worst case = ~120s (2 attempts × 60s), which stays
+      // under the 180s codebase_search budget in config/tool-timeouts.ts.
+      // Raised from 15s on 2026-08-25: under load the embedder answers 200 after 45.8s, so the
+      // former ~30s ceiling turned a LATENCY regime into a reported outage naming a false cause.
+      timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),
       maxRetries: 1,
     });
   }

@@ -307,8 +307,10 @@ function getCodebaseEmbeddingClient(): OpenAI {
 		codebaseEmbeddingClient = new OpenAI({
 			apiKey,
 			baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
-			// #1232: Reduce timeout and retries to prevent MCP Connection closed
-			timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '15000'),
+			// #1232: Reduce timeout and retries to prevent MCP Connection closed.
+			// 60s (not 15s) since 2026-08-25: measured 45.8s under load. maxRetries=1 -> ~120s
+			// worst case, under the 180s codebase_search budget in config/tool-timeouts.ts.
+			timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),
 			maxRetries: 1,
 		});
 	}
