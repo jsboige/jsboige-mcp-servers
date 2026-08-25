@@ -483,6 +483,12 @@ class RooStateManagerServer {
                 {
                     enabled: true,
                     checkInbox: process.env.NOTIFICATIONS_CHECK_INBOX !== 'false',
+                    // #3226(a): global dashboard [NOTIF] footer. Master kill switch
+                    // NOTIFICATIONS_FOOTER_ENABLED=false disables every footer,
+                    // GLOBAL_NOTIF_ENABLED=false disables the global one alone.
+                    checkGlobal:
+                        process.env.GLOBAL_NOTIF_ENABLED !== 'false' &&
+                        process.env.NOTIFICATIONS_FOOTER_ENABLED !== 'false',
                     refreshCache: true,
                     machineId
                 }

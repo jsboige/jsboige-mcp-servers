@@ -49,6 +49,9 @@ import {
 } from '../../utils/dashboard-helpers.js';
 import type OpenAI from 'openai';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
+// #3226(a): global read cursor — advances ONLY on an effective read of the
+// global dashboard so the [NOTIF] footer can report what the reader has missed.
+import { advanceGlobalSeenCursor } from '../../notifications/GlobalNotifState.js';
 // #3151 Phase C: PG persistence for dashboards (read PG-primary, dual-write)
 import {
   readDashboardFromPg,
@@ -910,6 +913,17 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
   const pgDashboard = await readDashboardFromPg(key);
   if (pgDashboard !== null) return pgDashboard;
   return readDashboardFromGdrive(key);
+}
+
+/**
+ * #3226(a): snapshot of the global dashboard intercom for the background
+ * notification check (ToolUsageInterceptor tick). Same read path as an agent
+ * read (PG-primary, GDrive fallback). Returns null when global does not exist
+ * yet — nothing to notify about.
+ */
+export async function readGlobalIntercomMessages(): Promise<IntercomMessage[] | null> {
+  const dashboard = await readDashboardFile('global');
+  return dashboard ? dashboard.intercom.messages : null;
 }
 
 // #3205 résiduel : lectures transitoires du fichier partagé (course write→rename
@@ -3034,6 +3048,22 @@ async function handleRead(
   // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
   if (args.format !== 'json') {
     jsonResult.markdownContent = buildMarkdownOutput(dashboard, readSection, data.intercom?.messages);
+  }
+
+  // #3226(a): an effective read of the global dashboard advances the reader's
+  // lastGlobalSeenAt cursor — the ONLY thing that advances it. Status-only reads
+  // do NOT count (the #2306 warning applies: status may be stale, the news is in
+  // the intercom). A local sub-ms write; never fails the read it belongs to.
+  if (args.type === 'global' && (readSection === 'intercom' || readSection === 'all')) {
+    try {
+      const messages = dashboard.intercom.messages;
+      const seenUpTo = messages.length > 0
+        ? messages[messages.length - 1].timestamp
+        : dashboard.lastModified;
+      await advanceGlobalSeenCursor(resolvedMachineId, resolvedWorkspace, seenUpTo);
+    } catch (err) {
+      logger.warn('Global read cursor advance failed (non-critical)', { key, error: String(err) });
+    }
   }
 
   return jsonResult;
