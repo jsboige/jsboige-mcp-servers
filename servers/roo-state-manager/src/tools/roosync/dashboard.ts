@@ -3057,9 +3057,14 @@ async function handleRead(
   if (args.type === 'global' && (readSection === 'intercom' || readSection === 'all')) {
     try {
       const messages = dashboard.intercom.messages;
-      const seenUpTo = messages.length > 0
-        ? messages[messages.length - 1].timestamp
-        : dashboard.lastModified;
+      // Max timestamp, not the last element: cross-machine appends are
+      // serialized by the lock but each is stamped by its author's local clock,
+      // so the last array element is not necessarily the newest (clock skew).
+      // Using lastModified as the seed also covers the empty case.
+      const seenUpTo = messages.reduce(
+        (max, m) => (m.timestamp > max ? m.timestamp : max),
+        dashboard.lastModified
+      );
       await advanceGlobalSeenCursor(resolvedMachineId, resolvedWorkspace, seenUpTo);
     } catch (err) {
       logger.warn('Global read cursor advance failed (non-critical)', { key, error: String(err) });
