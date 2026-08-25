@@ -440,4 +440,30 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(props).not.toHaveProperty('wait_for_archives');
         });
     });
+
+    // Wire-parity audit drift-guard (po-2023 c.190) — 4th/5th occurrences of the
+    // #1038/#3254 class, found by a systematic sweep of handler reads vs the
+    // static served schema. The tool-module schemas declare these keys and the
+    // handlers read them, but the static definitions never exposed them — the
+    // features were unreachable by every conforming caller.
+    // NOT exposed on purpose: roosync_indexing claude_code_sessions/max_sessions
+    // (sanctuary guard #1621 rejects them — advertising a forbidden lever on the
+    // wire would only invite rejected calls).
+    describe('wire-parity audit — roosync_search / roosync_indexing handler reads reachable on the wire', () => {
+        it('roosync_search must expose reset_circuit_breaker (#2634 forward, diagnose action)', () => {
+            const props = roosyncSearchDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('reset_circuit_breaker');
+        });
+
+        it('roosync_indexing action enum must include cleanup_failed (case implemented, dead on the wire)', () => {
+            const action = roosyncIndexingDefinition.inputSchema.properties?.action as { enum?: string[] };
+            expect(action?.enum).toContain('cleanup_failed');
+        });
+
+        it('roosync_indexing must expose the cleanup_failed params (error_class, max_cleanup_tasks)', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('error_class');
+            expect(props).toHaveProperty('max_cleanup_tasks');
+        });
+    });
 });
