@@ -143,10 +143,14 @@ export function resetEmbeddingMetricsForTest(): void {
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
 const EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 jours cache pour embeddings (FIX: augmenté de 24h)
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-// Embedding ops per minute per instance. Default 30 sized for fleet (12 MCP instances × 30 = 360/min ≈ 6 emb/s),
-// matching the qwen3-4b-awq embedder capacity on po-2026 (~5-10 req/s). Override via env to accelerate
-// once the cache is warm (steady-state sees high cache hits and the embedder is barely touched).
-const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '30', 10);
+// Embedding ops per minute per instance. The former default of 30 was sized from an ASSUMED
+// embedder capacity of ~5-10 req/s (12 MCP instances × 30 = 360/min ≈ 6 emb/s). Measurement on
+// 2026-08-25 falsified that premise: at ~88 req/min the qwen3-4b-awq backend still answered 200,
+// but only after 45.8s — above the client ceiling below, so callers saw a FABRICATED outage
+// (classified 'network_timeout') while the network itself measured 3-5ms. Sustained throughput is
+// ~1.5 req/s, not 6. Default 10 -> 12 instances x 10 = 120/min ~= 2/s, sized on the measured figure.
+// Override via env to accelerate once the cache is warm (steady-state sees high cache hits).
+const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '10', 10);
 // #2194: Batch size for embedding API calls. 1 = legacy single-input (backward compat).
 // Batch 16-32 yields ~3-5x throughput by amortizing HTTP round-trips.
 const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || '16', 10);

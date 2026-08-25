@@ -142,7 +142,7 @@ export async function classifySearchError(
 			return {
 				mode: 'embedding_timeout',
 				originalError: errorMsg,
-				message: `Embedding service timeout (> ${process.env.EMBEDDING_TIMEOUT_MS || '15000'}ms)`,
+				message: `Embedding service timeout (> ${process.env.EMBEDDING_TIMEOUT_MS || '60000'}ms)`,
 				hint: 'Embedding service is slow or overloaded. Try again or use roosync_search(action: "text") as fallback.',
 			};
 		}

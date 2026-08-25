@@ -118,7 +118,7 @@ describe('openai', () => {
 				apiKey: 'test-embedding-key',
 				baseURL: undefined,
 				maxRetries: 1,
-				timeout: 15000,
+				timeout: 60000,
 			});
 		});
 
@@ -134,7 +134,7 @@ describe('openai', () => {
 				apiKey: 'test-openai-key',
 				baseURL: undefined,
 				maxRetries: 1,
-				timeout: 15000,
+				timeout: 60000,
 			});
 		});
 
@@ -150,7 +150,7 @@ describe('openai', () => {
 				apiKey: 'embed-key',
 				baseURL: undefined,
 				maxRetries: 1,
-				timeout: 15000,
+				timeout: 60000,
 			});
 		});
 
@@ -166,7 +166,7 @@ describe('openai', () => {
 				apiKey: 'key',
 				baseURL: 'https://custom.api.com/v1',
 				maxRetries: 1,
-				timeout: 15000,
+				timeout: 60000,
 			});
 		});
 
