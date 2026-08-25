@@ -25,6 +25,7 @@ export interface ClaudeStorageLocation {
 export type ClaudeEntryType =
     | 'user'              // Message utilisateur
     | 'assistant'         // Message assistant
+    | 'ai-title'          // Titre AI de la session (#3174 — une entrée par prompt, sans timestamp)
     | 'command_result'    // Résultat d'une commande shell
     | 'read_result'       // Résultat d'une lecture de fichier
     | 'tool_result'       // Résultat d'un outil
@@ -36,6 +37,12 @@ export type ClaudeEntryType =
 export interface ClaudeJsonlEntry {
     /** Type de l'entrée */
     type: ClaudeEntryType;
+
+    /** Titre AI de la session (pour ai-title — dernière entrée = titre courant) */
+    aiTitle?: string;
+
+    /** Session d'origine (pour ai-title) */
+    sessionId?: string;
 
     /** Contenu du message (pour user/assistant) */
     message?: {
@@ -63,11 +70,11 @@ export interface ClaudeJsonlEntry {
         result: any;
     };
 
-    /** Timestamp ISO 8601 */
-    timestamp: string;
+    /** Timestamp ISO 8601 (absent sur les entrées ai-title) */
+    timestamp?: string;
 
-    /** UUID unique pour cette entrée */
-    uuid: string;
+    /** UUID unique pour cette entrée (absent sur les entrées ai-title) */
+    uuid?: string;
 
     /** Répertoire de travail (cwd) */
     cwd?: string;

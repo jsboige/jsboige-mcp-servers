@@ -152,7 +152,18 @@ export class ClaudeStorageDetector {
             const entry = JSON.parse(trimmed) as ClaudeJsonlEntry;
 
             // Validation basique
-            if (!entry.type || !entry.timestamp) {
+            // #3174: ai-title entries carry no timestamp — accept them on aiTitle alone.
+            // Before this, every ai-title line was counted as invalid and dropped, so
+            // the session's real title never reached the skeleton and extractTitle fell
+            // back to the first user message (a command wrapper) — all sessions of the
+            // same workspace/slash-command were indistinguishable in `list`.
+            if (!entry.type) {
+                return null;
+            }
+            if (entry.type === 'ai-title') {
+                return entry.aiTitle ? entry : null;
+            }
+            if (!entry.timestamp) {
                 return null;
             }
 
@@ -324,7 +335,12 @@ export class ClaudeStorageDetector {
         const sequence: (MessageSkeleton | ActionMetadata)[] = [];
 
         for (const entry of entries) {
-            const timestamp = entry.timestamp;
+            // #3174: ai-title = titre seulement, pas d'entrée de séquence
+            if (entry.type === 'ai-title') {
+                continue;
+            }
+            // garanti non-undefined par parseJsonlLine pour tout type ≠ ai-title
+            const timestamp = entry.timestamp!;
 
             // Messages user/assistant
             if (entry.type === 'user' || entry.type === 'assistant') {
@@ -474,8 +490,10 @@ export class ClaudeStorageDetector {
             e.type === 'tool_result'
         ).length;
 
-        // Timestamps
-        const timestamps = entries.map(e => new Date(e.timestamp).getTime()).filter(t => !isNaN(t));
+        // Timestamps (les entrées ai-title sans timestamp donnent NaN → filtrées)
+        const timestamps = entries
+            .map(e => (e.timestamp ? new Date(e.timestamp).getTime() : NaN))
+            .filter(t => !isNaN(t));
         const createdAt = timestamps.length > 0
             ? new Date(Math.min(...timestamps)).toISOString()
             : new Date().toISOString();
@@ -483,7 +501,7 @@ export class ClaudeStorageDetector {
             ? new Date(Math.max(...timestamps)).toISOString()
             : new Date().toISOString();
 
-        // Titre (premier message utilisateur)
+        // Titre (dernier ai-title, sinon premier message utilisateur)
         const title = this.extractTitle(entries);
 
         return {
@@ -501,6 +519,14 @@ export class ClaudeStorageDetector {
      * Extrait le titre de la conversation
      */
     private static extractTitle(entries: ClaudeJsonlEntry[]): string | undefined {
+        // #3174: Claude Code writes one ai-title entry per prompt; the LAST one is the
+        // session's current title. It discriminates sessions far better than the first
+        // user message, which for slash-command sessions is an indistinguishable
+        // command wrapper (<command-message>executor</command-message>…).
+        const lastAiTitle = [...entries].reverse().find(e => e.type === 'ai-title' && e.aiTitle);
+        if (lastAiTitle?.aiTitle) {
+            return lastAiTitle.aiTitle.split('\n')[0].substring(0, 80);
+        }
         const firstUserEntry = entries.find(e => e.type === 'user');
         if (firstUserEntry?.message?.content) {
             const content = this.extractContent(firstUserEntry.message.content, 100);

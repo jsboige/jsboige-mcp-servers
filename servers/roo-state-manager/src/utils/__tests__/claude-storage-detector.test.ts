@@ -551,4 +551,66 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
             expect(skUnknown?.metadata.messageCount).toBe(8);
         });
     });
+
+    describe('ai-title entries (#3174) — discrimination des sessions dans list', () => {
+        it('DEVRAIT parser une ligne ai-title sans timestamp', async () => {
+            const line = JSON.stringify({ type: 'ai-title', aiTitle: 'Réarmer le cron', sessionId: 'sess-1' });
+            const parsed = await ClaudeStorageDetector.parseJsonlLine(line);
+            expect(parsed).not.toBeNull();
+            expect(parsed?.type).toBe('ai-title');
+            expect(parsed?.aiTitle).toBe('Réarmer le cron');
+        });
+
+        it('DEVRAIT rejeter une ligne ai-title sans aiTitle', async () => {
+            const parsed = await ClaudeStorageDetector.parseJsonlLine(JSON.stringify({ type: 'ai-title' }));
+            expect(parsed).toBeNull();
+        });
+
+        it('DEVRAIT toujours rejeter un type message sans timestamp (hors ai-title)', async () => {
+            const parsed = await ClaudeStorageDetector.parseJsonlLine(
+                JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' } })
+            );
+            expect(parsed).toBeNull();
+        });
+
+        it('DEVRAIT prendre le DERNIER ai-title comme titre (pas le wrapper de commande)', async () => {
+            const jsonlContent = [
+                JSON.stringify({ type: 'ai-title', aiTitle: 'Premier titre obsolete', sessionId: 's' }),
+                JSON.stringify({ type: 'user', message: { role: 'user', content: '<command-message>executor</command-message>' }, timestamp: '2026-08-25T10:00:00.000Z', uuid: 'u1' }),
+                JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'ok' }, timestamp: '2026-08-25T10:00:01.000Z', uuid: 'a1' }),
+                JSON.stringify({ type: 'ai-title', aiTitle: 'Réarmer le cron', sessionId: 's' }),
+            ].join('\n');
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-task-id', testProjectDir);
+
+            expect(skeleton?.metadata.title).toBe('Réarmer le cron');
+            // les entrées ai-title ne polluent ni les comptages ni la séquence
+            expect(skeleton?.metadata.messageCount).toBe(2);
+            expect(skeleton?.sequence).toHaveLength(2);
+        });
+
+        it('DEVRAIT retomber sur le premier message utilisateur quand aucun ai-title', async () => {
+            const jsonlContent = [
+                JSON.stringify({ type: 'user', message: { role: 'user', content: 'Question réelle' }, timestamp: '2026-08-25T10:00:00.000Z', uuid: 'u1' }),
+            ].join('\n');
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-task-id', testProjectDir);
+            expect(skeleton?.metadata.title).toBe('Question réelle');
+        });
+
+        it('DEVRAIT ignorer les timestamps absents des ai-title dans createdAt/lastActivity', async () => {
+            const jsonlContent = [
+                JSON.stringify({ type: 'ai-title', aiTitle: 'Titre', sessionId: 's' }),
+                JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' }, timestamp: '2026-08-25T10:00:00.000Z', uuid: 'u1' }),
+            ].join('\n');
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), jsonlContent);
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-task-id', testProjectDir);
+            // new Date(undefined) → NaN → filtré : createdAt vient du message, pas de now()
+            expect(skeleton?.metadata.createdAt).toBe('2026-08-25T10:00:00.000Z');
+            expect(skeleton?.metadata.lastActivity).toBe('2026-08-25T10:00:00.000Z');
+        });
+    });
 });
