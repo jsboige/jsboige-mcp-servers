@@ -267,6 +267,16 @@ describe('handleDiagnoseSemanticIndex', () => {
                 })
             });
             mockGetQdrantClient.mockReturnValue(mockQdrant);
+            // #3257: align the live embedding with the 2560-dim collection. The
+            // pre-fix run had collection=2560 vs embedding=1536 and still asserted
+            // `healthy` — that was itself a false green (searches return 0 results
+            // in that state), now impossible under the no-false-green invariant.
+            mockGetOpenAIClient.mockReturnValue(createMockOpenAI({
+                create: vi.fn().mockResolvedValue({
+                    data: [{ embedding: new Array(2560).fill(0.1) }]
+                })
+            }));
+            process.env.EMBEDDING_DIMENSIONS = '2560';
 
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
@@ -727,9 +737,10 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            const errorText = diag.errors.join(' ');
-            expect(errorText).toContain('QDRANT_URL');
-            expect(errorText).toContain('EMBEDDING_API_KEY');
+            // #3257: env-var absence is the non-blocking warning category.
+            const warningText = diag.warnings.join(' ');
+            expect(warningText).toContain('QDRANT_URL');
+            expect(warningText).toContain('EMBEDDING_API_KEY');
         });
 
         it('should not include env error when all vars are present', async () => {
@@ -751,10 +762,11 @@ describe('handleDiagnoseSemanticIndex', () => {
             expect(diag.details.environment_variables.EMBEDDING_MODEL).toBe(false);
             expect(diag.details.environment_variables.EMBEDDING_DIMENSIONS).toBe(false);
 
-            const errorText = diag.errors.join(' ');
-            expect(errorText).toContain('EMBEDDING_MODEL');
-            expect(errorText).toContain('EMBEDDING_DIMENSIONS');
-            expect(errorText).not.toContain('QDRANT_URL');
+            // #3257: env-var absence is the non-blocking warning category.
+            const warningText = diag.warnings.join(' ');
+            expect(warningText).toContain('EMBEDDING_MODEL');
+            expect(warningText).toContain('EMBEDDING_DIMENSIONS');
+            expect(warningText).not.toContain('QDRANT_URL');
         });
 
         it('should treat empty string env vars as missing (falsy)', async () => {
@@ -903,9 +915,12 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
+            // #3257: a non-blocking finding (env var unused by the working setup)
+            // keeps the healthy verdict and lands in warnings[], not errors[].
             expect(diag.status).toBe('healthy');
             expect(diag.details.environment_variables.EMBEDDING_DIMENSIONS).toBe(false);
-            expect(diag.errors.length).toBeGreaterThan(0);
+            expect(diag.warnings.length).toBeGreaterThan(0);
+            expect(diag.errors).toHaveLength(0);
         });
 
         it('should handle collection with missing config fields gracefully', async () => {

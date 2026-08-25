@@ -46,7 +46,7 @@ vi.mock('../../../services/openai.js', () => ({
 }));
 
 // Import the module under test (static import, mocks are hoisted)
-import { handleDiagnoseSemanticIndex, _resetConnectivityCache, _classifyOpenAIError } from '../diagnose-index.tool.js';
+import { handleDiagnoseSemanticIndex, _resetConnectivityCache, _classifyOpenAIError, _classifyDeepDiagnosticError } from '../diagnose-index.tool.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 
 describe('diagnose-index.tool (unit tests)', () => {
@@ -551,16 +551,21 @@ describe('diagnose-index.tool (unit tests)', () => {
 			expect(envVars.EMBEDDING_DIMENSIONS).toBe(false);
 		});
 
-		it('should list missing environment variables in errors', async () => {
+		it('should list missing environment variables in warnings, not errors (#3257)', async () => {
 			delete process.env.EMBEDDING_API_KEY;
 			delete process.env.QDRANT_URL;
 
 			const result = await handleDiagnoseSemanticIndex(conversationCache);
 
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.errors.some(e => e.includes('Variables d\'environnement manquantes'))).toBe(true);
-			expect(parsed.errors.some(e => e.includes('EMBEDDING_API_KEY'))).toBe(true);
-			expect(parsed.errors.some(e => e.includes('QDRANT_URL'))).toBe(true);
+			// #3257: env-var absence is the explicit non-blocking warning category —
+			// a fully-working setup (connections above all succeeded) must not be
+			// degraded to non-healthy by it.
+			expect(parsed.warnings.some(e => e.includes('Variables d\'environnement manquantes'))).toBe(true);
+			expect(parsed.warnings.some(e => e.includes('EMBEDDING_API_KEY'))).toBe(true);
+			expect(parsed.warnings.some(e => e.includes('QDRANT_URL'))).toBe(true);
+			expect(parsed.errors).toHaveLength(0);
+			expect(parsed.status).toBe('healthy');
 		});
 	});
 
@@ -858,7 +863,8 @@ describe('diagnose-index.tool (unit tests)', () => {
 		});
 
 		it('surfaces deep diagnostics failure as soft error without throwing', async () => {
-			// Source: L319-322 — catch wraps the deep diagnostics block; never throws.
+			// Source: deep catch — never throws. #3257: the failure is ALSO reflected
+			// in the verdict now (degraded, not healthy) and carries a typed reason.
 			mockQdrantClient.scroll.mockRejectedValue(new Error('scroll timeout'));
 
 			const result = await handleDiagnoseSemanticIndex(
@@ -869,8 +875,17 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.details.deep_diagnostics.error).toBe('scroll timeout');
 			expect(parsed.errors.some((e: string) => e.includes('Deep diagnostics failed'))).toBe(true);
-			// Top-level status stays healthy (Qdrant collection still OK).
-			expect(parsed.status).toBe('healthy');
+			// #3257: an explicitly requested diagnostic part that failed must degrade
+			// the verdict — a consumer reading only `status` must not conclude the
+			// requested diagnostic ran to completion.
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.details.deep_diagnostics.abort_reason).toBe('timeout');
+			// Infrastructure stays healthy separately: only the deep pass failed.
+			expect(parsed.infrastructure_status).toMatchObject({
+				qdrant: 'healthy',
+				embeddings: 'healthy',
+				deep_diagnostics: 'failed'
+			});
 		});
 
 		it('adds workspace_name recommendation when field coverage < 50%', async () => {
@@ -917,6 +932,269 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const rec = parsed.recommendations.find((r: string) => r.includes('points sans champ `source`'));
 			expect(rec).toBeDefined();
 			expect(rec).toContain('ChunkExtractor Roo');
+		});
+	});
+
+	// ============================================================
+	// #3257 — deep diagnostics abort: no false green.
+	// po-2025 incident (2026-08-24): diagnose(deep=true) returned
+	// status:healthy + errors:["Deep diagnostics failed: This operation was
+	// aborted"] + recommendations:[] simultaneously. A watchdog reading only
+	// `status` concluded the requested diagnostic was complete.
+	// Fix: degraded verdict + typed abort_reason + separate infrastructure_status
+	// + actionable recommendation. Recurrence of the #2547 masking class.
+	// ============================================================
+
+	describe('#3257 — deep diagnostics abort degrades the verdict', () => {
+		beforeEach(() => {
+			// Healthy baseline: collection exists with points, embeddings OK —
+			// only the deep scroll fails (the incident's exact configuration).
+			mockQdrantClient.getCollections.mockResolvedValue({
+				collections: [{ name: 'test-roo-state-manager' }]
+			});
+			mockQdrantClient.getCollection.mockResolvedValue({
+				vectors_count: 1000,
+				indexed_vectors_count: 1000,
+				points_count: 100,
+				config: { params: { vectors: { distance: 'Cosine', size: 1536 } } }
+			});
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+		});
+
+		it('reproduces the po-2025 incident: QdrantClientTimeoutError abort → degraded, not healthy', async () => {
+			// Realistic incident shape (verified in @qdrant/js-client-rest@1.16.2
+			// dist/cjs/api-client.js): the client's timeout middleware converts its
+			// internal AbortError into QdrantClientTimeoutError, message preserved.
+			const timeoutErr: any = new Error('This operation was aborted');
+			timeoutErr.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.scroll.mockRejectedValue(timeoutErr);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true, sample_size: 1000, top_n_workspaces: 20 }
+			)).content[0].text);
+
+			// Acceptance: deep=true + abort → degraded|partial (NOT healthy).
+			expect(parsed.status).toBe('degraded');
+			// Typed, structured reason — not just the generic text.
+			expect(parsed.details.deep_diagnostics.abort_reason).toBe('timeout');
+			expect(parsed.details.deep_diagnostics.error).toBe('This operation was aborted');
+			expect(parsed.errors.some((e: string) => e.includes('reason=timeout'))).toBe(true);
+			// Acceptance: infrastructure status stays exposed separately.
+			expect(parsed.infrastructure_status).toEqual({
+				qdrant: 'healthy',
+				embeddings: 'healthy',
+				deep_diagnostics: 'failed'
+			});
+			// Acceptance: actionable recommendation (the incident output had none).
+			expect(parsed.recommendations.some((r: string) => r.includes('Réduisez sample_size'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('QDRANT_TIMEOUT_MS'))).toBe(true);
+		});
+
+		it('distinguishes caller cancellation from internal timeout (raw AbortError)', async () => {
+			// A RAW AbortError cannot be the client's internal timeout — the client's
+			// middleware converts its own into QdrantClientTimeoutError. So a bare
+			// AbortError reaching the handler is an external abort (caller/transport).
+			const abortErr: any = new Error('This operation was aborted');
+			abortErr.name = 'AbortError';
+			abortErr.code = 'ABORT_ERR';
+			mockQdrantClient.scroll.mockRejectedValue(abortErr);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			)).content[0].text);
+
+			expect(parsed.details.deep_diagnostics.abort_reason).toBe('caller_cancelled');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.recommendations.some((r: string) => r.includes('annulés par l\'appelant'))).toBe(true);
+		});
+
+		it('AbortError with a TimeoutError cause classifies as timeout', async () => {
+			// AbortSignal.timeout() rejects with an AbortError whose cause is a
+			// DOMException named 'TimeoutError' — that signature means timeout.
+			const causeErr: any = new Error('The operation was aborted due to timeout');
+			causeErr.name = 'TimeoutError';
+			const abortErr: any = new Error('This operation was aborted');
+			abortErr.name = 'AbortError';
+			abortErr.cause = causeErr;
+			mockQdrantClient.scroll.mockRejectedValue(abortErr);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			)).content[0].text);
+
+			expect(parsed.details.deep_diagnostics.abort_reason).toBe('timeout');
+		});
+
+		it('routes a 5xx scroll failure to server_abort with a backend-check recommendation', async () => {
+			mockQdrantClient.scroll.mockRejectedValue({ status: 503, message: 'Service Unavailable' });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			)).content[0].text);
+
+			expect(parsed.details.deep_diagnostics.abort_reason).toBe('server_abort');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.recommendations.some((r: string) => r.includes('interrompus par le serveur'))).toBe(true);
+		});
+
+		it('reports deep_diagnostics:completed and keeps healthy when the deep pass succeeds', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [{ id: 'p1', payload: { source: 'roo', workspace_name: 'w', timestamp: '2026-07-01', task_id: 'a' } }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(
+				conversationCache,
+				{ deep: true }
+			)).content[0].text);
+
+			expect(parsed.status).toBe('healthy');
+			expect(parsed.infrastructure_status).toEqual({
+				qdrant: 'healthy',
+				embeddings: 'healthy',
+				deep_diagnostics: 'completed'
+			});
+		});
+
+		it('reports deep_diagnostics:skipped when deep was not requested', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.infrastructure_status).toEqual({
+				qdrant: 'healthy',
+				embeddings: 'healthy',
+				deep_diagnostics: 'skipped'
+			});
+		});
+	});
+
+	// ============================================================
+	// #3257 — generic no-false-green invariant: healthy requires errors[] empty.
+	// Deep-diagnostics aborts were the triggering incident, but the same masking
+	// existed for dimension mismatches (errors pushed, verdict stayed healthy).
+	// ============================================================
+
+	describe('#3257 — no false green (generic invariant)', () => {
+		it('degrades healthy→degraded on dimension mismatch (previously healthy-with-errors)', async () => {
+			mockQdrantClient.getCollections.mockResolvedValue({
+				collections: [{ name: 'test-roo-state-manager' }]
+			});
+			// Collection built at 1536, live embedding returns 768 → mismatch.
+			mockQdrantClient.getCollection.mockResolvedValue({
+				vectors_count: 1000,
+				indexed_vectors_count: 1000,
+				points_count: 100,
+				config: { params: { vectors: { distance: 'Cosine', size: 1536 } } }
+			});
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: new Array(768).fill(0.1) }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// Searches return 0 results in this state — healthy was a false green.
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.errors.some((e: string) => e.includes('Dimension mismatch'))).toBe(true);
+			expect(parsed.errors.some((e: string) => e.includes('rétrogradé healthy→degraded'))).toBe(true);
+		});
+
+		it('keeps healthy silent: zero errors, zero warnings noise', async () => {
+			mockQdrantClient.getCollections.mockResolvedValue({
+				collections: [{ name: 'test-roo-state-manager' }]
+			});
+			mockQdrantClient.getCollection.mockResolvedValue({
+				vectors_count: 1000,
+				indexed_vectors_count: 1000,
+				points_count: 100,
+				config: { params: { vectors: { distance: 'Cosine', size: 1536 } } }
+			});
+			mockOpenAIClient.embeddings.create.mockResolvedValue({
+				data: [{ embedding: new Array(1536).fill(0.1) }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('healthy');
+			expect(parsed.errors).toHaveLength(0);
+			expect(parsed.warnings).toHaveLength(0);
+			expect(parsed.recommendations).toHaveLength(0);
+		});
+	});
+
+	// ============================================================
+	// #3257 — _classifyDeepDiagnosticError (unit): timeout interne vs
+	// annulation par l'appelant vs server abort vs sample rejection.
+	// ============================================================
+
+	describe('_classifyDeepDiagnosticError (unit)', () => {
+		it('classifies QdrantClientTimeoutError as timeout (structural, Phase A)', () => {
+			const err: any = new Error('This operation was aborted');
+			err.name = 'QdrantClientTimeoutError';
+			expect(_classifyDeepDiagnosticError(err)).toBe('timeout');
+		});
+
+		it('classifies a bare AbortError as caller_cancelled (Phase B)', () => {
+			const err: any = new Error('This operation was aborted');
+			err.name = 'AbortError';
+			expect(_classifyDeepDiagnosticError(err)).toBe('caller_cancelled');
+		});
+
+		it('classifies ABORT_ERR code without name as caller_cancelled', () => {
+			expect(_classifyDeepDiagnosticError({ code: 'ABORT_ERR', message: 'This operation was aborted' })).toBe('caller_cancelled');
+		});
+
+		it('classifies AbortError with TimeoutError cause as timeout', () => {
+			expect(
+				_classifyDeepDiagnosticError({ name: 'AbortError', message: 'aborted', cause: { name: 'TimeoutError', message: 'due to timeout' } })
+			).toBe('timeout');
+		});
+
+		it('classifies AbortError with ETIMEDOUT code as timeout', () => {
+			expect(
+				_classifyDeepDiagnosticError({ name: 'AbortError', code: 'ETIMEDOUT', message: 'This operation was aborted' })
+			).toBe('timeout');
+		});
+
+		it('structural timeout name wins over the "aborted" message (phase order guard)', () => {
+			// The exact trap: QdrantClientTimeoutError's message IS "This operation
+			// was aborted" — if the abort check ran first, internal timeouts would
+			// misclassify as caller_cancelled.
+			expect(_classifyDeepDiagnosticError({ name: 'QdrantClientTimeoutError', message: 'This operation was aborted' })).toBe('timeout');
+		});
+
+		it('classifies HTTP 503/500 as server_abort', () => {
+			expect(_classifyDeepDiagnosticError({ status: 503, message: 'Service Unavailable' })).toBe('server_abort');
+			expect(_classifyDeepDiagnosticError({ status: 500, message: 'Internal Server Error' })).toBe('server_abort');
+		});
+
+		it('classifies ECONNRESET / socket hang up as server_abort', () => {
+			expect(_classifyDeepDiagnosticError({ code: 'ECONNRESET', message: 'read ECONNRESET' })).toBe('server_abort');
+			expect(_classifyDeepDiagnosticError(new Error('socket hang up'))).toBe('server_abort');
+		});
+
+		it('classifies a 4xx explicitly about the sample as sample_limit_rejected', () => {
+			expect(_classifyDeepDiagnosticError({ status: 400, message: 'sample size exceeds limit' })).toBe('sample_limit_rejected');
+			expect(_classifyDeepDiagnosticError({ status: 413, message: 'requested size too large' })).toBe('sample_limit_rejected');
+		});
+
+		it('does NOT classify an unrelated 4xx as sample_limit_rejected', () => {
+			expect(_classifyDeepDiagnosticError({ status: 404, message: 'not found' })).toBe('unknown');
+			expect(_classifyDeepDiagnosticError({ status: 400, message: 'bad request shape' })).toBe('unknown');
+		});
+
+		it('falls back to timeout on generic timeout keywords (plain Error)', () => {
+			expect(_classifyDeepDiagnosticError(new Error('scroll timeout'))).toBe('timeout');
+			expect(_classifyDeepDiagnosticError(new Error('request timed out'))).toBe('timeout');
+		});
+
+		it('returns unknown for undefined/null/empty shapes', () => {
+			expect(_classifyDeepDiagnosticError(undefined)).toBe('unknown');
+			expect(_classifyDeepDiagnosticError(null)).toBe('unknown');
+			expect(_classifyDeepDiagnosticError({})).toBe('unknown');
 		});
 	});
 
