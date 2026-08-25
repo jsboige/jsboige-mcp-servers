@@ -374,6 +374,61 @@ describe('MessageManager PG-primary write path', () => {
     })
   );
 
+  // ── updateMessageAttachments (#3270) ──
+
+  test(
+    'updateMessageAttachments: PG update failure, no GDrive file → false (refs lost)',
+    withPrimaryGate(async () => {
+      // PG-primary send → no files; the PG row is the only place the refs
+      // can live. Its update failing means they are persisted NOWHERE.
+      const sent = await messageManager.sendMessage(
+        'myia-po-2023:roo-extensions', 'myia-ai-01', '[TASK]', 'body'
+      );
+      mockUpdateRooSyncMessage.mockRejectedValue(new Error('PG down'));
+      const persisted = await messageManager.updateMessageAttachments(sent.id, [
+        { uuid: 'u1', filename: 'secret.env', sizeBytes: 12 },
+      ]);
+      expect(persisted).toBe(false);
+      expect(mockUpdateRooSyncMessage).toHaveBeenCalledWith(sent.id, {
+        attachment_refs: [{ uuid: 'u1', filename: 'secret.env', sizeBytes: 12 }],
+      });
+    })
+  );
+
+  test(
+    'updateMessageAttachments: PG update success → true',
+    withPrimaryGate(async () => {
+      const sent = await messageManager.sendMessage(
+        'myia-po-2023:roo-extensions', 'myia-ai-01', '[TASK]', 'body'
+      );
+      const persisted = await messageManager.updateMessageAttachments(sent.id, [
+        { uuid: 'u1', filename: 'a.txt', sizeBytes: 3 },
+      ]);
+      expect(persisted).toBe(true);
+    })
+  );
+
+  test(
+    'updateMessageAttachments: PG failure but GDrive fallback files carry the refs → true (degraded, not lost)',
+    withPrimaryGate(async () => {
+      // Send-time PG failure → GDrive fallback files exist. The refs update
+      // failing on PG again is a mirror miss, not a loss: the files carry them.
+      mockInsertRooSyncMessage.mockRejectedValue(new Error('PG down'));
+      mockUpdateRooSyncMessage.mockRejectedValue(new Error('PG down'));
+      const sent = await messageManager.sendMessage(
+        'myia-po-2023:roo-extensions', 'myia-ai-01', '[TASK]', 'body'
+      );
+      const persisted = await messageManager.updateMessageAttachments(sent.id, [
+        { uuid: 'u1', filename: 'a.txt', sizeBytes: 3 },
+      ]);
+      expect(persisted).toBe(true);
+      const onDisk = JSON.parse(
+        readFileSync(join(testPath, 'messages/inbox', `${sent.id}.json`), 'utf-8')
+      );
+      expect(onDisk.attachments).toEqual([{ uuid: 'u1', filename: 'a.txt', sizeBytes: 3 }]);
+    })
+  );
+
   // ── destroyMessage ──
 
   test(

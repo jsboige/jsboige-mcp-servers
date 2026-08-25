@@ -316,6 +316,56 @@ describe('roosync_send', () => {
         });
     });
 
+    describe('attachments (#674 / #3270)', () => {
+        const ref = { uuid: 'att-3270', filename: 'secret.env', sizeBytes: 12 };
+
+        function setupSendWithAttachment() {
+            mockSendMessage.mockResolvedValue({
+                id: 'msg-att', from: 'myia-po-2025|roo-extensions', to: 'myia-ai-01',
+                subject: 'Secrets', priority: 'HIGH', timestamp: '2026-05-04T00:00:00.000Z',
+            });
+            mockUploadAttachment.mockResolvedValue({ ...ref });
+        }
+
+        it('reports attached files when refs persistence succeeds', async () => {
+            setupSendWithAttachment();
+            mockUpdateMessageAttachments.mockResolvedValue(true);
+            const result = await roosyncSend({
+                action: 'send', to: 'myia-ai-01', subject: 'Secrets', body: 'Body',
+                attachments: [{ path: '/tmp/secret.env' }],
+            });
+            expect(result.content[0].text).toContain('1 fichier(s) attaché(s)');
+            expect(result.content[0].text).toContain('att-3270');
+            expect(mockUpdateMessageAttachments).toHaveBeenCalledWith('msg-att', [{ ...ref }]);
+        });
+
+        // #3270 — sous PG-primary, un échec de persistance des refs rend les
+        // blobs introuvables : le succès affiché doit mesurer l'enregistrement
+        // des références, pas l'upload des blobs.
+        it('does NOT report a success line when refs persistence failed (#3270)', async () => {
+            setupSendWithAttachment();
+            mockUpdateMessageAttachments.mockResolvedValue(false);
+            const result = await roosyncSend({
+                action: 'send', to: 'myia-ai-01', subject: 'Secrets', body: 'Body',
+                attachments: [{ path: '/tmp/secret.env' }],
+            });
+            expect(result.content[0].text).not.toContain('fichier(s) attaché(s)');
+            expect(result.content[0].text).toContain('RÉFÉRENCES');
+            expect(result.content[0].text).toContain('att-3270');
+        });
+
+        it('reports no attachment section when the upload itself failed', async () => {
+            setupSendWithAttachment();
+            mockUploadAttachment.mockRejectedValue(new Error('upload failed'));
+            const result = await roosyncSend({
+                action: 'send', to: 'myia-ai-01', subject: 'Secrets', body: 'Body',
+                attachments: [{ path: '/tmp/secret.env' }],
+            });
+            expect(result.content[0].text).not.toContain('Pièces jointes');
+            expect(mockUpdateMessageAttachments).not.toHaveBeenCalled();
+        });
+    });
+
     describe('activity recording', () => {
         it('records activity after successful send', async () => {
             mockSendMessage.mockResolvedValue({
