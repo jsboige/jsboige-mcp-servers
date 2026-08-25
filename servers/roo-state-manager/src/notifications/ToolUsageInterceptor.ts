@@ -11,8 +11,14 @@
  * FIX #1356: Inbox check moved entirely to background interval (60s).
  * Previous fire-and-forget still saturated GDrive FUSE I/O on the event loop.
  *
+ * #3226(a): the background tick also checks the `global` dashboard against the
+ * reader's lastGlobalSeenAt cursor and builds a second [NOTIF] footer line per
+ * the §4 filter (ERROR unmatched >15min, ASK/PROPOSAL/BLOCKED/WAKE-*, one
+ * CLUSTER-HEALTH per tour; never INFO/ACK/DONE). The cursor advances ONLY on an
+ * effective global read — see GlobalNotifState.
+ *
  * @module ToolUsageInterceptor
- * @version 3.0.0 — #2192 push notification footer on tool response
+ * @version 4.0.0 — #3226 global dashboard [NOTIF] footer
  */
 
 import { NotificationService, NotificationEvent } from './NotificationService.js';
@@ -41,6 +47,9 @@ export interface InterceptorConfig {
   /** Activer la vérification de l'inbox RooSync */
   checkInbox: boolean;
 
+  /** #3226(a): activer la vérification du dashboard global (footer [NOTIF]) */
+  checkGlobal?: boolean;
+
   /** Activer le refresh du cache de conversations */
   refreshCache: boolean;
 
@@ -67,6 +76,8 @@ export class ToolUsageInterceptor {
   private pendingFooter: string | null = null;
   /** Total unread count from last background check */
   private lastUnreadCount = 0;
+  /** #3226(a): pre-built global-dashboard footer, annexed to next tool response */
+  private pendingGlobalFooter: string | null = null;
 
   constructor(
     notificationService: NotificationService,
@@ -86,7 +97,7 @@ export class ToolUsageInterceptor {
       minPriority: config.minPriority
     });
 
-    if (config.checkInbox) {
+    if (config.checkInbox || config.checkGlobal) {
       this.startBackgroundCheck();
     }
   }
@@ -127,10 +138,30 @@ export class ToolUsageInterceptor {
     if (this.pendingFooter && toolName === 'roosync_messages') {
       this.pendingFooter = null;
     }
+    // #3226(a): same staleness rule for the global footer — the agent just READ
+    // the global dashboard (execute() advanced the cursor), annexing "N nouveaux
+    // depuis ta dernière lecture" onto that very response would be nonsense.
+    // Other roosync_dashboard calls (e.g. a workspace read) keep the footer:
+    // that push is the feature working.
+    if (
+      this.pendingGlobalFooter &&
+      toolName === 'roosync_dashboard' &&
+      args?.action === 'read' &&
+      args?.type === 'global'
+    ) {
+      this.pendingGlobalFooter = null;
+    }
+    let footers = '';
     if (this.pendingFooter) {
-      const footer = this.pendingFooter;
+      footers += this.pendingFooter;
       this.pendingFooter = null;
-      return this.appendFooter(result, footer);
+    }
+    if (this.pendingGlobalFooter) {
+      footers += this.pendingGlobalFooter;
+      this.pendingGlobalFooter = null;
+    }
+    if (footers) {
+      return this.appendFooter(result, footers);
     }
 
     return result;
@@ -176,6 +207,7 @@ export class ToolUsageInterceptor {
 
   /**
    * Background inbox check — runs on interval, never blocks tool execution.
+   * #3226(a): also runs the global dashboard check in the same tick.
    * @private
    */
   private async backgroundInboxCheck(): Promise<void> {
@@ -183,38 +215,77 @@ export class ToolUsageInterceptor {
     this.inboxCheckInFlight = true;
 
     try {
-      const unreadItems = await this.messageManager.readInbox(
-        this.config.machineId,
-        'unread',
-        undefined,
-        getLocalWorkspaceId()
-      );
+      if (this.config.checkInbox) {
+        const unreadItems = await this.messageManager.readInbox(
+          this.config.machineId,
+          'unread',
+          undefined,
+          getLocalWorkspaceId()
+        );
 
-      const messages: Message[] = [];
-      for (const item of unreadItems) {
-        const msg = await this.messageManager.getMessage(item.id);
-        if (msg) {
-          messages.push(msg);
+        const messages: Message[] = [];
+        for (const item of unreadItems) {
+          const msg = await this.messageManager.getMessage(item.id);
+          if (msg) {
+            messages.push(msg);
+          }
         }
+
+        // Only notify about messages we haven't already notified about
+        const newToNotify = messages.filter(m => !this.notifiedMessageIds.has(m.id));
+
+        if (newToNotify.length > 0) {
+          for (const m of newToNotify) {
+            this.notifiedMessageIds.add(m.id);
+          }
+          console.error(`📬 [ToolUsageInterceptor] Background check: ${newToNotify.length} new unread messages`);
+          await this.notifyNewMessages(newToNotify, 'background-check');
+        }
+
+        // Build footer for all unread messages (not just new ones) — #2192
+        this.updatePendingFooter(messages);
       }
 
-      // Only notify about messages we haven't already notified about
-      const newToNotify = messages.filter(m => !this.notifiedMessageIds.has(m.id));
-
-      if (newToNotify.length > 0) {
-        for (const m of newToNotify) {
-          this.notifiedMessageIds.add(m.id);
-        }
-        console.error(`📬 [ToolUsageInterceptor] Background check: ${newToNotify.length} new unread messages`);
-        await this.notifyNewMessages(newToNotify, 'background-check');
+      // #3226(a): global dashboard notification check — same tick, one extra
+      // dashboard read. Fails soft: a GDrive hiccup clears the footer for this
+      // tick only, the next tick retries.
+      if (this.config.checkGlobal) {
+        await this.backgroundGlobalCheck();
       }
-
-      // Build footer for all unread messages (not just new ones) — #2192
-      this.updatePendingFooter(messages);
     } catch (error) {
       console.error('⚠️ [ToolUsageInterceptor] Background inbox check failed:', error);
     } finally {
       this.inboxCheckInFlight = false;
+    }
+  }
+
+  /**
+   * #3226(a): background global dashboard check.
+   * Reads the global intercom snapshot, filters per §4 against the reader's
+   * lastGlobalSeenAt cursor, and builds the [NOTIF] global footer.
+   * Heavy imports are dynamic — deferred to the first tick, off the startup path.
+   * @private
+   */
+  private async backgroundGlobalCheck(): Promise<void> {
+    try {
+      const { getGlobalSeenCursor, filterNotifiableGlobalMessages, buildGlobalFooter } =
+        await import('./GlobalNotifState.js');
+      const { readGlobalIntercomMessages } = await import('../tools/roosync/dashboard.js');
+
+      const messages = await readGlobalIntercomMessages();
+      if (!messages) return; // no global dashboard yet — nothing to notify
+
+      const workspace = getLocalWorkspaceId();
+      const cursor = await getGlobalSeenCursor(this.config.machineId, workspace);
+      const errorDelayMin = parseInt(process.env.GLOBAL_NOTIF_ERROR_DELAY_MIN || '15', 10);
+      const summary = filterNotifiableGlobalMessages(messages, cursor, Date.now(), {
+        selfMachineId: this.config.machineId,
+        errorDelayMin: Number.isFinite(errorDelayMin) ? errorDelayMin : undefined
+      });
+      this.pendingGlobalFooter = buildGlobalFooter(summary);
+    } catch (error) {
+      console.error('⚠️ [ToolUsageInterceptor] Global dashboard check failed:', error);
+      this.pendingGlobalFooter = null;
     }
   }
 
@@ -304,6 +375,7 @@ export class ToolUsageInterceptor {
     }
     this.notifiedMessageIds.clear();
     this.pendingFooter = null;
+    this.pendingGlobalFooter = null;
   }
   
   /**
@@ -386,13 +458,14 @@ export class ToolUsageInterceptor {
    * @param config Nouvelle configuration (partielle)
    */
   updateConfig(config: Partial<InterceptorConfig>): void {
-    const wasChecking = this.config.checkInbox;
+    const wasChecking = this.config.checkInbox || this.config.checkGlobal;
     this.config = { ...this.config, ...config };
     console.error('⚙️ [ToolUsageInterceptor] Config updated:', this.config);
 
-    if (!wasChecking && this.config.checkInbox) {
+    const isChecking = this.config.checkInbox || this.config.checkGlobal;
+    if (!wasChecking && isChecking) {
       this.startBackgroundCheck();
-    } else if (wasChecking && !this.config.checkInbox) {
+    } else if (wasChecking && !isChecking) {
       this.dispose();
     }
   }
