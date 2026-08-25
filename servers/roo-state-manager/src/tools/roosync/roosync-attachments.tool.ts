@@ -10,10 +10,31 @@
  */
 
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
+import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('RooSyncAttachmentTools');
+
+/**
+ * #3256 — Résout les refs d'attachments d'un message SANS parcourir le store.
+ *
+ * `getMessage` cherche en O(1) (PG si gate + caller fourni, sinon inbox → sent
+ * → archive → cache) et le message porte ses refs (`attachments[]`, maintenues
+ * par `updateMessageAttachments`). Retourne :
+ *   - `null` quand le message est introuvable — l'appelant retombe alors sur
+ *     le scan complet `listAttachments(messageId)` (comportement historique,
+ *     seul chemin pour un id inconnu) ;
+ *   - `[]` quand le message existe mais n'a aucune pièce jointe — miss
+ *     définitif, répondable sans toucher au store du tout.
+ */
+async function resolveMessageAttachmentRefs(
+  messageId: string,
+): Promise<Array<{ uuid: string; filename: string; sizeBytes: number }> | null> {
+  const message = await getMessageManager().getMessage(messageId);
+  if (!message) return null;
+  return message.attachments ?? [];
+}
 
 // ============================================================
 // roosync_list_attachments
@@ -31,7 +52,19 @@ export async function roosyncListAttachments(
     // entries were dropped and *why* — distinguishing a partial list from a
     // complete one (#3013). Filter `messageId` is NOT aggregated here.
     const stats: AttachmentListStats = { missingMetadata: 0, readTimeout: 0, parseError: 0 };
-    const attachments = await manager.listAttachments(args.message_id, stats);
+
+    // #3256 — chemin ciblé : un message trouvé répond depuis SES refs en O(k),
+    // jamais depuis un parcours du store (O(N_flotte), 17,9 s mesurés pour un
+    // miss). `null` (message inconnu) seul retombe sur le scan historique.
+    let attachments;
+    if (args.message_id) {
+      const refs = await resolveMessageAttachmentRefs(args.message_id);
+      attachments = refs === null
+        ? await manager.listAttachments(args.message_id, stats)
+        : await manager.listAttachmentsByRefs(refs.map((r) => r.uuid), stats);
+    } else {
+      attachments = await manager.listAttachments(undefined, stats);
+    }
 
     if (attachments.length === 0) {
       const scopeLabel = args.message_id ? `le message \`${args.message_id}\`` : 'le stockage partagé';
@@ -92,12 +125,31 @@ ${rows}
 // ============================================================
 
 export async function roosyncGetAttachment(
-  args: { uuid: string; targetPath: string }
+  args: { uuid?: string; targetPath: string; message_id?: string; filename?: string }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   logger.info('📥 roosync_get_attachment called', { uuid: args.uuid, targetPath: args.targetPath });
 
-  if (!args.uuid) {
-    return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis.' }] };
+  // #3256 — breaker de la boucle fermée : l'UUID n'est découvrable que par
+  // `attachments_list`, qui timeout sur les stores saturés. `(message_id,
+  // filename)` le résout en O(1) depuis les refs du message, sans listing.
+  let uuid = args.uuid;
+  if (!uuid) {
+    if (!args.message_id || !args.filename) {
+      return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis (ou `message_id` + `filename` — #3256).' }] };
+    }
+    const refs = await resolveMessageAttachmentRefs(args.message_id);
+    if (refs === null) {
+      return { content: [{ type: 'text', text: `❌ Message introuvable : \`${args.message_id}\` — impossible de résoudre \`filename\` sans UUID.` }] };
+    }
+    if (refs.length === 0) {
+      return { content: [{ type: 'text', text: `❌ Le message \`${args.message_id}\` n'a aucune pièce jointe.` }] };
+    }
+    const ref = refs.find((r) => r.filename === args.filename);
+    if (!ref) {
+      const available = refs.map((r) => `\`${r.filename}\``).join(', ');
+      return { content: [{ type: 'text', text: `❌ Aucune pièce jointe nommée \`${args.filename}\` sur \`${args.message_id}\`. Disponibles : ${available}` }] };
+    }
+    uuid = ref.uuid;
   }
   if (!args.targetPath) {
     return { content: [{ type: 'text', text: '❌ Paramètre `targetPath` requis.' }] };
@@ -106,7 +158,7 @@ export async function roosyncGetAttachment(
   try {
     const sharedStatePath = getSharedStatePath();
     const manager = new AttachmentManager(sharedStatePath);
-    const meta = await manager.getAttachment(args.uuid, args.targetPath);
+    const meta = await manager.getAttachment(uuid, args.targetPath);
 
     const text = `✅ **Pièce jointe récupérée**
 
@@ -132,7 +184,7 @@ export async function roosyncGetAttachment(
         text: `❌ **Erreur roosync_get_attachment :** ${msg}
 
 **Vérifications :**
-- L'UUID \`${args.uuid}\` est-il correct ?
+- L'UUID \`${uuid}\` est-il correct ?
 - Le répertoire cible \`${args.targetPath}\` est-il accessible en écriture ?
 - Utilisez \`roosync_list_attachments\` pour voir les UUIDs disponibles.`
       }]
@@ -204,7 +256,7 @@ Utilisez \`roosync_list_attachments\` pour voir les UUIDs disponibles.`
 // ============================================================
 
 export async function roosyncAttachments(
-  args: { action: 'list' | 'get' | 'delete'; message_id?: string; uuid?: string; targetPath?: string }
+  args: { action: 'list' | 'get' | 'delete'; message_id?: string; uuid?: string; filename?: string; targetPath?: string }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   logger.info('📎 roosync_attachments called', { action: args.action, uuid: args.uuid });
 
@@ -213,9 +265,18 @@ export async function roosyncAttachments(
       return roosyncListAttachments({ message_id: args.message_id });
 
     case 'get':
-      if (!args.uuid) return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis pour action=get.' }] };
+      // #3256 — uuid OU (message_id + filename) ; la résolution vit dans
+      // roosyncGetAttachment pour un seul point de vérité.
+      if (!args.uuid && !(args.message_id && args.filename)) {
+        return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis pour action=get (ou `message_id` + `filename` — #3256).' }] };
+      }
       if (!args.targetPath) return { content: [{ type: 'text', text: '❌ Paramètre `targetPath` requis pour action=get.' }] };
-      return roosyncGetAttachment({ uuid: args.uuid, targetPath: args.targetPath });
+      return roosyncGetAttachment({
+        uuid: args.uuid,
+        targetPath: args.targetPath,
+        message_id: args.message_id,
+        filename: args.filename,
+      });
 
     case 'delete':
       if (!args.uuid) return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis pour action=delete.' }] };

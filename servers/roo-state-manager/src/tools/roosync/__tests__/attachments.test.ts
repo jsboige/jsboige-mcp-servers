@@ -7,21 +7,32 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const { mockListAttachments, mockGetAttachment, mockGetAttachmentMetadata, mockDeleteAttachment } = vi.hoisted(() => ({
+const { mockListAttachments, mockGetAttachment, mockGetAttachmentMetadata, mockDeleteAttachment, mockGetMessage, mockListByRefs } = vi.hoisted(() => ({
   mockListAttachments: vi.fn(),
   mockGetAttachment: vi.fn(),
   mockGetAttachmentMetadata: vi.fn(),
   mockDeleteAttachment: vi.fn(),
+  mockGetMessage: vi.fn(),
+  mockListByRefs: vi.fn(),
 }));
 
 vi.mock('../../../services/roosync/AttachmentManager.js', () => ({
   AttachmentManager: class {
     constructor() {}
     listAttachments(...args: any[]) { return mockListAttachments(...args); }
+    // #3256 targeted path — mocked at class level like its scan sibling
+    listAttachmentsByRefs(...args: any[]) { return mockListByRefs(...args); }
     getAttachment(...args: any[]) { return mockGetAttachment(...args); }
     getAttachmentMetadata(...args: any[]) { return mockGetAttachmentMetadata(...args); }
     deleteAttachment(...args: any[]) { return mockDeleteAttachment(...args); }
   }
+}));
+
+// #3256 — the targeted path resolves refs through the MessageManager
+// singleton; mock it (undefined getMessage → null → fallback scan, which is
+// exactly the pre-#3256 behavior the existing tests below pin).
+vi.mock('../../../services/MessageManager.js', () => ({
+  getMessageManager: () => ({ getMessage: mockGetMessage }),
 }));
 
 vi.mock('../../../utils/server-helpers.js', () => ({
@@ -241,5 +252,119 @@ describe('roosync_attachments (CONS-7)', () => {
   test('unknown action returns error', async () => {
     const result = await roosyncAttachments({ action: 'unknown' as any });
     expect(result.content[0].text).toContain('Action inconnue');
+  });
+});
+
+// ============================================================
+// #3256 — targeted lookup: message refs replace the store scan
+// ============================================================
+describe('#3256 targeted attachment lookup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks drops implementations (vitest v3); re-establish the default
+    // delegation so a miss resolves to [] and an unknown message to the fallback.
+    mockListByRefs.mockResolvedValue([]);
+    mockGetMessage.mockResolvedValue(null);
+  });
+
+  test('message with attachments[] resolves via listAttachmentsByRefs — scan never called', async () => {
+    mockGetMessage.mockResolvedValue({
+      id: 'msg-hit', from: 'a', to: 'b', subject: 's', body: 'x',
+      priority: 'LOW', timestamp: '2026-08-24T00:00:00Z', status: 'unread',
+      attachments: [
+        { uuid: 'uuid-1', filename: 'one.txt', sizeBytes: 10 },
+        { uuid: 'uuid-2', filename: 'two.txt', sizeBytes: 20 },
+      ],
+    });
+    mockListByRefs.mockResolvedValue([
+      { uuid: 'uuid-1', originalName: 'one.txt', sizeBytes: 10, mimeType: 'text/plain', uploadedAt: '2026-08-24T00:00:00Z', uploaderMachineId: 'm', messageId: 'msg-hit' },
+      { uuid: 'uuid-2', originalName: 'two.txt', sizeBytes: 20, mimeType: 'text/plain', uploadedAt: '2026-08-24T00:00:00Z', uploaderMachineId: 'm', messageId: 'msg-hit' },
+    ]);
+
+    const result = await roosyncListAttachments({ message_id: 'msg-hit' });
+
+    expect(mockListByRefs).toHaveBeenCalledWith(['uuid-1', 'uuid-2'], expect.anything());
+    expect(mockListAttachments).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain('uuid-1');
+    expect(result.content[0].text).toContain('**Total :** 2');
+  });
+
+  test('message WITHOUT attachments answers immediately — the scan is never touched', async () => {
+    mockGetMessage.mockResolvedValue({
+      id: 'msg-miss', from: 'a', to: 'b', subject: 's', body: 'x',
+      priority: 'LOW', timestamp: '2026-08-24T00:00:00Z', status: 'unread',
+    });
+
+    const result = await roosyncListAttachments({ message_id: 'msg-miss' });
+
+    expect(result.content[0].text).toContain('Aucune pièce jointe');
+    expect(result.content[0].text).toContain('msg-miss');
+    // The store scan (O(N_flotte), the 17.9s miss) must never run; byRefs([])
+    // itself issues zero IO — proven at service level by the readFile counter.
+    expect(mockListAttachments).not.toHaveBeenCalled();
+    expect(mockListByRefs).toHaveBeenCalledWith([], expect.anything());
+  });
+
+  test('message with explicit empty attachments[] is a definitive miss too', async () => {
+    mockGetMessage.mockResolvedValue({
+      id: 'msg-empty', from: 'a', to: 'b', subject: 's', body: 'x',
+      priority: 'LOW', timestamp: '2026-08-24T00:00:00Z', status: 'unread',
+      attachments: [],
+    });
+
+    await roosyncListAttachments({ message_id: 'msg-empty' });
+    expect(mockListAttachments).not.toHaveBeenCalled();
+    expect(mockListByRefs).toHaveBeenCalledWith([], expect.anything());
+  });
+
+  test('UNKNOWN message falls back to the historical scan path', async () => {
+    mockGetMessage.mockResolvedValue(null);
+    mockListAttachments.mockResolvedValue([]);
+
+    await roosyncListAttachments({ message_id: 'msg-ghost' });
+
+    expect(mockListAttachments).toHaveBeenCalledWith('msg-ghost', expect.anything());
+    expect(mockListByRefs).not.toHaveBeenCalled();
+  });
+
+  test('attachments_get resolves uuid from (message_id, filename) without any listing', async () => {
+    mockGetMessage.mockResolvedValue({
+      id: 'msg-get', from: 'a', to: 'b', subject: 's', body: 'x',
+      priority: 'LOW', timestamp: '2026-08-24T00:00:00Z', status: 'unread',
+      attachments: [
+        { uuid: 'uuid-aaa', filename: 'secret.key', sizeBytes: 5 },
+        { uuid: 'uuid-bbb', filename: 'other.txt', sizeBytes: 7 },
+      ],
+    });
+    mockGetAttachment.mockResolvedValue({
+      uuid: 'uuid-aaa', originalName: 'secret.key', sizeBytes: 5,
+      mimeType: 'application/octet-stream', uploadedAt: '2026-08-24T00:00:00Z',
+      uploaderMachineId: 'm', messageId: 'msg-get',
+    });
+
+    const result = await roosyncGetAttachment({ message_id: 'msg-get', filename: 'secret.key', targetPath: '/tmp/secret.key' });
+
+    expect(mockGetAttachment).toHaveBeenCalledWith('uuid-aaa', '/tmp/secret.key');
+    expect(result.content[0].text).toContain('✅');
+    expect(result.content[0].text).toContain('uuid-aaa');
+  });
+
+  test('attachments_get with an absent filename lists what IS available', async () => {
+    mockGetMessage.mockResolvedValue({
+      id: 'msg-nope', from: 'a', to: 'b', subject: 's', body: 'x',
+      priority: 'LOW', timestamp: '2026-08-24T00:00:00Z', status: 'unread',
+      attachments: [{ uuid: 'uuid-aaa', filename: 'real.txt', sizeBytes: 5 }],
+    });
+
+    const result = await roosyncGetAttachment({ message_id: 'msg-nope', filename: 'ghost.txt', targetPath: '/tmp/x' });
+
+    expect(mockGetAttachment).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain('real.txt');
+  });
+
+  test('attachments_get without uuid and without (message_id, filename) says what is required', async () => {
+    const result = await roosyncGetAttachment({ targetPath: '/tmp/x' });
+    expect(result.content[0].text).toContain('uuid');
+    expect(result.content[0].text).toContain('message_id');
   });
 });

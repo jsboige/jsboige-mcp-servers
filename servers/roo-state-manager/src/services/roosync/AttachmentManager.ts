@@ -474,6 +474,61 @@ export class AttachmentManager {
   }
 
   /**
+   * #3256 — Liste les attachments d'un message depuis ses refs déjà résolues.
+   *
+   * Le chemin ciblé : `listAttachments(messageId)` (même fast path #925) doit
+   * parcourir le store global tant qu'un message n'est pas "complet", ce qui
+   * coûte O(N_flotte) — 17,9 s mesurés pour un simple miss. Mais le message
+   * lui-même porte ses refs (`Message.attachments`, maintenues à l'écriture
+   * par `updateMessageAttachments` et en PG par `attachment_refs`) : l'appelant
+   * qui les a résolues n'a plus qu'à lire CES k métadonnées.
+   *
+   * Différences contractuelles avec `listAttachments(uuids, …)` :
+   *   - aucun `readdir` du store : le coût est O(k), indépendant du nombre
+   *     total d'attachments sur la flotte ;
+   *   - aucune garantie d'ordre readdir à préserver — l'ordre des refs du
+   *     message est conservé tel quel ;
+   *   - les index mémoire #925 (`messageIndex`/`completeMessages`) ne sont ni
+   *     lus ni mis à jour : ce chemin EST le remplacement du fast path pour
+   *     les appels filtrés, pas un complément.
+   *
+   * Les trois causes de skip historiques (metadata absente / read timeout /
+   * parse error) s'appliquent par-uuid et alimentent `stats` comme le scan.
+   *
+   * @param uuids UUIDs des pièces jointes du message (depuis ses refs)
+   * @param stats Compteur optionnel des entrées omises, ventilé par cause
+   */
+  async listAttachmentsByRefs(
+    uuids: string[],
+    stats?: AttachmentListStats,
+  ): Promise<AttachmentMetadata[]> {
+    const out: AttachmentMetadata[] = [];
+    for (const uuid of uuids) {
+      const metadataPath = join(this.attachmentsPath, uuid, 'metadata.json');
+      if (!existsSync(metadataPath)) {
+        if (stats) stats.missingMetadata++;
+        continue;
+      }
+      try {
+        const raw = await withReadTimeout(
+          fs.readFile(metadataPath, 'utf-8'),
+          this.readTimeoutMs,
+          `metadata:${uuid}`,
+        );
+        if (raw === null) {
+          if (stats) stats.readTimeout++;
+          continue;
+        }
+        out.push(JSON.parse(raw) as AttachmentMetadata);
+      } catch (err) {
+        logger.warn('Failed to parse attachment metadata', { uuid, error: String(err) });
+        if (stats) stats.parseError++;
+      }
+    }
+    return out;
+  }
+
+  /**
    * Récupère les métadonnées d'un attachment par UUID
    *
    * @param uuid UUID de la pièce jointe

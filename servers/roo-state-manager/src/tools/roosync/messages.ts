@@ -93,7 +93,8 @@ export const MessagesArgsSchema = z.object({
   tag: z.string().optional().describe('Filtrer par tag (bulk)'),
 
   // --- Attachments params ---
-  uuid: z.string().optional().describe('UUID piece jointe (requis pour attachments_get/delete)'),
+  uuid: z.string().optional().describe('UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu'),
+  filename: z.string().optional().describe('#3256 — alternative a uuid pour attachments_get : nom du fichier, resolu via les refs du message_id fourni'),
   targetPath: z.string().optional().describe('Chemin local destination (requis pour attachments_get)'),
 
   // --- Output format ---
@@ -248,6 +249,8 @@ export async function roosyncMessages(args: MessagesArgs) {
       return roosyncAttachments({
         action: 'get',
         uuid: args.uuid,
+        filename: args.filename,
+        message_id: args.message_id,
         targetPath: args.targetPath
       });
 
