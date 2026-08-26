@@ -329,6 +329,202 @@ function getCodebaseEmbeddingModel(): string {
 	return process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 }
 
+// ─── #3279 Circuit-breaker for embedding API failures ─────────────────────
+// When the embedding API is unreachable (TCP down, DNS fail, timeout), the
+// OpenAI client blocks for ~60s before failing. Across a fleet with 6 machines
+// hitting the same dead endpoint, this burns 6 minutes of agent time per minute
+// of real time — no signal, just silence. Issue #3279 (26/08): `codebase_search`
+// was measured at 30.6s/call with no fast-fail. Once the breaker opens, subsequent
+// calls return immediately with a hint pointing to roosync_search(action:"diagnose").
+// Parity with search-semantic.tool.ts which has had this since #1232.
+let codebaseEmbeddingFailureTime = 0;
+let codebaseEmbeddingFailureReason = '';
+const CODEBASE_EMBEDDING_CB_TTL_MS = parseInt(process.env.CODEBASE_EMBEDDING_CB_TTL_MS || '300000'); // 5 min default
+
+/** Check if the circuit-breaker is currently open. If TTL expired, auto-reset. */
+function isCodebaseEmbeddingBreakerOpen(): boolean {
+	if (codebaseEmbeddingFailureTime === 0) return false;
+	const elapsed = Date.now() - codebaseEmbeddingFailureTime;
+	if (elapsed > CODEBASE_EMBEDDING_CB_TTL_MS) {
+		// TTL expired — half-open: reset and allow the next call to probe
+		codebaseEmbeddingFailureTime = 0;
+		codebaseEmbeddingFailureReason = '';
+		return false;
+	}
+	return true;
+}
+
+/** Record an embedding failure — opens the breaker for CODEBASE_EMBEDDING_CB_TTL_MS. */
+function recordCodebaseEmbeddingFailure(reason: string): void {
+	codebaseEmbeddingFailureTime = Date.now();
+	codebaseEmbeddingFailureReason = reason;
+}
+
+/** Record an embedding success — closes the breaker. */
+function recordCodebaseEmbeddingSuccess(): void {
+	if (codebaseEmbeddingFailureTime !== 0) {
+		codebaseEmbeddingFailureTime = 0;
+		codebaseEmbeddingFailureReason = '';
+	}
+}
+
+/**
+ * #3279: Build the circuit-breaker error response.
+ * Informative and immediate (<1 ms) instead of waiting 30+ s for an OpenAI timeout.
+ */
+function buildBreakerOpenResponse(query: string, workspace: string): CallToolResult {
+	const ttlRemaining = Math.max(
+		0,
+		Math.round((CODEBASE_EMBEDDING_CB_TTL_MS - (Date.now() - codebaseEmbeddingFailureTime)) / 1000)
+	);
+	return {
+		isError: true,
+		content: [{
+			type: 'text',
+			text: JSON.stringify({
+				status: 'embedding_unreachable',
+				message: `Embedding service unreachable — fast-fail (circuit-breaker OPEN, ${ttlRemaining}s remaining of ${Math.round(CODEBASE_EMBEDDING_CB_TTL_MS / 1000)}s TTL). Last recorded reason: ${codebaseEmbeddingFailureReason}`,
+				hint: 'The embedding backend is down (measured 26/08: TCP port closed). Try roosync_search(action: "text") for a non-semantic alternative, or wait for the breaker to half-open and retry. Run roosync_search(action: "diagnose") to confirm service state.',
+				query,
+				workspace,
+				circuit_breaker: {
+					open: true,
+					ttl_seconds_remaining: ttlRemaining,
+					ttl_total_seconds: Math.round(CODEBASE_EMBEDDING_CB_TTL_MS / 1000),
+					last_failure_reason: codebaseEmbeddingFailureReason,
+				},
+				alternative: 'Use roosync_search(action: "text") with the same query for a non-semantic fallback that does not require embedding.',
+			}, null, 2)
+		}]
+	};
+}
+
+/** Reset circuit-breaker state (for testing). @internal */
+export function resetCodebaseEmbeddingBreaker(): void {
+	codebaseEmbeddingFailureTime = 0;
+	codebaseEmbeddingFailureReason = '';
+}
+
+/**
+ * #3279: Text/keyword fallback when embedding is unreachable.
+ *
+ * Uses Qdrant's `scroll` API with payload filters — no vector, no embedding needed.
+ * Matches the query tokens (≥3 chars) against codeChunk text in payload. Robust
+ * to whitespace/punctuation via a case-insensitive regex on whole words.
+ *
+ * Limits: scrolls the first N points with payload, filters client-side, returns
+ * top-K by token-match count. NOT a substitute for semantic search — agents
+ * should treat the result as a degraded path and prefer semantic once the
+ * breaker half-opens. The `fallback_used` flag tells the caller.
+ *
+ * Returns null on any error so the caller can surface the original error.
+ */
+async function tryTextFallback(
+	qdrant: any,
+	collectionName: string,
+	query: string,
+	limit: number,
+	directoryPrefix: string | undefined,
+	workspace: string
+): Promise<CallToolResult | null> {
+	try {
+		const queryTokens = query
+			.toLowerCase()
+			.split(/\s+/)
+			.filter(t => t.length >= 3)
+			.slice(0, 10); // cap regex complexity
+
+		if (queryTokens.length === 0) {
+			return null;
+		}
+
+		// Build a filter that excludes metadata + roo-code + i18n (same as semantic path)
+		const filter: any = {
+			must_not: [
+				{ key: 'type', match: { value: 'metadata' } },
+				{ key: 'pathSegments.0', match: { value: 'roo-code' } },
+				{ key: 'pathSegments.0', match: { value: 'i18n' } },
+			],
+		};
+
+		if (directoryPrefix) {
+			const normalizedPrefix = directoryPrefix.replace(/\\/g, '/').replace(/^\.\//, '');
+			const segments = normalizedPrefix.split('/').filter(Boolean).slice(0, 5);
+			if (segments.length > 0) {
+				filter.must = segments.map((segment, index) => ({
+					key: `pathSegments.${index}`,
+					match: { value: segment }
+				}));
+			}
+		}
+
+		// Over-fetch so token-matching has headroom
+		const overFetch = Math.min(limit * 4, 200);
+		const scrollResult = await qdrant.scroll(collectionName, {
+			limit: overFetch,
+			filter,
+			with_payload: { include: ['filePath', 'codeChunk', 'startLine', 'endLine', 'pathSegments'] },
+			with_vector: false,
+		});
+
+		const points = scrollResult?.points || scrollResult?.result?.points || [];
+
+		// Score by token-match count (case-insensitive, whole-word-ish)
+		const scored: { point: any; score: number; matchedTokens: string[] }[] = [];
+		for (const p of points) {
+			const codeChunk = String(p.payload?.codeChunk || '');
+			const lowerChunk = codeChunk.toLowerCase();
+			const matched: string[] = [];
+			let count = 0;
+			for (const token of queryTokens) {
+				if (lowerChunk.includes(token)) {
+					matched.push(token);
+					count++;
+				}
+			}
+			if (count > 0) {
+				scored.push({ point: p, score: count / queryTokens.length, matchedTokens: matched });
+			}
+		}
+
+		scored.sort((a, b) => b.score - a.score);
+		const top = scored.slice(0, limit);
+
+		const results = top.map(({ point, score, matchedTokens }) => ({
+			file_path: point.payload?.filePath,
+			score,
+			relevance: 'text-match',
+			matched_tokens: matchedTokens,
+			snippet: extractSnippet(point.payload?.codeChunk || '', query),
+			...(point.payload?.startLine && point.payload?.endLine
+				? { start_line: point.payload.startLine, end_line: point.payload.endLine }
+				: {})
+		}));
+
+		return {
+			isError: false,
+			content: [{
+				type: 'text',
+				text: JSON.stringify({
+					status: 'success',
+					query,
+					workspace,
+					collection: collectionName,
+					fallback_used: true,
+					fallback_reason: 'embedding_unreachable',
+					original_search_mode: 'semantic',
+					actual_search_mode: 'text',
+					results_count: results.length,
+					results,
+					warning: 'Embedding service unreachable. This is a token-match fallback, NOT a semantic search. Results are ranked by substring match count, not by concept similarity.',
+				}, null, 2)
+			}]
+		};
+	} catch {
+		return null; // Fallback itself failed — caller surfaces the original semantic error
+	}
+}
+
 /**
  * Arguments de l'outil codebase_search
  */
@@ -626,15 +822,55 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		}
 
 		// 3. Générer l'embedding de la requête (uses dedicated codebase embedding client)
+		// #3279: Fast-fail check BEFORE the 60s OpenAI client timeout. If the breaker
+		// is open, return immediately with an informative error pointing to the
+		// non-semantic fallback (roosync_search text, or our own tryTextFallback).
+		if (isCodebaseEmbeddingBreakerOpen()) {
+			return buildBreakerOpenResponse(query, workspace);
+		}
+
 		const embeddingClient = getCodebaseEmbeddingClient();
 		const embeddingModel = getCodebaseEmbeddingModel();
 
-		const embeddingResponse = await embeddingClient.embeddings.create({
-			model: embeddingModel,
-			input: query
-		});
-
-		const queryVector = embeddingResponse.data[0].embedding;
+		let queryVector: number[];
+		try {
+			const embeddingResponse = await embeddingClient.embeddings.create({
+				model: embeddingModel,
+				input: query
+			});
+			queryVector = embeddingResponse.data[0].embedding;
+			// #3279: success — close the breaker if it was previously open
+			recordCodebaseEmbeddingSuccess();
+		} catch (embeddingError) {
+			// #3279: Auth errors (401/403) are PERSISTENT — no point in retrying or fallback.
+			// Skip the breaker/fallback and let the outer classifier surface the auth failure.
+			const errorMsg = embeddingError instanceof Error ? embeddingError.message : String(embeddingError);
+			const errorStatus = (embeddingError as any)?.status || (embeddingError as any)?.response?.status;
+			const isAuthError = errorStatus === 401 || errorStatus === 403 ||
+				errorMsg.includes('API key') || errorMsg.includes('Unauthorized') || errorMsg.includes('Forbidden');
+			if (isAuthError) {
+				const tagged = embeddingError instanceof Error
+					? Object.assign(embeddingError, { __codebase_search_source: 'embedding' as const })
+					: new Error(errorMsg);
+				if (!(embeddingError instanceof Error)) (tagged as any).__codebase_search_source = 'embedding';
+				throw tagged;
+			}
+			// #3279: Network/timeout/unexpected — record failure (opens breaker for TTL),
+			// then attempt text fallback so the agent gets SOMETHING instead of a dead error.
+			recordCodebaseEmbeddingFailure(errorMsg);
+			const fallbackResult = await tryTextFallback(qdrant, collectionName, query, effectiveLimit, directory_prefix, workspace);
+			if (fallbackResult) {
+				return fallbackResult;
+			}
+			// Fallback itself failed — tag the error as embedding-originated so the outer
+			// classifier routes it to embedding_unreachable/embedding_timeout instead of
+			// misclassifying it as qdrant_unreachable (see classifier: 'embedding' branch).
+			const tagged = embeddingError instanceof Error
+				? Object.assign(embeddingError, { __codebase_search_source: 'embedding' as const })
+				: new Error(errorMsg);
+			if (!(embeddingError instanceof Error)) (tagged as any).__codebase_search_source = 'embedding';
+			throw tagged;
+		}
 
 		// 4. Construire le filtre si directory_prefix fourni
 		let filter: any = {
@@ -851,7 +1087,12 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 
 	} catch (error) {
 		// #2063 P1: Classified error reporting for actionable diagnostics
-		const classified = await classifySearchError(error, 'codebase_search');
+		// #3279: If the error was tagged by the embedding sub-catch, route it through the
+		// embedding-classifier branch (which handles embedding_unreachable / embedding_timeout)
+		// instead of misclassifying it as qdrant_unreachable under operation='codebase_search'.
+		const operation: 'embedding' | 'codebase_search' =
+			(error as any)?.__codebase_search_source === 'embedding' ? 'embedding' : 'codebase_search';
+		const classified = await classifySearchError(error, operation);
 
 		return {
 			isError: true,
