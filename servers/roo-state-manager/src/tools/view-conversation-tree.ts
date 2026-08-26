@@ -527,18 +527,28 @@ async function handleViewConversationTreeExecutionAsync(
     // #1244 Couche 2.5 — Hard cap final: filet de securite pour garantir max_output_length
     // independamment des estimations en amont. Couvre les bugs d'estimation, les fuites du
     // legacy path, et les depassements occasionnels du gradient engine.
-    const cappedResult = applyHardCap(result, max_output_length);
+    // #3280 — le filet applique la MEME limite que le chemin emprunte : smart →
+    // limite effective (plafond par detail_level, ex 50k en summary), legacy → max_output_length.
+    // Avant, le chemin smart etait borne a 300k cote filet alors que le moteur
+    // annoncait 50k : l'overhead de rendu passait entre les deux.
+    const finalCap = useSmart
+        ? getEffectiveSmartOutputLimit(args, detail_level, max_output_length)
+        : max_output_length;
+    let finalResult = applyHardCap(result, finalCap);
 
     // #1244 Couche 2.6 — Injecter messageRange metadata si pagination explicite
+    // #3280 — l'injection PRECEDE le cap final : la borne porte sur la sortie
+    // TOTALE (contenu + en-tetes + metadonnees), messageRange inclus.
     if (hasPagingArgs) {
-        return injectMessageRangeMetadata(cappedResult, {
+        finalResult = injectMessageRangeMetadata(finalResult, {
             start: effectiveMessageStart,
             end: effectiveMessageEnd,
             total: totalMessages,
             truncated: effectiveMessageEnd < totalMessages || effectiveMessageStart > 0,
         });
+        finalResult = applyHardCap(finalResult, finalCap);
     }
-    return cappedResult;
+    return finalResult;
 }
 
 /**
@@ -668,18 +678,24 @@ function handleViewConversationTreeExecution(
         : handleLegacyTruncation(tasksToDisplay, args, view_mode, detail_level, max_output_length, truncate, currentTaskId);
 
     // #1244 Couche 2.5 — Hard cap final
-    const cappedResult = applyHardCap(result, max_output_length);
+    // #3280 — meme limite effective que le chemin smart (cf. version async)
+    const finalCap = useSmart
+        ? getEffectiveSmartOutputLimit(args, detail_level, max_output_length)
+        : max_output_length;
+    let finalResult = applyHardCap(result, finalCap);
 
     // #1244 Couche 2.6 — Injecter messageRange metadata si pagination explicite
+    // #3280 — l'injection PRECEDE le cap final (borne sur la sortie TOTALE)
     if (hasPagingArgs) {
-        return injectMessageRangeMetadata(cappedResult, {
+        finalResult = injectMessageRangeMetadata(finalResult, {
             start: effectiveMessageStart,
             end: effectiveMessageEnd,
             total: totalMessages,
             truncated: effectiveMessageEnd < totalMessages || effectiveMessageStart > 0,
         });
+        finalResult = applyHardCap(finalResult, finalCap);
     }
-    return cappedResult;
+    return finalResult;
 }
 
 /**
@@ -868,6 +884,34 @@ function getSmartTruncationLimit(detail_level: string): number {
 }
 
 /**
+ * #3280 — Limite EFFECTIVE du chemin smart : celle que le moteur budgete
+ * ET celle que le hard cap final applique. Avant ce fix, le moteur visait
+ * 50k (summary) mais le filet de securite appliquait max_output_length
+ * (300k par defaut) : l'overhead de rendu (header par message, prefixe
+ * `    | ` par ligne, Params JSON pretty-printes) passait entre les deux —
+ * 216k rendus pour 50k annonces sur une session de 12,7 Mo / 1125 messages.
+ *
+ * Extraite en helper pour que moteur et filet ne puissent plus diverger.
+ */
+function getEffectiveSmartOutputLimit(
+    args: ViewConversationTreeArgs,
+    detail_level: string,
+    max_output_length: number
+): number {
+    const wasExplicitlySet = args.smart_truncation_config?.maxOutputLength !== undefined;
+    return wasExplicitlySet
+        ? max_output_length
+        : Math.min(max_output_length, getSmartTruncationLimit(detail_level));
+}
+
+/**
+ * #3280 — Regex de la ligne d'annonce de compression emise par
+ * SmartOutputFormatter.formatTruncatedOutput. Servie pour la reecrire
+ * avec la taille REELLE rendue apres cap total.
+ */
+const COMPRESSION_ANNOUNCEMENT_RE = /🎯 Compression intelligente: ([\d.]+)% \(\d+k → \d+k chars\)/;
+
+/**
  * ✨ NOUVEL ALGORITHME DE TRONCATURE INTELLIGENTE
  */
 function handleSmartTruncation(
@@ -882,10 +926,8 @@ function handleSmartTruncation(
         // FIX P0-1d: Utiliser des limites adaptées au detail_level quand smart_truncation est activé
         // Le default de 300K est trop haut - les conversations ne l'atteignent jamais,
         // donc excessSize = 0 et aucune troncature ne se déclenche (bug "0% compression")
-        const wasExplicitlySet = args.smart_truncation_config?.maxOutputLength !== undefined;
-        const effectiveMaxOutput = wasExplicitlySet
-            ? max_output_length
-            : Math.min(max_output_length, getSmartTruncationLimit(detail_level));
+        // #3280: extrait en helper — la MEME limite est appliquée par le cap total final.
+        const effectiveMaxOutput = getEffectiveSmartOutputLimit(args, detail_level, max_output_length);
 
         // Configuration avec overrides utilisateur
         const smartConfig = {
@@ -927,7 +969,36 @@ function handleSmartTruncation(
                 formattedOutput += `  • ${diag}\n`;
             });
         }
-        
+
+        // #3280 — Plafond dur sur la taille TOTALE du rendu (contenu compressé +
+        // en-têtes par message + préfixes de ligne + Params + métadonnées).
+        // Le moteur ne borne que le contenu ESTIMÉ des éléments ; l'overhead de
+        // rendu échappait à la borne (216k réels pour 50k annoncés sur session
+        // 12,7 Mo / 1125 messages). hardCapString préserve les 2000 premiers
+        // chars (header + débuts de conversation) et la fin.
+        if (formattedOutput.length > effectiveMaxOutput) {
+            formattedOutput = ContentTruncator.hardCapString(formattedOutput, effectiveMaxOutput, { headerKeepChars: 2000 });
+        }
+
+        // #3280 — Le header annonce la taille RÉELLE rendue, pas celle de la
+        // portion compressée. L'annonce d'origine chiffrait le plan du moteur
+        // (A → B estimés) ; B est remplacé par la mesure post-cap.
+        if (COMPRESSION_ANNOUNCEMENT_RE.test(formattedOutput)) {
+            const realRendered = formattedOutput.length;
+            const originalEstimate = truncationResult.metrics.originalTotalSize;
+            const realRatio = originalEstimate > 0
+                ? Math.max(0, (originalEstimate - realRendered) / originalEstimate * 100).toFixed(1)
+                : '0.0';
+            formattedOutput = formattedOutput.replace(
+                COMPRESSION_ANNOUNCEMENT_RE,
+                `🎯 Compression intelligente: ${realRatio}% (${Math.round(originalEstimate / 1000)}k → ${Math.round(realRendered / 1000)}k chars rendus)`
+            );
+            // La réécriture peut décaler la longueur de quelques chars : rogner le surplus
+            if (formattedOutput.length > effectiveMaxOutput) {
+                formattedOutput = formattedOutput.substring(0, effectiveMaxOutput);
+            }
+        }
+
         return { content: [{ type: 'text', text: formattedOutput }] };
         
     } catch (error) {
@@ -1037,7 +1108,7 @@ export const viewConversationTree = {
             detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], default: 'skeleton', description: 'Niveau de détail: skeleton (métadonnées seulement), summary (résumé), full (complet).' },
             truncate: { type: 'number', default: 0, description: 'Nombre de lignes à conserver au début et à la fin de chaque message. 0 pour vue complète (défaut intelligent).' },
             max_output_length: { type: 'number', default: 300000, description: 'Limite maximale de caractères en sortie. Au-delà, force la troncature. (AUGMENTÉ: 300K vs 150K)' },
-            smart_truncation: { type: 'boolean', default: true, description: '#1244 Couche 2.5 — Algorithme de troncature intelligente avec gradient (gradient temporel + priorisation par type, preserve debut/fin de conversation). Active PAR DEFAUT (defaut inverse depuis #1244). Passer false uniquement pour debug ou comparaison avec le legacy path. Un hard cap final est applique en sortie pour garantir le respect de max_output_length quel que soit le mode.' },
+            smart_truncation: { type: 'boolean', default: true, description: '#1244 Couche 2.5 — Algorithme de troncature intelligente avec gradient (gradient temporel + priorisation par type, preserve debut/fin de conversation). Active PAR DEFAUT (defaut inverse depuis #1244). Passer false uniquement pour debug ou comparaison avec le legacy path. Un hard cap final est applique en sortie pour garantir le respect de la limite effective (max_output_length ou plafond par detail_level : 15k skeleton / 50k summary / 150k full) sur la taille TOTALE rendue, en-tetes et metadonnees inclus (#3280).' },
             smart_truncation_config: {
                 type: 'object',
                 description: '⚙️ Configuration avancée pour la troncature intelligente (NOUVEAU)',
