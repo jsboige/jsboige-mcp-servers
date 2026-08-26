@@ -40,7 +40,9 @@ import {
 	listWorkspaceCollections,
 	findCollectionByContent,
 	codebaseSearchTool,
-	handleCodebaseSearch
+	handleCodebaseSearch,
+	resetCodebaseEmbeddingBreaker,
+	resetCodebaseEmbeddingClient
 } from '../search-codebase.tool.js';
 
 describe('search-codebase.tool', () => {
@@ -1076,29 +1078,55 @@ describe('search-codebase.tool', () => {
 			process.env.EMBEDDING_API_KEY = 'test-key';
 			// Collection found successfully
 			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+			// #3279: Reset breaker state between tests to prevent pollution
+			resetCodebaseEmbeddingBreaker();
+			resetCodebaseEmbeddingClient();
 		});
 
 		afterEach(() => {
 			delete process.env.EMBEDDING_API_KEY;
+			resetCodebaseEmbeddingBreaker();
 		});
 
-		test('returns qdrant_unreachable on fetch failed', async () => {
+		test('falls back to text on fetch failed and opens breaker (#3279)', async () => {
+			// #3279: fetch failures now trigger text fallback (instead of returning an opaque error).
+			// The breaker also opens for CODEBASE_EMBEDDING_CB_TTL_MS so subsequent calls fast-fail.
 			mockEmbeddingCreate.mockRejectedValue(new Error('fetch failed: connection refused'));
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
-			expect((result as any).isError).toBe(true);
+			expect((result as any).isError).toBe(false);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_unreachable');
-			expect(parsed.hint).toBeDefined();
+			expect(parsed.fallback_used).toBe(true);
+			expect(parsed.fallback_reason).toBe('embedding_unreachable');
+
+			// Subsequent call should fast-fail via breaker (not 30s wait)
+			mockEmbeddingCreate.mockClear();
+			const start = Date.now();
+			const second = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			const elapsed = Date.now() - start;
+			expect(elapsed).toBeLessThan(500);
+			expect(mockEmbeddingCreate).not.toHaveBeenCalled();
+			const secondParsed = JSON.parse(second.content[0].text);
+			expect(secondParsed.status).toBe('embedding_unreachable');
+			expect(secondParsed.circuit_breaker.open).toBe(true);
 		});
 
-		test('returns qdrant_unreachable on ECONNREFUSED', async () => {
+		test('falls back to text on ECONNREFUSED and opens breaker (#3279)', async () => {
+			// #3279: Same fallback+breaker behavior for ECONNREFUSED.
 			mockEmbeddingCreate.mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:6333'));
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
-			expect((result as any).isError).toBe(true);
+			expect((result as any).isError).toBe(false);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_unreachable');
+			expect(parsed.fallback_used).toBe(true);
+
+			// Subsequent call: breaker open → fast-fail
+			mockEmbeddingCreate.mockClear();
+			const second = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect(mockEmbeddingCreate).not.toHaveBeenCalled();
+			expect(JSON.parse(second.content[0].text).circuit_breaker.open).toBe(true);
 		});
 
 		test('returns auth_failed on API key error', async () => {
@@ -1120,24 +1148,176 @@ describe('search-codebase.tool', () => {
 			expect(parsed.status).toBe('auth_failed');
 		});
 
-		test('returns generic error on unexpected exception', async () => {
+		test('returns text-fallback on unexpected exception (#3279)', async () => {
+			// #3279: Unexpected errors now go through the text fallback path. With empty mock
+			// scroll, the fallback returns success with 0 results — informative, not an opaque error.
 			mockEmbeddingCreate.mockRejectedValue(new Error('Unexpected internal error'));
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
-			expect((result as any).isError).toBe(true);
+			expect((result as any).isError).toBe(false);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('unknown');
-			expect(parsed.error).toContain('Unexpected internal error');
+			expect(parsed.fallback_used).toBe(true);
+			expect(parsed.fallback_reason).toBe('embedding_unreachable');
+			expect(parsed.results_count).toBe(0);
 		});
 
-		test('handles non-Error thrown values', async () => {
+		test('handles non-Error thrown values via text fallback (#3279)', async () => {
+			// #3279: Same fallback path for non-Error rejections.
 			mockEmbeddingCreate.mockRejectedValue('string error');
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(false);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.fallback_used).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// #3279 Circuit-breaker + text fallback
+	// ============================================================
+
+	describe('handleCodebaseSearch - circuit-breaker (#3279)', () => {
+		beforeEach(() => {
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			resetCodebaseEmbeddingBreaker();
+			resetCodebaseEmbeddingClient();
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+		});
+
+		afterEach(() => {
+			delete process.env.EMBEDDING_API_KEY;
+			resetCodebaseEmbeddingBreaker();
+		});
+
+		test('opens breaker after embedding failure', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('fetch failed: connection refused'));
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+			await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+
+			// Second call should fast-fail via breaker, NOT hit the embedding API
+			mockEmbeddingCreate.mockClear();
+			const start = Date.now();
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			const elapsed = Date.now() - start;
+
+			expect(elapsed).toBeLessThan(500); // Fast-fail, not 30s
+			expect(mockEmbeddingCreate).not.toHaveBeenCalled();
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('embedding_unreachable');
+			expect(parsed.circuit_breaker.open).toBe(true);
+		});
+
+		test('fast-fail response includes TTL and alternative path hint', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('ECONNREFUSED'));
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+			await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.hint).toContain('roosync_search');
+			expect(parsed.circuit_breaker.ttl_total_seconds).toBeGreaterThan(0);
+		});
+
+		test('closes breaker on embedding success', async () => {
+			// First call: embedding fails → breaker opens, fallback tried (empty)
+			mockEmbeddingCreate.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+			mockQdrant.scroll.mockResolvedValueOnce({ points: [] });
+			await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+
+			// Manually close the breaker (simulating TTL expiry) so the next call actually hits embedding
+			resetCodebaseEmbeddingBreaker();
+
+			// Now succeed — should NOT open the breaker
+			mockEmbeddingCreate.mockResolvedValue({
+				data: [{ embedding: new Array(2560).fill(0.1) }]
+			});
+			mockQdrant.query.mockResolvedValue({ points: [] });
+
+			await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+
+			// Breaker should still be closed — embedding was called and succeeded
+			mockEmbeddingCreate.mockClear();
+			mockQdrant.query.mockResolvedValue({ points: [] });
+			await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect(mockEmbeddingCreate).toHaveBeenCalled();
+		});
+	});
+
+	describe('handleCodebaseSearch - text fallback (#3279)', () => {
+		beforeEach(() => {
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			resetCodebaseEmbeddingBreaker();
+			resetCodebaseEmbeddingClient();
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+		});
+
+		afterEach(() => {
+			delete process.env.EMBEDDING_API_KEY;
+			resetCodebaseEmbeddingBreaker();
+		});
+
+		test('text fallback returns token-matched results when embedding fails', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('fetch failed'));
+			mockQdrant.scroll.mockResolvedValue({
+				points: [
+					{
+						payload: {
+							filePath: 'src/services/auth.ts',
+							codeChunk: 'function authenticate(user, token) { return verifyToken(token); }',
+							startLine: 1,
+							endLine: 5,
+							pathSegments: { '0': 'src', '1': 'services' }
+						}
+					},
+					{
+						payload: {
+							filePath: 'src/utils/helpers.ts',
+							codeChunk: '// unrelated content here',
+							startLine: 1,
+							endLine: 3,
+							pathSegments: { '0': 'src', '1': 'utils' }
+						}
+					}
+				]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'authenticate user token', workspace: '/ws' });
+			expect((result as any).isError).toBe(false);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.fallback_used).toBe(true);
+			expect(parsed.fallback_reason).toBe('embedding_unreachable');
+			expect(parsed.results_count).toBeGreaterThan(0);
+			expect(parsed.results[0].file_path).toBe('src/services/auth.ts');
+			expect(parsed.results[0].matched_tokens).toEqual(expect.arrayContaining(['authenticate', 'user', 'token']));
+		});
+
+		test('text fallback returns empty results when no token matches', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('ECONNREFUSED'));
+			mockQdrant.scroll.mockResolvedValue({
+				points: [
+					{ payload: { filePath: 'a.ts', codeChunk: 'completely unrelated code' } }
+				]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'xyzzy plover', workspace: '/ws' });
+			expect((result as any).isError).toBe(false);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.fallback_used).toBe(true);
+			expect(parsed.results_count).toBe(0);
+		});
+
+		test('text fallback returns error when fallback scroll also fails', async () => {
+			mockEmbeddingCreate.mockRejectedValue(new Error('fetch failed'));
+			mockQdrant.scroll.mockRejectedValue(new Error('Qdrant also down'));
 
 			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
 			expect((result as any).isError).toBe(true);
 			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('unknown');
-			expect(parsed.error).toBe('string error');
+			expect(parsed.status).toBe('embedding_unreachable');
 		});
 	});
 });
