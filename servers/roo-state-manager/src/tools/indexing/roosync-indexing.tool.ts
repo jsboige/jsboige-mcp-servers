@@ -650,7 +650,17 @@ export async function handleRooSyncIndexing(
                     is_leader: isLeader,
                     leader_pid: leaderInfo?.leaderPid ?? null,
                     leader_lock_age_ms: leaderInfo?.lockAgeMs ?? null,
+                    // #3286: queue_size and metrics are PROCESS-LOCAL magnitudes —
+                    // qdrantIndexQueue is an in-memory per-process Set and indexedTasks is
+                    // incremented in this same process only. With ~62 concurrent roo-state-manager
+                    // processes fleet-wide, two reads from two sessions return different numbers
+                    // with no state change: they interrogated two different processes. pid identifies
+                    // the process serving THIS response (making two sessions distinguishable), and
+                    // *_scope names the scope so e.g. indexed:0 on a follower reads as nominal.
+                    pid: process.pid,
                     queue_size: state.qdrantIndexQueue.size,
+                    queue_size_scope: 'this-process',
+                    metrics_scope: 'this-process',
                     // #2766 S2+: dead-letter size is exposed at the top level
                     // so dashboards can chart the separation. Operators who
                     // see queue_size plateau + dead_letter_size growing know
