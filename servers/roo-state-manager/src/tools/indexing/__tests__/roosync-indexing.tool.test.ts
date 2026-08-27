@@ -588,6 +588,74 @@ describe('roosync_indexing status action', () => {
 		expect(parsed.background_indexer.leader_lock_age_ms).toBeNull();
 	});
 
+	// #3286: queue_size / indexed are PROCESS-LOCAL. The qdrantIndexQueue is an
+	// in-memory Set per process and indexedTasks++ only runs past the leader
+	// guard — with dozens of RSM processes per machine, two sessions read two
+	// different queues with no underlying state change. Three readings on
+	// 2026-08-27 (197/176/505) were three different processes, not an
+	// inconsistent queue; `indexed: 0` on a follower is nominal, not a failure.
+	// The status output must SAY so: `pid` identifies the responding process,
+	// `queue_size_scope` / `metrics.scope` name the quantities' reach.
+
+	test('#3286: status exposes the process-local scope of queue_size / indexed', async () => {
+		const indexingState = {
+			qdrantIndexQueue: new Set(['task-1', 'task-2']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 100, skippedTasks: 10, indexedTasks: 85, failedTasks: 5, retryTasks: 2, bandwidthSaved: 0, lastIndexedAt: undefined }
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		// pid of the process that served the response — an integer, this process's.
+		expect(Number.isInteger(parsed.background_indexer.pid)).toBe(true);
+		expect(parsed.background_indexer.pid).toBe(process.pid);
+		// Scope named on the quantities the issue calls out.
+		expect(parsed.background_indexer.queue_size_scope).toBe('this-process');
+		expect(parsed.background_indexer.metrics.scope).toBe('this-process');
+		// leader_pid / leader_lock_age_ms stay machine-wide (lock-file reads),
+		// unaffected by the new scope markers.
+		expect(parsed.background_indexer.leader_pid).toBeNull();
+	});
+
+	test('#3286 (the trap): two sessions → two readings distinguishable by pid', async () => {
+		// Identical state handed to two invocations; only process.pid differs
+		// (two sessions = two processes). Pre-fix, the outputs were
+		// byte-identical — three readings on 2026-08-27 (197/176/505) looked
+		// like an inconsistent queue. Post-fix, pid tells the readings apart.
+		const indexingState = {
+			qdrantIndexQueue: new Set(['t1']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined }
+		};
+		const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'pid');
+		try {
+			Object.defineProperty(process, 'pid', { value: 11111, configurable: true });
+			const readingA = JSON.parse((await handleRooSyncIndexing(
+				{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler, indexingState
+			)).content[0].text);
+
+			Object.defineProperty(process, 'pid', { value: 22222, configurable: true });
+			const readingB = JSON.parse((await handleRooSyncIndexing(
+				{ action: 'status' }, cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler, indexingState
+			)).content[0].text);
+
+			// Same state, same queue_size — but the readings are distinguishable.
+			expect(readingA.background_indexer.queue_size).toBe(readingB.background_indexer.queue_size);
+			expect(readingA.background_indexer.pid).toBe(11111);
+			expect(readingB.background_indexer.pid).toBe(22222);
+			expect(readingA.background_indexer.pid).not.toBe(readingB.background_indexer.pid);
+		} finally {
+			if (originalDescriptor) Object.defineProperty(process, 'pid', originalDescriptor);
+		}
+	});
+
 	// #2963 regression tests — distinguish "measured zero" from "not measured",
 	// and surface counter divergence (rule #3: failed 12 vs failed_by_class 26).
 
