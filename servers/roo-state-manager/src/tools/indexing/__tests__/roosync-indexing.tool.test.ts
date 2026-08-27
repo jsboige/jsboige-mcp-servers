@@ -565,6 +565,58 @@ describe('roosync_indexing status action', () => {
 		expect(leaderParsed.background_indexer.leader_pid).not.toBe(followerParsed.background_indexer.leader_pid);
 	});
 
+	// #3286: queue_size and metrics.indexed are PROCESS-LOCAL magnitudes
+	// (in-memory per-process Set / counter). Two reads from two sessions on the
+	// same machine return different numbers with no state change — they
+	// interrogated two different processes (measured 197/176/505 on 27/08, read
+	// as queue incoherence). The fix names the scope in the output: `pid`
+	// identifies the serving process, *_scope names the magnitude's scope.
+	test('#3286: status names the process-local scope (pid, queue_size_scope, metrics_scope)', async () => {
+		const indexingState = {
+			qdrantIndexQueue: new Set(['t1']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			isIndexLeader: false,
+			machineId: 'myia-test',
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		// The serving process is identified — two sessions are distinguishable.
+		expect(parsed.background_indexer.pid).toBe(process.pid);
+		// The process-local magnitudes are named as such.
+		expect(parsed.background_indexer.queue_size_scope).toBe('this-process');
+		expect(parsed.background_indexer.metrics_scope).toBe('this-process');
+	});
+
+	test('#3286: two reads from two sessions are distinguishable in the output (pid present on every status)', async () => {
+		const indexingState = {
+			qdrantIndexQueue: new Set(['t1']),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			isIndexLeader: true,
+			machineId: 'myia-test',
+			indexingMetrics: { totalTasks: 1, skippedTasks: 0, indexedTasks: 1, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(typeof parsed.background_indexer.pid).toBe('number');
+		expect(parsed.background_indexer.pid).toBe(process.pid);
+		expect(parsed.background_indexer.metrics.indexed).toBe(1);
+	});
+
 	test('#3014: readLeaderLockInfo null (no/currupt lock) → leader_pid null, is_leader still from state', async () => {
 		mockReadLeaderLockInfo.mockResolvedValue(null);
 		const indexingState = {
