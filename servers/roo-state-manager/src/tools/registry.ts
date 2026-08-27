@@ -352,6 +352,22 @@ export function registerCallToolHandler(
                         // #2766 S2+: dead-letter surfaces to the status tool.
                         deadLetterQueue: state.deadLetterQueue,
                         deadLetterDetails: state.deadLetterDetails,
+                        // #3279: #3014 added is_leader/leader_pid/leader_lock_age_ms to the
+                        // status output, reading them off this object through casts
+                        // (`(state as { machineId?: string }).machineId`). This literal never
+                        // supplied them, and the parameter's declared type (IndexingState) is
+                        // the per-task shape that holds neither — so a cast asserted a shape
+                        // nothing checked, at both ends. Measured on ai-01 2026-08-27: a live
+                        // leader lock (PID 38276, renewed 1.3 min earlier) rendered as
+                        // is_leader:false / leader_pid:null, i.e. identical to "no leader at
+                        // all", and the explanatory follower hint never fired. `is_leader` was
+                        // `undefined === true` — false on every machine, leader included.
+                        // The #3014 unit tests stayed green throughout because they build
+                        // their own state literal and pass these two fields themselves: they
+                        // prove the tool RENDERS what it is given, never that the wiring
+                        // DELIVERS it. roosync-indexing.wiring.test.ts guards this literal.
+                        machineId: state.machineId,
+                        isIndexLeader: state.isIndexLeader,
                     }
                 );
                 break;

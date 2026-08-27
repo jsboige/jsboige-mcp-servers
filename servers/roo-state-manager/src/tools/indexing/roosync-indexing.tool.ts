@@ -323,6 +323,21 @@ export interface IndexingState {
         lastAttempt: string;
         movedAt: string;
     }>;
+    // #3279: same pass-through as the dead-letter fields above, for the #3014
+    // leader-observability output. #3014 added is_leader / leader_pid /
+    // leader_lock_age_ms to the status payload but reached these two values by
+    // casting the parameter (`(state as { machineId?: string }).machineId`)
+    // instead of declaring them here — so the call site in registry.ts was never
+    // told to forward them, and could not have: adding `machineId` to that
+    // literal was a TS2353 excess-property error for as long as this interface
+    // omitted it. Net effect in production, on every machine: `is_leader` was
+    // `undefined === true` (constant false, leader included), leader_pid and
+    // leader_lock_age_ms constant null, and the follower hint never fired.
+    // Optional for the same reason as the dead-letter pair — callers that build
+    // this object by hand (tests, out-of-host status reads) may omit them, and
+    // the reads below degrade to "unknown" rather than lying.
+    machineId?: string;
+    isIndexLeader?: boolean;
 }
 
 export async function handleRooSyncIndexing(
@@ -615,8 +630,11 @@ export async function handleRooSyncIndexing(
             // `is_running` (a setInterval handle exists) was the only signal, so a
             // follower and a stuck leader produced identical status output — the
             // diagnostic trap that cost ai-01 5 reads / 4 cycles on a working system.
-            const leaderMachineId = (state as { machineId?: string }).machineId;
-            const isLeader = (state as { isIndexLeader?: boolean }).isIndexLeader === true;
+            // #3279: read through the declared fields, not casts. A cast asserts a
+            // shape without checking it — which is precisely how these two went
+            // unwired from #3014 until 2026-08-27 while their unit tests stayed green.
+            const leaderMachineId = state.machineId;
+            const isLeader = state.isIndexLeader === true;
             const leaderInfo = leaderMachineId ? await readLeaderLockInfo(leaderMachineId) : null;
             if (leaderMachineId && !isLeader) {
                 const holder = leaderInfo ? `PID ${leaderInfo.leaderPid}` : 'un autre process';
