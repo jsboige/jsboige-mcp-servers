@@ -644,38 +644,38 @@ export async function handleRooSyncIndexing(
 
             const status = {
                 background_indexer: {
-                    // #3286: pid of the process that served this response.
-                    // `queue_size`, `dead_letter_size` and the `metrics`
-                    // counters below are THIS process's in-memory state — the
-                    // queue is a per-process Set (state-manager.service.ts)
-                    // and `indexedTasks++` only runs past the leader guard
-                    // (background-services.ts). With dozens of RSM processes
-                    // per machine, two sessions read two different queues
-                    // with no underlying state change; `pid` is what tells
-                    // the readings apart, and `pid === leader_pid` means this
-                    // process carries the machine's drain. `leader_pid` /
-                    // `leader_lock_age_ms` are the machine-wide exceptions
-                    // (read from the leader lock file, not from memory).
+                    // #3286: pid of the process that served this response, and
+                    // the scope of the quantities below. `queue_size`,
+                    // `dead_letter_size` and the `metrics` counters are THIS
+                    // process's in-memory state — the queue is a per-process
+                    // Set (state-manager.service.ts) and `indexedTasks++` only
+                    // runs past the leader guard (background-services.ts). With
+                    // dozens of RSM processes per machine, two sessions read
+                    // two different queues with no underlying state change;
+                    // `pid` is what tells the readings apart, and
+                    // `pid === leader_pid` means this process carries the
+                    // machine's drain. `leader_pid` / `leader_lock_age_ms` are
+                    // the machine-wide exceptions (read from the leader lock
+                    // file, not from memory).
                     pid: process.pid,
+                    scope: 'this-process',
                     is_running: state.qdrantIndexInterval !== null,
                     is_enabled: state.isQdrantIndexingEnabled,
                     // #3014: distinguishes healthy follower from blocked leader.
                     is_leader: isLeader,
                     leader_pid: leaderInfo?.leaderPid ?? null,
                     leader_lock_age_ms: leaderInfo?.lockAgeMs ?? null,
-                    // #3286: per-process in-memory queue — see `pid` above.
+                    // #3286: per-process in-memory queue — see `scope` above.
                     queue_size: state.qdrantIndexQueue.size,
-                    queue_size_scope: 'this-process',
                     // #2766 S2+: dead-letter size is exposed at the top level
                     // so dashboards can chart the separation. Operators who
                     // see queue_size plateau + dead_letter_size growing know
                     // the fix is working as intended.
                     dead_letter_size: deadLetterSize,
                     metrics: {
-                        // #3286: lifetime counters of THIS process (see `pid`
-                        // above). `indexed: 0` is nominal on a follower —
-                        // the increment sits past the leader guard.
-                        scope: 'this-process',
+                        // #3286: lifetime counters of THIS process (see
+                        // `scope` above). `indexed: 0` is nominal on a
+                        // follower — the increment sits past the leader guard.
                         total_tasks: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.totalTasks,
                         indexed: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.indexedTasks,
                         skipped: lifetimeMetricsUnpopulated ? null : state.indexingMetrics.skippedTasks,

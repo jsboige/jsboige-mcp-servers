@@ -595,7 +595,9 @@ describe('roosync_indexing status action', () => {
 	// 2026-08-27 (197/176/505) were three different processes, not an
 	// inconsistent queue; `indexed: 0` on a follower is nominal, not a failure.
 	// The status output must SAY so: `pid` identifies the responding process,
-	// `queue_size_scope` / `metrics.scope` name the quantities' reach.
+	// `scope` names the reach of the process-local quantities (single field on
+	// background_indexer — one shape, covers queue_size, dead_letter_size and
+	// the metrics counters; leader_pid / leader_lock_age_ms stay machine-wide).
 
 	test('#3286: status exposes the process-local scope of queue_size / indexed', async () => {
 		const indexingState = {
@@ -615,11 +617,10 @@ describe('roosync_indexing status action', () => {
 		// pid of the process that served the response — an integer, this process's.
 		expect(Number.isInteger(parsed.background_indexer.pid)).toBe(true);
 		expect(parsed.background_indexer.pid).toBe(process.pid);
-		// Scope named on the quantities the issue calls out.
-		expect(parsed.background_indexer.queue_size_scope).toBe('this-process');
-		expect(parsed.background_indexer.metrics.scope).toBe('this-process');
+		// Scope named once, covering the process-local quantities.
+		expect(parsed.background_indexer.scope).toBe('this-process');
 		// leader_pid / leader_lock_age_ms stay machine-wide (lock-file reads),
-		// unaffected by the new scope markers.
+		// unaffected by the scope marker.
 		expect(parsed.background_indexer.leader_pid).toBeNull();
 	});
 
