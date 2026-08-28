@@ -83,6 +83,7 @@ export const MessagesArgsSchema = z.object({
   page: z.number().optional().describe('Numero de page (1-based, requiert per_page)'),
   per_page: z.number().optional().describe('Messages par page (requiert page)'),
   mark_as_read: z.boolean().optional().describe('Marquer comme lu (mode message, defaut: false)'),
+  deep: z.boolean().optional().describe('#3292 inbox: scanner TOUT le pool au lieu de la slice recente au cold-start (defaut: false = ~100 recents servis synchronement, hydratation du reste en arriere-plan)'),
   workspace: z.string().optional().describe('Override workspace filter (#1498). Identifiant de workspace SEUL — la machine reste la vôtre (ou to_machine). Passer "machine:workspace" ici produit une identité-valise inconnue de la flotte (#3177)'),
   to_machine: z.string().optional().describe('Override machine filter (#1498, avance). NB: pas "machineId" — ce param n existe pas et est rejeté depuis #3177'),
 
@@ -195,7 +196,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         per_page: args.per_page,
         workspace: args.workspace,
         to_machine: args.to_machine,
-        format: args.format
+        format: args.format,
+        deep: args.deep
       });
 
     case 'message':

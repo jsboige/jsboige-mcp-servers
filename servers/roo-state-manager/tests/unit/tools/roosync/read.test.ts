@@ -24,6 +24,7 @@ const {
     mockRegisterHeartbeat,
     mockListAttachments,
     mockRecordActivity,
+    mockIsInboxCachePartial,
 } = vi.hoisted(() => ({
     mockGetMessageManager: vi.fn(),
     mockGetLocalMachineId: vi.fn(() => 'myia-po-2025'),
@@ -40,6 +41,7 @@ const {
     mockRegisterHeartbeat: vi.fn(() => Promise.resolve()),
     mockListAttachments: vi.fn(),
     mockRecordActivity: vi.fn(),
+    mockIsInboxCachePartial: vi.fn(() => false),
 }));
 
 vi.mock('../../../../src/services/MessageManager.js', () => ({
@@ -101,6 +103,7 @@ function setupMM() {
         autoArchiveOld: mockAutoArchiveOld,
         cleanupExpiredMessages: mockCleanupExpiredMessages,
         sendExpiryReminders: mockSendExpiryReminders,
+        isInboxCachePartial: mockIsInboxCachePartial,
     };
     mockGetMessageManager.mockReturnValue(mm);
 
@@ -146,7 +149,7 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             await roosyncRead({ mode: 'inbox', status: 'unread' });
             expect(mockReadInbox).toHaveBeenCalledWith(
-                'myia-po-2025', 'unread', undefined, 'roo-extensions', undefined, undefined
+                'myia-po-2025', 'unread', undefined, 'roo-extensions', undefined, undefined, undefined
             );
         });
 
@@ -155,7 +158,7 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             await roosyncRead({ mode: 'inbox', limit: 5 });
             expect(mockReadInbox).toHaveBeenCalledWith(
-                'myia-po-2025', 'all', 5, 'roo-extensions', undefined, undefined
+                'myia-po-2025', 'all', 5, 'roo-extensions', undefined, undefined, undefined
             );
         });
 
@@ -164,7 +167,7 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             await roosyncRead({ mode: 'inbox', page: 2, per_page: 20 });
             expect(mockReadInbox).toHaveBeenCalledWith(
-                'myia-po-2025', 'all', undefined, 'roo-extensions', 2, 20
+                'myia-po-2025', 'all', undefined, 'roo-extensions', 2, 20, undefined
             );
             const result = await roosyncRead({ mode: 'inbox', page: 2, per_page: 20 });
             expect(result.content[0].text).toContain('Page');
@@ -175,7 +178,7 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             await roosyncRead({ mode: 'inbox', to_machine: 'myia-ai-01' });
             expect(mockReadInbox).toHaveBeenCalledWith(
-                'myia-ai-01', expect.any(String), undefined, 'roo-extensions', undefined, undefined
+                'myia-ai-01', expect.any(String), undefined, 'roo-extensions', undefined, undefined, undefined
             );
         });
 
@@ -184,7 +187,7 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             await roosyncRead({ mode: 'inbox', workspace: 'other-workspace' });
             expect(mockReadInbox).toHaveBeenCalledWith(
-                'myia-po-2025', expect.any(String), undefined, 'other-workspace', undefined, undefined
+                'myia-po-2025', expect.any(String), undefined, 'other-workspace', undefined, undefined, undefined
             );
         });
 
@@ -211,6 +214,30 @@ describe('roosync_read', () => {
             mockReadInbox.mockResolvedValue([]);
             const result = await roosyncRead({ mode: 'inbox', status: 'unread' });
             expect(result.content[0].text).toContain('Aucun message pour le filtre');
+        });
+
+        it('passes deep through to both calls and suppresses the partial note (#3292)', async () => {
+            mockGetFilteredCount.mockResolvedValue({ total: 100, unread: 1, read: 99 });
+            mockReadInbox.mockResolvedValue([]);
+            mockIsInboxCachePartial.mockReturnValue(true);
+
+            await roosyncRead({ mode: 'inbox', deep: true });
+            expect(mockReadInbox).toHaveBeenCalledWith(
+                'myia-po-2025', 'all', undefined, 'roo-extensions', undefined, undefined, true
+            );
+            expect(mockGetFilteredCount).toHaveBeenCalledWith('myia-po-2025', 'all', 'roo-extensions', true);
+        });
+
+        it('renders the partial-view note (markdown + JSON) on a cold-start slice (#3292)', async () => {
+            mockGetFilteredCount.mockResolvedValue({ total: 100, unread: 1, read: 99 });
+            mockReadInbox.mockResolvedValue([]);
+            mockIsInboxCachePartial.mockReturnValue(true);
+
+            const md = await roosyncRead({ mode: 'inbox' });
+            expect(md.content[0].text).toContain('Vue récente');
+
+            const json = await roosyncRead({ mode: 'inbox', format: 'json' });
+            expect(json.content[0].text).toContain('"partial": true');
         });
     });
 

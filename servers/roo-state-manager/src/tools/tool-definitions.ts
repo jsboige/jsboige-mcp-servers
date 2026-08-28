@@ -595,6 +595,7 @@ export const roosyncReadDefinition = {
             per_page: { type: 'number' },
             message_id: { type: 'string', description: 'Required for mode=message/attachments' },
             mark_as_read: { type: 'boolean' },
+            deep: { type: 'boolean', description: '#3292 inbox: scan the ENTIRE pool instead of the cold-start recent slice' },
             workspace: { type: 'string', description: 'Override workspace filter' },
             to_machine: { type: 'string', description: 'Override machine filter' }
         },
@@ -679,6 +680,7 @@ export const roosyncMessagesDefinition = {
             page: { type: 'number', description: '1-based' },
             per_page: { type: 'number' },
             mark_as_read: { type: 'boolean' },
+            deep: { type: 'boolean', description: '#3292 inbox: scan the ENTIRE pool instead of the cold-start recent slice (default false = ~100 most recent served synchronously, rest hydrating in background)' },
             workspace: { type: 'string' },
             to_machine: { type: 'string' },
             from: { type: 'string' },
