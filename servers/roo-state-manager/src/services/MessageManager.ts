@@ -246,6 +246,17 @@ export class MessageManager {
   private static readonly INBOX_REBUILD_BUDGET_MS = 60_000;
   /** In-flight rebuild, shared by concurrent callers (#3205). */
   private inboxRebuildInFlight: Promise<{ items: MessageListItem[]; full: Map<string, Message> }> | null = null;
+  /**
+   * Cold-start recent slice size (#3292). The stdio server restarts with every
+   * Claude Code session, and the old cold start parsed the ENTIRE shared pool
+   * (3 921 files, 99.7 % dead weight) before answering — 48-120 s. Message ids
+   * embed their timestamp (`msg-YYYYMMDDHHMMSS-*`), so a lexical sort of the
+   * readdir listing IS a recency sort: parse only these N newest files
+   * synchronously, hydrate the rest in the background.
+   */
+  private static readonly COLD_START_SLICE_SIZE = 100;
+  /** True while `inboxCache`/`inboxFullCache` hold only the recent slice (#3292). */
+  private inboxCachePartial = false;
 
   /** Auto-archive daemon timer (#809 — prevents inbox unbounded growth) */
   private autoArchiveTimer: NodeJS.Timeout | null = null;
@@ -309,6 +320,12 @@ export class MessageManager {
     this.inboxFullCache.clear();
     this.cacheBuiltAt = 0;
     this.lastInboxFileCount = -1;
+    this.inboxCachePartial = false;
+  }
+
+  /** True while the inbox cache holds only the cold-start recent slice (#3292). */
+  isInboxCachePartial(): boolean {
+    return this.inboxCachePartial;
   }
 
   /** Prune expired negative-cache entries. Returns true if any were pruned
@@ -400,18 +417,26 @@ export class MessageManager {
    * Build or return the cached inbox metadata.
    * Reads all inbox JSON files once, caches results for CACHE_TTL_MS.
    * Uses file count as a cheap invalidation heuristic for external changes.
+   * #3292: a COLD start parses only the COLD_START_SLICE_SIZE most recent files
+   * synchronously (ids embed their timestamp, so a lexical sort is a recency
+   * sort) and hydrates the rest in the background — the stdio server restarts
+   * with every session and the old full-pool cold start cost 48-120 s.
+   * `deep: true` opts out of the slice and waits for the full pool.
    * @private
    */
-  private async ensureInboxCache(): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
+  private async ensureInboxCache(opts?: { deep?: boolean }): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
     if (!existsSync(this.inboxPath)) {
       return { items: [], full: new Map() };
     }
 
-    // Fast path: return cached data if still within TTL (skip readdir entirely)
+    // Fast path: return cached data if still within TTL (skip readdir entirely).
+    // #3292: deep never takes this path while the cache holds only the recent
+    // slice — it must fall through and join the full-pool hydration below.
     const now = Date.now();
     if (
       this.inboxCache !== null &&
-      (now - this.cacheBuiltAt) < MessageManager.CACHE_TTL_MS
+      (now - this.cacheBuiltAt) < MessageManager.CACHE_TTL_MS &&
+      !(opts?.deep && this.inboxCachePartial)
     ) {
       return { items: this.inboxCache, full: this.inboxFullCache };
     }
@@ -433,6 +458,19 @@ export class MessageManager {
       return { items: this.inboxCache, full: this.inboxFullCache };
     }
 
+    // #3292 cold start on a big pool: serve a recent slice synchronously, then
+    // hydrate the rest in the background. Slice FIRST so its ~2 chunks don't
+    // compete with 50 concurrent background reads on a contended DriveFS.
+    if (
+      this.inboxCache === null &&
+      !opts?.deep &&
+      files.length > MessageManager.COLD_START_SLICE_SIZE
+    ) {
+      const sliced = await this.buildRecentSlice(files, now);
+      this.startInboxRebuild(files);
+      return sliced;
+    }
+
     // Past this point the per-file read phase is required, and it is the only
     // expensive one — the readdir and the count check above stay in the foreground
     // so external-change detection keeps its exact semantics. Two changes (#3205):
@@ -443,10 +481,37 @@ export class MessageManager {
     // whole rebuild and hit its tool timeout, while the retry right behind it got
     // the fast path in ~30ms — the "times out, then instantly fine" signature.
     const rebuild = this.startInboxRebuild(files);
-    if (this.inboxCache !== null) {
+    // deep: never hand back the slice — a partial warm cache is completed by the
+    // awaited rebuild (deduped: joins the in-flight pass if there is one).
+    if (this.inboxCache !== null && !(opts?.deep && this.inboxCachePartial)) {
       return { items: this.inboxCache, full: this.inboxFullCache };
     }
     return rebuild;
+  }
+
+  /**
+   * Parse only the N most recent inbox files and install them as a PARTIAL
+   * cache (#3292). `lastInboxFileCount = -1` defeats the count fast-path so the
+   * next expired-TTL call rejoins the background hydration instead of trusting
+   * the slice as complete.
+   *
+   * @private
+   */
+  private async buildRecentSlice(allFiles: string[], now: number): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
+    const recent = [...allFiles]
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, MessageManager.COLD_START_SLICE_SIZE);
+    const readable = recent.filter(f => !this.isNegativelyCached(f));
+    const { items, full } = await this.parseInboxFiles(readable, now + this.rebuildBudgetMs);
+
+    this.inboxCache = items;
+    this.inboxFullCache = full;
+    this.cacheBuiltAt = now;
+    this.lastInboxFileCount = -1;
+    this.inboxCachePartial = true;
+    logger.info(`Inbox cold start: recent slice served (${items.length} msgs from ${readable.length}/${allFiles.length} files) — full pool hydrating in background (#3292)`);
+
+    return { items, full };
   }
 
   /**
@@ -485,17 +550,53 @@ export class MessageManager {
     const skippedCount = files.length - readableFiles.length;
 
     logger.info(`Building inbox cache (${readableFiles.length} files${skippedCount ? `, ${skippedCount} skipped (negative cache)` : ''}, concurrency=${MessageManager.READ_CONCURRENCY})`);
+
+    const deadline = now + this.rebuildBudgetMs;
+    const { items, full, truncated } = await this.parseInboxFiles(readableFiles, deadline);
+
+    if (truncated && this.inboxCache !== null) {
+      // A truncated pass is a SUBSET. Installing it would turn a complete cache
+      // into a partial one — a regression no caller can see. Keep what we have;
+      // -1 defeats the count check so the next call rebuilds, while the TTL still
+      // throttles how often that happens.
+      this.lastInboxFileCount = -1;
+      this.cacheBuiltAt = now;
+      return { items: this.inboxCache, full: this.inboxFullCache };
+    }
+
+    this.inboxCache = items;
+    this.inboxFullCache = full;
+    this.cacheBuiltAt = now;
+    // On a cold-start truncation there is nothing better to serve, so the partial
+    // result IS installed — and it must be FLAGGED as such. `false` here would
+    // hand a truncated pool to the caller labelled complete, which is exactly the
+    // reading this flag exists to prevent. -1 forces the next call to finish the job.
+    this.inboxCachePartial = truncated;
+    this.lastInboxFileCount = truncated ? -1 : files.length;
+
+    return { items, full };
+  }
+
+  /**
+   * Parallel chunked read+parse of inbox files (#3292: extracted so the cold-start
+   * recent slice and the full rebuild share the exact same per-file semantics —
+   * read timeout, negative cache, phantom guard, sort).
+   *
+   * @private
+   */
+  private async parseInboxFiles(
+    readableFiles: string[],
+    deadline: number
+  ): Promise<{ items: MessageListItem[]; full: Map<string, Message>; truncated: boolean }> {
     const items: MessageListItem[] = [];
     const full = new Map<string, Message>();
-
-    // Parallel chunked reads — 50 concurrent instead of serial (84s → ~2s on GDrive)
-    const deadline = now + this.rebuildBudgetMs;
     let truncated = false;
 
+    // Parallel chunked reads — 50 concurrent instead of serial (84s → ~2s on GDrive)
     for (let i = 0; i < readableFiles.length; i += MessageManager.READ_CONCURRENCY) {
       if (Date.now() >= deadline) {
         truncated = true;
-        logger.warn(`Inbox cache rebuild hit its ${this.rebuildBudgetMs}ms budget after ${i}/${readableFiles.length} files - returning early (#3205)`);
+        logger.warn(`Inbox cache rebuild hit its budget after ${i}/${readableFiles.length} files - returning early (#3205)`);
         break;
       }
       const chunk = readableFiles.slice(i, i + MessageManager.READ_CONCURRENCY);
@@ -562,24 +663,7 @@ export class MessageManager {
     // Sort by timestamp descending (most recent first) once
     items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-    if (truncated && this.inboxCache !== null) {
-      // A truncated pass is a SUBSET. Installing it would turn a complete cache
-      // into a partial one — a regression no caller can see. Keep what we have;
-      // -1 defeats the count check so the next call rebuilds, while the TTL still
-      // throttles how often that happens.
-      this.lastInboxFileCount = -1;
-      this.cacheBuiltAt = now;
-      return { items: this.inboxCache, full: this.inboxFullCache };
-    }
-
-    this.inboxCache = items;
-    this.inboxFullCache = full;
-    this.cacheBuiltAt = now;
-    // On a cold-start truncation there is nothing better to serve, so the partial
-    // result is installed — but -1 forces the next call to finish the job.
-    this.lastInboxFileCount = truncated ? -1 : files.length;
-
-    return { items, full };
+    return { items, full, truncated };
   }
 
   /**
@@ -826,7 +910,8 @@ export class MessageManager {
     limit?: number,
     workspaceId?: string,
     page?: number,
-    perPage?: number
+    perPage?: number,
+    deep?: boolean
   ): Promise<MessageListItem[]> {
     const effectiveWorkspaceId = workspaceId;
     logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`);
@@ -847,8 +932,9 @@ export class MessageManager {
     }
 
     try {
-      // Use cached data (#638 perf optimization)
-      const { items, full } = await this.ensureInboxCache();
+      // Use cached data (#638 perf optimization). deep: skip the #3292 cold-start
+      // recent slice and wait for the full pool instead.
+      const { items, full } = await this.ensureInboxCache({ deep });
 
       if (items.length === 0) {
         return [];
@@ -930,7 +1016,8 @@ export class MessageManager {
   async getFilteredCount(
     machineId: string,
     status?: 'unread' | 'read' | 'all',
-    workspaceId?: string
+    workspaceId?: string,
+    deep?: boolean
   ): Promise<{ total: number; unread: number; read: number }> {
     const effectiveWorkspaceId = workspaceId;
 
@@ -942,7 +1029,7 @@ export class MessageManager {
       logger.warn('[channel-pg] PG mailbox count failed — falling back to GDrive');
     }
 
-    const { items, full } = await this.ensureInboxCache();
+    const { items, full } = await this.ensureInboxCache({ deep });
 
     let total = 0;
     let unread = 0;

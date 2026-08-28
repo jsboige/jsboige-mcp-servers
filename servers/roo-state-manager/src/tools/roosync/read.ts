@@ -51,6 +51,12 @@ interface RooSyncReadArgs {
   /** Messages per page (requires page) */
   per_page?: number;
 
+  /** #3292: parse the ENTIRE inbox pool instead of the cold-start recent slice.
+   *  Default (false): a cold start serves the ~100 most recent messages synchronously
+   *  and hydrates the rest in the background — unread messages are recent in practice.
+   *  Set deep:true when you genuinely need an old-pool listing right now. */
+  deep?: boolean;
+
   // Pour mode 'message' et 'attachments'
   /** ID du message à récupérer (requis si mode='message' ou 'attachments') */
   message_id?: string;
@@ -143,13 +149,24 @@ async function readInboxMode(
     }
   }
 
-  // Get counts from cache (single scan, no double-read — #638 perf fix)
-  const counts = await messageManager.getFilteredCount(effectiveMachineId, 'all', effectiveWorkspaceId);
+  // Get counts from cache (single scan, no double-read — #638 perf fix).
+  // deep propagates so counts and listing always derive from the same pool (#3292).
+  const counts = await messageManager.getFilteredCount(effectiveMachineId, 'all', effectiveWorkspaceId, args.deep);
 
   // Read messages with pagination
   const messages = await messageManager.readInbox(
-    effectiveMachineId, status, limit, effectiveWorkspaceId, page, perPage
+    effectiveMachineId, status, limit, effectiveWorkspaceId, page, perPage, args.deep
   );
+
+  // #3292: a cold start without deep serves the recent slice while the full
+  // pool hydrates in the background — surface that so consumers don't read
+  // "Total: N" as the whole mailbox.
+  // NOT `!args.deep && ...`: deep opts out of the SLICE, it does not guarantee a
+  // complete pool. A deep cold start whose rebuild busts INBOX_REBUILD_BUDGET_MS
+  // (60s, against the 48-120s full-pool cost this PR exists to fix) installs a
+  // truncated cache — the caller who asked for exhaustiveness is the last one who
+  // should be told "complete" in silence. Ask the flag, not the intent.
+  const partialView = messageManager.isInboxCachePartial();
 
   // Fire-and-forget heartbeat update. Truly non-blocking — don't await the
   // lazy service load. Uses .then() to chain without blocking the inbox response.
@@ -189,6 +206,7 @@ Votre inbox est vide pour le moment.
       read: counts.read,
       page: page ?? null,
       per_page: perPage ?? null,
+      ...(partialView ? { partial: true, note: 'Cold start: recent slice only — full pool hydrating in background. Pass deep:true for the complete scan.' } : {}),
       messages: messages.map(msg => ({
         id: msg.id,
         from: msg.from,
@@ -208,6 +226,9 @@ Votre inbox est vide pour le moment.
   result += `**Total :** ${counts.total} message${counts.total > 1 ? 's' : ''} | `;
   result += `🆕 ${counts.unread} non-lu${counts.unread > 1 ? 's' : ''} | `;
   result += `✅ ${counts.read} lu${counts.read > 1 ? 's' : ''}\n`;
+  if (partialView) {
+    result += `⏳ _Vue récente (cold start #3292) — hydratation du pool complet en arrière-plan, \`deep: true\` pour forcer le scan complet._\n`;
+  }
 
   // Pagination info
   if (page !== undefined && perPage !== undefined) {

@@ -1703,4 +1703,110 @@ describe('MessageManager', () => {
       writeSpy.mockRestore();
     });
   });
+
+  // ─── #3292: cold-start recent slice + background hydration + deep opt-out ───
+  // Files are written directly (controlled ids/timestamps, filename === `${id}.json`)
+  // because 150 real sendMessage calls share the same wall-clock second, making
+  // "most recent" ill-defined for the lexical filename sort the slice relies on.
+  describe('cold-start recent slice (#3292)', () => {
+    const TOTAL = 150;
+    const idFor = (i: number) => {
+      const mm = String(Math.floor(i / 60)).padStart(2, '0');
+      const ss = String(i % 60).padStart(2, '0');
+      return `msg-20260828T00${mm}${ss}-${String(i).padStart(6, '0')}`;
+    };
+    const tsFor = (i: number) => `2026-08-28T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z`;
+
+    const seedBigPool = async () => {
+      for (let i = 0; i < TOTAL; i++) {
+        const msg = {
+          id: idFor(i),
+          from: 'machine-b',
+          to: 'machine-a',
+          subject: `Pool message ${i}`,
+          body: `Body ${i}`,
+          priority: 'LOW',
+          timestamp: tsFor(i),
+          status: 'unread'
+        };
+        await fs.writeFile(
+          join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`),
+          JSON.stringify(msg, null, 2),
+          'utf-8'
+        );
+      }
+    };
+
+    test('cold start on a big pool serves the recent slice, flagged partial', async () => {
+      await seedBigPool();
+
+      const items = await messageManager.readInbox('machine-a', 'all');
+
+      // Assertions in ONE synchronous block: the background hydration started by
+      // the slice install progresses on later macrotask ticks — no awaits until
+      // both the captured list and the partial flag are checked.
+      expect(items).toHaveLength(100);
+      expect(items.find(m => m.id === idFor(TOTAL - 1))).toBeDefined();
+      expect(items.find(m => m.id === idFor(99))).toBeDefined();
+      expect(items.find(m => m.id === idFor(50))).toBeDefined();
+      expect(items.find(m => m.id === idFor(49))).toBeUndefined();
+      expect(items.find(m => m.id === idFor(0))).toBeUndefined();
+      expect(messageManager.isInboxCachePartial()).toBe(true);
+    });
+
+    test('deep:true joins the in-flight hydration and returns the full pool (not the slice)', async () => {
+      await seedBigPool();
+
+      // Cold start → slice.
+      const slice = await messageManager.readInbox('machine-a', 'all');
+      expect(slice).toHaveLength(100);
+
+      // deep within the slice TTL must NOT hit the TTL fast path (which would
+      // hand back the slice): it rejoins the in-flight rebuild, awaits it, and
+      // returns everything.
+      const deep = await messageManager.readInbox('machine-a', 'all', undefined, undefined, undefined, undefined, true);
+      expect(deep).toHaveLength(TOTAL);
+      expect(deep.find(m => m.id === idFor(0))).toBeDefined();
+      expect(messageManager.isInboxCachePartial()).toBe(false);
+
+      // Counts now derive from the completed pool, consistent with the deep listing.
+      const counts = await messageManager.getFilteredCount('machine-a', 'all');
+      expect(counts.total).toBe(TOTAL);
+    });
+
+    test('deep:true on a COLD cache parses the full pool directly (no slice detour)', async () => {
+      await seedBigPool();
+
+      const deep = await messageManager.readInbox('machine-a', 'all', undefined, undefined, undefined, undefined, true);
+      expect(deep).toHaveLength(TOTAL);
+      expect(messageManager.isInboxCachePartial()).toBe(false);
+    });
+
+    test('pools at or under the slice size keep the exact pre-#3292 behavior', async () => {
+      for (let i = 0; i < 50; i++) {
+        const msg = {
+          id: idFor(i),
+          from: 'machine-b',
+          to: 'machine-a',
+          subject: `Small pool ${i}`,
+          body: `Body ${i}`,
+          priority: 'LOW',
+          timestamp: tsFor(i),
+          status: 'unread'
+        };
+        await fs.writeFile(
+          join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`),
+          JSON.stringify(msg, null, 2),
+          'utf-8'
+        );
+      }
+
+      const items = await messageManager.readInbox('machine-a', 'all');
+      expect(items).toHaveLength(50);
+      expect(messageManager.isInboxCachePartial()).toBe(false);
+
+      const counts = await messageManager.getFilteredCount('machine-a', 'all');
+      expect(counts.total).toBe(50);
+    });
+  });
 });
