@@ -15,6 +15,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageManager, type MessageListItem } from '../MessageManager.js';
+import { MessageManagerErrorCode } from '../../types/errors.js';
 import { AttachmentManager } from '../roosync/AttachmentManager.js';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
@@ -543,6 +544,33 @@ describe('MessageManager', () => {
           'Self message'
         )
       ).rejects.toThrow(/Auto-message interdit/);
+    });
+
+    // po-204 : une clé dashée de projet Claude (ex. "c--dev-roo-extensions" pour
+    // C:\dev\roo-extensions) ne matche jamais le basename auto-détecté côté
+    // destinataire — le message serait listé dans son inbox mais illisible en
+    // getMessage/mark_read. Le send doit le rejeter à la source.
+    test('should reject dashed Claude-projects workspace key in recipient (po-204)', async () => {
+      await expect(
+        messageManager.sendMessage(
+          'myia-po-204',
+          'myia-po-2024:c--dev-roo-extensions',
+          'Dashed',
+          'Phantom recipient'
+        )
+      ).rejects.toMatchObject({
+        code: MessageManagerErrorCode.INVALID_RECIPIENT,
+        details: { type: 'dashed-workspace-key' }
+      });
+    });
+
+    test('should allow machine-only and basename recipients (po-204 convention)', async () => {
+      await expect(
+        messageManager.sendMessage('myia-po-204', 'myia-po-2024', 'Conv', 'Machine only')
+      ).resolves.toMatchObject({ to: 'myia-po-2024' });
+      await expect(
+        messageManager.sendMessage('myia-po-204', 'myia-po-2024:roo-extensions', 'Conv', 'Basename')
+      ).resolves.toMatchObject({ to: 'myia-po-2024:roo-extensions' });
     });
 
     test('readInbox with workspace should see workspace-specific messages', async () => {
@@ -1344,9 +1372,36 @@ describe('MessageManager', () => {
       const msg = await messageManager.sendMessage(
         'sender', 'machine-a:ws-1', 'Secret', 'Private body', 'HIGH'
       );
-      // Same machine, different workspace
-      const result = await messageManager.getMessage(msg.id, 'machine-a:ws-2');
-      expect(result).toBeNull();
+      // Same machine, different workspace — denied now THROWS (po-204): a null
+      // used to render as "Message introuvable" in every tool, lying about a
+      // message that exists and is simply addressed elsewhere.
+      await expect(messageManager.getMessage(msg.id, 'machine-a:ws-2'))
+        .rejects.toMatchObject({ code: MessageManagerErrorCode.ACCESS_DENIED });
+    });
+
+    test('getMessage: denied error names the actual recipient, not "introuvable" (po-204)', async () => {
+      const msg = await messageManager.sendMessage(
+        'myia-po-204', 'myia-po-2024', 'Pépites', 'Body'
+      );
+      // The dashed key is rejected at send since po-204 — drop the message file
+      // directly to simulate the pre-fix phantom still living in GDrive.
+      const phantom = {
+        ...msg,
+        id: 'msg-phantom-po204',
+        to: 'myia-po-2024:c--dev-roo-extensions'
+      };
+      await fs.writeFile(
+        join(testSharedStatePath, 'messages/inbox/msg-phantom-po204.json'),
+        JSON.stringify(phantom), 'utf-8'
+      );
+      const callerId = 'myia-po-2024:roo-extensions';
+      const err = await messageManager.getMessage('msg-phantom-po204', callerId)
+        .catch((e: any) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.code).toBe(MessageManagerErrorCode.ACCESS_DENIED);
+      expect(err.message).toContain('c--dev-roo-extensions');
+      expect(err.message).toContain(callerId);
+      expect(err.message).toContain('basename');
     });
 
     test('getMessage: allows reading messages targeted to same machine (no workspace)', async () => {
@@ -1372,8 +1427,8 @@ describe('MessageManager', () => {
       const msg = await messageManager.sendMessage(
         'sender', 'machine-a', 'Test', 'Private', 'HIGH'
       );
-      const result = await messageManager.getMessage(msg.id, 'machine-b');
-      expect(result).toBeNull();
+      await expect(messageManager.getMessage(msg.id, 'machine-b'))
+        .rejects.toMatchObject({ code: MessageManagerErrorCode.ACCESS_DENIED });
     });
 
     test('getMessage: without callerId skips workspace check (backward compat)', async () => {
