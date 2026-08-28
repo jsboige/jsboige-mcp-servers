@@ -662,6 +662,20 @@ export class MessageManager {
       );
     }
 
+    // Dashed Claude-projects keys (e.g. "c--dev-roo-extensions") never match the
+    // receiver's auto-detected workspace (a basename like "roo-extensions"), so
+    // the recipient's inbox would list the message while getMessage/mark_read
+    // deny it — the phantom "listed but introuvable" (friction po-204). Reject
+    // at the source: the convention is machine[:workspace-basename].
+    if (toParsed.workspaceId && /^[a-zA-Z]--/.test(toParsed.workspaceId)) {
+      throw new MessageManagerError(
+        `Destinataire invalide : « ${to} » cible la clé dashée « ${toParsed.workspaceId} », que le destinataire ne pourra jamais faire correspondre à son workspace auto-détecté. ` +
+        `Convention : « machine » (toute la machine) ou « machine:basename-du-workspace » (ex. « myia-po-2024:roo-extensions »).`,
+        MessageManagerErrorCode.INVALID_RECIPIENT,
+        { from, to, type: 'dashed-workspace-key' }
+      );
+    }
+
     // Compute expires_at from destruct_after TTL
     let expiresAt: string | undefined;
     if (options?.destruct_after) {
@@ -970,6 +984,24 @@ export class MessageManager {
   }
 
   /**
+   * #2287 denied path — throw instead of returning null. A null from getMessage
+   * renders as "Message introuvable / peut-être supprimé" in every tool, which
+   * lied about messages that exist and are simply addressed elsewhere (po-204:
+   * dashed Claude-projects keys like "c--dev-roo-extensions" never match the
+   * receiver's auto-detected workspace basename, so the inbox lists the message
+   * while getMessage/mark_read report it missing).
+   */
+  private accessDeniedError(messageId: string, message: Message, callerId: string): MessageManagerError {
+    return new MessageManagerError(
+      `Accès refusé : le message ${messageId} existe mais est adressé à « ${message.to} » (expéditeur « ${message.from} ») ; l'appelant est « ${callerId} ». ` +
+      `Convention d'adressage : « machine » (toute la machine) ou « machine:basename-du-workspace » (ex. « myia-po-2024:roo-extensions »). ` +
+      `Une clé dashée de projet Claude (ex. « c--dev-roo-extensions ») ne correspond jamais au workspace auto-détecté du destinataire — le message apparaît alors dans son inbox mais reste illisible.`,
+      MessageManagerErrorCode.ACCESS_DENIED,
+      { messageId, to: message.to, from: message.from, caller: callerId }
+    );
+  }
+
+  /**
    * Obtient un message spécifique par son ID
    *
    * Cherche dans PG (Phase B, env-gated) puis inbox, sent, puis archive.
@@ -977,7 +1009,9 @@ export class MessageManager {
    *
    * @param messageId ID du message à récupérer
    * @param callerId ID complet du caller (machine:workspace) pour vérification d'accès
-   * @returns Le message complet ou null si introuvable ou accès refusé
+   * @returns Le message complet ou null si introuvable
+   * @throws MessageManagerError ACCESS_DENIED si le message existe mais est adressé
+   *   à un autre machine:workspace que celui du caller (po-204)
    */
   async getMessage(messageId: string, callerId?: string): Promise<Message | null> {
     logger.info(`Getting message: ${messageId}`);
@@ -1000,7 +1034,7 @@ export class MessageManager {
       if (pgMessage) {
         if (!this.callerCanAccessMessage(pgMessage, callerId)) {
           logger.warn(`Access denied: message ${messageId} targets ${pgMessage.to}, caller is ${callerId}`);
-          return null;
+          throw this.accessDeniedError(messageId, pgMessage, callerId!);
         }
         logger.info(`Message served from PG: ${messageId}`);
         return pgMessage;
@@ -1024,11 +1058,14 @@ export class MessageManager {
           // #2287: Verify workspace access — allow if caller is recipient OR sender
           if (!this.callerCanAccessMessage(message, callerId)) {
             logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
-            return null;
+            throw this.accessDeniedError(messageId, message, callerId!);
           }
 
           return message;
         } catch (error) {
+          // po-204: the access-denied throw above is a protocol error, not a
+          // filesystem error — never swallow it into "try the next path".
+          if (error instanceof MessageManagerError) throw error;
           logger.error(`Error reading message from ${filePath}`, error);
         }
       }
@@ -1048,6 +1085,11 @@ export class MessageManager {
       this.inboxFullCache = new Map();
       this.cacheBuiltAt = 0;
       this.lastInboxFileCount = -1;
+      // po-204: the inbox cache can hold messages the caller cannot access
+      // (e.g. addressed to a dashed workspace key) — same denial as the disk path.
+      if (!this.callerCanAccessMessage(cached, callerId)) {
+        throw this.accessDeniedError(messageId, cached, callerId!);
+      }
       // Return cached message with archived status so callers treat it as processed
       return { ...cached, status: 'archived' as const };
     }
