@@ -161,7 +161,12 @@ async function readInboxMode(
   // #3292: a cold start without deep serves the recent slice while the full
   // pool hydrates in the background — surface that so consumers don't read
   // "Total: N" as the whole mailbox.
-  const partialView = !args.deep && messageManager.isInboxCachePartial();
+  // NOT `!args.deep && ...`: deep opts out of the SLICE, it does not guarantee a
+  // complete pool. A deep cold start whose rebuild busts INBOX_REBUILD_BUDGET_MS
+  // (60s, against the 48-120s full-pool cost this PR exists to fix) installs a
+  // truncated cache — the caller who asked for exhaustiveness is the last one who
+  // should be told "complete" in silence. Ask the flag, not the intent.
+  const partialView = messageManager.isInboxCachePartial();
 
   // Fire-and-forget heartbeat update. Truly non-blocking — don't await the
   // lazy service load. Uses .then() to chain without blocking the inbox response.

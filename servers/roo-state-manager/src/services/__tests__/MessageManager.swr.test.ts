@@ -197,6 +197,32 @@ describe('MessageManager — inbox cache stale-while-revalidate (#3205)', () => 
     expect(mocks.warn.mock.calls.some(([msg]) => String(msg).includes('budget'))).toBe(true);
   }, 10_000);
 
+  test('a COLD pass truncated by the budget is installed FLAGGED partial, deep included', async () => {
+    // The sibling test above covers the warm case, where a truncated pass is
+    // discarded. Cold is the other half: there is no better cache to keep, so the
+    // truncated pool IS served — and the caller must be able to see that.
+    // Reachable in production: the budget is 60s and the full-pool cold start this
+    // slice work exists to fix costs 48-120s, so a deep cold start truncates on the
+    // slow half of that range.
+    for (const id of ['msg-swr-cbud-llllll', 'msg-swr-cbud-mmmmmm']) {
+      seedInboxMessage(sharedState, id);
+    }
+
+    const manager = new MessageManager(sharedState, TEST_TIMEOUT_MS);
+    (manager as any).rebuildBudgetMs = 0; // truncate before reading anything, on a COLD cache
+
+    // deep:true skips the recent slice and goes straight to the full rebuild — the
+    // caller explicitly asking for exhaustiveness is the one who must not be told
+    // "complete" in silence.
+    const deep = await manager.readInbox(RECIPIENT, 'all', undefined, undefined, undefined, undefined, true);
+
+    expect(deep).toHaveLength(0); // truncated: nothing was read
+    expect(mocks.warn.mock.calls.some(([msg]) => String(msg).includes('budget'))).toBe(true);
+    // The discriminant: `false` here would label a truncated pool complete.
+    expect(manager.isInboxCachePartial()).toBe(true);
+    expect((manager as any).lastInboxFileCount).toBe(-1);
+  }, 10_000);
+
   test('a failing background refresh is caught and never becomes an unhandled rejection', async () => {
     const id = 'msg-swr-reject-jjjjjj';
     seedInboxMessage(sharedState, id);

@@ -567,9 +567,11 @@ export class MessageManager {
     this.inboxCache = items;
     this.inboxFullCache = full;
     this.cacheBuiltAt = now;
-    this.inboxCachePartial = false;
     // On a cold-start truncation there is nothing better to serve, so the partial
-    // result is installed — but -1 forces the next call to finish the job.
+    // result IS installed — and it must be FLAGGED as such. `false` here would
+    // hand a truncated pool to the caller labelled complete, which is exactly the
+    // reading this flag exists to prevent. -1 forces the next call to finish the job.
+    this.inboxCachePartial = truncated;
     this.lastInboxFileCount = truncated ? -1 : files.length;
 
     return { items, full };
