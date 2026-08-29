@@ -175,8 +175,13 @@ async function readInboxMode(
       .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_read_inbox', messageCount: messages.length }))
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
 
-  // Cas : aucun message
-  if (messages.length === 0 && counts.total === 0) {
+  // Cas : aucun message. Zero hits on a PARTIAL cache is not evidence of an
+  // empty inbox (#3292): the cold-start slice covers only the newest N files of
+  // a pool shared by the whole fleet, so a machine whose messages all predate
+  // that window scans zero of them. Reporting "empty" there is a false negative
+  // on the one call agents use to learn they were sent something — say the scan
+  // was partial and point at deep:true instead.
+  if (messages.length === 0 && counts.total === 0 && !partialView) {
     if (args.format === 'json') {
       return JSON.stringify({
         machine_id: effectiveMachineId,
