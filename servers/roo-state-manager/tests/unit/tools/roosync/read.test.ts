@@ -239,6 +239,36 @@ describe('roosync_read', () => {
             const json = await roosyncRead({ mode: 'inbox', format: 'json' });
             expect(json.content[0].text).toContain('"partial": true');
         });
+
+        it('flags an EMPTY cold-start result as partial instead of claiming "inbox empty" (#3292)', async () => {
+            // Regression: the recent-slice covers only the newest N files of a
+            // pool shared by the whole fleet. A machine whose messages are all
+            // older than that window gets zero hits — indistinguishable, in the
+            // rendered output, from genuinely having no mail. "You have no
+            // messages" is the one answer a partial scan cannot support.
+            mockGetFilteredCount.mockResolvedValue({ total: 0, unread: 0, read: 0 });
+            mockReadInbox.mockResolvedValue([]);
+            mockIsInboxCachePartial.mockReturnValue(true);
+
+            const md = await roosyncRead({ mode: 'inbox' });
+            expect(md.content[0].text).not.toContain('Votre inbox est vide');
+            expect(md.content[0].text).toContain('Vue récente');
+
+            const json = await roosyncRead({ mode: 'inbox', format: 'json' });
+            expect(JSON.parse(json.content[0].text).partial).toBe(true);
+        });
+
+        it('still reports a genuinely empty inbox when the cache is COMPLETE (#3292)', async () => {
+            mockGetFilteredCount.mockResolvedValue({ total: 0, unread: 0, read: 0 });
+            mockReadInbox.mockResolvedValue([]);
+            mockIsInboxCachePartial.mockReturnValue(false);
+
+            const md = await roosyncRead({ mode: 'inbox' });
+            expect(md.content[0].text).toContain('Votre inbox est vide');
+
+            const json = await roosyncRead({ mode: 'inbox', format: 'json' });
+            expect(JSON.parse(json.content[0].text).partial).toBeUndefined();
+        });
     });
 
     describe('mode=message', () => {
