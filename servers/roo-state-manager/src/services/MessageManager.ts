@@ -260,6 +260,15 @@ export class MessageManager {
 
   /** Auto-archive daemon timer (#809 — prevents inbox unbounded growth) */
   private autoArchiveTimer: NodeJS.Timeout | null = null;
+  /**
+   * Daemon config + last run (#3292) — surfaced by getAutoArchiveStatus() so the
+   * fleet can VERIFY the rotation is running. The "nothing schedules the
+   * archiving" belief on #3292 persisted precisely because the daemon was
+   * invisible: it ran (live pool showed 0 files past the 90-day lane) while
+   * the issue diagnosed the pool as "never rotated".
+   */
+  private autoArchiveConfig: { maxAgeDays: number; intervalHours: number; unreadMaxAgeDays: number } | null = null;
+  private autoArchiveLastRun: { at: string; archived: number; durationMs: number; error?: string } | null = null;
 
   /**
    * Constructeur du MessageManager
@@ -2172,10 +2181,13 @@ export class MessageManager {
       logger.warn('AutoArchive daemon already running, ignoring duplicate start');
       return;
     }
+    this.autoArchiveConfig = { maxAgeDays, intervalHours, unreadMaxAgeDays };
 
     const runOnce = async () => {
+      const startedAt = Date.now();
       try {
         const archived = await this.autoArchiveOld(maxAgeDays, true, unreadMaxAgeDays);
+        this.autoArchiveLastRun = { at: new Date().toISOString(), archived, durationMs: Date.now() - startedAt };
         if (archived > 0) {
           logger.info(
             `[AutoArchive] Archived ${archived} messages ` +
@@ -2183,6 +2195,12 @@ export class MessageManager {
           );
         }
       } catch (err) {
+        this.autoArchiveLastRun = {
+          at: new Date().toISOString(),
+          archived: 0,
+          durationMs: Date.now() - startedAt,
+          error: err instanceof Error ? err.message : String(err)
+        };
         logger.error('[AutoArchive] Run failed', err as Record<string, any>);
       }
     };
@@ -2204,6 +2222,64 @@ export class MessageManager {
       this.autoArchiveTimer = null;
       logger.info('[AutoArchive] Daemon stopped');
     }
+  }
+
+  /**
+   * Rotation observability (#3292).
+   *
+   * Running state, horizons and last run of the #809/#3150 daemon. `lastRun`
+   * survives a stop (config too): a `running: false` WITH a last run says "the
+   * daemon was started and someone stopped it", not "it never ran".
+   */
+  getAutoArchiveStatus(): {
+    running: boolean;
+    config: { maxAgeDays: number; intervalHours: number; unreadMaxAgeDays: number } | null;
+    lastRun: { at: string; archived: number; durationMs: number; error?: string } | null;
+  } {
+    return {
+      running: this.autoArchiveTimer !== null,
+      config: this.autoArchiveConfig,
+      lastRun: this.autoArchiveLastRun
+    };
+  }
+
+  /**
+   * Age histogram of the SHARED inbox pool (#3292), from filenames only.
+   *
+   * Ids embed `msg-YYYYMMDDTHHMMSS`, so a single readdir — no per-file open,
+   * no cache dependency — yields the distribution. Bucket edges mirror the
+   * rotation knobs: 7d = read-mail grace (opportunistic archive on reads),
+   * 30d = read-mail daemon horizon, 90d = dead-letter (unread) horizon.
+   * The 7-90d band is dead-addressed mail by construction (read mail leaves
+   * at the 7d/30d lanes); its size is the cost of the chosen horizon.
+   */
+  async getInboxPoolAges(): Promise<{
+    total: number;
+    d0_7: number;
+    d7_30: number;
+    d30_90: number;
+    d90_plus: number;
+    undated: number;
+  }> {
+    const buckets = { total: 0, d0_7: 0, d7_30: 0, d30_90: 0, d90_plus: 0, undated: 0 };
+    if (!existsSync(this.inboxPath)) return buckets;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const dateInName = /^msg-(\d{4})(\d{2})(\d{2})T\d{6}/;
+    for (const f of await fs.readdir(this.inboxPath)) {
+      if (!f.endsWith('.json')) continue;
+      buckets.total++;
+      const m = dateInName.exec(f);
+      if (!m) {
+        buckets.undated++;
+        continue;
+      }
+      const ageDays = (Date.now() - Date.UTC(+m[1], +m[2] - 1, +m[3])) / DAY_MS;
+      if (ageDays < 7) buckets.d0_7++;
+      else if (ageDays < 30) buckets.d7_30++;
+      else if (ageDays < 90) buckets.d30_90++;
+      else buckets.d90_plus++;
+    }
+    return buckets;
   }
 
   async getInboxStats(

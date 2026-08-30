@@ -73,6 +73,9 @@ function setupMM() {
         archiveMessage: mockArchiveMessage,
         bulkOperation: mockBulkOperation,
         getInboxStats: mockGetInboxStats,
+        // #3292: stats action also reads the shared-pool histogram + rotation state
+        getInboxPoolAges: vi.fn().mockResolvedValue({ total: 0, d0_7: 0, d7_30: 0, d30_90: 0, d90_plus: 0, undated: 0 }),
+        getAutoArchiveStatus: vi.fn().mockReturnValue({ running: false, config: null, lastRun: null }),
         cleanupExpiredMessages: mockCleanupExpiredMessages,
         sendExpiryReminders: mockSendExpiryReminders,
     };
@@ -262,6 +265,30 @@ describe('roosync_manage', () => {
             const text = result.content[0].text;
             expect(text).toContain('Statistiques');
             expect(text).toContain('15');
+        });
+
+        it('renders the shared-pool histogram + rotation state (#3292)', async () => {
+            mockGetInboxStats.mockResolvedValue({
+                total: 0, unread: 0, read: 0,
+                by_priority: {}, by_sender: {},
+            });
+            const result = await roosyncManage({ action: 'stats' });
+            const text = result.content[0].text;
+            expect(text).toContain('Pool partagé & rotation (#3292)');
+            expect(text).toContain('| **Total** | **0** |');
+            // Daemon never started on this (mocked) process — stated, not hidden
+            expect(text).toContain('jamais démarrée sur ce process');
+        });
+
+        it('stats json format carries pool_files and rotation (#3292)', async () => {
+            mockGetInboxStats.mockResolvedValue({
+                total: 0, unread: 0, read: 0,
+                by_priority: {}, by_sender: {},
+            });
+            const result = await roosyncManage({ action: 'stats', format: 'json' });
+            const parsed = JSON.parse(result.content[0].text);
+            expect(parsed.pool_files).toEqual({ total: 0, d0_7: 0, d7_30: 0, d30_90: 0, d90_plus: 0, undated: 0 });
+            expect(parsed.rotation).toEqual({ running: false, config: null, lastRun: null });
         });
     });
 

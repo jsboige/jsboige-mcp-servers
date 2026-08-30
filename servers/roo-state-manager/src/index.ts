@@ -294,6 +294,12 @@ class RooStateManagerServer {
             logger.warn(`[Workspace] ⚠️ WORKSPACE_PATH not set — falling back to process.cwd()`);
         }
 
+        // #3292: rotation de l'inbox partagée AVANT les notifications — le daemon
+        // d'auto-archive ne doit pas être otage de NOTIFICATIONS_ENABLED ni d'un
+        // échec de l'init notification (une machine qui désactive les notifications
+        // ne doit pas perdre la rotation silencieusement).
+        await this.initializeAutoArchive();
+
         // Initialize notification system (deferred — pulls in MessageManager 3.8s)
         await this.initializeNotificationSystem();
 
@@ -406,6 +412,42 @@ class RooStateManagerServer {
     }
 
     /**
+     * Démarre le daemon d'auto-archive de l'inbox partagée (#809 + #3150).
+     *
+     * #3292: ce démarrage vivait DANS initializeNotificationSystem(), sous le
+     * garde NOTIFICATIONS_ENABLED et après la construction de NotificationService.
+     * Une machine qui désactive les notifications — ou dont l'init notification
+     * échoue avant d'atteindre le bloc — perdait la rotation SILENCIEUSEMENT,
+     * et le pool inbox/ repartait à la hausse (3 921 fichiers à l'ouverture de
+     * #3292). Étape propre : la rotation est indépendante des notifications.
+     * MessageManager reste à chargement différé (import dynamique) — il n'est
+     * payé qu'une fois, ici, avant l'init notification qui le réutilise.
+     */
+    private async initializeAutoArchive(): Promise<void> {
+        const sharedStatePath = process.env.ROOSYNC_SHARED_PATH;
+        if (!sharedStatePath) {
+            logger.warn('⚠️ [AutoArchive] ROOSYNC_SHARED_PATH non défini, rotation inbox désactivée');
+            return;
+        }
+        // #809: Start auto-archive daemon to prevent inbox unbounded growth.
+        // Volume grew x100 between Jan and May 2026 (~30/month → ~140/day),
+        // causing 2m+ cold scans on 4000-file inboxes. Daemon archives read
+        // messages older than maxAgeDays every intervalHours.
+        // #3150: the read-only criterion never fired — inbox/ is shared fleet-wide,
+        // so mail addressed to another machine stays unread forever. Messages nobody
+        // opened in UNREAD_MAX_AGE_DAYS are archived too (moved, never deleted).
+        if (process.env.MESSAGE_AUTO_ARCHIVE_ENABLED === 'false') {
+            logger.info('📴 [AutoArchive] Désactivé via MESSAGE_AUTO_ARCHIVE_ENABLED=false');
+            return;
+        }
+        const { getMessageManager } = await import('./services/MessageManager.js');
+        const maxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_MAX_AGE_DAYS || '30', 10);
+        const intervalHours = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_INTERVAL_HOURS || '6', 10);
+        const unreadMaxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_UNREAD_MAX_AGE_DAYS || '90', 10);
+        getMessageManager().startAutoArchiveDaemon(maxAgeDays, intervalHours, unreadMaxAgeDays);
+    }
+
+    /**
      * Initialise le système de notifications push (lazy)
      */
     private async initializeNotificationSystem(): Promise<void> {
@@ -428,21 +470,6 @@ class RooStateManagerServer {
 
             const notificationService = new NotificationService();
             const messageManager = getMessageManager();
-
-            // #809: Start auto-archive daemon to prevent inbox unbounded growth.
-            // Volume grew x100 between Jan and May 2026 (~30/month → ~140/day),
-            // causing 2m+ cold scans on 4000-file inboxes. Daemon archives read
-            // messages older than maxAgeDays every intervalHours.
-            // #3150: the read-only criterion never fired — inbox/ is shared fleet-wide,
-            // so mail addressed to another machine stays unread forever. Messages nobody
-            // opened in UNREAD_MAX_AGE_DAYS are archived too (moved, never deleted).
-            const autoArchiveEnabled = process.env.MESSAGE_AUTO_ARCHIVE_ENABLED !== 'false';
-            if (autoArchiveEnabled) {
-                const maxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_MAX_AGE_DAYS || '30', 10);
-                const intervalHours = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_INTERVAL_HOURS || '6', 10);
-                const unreadMaxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_UNREAD_MAX_AGE_DAYS || '90', 10);
-                messageManager.startAutoArchiveDaemon(maxAgeDays, intervalHours, unreadMaxAgeDays);
-            }
 
             const minPriority = process.env.NOTIFICATIONS_MIN_PRIORITY || 'MEDIUM';
             notificationService.loadFilterRules([

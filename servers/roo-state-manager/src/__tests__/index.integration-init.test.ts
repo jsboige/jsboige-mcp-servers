@@ -332,6 +332,79 @@ describe('#3001 item 3 — idempotence guards on retry', () => {
     });
 });
 
+describe('#3292 — auto-archive daemon must not be hostage to notifications', () => {
+    // The daemon start used to live INSIDE initializeNotificationSystem(), after
+    // the NOTIFICATIONS_ENABLED gate. A machine disabling notifications (or a
+    // NotificationService init failure) silently lost inbox rotation and the
+    // shared pool grew again. It now runs as its own init step.
+
+    beforeEach(async () => {
+        const { StateManager, initializeBackgroundServices } = await getMocks();
+        StateManager.mockReset();
+        initializeBackgroundServices.mockReset();
+        StateManager.mockImplementation(() => ({
+            getState: () => makeMockState(),
+        }) as any);
+        initializeBackgroundServices.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+        delete process.env.NOTIFICATIONS_ENABLED;
+        delete process.env.ROOSYNC_SHARED_PATH;
+        delete process.env.MESSAGE_AUTO_ARCHIVE_ENABLED;
+    });
+
+    async function daemonStartMock() {
+        const mmMod = await import('../services/MessageManager.js');
+        const getMessageManager = vi.mocked(mmMod.getMessageManager);
+        const startAutoArchiveDaemon = vi.fn();
+        getMessageManager.mockReturnValue({ startAutoArchiveDaemon } as any);
+        return startAutoArchiveDaemon;
+    }
+
+    test('daemon starts with NOTIFICATIONS_ENABLED=false', async () => {
+        process.env.NOTIFICATIONS_ENABLED = 'false';
+        process.env.ROOSYNC_SHARED_PATH = 'X:\\tmp';
+        const startAutoArchiveDaemon = await daemonStartMock();
+
+        const instance = new RooStateManagerServer();
+        await (instance as any).initializeAsync();
+
+        expect(startAutoArchiveDaemon).toHaveBeenCalledTimes(1);
+    });
+
+    test('daemon starts with notifications on (no behavior change)', async () => {
+        process.env.ROOSYNC_SHARED_PATH = 'X:\\tmp';
+        const startAutoArchiveDaemon = await daemonStartMock();
+
+        const instance = new RooStateManagerServer();
+        await (instance as any).initializeAsync();
+
+        expect(startAutoArchiveDaemon).toHaveBeenCalledTimes(1);
+    });
+
+    test('MESSAGE_AUTO_ARCHIVE_ENABLED=false still opts out', async () => {
+        process.env.ROOSYNC_SHARED_PATH = 'X:\\tmp';
+        process.env.MESSAGE_AUTO_ARCHIVE_ENABLED = 'false';
+        const startAutoArchiveDaemon = await daemonStartMock();
+
+        const instance = new RooStateManagerServer();
+        await (instance as any).initializeAsync();
+
+        expect(startAutoArchiveDaemon).not.toHaveBeenCalled();
+    });
+
+    test('missing ROOSYNC_SHARED_PATH skips the daemon (no throw)', async () => {
+        delete process.env.ROOSYNC_SHARED_PATH;
+        const startAutoArchiveDaemon = await daemonStartMock();
+
+        const instance = new RooStateManagerServer();
+        await expect((instance as any).initializeAsync()).resolves.toBeUndefined();
+
+        expect(startAutoArchiveDaemon).not.toHaveBeenCalled();
+    });
+});
+
 describe('#3001 item 2 — behavioral anti-reintroduction guard', () => {
     // The source-regex tests in index.startup-init.test.ts (#2993(c) + PR #923) guard
     // against re-adding `await this.ensureInitialized()` in initializeAsync or
