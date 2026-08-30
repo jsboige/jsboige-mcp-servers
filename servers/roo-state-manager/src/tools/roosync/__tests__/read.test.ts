@@ -429,6 +429,36 @@ describe.sequential('roosyncRead', () => {
       expect(msg?.status).toBe('read');
     });
 
+    // #1017-bis : si markAsRead retourne false, la lecture doit réussir ET
+    // embarquer un avertissement inline explicite. Le spy est court (test
+    // scope) et restauré en finally pour ne pas polluer les autres tests du
+    // fichier (cf. leçon c.218 : vi.spyOn(prototype) global leak). NOTE :
+    // spy sur prototype et non sur instance car `roosyncRead` reconstruit
+    // `getMessageManager()` à chaque appel (= nouvelle instance du test).
+    test('should embed warning when markAsRead returns false (#1017-bis)', async () => {
+      const { MessageManager } = await import('../../../services/MessageManager.js');
+      const markAsReadSpy = vi.spyOn(MessageManager.prototype, 'markAsRead').mockResolvedValue(false);
+
+      try {
+        const result = await roosyncRead({
+          mode: 'message',
+          message_id: testMessageId,
+          mark_as_read: true
+        });
+
+        const text = (result.content[0] as any).text as string;
+        // Lecture OK : contenu du message présent.
+        expect(text).toContain(testMessageId);
+        // Avertissement #1017-bis inline.
+        expect(text).toContain('non persisté');
+        expect(text).toContain('#2287');
+        // Spy appelé avec le bon argument.
+        expect(markAsReadSpy).toHaveBeenCalledWith(testMessageId, expect.any(String));
+      } finally {
+        markAsReadSpy.mockRestore();
+      }
+    });
+
     test('should not mark message as read by default', async () => {
       await roosyncRead({
         mode: 'message',

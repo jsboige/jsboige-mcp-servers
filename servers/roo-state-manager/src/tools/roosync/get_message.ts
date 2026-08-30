@@ -127,10 +127,26 @@ Le message n'a pas été trouvé dans :
     }
 
     // Marquer comme lu si demandé (avec tracking per-machine #629)
+    // #1017-bis : capturer le retour de markAsRead. Si `false` strict
+    // (workspace guard #2287, message phantom, PG update raté sans fallback
+    // GDrive), le write n'a pas persisté : on NE MUTUALISE PAS le statut
+    // local (le message resterait `unread` côté store) et on embarque un
+    // avertissement inline dans la réponse. Test strict `=== false` pour
+    // rester compatible avec les implémentations/mocks qui retournent
+    // `undefined` (legacy).
+    let markReadWarning = '';
     if (args.mark_as_read && message.status === 'unread') {
       logger.debug('✉️ Marking message as read');
-      await messageManager.markAsRead(args.message_id, getLocalFullId());
-      message.status = 'read';
+      const marked = await messageManager.markAsRead(args.message_id, getLocalFullId());
+      if (marked === false) {
+        logger.warn('❌ markAsRead returned false — write non persistant', {
+          messageId: args.message_id,
+          reader: getLocalFullId(),
+        });
+        markReadWarning = '\n> ⚠️ **Marquage "lu" non persisté** : le write a échoué (workspace guard #2287, message phantom, ou PG update raté sans fallback GDrive). Le message reste dans votre inbox.\n';
+      } else {
+        message.status = 'read';
+      }
     }
 
     // Icônes pour le formatage
@@ -148,6 +164,11 @@ Le message n'a pas été trouvé dans :
     result += `**À :** ${message.to}\n`;
     result += `**Date :** ${formatDate(message.timestamp)}\n`;
     result += `**ID :** \`${message.id}\`\n`;
+
+    // #1017-bis : avertissement inline si le mark_read auto a échoué (lecture OK, write KO)
+    if (markReadWarning) {
+      result += markReadWarning;
+    }
 
     // Métadonnées optionnelles
     if (message.tags && message.tags.length > 0) {
