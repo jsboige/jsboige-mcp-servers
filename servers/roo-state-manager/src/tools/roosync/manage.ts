@@ -523,7 +523,7 @@ async function showStats(
     : '⚠️ jamais démarrée sur ce process';
   const lastRunLine = rotation.lastRun
     ? `Dernier passage : ${formatDate(rotation.lastRun.at)} — ${rotation.lastRun.archived} archivés en ${rotation.lastRun.durationMs} ms${rotation.lastRun.error ? ` (erreur : ${rotation.lastRun.error})` : ''}`
-    : 'Aucun passage depuis le démarrage de ce process (1er run 30 s après boot, puis toutes les 6 h)';
+    : `Aucun passage depuis le démarrage de ce process${rotation.config ? ` (1er run 30 s après boot, puis toutes les ${rotation.config.intervalHours} h)` : ''}`;
 
   return `📊 **Statistiques inbox - ${machineId}**
 

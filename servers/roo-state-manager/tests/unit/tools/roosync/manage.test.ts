@@ -280,6 +280,23 @@ describe('roosync_manage', () => {
             expect(text).toContain('jamais démarrée sur ce process');
         });
 
+        it('derives rotation interval from config, not hardcoded defaults (review #1056)', async () => {
+            mockGetInboxStats.mockResolvedValue({
+                total: 0, unread: 0, read: 0,
+                by_priority: {}, by_sender: {},
+            });
+            const mm = setupMM();
+            mm.getAutoArchiveStatus = vi.fn().mockReturnValue({
+                running: true,
+                config: { maxAgeDays: 30, intervalHours: 12, unreadMaxAgeDays: 90 },
+                lastRun: null,
+            });
+            const result = await roosyncManage({ action: 'stats' });
+            const text = result.content[0].text;
+            expect(text).toContain('toutes les 12 h');
+            expect(text).not.toContain('toutes les 6 h');
+        });
+
         it('stats json format carries pool_files and rotation (#3292)', async () => {
             mockGetInboxStats.mockResolvedValue({
                 total: 0, unread: 0, read: 0,
