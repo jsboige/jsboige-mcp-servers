@@ -142,6 +142,28 @@ describe('get_message', () => {
 			expect(mockMarkAsRead).toHaveBeenCalledWith('msg-100', expect.any(String));
 		});
 
+		test('surfaces warning when markAsRead returns false (#1017-bis)', async () => {
+			mockGetMessage.mockResolvedValue({ ...mockMsg });
+			mockMarkAsRead.mockResolvedValue(false);
+
+			const result = await getMessage({ message_id: 'msg-100', mark_as_read: true });
+
+			// #1017-bis : la lecture doit réussir (message retourné), MAIS un
+			// avertissement inline explicite doit signaler l'échec du write.
+			expect(result.content[0].text).toContain('msg-100');
+			expect(result.content[0].text).toContain('non persisté');
+			expect(result.content[0].text).toContain('#2287');
+		});
+
+		test('does not surface warning when markAsRead returns true (#1017-bis)', async () => {
+			mockGetMessage.mockResolvedValue({ ...mockMsg });
+			mockMarkAsRead.mockResolvedValue(true);
+
+			const result = await getMessage({ message_id: 'msg-100', mark_as_read: true });
+
+			expect(result.content[0].text).not.toContain('non persisté');
+		});
+
 		test('does not mark as read when not requested', async () => {
 			mockGetMessage.mockResolvedValue({ ...mockMsg, status: 'unread' });
 
