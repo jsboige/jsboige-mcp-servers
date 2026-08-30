@@ -88,7 +88,7 @@ describe('mark_message_read', () => {
 				id: 'msg-2', from: 'ai-01', to: 'po-2023',
 				subject: 'New Message', timestamp: '2026-01-01T00:00:00Z', status: 'read'
 			});
-		mockMarkAsRead.mockResolvedValue(undefined);
+		mockMarkAsRead.mockResolvedValue(true); // #1017: must be true (write persisted)
 
 		const result = await markMessageRead({ message_id: 'msg-2' });
 
@@ -96,6 +96,28 @@ describe('mark_message_read', () => {
 		expect(result.content[0].text).toContain('UNREAD');
 		expect(result.content[0].text).toContain('READ');
 		expect(mockMarkAsRead).toHaveBeenCalledWith('msg-2', expect.any(String));
+	});
+
+	test('reports failure when markAsRead returns false (#1017)', async () => {
+		// Repro issue #1017: write non persistant (workspace guard #2287, message
+		// introuvable, ou PG update raté). Avant le fix, le tool retournait un ACK
+		// succès — ce qui induisait l'agent en boucle de retraitement. Maintenant
+		// le tool surface le retour et retourne un message d'erreur explicite.
+		mockGetMessage.mockResolvedValue({
+			id: 'msg-3', from: 'ai-01', to: 'po-2023',
+			subject: 'Phantom', timestamp: '2026-01-01T00:00:00Z', status: 'unread'
+		});
+		mockMarkAsRead.mockResolvedValue(false);
+
+		const result = await markMessageRead({ message_id: 'msg-3' });
+
+		expect(result.content[0].text).toContain('Échec du marquage');
+		// Le mot "persisté" est présent dans la cause affichée. On évite le
+		// "pas" qui est entouré de ** markdown et pourrait casser le match.
+		expect(result.content[0].text).toContain('persisté');
+		// Crucially, the false-positive success marker must NOT appear.
+		expect(result.content[0].text).not.toContain('Message marqué comme lu');
+		expect(result.content[0].text).not.toContain('UNREAD → ✅ READ');
 	});
 
 	test('returns error on failure', async () => {
