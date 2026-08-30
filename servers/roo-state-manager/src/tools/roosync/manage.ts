@@ -497,6 +497,13 @@ async function showStats(
   const machineId = getLocalMachineId();
   const stats = await messageManager.getInboxStats(machineId);
 
+  // #3292: pool partagé + rotation. Rend visible ce qui ne l'était pas — le
+  // daemon d'auto-archive tourne depuis #809/#3150 mais était invisible, et
+  // l'issue a diagnostiqué le pool comme "jamais tourné" alors que la live
+  // montrait 0 fichier au-delà de la voie 90 j.
+  const pool = await messageManager.getInboxPoolAges();
+  const rotation = messageManager.getAutoArchiveStatus();
+
   if (format === 'json') {
     return JSON.stringify({
       machine_id: machineId,
@@ -505,9 +512,18 @@ async function showStats(
       read: stats.read,
       oldest_unread: stats.oldest_unread || null,
       by_priority: stats.by_priority,
-      by_sender: stats.by_sender
+      by_sender: stats.by_sender,
+      pool_files: pool,
+      rotation
     }, null, 2);
   }
+
+  const rotationLine = rotation.config
+    ? `${rotation.running ? '✅ active' : '⚠️ inactive'} — lus >${rotation.config.maxAgeDays} j, non-lus >${rotation.config.unreadMaxAgeDays} j, toutes les ${rotation.config.intervalHours} h`
+    : '⚠️ jamais démarrée sur ce process';
+  const lastRunLine = rotation.lastRun
+    ? `Dernier passage : ${formatDate(rotation.lastRun.at)} — ${rotation.lastRun.archived} archivés en ${rotation.lastRun.durationMs} ms${rotation.lastRun.error ? ` (erreur : ${rotation.lastRun.error})` : ''}`
+    : 'Aucun passage depuis le démarrage de ce process (1er run 30 s après boot, puis toutes les 6 h)';
 
   return `📊 **Statistiques inbox - ${machineId}**
 
@@ -525,6 +541,22 @@ ${Object.entries(stats.by_priority).map(([p, c]) => `| ${p} | ${c} |`).join('\n'
 
 ### Par expéditeur
 ${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).map(([s, c]) => `| ${s} | ${c} |`).join('\n') || '(aucun)'}
+
+### Pool partagé & rotation (#3292)
+
+Âge des fichiers \`messages/inbox/\` (pool commun à toute la flotte, toutes machines) :
+
+| Âge | Fichiers | Voie de rotation |
+|----------|--------|------------------|
+| 0-7 j | ${pool.d0_7} | grâce lus 7 j (archivage opportuniste à la lecture) |
+| 7-30 j | ${pool.d7_30} | survie morte (lus partis, restent les non-lus) |
+| 30-90 j | ${pool.d30_90} | dead-letter en attente de la voie 90 j |
+| >90 j | ${pool.d90_plus} | doit être 0 (daemon #3150) |
+| non datés | ${pool.undated} | noms sans horodatage msg-YYYYMMDDTHHMMSS |
+| **Total** | **${pool.total}** | |
+
+Rotation : ${rotationLine}
+${lastRunLine}
 
 ---
 

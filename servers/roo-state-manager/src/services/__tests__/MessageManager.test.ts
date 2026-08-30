@@ -1350,6 +1350,70 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('getAutoArchiveStatus (#3292 — rotation observability)', () => {
+    test('before any start: not running, no config, no last run', () => {
+      const status = messageManager.getAutoArchiveStatus();
+      expect(status.running).toBe(false);
+      expect(status.config).toBeNull();
+      expect(status.lastRun).toBeNull();
+    });
+
+    test('start records the config; stop keeps config + last run for post-mortem', () => {
+      messageManager.startAutoArchiveDaemon(30, 6, 90);
+      let status = messageManager.getAutoArchiveStatus();
+      expect(status.running).toBe(true);
+      expect(status.config).toEqual({ maxAgeDays: 30, intervalHours: 6, unreadMaxAgeDays: 90 });
+
+      messageManager.stopAutoArchiveDaemon();
+      status = messageManager.getAutoArchiveStatus();
+      // running:false WITH a config says "was started, then stopped" — not "never ran"
+      expect(status.running).toBe(false);
+      expect(status.config).toEqual({ maxAgeDays: 30, intervalHours: 6, unreadMaxAgeDays: 90 });
+    });
+  });
+
+  describe('getInboxPoolAges (#3292 — shared-pool age histogram)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    /** Drops a file with a controlled timestamp-encoded name straight into inbox/. */
+    const seedNamed = async (daysAgo: number, label: string): Promise<void> => {
+      const d = new Date(Date.now() - daysAgo * DAY_MS);
+      const stamp = d.toISOString().replace(/[-:]/g, '').slice(0, 15); // YYYYMMDDTHHMMSS
+      await fs.writeFile(
+        join(testSharedStatePath, 'messages/inbox', `msg-${stamp}-${label}.json`),
+        '{}',
+        'utf-8'
+      );
+    };
+
+    test('buckets by age from filenames, no file parse', async () => {
+      await seedNamed(1, 'fresh');       // 0-7
+      await seedNamed(15, 'mid');        // 7-30
+      await seedNamed(45, 'dead');       // 30-90
+      await seedNamed(120, 'ancient');   // >90
+      // Non-timestamp id + non-JSON entry: undated / ignored respectively
+      await fs.writeFile(join(testSharedStatePath, 'messages/inbox', 'msg-legacy-id.json'), '{}', 'utf-8');
+      await fs.writeFile(join(testSharedStatePath, 'messages/inbox', 'desktop.ini'), '[Shell]', 'utf-8');
+
+      const pool = await messageManager.getInboxPoolAges();
+
+      expect(pool).toEqual({
+        total: 5,        // 4 dated + 1 undated (desktop.ini excluded)
+        d0_7: 1,
+        d7_30: 1,
+        d30_90: 1,
+        d90_plus: 1,
+        undated: 1
+      });
+    });
+
+    test('empty/absent inbox returns zeroed buckets', async () => {
+      rmSync(join(testSharedStatePath, 'messages/inbox'), { recursive: true, force: true });
+      const pool = await messageManager.getInboxPoolAges();
+      expect(pool).toEqual({ total: 0, d0_7: 0, d7_30: 0, d30_90: 0, d90_plus: 0, undated: 0 });
+    });
+  });
+
   describe('workspace filtering (#2287)', () => {
     test('getMessage: allows reading messages targeted to caller machine', async () => {
       const msg = await messageManager.sendMessage(
