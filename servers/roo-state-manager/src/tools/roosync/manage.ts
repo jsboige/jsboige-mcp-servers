@@ -126,7 +126,32 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
 
   // Marquer comme lu (avec tracking per-machine #629, workspace-aware #2287)
   logger.info('✉️ Marking message as read');
-  await messageManager.markAsRead(args.message_id, getLocalFullId());
+  const marked = await messageManager.markAsRead(args.message_id, getLocalFullId());
+
+  // #1017: surface le retour de markAsRead. Un retour `false` (strict) =
+  // le write n'a pas atterri (workspace guard #2287, message introuvable,
+  // PG update raté sans fallback GDrive). On teste `=== false` strict
+  // plutôt que `!marked` pour rester compatible avec les implémentations
+  // et mocks existants qui retournent `undefined` (legacy).
+  if (marked === false) {
+    logger.warn('❌ markAsRead returned false — write non persistant', {
+      messageId: args.message_id,
+      reader: getLocalFullId(),
+    });
+    return `❌ **Échec du marquage comme lu**
+
+**ID :** \`${args.message_id}\`
+**Sujet :** ${message.subject}
+**De :** ${message.from}
+**À :** ${message.to}
+
+Le write n'a **pas** été persisté. Causes probables :
+- Workspace mismatch (#2287) : le reader (\`${getLocalFullId()}\`) ne couvre pas le destinataire du message
+- Message introuvable dans inbox/ ET archive/ (phantom ou auto-détruit)
+- PG update raté sans fallback GDrive (#1017)
+
+**Action recommandée** : vérifiez le destinataire, ré-essayez avec \`action: "message"\` pour confirmer l'état, ou ré-essayez après quelques secondes si le PG est temporairement indisponible.`;
+  }
 
   // Fire-and-forget heartbeat update: marking a message read proves the machine is active
   (await getRooSyncService()).getHeartbeatService()

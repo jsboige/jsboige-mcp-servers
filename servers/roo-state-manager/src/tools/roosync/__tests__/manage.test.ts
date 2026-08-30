@@ -31,12 +31,16 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
 
-// Mock getMessageManager to use test path (real getMessageManager uses require() which fails in vitest ESM)
+// Mock getMessageManager to use test path (real getMessageManager uses require() which fails in vitest ESM).
+// Module-level mutable holder: tests can swap `getMessageManager` to return a stub instance
+// for the duration of a single it(), without polluting MessageManager.prototype (which would
+// leak across forks/files and break sibling tests in tests/unit/tools/roosync/ — #1017 lesson).
+const moduleHolder: { instance: any } = { instance: null };
 vi.mock('../../../services/MessageManager.js', async () => {
   const actual = await vi.importActual('../../../services/MessageManager.js') as any;
   return {
     ...actual,
-    getMessageManager: () => new actual.MessageManager(testSharedStatePath),
+    getMessageManager: () => moduleHolder.instance ?? new actual.MessageManager(testSharedStatePath),
   };
 });
 
@@ -76,6 +80,7 @@ describe('roosyncManage', () => {
     }
 
     messageManager = new MessageManager(testSharedStatePath);
+    moduleHolder.instance = messageManager;
   });
 
   afterEach(async () => {
@@ -178,6 +183,32 @@ describe('roosyncManage', () => {
       expect((result.content[0] as any).text).toContain('Test Subject');
       expect((result.content[0] as any).text).toContain('sender-machine');
       expect((result.content[0] as any).text).toContain('test-machine');
+    });
+
+    test('should report failure when markAsRead returns false (#1017)', async () => {
+      // Repro issue #1017: faux ACK succès quand le write n'a pas atterri.
+      // On mocke markAsRead sur l'instance partagée (moduleHolder.instance) que
+      // getMessageManager() retourne au tool. Le spy d'instance est restauré
+      // dans le finally — pas de pollution de MessageManager.prototype, qui
+      // casserait les tests siblings sous tests/unit/tools/roosync/ (cf. CI
+      // run #2 où le spy prototype avait leaké).
+      const spy = vi.spyOn(messageManager, 'markAsRead').mockResolvedValue(false);
+
+      try {
+        const result = await roosyncManage({
+          action: 'mark_read',
+          message_id: unreadMessageId
+        });
+
+        expect((result.content[0] as any).text).toContain('Échec du marquage');
+        // Le mot "persisté" est présent dans la cause affichée. On évite le
+        // "pas" qui est entouré de ** markdown et pourrait casser le match.
+        expect((result.content[0] as any).text).toContain('persisté');
+        // Crucially, the false-positive success marker must NOT appear.
+        expect((result.content[0] as any).text).not.toContain('UNREAD → ✅ READ');
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
