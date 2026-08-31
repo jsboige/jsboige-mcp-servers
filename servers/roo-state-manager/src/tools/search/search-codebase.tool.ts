@@ -84,6 +84,11 @@ export function getWorkspaceCollectionVariants(workspacePath: string): string[] 
 		const upper = cleaned[0].toUpperCase() + cleaned.slice(1);
 		variants.add(upper);
 		variants.add(upper.replace(/\//g, '\\'));
+		// #3344: the uppercase-drive form must exist in BOTH separator styles —
+		// previously only cleaned's own separator was carried over, so a lowercase
+		// backslash input could reach the canonical fsPath hash but never the
+		// canonical forward-slash hash (convergence gap caught by the #3344 test).
+		variants.add(upper.replace(/\\/g, '/'));
 	}
 
 	// Generate collection names for each variant
@@ -98,10 +103,34 @@ export function getWorkspaceCollectionVariants(workspacePath: string): string[] 
  * Used when no hash variant matches, to handle unknown path formats.
  * #1085: The workspace path hashing is fragile across agents/environments.
  */
+/**
+ * #3344: bounded retry for transient transport failures on Qdrant calls.
+ *
+ * The reported failure signature: a single `fetch failed` on the FIRST Qdrant
+ * call of a codebase_search, while a diagnose 2 minutes later is fully green —
+ * i.e. a transient network event (connection pool race, TLS handshake hiccup),
+ * not a backend outage. One retry after a short backoff absorbs exactly that
+ * class; persistent failures still propagate to the classifier (which now
+ * distinguishes client-failure from Qdrant-down via the /healthz probe).
+ */
+const TRANSPORT_RETRY_DELAY_MS = parseInt(process.env.QDRANT_TRANSPORT_RETRY_DELAY_MS || '400');
+
+async function withTransportRetry<T>(fn: () => Promise<T>, retries = 1): Promise<T> {
+	try {
+		return await fn();
+	} catch (err) {
+		if (retries > 0 && isNetworkErrorLike(err)) {
+			await new Promise(r => setTimeout(r, TRANSPORT_RETRY_DELAY_MS));
+			return withTransportRetry(fn, retries - 1);
+		}
+		throw err;
+	}
+}
+
 export async function listWorkspaceCollections(): Promise<string[]> {
 	try {
 		const qdrant = getQdrantClient();
-		const response = await qdrant.getCollections();
+		const response = await withTransportRetry(() => qdrant.getCollections());
 		return response.collections
 			.map((c: any) => c.name)
 			.filter((name: string) => name.startsWith('ws-'));
@@ -697,7 +726,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 
 		for (const variant of collectionVariants) {
 			try {
-				const collectionInfo = await qdrant.getCollection(variant);
+				const collectionInfo = await withTransportRetry(() => qdrant.getCollection(variant));
 				if (collectionInfo.status !== undefined) {
 					collectionName = variant;
 					hashMatchedPointsCount = (collectionInfo as any)?.points_count ?? null;
@@ -906,7 +935,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// #2267: Use native Qdrant timeout (seconds) to prevent indefinite hangs.
 		// Follows #1275 convention used in task-searcher.ts and search-semantic.tool.ts.
 		const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
-		const searchResults = await qdrant.query(collectionName, {
+		const searchResults = await withTransportRetry(() => qdrant.query(collectionName, {
 			query: queryVector,
 			filter: filter,
 			score_threshold: effectiveMinScore,
@@ -919,7 +948,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			with_payload: {
 				include: ['filePath', 'codeChunk', 'startLine', 'endLine', 'pathSegments']
 			}
-		});
+		}));
 
 		// 6. Formater les résultats
 		// #2609/#2554: post-filter dead paths (orphans from rename/delete that the

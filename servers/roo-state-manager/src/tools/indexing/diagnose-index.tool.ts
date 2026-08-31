@@ -429,6 +429,13 @@ export async function handleDiagnoseSemanticIndex(
             const workspaceCounts: Record<string, number> = {};
             const fieldPresence: Record<string, number> = {};
             const samples: PayloadSample[] = [];
+            // #3344: workspace_name coverage broken down by source and machine — the
+            // global rate (49.1%) masked the real shape: 3.5% derivation gap (workspace
+            // present, name missing) + 48.2% points indexed with NO workspace at all,
+            // concentrated on specific lanes (myia-po-2024: 0/150 complete). Per-group
+            // coverage makes a lane at 0% visible in one diagnose call.
+            const coverageBySource: Record<string, { total: number; with_workspace_name: number }> = {};
+            const coverageByMachine: Record<string, { total: number; with_workspace_name: number }> = {};
 
             for (const point of points) {
                 const payload = point?.payload || {};
@@ -436,6 +443,18 @@ export async function handleDiagnoseSemanticIndex(
                 // source distribution
                 const src = (payload.source ?? '__unknown__') as string;
                 sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+
+                // #3344: per-group workspace_name coverage (source + machine)
+                const machine = (typeof payload.host_os === 'string' && payload.host_os)
+                    ? payload.host_os
+                    : '__unknown__';
+                const hasWsName = typeof payload.workspace_name === 'string' && payload.workspace_name.length > 0;
+                const srcGroup = (coverageBySource[src] ??= { total: 0, with_workspace_name: 0 });
+                srcGroup.total++;
+                if (hasWsName) srcGroup.with_workspace_name++;
+                const machGroup = (coverageByMachine[machine] ??= { total: 0, with_workspace_name: 0 });
+                machGroup.total++;
+                if (hasWsName) machGroup.with_workspace_name++;
 
                 // workspace_name distribution
                 const ws = payload.workspace_name;
@@ -476,6 +495,17 @@ export async function handleDiagnoseSemanticIndex(
                 fieldCoveragePct[f] = sampledCount > 0 ? +(count / sampledCount * 100).toFixed(1) : 0;
             }
 
+            // #3344: render per-group coverage sorted by group size (desc) — the
+            // largest lanes first so a 0% lane cannot hide at the bottom.
+            const toCoverage = (groups: Record<string, { total: number; with_workspace_name: number }>) =>
+                Object.fromEntries(Object.entries(groups)
+                    .sort((a, b) => b[1].total - a[1].total)
+                    .map(([k, v]) => [k, {
+                        total: v.total,
+                        with_workspace_name: v.with_workspace_name,
+                        pct: v.total > 0 ? +((v.with_workspace_name / v.total) * 100).toFixed(1) : 0,
+                    }]));
+
             diagnostics.details.deep_diagnostics = {
                 sample_size_requested: sampleSize,
                 sample_size_actual: sampledCount,
@@ -483,6 +513,9 @@ export async function handleDiagnoseSemanticIndex(
                 workspace_distribution_top: sortedWorkspaces,
                 workspace_distribution_distinct: Object.keys(workspaceCounts).filter(k => k !== '__missing__').length,
                 field_coverage_pct: fieldCoveragePct,
+                // #3344: per-lane coverage — a global rate masks a lane at 0%.
+                workspace_name_coverage_by_source: toCoverage(coverageBySource),
+                workspace_name_coverage_by_machine: toCoverage(coverageByMachine),
                 payload_samples: samples,
             };
 
@@ -615,8 +648,12 @@ export async function handleDiagnoseSemanticIndex(
         const dd = diagnostics.details.deep_diagnostics;
         if ((dd.field_coverage_pct?.workspace_name ?? 0) < 50) {
             recommendations.push(
-                'workspace_name peu populé. Vérifiez ChunkExtractor.ts ' +
-                '(populate workspace_name = path.basename(workspace) systématiquement).'
+                'workspace_name peu populé. #3344: distinguer les deux cohortes — ' +
+                '(a) points avec `workspace` mais sans `workspace_name` = trou de dérivation ' +
+                '(corrigé à l\'indexation + réparable), (b) points sans aucune coordonnée workspace = ' +
+                'émetteurs n\'envoyant pas de workspace (voir workspace_name_coverage_by_source/machine ' +
+                'pour identifier la lane). Lancer roosync_indexing(action: "repair_workspace", dry_run: true) ' +
+                'pour quantifier le réparable.'
             );
         }
         if (dd.source_distribution && (dd.source_distribution['__unknown__'] ?? 0) > sampleSize * 0.5) {

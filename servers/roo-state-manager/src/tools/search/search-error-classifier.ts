@@ -9,6 +9,7 @@ export type FailureMode =
 	| 'embedding_unreachable'    // POST embedding fail → service down or DNS
 	| 'embedding_timeout'        // embedding slow > timeout
 	| 'qdrant_unreachable'       // TCP RST / DNS fail / TLS fail
+	| 'qdrant_client_failure'    // #3344: transport failed BUT /healthz is UP → client/path-specific, not a Qdrant outage
 	| 'qdrant_proxy_drop'        // TLS OK + GET OK + POST search timeout (IIS/ARR pattern)
 	| 'qdrant_backend_slow'      // POST search 5xx or timeout > configured threshold
 	| 'qdrant_collection_missing'// 404 collection
@@ -86,6 +87,39 @@ async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; st
 }
 
 /**
+ * #3344: Unwrap the `cause` chain of a transport error.
+ *
+ * Node's undici wraps every low-level failure as `TypeError: fetch failed` with
+ * `.code` unset — the real errno (ENOTFOUND, ECONNRESET, ETIMEDOUT, TLS errors…)
+ * lives on `.cause` (and for DNS failures on `.cause.errors[i]` of an AggregateError).
+ * Without unwrapping, the classifier reported "network/TLS error: unknown", which
+ * is exactly the signature that made the #3344 intermittent failure undiagnosable.
+ *
+ * Returns the deepest informative { code, message } found on the cause chain,
+ * or null when the error carries no cause.
+ */
+export function unwrapTransportCause(error: unknown): { code: string; message: string } | null {
+	let cause = (error as any)?.cause;
+	let depth = 0;
+	while (cause && depth < 5) {
+		// AggregateError (DNS ENOTFOUND): individual errno entries sit on `.errors`.
+		const aggregateCodes: string[] = Array.isArray(cause.errors)
+			? cause.errors.map((e: any) => e?.code).filter((c: unknown) => typeof c === 'string' && c)
+			: [];
+		const code = (typeof cause.code === 'string' && cause.code)
+			|| aggregateCodes[0]
+			|| '';
+		const msg = typeof cause.message === 'string' ? cause.message : '';
+		if (code || msg) {
+			return { code, message: aggregateCodes.length > 1 ? msg : (msg || String(cause)) };
+		}
+		cause = cause.cause;
+		depth++;
+	}
+	return null;
+}
+
+/**
  * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
  */
 function isHttpServerError(error: unknown): boolean {
@@ -103,7 +137,11 @@ export async function classifySearchError(
 	operation: 'embedding' | 'search' | 'codebase_search'
 ): Promise<ClassifiedError> {
 	const errorMsg = error instanceof Error ? error.message : String(error);
-	const errorCode = (error as any)?.code || '';
+	// #3344: undici sets no `.code` on "fetch failed" — the errno lives on `.cause`.
+	const unwrapped = unwrapTransportCause(error);
+	const errorCode = (error as any)?.code || unwrapped?.code || '';
+	const causeMessage = unwrapped?.message || '';
+	const causeDetail = unwrapped ? `${errorCode || 'no_errno'}: ${causeMessage}` : '';
 	const errorStatus = (error as any)?.status || (error as any)?.response?.status;
 
 	// Auth failures (checked first — applies to all operations)
@@ -132,7 +170,7 @@ export async function classifySearchError(
 		if (isNetworkError(errorCode, errorMsg) || errorMsg.includes('fetch failed')) {
 			return {
 				mode: 'embedding_unreachable',
-				originalError: errorMsg,
+				originalError: causeDetail ? `${errorMsg} (cause: ${causeDetail})` : errorMsg,
 				message: 'Embedding service unreachable',
 				hint: `Check EMBEDDING_API_BASE_URL (${process.env.EMBEDDING_API_BASE_URL || 'not set'}). DNS/TCP failure.`,
 			};
@@ -150,13 +188,30 @@ export async function classifySearchError(
 
 	// Qdrant-level errors (search or codebase_search operations)
 	if (operation === 'search' || operation === 'codebase_search') {
-		// TCP/DNS/TLS failures → qdrant_unreachable
-		if (isNetworkError(errorCode, errorMsg) || errorMsg.includes('fetch failed')) {
+		// TCP/DNS/TLS failures → probe /healthz to distinguish a real Qdrant outage
+		// from a client/path-specific failure (#3344: diagnose was green while
+		// codebase_search failed — the two verdicts could not be told apart).
+		if (isNetworkError(errorCode, errorMsg) || isNetworkError(errorCode, causeMessage) || errorMsg.includes('fetch failed')) {
+			const originalWithCause = causeDetail ? `${errorMsg} (cause: ${causeDetail})` : errorMsg;
+			let healthProbe: { ok: boolean; latencyMs: number; status?: number } | null = null;
+			try {
+				healthProbe = await probeQdrantHealth();
+			} catch {
+				healthProbe = null;
+			}
+			if (healthProbe?.ok) {
+				return {
+					mode: 'qdrant_client_failure',
+					originalError: originalWithCause,
+					message: `Qdrant is UP (GET /healthz ${healthProbe.status} in ${healthProbe.latencyMs}ms) but the ${operation} transport failed — client/path-specific failure (transient network event or routing), NOT a Qdrant outage`,
+					hint: `Transport cause: ${causeDetail || 'unknown (no errno on the cause chain)'}. Qdrant is reachable from this process — do NOT treat this as backend-down. Retry the call; if it persists, inspect the proxy/TLS path between this client and QDRANT_URL (${process.env.QDRANT_URL || 'not set'}).`,
+				};
+			}
 			return {
 				mode: 'qdrant_unreachable',
-				originalError: errorMsg,
-				message: `Qdrant unreachable (network/TLS error: ${errorCode || 'unknown'})`,
-				hint: `Check QDRANT_URL (${process.env.QDRANT_URL || 'not set'}), DNS resolution, and TLS certificate.`,
+				originalError: originalWithCause,
+				message: `Qdrant unreachable (network/TLS error: ${errorCode || 'unknown'}${causeDetail ? ` — ${causeMessage}` : ''}; health probe also failed)`,
+				hint: `Check QDRANT_URL (${process.env.QDRANT_URL || 'not set'}), DNS resolution, and TLS certificate. The /healthz probe failed too → the backend or the network path is down from this machine.`,
 			};
 		}
 

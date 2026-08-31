@@ -307,37 +307,51 @@ describe('search-codebase.tool', () => {
 		// NOT be folded into collection_not_found (which masks an outage as a missing index
 		// and steers callers toward a wrong "re-index" remediation).
 		test('returns qdrant_unreachable when getCollection fails with a network error (#2636)', async () => {
-			mockQdrant.getCollection.mockRejectedValue(
-				Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' })
-			);
+			// #3344: the classifier now probes /healthz to distinguish outage vs client
+			// failure — stub the probe as dead so this test asserts the outage branch
+			// deterministically (independent of a real Qdrant reachable from CI/dev).
+			vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
+			try {
+				mockQdrant.getCollection.mockRejectedValue(
+					Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' })
+				);
 
-			const result = await handleCodebaseSearch({
-				query: 'test',
-				workspace: '/ws'
-			});
+				const result = await handleCodebaseSearch({
+					query: 'test',
+					workspace: '/ws'
+				});
 
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_unreachable');
-			expect((result as any).isError).toBe(true);
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('qdrant_unreachable');
+				expect((result as any).isError).toBe(true);
+			} finally {
+				vi.unstubAllGlobals();
+			}
 		});
 
 		// #2636: a Qdrant outage reached via the listWorkspaceCollections() fallback
 		// (variant loop sees genuine 404s, then getCollections() is down) must also
 		// surface as qdrant_unreachable rather than collection_not_found.
 		test('returns qdrant_unreachable when getCollections fails with a network error (#2636)', async () => {
-			mockQdrant.getCollection.mockRejectedValue(new Error('Not found')); // genuine 404 per variant
-			mockQdrant.getCollections.mockRejectedValue(
-				Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6333'), { code: 'ECONNREFUSED' })
-			);
+			// #3344: stub the /healthz probe as dead — outage branch, deterministic.
+			vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
+			try {
+				mockQdrant.getCollection.mockRejectedValue(new Error('Not found')); // genuine 404 per variant
+				mockQdrant.getCollections.mockRejectedValue(
+					Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6333'), { code: 'ECONNREFUSED' })
+				);
 
-			const result = await handleCodebaseSearch({
-				query: 'test',
-				workspace: '/ws'
-			});
+				const result = await handleCodebaseSearch({
+					query: 'test',
+					workspace: '/ws'
+				});
 
-			const parsed = JSON.parse(result.content[0].text);
-			expect(parsed.status).toBe('qdrant_unreachable');
-			expect((result as any).isError).toBe(true);
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('qdrant_unreachable');
+				expect((result as any).isError).toBe(true);
+			} finally {
+				vi.unstubAllGlobals();
+			}
 		});
 	});
 
@@ -1319,5 +1333,126 @@ describe('search-codebase.tool', () => {
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('embedding_unreachable');
 		});
+	});
+});
+
+// ============================================================
+// #3344 — transport resilience, hash convergence, filtered search
+// ============================================================
+
+describe('#3344 transport resilience + hash convergence', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockGetQdrantClient.mockReturnValue(mockQdrant);
+		mockExistsSync.mockReturnValue(true);
+		mockReaddirSync.mockReturnValue([]);
+	});
+
+	test('transient fetch failed on getCollection is retried once, search succeeds', async () => {
+		process.env.EMBEDDING_API_KEY = 'test-key';
+		try {
+			let calls = 0;
+			mockQdrant.getCollection.mockImplementation(async () => {
+				calls++;
+				if (calls === 1) {
+					const inner: any = new Error('read ECONNRESET'); inner.code = 'ECONNRESET';
+					const outer: any = new TypeError('fetch failed'); outer.cause = inner;
+					throw outer;
+				}
+				return { status: 'green', points_count: 10 };
+			});
+			mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: new Array(8).fill(0.1) }] });
+			mockQdrant.query.mockResolvedValue({ points: [] });
+
+			const result = await handleCodebaseSearch({ query: 'foo', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(calls).toBe(2); // exactly one retry, then success
+		} finally {
+			delete process.env.EMBEDDING_API_KEY;
+		}
+	});
+
+	test('persistent transport failure surfaces classified error with real errno', async () => {
+		const fetchMock = vi.fn().mockRejectedValue(new Error('probe refused'));
+		vi.stubGlobal('fetch', fetchMock);
+		try {
+			const inner: any = new Error('connect ETIMEDOUT 1.2.3.4:443'); inner.code = 'ETIMEDOUT';
+			const outer: any = new TypeError('fetch failed'); outer.cause = inner;
+			mockQdrant.getCollection.mockRejectedValue(outer);
+
+			const result = await handleCodebaseSearch({ query: 'foo', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(result.isError).toBe(true);
+			expect(parsed.status).toBe('qdrant_unreachable');
+			expect(parsed.message).toContain('ETIMEDOUT');
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	test('hash convergence: lowercase-backslash, forward-slash and canonical Windows fsPath forms converge', () => {
+		// Criterion added in #3344 (comment 15:11Z): the hash produced for the
+		// lowercase-backslash, forward-slash and canonical Windows fsPath forms must
+		// converge — every form's variant set contains the canonical fsPath hash, so
+		// whatever form the caller passes, the real indexed collection is reachable.
+		const fsPathCanonical = 'D:\\dev\\CoursIA-2';
+		const fwdSlash = 'D:/dev/CoursIA-2';
+		const lowerBackslash = 'd:\\dev\\CoursIA-2';
+		const lowerFwd = 'd:/dev/CoursIA-2';
+
+		const canonicalHash = getWorkspaceCollectionName(fsPathCanonical);
+		const fwdHash = getWorkspaceCollectionName(fwdSlash);
+
+		const vCanonical = getWorkspaceCollectionVariants(fsPathCanonical);
+		const vFwd = getWorkspaceCollectionVariants(fwdSlash);
+		const vLowerBack = getWorkspaceCollectionVariants(lowerBackslash);
+		const vLowerFwd = getWorkspaceCollectionVariants(lowerFwd);
+
+		// Canonical fsPath hash reachable from every input form
+		expect(vCanonical).toContain(canonicalHash);
+		expect(vFwd).toContain(canonicalHash);
+		expect(vLowerBack).toContain(canonicalHash);
+		expect(vLowerFwd).toContain(canonicalHash);
+		// Forward-slash canonical hash reachable too
+		expect(vCanonical).toContain(fwdHash);
+		expect(vLowerBack).toContain(fwdHash);
+		// Double-escaped input (JSON/MCP passing) also converges
+		const doubleEscaped = getWorkspaceCollectionVariants('d:\\\\dev\\\\CoursIA-2');
+		expect(doubleEscaped).toContain(canonicalHash);
+	});
+
+	test('filtered search on a CoursIA-2 workspace applies pathSegments filter and returns results', async () => {
+		process.env.EMBEDDING_API_KEY = 'test-key';
+		try {
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green', points_count: 42 });
+			mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: new Array(8).fill(0.1) }] });
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.75,
+					payload: { filePath: 'scripts/deploy.ps1', codeChunk: 'param($Workspace)', startLine: 1, endLine: 3 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({
+				query: 'coordination adjoint dispatch workflow',
+				workspace: 'D:\\dev\\CoursIA-2',
+				directory_prefix: 'scripts'
+			});
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.results_count).toBe(1);
+			// The directory filter must be translated into indexed pathSegments keys
+			expect(mockQdrant.query).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					filter: expect.objectContaining({
+						must: [{ key: 'pathSegments.0', match: { value: 'scripts' } }]
+					})
+				})
+			);
+		} finally {
+			delete process.env.EMBEDDING_API_KEY;
+		}
 	});
 });
