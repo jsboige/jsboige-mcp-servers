@@ -16,6 +16,8 @@ import {
   parseMachineWorkspace,
   matchesRecipient,
   normalizeWorkspaceId,
+  canonicalMachineId,
+  canonicalizeFullId,
   formatDate,
   getPriorityIcon,
   getStatusIcon,
@@ -250,6 +252,157 @@ describe('message-helpers', () => {
 
     test('returns simple name unchanged (lowercased)', () => {
       expect(normalizeWorkspaceId('roo-extensions')).toBe('roo-extensions');
+    });
+  });
+
+  describe('parseMachineWorkspace with canonicalization (#3292)', () => {
+    test('short-form machine returns canonical machineId', () => {
+      expect(parseMachineWorkspace('po-2024:roo-extensions')).toEqual({
+        machineId: 'myia-po-2024',
+        workspaceId: 'roo-extensions'
+      });
+      expect(parseMachineWorkspace('ai-01')).toEqual({
+        machineId: 'myia-ai-01'
+      });
+    });
+
+    test('case-insensitive short form', () => {
+      expect(parseMachineWorkspace('AI-01:roo-extensions').machineId).toBe('myia-ai-01');
+      expect(parseMachineWorkspace('Po-2024').machineId).toBe('myia-po-2024');
+    });
+
+    test('canonical input is unchanged', () => {
+      expect(parseMachineWorkspace('myia-po-2024:roo-extensions')).toEqual({
+        machineId: 'myia-po-2024',
+        workspaceId: 'roo-extensions'
+      });
+    });
+
+    test('unknown machine (e.g. agent) passes through', () => {
+      expect(parseMachineWorkspace('NanoClaw')).toEqual({ machineId: 'NanoClaw' });
+    });
+  });
+
+  describe('canonicalMachineId (#3292)', () => {
+    test('short form (no myia- prefix) maps to canonical', () => {
+      expect(canonicalMachineId('po-2024')).toBe('myia-po-2024');
+      expect(canonicalMachineId('po-2023')).toBe('myia-po-2023');
+      expect(canonicalMachineId('po-2025')).toBe('myia-po-2025');
+      expect(canonicalMachineId('po-2026')).toBe('myia-po-2026');
+      expect(canonicalMachineId('po-2027')).toBe('myia-po-2027');
+      expect(canonicalMachineId('ai-01')).toBe('myia-ai-01');
+      expect(canonicalMachineId('web1')).toBe('myia-web1');
+    });
+
+    test('case-insensitive lookup', () => {
+      expect(canonicalMachineId('AI-01')).toBe('myia-ai-01');
+      expect(canonicalMachineId('Po-2024')).toBe('myia-po-2024');
+      expect(canonicalMachineId('PO-2025')).toBe('myia-po-2025');
+      expect(canonicalMachineId('MyIA-AI-01')).toBe('myia-ai-01');
+      expect(canonicalMachineId('Web1')).toBe('myia-web1');
+      expect(canonicalMachineId('MyIA-Web1')).toBe('myia-web1');
+    });
+
+    test('already-canonical ids are unchanged', () => {
+      expect(canonicalMachineId('myia-po-2024')).toBe('myia-po-2024');
+      expect(canonicalMachineId('myia-ai-01')).toBe('myia-ai-01');
+    });
+
+    test('agent names pass through (no alias collision)', () => {
+      expect(canonicalMachineId('NanoClaw')).toBe('NanoClaw');
+      expect(canonicalMachineId('Hermes')).toBe('Hermes');
+      expect(canonicalMachineId('cluster-manager')).toBe('cluster-manager');
+    });
+
+    test('SHA-like / unknown values pass through (no false positive)', () => {
+      expect(canonicalMachineId('f75baded6fa94bfdc199e4aab78b3f97de86de32')).toBe(
+        'f75baded6fa94bfdc199e4aab78b3f97de86de32'
+      );
+      expect(canonicalMachineId('head')).toBe('head');
+      expect(canonicalMachineId('main')).toBe('main');
+      expect(canonicalMachineId('test-machine')).toBe('test-machine');
+    });
+
+    test('empty string passes through', () => {
+      expect(canonicalMachineId('')).toBe('');
+    });
+
+    test('"all" / "All" broadcast pass through', () => {
+      expect(canonicalMachineId('all')).toBe('all');
+      expect(canonicalMachineId('All')).toBe('All');
+    });
+  });
+
+  describe('canonicalizeFullId (#3292)', () => {
+    test('composite id: only machine portion is canonicalized', () => {
+      expect(canonicalizeFullId('po-2024:CoursIA')).toBe('myia-po-2024:CoursIA');
+      expect(canonicalizeFullId('ai-01:roo-extensions')).toBe('myia-ai-01:roo-extensions');
+    });
+
+    test('bare machine id: same as canonicalMachineId', () => {
+      expect(canonicalizeFullId('po-2024')).toBe('myia-po-2024');
+      expect(canonicalizeFullId('NanoClaw')).toBe('NanoClaw');
+    });
+
+    test('workspace part preserved verbatim (no lowercase / path normalization)', () => {
+      expect(canonicalizeFullId('po-2024:D:\\vllm')).toBe('myia-po-2024:D:\\vllm');
+      expect(canonicalizeFullId('ai-01:UPPER-WS')).toBe('myia-ai-01:UPPER-WS');
+    });
+
+    test('"all:workspace" passes through (broadcast routing)', () => {
+      expect(canonicalizeFullId('all:roo-extensions')).toBe('all:roo-extensions');
+      expect(canonicalizeFullId('All:roo-extensions')).toBe('All:roo-extensions');
+    });
+
+    test('id with multiple colons: only first colon splits', () => {
+      // The convention is machine:workspace; workspace names containing colons
+      // are not normalized by this function (preserved verbatim like before).
+      expect(canonicalizeFullId('po-2024:ns:with:colons')).toBe('myia-po-2024:ns:with:colons');
+    });
+  });
+
+  describe('matchesRecipient with canonicalization (#3292)', () => {
+    test('short-form "to" matches canonical localMachineId', () => {
+      // The bug: legacy messages with to="po-2024" never reached myia-po-2024.
+      expect(matchesRecipient('po-2024', 'myia-po-2024', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('ai-01', 'myia-ai-01', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('web1', 'myia-web1', 'roo-extensions')).toBe(true);
+    });
+
+    test('short-form "to" with workspace matches canonical localMachineId', () => {
+      expect(matchesRecipient('po-2024:roo-extensions', 'myia-po-2024', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('po-2024:other-ws', 'myia-po-2024', 'roo-extensions')).toBe(false);
+    });
+
+    test('short-form localMachineId still matches canonical "to"', () => {
+      // Defensive: if a test injects "po-2024" as localMachineId.
+      expect(matchesRecipient('myia-po-2024', 'po-2024', 'roo-extensions')).toBe(true);
+    });
+
+    test('case-insensitive short form matches canonical localMachineId', () => {
+      expect(matchesRecipient('PO-2024', 'myia-po-2024', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('AI-01', 'myia-ai-01', 'roo-extensions')).toBe(true);
+    });
+
+    test('non-matching machine still does not match (canonicalization is per-side)', () => {
+      expect(matchesRecipient('po-2025', 'myia-po-2024', 'roo-extensions')).toBe(false);
+      expect(matchesRecipient('myia-po-2025', 'myia-po-2024', 'roo-extensions')).toBe(false);
+    });
+
+    test('SHA / unknown machine still does not match (no false positive)', () => {
+      expect(matchesRecipient('f75baded6fa94bfdc199e4aab78b3f97de86de32', 'myia-po-2024', 'roo-extensions')).toBe(false);
+      expect(matchesRecipient('head', 'myia-po-2024', 'roo-extensions')).toBe(false);
+      expect(matchesRecipient('test-machine', 'myia-po-2024', 'roo-extensions')).toBe(false);
+    });
+
+    test('broadcast still matches any machine', () => {
+      expect(matchesRecipient('all', 'myia-po-2024', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('All', 'po-2024', 'roo-extensions')).toBe(true);
+    });
+
+    test('agent names still match exactly (no alias collision)', () => {
+      expect(matchesRecipient('NanoClaw', 'NanoClaw', 'roo-extensions')).toBe(true);
+      expect(matchesRecipient('NanoClaw', 'myia-ai-01', 'roo-extensions')).toBe(false);
     });
   });
 
