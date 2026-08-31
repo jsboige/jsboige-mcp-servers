@@ -10,9 +10,14 @@
  * Usage: npx vitest run --config vitest.config.ci.ts
  *
  * IMPORTANT: When adding new test exclusions here, also create a tracking
- * issue to fix the underlying test so it can run in CI.
+ * issue to fix the underlying test so it can run in CI, and re-run
+ * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Last audit: 2026-03-14 (29 files excluded - removed 8 stale entries, see #699)
+ * Exclusion census: 31 test-file entries + 4 tests-directory globs
+ * (canonical measure, script-extracted — per-entry reasons and effective
+ * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
+ *
+ * Last audit: 2026-08-31 (#3322) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import unitConfig from './vitest.config.unit.js';
@@ -35,9 +40,7 @@ export default mergeConfig(unitConfig, defineConfig({
       'tests/unit/workspace-filtering-diagnosis.test.ts',
       'tests/integration/hierarchy-real-data.test.ts',
       'tests/integration/integration.test.ts',
-      'tests/unit/services/roosync/FileLockManager.test.ts',
       'tests/unit/services/roosync/FileLockManager.simple.test.ts',
-      'tests/unit/services/roosync/FileLockManager.diagnostic.test.ts',
       'tests/unit/services/roosync/PresenceManager.integration.test.ts',
 
       // ===== SERVICE_MOCK: Exclusions removed 2026-05-14 (#1143 audit) =====

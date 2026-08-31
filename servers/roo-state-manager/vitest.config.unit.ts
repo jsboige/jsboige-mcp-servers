@@ -39,9 +39,7 @@ export default defineConfig({
       'tests/unit/parent-child-validation.test.ts',
       'tests/unit/skeleton-cache-reconstruction.test.ts',
       'tests/unit/workspace-filtering-diagnosis.test.ts',
-      'tests/unit/services/roosync/FileLockManager.test.ts',
       'tests/unit/services/roosync/FileLockManager.simple.test.ts',
-      'tests/unit/services/roosync/FileLockManager.diagnostic.test.ts',
       'tests/unit/services/roosync/PresenceManager.integration.test.ts'
     ],
     setupFiles: ['./tests/setup-env.ts', './tests/setup/jest.setup.js', './tests/setup/filelock.setup.js'],

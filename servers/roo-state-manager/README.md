@@ -20,7 +20,7 @@ npm run build && npx vitest run --config vitest.config.ci.ts
 | Config | Usage | Excludes |
 |--------|-------|----------|
 | `vitest.config.ts` | Local dev | Only e2e/timeouts |
-| `vitest.config.ci.ts` | CI (GitHub Actions) | + 33 platform-dependent test files |
+| `vitest.config.ci.ts` | CI (GitHub Actions) | + 31 declared test-file exclusions (census: [docs/CI-EXCLUSIONS-CENSUS.md](./docs/CI-EXCLUSIONS-CENSUS.md)) |
 
 ### CI failure notifications
 
