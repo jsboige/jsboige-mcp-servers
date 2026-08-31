@@ -164,4 +164,35 @@ describe('read-vscode-logs', () => {
 
 		expect(result.content[0].text).toContain('No relevant VS Code logs found');
 	});
+
+	test('reads ALL windows of a session, not only the lexicographically-highest one (#3341)', async () => {
+		// Session dirs
+		mockReaddir.mockResolvedValueOnce([
+			{ name: '20260215T100000', isDirectory: () => true }
+		]);
+		// 12 window dirs — l'ancien code ne lisait que windowDirs[0], choisi par
+		// localeCompare descendant (tri de chaînes) : window9 dès 10+ fenêtres
+		const windows = Array.from({ length: 12 }, (_, i) => ({ name: `window${i + 1}`, isDirectory: () => true }));
+		mockReaddir.mockResolvedValueOnce(windows);
+
+		for (let i = 1; i <= 12; i++) {
+			mockAccess.mockResolvedValueOnce(undefined); // renderer.log exists
+			mockReadFile.mockResolvedValueOnce(`renderer log line window${i}`);
+			mockAccess.mockRejectedValueOnce(new Error('ENOENT')); // exthost
+			mockAccess.mockRejectedValueOnce(new Error('ENOENT')); // main
+			mockAccess.mockRejectedValueOnce(new Error('ENOENT')); // nested exthost
+			mockReaddir.mockResolvedValueOnce([]); // exthost output dirs
+		}
+
+		const { readVscodeLogs } = await import('../read-vscode-logs.js');
+		const result = await readVscodeLogs.handler({ lines: 10 });
+
+		const text = result.content[0].text;
+		const rendererBlocks = text.match(/--- LOG: window\d+\/renderer ---/g) || [];
+		expect(rendererBlocks).toHaveLength(12);
+		expect(text).toContain('--- LOG: window12/renderer ---');
+		expect(text).toContain('renderer log line window12');
+		// Ordre numérique, pas lexicographique : bloc window2 avant bloc window10
+		expect(text.indexOf('--- LOG: window2/renderer ---')).toBeLessThan(text.indexOf('--- LOG: window10/renderer ---'));
+	});
 });

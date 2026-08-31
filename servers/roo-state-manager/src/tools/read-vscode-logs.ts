@@ -44,7 +44,7 @@ async function readLastLines(filePath: string, lineCount: number, filter?: strin
 
 export const readVscodeLogs = {
     name: 'read_vscode_logs',
-    description: 'Scans the VS Code log directory to automatically find and read the latest logs from the Extension Host, Renderer, and Roo-Code Output Channels.',
+    description: 'Scans the VS Code log directory to read the logs of EVERY window of each recent session: Extension Host, Renderer, and Roo-Code Output Channels. A crashed window is not necessarily the latest one.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -82,65 +82,70 @@ export const readVscodeLogs = {
                 const sessionPath = path.join(rootLogsPath, sessionDir.name);
                 const windowDirs = (await fs.readdir(sessionPath, { withFileTypes: true }).catch(() => []) || [])
                     .filter(d => d.isDirectory() && d.name.startsWith('window'))
-                    .sort((a, b) => b.name.localeCompare(a.name));
+                    .sort((a, b) => (parseInt(a.name.slice(6), 10) || 0) - (parseInt(b.name.slice(6), 10) || 0)); // Numeric order: window2 before window10
 
                 if (windowDirs.length > 0) {
-                    const latestWindowPath = path.join(sessionPath, windowDirs[0].name); // Most recent window in the session
-                    debugLog.push(`[DEBUG] Processing session ${sessionsProcessed + 1}/${maxSessions}: ${latestWindowPath}`);
+                    debugLog.push(`[DEBUG] Processing session ${sessionsProcessed + 1}/${maxSessions}: ${sessionPath} (${windowDirs.length} windows: ${windowDirs.map(d => d.name).join(', ')})`);
                     sessionsProcessed++;
 
-                    const logTargets = [
-                        { name: 'renderer', file: 'renderer.log' },
-                        { name: 'exthost', file: 'exthost.log' },
-                        { name: 'Main', file: 'main.log' }
-                    ];
+                    // Read EVERY window of the session: for crash diagnosis the interesting
+                    // window is the one that died — not the highest-numbered or latest one (#3341)
+                    for (const windowDir of windowDirs) {
+                        const windowPath = path.join(sessionPath, windowDir.name);
 
-                    // Standard Logs
-                    for (const target of logTargets) {
-                        const logPath = path.join(latestWindowPath, target.file);
+                        const logTargets = [
+                            { name: 'renderer', file: 'renderer.log' },
+                            { name: 'exthost', file: 'exthost.log' },
+                            { name: 'Main', file: 'main.log' }
+                        ];
+
+                        // Standard Logs
+                        for (const target of logTargets) {
+                            const logPath = path.join(windowPath, target.file);
+                            try {
+                                await fs.access(logPath); // Check if file exists
+                                const content = await readLastLines(logPath, lineCount, filter);
+                                allLogsContent.push({ title: `${windowDir.name}/${target.name}`, path: logPath, content });
+                                foundLogs = true;
+                            } catch (e) { /* File doesn't exist, ignore */ }
+                        }
+
+                        // Roo-Code Output Log (special search)
+                        const exthostPath = path.join(windowPath, 'exthost');
+
+                        // Also read nested exthost/exthost.log (tests expect this)
                         try {
-                            await fs.access(logPath); // Check if file exists
-                            const content = await readLastLines(logPath, lineCount, filter);
-                            allLogsContent.push({ title: target.name, path: logPath, content });
+                            const nestedExthostLog = path.join(exthostPath, 'exthost.log');
+                            await fs.access(nestedExthostLog);
+                            const nestedContent = await readLastLines(nestedExthostLog, lineCount, filter);
+                            allLogsContent.push({ title: `${windowDir.name}/exthost`, path: nestedExthostLog, content: nestedContent });
                             foundLogs = true;
-                        } catch (e) { /* File doesn't exist, ignore */ }
-                    }
+                        } catch (e) { /* ignore if not present */ }
 
-                    // Roo-Code Output Log (special search)
-                    const exthostPath = path.join(latestWindowPath, 'exthost');
+                        const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []) || [])
+                            .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'));
 
-                    // Also read nested exthost/exthost.log (tests expect this)
-                    try {
-                        const nestedExthostLog = path.join(exthostPath, 'exthost.log');
-                        await fs.access(nestedExthostLog);
-                        const nestedContent = await readLastLines(nestedExthostLog, lineCount, filter);
-                        allLogsContent.push({ title: 'exthost', path: nestedExthostLog, content: nestedContent });
-                        foundLogs = true;
-                    } catch (e) { /* ignore if not present */ }
+                        let latestRooLog = { path: '', mtime: new Date(0) };
+                        for (const outputDir of outputDirs) {
+                            const logFilesPath = path.join(exthostPath, outputDir.name);
+                            const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []) || [];
+                            for (const logFile of logFiles) {
+                                if (logFile.isFile() && /\d+-Roo-Code\.log$/.test(logFile.name)) {
+                                    const rooLogPath = path.join(logFilesPath, logFile.name);
+                                    const stats = await fs.stat(rooLogPath);
 
-                    const outputDirs = (await fs.readdir(exthostPath, { withFileTypes: true }).catch(() => []) || [])
-                        .filter(d => d.isDirectory() && d.name.startsWith('output_logging_'));
-
-                    let latestRooLog = { path: '', mtime: new Date(0) };
-                    for (const outputDir of outputDirs) {
-                        const logFilesPath = path.join(exthostPath, outputDir.name);
-                        const logFiles = await fs.readdir(logFilesPath, { withFileTypes: true }).catch(() => []) || [];
-                        for (const logFile of logFiles) {
-                            if (logFile.isFile() && /\d+-Roo-Code\.log$/.test(logFile.name)) {
-                                const rooLogPath = path.join(logFilesPath, logFile.name);
-                                const stats = await fs.stat(rooLogPath);
-
-                                if (stats.mtime > latestRooLog.mtime) {
-                                    latestRooLog = { path: rooLogPath, mtime: stats.mtime };
+                                    if (stats.mtime > latestRooLog.mtime) {
+                                        latestRooLog = { path: rooLogPath, mtime: stats.mtime };
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if (latestRooLog.path) {
-                        const content = await readLastLines(latestRooLog.path, lineCount, filter);
-                        allLogsContent.push({ title: 'Roo-Code Output', path: latestRooLog.path, content });
-                        foundLogs = true;
+                        if (latestRooLog.path) {
+                            const content = await readLastLines(latestRooLog.path, lineCount, filter);
+                            allLogsContent.push({ title: `${windowDir.name}/Roo-Code Output`, path: latestRooLog.path, content });
+                            foundLogs = true;
+                        }
                     }
 
                     // Continue to next session (removed break for multi-session search)
