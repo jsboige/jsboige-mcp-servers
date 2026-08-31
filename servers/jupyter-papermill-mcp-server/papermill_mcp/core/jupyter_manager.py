@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import subprocess
+import sys
 import uuid
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field
@@ -228,6 +229,7 @@ class JupyterManager:
             RuntimeError: If kernel fails to start
         """
         kernel_id = str(uuid.uuid4())
+        km: Optional[KernelManager] = None
 
         try:
             # Create kernel manager
@@ -258,6 +260,38 @@ class JupyterManager:
             return kernel_id
 
         except Exception as e:
+            # #3346: km.start_kernel() may have spawned the kernel process before
+            # the failure (e.g. IOException during the wait_for_ready handshake on
+            # slow-starting .NET kernels). The kernel is not registered yet, so
+            # nothing would ever shut it down -- kill it boundedly or the process
+            # leaks with no registry entry.
+            if km is not None:
+                # Tree-kill before the direct-child kill: a .NET kernelspec
+                # wrapper (dotnet.exe) has the real kernel as a grandchild.
+                tree_kill = await self._kill_process_tree(km)
+                if tree_kill and not tree_kill.get("killed"):
+                    self.logger.warning(
+                        f"#3346 process-tree kill after failed start of "
+                        f"'{kernel_name}': {tree_kill}"
+                    )
+                try:
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None, lambda: km.shutdown_kernel(now=True)
+                        ),
+                        timeout=15.0,
+                    )
+                    self.logger.info(
+                        f"Cleaned up spawned kernel process after failed start "
+                        f"of '{kernel_name}'"
+                    )
+                except Exception as cleanup_err:
+                    self.logger.error(
+                        f"#3346 failed to clean up spawned kernel after start "
+                        f"failure of '{kernel_name}' "
+                        f"(connection file: {getattr(km, 'connection_file', 'unknown')}): "
+                        f"{cleanup_err}"
+                    )
             error_msg = f"Failed to start kernel '{kernel_name}': {e}"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
@@ -392,6 +426,11 @@ class JupyterManager:
                 f"manage_kernel(action='restart') before executing new code."
             )
 
+        # #3346: these are read by the finally block below, so they must exist
+        # on every exit path (including exceptions raised before the loop).
+        status = "ok"
+        cancelled = False
+
         try:
             # Update status
             kernel_info.status = "busy"
@@ -495,47 +534,9 @@ class JupyterManager:
             if asyncio.get_event_loop().time() >= deadline:
                 status = "timeout"
                 self.logger.warning(f"Code execution timed out after {timeout}s")
-                # Interrupt the kernel to actually free it. Without this the kernel keeps
-                # running the (still-compiling) code, every subsequent call re-queues on a
-                # busy kernel and appears to hang indefinitely (the "stuck for hours" bug).
-                #
-                # #2718: km.interrupt_kernel() can itself block on Windows for
-                # dotnet-interactive kernels (interrupt_mode=signal) in the middle of a
-                # non-cooperative nuget restore -- the await never returns and the tool
-                # hangs past the deadline. Time-box the interrupt so we always return a
-                # bounded answer; if it times out, mark the kernel "unresponsive" so the
-                # next call doesn't re-queue on a (still) busy kernel.
-                interrupt_deadline_start = asyncio.get_event_loop().time()
-                interrupt_succeeded = False
-                try:
-                    await asyncio.wait_for(
-                        self.interrupt_kernel(kernel_id),
-                        timeout=5.0,
-                    )
-                    interrupt_succeeded = True
-                except asyncio.TimeoutError:
-                    elapsed = asyncio.get_event_loop().time() - interrupt_deadline_start
-                    self.logger.error(
-                        f"Interrupt kernel {kernel_id} timed out after {elapsed:.1f}s "
-                        f"-- kernel likely stuck in non-cooperative code path (e.g. .NET "
-                        f"nuget restore). Marking as 'unresponsive'."
-                    )
-                except Exception as ie:
-                    self.logger.error(
-                        f"Failed to interrupt kernel {kernel_id} after timeout: {ie}"
-                    )
-
-            # Update kernel info
-            # If we timed out AND the interrupt didn't succeed, mark the kernel
-            # "unresponsive" rather than "idle". The entry-point gate (top of
-            # execute_code) then refuses to re-queue on this still-busy kernel,
-            # breaking the original "stuck for hours" re-queue loop. Recovery is
-            # via restart_kernel() which resets status to "idle".
-            if status == "timeout" and not interrupt_succeeded:
-                kernel_info.status = "unresponsive"
-            else:
-                kernel_info.status = "idle"
-            kernel_info.last_activity = datetime.now()
+                # The bounded interrupt + status update now live in the finally
+                # block below (_finalize_execution), so they run on EVERY exit
+                # path -- including cancellation -- instead of only here (#3346).
 
             return ExecutionResult(
                 status=status,
@@ -547,10 +548,20 @@ class JupyterManager:
                 traceback=traceback,
             )
 
+        except asyncio.CancelledError:
+            # #3346: transport-level hard timeout or caller cancellation. CancelledError
+            # derives from BaseException, so it used to skip both the except below and
+            # the post-loop status update -- the kernel stayed 'busy' in the registry
+            # with a live OS process and nobody left to restart it (the zombie-kernel
+            # leak of the full-notebook path). Re-raise after the bounded cleanup in
+            # the finally block, which DOES run during cancellation unwinding.
+            cancelled = True
+            self.logger.error(
+                f"Execution on kernel {kernel_id} was cancelled mid-flight -- "
+                f"running bounded cleanup before the cancellation completes"
+            )
+            raise
         except Exception as e:
-            kernel_info.status = "idle"
-            kernel_info.last_activity = datetime.now()
-
             error_msg = f"Code execution failed: {e}"
             self.logger.error(error_msg)
 
@@ -562,6 +573,228 @@ class JupyterManager:
                 error_name="ExecutionError",
                 error_value=str(e),
             )
+        finally:
+            # #3346: bounded finalization for every exit path (ok / error / timeout /
+            # cancellation). Time-boxed so it can never hang the return or the
+            # cancellation. Status transitions:
+            #   - normal/error exit, or timeout with a cooperative interrupt -> 'idle'
+            #   - timeout with a non-cooperative kernel, caller present -> 'unresponsive'
+            #     (#2718 semantics preserved: registered, re-queue refused, manual
+            #     restart recovers)
+            #   - cancellation with a non-cooperative kernel -> force-stopped and
+            #     deregistered (#3346: nobody is left to restart it)
+            try:
+                cleanup_diag = await self._finalize_execution(
+                    kernel_id,
+                    kernel_info,
+                    timed_out=(status == "timeout"),
+                    cancelled=cancelled,
+                )
+                if cleanup_diag:
+                    self.logger.warning(
+                        f"#3346 kernel {kernel_id} cleanup: {cleanup_diag}"
+                    )
+            except Exception as finalize_err:
+                # Finalization must never mask the original outcome.
+                self.logger.error(
+                    f"#3346 kernel {kernel_id} finalize failed: {finalize_err}"
+                )
+            kernel_info.last_activity = datetime.now()
+
+    async def _finalize_execution(
+        self,
+        kernel_id: str,
+        kernel_info: "KernelInfo",
+        *,
+        timed_out: bool,
+        cancelled: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        #3346: bounded kernel finalization, called from execute_code's finally block.
+
+        Runs even while a CancelledError unwinds. Never hangs: the interrupt is
+        time-boxed (5s) and the escalated stop too (15s).
+
+        Returns a diagnostic dict when a cleanup ran, else None (plain exit).
+        """
+        if not timed_out and not cancelled:
+            kernel_info.status = "idle"
+            return None
+
+        # Interrupt the kernel to actually free it. Without this the kernel keeps
+        # running the (still-compiling) code, every subsequent call re-queues on a
+        # busy kernel and appears to hang indefinitely (the "stuck for hours" bug).
+        #
+        # #2718: km.interrupt_kernel() can itself block on Windows for
+        # dotnet-interactive kernels (interrupt_mode=signal) in the middle of a
+        # non-cooperative nuget restore -- time-box it. The shield protects the
+        # cleanup from the pending cancellation we may be unwinding.
+        interrupt_ok = False
+        interrupt_error: Optional[str] = None
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(self.interrupt_kernel(kernel_id)),
+                timeout=5.0,
+            )
+            interrupt_ok = True
+        except asyncio.TimeoutError:
+            interrupt_error = (
+                "interrupt timed out after 5.0s -- kernel stuck in a "
+                "non-cooperative code path (e.g. .NET nuget restore)"
+            )
+        except Exception as ie:
+            interrupt_error = f"interrupt failed: {ie}"
+
+        if interrupt_ok:
+            kernel_info.status = "idle"
+            return {"phase": "cleanup", "interrupt": "ok", "final_status": "idle"}
+
+        self.logger.error(
+            f"#3346 kernel {kernel_id} interrupt failed: {interrupt_error}"
+        )
+
+        if not cancelled:
+            # Caller is present: keep the kernel registered as 'unresponsive' (#2718).
+            # The entry-point gate refuses to re-queue on it; recovery is a manual
+            # restart, which resets the status to 'idle'.
+            kernel_info.status = "unresponsive"
+            return {
+                "phase": "cleanup",
+                "interrupt": interrupt_error,
+                "final_status": "unresponsive",
+                "recovery": "manage_kernel(action='restart')",
+            }
+
+        # Cancelled caller + non-cooperative kernel: nobody will restart this
+        # kernel, so leaving it registered busy/unresponsive leaks the process
+        # (#3346). Escalate to a bounded force-stop.
+        return await self._force_stop_kernel(kernel_id)
+
+    @staticmethod
+    def _kernel_pid(km: Any) -> Optional[int]:
+        """
+        #3346: best-effort extraction of the spawned kernel process PID from a
+        jupyter_client KernelManager (km.provisioner.process.pid, 8.x layout).
+        Returns None whenever anything is missing or not a real int PID.
+        """
+        try:
+            pid = km.provisioner.process.pid
+        except Exception:
+            return None
+        return pid if isinstance(pid, int) else None
+
+    async def _kill_process_tree(self, km: Any) -> Optional[Dict[str, Any]]:
+        """
+        #3346: kill the kernel's whole OS process tree on Windows.
+
+        jupyter_client's force-stop (LocalProvisioner SIGKILL path) terminates
+        only the process it spawned -- for the .NET kernelspec that is the thin
+        `dotnet.exe` wrapper, and the real kernel `dotnet-interactive.exe` is a
+        grandchild that survives as an orphan (po-2025 repro 2: registry clean,
+        process tree alive). `taskkill /F /T` walks the tree from the parent, so
+        it MUST run while the parent is still alive -- i.e. BEFORE any
+        direct-child kill. No-op on non-Windows platforms (POSIX relies on the
+        provisioner's process-group kill) and when no int PID is available.
+        """
+        if sys.platform != "win32":
+            return None
+        pid = self._kernel_pid(km)
+        if pid is None:
+            return None
+        try:
+            proc = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True,
+                        timeout=10,
+                    ),
+                ),
+                timeout=15.0,
+            )
+            killed = proc.returncode == 0
+            detail = (proc.stderr or proc.stdout or b"").decode(
+                errors="replace"
+            ).strip()
+            return {
+                "pid": pid,
+                "method": "taskkill /F /T",
+                "killed": killed,
+                "detail": detail[:200] if detail else None,
+            }
+        except Exception as e:
+            self.logger.warning(f"#3346 process-tree kill failed for pid {pid}: {e}")
+            return {
+                "pid": pid,
+                "method": "taskkill /F /T",
+                "killed": False,
+                "detail": str(e)[:200],
+            }
+
+    async def _force_stop_kernel(self, kernel_id: str) -> Dict[str, Any]:
+        """
+        #3346: bounded force-stop (shutdown now=True) of a non-cooperative kernel,
+        with registry removal. Last-resort cleanup when the caller is gone.
+
+        If the kill itself fails, the entry stays registered as 'unresponsive' so
+        a later manage_kernel(action='stop') can still recover it manually (this
+        is how the incident kernels were eventually reclaimed).
+        """
+        km = self._active_kernels.get(kernel_id)
+        info = self._kernel_info.get(kernel_id)
+        connection_file = info.connection_file if info else "unknown"
+        stopped = False
+        tree_kill: Optional[Dict[str, Any]] = None
+        if km is not None:
+            # Tree-kill first: taskkill /T needs a LIVE parent to reach the
+            # grandchildren (dotnet.exe -> dotnet-interactive.exe).
+            tree_kill = await self._kill_process_tree(km)
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, lambda: km.shutdown_kernel(now=True)
+                    ),
+                    timeout=15.0,
+                )
+                stopped = True
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"#3346 force-stop of kernel {kernel_id} timed out after 15s "
+                    f"(connection file: {connection_file}) -- manual kill required"
+                )
+            except Exception as se:
+                self.logger.error(
+                    f"#3346 force-stop of kernel {kernel_id} failed: {se} "
+                    f"(connection file: {connection_file}) -- manual kill required"
+                )
+
+        if stopped:
+            self._active_kernels.pop(kernel_id, None)
+            self._kernel_info.pop(kernel_id, None)
+            result = {
+                "phase": "cleanup",
+                "interrupt": "failed",
+                "stop": "stopped",
+                "final_status": "removed",
+            }
+            if tree_kill:
+                result["process_tree"] = tree_kill
+            return result
+
+        if info is not None:
+            info.status = "unresponsive"
+        result = {
+            "phase": "cleanup",
+            "interrupt": "failed",
+            "stop": "failed",
+            "final_status": "unresponsive",
+            "connection_file": connection_file,
+            "recovery": "manage_kernel(action='stop')",
+        }
+        if tree_kill:
+            result["process_tree"] = tree_kill
+        return result
 
     async def execute_code_streaming(
         self, kernel_id: str, code: str, timeout: float = 60.0
