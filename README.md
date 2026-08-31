@@ -9,7 +9,7 @@ Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités
 
 - **Workflow** (`.github/workflows/ci.yml`): build + vitest for roo-state-manager
 - **Branch protection**: CI must pass before merge on `main`
-- **Configs**: `vitest.config.ts` (dev) / `vitest.config.ci.ts` (CI, excludes 32 platform-dependent tests)
+- **Configs**: `vitest.config.ts` (dev) / `vitest.config.ci.ts` (CI, excludes 31 declared test-file entries — census: `servers/roo-state-manager/docs/CI-EXCLUSIONS-CENSUS.md`)
 
 ---
 
@@ -132,7 +132,7 @@ servers/
 
 1. **Build**: `npm run build` (serveurs TypeScript)
 2. **Tests**: `npx vitest run` (JAMAIS `npm test` — watch mode blocks)
-3. **CI config**: `npx vitest run --config vitest.config.ci.ts` (exclut 32 tests platform-dependants)
+3. **CI config**: `npx vitest run --config vitest.config.ci.ts` (exclut 31 fichiers de tests déclarés — recensement #3322 : `servers/roo-state-manager/docs/CI-EXCLUSIONS-CENSUS.md`)
 
 ---
 
