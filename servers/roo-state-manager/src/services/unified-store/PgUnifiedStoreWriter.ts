@@ -86,6 +86,8 @@ interface WriterMetrics {
   upsertsFailed: number;
   upsertsRetried: number;
   breakerOpens: number;
+  /** #3342: count of string values that had NUL bytes replaced with U+FFFD. */
+  nulSanitized: number;
   lastError?: string;
   lastErrorTs?: string;
 }
@@ -98,6 +100,8 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
   private breaker: CircuitBreaker;
   private metrics: WriterMetrics;
   private initialized = false;
+  /** #3342: warn about NUL sanitization once per writer instance (not per cycle). */
+  private nulWarned = false;
 
   // Retry config
   private readonly maxRetries: number;
@@ -112,6 +116,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       upsertsFailed: 0,
       upsertsRetried: 0,
       breakerOpens: 0,
+      nulSanitized: 0,
     };
     this.maxRetries = config.maxRetries ?? 2;
     this.baseDelayMs = config.baseDelayMs ?? 500;
@@ -565,6 +570,49 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
 
   // ─── Query Helpers ────────────────────────────────────────────
 
+  // ─── NUL sanitization (#3342) ─────────────────────────────────
+
+  /**
+   * PostgreSQL `text` rejects the NUL byte (0x00) — "invalid byte sequence
+   * for encoding UTF8: 0x00" — while JS strings (claude-code transcripts,
+   * tool results) can legitimately carry it. This is the single choke point
+   * at the writer boundary: every raw string bound to a text column passes
+   * through here and gets NUL replaced with U+FFFD (replacement character).
+   *
+   * The transformation is lossy and documented: persisted content may differ
+   * from source input by NUL → U+FFFD substitutions, and only by that.
+   * JSON-bound values (tool_calls, metadata) need no sanitization:
+   * JSON.stringify escapes \u0000, so stringified JSON never carries a raw NUL.
+   */
+  private static readonly NUL_RE = /\x00/g;
+  private static readonly NUL_REPLACEMENT = '\uFFFD';
+
+  private sanitizeText<T extends string | null | undefined>(value: T): T {
+    if (value === null || value === undefined) return value;
+    if (!value.includes('\x00')) return value;
+    if (!this.nulWarned) {
+      this.nulWarned = true;
+      console.warn(
+        '[PgUnifiedStoreWriter] NUL byte(s) found in payload — replacing with U+FFFD to satisfy PostgreSQL text (#3342). Subsequent occurrences counted in metrics.nulSanitized.'
+      );
+    }
+    this.metrics.nulSanitized++;
+    return value.replace(PgUnifiedStoreWriter.NUL_RE, PgUnifiedStoreWriter.NUL_REPLACEMENT) as T;
+  }
+
+  /**
+   * #3342: PostgreSQL data_exception class (SQLSTATE 22xxx — e.g. 22021
+   * character_not_in_repertoire, raised for NUL bytes in text) is
+   * deterministic: the same payload fails the same way forever. Retrying a
+   * validation error is wasted I/O. The message sniff is a fallback for
+   * callers/drivers that surface the error without a SQLSTATE code.
+   */
+  private static isDeterministicDataError(err: Error): boolean {
+    const code = (err as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && code.length >= 2 && code.slice(0, 2) === '22') return true;
+    return err.message.includes('invalid byte sequence for encoding');
+  }
+
   private async upsertConversationRow(client: pg.PoolClient, row: ConversationRow): Promise<void> {
     const sql = `
       INSERT INTO conversations (task_id, machine_id, harness, workspace, parent_task_id, title, first_ts, last_ts, msg_count, metadata)
@@ -581,12 +629,12 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
         metadata = COALESCE(EXCLUDED.metadata, conversations.metadata)
     `;
     const params = [
-      row.task_id,
-      row.machine_id,
-      row.harness,
-      row.workspace ?? null,
-      row.parent_task_id ?? null,
-      row.title ?? null,
+      this.sanitizeText(row.task_id),
+      this.sanitizeText(row.machine_id),
+      this.sanitizeText(row.harness),
+      this.sanitizeText(row.workspace ?? null),
+      this.sanitizeText(row.parent_task_id ?? null),
+      this.sanitizeText(row.title ?? null),
       row.first_ts ?? null,
       row.last_ts ?? null,
       row.msg_count,
@@ -606,11 +654,13 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     const timestamps: string[] = [];
 
     for (const row of rows) {
-      taskIds.push(row.task_id);
-      messageIds.push(row.message_id ?? null);
+      // #3342: raw text params pass through sanitizeText (NUL → U+FFFD);
+      // toolCalls below is JSON.stringify'd, which escapes \u0000 already.
+      taskIds.push(this.sanitizeText(row.task_id));
+      messageIds.push(this.sanitizeText(row.message_id ?? null));
       seqs.push(row.seq);
-      roles.push(row.role);
-      contents.push(row.content ?? null);
+      roles.push(this.sanitizeText(row.role));
+      contents.push(this.sanitizeText(row.content ?? null));
       // #2426 Phase C+: Guard jsonb[] cast — validate JSON before pushing to pg array
       // pg transforms JS string[] into Postgres array literal {val1,val2,...}
       // which breaks if strings contain commas, braces, quotes. Validate + stringify safely.
@@ -669,6 +719,20 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
         return;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+
+        // #3342: data-validation errors (PG SQLSTATE class 22, e.g. 22021 on
+        // NUL bytes) are deterministic — retrying the same payload cannot
+        // succeed. Fail fast: log, count, return. The breaker is NOT tripped:
+        // the database is healthy, the payload is not.
+        if (PgUnifiedStoreWriter.isDeterministicDataError(lastError)) {
+          this.metrics.upsertsFailed++;
+          this.metrics.lastError = lastError.message;
+          this.metrics.lastErrorTs = new Date().toISOString();
+          console.error(
+            `[PgUnifiedStoreWriter] ${label} failed (deterministic data error, not retried): ${lastError.message}`
+          );
+          return;
+        }
 
         if (attempt < this.maxRetries) {
           this.metrics.upsertsRetried++;

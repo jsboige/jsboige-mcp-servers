@@ -283,6 +283,135 @@ describe('PgUnifiedStoreWriter', () => {
       expect(convQuery![1][0]).toBe("'; DROP TABLE conversations; --");
     });
   });
+
+  // ─── #3342: NUL-byte sanitization + fail-fast on deterministic data errors ───
+
+  describe('#3342 NUL-byte sanitization', () => {
+    it('upserts a message containing NUL bytes — content sanitized to U+FFFD, succeeds first attempt', async () => {
+      await writer.init();
+      const nulMessage: MessageRow = {
+        task_id: 't-nul',
+        message_id: null,
+        seq: 0,
+        role: 'user',
+        content: 'before\x00after\x00tail',
+        tool_calls: null,
+        ts: '2026-08-31T11:32:20.907Z',
+      };
+      await writer.upsertMessages([nulMessage]);
+
+      const msgQuery = mockQuery.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('INSERT INTO messages'));
+      expect(msgQuery).toBeDefined();
+      // Param layout: [taskIds, messageIds, seqs, roles, contents, toolCalls, timestamps]
+      const contents = msgQuery![1][4] as (string | null)[];
+      expect(contents[0]).toBe('before\uFFFDafter\uFFFDtail');
+      expect(contents[0]).not.toContain('\x00');
+      // Relisible post-sanitization: no rejection path taken
+      expect(writer.getMetrics().upsertsSuccess).toBe(1);
+      expect(writer.getMetrics().upsertsFailed).toBe(0);
+      expect(writer.getMetrics().nulSanitized).toBe(1);
+    });
+
+    it('sanitizes NUL in conversation text fields (title) via the bundle path', async () => {
+      await writer.init();
+      await writer.upsertConversationOnly({ ...dummyConv, title: 'ti\x00tle' });
+
+      const convQuery = mockQuery.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('INSERT INTO conversations'));
+      expect(convQuery).toBeDefined();
+      // params layout: [..., title = index 5, ...]
+      expect(convQuery![1][5]).toBe('ti\uFFFDtle');
+    });
+
+    it('leaves NUL-free content untouched (no false sanitization, no metric bump)', async () => {
+      await writer.init();
+      await writer.upsertMessages(dummyMessages);
+
+      expect(writer.getMetrics().nulSanitized).toBe(0);
+      const msgQuery = mockQuery.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('INSERT INTO messages'));
+      expect((msgQuery![1][4] as (string | null)[])[0]).toBe('Hello');
+    });
+
+    it('JSON-bound tool_calls need no sanitization: JSON.stringify escapes NUL (\\u0000)', async () => {
+      await writer.init();
+      const nulToolMessage: MessageRow = {
+        task_id: 't-nul-json',
+        message_id: null,
+        seq: 0,
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ name: 'bash', args: { output: 'a\x00b' } }],
+        ts: '2026-08-31T11:32:20.907Z',
+      };
+      await writer.upsertMessages([nulToolMessage]);
+
+      const msgQuery = mockQuery.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('INSERT INTO messages'));
+      const toolCalls = msgQuery![1][5] as (string | null)[];
+      // Stringified JSON escapes \u0000 → the jsonb param carries no raw NUL
+      expect(toolCalls[0]).toBe(JSON.stringify([{ name: 'bash', args: { output: 'a\x00b' } }]));
+      expect(toolCalls[0]).not.toContain('\x00');
+      // content was null → no sanitization counter from this path
+      expect(writer.getMetrics().nulSanitized).toBe(0);
+    });
+  });
+
+  describe('#3342 fail-fast on deterministic data errors', () => {
+    it('does NOT retry a PG data-exception error (SQLSTATE 22021) and leaves the breaker CLOSED', async () => {
+      await writer.init();
+      const pgErr = Object.assign(
+        new Error('invalid byte sequence for encoding "UTF8": 0x00'),
+        { code: '22021' },
+      );
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO conversations')) throw pgErr;
+        return Promise.resolve({ rowCount: 1 });
+      });
+
+      await writer.upsertConversationOnly(dummyConv); // best-effort: must not throw
+
+      const metrics = writer.getMetrics();
+      expect(metrics.upsertsRetried).toBe(0); // fail-fast: no wasted retries
+      expect(metrics.upsertsFailed).toBe(1);
+      expect(metrics.lastError).toContain('invalid byte sequence');
+      // Deterministic payload error is not a DB-health signal — breaker untouched
+      expect(writer.getBreakerState()).toBe('CLOSED');
+      expect(metrics.breakerOpens).toBe(0);
+    });
+
+    it('fails fast on the canonical NUL message even without a SQLSTATE code', async () => {
+      await writer.init();
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO conversations')) {
+          throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
+        }
+        return Promise.resolve({ rowCount: 1 });
+      });
+
+      await writer.upsertConversationOnly(dummyConv);
+
+      expect(writer.getMetrics().upsertsRetried).toBe(0);
+      expect(writer.getMetrics().upsertsFailed).toBe(1);
+    });
+
+    it('still retries non-deterministic errors (no regression on transient path)', async () => {
+      await writer.init();
+      let callCount = 0;
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO conversations')) {
+          callCount++;
+          if (callCount === 1) {
+            throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+          }
+          return Promise.resolve({ rowCount: 1 });
+        }
+        return Promise.resolve({ rowCount: 1 });
+      });
+
+      await writer.upsertConversationOnly(dummyConv);
+
+      expect(writer.getMetrics().upsertsRetried).toBe(1);
+      expect(writer.getMetrics().upsertsSuccess).toBe(1);
+    });
+  });
 });
 
 // ─── Additional coverage: genuine untested branches (#815 Cluster B, po-2024) ───
