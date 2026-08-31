@@ -13,7 +13,7 @@ import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId } from '../utils/message-helpers.js';
 // Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
 // cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
@@ -740,6 +740,14 @@ export class MessageManager {
     }
   ): Promise<Message> {
     logger.info(`Sending message from ${from} to ${to}`);
+
+    // #3292 canonicalization: rewrite legacy short forms ("po-2024", "ai-01")
+    // and capitalization variants to their canonical machineId before any
+    // validation. Without this, every new message would re-pollute the inbox
+    // with non-canonical `to` values, defeating both the sharding layout and
+    // the matchesRecipient fix on the read side.
+    from = canonicalizeFullId(from);
+    to = canonicalizeFullId(to);
 
     // Validation anti-auto-messages (workspace-aware)
     // Same machine + same workspace = blocked
