@@ -84,6 +84,34 @@ class KernelService:
                 "success": True,
             }
 
+            # #3346: surface same-name kernels still busy/unresponsive from a prior
+            # run so the caller doesn't stack a new attempt on top of a leaked
+            # kernel (the incident stacked two .net-csharp kernels this way).
+            # Advisory only: a failure here must never fail the kernel start.
+            try:
+                lingering = [
+                    k
+                    for k in self.jupyter_manager.list_active_kernels()
+                    if k["kernel_name"] == kernel_name
+                    and k["kernel_id"] != kernel_id
+                    and k.get("status") in ("busy", "unresponsive")
+                ]
+                if lingering:
+                    result["warning"] = {
+                        "message": (
+                            f"{len(lingering)} kernel(s) '{kernel_name}' from a prior run "
+                            f"are still registered as busy/unresponsive"
+                        ),
+                        "kernels": lingering,
+                        "suggestion": (
+                            "Reclaim them with manage_kernel(action='stop'|'restart') "
+                            "before piling new attempts"
+                        ),
+                    }
+                    logger.warning(f"#3346 lingering kernels on start: {lingering}")
+            except Exception as warn_err:
+                logger.debug(f"#3346 lingering-kernel check skipped: {warn_err}")
+
             logger.info(
                 f"Successfully started kernel {kernel_name} with ID {kernel_id}"
             )
@@ -237,7 +265,10 @@ class KernelService:
             raise
 
     async def execute_notebook_in_kernel(
-        self, kernel_id: str, notebook_path: str
+        self,
+        kernel_id: str,
+        notebook_path: str,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Execute all code cells in a notebook using a specific kernel.
@@ -245,6 +276,10 @@ class KernelService:
         Args:
             kernel_id: ID of the kernel to use
             notebook_path: Path to the notebook to execute
+            timeout: Per-cell execution timeout in seconds (#3346: forwarded from
+                the tool call -- previously the caller's timeout was silently
+                dropped and the config default (900s) used, which exceeded the
+                transport hard timeout and guaranteed a mid-cell cancellation)
 
         Returns:
             Dictionary with execution results for all cells
@@ -254,11 +289,18 @@ class KernelService:
 
             from ..utils.file_utils import FileUtils
 
+            cell_timeout = (
+                float(timeout)
+                if timeout is not None
+                else float(self.config.papermill.timeout)
+            )
+
             # Read the notebook
             notebook = FileUtils.read_notebook(notebook_path)
 
             results = []
             total_execution_time = 0.0
+            cleanup_diag: Optional[Dict[str, Any]] = None
 
             # Execute each code cell
             for i, cell in enumerate(notebook.cells):
@@ -270,7 +312,7 @@ class KernelService:
                         cell_result = await self.jupyter_manager.execute_code(
                             kernel_id,
                             cell.source,
-                            timeout=self.config.papermill.timeout,
+                            timeout=cell_timeout,
                         )
 
                         cell_dict = {
@@ -285,6 +327,37 @@ class KernelService:
                                 cell_result, "execution_time", None
                             ),
                         }
+
+                        # #3346: a timed-out cell leaves the kernel potentially busy
+                        # or unresponsive (execute_code's finally already ran the
+                        # bounded interrupt). Report the post-cleanup kernel state
+                        # and stop the run if the kernel is not usable -- re-queueing
+                        # on a busy/unresponsive kernel is exactly the "stuck for
+                        # hours" failure mode.
+                        if cell_result.status == "timeout":
+                            info = self.jupyter_manager.get_kernel_info(kernel_id)
+                            kernel_status_after = (
+                                info["status"] if info else "removed"
+                            )
+                            cleanup_diag = {
+                                "phase": "interrupt",
+                                "failed_cell_index": i,
+                                "kernel_status": kernel_status_after,
+                                "result": {
+                                    "idle": "kernel_idle",
+                                    "unresponsive": "kernel_unresponsive_restart_required",
+                                    "removed": "kernel_removed",
+                                }.get(kernel_status_after, f"kernel_{kernel_status_after}"),
+                            }
+                            cell_dict["cleanup"] = cleanup_diag
+
+                            if kernel_status_after != "idle":
+                                logger.warning(
+                                    f"Stopping notebook execution after timeout in "
+                                    f"cell {i}: kernel status '{kernel_status_after}'"
+                                )
+                                results.append(cell_dict)
+                                break
 
                         total_execution_time += getattr(cell_result, "execution_time", 0.0)
                         results.append(cell_dict)
@@ -316,6 +389,9 @@ class KernelService:
             # Summary
             successful_cells = sum(1 for r in results if r["status"] == "ok")
             error_cells = sum(1 for r in results if r["status"] == "error")
+            # #3346: timeout cells are not 'error' -- counting them separately keeps
+            # the success flag honest (a run killed by a cell timeout is NOT a success).
+            timeout_cells = sum(1 for r in results if r["status"] == "timeout")
 
             result = {
                 "kernel_id": kernel_id,
@@ -326,10 +402,17 @@ class KernelService:
                 "executed_cells": len(results),
                 "successful_cells": successful_cells,
                 "error_cells": error_cells,
+                "timeout_cells": timeout_cells,
                 "total_execution_time": total_execution_time,
                 "results": results,
-                "success": error_cells == 0,
+                "success": error_cells == 0 and timeout_cells == 0,
             }
+
+            # #3346: name the failing cell, the phase and the cleanup outcome in the
+            # response so the caller knows whether the kernel survived.
+            if cleanup_diag is not None:
+                result["cleanup"] = cleanup_diag
+                result["timeout_cell_index"] = cleanup_diag["failed_cell_index"]
 
             logger.info(
                 f"Notebook execution completed: {successful_cells} successful, {error_cells} errors"
@@ -343,7 +426,11 @@ class KernelService:
             raise
 
     async def execute_notebook_cell(
-        self, notebook_path: str, cell_index: int, kernel_id: str
+        self,
+        notebook_path: str,
+        cell_index: int,
+        kernel_id: str,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Execute a specific cell from a notebook in a kernel.
@@ -352,6 +439,8 @@ class KernelService:
             notebook_path: Path to the notebook
             cell_index: Index of the cell to execute
             kernel_id: ID of the kernel to use
+            timeout: Execution timeout in seconds (#3346: forwarded from the tool
+                call instead of silently using the config default)
 
         Returns:
             Dictionary with cell execution result
@@ -394,7 +483,13 @@ class KernelService:
 
             # Execute the cell
             cell_result = await self.jupyter_manager.execute_code(
-                kernel_id, cell.source, timeout=self.config.papermill.timeout
+                kernel_id,
+                cell.source,
+                timeout=(
+                    float(timeout)
+                    if timeout is not None
+                    else float(self.config.papermill.timeout)
+                ),
             )
 
             result = {
@@ -581,14 +676,20 @@ class KernelService:
         elif mode == "notebook":
             if path is None:
                 raise ValueError("path is required for mode='notebook'")
-            return await self.execute_notebook_in_kernel(kernel_id, path)
+            # #3346: forward the caller's timeout as the per-cell budget (it was
+            # silently dropped here before, see execute_notebook_in_kernel).
+            return await self.execute_notebook_in_kernel(
+                kernel_id, path, timeout=float(timeout)
+            )
 
         elif mode == "notebook_cell":
             if path is None or cell_index is None:
                 raise ValueError(
                     "path and cell_index are required for mode='notebook_cell'"
                 )
-            return await self.execute_notebook_cell(path, cell_index, kernel_id)
+            return await self.execute_notebook_cell(
+                path, cell_index, kernel_id, timeout=float(timeout)
+            )
 
         else:
             raise ValueError(f"Invalid mode: {mode}")
