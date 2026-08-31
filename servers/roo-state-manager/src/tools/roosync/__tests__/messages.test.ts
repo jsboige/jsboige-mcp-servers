@@ -191,6 +191,32 @@ describe('roosync_messages dispatcher', () => {
       );
     });
 
+    // #3351: from/subject_contains étaient acceptés par le schéma plat puis
+    // silencieusement droppés par le case 'inbox' — la trappe originelle.
+    test('#3351 inbox passes from/subject_contains to roosyncRead', async () => {
+      await roosyncMessages({ action: 'inbox', from: 'myia-ai-01', subject_contains: 'rapport' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'inbox',
+          from: 'myia-ai-01',
+          subject_contains: 'rapport'
+        })
+      );
+    });
+
+    test('#3351 inbox rejects bulk-only params loudly (never silently dropped)', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', tag: 'INFO' } as any)
+      ).rejects.toThrow(/bulk-only.*tag/);
+      await expect(
+        roosyncMessages({ action: 'inbox', before_date: '2026-08-01' } as any)
+      ).rejects.toThrow(/bulk-only.*before_date/);
+      await expect(
+        roosyncMessages({ action: 'inbox', priority: 'HIGH' } as any)
+      ).rejects.toThrow(/bulk-only.*priority/);
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
     test('message routes to roosyncRead with mode=message', async () => {
       await roosyncMessages({ action: 'message', message_id: 'msg-1' });
       expect(mockRead).toHaveBeenCalledWith(

@@ -240,6 +240,123 @@ describe.sequential('roosyncRead', () => {
   });
 
   // ============================================================
+  // Tests pour mode: 'inbox' — sender/subject filters (#3351)
+  // ============================================================
+
+  describe('mode: inbox — sender/subject filters (#3351)', () => {
+    test('filters by sender (from) and echoes the active filter', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Rapport hebdo', 'B1', 'MEDIUM');
+      await messageManager.sendMessage('sender-2', 'test-machine', 'Alerte prod', 'B2', 'HIGH');
+
+      const result = await roosyncRead({ mode: 'inbox', from: 'sender-1' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Boîte de Réception');
+      expect(text).toContain('🔎 **Filtre :**');
+      expect(text).toContain('from: sender-1');
+      expect(text).toContain('sender-1');
+      expect(text).toContain('Rapport hebdo');
+      expect(text).not.toContain('sender-2');
+      // Counts décrivent le SET FILTRÉ, pas l'inbox entière (sinon le filtre
+      // no-op de #3351 se lit comme un filtre actif).
+      expect(text).toContain('1 message');
+    });
+
+    test('from filter is case-insensitive (mirrors bulkOperation semantics)', async () => {
+      await messageManager.sendMessage('myia-ai-01', 'test-machine', 'Sujet', 'B', 'LOW');
+
+      const result = await roosyncRead({ mode: 'inbox', from: 'MYIA-AI-01' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('myia-ai-01');
+      expect(text).toContain('1 message');
+    });
+
+    test('filters by subject_contains (substring, case-insensitive)', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Rapport hebdo', 'B1', 'LOW');
+      await messageManager.sendMessage('sender-2', 'test-machine', 'Alerte prod', 'B2', 'HIGH');
+
+      const result = await roosyncRead({ mode: 'inbox', subject_contains: 'RAPPORT' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Rapport hebdo');
+      expect(text).not.toContain('Alerte prod');
+      expect(text).toContain('1 message');
+    });
+
+    test('from + subject_contains combine with AND logic', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Rapport A', 'B', 'LOW');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Alerte B', 'B', 'LOW');
+      await messageManager.sendMessage('sender-2', 'test-machine', 'Rapport C', 'B', 'LOW');
+
+      const result = await roosyncRead({ mode: 'inbox', from: 'sender-1', subject_contains: 'Rapport' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Rapport A');
+      expect(text).not.toContain('Alerte B');
+      expect(text).not.toContain('sender-2');
+      expect(text).toContain('1 message');
+    });
+
+    test('zero match returns explicit filtered-empty response naming the filter', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Sujet', 'B', 'LOW');
+
+      const result = await roosyncRead({ mode: 'inbox', from: 'ghost-machine' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Aucun message ne correspond au filtre');
+      expect(text).toContain('from: ghost-machine');
+    });
+
+    test('limit slices the FILTERED set — counts describe the filtered total', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg1', 'B', 'LOW');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg2', 'B', 'LOW');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg3', 'B', 'LOW');
+      await messageManager.sendMessage('sender-2', 'test-machine', 'Autre', 'B', 'LOW');
+
+      const result = await roosyncRead({ mode: 'inbox', from: 'sender-1', limit: 2 });
+      const text = (result.content[0] as any).text as string;
+
+      // 3 messages match sender-1 : total filtré = 3 (pas 4 = inbox entière),
+      // table limitée à 2. Si le filtre était droppé (#3351 originel), le
+      // total rendu serait 4.
+      expect(text).toContain('3 message');
+      expect(text).not.toContain('sender-2');
+    });
+
+    test('page/per_page slice the FILTERED set', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg1', 'B', 'LOW');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg2', 'B', 'LOW');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg3', 'B', 'LOW');
+      await messageManager.sendMessage('sender-2', 'test-machine', 'Autre', 'B', 'LOW');
+
+      // 3 matchs filtrés, per_page 3 → page 2 = slice vide. Si la pagination
+      // s'appliquait au pool NON filtré, la page 2 montrerait sender-2.
+      const result = await roosyncRead({
+        mode: 'inbox', from: 'sender-1', page: 2, per_page: 3
+      });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Aucun message pour le filtre');
+      expect(text).not.toContain('sender-2');
+      expect(text).toContain('3 message');
+    });
+
+    test('json format echoes filters_applied', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Rapport', 'B', 'LOW');
+
+      const result = await roosyncRead({
+        mode: 'inbox', from: 'sender-1', subject_contains: 'rapport', format: 'json'
+      });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('"filters_applied"');
+      expect(text).toContain('"from": "sender-1"');
+      expect(text).toContain('"subject_contains": "rapport"');
+    });
+  });
+
+  // ============================================================
   // Tests pour mode: 'inbox' — workspace & to_machine overrides (#1498)
   // ============================================================
 
