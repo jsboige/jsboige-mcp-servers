@@ -13,6 +13,12 @@ after timeout/crash. Root causes covered here:
 3. the notebook path dropped the caller's timeout (config default 900s used
    instead) and returned no cleanup diagnostics;
 4. nothing surfaced same-name lingering kernels on a new start.
+
+Repro 2 (same day, follow-up comment): after a transport-timeout of a
+`notebook_cell` call, the registry said `not_found` while the OS process tree
+stayed alive -- jupyter_client's force-stop only terminates the process it
+spawned (the dotnet.exe wrapper), orphaning the real kernel
+(dotnet-interactive.exe grandchild). Covered by the process-tree kill tests.
 """
 
 import asyncio
@@ -382,3 +388,183 @@ def test_transport_hard_timeout_proportional_for_notebook(tmp_path):
         _transport_hard_timeout("notebook", "Z:/nope/missing.ipynb", 420, 3600)
         == 450
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. Repro 2: transport-timeout of notebook_cell -> registry removal AND
+#    process-tree termination (the registry alone can look clean while the
+#    dotnet.exe wrapper's children survive jupyter_client's direct-child kill)
+# ---------------------------------------------------------------------------
+
+
+def _fake_taskkill_ok():
+    """CompletedProcess-like mock for a successful taskkill."""
+    return MagicMock(returncode=0, stderr=b"", stdout=b"SUCCESS: process killed.\r\n")
+
+
+@pytest.mark.asyncio
+async def test_transport_timeout_deregisters_and_kills_process_tree(
+    manager_with_busy_kernel,
+):
+    """#3346 repro 2: after a transport-timeout cancellation of a
+    notebook_cell-style call on a non-cooperative kernel, BOTH must hold:
+    (a) the kernel is removed from the registry, and (b) the OS process tree
+    of the spawned kernel is terminated (taskkill /F /T), not just the direct
+    child that jupyter_client kills."""
+    mgr, kernel_id, km_mock = manager_with_busy_kernel
+    # dotnet.exe wrapper PID as jupyter_client 8.x exposes it
+    km_mock.provisioner.process.pid = 57328
+
+    async def hang_interrupt(kid):
+        await asyncio.sleep(1000)  # non-cooperative .NET kernel
+
+    with patch("sys.platform", "win32"), patch(
+        "papermill_mcp.core.jupyter_manager.subprocess.run",
+        return_value=_fake_taskkill_ok(),
+    ) as tk:
+        with patch.object(mgr, "interrupt_kernel", side_effect=hang_interrupt):
+            # Simulates the transport hard timeout cancelling the tool call
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    mgr.execute_code(kernel_id, "new Model(modelDir)", timeout=900),
+                    timeout=1,
+                )
+
+        # (a) registry removal
+        assert kernel_id not in mgr._kernel_info
+        assert kernel_id not in mgr._active_kernels
+        # (b) process-tree termination -- /T is what reaches the grandchild
+        tk.assert_called_once()
+        args = tk.call_args.args[0]
+        assert args[:4] == ["taskkill", "/F", "/T", "/PID"]
+        assert "57328" in args
+        km_mock.shutdown_kernel.assert_called_once_with(now=True)
+
+
+@pytest.mark.asyncio
+async def test_force_stop_skips_taskkill_without_real_pid(
+    manager_with_busy_kernel,
+):
+    """#3346: no int PID reachable (mocked/absent provisioner) -> tree-kill is
+    skipped (never spawns a bogus taskkill), shutdown still runs."""
+    mgr, kernel_id, km_mock = manager_with_busy_kernel
+    # provisioner.process.pid stays a Mock -> _kernel_pid returns None
+
+    async def hang_interrupt(kid):
+        await asyncio.sleep(1000)
+
+    with patch("sys.platform", "win32"), patch(
+        "papermill_mcp.core.jupyter_manager.subprocess.run"
+    ) as tk:
+        with patch.object(mgr, "interrupt_kernel", side_effect=hang_interrupt):
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    mgr.execute_code(kernel_id, "#r \"nuget: X\"", timeout=420),
+                    timeout=1,
+                )
+
+        tk.assert_not_called()
+        km_mock.shutdown_kernel.assert_called_once_with(now=True)
+        assert kernel_id not in mgr._kernel_info
+
+
+@pytest.mark.asyncio
+async def test_force_stop_survives_taskkill_failure(manager_with_busy_kernel):
+    """#3346: taskkill failing (access denied / pid gone) must not prevent the
+    jupyter_client shutdown + deregistration; the outcome reports killed=False."""
+    mgr, kernel_id, km_mock = manager_with_busy_kernel
+    km_mock.provisioner.process.pid = 57328
+
+    with patch("sys.platform", "win32"), patch(
+        "papermill_mcp.core.jupyter_manager.subprocess.run",
+        side_effect=OSError("access denied"),
+    ):
+        result = await mgr._force_stop_kernel(kernel_id)
+
+    # Shutdown still ran and the kernel is deregistered despite taskkill failing
+    assert kernel_id not in mgr._kernel_info
+    km_mock.shutdown_kernel.assert_called_once_with(now=True)
+    assert result["process_tree"]["killed"] is False
+    assert result["final_status"] == "removed"
+
+
+@pytest.mark.asyncio
+async def test_start_kernel_failure_kills_process_tree():
+    """#3346: a start that fails after spawning must tree-kill the wrapper
+    (dotnet.exe -> dotnet-interactive.exe) before the direct-child shutdown."""
+    mgr = JupyterManager()
+
+    with patch("papermill_mcp.core.jupyter_manager.KernelManager") as KM:
+        km_mock = MagicMock()
+        km_mock.client.return_value.wait_for_ready.side_effect = OSError(
+            "IOException during handshake"
+        )
+        km_mock.provisioner.process.pid = 29344
+        KM.return_value = km_mock
+
+        with patch("sys.platform", "win32"), patch(
+            "papermill_mcp.core.jupyter_manager.subprocess.run",
+            return_value=_fake_taskkill_ok(),
+        ) as tk:
+            with pytest.raises(RuntimeError, match="Failed to start kernel"):
+                await mgr.start_kernel(".net-csharp")
+
+            tk.assert_called_once()
+            assert "/T" in tk.call_args.args[0]
+            km_mock.shutdown_kernel.assert_called_once_with(now=True)
+
+    assert len(mgr._kernel_info) == 0
+    assert len(mgr._active_kernels) == 0
+
+
+# ---------------------------------------------------------------------------
+# 7. Legacy tool regression: execute_notebook_cell kwarg mismatch (#3346 comment)
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyExecuteNotebookCellKwarg:
+    @pytest.fixture
+    def registered_tools(self):
+        from papermill_mcp.tools.execution_tools import register_execution_tools
+        from mcp.server.fastmcp import FastMCP
+
+        app = MagicMock(spec=FastMCP)
+        captured = {}
+
+        def tool_decorator():
+            def wrapper(func):
+                captured[func.__name__] = func
+                return func
+
+            return wrapper
+
+        app.tool.side_effect = tool_decorator
+        register_execution_tools(app)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_forwards_notebook_path_kwarg(self, registered_tools):
+        """The legacy wrapper called the service with `path=` while the service
+        parameter is `notebook_path` -- every call died immediately with
+        "unexpected keyword argument 'path'" (reported in the #3346 comment)."""
+        tool = registered_tools["execute_notebook_cell"]
+
+        nb_service = MagicMock()
+        kernel_service = AsyncMock()
+        with patch(
+            "papermill_mcp.tools.execution_tools.get_services",
+            return_value=(nb_service, kernel_service),
+        ):
+            result = await tool(
+                path="10f_ORTGenAI_DotNet_BakeOff.ipynb",
+                cell_index=1,
+                kernel_id="aec4577f-9a10",
+            )
+
+        kwargs = kernel_service.execute_notebook_cell.call_args.kwargs
+        assert kwargs["notebook_path"] == "10f_ORTGenAI_DotNet_BakeOff.ipynb"
+        assert kwargs["cell_index"] == 1
+        assert kwargs["kernel_id"] == "aec4577f-9a10"
+        assert result is kernel_service.execute_notebook_cell.return_value
+        # And no error payload was returned
+        assert "error" not in result

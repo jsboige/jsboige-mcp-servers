@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import subprocess
+import sys
 import uuid
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field
@@ -265,6 +266,14 @@ class JupyterManager:
             # nothing would ever shut it down -- kill it boundedly or the process
             # leaks with no registry entry.
             if km is not None:
+                # Tree-kill before the direct-child kill: a .NET kernelspec
+                # wrapper (dotnet.exe) has the real kernel as a grandchild.
+                tree_kill = await self._kill_process_tree(km)
+                if tree_kill and not tree_kill.get("killed"):
+                    self.logger.warning(
+                        f"#3346 process-tree kill after failed start of "
+                        f"'{kernel_name}': {tree_kill}"
+                    )
                 try:
                     await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(
@@ -661,6 +670,68 @@ class JupyterManager:
         # (#3346). Escalate to a bounded force-stop.
         return await self._force_stop_kernel(kernel_id)
 
+    @staticmethod
+    def _kernel_pid(km: Any) -> Optional[int]:
+        """
+        #3346: best-effort extraction of the spawned kernel process PID from a
+        jupyter_client KernelManager (km.provisioner.process.pid, 8.x layout).
+        Returns None whenever anything is missing or not a real int PID.
+        """
+        try:
+            pid = km.provisioner.process.pid
+        except Exception:
+            return None
+        return pid if isinstance(pid, int) else None
+
+    async def _kill_process_tree(self, km: Any) -> Optional[Dict[str, Any]]:
+        """
+        #3346: kill the kernel's whole OS process tree on Windows.
+
+        jupyter_client's force-stop (LocalProvisioner SIGKILL path) terminates
+        only the process it spawned -- for the .NET kernelspec that is the thin
+        `dotnet.exe` wrapper, and the real kernel `dotnet-interactive.exe` is a
+        grandchild that survives as an orphan (po-2025 repro 2: registry clean,
+        process tree alive). `taskkill /F /T` walks the tree from the parent, so
+        it MUST run while the parent is still alive -- i.e. BEFORE any
+        direct-child kill. No-op on non-Windows platforms (POSIX relies on the
+        provisioner's process-group kill) and when no int PID is available.
+        """
+        if sys.platform != "win32":
+            return None
+        pid = self._kernel_pid(km)
+        if pid is None:
+            return None
+        try:
+            proc = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True,
+                        timeout=10,
+                    ),
+                ),
+                timeout=15.0,
+            )
+            killed = proc.returncode == 0
+            detail = (proc.stderr or proc.stdout or b"").decode(
+                errors="replace"
+            ).strip()
+            return {
+                "pid": pid,
+                "method": "taskkill /F /T",
+                "killed": killed,
+                "detail": detail[:200] if detail else None,
+            }
+        except Exception as e:
+            self.logger.warning(f"#3346 process-tree kill failed for pid {pid}: {e}")
+            return {
+                "pid": pid,
+                "method": "taskkill /F /T",
+                "killed": False,
+                "detail": str(e)[:200],
+            }
+
     async def _force_stop_kernel(self, kernel_id: str) -> Dict[str, Any]:
         """
         #3346: bounded force-stop (shutdown now=True) of a non-cooperative kernel,
@@ -674,7 +745,11 @@ class JupyterManager:
         info = self._kernel_info.get(kernel_id)
         connection_file = info.connection_file if info else "unknown"
         stopped = False
+        tree_kill: Optional[Dict[str, Any]] = None
         if km is not None:
+            # Tree-kill first: taskkill /T needs a LIVE parent to reach the
+            # grandchildren (dotnet.exe -> dotnet-interactive.exe).
+            tree_kill = await self._kill_process_tree(km)
             try:
                 await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
@@ -697,16 +772,19 @@ class JupyterManager:
         if stopped:
             self._active_kernels.pop(kernel_id, None)
             self._kernel_info.pop(kernel_id, None)
-            return {
+            result = {
                 "phase": "cleanup",
                 "interrupt": "failed",
                 "stop": "stopped",
                 "final_status": "removed",
             }
+            if tree_kill:
+                result["process_tree"] = tree_kill
+            return result
 
         if info is not None:
             info.status = "unresponsive"
-        return {
+        result = {
             "phase": "cleanup",
             "interrupt": "failed",
             "stop": "failed",
@@ -714,6 +792,9 @@ class JupyterManager:
             "connection_file": connection_file,
             "recovery": "manage_kernel(action='stop')",
         }
+        if tree_kill:
+            result["process_tree"] = tree_kill
+        return result
 
     async def execute_code_streaming(
         self, kernel_id: str, code: str, timeout: float = 60.0
