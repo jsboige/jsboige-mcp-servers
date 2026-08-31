@@ -60,11 +60,11 @@ describe('read_vscode_logs Tool', () => {
     const result = await readVscodeLogs.handler({});
     const textContent = result.content[0].type === 'text' ? result.content[0].text : '';
 
-    expect(textContent).toContain('--- LOG: renderer ---');
+    expect(textContent).toContain('--- LOG: window2/renderer ---');
     expect(textContent).toContain('some renderer line 1\nsome renderer line 2');
-    expect(textContent).toContain('--- LOG: exthost ---');
+    expect(textContent).toContain('--- LOG: window2/exthost ---');
     expect(textContent).toContain('exthost line 1\nroo line 2\nexthost line 3');
-    expect(textContent).toContain('--- LOG: Roo-Code Output ---');
+    expect(textContent).toContain('--- LOG: window2/Roo-Code Output ---');
     expect(textContent).toContain('roo log line 1\nroo log line 2');
   });
 

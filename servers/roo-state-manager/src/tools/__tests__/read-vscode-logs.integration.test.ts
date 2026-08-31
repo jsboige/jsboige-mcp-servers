@@ -91,9 +91,10 @@ describe('read_vscode_logs (integration)', () => {
       const text = result.content[0].text;
 
       // Vérifier que les trois logs standards sont présents
-      expect(text).toContain('--- LOG: renderer ---');
-      expect(text).toContain('--- LOG: exthost ---');
-      expect(text).toContain('--- LOG: Main ---');
+      // (#3341: chaque bloc est préfixé par sa fenêtre)
+      expect(text).toContain('--- LOG: window1/renderer ---');
+      expect(text).toContain('--- LOG: window1/exthost ---');
+      expect(text).toContain('--- LOG: window1/Main ---');
     });
 
     test('should include Roo-Code Output log', async () => {
@@ -102,7 +103,7 @@ describe('read_vscode_logs (integration)', () => {
 
       const text = result.content[0].text;
 
-      expect(text).toContain('--- LOG: Roo-Code Output ---');
+      expect(text).toContain('--- LOG: window1/Roo-Code Output ---');
       expect(text).toContain('Roo-Code');
     });
 
@@ -234,6 +235,38 @@ describe('read_vscode_logs (integration)', () => {
 
       // Nettoyer
       rmSync(codeDir, { recursive: true, force: true });
+    });
+  });
+
+  // ============================================================
+  // Tests multi-fenêtres (#3341)
+  // ============================================================
+
+  describe('multi-window support (#3341)', () => {
+    test('should read ALL windows of a session, not only window9', async () => {
+      // Ajouter 11 fenêtres à la session créée par beforeEach (window1..window12),
+      // chacune avec son propre renderer.log
+      const sessionDir = join(testLogsBase, 'Code', 'logs', '20260309T120000');
+      for (let i = 2; i <= 12; i++) {
+        const windowDir = join(sessionDir, `window${i}`);
+        if (!existsSync(windowDir)) {
+          mkdirSync(windowDir, { recursive: true });
+        }
+        writeFileSync(join(windowDir, 'renderer.log'), `[2026-03-09 12:00:00.000] [ERROR] Crash signature in window${i}`);
+      }
+
+      const { readVscodeLogs } = await import('../read-vscode-logs.js');
+      const result = await readVscodeLogs.handler({ filter: 'ERROR', lines: 5 });
+
+      const text = result.content[0].text;
+
+      // Chaque fenêtre doit apparaître — l'ancien code ne lisait que
+      // windowDirs[0] (window9 en tri localeCompare descendant), jetant
+      // silencieusement 11/12 des preuves
+      for (let i = 1; i <= 12; i++) {
+        expect(text).toContain(`--- LOG: window${i}/renderer ---`);
+      }
+      expect(text).toContain('Crash signature in window12');
     });
   });
 
