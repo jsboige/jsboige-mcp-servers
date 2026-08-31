@@ -1533,6 +1533,29 @@ describe('roosync_dashboard', () => {
       const contradictions = detectStatusContradictions(status);
       expect(contradictions.length).toBeGreaterThanOrEqual(2);
     });
+
+    // #3329 (RECIDIVE #1502): dedup regression — the guard that emits
+    // `<!-- #1502 CONTRADICTION: ... -->` markers must strip stale markers
+    // before re-emitting, otherwise they accumulate every cycle.
+    it('regression #3329: dedup strips stale #1502 markers from status', () => {
+      const staleStatus = [
+        '## Status',
+        '- vllm : DOWN (ancien)',
+        '- vllm : UP (mis à jour)',
+        '',
+        '<!-- #1502 CONTRADICTION: vllm has conflicting states: DOWN vs UP -->',
+        '<!-- #1502 CONTRADICTION: myia-web1 has conflicting states: offline vs active -->',
+        '<!-- #1502 CONTRADICTION: vllm has conflicting states: DOWN vs UP -->',
+        '<!-- #1502 CONTRADICTION: myia-web1 has conflicting states: offline vs active -->'
+      ].join('\n');
+      const deduped = staleStatus.replace(/^[ \t]*<!-- #1502 CONTRADICTION:.*-->[ \t]*\n?/gm, '').trimEnd();
+      expect(deduped).not.toContain('#1502 CONTRADICTION');
+      expect(deduped).toContain('## Status');
+      expect(deduped).toContain('vllm');
+      // Sanity: detectStatusContradictions still fires on the deduped content
+      const contradictions = detectStatusContradictions(deduped);
+      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   // #1956: Auto-ACK + reply_to + acknowledged_at
