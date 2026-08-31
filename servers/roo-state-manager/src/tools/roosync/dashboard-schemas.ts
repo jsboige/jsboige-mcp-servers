@@ -166,7 +166,7 @@ export const DashboardArgsSchema = z.object({
   createIfNotExists: z.boolean().optional()
     .describe('Create if missing (default: true)'),
   messageId: z.string().optional()
-    .describe('(append) Custom message ID'),
+    .describe('(append) Custom message ID. Idempotency key (#3276): if an entry with this id already exists, the append is skipped (deduplicated=true)'),
 
   // Pour append — tags
   tags: z.array(z.string()).optional()

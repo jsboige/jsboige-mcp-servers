@@ -341,6 +341,100 @@ describe('roosync_dashboard', () => {
     expect(msgs?.[1].content).toBe('Message 2');
   });
 
+  // === #3276: Append idempotent sur messageId explicite ===
+  // La double-exécution d'un même tool_use (fork transcript, route gpt-5.6-sol)
+  // fait atterrir DEUX entrées byte-identiques pour un seul append intentionnel.
+  // Un messageId explicite est désormais une clé d'idempotence : le 2e append
+  // portant un id déjà présent est absorbé (skip), pas dupliqué.
+  describe('append idempotence on explicit messageId (#3276)', () => {
+    it('skips a second append carrying an id already present', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      const first = await roosyncDashboard({
+        action: 'append', type: 'global', content: 'Message A', messageId: 'idem-3276-a'
+      });
+      expect(first.success).toBe(true);
+      expect(first.deduplicated).toBeUndefined();
+
+      const second = await roosyncDashboard({
+        action: 'append', type: 'global', content: 'Message A', messageId: 'idem-3276-a'
+      });
+      expect(second.success).toBe(true);
+      expect(second.deduplicated).toBe(true);
+      expect(second.warning).toBeUndefined();
+
+      const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const msgs = (read.data?.intercom?.messages ?? []) as Array<{ id: string }>;
+      expect(msgs.filter(m => m.id === 'idem-3276-a')).toHaveLength(1);
+    });
+
+    it('absorbs a concurrent double-execution of the same append (fork simulation)', async () => {
+      await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
+
+      // Deux exécutions du même tool_use arrivent quasi simultanément —
+      // withKeyLock les sérialise, la 2e relit le dashboard APRÈS le write de la 1re.
+      const [r1, r2] = await Promise.all([
+        roosyncDashboard({ action: 'append', type: 'workspace', content: 'Fork payload', messageId: 'idem-3276-fork' }),
+        roosyncDashboard({ action: 'append', type: 'workspace', content: 'Fork payload', messageId: 'idem-3276-fork' })
+      ]);
+
+      expect(r1.success).toBe(true);
+      expect(r2.success).toBe(true);
+      const dedupCount = [r1, r2].filter(r => r.deduplicated === true).length;
+      expect(dedupCount).toBe(1);
+
+      const read = await roosyncDashboard({ action: 'read', type: 'workspace', section: 'intercom' });
+      const msgs = (read.data?.intercom?.messages ?? []) as Array<{ id: string }>;
+      expect(msgs.filter(m => m.id === 'idem-3276-fork')).toHaveLength(1);
+    });
+
+    it('appends both messages when explicit ids differ', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      const a = await roosyncDashboard({ action: 'append', type: 'global', content: 'X', messageId: 'idem-3276-x' });
+      const b = await roosyncDashboard({ action: 'append', type: 'global', content: 'Y', messageId: 'idem-3276-y' });
+
+      expect(a.deduplicated).toBeUndefined();
+      expect(b.deduplicated).toBeUndefined();
+
+      const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      expect(read.data?.intercom?.messages).toHaveLength(2);
+    });
+
+    it('does not dedup appends without explicit messageId (unchanged behavior)', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      // Ids auto-générés = uniques par appel : deux appels identiques = deux entrées
+      // (comportement historique préservé — repro n°8 : ids auto distincts)
+      const a = await roosyncDashboard({ action: 'append', type: 'global', content: 'Same content' });
+      const b = await roosyncDashboard({ action: 'append', type: 'global', content: 'Same content' });
+
+      expect(a.deduplicated).toBeUndefined();
+      expect(b.deduplicated).toBeUndefined();
+
+      const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const msgs = read.data?.intercom?.messages ?? [];
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).not.toBe(msgs[1].id);
+    });
+
+    it('flags a content mismatch when a reused id carries different content', async () => {
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'Original', messageId: 'idem-3276-mismatch' });
+      const second = await roosyncDashboard({ action: 'append', type: 'global', content: 'DIFFERENT', messageId: 'idem-3276-mismatch' });
+
+      expect(second.deduplicated).toBe(true);
+      expect(second.warning).toContain('CONTENU DIFFÉRENT');
+
+      // L'entrée existante est conservée telle quelle
+      const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
+      const msgs = read.data?.intercom?.messages ?? [];
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].content).toBe('Original');
+    });
+  });
+
   // === Test 10: Legacy tag headers tolerated by parser ===
   // Tags removed from dashboard intercom in 2026-04 (no consumer, AI slop).
   // Parser still tolerates legacy `### [ts] machine|workspace [TAGS]` headers but discards them.
