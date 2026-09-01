@@ -178,6 +178,31 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // the merge backstop), so we err on the generous side. Env-overridable.
 const CONDENSE_LOCK_TTL_MS = Number(process.env.CONDENSE_LOCK_TTL_MS) || (CONDENSE_LLM_TIMEOUT_MS + 180000); // ~15 min
 
+// #2818 follow-up (GDrive): `wx` exclusive-create is atomic on a local FS, but
+// this lock lives on DriveFS — a caching sync layer, not a POSIX-coherent shared
+// filesystem. Two machines can each succeed against their own mirror. Settle
+// delay before confirming sole ownership; the mirrors converge to ONE payload,
+// and exactly its owner proceeds. Read at CALL time (not module load) so the
+// fleet can tune it without an MCP restart, and tests can zero it.
+const condenseLockConfirmDelayMs = (): number => {
+  const raw = process.env.CONDENSE_LOCK_CONFIRM_DELAY_MS;
+  if (raw === undefined || raw === '') return 1500;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 1500;
+};
+
+// #2818 follow-up: `acquiredAt` is stamped by the HOLDER's clock and compared
+// against OURS. A holder whose clock lags inflates the computed age and gets its
+// live lock stolen mid-condense. Tolerance added to the TTL before declaring a
+// lock stale — err toward respecting a lock, since a false steal costs a
+// redundant multi-minute LLM pass.
+const condenseLockClockSkewMs = (): number => {
+  const raw = process.env.CONDENSE_LOCK_CLOCK_SKEW_MS;
+  if (raw === undefined || raw === '') return 120000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 120000;
+};
+
 // #3205 write-side: cross-process file-lock for the dashboard append read→rename
 // window. Unlike the condense lock (first-wins, others SKIP — safe, the message
 // is already persisted), an append lock holder is serializing a write that has
@@ -692,6 +717,77 @@ export function getCondenseLockPath(key: string): string {
 }
 
 /**
+ * Identity predicate for a lock holder, shared by the condense and append locks
+ * (both stamp a `CondenseLockInfo`). The same triple governs "did my payload
+ * survive the DriveFS merge" and "may I delete this lock" — keeping it in one
+ * place stops the two from drifting apart.
+ */
+function sameLockHolder(a: CondenseLockInfo, b: CondenseLockInfo): boolean {
+  return a.machineId === b.machineId && a.pid === b.pid && a.acquiredAt === b.acquiredAt;
+}
+
+/**
+ * Is an existing condense lock old enough to be treated as abandoned by a
+ * crashed holder? An unparseable timestamp counts as stale: reclaiming garbage
+ * beats letting it wedge condensation for a saturated dashboard.
+ */
+function isCondenseLockStale(existing: CondenseLockInfo): boolean {
+  const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
+  if (!Number.isFinite(ageMs)) return true;
+  return ageMs >= CONDENSE_LOCK_TTL_MS + condenseLockClockSkewMs();
+}
+
+/**
+ * #2818 follow-up: confirm we are the SOLE holder after writing our payload.
+ *
+ * On GDrive two writers can both believe they created the file. After a settle
+ * delay the mirrors converge to one payload; its owner proceeds and the other
+ * backs off. This cannot wedge: the surviving owner holds a real lock and
+ * releases it in its `finally`. Before the delay elapses the behaviour simply
+ * degrades to the pre-existing one (both condense) — never worse.
+ *
+ * Fail-OPEN on any read/parse failure, matching the rest of this lock layer.
+ */
+async function confirmSoleCondenseHolder(
+  key: string,
+  lockPath: string,
+  holder: CondenseLockInfo
+): Promise<boolean> {
+  const delayMs = condenseLockConfirmDelayMs();
+  if (delayMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+  let onDisk: CondenseLockInfo;
+  try {
+    onDisk = JSON.parse(await fs.readFile(lockPath, 'utf8')) as CondenseLockInfo;
+  } catch {
+    // Vanished or unreadable between write and confirm — fail open.
+    return true;
+  }
+  if (sameLockHolder(onDisk, holder)) {
+    return true;
+  }
+  if (isCondenseLockStale(onDisk)) {
+    // The payload that survived belongs to a crashed holder — reclaim it.
+    logger.warn('Condense lock: survivor payload is stale — reclaiming (#2818 GDrive confirm)', {
+      key, survivor: `${onDisk.machineId}:${onDisk.workspace}#${onDisk.pid}`
+    });
+    try {
+      await fs.writeFile(lockPath, JSON.stringify(holder), { encoding: 'utf8', flag: 'w' });
+    } catch { /* best-effort */ }
+    return true;
+  }
+  // Another holder's payload won the mirror merge: it condenses, we skip. Our
+  // message is already persisted (append-first) and #2328 stitches it back in.
+  logger.info('Condense lock: lost the GDrive merge to a concurrent holder — skipping (#2818 GDrive confirm)', {
+    key,
+    wonBy: `${onDisk.machineId}:${onDisk.workspace}#${onDisk.pid}`,
+    ours: `${holder.machineId}:${holder.workspace}#${holder.pid}`
+  });
+  return false;
+}
+
+/**
  * Try to acquire the cross-process condensation lock for `key`.
  * Returns true if this caller now holds the lock (and MUST release it), false if
  * a fresh holder already owns it (caller should skip condensing).
@@ -707,7 +803,9 @@ export async function tryAcquireCondenseLock(key: string, holder: CondenseLockIn
   try {
     // Atomic exclusive-create: fails with EEXIST if a lock file already exists.
     await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'wx' });
-    return true;
+    // Observed twice in production (2026-08-30 19:22Z, 2026-09-01 05:05Z): both
+    // holders condensed and #2328 discarded one multi-minute result. Confirm.
+    return await confirmSoleCondenseHolder(key, lockPath, holder);
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code !== 'EEXIST') {
@@ -722,7 +820,7 @@ export async function tryAcquireCondenseLock(key: string, holder: CondenseLockIn
       const raw = await fs.readFile(lockPath, 'utf8');
       const existing = JSON.parse(raw) as CondenseLockInfo;
       const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
-      if (Number.isFinite(ageMs) && ageMs < CONDENSE_LOCK_TTL_MS) {
+      if (!isCondenseLockStale(existing)) {
         // Fresh holder — respect it, skip condensing.
         logger.info('Condense lock held by fresh holder — skipping redundant condense (#2818)', {
           key,
@@ -739,7 +837,7 @@ export async function tryAcquireCondenseLock(key: string, holder: CondenseLockIn
         ttlSeconds: Math.round(CONDENSE_LOCK_TTL_MS / 1000)
       });
       await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'w' });
-      return true;
+      return await confirmSoleCondenseHolder(key, lockPath, holder);
     } catch (inner: unknown) {
       // Could not read/parse the existing lock (corrupt or vanished mid-check).
       // Reclaim it so a garbage lock can't wedge condensation forever.
@@ -765,7 +863,7 @@ export async function releaseCondenseLock(key: string, holder: CondenseLockInfo)
   try {
     const raw = await fs.readFile(lockPath, 'utf8');
     const existing = JSON.parse(raw) as CondenseLockInfo;
-    if (existing.machineId === holder.machineId && existing.pid === holder.pid && existing.acquiredAt === holder.acquiredAt) {
+    if (sameLockHolder(existing, holder)) {
       await fs.unlink(lockPath);
     } else {
       logger.debug('Condense lock not released — owned by another holder now (#2818)', {
@@ -870,7 +968,7 @@ export async function releaseAppendLock(key: string, holder: CondenseLockInfo): 
   try {
     const raw = await fs.readFile(lockPath, 'utf8');
     const existing = JSON.parse(raw) as CondenseLockInfo;
-    if (existing.machineId === holder.machineId && existing.pid === holder.pid && existing.acquiredAt === holder.acquiredAt) {
+    if (sameLockHolder(existing, holder)) {
       await fs.unlink(lockPath);
     }
   } catch {
