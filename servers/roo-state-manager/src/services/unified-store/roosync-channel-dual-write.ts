@@ -11,6 +11,20 @@
  * in Phase A). Call sites attach `.catch(() => {})` for floating-promise
  * linting, matching the conversation dual-write convention.
  *
+ * **Never blocking is not never mentioning (#3151, mesuré 2026-09-01).** Every
+ * catch below deliberately swallows so PG can never break the GDrive path —
+ * that contract stays. What was missing is that they swallowed *silently*: a
+ * mirror that failed produced no log, no counter, no trace anywhere. A loss
+ * with zero observable output cannot be noticed, reported, or counted, so the
+ * gap it opens is invisible **by construction** — which is why it went
+ * undescribed for weeks while ~7 % of the inbox drifted out of PG.
+ *
+ * The sibling PG-primary path (roosync-channel-write.ts) already logs each
+ * failure with the id and the error; the dashboard store does too. This module
+ * was the last silent one. The logs are the precondition for ever trusting the
+ * Phase B read switch: you cannot verify "0 loss" on a channel that is
+ * structurally unable to report loss.
+ *
  * Phase A covered creation: send / reply / amend / attachment upload.
  * Phase A.2 covers what happens to a message afterwards — read, archived,
  * destroyed — for two independent reasons:
@@ -34,6 +48,9 @@ import { getUnifiedStoreWriter } from './writer-factory.js';
 import { parseMachineWorkspace } from '../../utils/message-helpers.js';
 import { createHash } from 'crypto';
 import { readFile } from 'fs/promises';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('roosync-channel-dual-write');
 
 /**
  * Map a MessageManager Message to a roosync_messages row.
@@ -88,8 +105,14 @@ function mapMessageOptions(message: Message): RooSyncMessageOptions {
 export async function dualWriteRooSyncMessageToStore(message: Message): Promise<void> {
   try {
     await getUnifiedStoreWriter().insertRooSyncMessage(mapMessageToRow(message));
-  } catch {
-    // Swallow — never block the GDrive send path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'insert',
+      id: message.id,
+      error: String(error),
+    });
   }
 }
 
@@ -101,8 +124,14 @@ export async function dualWriteRooSyncMessageAmendment(
 ): Promise<void> {
   try {
     await getUnifiedStoreWriter().updateRooSyncMessage(message.id, { body: message.body });
-  } catch {
-    // Swallow — never block the GDrive amend path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'amend',
+      id: message.id,
+      error: String(error),
+    });
   }
 }
 
@@ -118,8 +147,14 @@ export async function dualWriteRooSyncAttachmentRefs(
     await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       attachment_refs: attachments ?? [],
     });
-  } catch {
-    // Swallow — never block the GDrive path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'attachment-refs',
+      id: messageId,
+      error: String(error),
+    });
   }
 }
 
@@ -137,8 +172,14 @@ export async function dualWriteRooSyncMessageRead(messageId: string): Promise<vo
       status: 'read',
       read_at: new Date().toISOString(),
     });
-  } catch {
-    // Swallow — never block the GDrive markAsRead path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'read',
+      id: messageId,
+      error: String(error),
+    });
   }
 }
 
@@ -159,8 +200,14 @@ export async function dualWriteRooSyncMessageBroadcastRead(
     await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       read_by: readBy,
     });
-  } catch {
-    // Swallow — never block the GDrive markAsRead path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'broadcast-read',
+      id: messageId,
+      error: String(error),
+    });
   }
 }
 
@@ -176,8 +223,14 @@ export async function dualWriteRooSyncMessageArchived(messageId: string): Promis
       status: 'archived',
       archived_at: new Date().toISOString(),
     });
-  } catch {
-    // Swallow — never block the GDrive archive path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'archived',
+      id: messageId,
+      error: String(error),
+    });
   }
 }
 
@@ -196,8 +249,14 @@ export async function dualWriteRooSyncMessageReminderSent(
     await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       reminder_sent_at: new Date().toISOString(),
     });
-  } catch {
-    // Swallow — never block the GDrive reminder path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'reminder-sent',
+      id: messageId,
+      error: String(error),
+    });
   }
 }
 
@@ -226,8 +285,14 @@ export async function dualWriteRooSyncMessageDestroyed(
       destroyed_at: new Date().toISOString(),
       destroyed_reason: reason,
     });
-  } catch {
-    // Swallow — never block the GDrive destruction path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'destroy',
+      id: messageId,
+      error: String(error),
+    });
   }
 }
 
@@ -252,7 +317,13 @@ export async function dualWriteRooSyncAttachmentToStore(
       sha256: createHash('sha256').update(payload).digest('hex'),
       payload,
     });
-  } catch {
-    // Swallow — never block the GDrive upload path.
+  } catch (error) {
+    // Swallowed on purpose (contract above), but NEVER silent: an
+    // unlogged loss is undetectable by construction.
+    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+      op: 'attachment-payload',
+      id: uuid,
+      error: String(error),
+    });
   }
 }
