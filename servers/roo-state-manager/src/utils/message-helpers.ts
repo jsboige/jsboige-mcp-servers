@@ -336,6 +336,20 @@ export function matchesRecipient(
 }
 
 /**
+ * True when `messageTo` names a machine WITHOUT a workspace (e.g. "myia-ai-01"),
+ * excluding the "all"/"All" broadcast.
+ *
+ * Such a message is visible to EVERY workspace on that machine (see
+ * `matchesRecipient` above). Its read state must therefore be tracked per
+ * reader, exactly as broadcasts already are per machine - a global
+ * `status: 'read'` would hide it from workspaces that never saw it.
+ */
+export function isMachineWideTarget(messageTo: string): boolean {
+  if (messageTo === 'all' || messageTo === 'All') return false;
+  return !parseMachineWorkspace(messageTo).workspaceId;
+}
+
+/**
  * Formatte la date en format français lisible
  *
  * @param isoDate Date au format ISO-8601

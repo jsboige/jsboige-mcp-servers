@@ -13,7 +13,7 @@ import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget } from '../utils/message-helpers.js';
 // Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
 // cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
@@ -93,6 +93,10 @@ export interface Message {
 
   /** Machines/workspaces ayant lu ce message (tracking multi-lecteurs #629) */
   read_by?: string[];
+  /** Full reader ids ("machine:workspace") that have read a MACHINE-WIDE message.
+   *  `read_by` is machine-granular and cannot separate two workspaces of the same
+   *  machine, which is exactly what a machine-wide target needs. */
+  read_by_workspace?: string[];
 
   /** Timestamps de lecture par machine (machineId → ISO timestamp) */
   acknowledged_at?: Record<string, string>;
@@ -976,12 +980,9 @@ export class MessageManager {
 
         // Filter by status — per-machine for broadcasts (#629)
         if (status && status !== 'all') {
-          const isBroadcast = fullMsg.to === 'all' || fullMsg.to === 'All';
-          if (isBroadcast && fullMsg.read_by) {
-            const readerMachineId = parseMachineWorkspace(machineId).machineId;
-            const hasRead = fullMsg.read_by.includes(readerMachineId);
-            if (status === 'unread' && hasRead) continue;
-            if (status === 'read' && !hasRead) continue;
+          const perReader = MessageManager.perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+          if (perReader !== null) {
+            if (perReader !== status) continue;
           } else {
             if (fullMsg.status !== status) continue;
           }
@@ -990,11 +991,9 @@ export class MessageManager {
         // #2307 Phase 4: For broadcast messages, adjust status per-machine so
         // callers (read.ts inbox display) see the correct read/unread state.
         // Without this, broadcast messages always show "unread" even after being read.
-        const isBroadcast = fullMsg.to === 'all' || fullMsg.to === 'All';
-        if (isBroadcast && fullMsg.read_by) {
-          const readerMachineId = parseMachineWorkspace(machineId).machineId;
-          const hasRead = fullMsg.read_by.includes(readerMachineId);
-          filtered.push({ ...item, status: hasRead ? 'read' : 'unread' });
+        const perReader = MessageManager.perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+        if (perReader !== null) {
+          filtered.push({ ...item, status: perReader });
         } else {
           filtered.push(item);
         }
@@ -1088,14 +1087,9 @@ export class MessageManager {
       if (!matchesRecipient(fullMsg.to, machineId, effectiveWorkspaceId)) continue;
 
       total++;
-      const isBroadcast = fullMsg.to === 'all' || fullMsg.to === 'All';
-      let isUnreadForMachine: boolean;
-      if (isBroadcast && fullMsg.read_by) {
-        const readerMachineId = parseMachineWorkspace(machineId).machineId;
-        isUnreadForMachine = !fullMsg.read_by.includes(readerMachineId);
-      } else {
-        isUnreadForMachine = fullMsg.status === 'unread';
-      }
+      const perReader = MessageManager.perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+      const isUnreadForMachine =
+        perReader !== null ? perReader === 'unread' : fullMsg.status === 'unread';
 
       if (isUnreadForMachine) unread++;
       else read++;
@@ -1312,6 +1306,12 @@ export class MessageManager {
       // a global 'read' would hide them from machines that have not read them.
       if (isBroadcast) {
         dualWriteRooSyncMessageBroadcastRead(messageId, message.read_by ?? []).catch(() => {});
+      } else if (isMachineWideTarget(message.to)) {
+        // Per-workspace read state has no PG column yet (migrations/005 mirrors
+        // read_by only). Mirroring status=read here would reintroduce, in PG,
+        // exactly the global flip this change removes - so mirror NOTHING and
+        // leave GDrive authoritative for this class. PG channel reads are off.
+        // TODO(#3151): add a read_by_workspace column, then mirror it here.
       } else {
         dualWriteRooSyncMessageRead(messageId).catch(() => {});
       }
@@ -1350,6 +1350,36 @@ export class MessageManager {
    *
    * @returns false when the reader is denied; true with `message` mutated.
    */
+  /**
+   * Per-reader read state, or `null` when the message uses the global `status`.
+   *
+   * Two classes track readers individually instead of flipping a global status:
+   *   - broadcasts ("all"/"All") - per MACHINE, via `read_by` (#629);
+   *   - machine-wide targets ("myia-ai-01") - per WORKSPACE, via
+   *     `read_by_workspace`, because every workspace of the machine receives them.
+   *
+   * @private
+   */
+  private static perReaderStatus(
+    message: Message,
+    machineId: string,
+    workspaceId?: string
+  ): 'read' | 'unread' | null {
+    if (message.to === 'all' || message.to === 'All') {
+      if (!message.read_by) return null;
+      const readerMachineId = parseMachineWorkspace(machineId).machineId;
+      return message.read_by.includes(readerMachineId) ? 'read' : 'unread';
+    }
+    if (isMachineWideTarget(message.to)) {
+      // No workspace on the reader side -> cannot discriminate; fall back to the
+      // global status rather than report every such message as unread forever.
+      if (!workspaceId) return null;
+      const full = canonicalizeFullId(parseMachineWorkspace(machineId).machineId + ':' + workspaceId);
+      return (message.read_by_workspace ?? []).includes(full) ? 'read' : 'unread';
+    }
+    return null;
+  }
+
   private static applyReadTracking(message: Message, readerId?: string): boolean {
     if (readerId) {
       // #2287: Workspace guard — reject if reader's workspace doesn't match message target
@@ -1392,12 +1422,32 @@ export class MessageManager {
         message.acknowledged_at[readerMachineId] = new Date().toISOString();
       }
       logger.info(`Reader ${readerMachineId} tracked in read_by (${message.read_by.length} readers)`);
+
+      // Machine-wide target: also track the READER'S WORKSPACE, so the other
+      // workspaces of the same machine keep seeing the message as unread.
+      if (isMachineWideTarget(message.to) && readerWorkspaceId) {
+        if (!message.read_by_workspace) {
+          message.read_by_workspace = [];
+        }
+        const fullReader = canonicalizeFullId(readerMachineId + ':' + readerWorkspaceId);
+        if (!message.read_by_workspace.includes(fullReader)) {
+          message.read_by_workspace.push(fullReader);
+        }
+      }
     }
 
-    // For targeted messages (not broadcast), set global status to 'read'
-    // For broadcasts (to: "all"/"All"), keep status as-is — per-machine filtering uses read_by
+    // For workspace-targeted messages, set global status to 'read'.
+    // Two classes keep status as-is because their readers are tracked individually:
+    //   - broadcasts ("all"/"All")     -> read_by, per machine (#629)
+    //   - machine-wide ("myia-ai-01")  -> read_by_workspace, per workspace
+    // A global flip on either would hide the message from readers who never saw it.
     const isBroadcast = message.to === 'all' || message.to === 'All';
-    if (!isBroadcast) {
+    const machineWide = isMachineWideTarget(message.to);
+    // A reader without a workspace cannot be tracked per workspace: fall back to
+    // the global flip so the message can still be cleared at all.
+    const trackedPerWorkspace =
+      machineWide && !!parseMachineWorkspace(readerId ?? '').workspaceId;
+    if (!isBroadcast && !trackedPerWorkspace) {
       message.status = 'read';
     }
     return true;
