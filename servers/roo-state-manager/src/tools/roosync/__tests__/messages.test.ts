@@ -217,6 +217,16 @@ describe('roosync_messages dispatcher', () => {
       expect(mockRead).not.toHaveBeenCalled();
     });
 
+    // Friction po-2025 01/09 : un binding qui force-inclut les optionnels
+    // sérialise les strings vides — '' n'est pas une intention de filtrer,
+    // et l'aval le traite déjà comme absent. Le garde ne doit pas le rejeter.
+    test('#3351 inbox tolerates binding-serialized empty strings (no bulk-only rejection)', async () => {
+      await roosyncMessages({ action: 'inbox', tag: '', before_date: '', from: '', subject_contains: '' } as any);
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'inbox' })
+      );
+    });
+
     test('message routes to roosyncRead with mode=message', async () => {
       await roosyncMessages({ action: 'message', message_id: 'msg-1' });
       expect(mockRead).toHaveBeenCalledWith(
