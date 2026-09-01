@@ -822,6 +822,33 @@ describe('diagnose-index.tool (unit tests)', () => {
 			expect(dd.payload_samples[0].id).toBe('p1');
 		});
 
+		it('#3344: reports workspace_name coverage broken down by source and machine', async () => {
+			// A global rate can mask a lane at 0% (measured: myia-po-2024 0/150 with
+			// workspace_name). The per-group coverage must expose the failing lane.
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [
+					{ id: 'p1', payload: { source: 'roo', workspace_name: 'W', host_os: 'hostA-win', task_id: 'a', timestamp: '2026-07-01' } },
+					{ id: 'p2', payload: { source: 'roo', host_os: 'hostB-win', task_id: 'b', timestamp: '2026-07-02' } },
+					{ id: 'p3', payload: { source: 'claude-code', workspace_name: 'X', host_os: 'hostA-win', task_id: 'c', timestamp: '2026-07-03' } },
+					{ id: 'p4', payload: { source: 'claude-code', host_os: 'hostB-win', task_id: 'd', timestamp: '2026-07-04' } },
+					{ id: 'p5', payload: {} }
+				]
+			});
+
+			const result = await handleDiagnoseSemanticIndex(conversationCache, { deep: true });
+			const parsed = JSON.parse(result.content[0].text);
+			const dd = parsed.details.deep_diagnostics;
+
+			expect(dd.workspace_name_coverage_by_source).toEqual({
+				roo: { total: 2, with_workspace_name: 1, pct: 50 },
+				'claude-code': { total: 2, with_workspace_name: 1, pct: 50 },
+				'__unknown__': { total: 1, with_workspace_name: 0, pct: 0 },
+			});
+			expect(dd.workspace_name_coverage_by_machine['hostA-win']).toEqual({ total: 2, with_workspace_name: 2, pct: 100 });
+			expect(dd.workspace_name_coverage_by_machine['hostB-win']).toEqual({ total: 2, with_workspace_name: 0, pct: 0 });
+			expect(dd.workspace_name_coverage_by_machine['__unknown__']).toEqual({ total: 1, with_workspace_name: 0, pct: 0 });
+		});
+
 		it('emits workspace_name error below 50% coverage', async () => {
 			// Source: L307-312 — `if (fieldCoveragePct.workspace_name ?? 0 < 50)` → error
 			mockQdrantClient.scroll.mockResolvedValue({
@@ -906,7 +933,11 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const parsed = JSON.parse(result.content[0].text);
 			const rec = parsed.recommendations.find((r: string) => r.includes('workspace_name peu populé'));
 			expect(rec).toBeDefined();
-			expect(rec).toContain('ChunkExtractor.ts');
+			// #3344: the recommendation now splits the two cohorts (derivation gap vs
+			// missing workspace coordinates) instead of pointing only at ChunkExtractor
+			// (which covers just the 3.5% derivation gap — ai-01 counter-sample).
+			expect(rec).toContain('repair_workspace');
+			expect(rec).toContain('coverage_by_source');
 		});
 
 		it('adds source recommendation when __unknown__ exceeds sampleSize * 0.5', async () => {

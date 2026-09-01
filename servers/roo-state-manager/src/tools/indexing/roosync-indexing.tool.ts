@@ -26,6 +26,7 @@ import { isStuckRetry } from '../../types/indexing.js';
 import { indexTaskSemanticTool } from './index-task.tool.js';
 import { resetQdrantCollectionTool } from './reset-collection.tool.js';
 import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
+import { handleRepairWorkspace } from './repair-workspace.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 
@@ -72,7 +73,7 @@ export function normalizeToolName(rawName: string): string {
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -140,6 +141,12 @@ export interface RooSyncIndexingArgs {
     /** #2246: Max tasks to repair per call (pour action=repair_gaps). Défaut: 50 */
     max_repair_tasks?: number;
 
+    /** #3344: Max points to scan per repair_workspace call. Défaut: 20000 */
+    max_scan_points?: number;
+
+    /** #3344: Max points to repair per repair_workspace call. Défaut: 5000 */
+    max_repair_points?: number;
+
     /**
      * #2766 S2+ P1 follow-up — `cleanup_failed` action: filter by error class.
      * Use 'all' to clean every perm-failed + stuck-retry task; otherwise narrow
@@ -171,8 +178,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
             },
             task_id: {
                 type: 'string',
@@ -199,7 +206,7 @@ export const roosyncIndexingTool: Tool = {
             },
             dry_run: {
                 type: 'boolean',
-                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans)',
+                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans, repair_workspace)',
                 default: false
             },
             machine_id: {
@@ -280,6 +287,16 @@ export const roosyncIndexingTool: Tool = {
                 description: 'For repair_gaps. Max tasks to scan per call. Default: 50.',
                 default: 50
             },
+            max_scan_points: {
+                type: 'number',
+                description: 'For repair_workspace. Max points to scan per call. Default: 20000.',
+                default: 20000
+            },
+            max_repair_points: {
+                type: 'number',
+                description: 'For repair_workspace. Max points to repair per call. Default: 5000.',
+                default: 5000
+            },
             start_date: {
                 type: 'string',
                 description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.'
@@ -358,10 +375,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, cleanup_failed, tool_usage_stats, save_snapshot, trend_report` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report` }]
         };
     }
 
@@ -861,6 +878,17 @@ export async function handleRooSyncIndexing(
                     }]
                 };
             }
+        }
+
+        case 'repair_workspace': {
+            // #3344: backfill workspace_name on existing points (derive from `workspace`
+            // when present; resolve by local task/session lookup otherwise). Non-destructive:
+            // setPayload only adds the workspace fields.
+            return await handleRepairWorkspace({
+                dryRun: args.dry_run,
+                maxScanPoints: args.max_scan_points,
+                maxRepairPoints: args.max_repair_points,
+            });
         }
 
         case 'repair_gaps': {

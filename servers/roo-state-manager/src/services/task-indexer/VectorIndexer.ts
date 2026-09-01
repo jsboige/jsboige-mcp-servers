@@ -5,7 +5,7 @@ import { Schemas } from '@qdrant/js-client-rest';
 import { getQdrantClient } from '../qdrant.js';
 import getOpenAIClient, { getEmbeddingModel, getEmbeddingDimensions } from '../openai.js';
 import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
-import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk, MAX_CHUNKS_PER_TASK } from './ChunkExtractor.js';
+import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk, MAX_CHUNKS_PER_TASK, workspaceBasename } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
@@ -1097,10 +1097,18 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             const vector = cachedResults.get(contentHash);
             if (!vector) continue;
 
+            const payload: any = { ...subChunk, source: source, contentHash };
+            // #3344: guarantee workspace_name on every indexed point — derive from
+            // workspace when an emitter set the path but not the name (3.5% cohort in
+            // the ai-01 counter-sample). Safety net: ChunkExtractor already derives it,
+            // this catches any other emitter feeding pointsToIndex.
+            if (payload.workspace && !payload.workspace_name) {
+                payload.workspace_name = workspaceBasename(String(payload.workspace));
+            }
             const point: PointStruct = {
                 id: subChunk.chunk_id,
                 vector: vector,
-                payload: { ...subChunk, source: source, contentHash },
+                payload: payload,
             };
             pointsToIndex.push(point);
         }

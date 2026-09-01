@@ -82,25 +82,37 @@ describe('codebase_search - handleCodebaseSearch - Error paths', () => {
 	});
 
 	it('retourne qdrant_unreachable quand fetch failed', async () => {
+		// #3344: the classifier probes /healthz to distinguish outage vs client failure —
+		// stub the probe as dead so the outage branch is asserted deterministically.
+		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
 		mockQuery.mockRejectedValue(new Error('fetch failed ECONNREFUSED 127.0.0.1:6333'));
 
-		const result = await hcs({ query: 'test connection error', workspace: '/test' });
+		try {
+			const result = await hcs({ query: 'test connection error', workspace: '/test' });
 
-		expect(result.isError).toBe(true);
-		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('qdrant_unreachable');
-		expect(response.hint).toBeDefined();
-		expect(response.error).toContain('fetch failed');
+			expect(result.isError).toBe(true);
+			const response = JSON.parse(result.content[0].text);
+			expect(response.status).toBe('qdrant_unreachable');
+			expect(response.hint).toBeDefined();
+			expect(response.error).toContain('fetch failed');
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it('retourne qdrant_unreachable quand ECONNREFUSED', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
 		mockQuery.mockRejectedValue(new Error('connect ECONNREFUSED ::1:6333'));
 
-		const result = await hcs({ query: 'test econnrefused', workspace: '/test' });
+		try {
+			const result = await hcs({ query: 'test econnrefused', workspace: '/test' });
 
-		expect(result.isError).toBe(true);
-		const response = JSON.parse(result.content[0].text);
-		expect(response.status).toBe('qdrant_unreachable');
+			expect(result.isError).toBe(true);
+			const response = JSON.parse(result.content[0].text);
+			expect(response.status).toBe('qdrant_unreachable');
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it('retourne auth_failed quand API key invalide', async () => {

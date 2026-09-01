@@ -134,6 +134,20 @@ export function getHostIdentifier() {
 }
 
 /**
+ * #3344: separator-robust basename for workspace paths.
+ *
+ * Indexed workspaces carry both separator styles (Roo metadata uses forward
+ * slashes, Claude Code `cwd` uses backslashes on Windows), and `path.basename`
+ * only handles the separator convention of the CURRENT platform — breaking
+ * under the Ubuntu CI while working on the Windows fleet. Splitting on both
+ * separators is deterministic everywhere.
+ */
+export function workspaceBasename(ws: string): string {
+    const parts = ws.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1] || ws;
+}
+
+/**
  * #2247 follow-up (po-204 c.161, ai-01 c.160 SDDD): classify code citations.
  *
  * Returns true if the content is predominantly a cited code block (a fenced
@@ -289,6 +303,18 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         const apiHistoryContent = await fs.readFile(apiHistoryPath, 'utf-8');
         const apiMessages: ApiMessage[] = JSON.parse(apiHistoryContent);
 
+        // #3344: derive workspace when task_metadata.json omits it (48.2% of sampled
+        // points indexed with NEITHER workspace NOR workspace_name — ai-01 counter-
+        // sample 2026-08-31). Same regex as roo-storage-detector.ts skeleton-level
+        // detection: the Roo system prompt embeds "Current Workspace Directory (<path>)".
+        if (!workspace) {
+            const wsMatch = apiHistoryContent.match(/Current Workspace Directory \(([^)]+)\)/);
+            if (wsMatch?.[1]) {
+                workspace = wsMatch[1].trim();
+                console.log(`[extractChunksFromTask] #3344: derived workspace "${workspace}" from api_conversation_history (metadata had none) for ${taskId}`);
+            }
+        }
+
         // #2825 (volet A / G2): page through ALL messages — no silent drop.
         // The previous `slice(0, MAX_MESSAGES_PER_TASK)` amputated 90%+ of runaway
         // worker sessions with no recovery. We now iterate over every message and
@@ -407,7 +433,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         participants: [msg.role],
                         tool_details: null,
                         workspace: workspace,
-                        workspace_name: workspace ? path.basename(workspace) : undefined,
+                        workspace_name: workspace ? workspaceBasename(workspace) : undefined,
                         task_title: taskTitle,
                         message_index: messageIndex,
                         total_messages: totalMessages,
@@ -463,7 +489,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         tool_name: toolCall.function.name,
                         model: taskModel,
                         workspace: workspace,
-                        workspace_name: workspace ? path.basename(workspace) : undefined,
+                        workspace_name: workspace ? workspaceBasename(workspace) : undefined,
                         task_title: taskTitle,
                         host_os: getHostIdentifier(),
                         // #2825 (G2/G3): pagination metadata
@@ -536,7 +562,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 participants: [msg.author === 'agent' ? 'assistant' : 'user'],
                 tool_details: null,
                 workspace: workspace,
-                workspace_name: workspace ? path.basename(workspace) : undefined,
+                workspace_name: workspace ? workspaceBasename(workspace) : undefined,
                 task_title: taskTitle,
                 host_os: getHostIdentifier(),
                 // #636: Enriched metadata
@@ -622,6 +648,11 @@ export async function extractChunksFromClaudeSession(
     const chunks: Chunk[] = [];
     let sequenceOrder = 0;
     let messageIndex = 0;
+    // #3344: workspace derived from JSONL `cwd` when the caller passes no metadata
+    // (28% of sampled claude-code points on ai-01 carried NEITHER workspace NOR
+    // workspace_name). Same priority as claude-storage-detector detectWorkspace()
+    // (PRIORITÉ 1: entry.cwd) — but applied at CHUNK level so indexed points carry it.
+    let derivedWorkspace: string | undefined;
 
     try {
         // #852 FIX: Accept project directory and scan for JSONL files
@@ -668,6 +699,7 @@ export async function extractChunksFromClaudeSession(
                     totalLines++;
                     try {
                         const entry = JSON.parse(line);
+                        if (!derivedWorkspace && entry.cwd) derivedWorkspace = entry.cwd;
 
                         // Claude Code JSONL has entries with type and message fields
                         const entryType = entry.type;
@@ -734,6 +766,7 @@ export async function extractChunksFromClaudeSession(
                         const claudeChunkType: Chunk['chunk_type'] = isCodeCitation(contentText)
                             ? 'code_citation'
                             : 'message_exchange';
+                        const chunkWorkspace = metadata?.workspace || derivedWorkspace;
                         chunks.push({
                             chunk_id: computeChunkId(claudeEffectiveTaskId, claudeChunkType, seq, contentText),
                             task_id: claudeEffectiveTaskId,
@@ -747,8 +780,8 @@ export async function extractChunksFromClaudeSession(
                             content_summary: contentText.substring(0, 200),
                             participants: [role],
                             tool_details: null,
-                            workspace: metadata?.workspace,
-                            workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
+                            workspace: chunkWorkspace,
+                            workspace_name: chunkWorkspace ? workspaceBasename(chunkWorkspace) : undefined,
                             task_title: metadata?.title,
                             message_index: messageIndex,
                             role,
@@ -794,8 +827,8 @@ export async function extractChunksFromClaudeSession(
                                 },
                                 tool_name: toolName,
                                 model: entry.model || message?.model,
-                                workspace: metadata?.workspace,
-                                workspace_name: metadata?.workspace ? path.basename(metadata.workspace) : undefined,
+                                workspace: chunkWorkspace,
+                                workspace_name: chunkWorkspace ? workspaceBasename(chunkWorkspace) : undefined,
                                 task_title: metadata?.title,
                                 host_os: getHostIdentifier(),
                                 source: 'claude-code',

@@ -164,9 +164,9 @@ describe('roosyncIndexingTool', () => {
 		expect(roosyncIndexingTool.inputSchema.required).toEqual(['action']);
 	});
 
-	test('has action enum with 14 values', () => {
+	test('has action enum with 15 values', () => {
 		const actionProp = (roosyncIndexingTool.inputSchema.properties as any).action;
-		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
+		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
 	});
 
 	// ============================================================

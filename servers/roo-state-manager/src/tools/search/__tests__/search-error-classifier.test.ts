@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { classifySearchError, formatClassifiedError } from '../search-error-classifier.js';
+import { classifySearchError, formatClassifiedError, unwrapTransportCause } from '../search-error-classifier.js';
 import type { ClassifiedError } from '../search-error-classifier.js';
 
 // Mock global.fetch for probeQdrantHealth tests
@@ -244,5 +244,103 @@ describe('formatClassifiedError', () => {
 		const result = formatClassifiedError(base);
 		const lines = result.split('\n');
 		expect(lines.length).toBe(4); // header + detected + likely + original
+	});
+});
+
+// ── #3344: cause unwrapping + Qdrant-down vs client-failure disambiguation ──
+
+describe('unwrapTransportCause (#3344)', () => {
+	it('extracts errno from an undici fetch failed cause chain', () => {
+		const inner: any = new Error('getaddrinfo ENOTFOUND qdrant.myia.io');
+		inner.code = 'ENOTFOUND';
+		const outer: any = new TypeError('fetch failed');
+		outer.cause = inner;
+		const unwrapped = unwrapTransportCause(outer);
+		expect(unwrapped?.code).toBe('ENOTFOUND');
+		expect(unwrapped?.message).toContain('ENOTFOUND');
+	});
+
+	it('handles the AggregateError DNS shape (.errors[])', () => {
+		const e1: any = new Error('getaddrinfo ENOTFOUND qdrant.myia.io');
+		e1.code = 'ENOTFOUND';
+		const agg: any = new Error('All DNS requests failed');
+		agg.errors = [e1];
+		const outer: any = new TypeError('fetch failed');
+		outer.cause = agg;
+		const unwrapped = unwrapTransportCause(outer);
+		expect(unwrapped?.code).toBe('ENOTFOUND');
+	});
+
+	it('returns null when the error has no cause', () => {
+		expect(unwrapTransportCause(new Error('fetch failed'))).toBeNull();
+	});
+
+	it('stops at depth 5 on cyclic cause chains', () => {
+		const a: any = new Error('a');
+		const b: any = new Error('b');
+		a.cause = b;
+		b.cause = a;
+		// No code/message beyond depth 5 — must terminate, not hang
+		const unwrapped = unwrapTransportCause(a);
+		expect(['a', 'b']).toContain(unwrapped?.message);
+	});
+});
+
+describe('#3344 qdrant_client_failure vs qdrant_unreachable', () => {
+	beforeEach(() => {
+		mockFetch.mockReset();
+	});
+
+	function makeFetchFailed(causeCode: string, causeMsg: string): TypeError {
+		const inner: any = new Error(causeMsg);
+		inner.code = causeCode;
+		const outer: any = new TypeError('fetch failed');
+		outer.cause = inner;
+		return outer as TypeError;
+	}
+
+	it('fetch failed + healthy /healthz probe → qdrant_client_failure (Qdrant UP, transport failed)', async () => {
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const err = makeFetchFailed('ECONNRESET', 'read ECONNRESET');
+		const result = await classifySearchError(err, 'codebase_search');
+		expect(result.mode).toBe('qdrant_client_failure');
+		expect(result.message).toContain('Qdrant is UP');
+		expect(result.message).toContain('/healthz');
+		// Real errno surfaced from the cause chain
+		expect(result.originalError).toContain('ECONNRESET');
+		expect(result.hint).toContain('do NOT treat this as backend-down');
+	});
+
+	it('fetch failed + dead probe → qdrant_unreachable with the REAL errno (not "unknown")', async () => {
+		mockFetch.mockRejectedValue(new Error('probe refused'));
+		const err = makeFetchFailed('ETIMEDOUT', 'connect ETIMEDOUT 1.2.3.4:443');
+		const result = await classifySearchError(err, 'codebase_search');
+		expect(result.mode).toBe('qdrant_unreachable');
+		expect(result.message).toContain('ETIMEDOUT');
+		expect(result.message).toContain('health probe also failed');
+		expect(result.originalError).toContain('cause: ETIMEDOUT');
+	});
+
+	it('fetch failed + probe returns non-ok → qdrant_unreachable (backend unhealthy)', async () => {
+		mockFetch.mockResolvedValue({ ok: false, status: 503 });
+		const err = makeFetchFailed('ECONNREFUSED', 'connect ECONNREFUSED');
+		const result = await classifySearchError(err, 'search');
+		expect(result.mode).toBe('qdrant_unreachable');
+	});
+
+	it('bare fetch failed (no cause) + healthy probe → qdrant_client_failure with "no errno" hint', async () => {
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const err = new TypeError('fetch failed');
+		const result = await classifySearchError(err, 'search');
+		expect(result.mode).toBe('qdrant_client_failure');
+		expect(result.hint).toContain('no errno');
+	});
+
+	it('embedding op with unwrapped cause reports the errno in originalError', async () => {
+		mockFetch.mockReset();
+		const err = makeFetchFailed('ENOTFOUND', 'getaddrinfo ENOTFOUND embed.local');
+		const result = await classifySearchError(err, 'embedding');
+		expect(result.mode).toBe('embedding_unreachable');
+		expect(result.originalError).toContain('ENOTFOUND');
 	});
 });
