@@ -16,7 +16,8 @@ import {
   formatDateFull,
   getLocalMachineId,
   getLocalFullId,
-  parseMachineWorkspace
+  parseMachineWorkspace,
+  perReaderStatus
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 
@@ -104,12 +105,22 @@ Le message n'a pas été trouvé dans :
 Ce message a été automatiquement archivé entre le moment où il a été listé et maintenant. Aucune action nécessaire.`;
   }
 
-  // Vérifier si déjà lu (per-machine for broadcasts #629)
+  // Vérifier si déjà lu. Deux classes suivent leurs lecteurs individuellement
+  // (broadcasts #629 par machine, cibles machine-larges par workspace) et
+  // gardent donc `status: 'unread'` : calculer `status === 'read'` ici
+  // annoncerait "non lu" un message que CE workspace a déjà lu, et le
+  // réécrirait pour rien. perReaderStatus (message-helpers) est la source unique.
   const localMachine = getLocalMachineId();
+  const localWorkspace = parseMachineWorkspace(getLocalFullId()).workspaceId;
   const isBroadcast = message.to === 'all' || message.to === 'All';
-  const alreadyReadByMe = isBroadcast
-    ? (message.read_by?.includes(parseMachineWorkspace(localMachine).machineId) ?? false)
-    : message.status === 'read';
+  const perReader = perReaderStatus(message, localMachine, localWorkspace);
+  const alreadyReadByMe =
+    perReader !== null ? perReader === 'read' : message.status === 'read';
+  const readersSuffix = isBroadcast && message.read_by?.length
+    ? ` (lu par ${message.read_by.length} machine(s): ${message.read_by.join(', ')})`
+    : message.read_by_workspace?.length
+      ? ` (lu par ${message.read_by_workspace.length} workspace(s): ${message.read_by_workspace.join(', ')})`
+      : '';
 
   if (alreadyReadByMe) {
     return `ℹ️ **Message déjà marqué comme lu**
@@ -119,7 +130,7 @@ Ce message a été automatiquement archivé entre le moment où il a été list�
 **De :** ${message.from}
 **À :** ${message.to}
 **Date :** ${formatDateFull(message.timestamp)}
-**Statut actuel :** ✅ READ${isBroadcast && message.read_by ? ` (lu par ${message.read_by.length} machine(s): ${message.read_by.join(', ')})` : ''}
+**Statut actuel :** ✅ READ${readersSuffix}
 
 Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
   }

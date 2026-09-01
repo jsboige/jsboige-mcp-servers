@@ -13,7 +13,7 @@ import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
 // Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
 // cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
@@ -980,7 +980,7 @@ export class MessageManager {
 
         // Filter by status — per-machine for broadcasts (#629)
         if (status && status !== 'all') {
-          const perReader = MessageManager.perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+          const perReader = perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
           if (perReader !== null) {
             if (perReader !== status) continue;
           } else {
@@ -991,7 +991,7 @@ export class MessageManager {
         // #2307 Phase 4: For broadcast messages, adjust status per-machine so
         // callers (read.ts inbox display) see the correct read/unread state.
         // Without this, broadcast messages always show "unread" even after being read.
-        const perReader = MessageManager.perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+        const perReader = perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
         if (perReader !== null) {
           filtered.push({ ...item, status: perReader });
         } else {
@@ -1087,7 +1087,7 @@ export class MessageManager {
       if (!matchesRecipient(fullMsg.to, machineId, effectiveWorkspaceId)) continue;
 
       total++;
-      const perReader = MessageManager.perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+      const perReader = perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
       const isUnreadForMachine =
         perReader !== null ? perReader === 'unread' : fullMsg.status === 'unread';
 
@@ -1350,36 +1350,6 @@ export class MessageManager {
    *
    * @returns false when the reader is denied; true with `message` mutated.
    */
-  /**
-   * Per-reader read state, or `null` when the message uses the global `status`.
-   *
-   * Two classes track readers individually instead of flipping a global status:
-   *   - broadcasts ("all"/"All") - per MACHINE, via `read_by` (#629);
-   *   - machine-wide targets ("myia-ai-01") - per WORKSPACE, via
-   *     `read_by_workspace`, because every workspace of the machine receives them.
-   *
-   * @private
-   */
-  private static perReaderStatus(
-    message: Message,
-    machineId: string,
-    workspaceId?: string
-  ): 'read' | 'unread' | null {
-    if (message.to === 'all' || message.to === 'All') {
-      if (!message.read_by) return null;
-      const readerMachineId = parseMachineWorkspace(machineId).machineId;
-      return message.read_by.includes(readerMachineId) ? 'read' : 'unread';
-    }
-    if (isMachineWideTarget(message.to)) {
-      // No workspace on the reader side -> cannot discriminate; fall back to the
-      // global status rather than report every such message as unread forever.
-      if (!workspaceId) return null;
-      const full = canonicalizeFullId(parseMachineWorkspace(machineId).machineId + ':' + workspaceId);
-      return (message.read_by_workspace ?? []).includes(full) ? 'read' : 'unread';
-    }
-    return null;
-  }
-
   private static applyReadTracking(message: Message, readerId?: string): boolean {
     if (readerId) {
       // #2287: Workspace guard — reject if reader's workspace doesn't match message target

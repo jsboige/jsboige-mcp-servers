@@ -46,7 +46,7 @@ function makeTempSharedState(): string {
   return dir;
 }
 
-function seed(sharedState: string, id: string, to: string): void {
+function seed(sharedState: string, id: string, to: string, status = 'unread'): void {
   const msg = {
     id,
     from: 'myia-po-2023:roo-extensions',
@@ -55,7 +55,7 @@ function seed(sharedState: string, id: string, to: string): void {
     body: `body-${id}`,
     priority: 'MEDIUM',
     timestamp: new Date('2026-09-01T10:00:00.000Z').toISOString(),
-    status: 'unread',
+    status,
   };
   writeFileSync(join(sharedState, 'messages', 'inbox', `${id}.json`), JSON.stringify(msg), 'utf-8');
 }
@@ -145,6 +145,22 @@ describe('MessageManager — machine-wide targets are read per workspace', () =>
     expect(raw.read_by).toEqual([MACHINE]);
     // A broadcast is machine-granular by design: both workspaces of ai-01 now see it read.
     expect((await process_(shared).readInbox(MACHINE, 'unread', undefined, WS_B)).map(m => m.id)).toEqual([]);
+  });
+
+  test('a message already flipped globally is NOT resurrected as unread', async () => {
+    // The fleet's existing stock: machine-wide messages read under the OLD
+    // semantics carry status 'read' and no per-workspace record — and never
+    // will, nothing backfills them. Deciding purely on `read_by_workspace`
+    // would report every one of them unread again, on seven machines, the day
+    // this ships. Per-workspace tracking governs messages that have not
+    // already been consumed globally; it does not reopen the ones that have.
+    const id = 'msg-20260901T100006-mwtggg';
+    seed(shared, id, MACHINE, 'read');
+
+    expect((await process_(shared).readInbox(MACHINE, 'unread', undefined, WS_A)).map(m => m.id)).toEqual([]);
+    expect((await process_(shared).readInbox(MACHINE, 'unread', undefined, WS_B)).map(m => m.id)).toEqual([]);
+    expect(await process_(shared).getFilteredCount(MACHINE, 'all', WS_B))
+      .toEqual({ total: 1, unread: 0, read: 1 });
   });
 
   test('a reader without a workspace still clears the message (no permanent unread)', async () => {
