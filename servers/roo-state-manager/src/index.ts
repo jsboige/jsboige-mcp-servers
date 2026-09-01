@@ -808,6 +808,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
         return;
     }
     isShuttingDown = true;
+    const shutdownStart = Date.now();
     logger.info(`Received ${signal}, starting graceful shutdown (timeout: ${SHUTDOWN_TIMEOUT_MS}ms)...`);
 
     const forceExitTimeout = setTimeout(() => {
@@ -820,6 +821,23 @@ async function gracefulShutdown(signal: string): Promise<void> {
             logger.info('Stopping MCP server...');
             await serverInstance.stop();
             logger.info('MCP server stopped');
+        }
+
+        // #3151: hold the door for in-flight PG mirror writes. Before this,
+        // process.exit() dropped them (repro 2026-09-01: send + stdin-end →
+        // GDrive PRESENT / PG ABSENT — the graceful path lost the write too,
+        // because nothing ever drained the writer). The drain budget is what
+        // remains of SHUTDOWN_TIMEOUT_MS; the force-exit timer above stays the
+        // hard backstop either way. Dynamic import per #1140: the chain pulls
+        // `pg` via writer-factory → PgUnifiedStoreWriter, which has no business
+        // in the startup budget.
+        const { drainPendingDualWrites } = await import(
+            './services/unified-store/roosync-channel-dual-write.js'
+        );
+        const drainBudget = Math.max(1000, SHUTDOWN_TIMEOUT_MS - (Date.now() - shutdownStart) - 1000);
+        const drained = await drainPendingDualWrites(drainBudget);
+        if (!drained) {
+            logger.warn('[shutdown] dual-write drain incomplete — some PG mirror writes may be lost');
         }
 
         clearTimeout(forceExitTimeout);

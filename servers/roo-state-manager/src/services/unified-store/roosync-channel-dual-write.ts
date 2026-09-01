@@ -53,6 +53,89 @@ import { createLogger } from '../../utils/logger.js';
 const logger = createLogger('roosync-channel-dual-write');
 
 /**
+ * Mirror ops currently in flight (#3151).
+ *
+ * #1069 made a *failing* mirror observable; the measured residual loss
+ * (po-2024 24.5 % / po-2027 72.5 %, fenêtre 26/08→01/09) is the mirror that
+ * never got to fail: the process exits while the fire-and-forget INSERT is
+ * still in flight. Repro 2026-09-01 (po-204, build post-#1069): send a
+ * message, kill the server right after the tool response → GDrive PRESENT /
+ * PG ABSENT — and the same signature on the *graceful* stdin-end path,
+ * because `gracefulShutdown` never drained the writer (`writer.close()` had
+ * no production caller). High-churn machines (short-lived worker sessions)
+ * hit this constantly; long-lived sessions almost never — which is exactly
+ * the measured per-machine distribution.
+ */
+const pendingMirrorOps = new Set<Promise<void>>();
+
+/**
+ * Run one mirror op registered above, keeping the #1069 failure contract
+ * verbatim (swallowed, logged with op + id, never blocks the GDrive path).
+ */
+function runTrackedMirrorOp(op: string, id: string, work: () => Promise<void>): Promise<void> {
+  const tracked = (async () => {
+    try {
+      await work();
+    } catch (error) {
+      // Swallowed on purpose (contract above), but NEVER silent: an
+      // unlogged loss is undetectable by construction.
+      logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
+        op,
+        id,
+        error: String(error),
+      });
+    }
+  })();
+  pendingMirrorOps.add(tracked);
+  void tracked.then(
+    () => pendingMirrorOps.delete(tracked),
+    () => pendingMirrorOps.delete(tracked)
+  );
+  return tracked;
+}
+
+/** Number of mirror writes in flight (diagnostic; also asserted in tests). */
+export function getPendingDualWriteCount(): number {
+  return pendingMirrorOps.size;
+}
+
+/**
+ * Hold the exit door open for in-flight mirror writes (#3151).
+ *
+ * Waits (bounded by `timeoutMs`, re-checked as new ops arrive) for every
+ * registered mirror op, then closes the writer pool — `pg`'s `pool.end()`
+ * additionally waits for queries already handed to a client. Returns true
+ * when everything settled, false on timeout (ops may then be lost; the
+ * caller is expected to log it). Hard kills (Windows TerminateProcess) still
+ * bypass this — that residual is for a reconcile/backfill pass, not for the
+ * exit path.
+ */
+export async function drainPendingDualWrites(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (pendingMirrorOps.size > 0 && Date.now() < deadline) {
+    const snapshot = [...pendingMirrorOps];
+    const remaining = deadline - Date.now();
+    await Promise.race([
+      Promise.allSettled(snapshot),
+      new Promise(resolve => setTimeout(resolve, Math.max(remaining, 0))),
+    ]);
+  }
+  const drained = pendingMirrorOps.size === 0;
+  if (!drained) {
+    logger.warn('[channel-dual-write] shutdown drain timed out — mirror writes still in flight', {
+      stillPending: pendingMirrorOps.size,
+      timeoutMs,
+    });
+  }
+  try {
+    await getUnifiedStoreWriter().close();
+  } catch (error) {
+    logger.warn('[channel-dual-write] writer close on shutdown failed', { error: String(error) });
+  }
+  return drained;
+}
+
+/**
  * Map a MessageManager Message to a roosync_messages row.
  * "machine:workspace" ids split into the two columns; a bare machine id gets
  * an empty workspace (schema NOT NULL — empty = all workspaces, matching the
@@ -102,60 +185,36 @@ function mapMessageOptions(message: Message): RooSyncMessageOptions {
  * Dual-write a sent message (covers send AND reply — both produce a new Message).
  * Idempotent: INSERT ON CONFLICT (id) DO NOTHING at the writer level.
  */
-export async function dualWriteRooSyncMessageToStore(message: Message): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().insertRooSyncMessage(mapMessageToRow(message));
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'insert',
-      id: message.id,
-      error: String(error),
-    });
-  }
+export function dualWriteRooSyncMessageToStore(message: Message): Promise<void> {
+  return runTrackedMirrorOp('insert', message.id, () =>
+    getUnifiedStoreWriter().insertRooSyncMessage(mapMessageToRow(message))
+  );
 }
 
 /**
  * Dual-write an amended body (amendMessage keeps the same message id).
  */
-export async function dualWriteRooSyncMessageAmendment(
+export function dualWriteRooSyncMessageAmendment(
   message: Message
 ): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(message.id, { body: message.body });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'amend',
-      id: message.id,
-      error: String(error),
-    });
-  }
+  return runTrackedMirrorOp('amend', message.id, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(message.id, { body: message.body })
+  );
 }
 
 /**
  * Dual-write refreshed attachment refs on an existing message
  * (updateMessageAttachments after uploads complete).
  */
-export async function dualWriteRooSyncAttachmentRefs(
+export function dualWriteRooSyncAttachmentRefs(
   messageId: string,
   attachments: Message['attachments']
 ): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+  return runTrackedMirrorOp('attachment-refs', messageId, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       attachment_refs: attachments ?? [],
-    });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'attachment-refs',
-      id: messageId,
-      error: String(error),
-    });
-  }
+    })
+  );
 }
 
 /**
@@ -166,21 +225,13 @@ export async function dualWriteRooSyncAttachmentRefs(
  * globally `read` would hide it from the five machines that have not read it
  * yet. Over-show is the safe error, under-show is not.
  */
-export async function dualWriteRooSyncMessageRead(messageId: string): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+export function dualWriteRooSyncMessageRead(messageId: string): Promise<void> {
+  return runTrackedMirrorOp('read', messageId, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       status: 'read',
       read_at: new Date().toISOString(),
-    });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'read',
-      id: messageId,
-      error: String(error),
-    });
-  }
+    })
+  );
 }
 
 /**
@@ -192,23 +243,15 @@ export async function dualWriteRooSyncMessageRead(messageId: string): Promise<vo
  * self-healing for readers missed by an older partial write. The global
  * `status` of a broadcast is deliberately left `unread`.
  */
-export async function dualWriteRooSyncMessageBroadcastRead(
+export function dualWriteRooSyncMessageBroadcastRead(
   messageId: string,
   readBy: string[]
 ): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+  return runTrackedMirrorOp('broadcast-read', messageId, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       read_by: readBy,
-    });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'broadcast-read',
-      id: messageId,
-      error: String(error),
-    });
-  }
+    })
+  );
 }
 
 /**
@@ -217,21 +260,13 @@ export async function dualWriteRooSyncMessageBroadcastRead(
  * This is the one that keeps a Phase B mailbox read bounded: on GDrive the file
  * leaves `inbox/`, and this is its PG equivalent.
  */
-export async function dualWriteRooSyncMessageArchived(messageId: string): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+export function dualWriteRooSyncMessageArchived(messageId: string): Promise<void> {
+  return runTrackedMirrorOp('archived', messageId, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       status: 'archived',
       archived_at: new Date().toISOString(),
-    });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'archived',
-      id: messageId,
-      error: String(error),
-    });
-  }
+    })
+  );
 }
 
 /**
@@ -242,22 +277,14 @@ export async function dualWriteRooSyncMessageArchived(messageId: string): Promis
  * sweep from reminding twice. Unmirrored, a Phase B sweep would re-send a
  * reminder for the same message on every pass.
  */
-export async function dualWriteRooSyncMessageReminderSent(
+export function dualWriteRooSyncMessageReminderSent(
   messageId: string
 ): Promise<void> {
-  try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+  return runTrackedMirrorOp('reminder-sent', messageId, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       reminder_sent_at: new Date().toISOString(),
-    });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'reminder-sent',
-      id: messageId,
-      error: String(error),
-    });
-  }
+    })
+  );
 }
 
 /**
@@ -270,12 +297,12 @@ export async function dualWriteRooSyncMessageReminderSent(
  * dual-write must never break the caller), so it purges payloads individually
  * and lets `withRetry` in the writer handle transient errors.
  */
-export async function dualWriteRooSyncMessageDestroyed(
+export function dualWriteRooSyncMessageDestroyed(
   messageId: string,
   reason: string,
   attachmentUuids: string[]
 ): Promise<void> {
-  try {
+  return runTrackedMirrorOp('destroy', messageId, async () => {
     const writer = getUnifiedStoreWriter();
     for (const uuid of attachmentUuids) {
       await writer.deleteRooSyncAttachment(uuid);
@@ -285,15 +312,7 @@ export async function dualWriteRooSyncMessageDestroyed(
       destroyed_at: new Date().toISOString(),
       destroyed_reason: reason,
     });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'destroy',
-      id: messageId,
-      error: String(error),
-    });
-  }
+  });
 }
 
 /**
@@ -301,13 +320,13 @@ export async function dualWriteRooSyncMessageDestroyed(
  * Reads the file the AttachmentManager just wrote to GDrive and ships its
  * bytes to PG, with sha256 for integrity.
  */
-export async function dualWriteRooSyncAttachmentToStore(
+export function dualWriteRooSyncAttachmentToStore(
   uuid: string,
   filePath: string,
   filename: string,
   mime: string | null
 ): Promise<void> {
-  try {
+  return runTrackedMirrorOp('attachment-payload', uuid, async () => {
     const payload = await readFile(filePath);
     await getUnifiedStoreWriter().insertRooSyncAttachment({
       id: uuid,
@@ -317,13 +336,5 @@ export async function dualWriteRooSyncAttachmentToStore(
       sha256: createHash('sha256').update(payload).digest('hex'),
       payload,
     });
-  } catch (error) {
-    // Swallowed on purpose (contract above), but NEVER silent: an
-    // unlogged loss is undetectable by construction.
-    logger.warn('[channel-dual-write] PG mirror failed — GDrive write kept', {
-      op: 'attachment-payload',
-      id: uuid,
-      error: String(error),
-    });
-  }
+  });
 }
