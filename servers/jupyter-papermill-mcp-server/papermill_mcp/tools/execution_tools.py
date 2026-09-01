@@ -457,8 +457,10 @@ def register_execution_tools(app: FastMCP) -> None:
             logger.info(f"Executing cell {cell_index} from notebook: {path}")
             _, kernel_service = get_services()
 
+            # #3346: the service parameter is `notebook_path` -- calling with
+            # `path=` raised "unexpected keyword argument 'path'" immediately.
             result = await kernel_service.execute_notebook_cell(
-                path=path, cell_index=cell_index, kernel_id=kernel_id
+                notebook_path=path, cell_index=cell_index, kernel_id=kernel_id
             )
 
             logger.info(

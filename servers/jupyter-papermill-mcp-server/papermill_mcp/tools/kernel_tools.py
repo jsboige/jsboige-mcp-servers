@@ -33,6 +33,41 @@ def get_kernel_service() -> KernelService:
         raise RuntimeError("Kernel service not initialized")
     return _kernel_service
 
+
+def _transport_hard_timeout(
+    mode: str,
+    path: Optional[str],
+    effective_timeout: int,
+    max_timeout: int,
+) -> int:
+    """
+    #3346: transport-level hard timeout for a logical tool call.
+
+    For mode="notebook" the call spans ALL code cells and `effective_timeout` is
+    a PER-CELL budget (forwarded to each execute_code). A flat
+    effective_timeout + 30 is LOWER than one slow cell's own budget (e.g. 900s
+    config default vs 450s transport cap) -- the transport then cancels the
+    call mid-cell before any per-cell timeout can fire, which is exactly the
+    inversion that leaked .NET kernels on po-2025 (#3346). Bound the transport
+    by the sum of the per-cell budgets, clamped to the configured max.
+    """
+    if mode != "notebook" or not path:
+        return effective_timeout + 30
+    try:
+        from ..utils.file_utils import FileUtils
+
+        nb = FileUtils.read_notebook(path)
+        n_code_cells = max(
+            1, sum(1 for c in nb.cells if c.cell_type == "code")
+        )
+        return min(effective_timeout * n_code_cells + 60, max_timeout)
+    except Exception as e:
+        logger.warning(
+            f"#3346 could not count code cells for notebook-mode transport "
+            f"timeout ({e}); falling back to flat hard timeout"
+        )
+        return effective_timeout + 30
+
 def register_kernel_tools(app: FastMCP) -> None:
     """Register all kernel tools with the FastMCP app."""
 
@@ -77,7 +112,10 @@ def register_kernel_tools(app: FastMCP) -> None:
             code: Code Python à exécuter (pour mode="code")
             path: Chemin du notebook (pour mode="notebook" | "notebook_cell")
             cell_index: Index de la cellule (pour mode="notebook_cell", 0-based)
-            timeout: Timeout en secondes (défaut: MCP_JUPYTER_DEFAULT_TIMEOUT=30, max: MCP_JUPYTER_MAX_TIMEOUT=3600)
+            timeout: Timeout en secondes, PAR CELLULE pour mode="notebook"
+                (défaut: MCP_JUPYTER_DEFAULT_TIMEOUT, max: MCP_JUPYTER_MAX_TIMEOUT=3600).
+                #3346: pour mode="notebook", le timeout transport couvre l'ensemble
+                des cellules (somme des budgets par cellule, clampée au max).
 
         Returns:
             Execution result dict with status, outputs, and timing info.
@@ -102,8 +140,11 @@ def register_kernel_tools(app: FastMCP) -> None:
                 )
                 effective_timeout = max_timeout
 
-            # Hard timeout at MCP transport level — always enforced (#2206)
-            hard_timeout = effective_timeout + 30
+            # Hard timeout at MCP transport level — always enforced (#2206).
+            # #3346: proportional for notebook mode (see _transport_hard_timeout).
+            hard_timeout = _transport_hard_timeout(
+                mode, path, effective_timeout, max_timeout
+            )
 
             async def _execute():
                 return await service.execute_on_kernel_consolidated(
@@ -124,12 +165,28 @@ def register_kernel_tools(app: FastMCP) -> None:
                 f"execute_on_kernel timed out (hard limit {hard_timeout}s) "
                 f"on kernel {kernel_id} in mode: {mode}"
             )
+            # #3346: the inner execute_code finalizer ran during the cancellation
+            # (interrupt, then force-stop if non-cooperative). Report the
+            # post-cleanup kernel state so the caller knows where it stands:
+            # None = deregistered (kernel stopped), a dict = registered state.
+            kernel_state = None
+            try:
+                kernel_state = service.jupyter_manager.get_kernel_info(kernel_id)
+            except Exception:
+                pass
             return {
                 "error": f"Execution timed out (hard limit {hard_timeout}s, kernel timeout {effective_timeout}s)",
                 "kernel_id": kernel_id,
                 "mode": mode,
                 "status": "timeout",
                 "success": False,
+                "kernel_state": kernel_state,
+                "cleanup": (
+                    "kernel stopped and deregistered"
+                    if kernel_state is None
+                    else f"kernel left in state '{kernel_state.get('status')}' "
+                    f"(see recovery hint in its status)"
+                ),
             }
         except Exception as e:
             logger.error(f"Error executing on kernel {kernel_id} in mode {mode}: {e}")

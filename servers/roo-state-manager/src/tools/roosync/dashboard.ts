@@ -2424,10 +2424,18 @@ async function condenseIntercom(
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');
   llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary');
 
-  // #1502: Detect contradictions in generated status before committing
+  // #1502: Detect contradictions in generated status before committing.
+  // #3329 (RECIDIVE): the previous guard appended HTML comment markers but
+  // never stripped them on the next cycle, so they accumulated (7 entities ×
+  // 2 cycles = 14 lines in workspace status, 3 in global). This is the
+  // minimal dedup + branchement: strip stale markers before re-emitting so
+  // each cycle's status carries exactly one fresh marker per conflicting
+  // entity, and escalate to logger.error so the existing guard is no
+  // longer a silent journal.
+  newStatus = newStatus!.replace(/^[ \t]*<!-- #1502 CONTRADICTION:.*-->[ \t]*\n?/gm, '').trimEnd();
   const detectedContradictions = detectStatusContradictions(newStatus!);
   if (detectedContradictions.length > 0) {
-    logger.warn('Status contradictions detected after LLM generation (#1502)', {
+    logger.error('Status contradictions detected after LLM generation (#1502/#3329)', {
       contradictionCount: detectedContradictions.length,
       contradictions: detectedContradictions.map(c => `${c.entity}: ${c.conflictingStates.join(' vs ')}`)
     });
@@ -2435,7 +2443,7 @@ async function condenseIntercom(
     const warningLines = detectedContradictions.map(c =>
       `<!-- #1502 CONTRADICTION: ${c.entity} has conflicting states: ${c.conflictingStates.join(' vs ')} -->`
     ).join('\n');
-    newStatus = newStatus! + '\n\n' + warningLines;
+    newStatus = newStatus + '\n\n' + warningLines;
   }
 
   const statusUpdated = true;

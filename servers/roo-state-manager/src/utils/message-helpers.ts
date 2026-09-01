@@ -149,26 +149,128 @@ export function getLocalFullId(): string {
 }
 
 /**
+ * Alias map for machine ID canonicalization (#3292 sharding precondition).
+ *
+ * Historical messages in the shared inbox used short forms ("po-2024", "ai-01",
+ * "po-2023") without the "myia-" prefix; a few stray entries used SHAs, "head",
+ * "main", or fixture names ("test-machine"). Without canonicalization:
+ * - `parseMachineWorkspace("po-2024:roo-extensions").machineId` = "po-2024"
+ *   ≠ localMachineId "myia-po-2024" → `matchesRecipient` returns false → message
+ *   is silently unreadable by its legitimate recipient.
+ * - The future shard layout (one directory per `to` machine) would store these
+ *   under non-canonical keys, breaking the shard lookup entirely.
+ *
+ * Aliases here resolve to a single canonical form per fleet machine. Names not
+ * in the map are returned unchanged — they may be deliberate agent names
+ * ("NanoClaw", "Hermes") or future machine additions.
+ *
+ * Scope is intentionally narrow: this is a recipient-side alias map, not a
+ * fleet roster. Adding a new fleet machine requires updating this constant AND
+ * `inventoryCollector` separately.
+ */
+const MACHINE_ID_ALIASES: ReadonlyMap<string, string> = new Map<string, string>([
+  // Short forms (no myia- prefix) → canonical
+  ['po-2023', 'myia-po-2023'],
+  ['po-2024', 'myia-po-2024'],
+  ['po-2025', 'myia-po-2025'],
+  ['po-2026', 'myia-po-2026'],
+  ['po-2027', 'myia-po-2027'],
+  ['ai-01', 'myia-ai-01'],
+  ['web1', 'myia-web1'],
+  // Capitalization variants observed in pool
+  ['MyIA-AI-01', 'myia-ai-01'],
+  ['MyIA-PO-2024', 'myia-po-2024'],
+  ['MyIA-Web1', 'myia-web1'],
+  ['Web1', 'myia-web1'],
+  // 8-char abbreviations observed in legacy dashboard mentions
+  ['nano', 'nanoclaw'],
+  ['nano-cluster', 'cluster-manager:nanoclaw-cluster'],
+]);
+
+/**
+ * Canonicalize a machine identifier.
+ *
+ * Returns the canonical form if `raw` matches a known alias, otherwise returns
+ * `raw` unchanged. Case-insensitive lookup so callers don't have to pre-lowercase.
+ *
+ * @param raw Machine identifier as written in a message's `to`/`from` field
+ * @returns Canonical machine identifier
+ *
+ * @example
+ * ```typescript
+ * canonicalMachineId("po-2024");      // "myia-po-2024"
+ * canonicalMachineId("AI-01");        // "myia-ai-01"
+ * canonicalMachineId("NanoClaw");     // "NanoClaw" (unchanged — agent name)
+ * canonicalMachineId("myia-po-2024"); // "myia-po-2024" (already canonical)
+ * canonicalMachineId("f75baded...");  // unchanged (SHA — caught by unrecognized branch)
+ * ```
+ */
+export function canonicalMachineId(raw: string): string {
+  if (!raw) return raw;
+  const canonical = MACHINE_ID_ALIASES.get(raw);
+  if (canonical !== undefined) return canonical;
+  const lower = raw.toLowerCase();
+  const canonicalLower = MACHINE_ID_ALIASES.get(lower);
+  if (canonicalLower !== undefined) return canonicalLower;
+  return raw;
+}
+
+/**
+ * Canonicalize a composite "machine[:workspace]" id (#3292).
+ *
+ * Only the machine portion is rewritten; the workspace part is preserved
+ * verbatim (workspaces have their own normalization via `normalizeWorkspaceId`).
+ * "all" / "All" pass through unchanged — broadcast is a routing primitive,
+ * not a machine identifier.
+ *
+ * @param fullId Raw id, possibly with ":workspace" suffix
+ * @returns Canonical id, or `fullId` unchanged if it can't be split / not an alias
+ *
+ * @example
+ * ```typescript
+ * canonicalizeFullId("po-2024:CoursIA");     // "myia-po-2024:CoursIA"
+ * canonicalizeFullId("ai-01");              // "myia-ai-01"
+ * canonicalizeFullId("NanoClaw");           // "NanoClaw" (unchanged)
+ * canonicalizeFullId("all:roo-extensions"); // "all:roo-extensions"
+ * ```
+ */
+export function canonicalizeFullId(fullId: string): string {
+  if (!fullId) return fullId;
+  const colonIndex = fullId.indexOf(':');
+  if (colonIndex === -1) {
+    return canonicalMachineId(fullId);
+  }
+  const machine = fullId.substring(0, colonIndex);
+  const rest = fullId.substring(colonIndex);
+  return canonicalMachineId(machine) + rest;
+}
+
+/**
  * Parse un identifiant composite "machineId:workspaceId" ou simple "machineId"
  *
+ * Applies machine-id canonicalization (#3292) so legacy short forms ("po-2024")
+ * parse to the same machineId as their canonical counterparts.
+ *
  * @param id L'identifiant à parser
- * @returns Objet avec machineId et workspaceId optionnel
+ * @returns Objet avec machineId (canonical) et workspaceId optionnel
  *
  * @example
  * ```typescript
  * parseMachineWorkspace("myia-ai-01:roo-extensions");
  * // { machineId: "myia-ai-01", workspaceId: "roo-extensions" }
- * parseMachineWorkspace("myia-ai-01");
- * // { machineId: "myia-ai-01", workspaceId: undefined }
+ * parseMachineWorkspace("po-2024:roo-extensions");
+ * // { machineId: "myia-po-2024", workspaceId: "roo-extensions" } (#3292)
+ * parseMachineWorkspace("ai-01");
+ * // { machineId: "myia-ai-01", workspaceId: undefined } (#3292)
  * ```
  */
 export function parseMachineWorkspace(id: string): { machineId: string; workspaceId?: string } {
   const colonIndex = id.indexOf(':');
   if (colonIndex === -1) {
-    return { machineId: id };
+    return { machineId: canonicalMachineId(id) };
   }
   return {
-    machineId: id.substring(0, colonIndex),
+    machineId: canonicalMachineId(id.substring(0, colonIndex)),
     workspaceId: id.substring(colonIndex + 1)
   };
 }
@@ -215,8 +317,10 @@ export function matchesRecipient(
 
   const parsed = parseMachineWorkspace(messageTo);
 
-  // Machine must match
-  if (parsed.machineId !== localMachineId) {
+  // Machine must match (after canonicalization on both sides — #3292 handles
+  // legacy short forms like "po-2024" stored before the prefix was enforced).
+  const localCanonical = canonicalMachineId(localMachineId);
+  if (parsed.machineId !== localCanonical) {
     return false;
   }
 
