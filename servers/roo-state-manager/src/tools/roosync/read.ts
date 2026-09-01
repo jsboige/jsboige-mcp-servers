@@ -7,7 +7,7 @@
  * @version 1.0.0
  */
 
-import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
+import { MessageManager, getMessageManager, type MessageListItem } from '../../services/MessageManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
@@ -56,6 +56,12 @@ interface RooSyncReadArgs {
    *  and hydrates the rest in the background — unread messages are recent in practice.
    *  Set deep:true when you genuinely need an old-pool listing right now. */
   deep?: boolean;
+
+  /** #3351: filter inbox by sender — case-insensitive substring, same semantics as bulk */
+  from?: string;
+
+  /** #3351: filter inbox by subject — case-insensitive substring, same semantics as bulk */
+  subject_contains?: string;
 
   // Pour mode 'message' et 'attachments'
   /** ID du message à récupérer (requis si mode='message' ou 'attachments') */
@@ -149,14 +155,45 @@ async function readInboxMode(
     }
   }
 
-  // Get counts from cache (single scan, no double-read — #638 perf fix).
-  // deep propagates so counts and listing always derive from the same pool (#3292).
-  const counts = await messageManager.getFilteredCount(effectiveMachineId, 'all', effectiveWorkspaceId, args.deep);
+  // #3351: from/subject_contains are honored on inbox. With a filter active,
+  // counts must describe the FILTERED set — a whole-inbox "total" printed next
+  // to a filtered page reads exactly like the no-op filter #3351 reports —
+  // and pagination slices the filtered set. Fetch the full filtered list once
+  // and derive counts + page from it (filter result sets are small; the
+  // unfiltered path keeps the #638 single-scan flow unchanged).
+  const fromFilter = args.from;
+  const subjectFilter = args.subject_contains;
+  const hasFilters = !!(fromFilter || subjectFilter);
 
-  // Read messages with pagination
-  const messages = await messageManager.readInbox(
-    effectiveMachineId, status, limit, effectiveWorkspaceId, page, perPage, args.deep
-  );
+  let counts: { total: number; unread: number; read: number };
+  let messages: MessageListItem[];
+  if (hasFilters) {
+    const fullSet = await messageManager.readInbox(
+      effectiveMachineId, status, undefined, effectiveWorkspaceId,
+      undefined, undefined, args.deep, fromFilter, subjectFilter
+    );
+    const unread = fullSet.filter(m => m.status === 'unread').length;
+    counts = { total: fullSet.length, unread, read: fullSet.length - unread };
+    // #638 pagination semantics mirrored client-side: page/per_page first,
+    // then limit, then everything.
+    if (page !== undefined && perPage !== undefined && perPage > 0) {
+      const startIdx = (page - 1) * perPage;
+      messages = fullSet.slice(startIdx, startIdx + perPage);
+    } else if (limit) {
+      messages = fullSet.slice(0, limit);
+    } else {
+      messages = fullSet;
+    }
+  } else {
+    // Get counts from cache (single scan, no double-read — #638 perf fix).
+    // deep propagates so counts and listing always derive from the same pool (#3292).
+    counts = await messageManager.getFilteredCount(effectiveMachineId, 'all', effectiveWorkspaceId, args.deep);
+
+    // Read messages with pagination
+    messages = await messageManager.readInbox(
+      effectiveMachineId, status, limit, effectiveWorkspaceId, page, perPage, args.deep
+    );
+  }
 
   // #3292: a cold start without deep serves the recent slice while the full
   // pool hydrates in the background — surface that so consumers don't read
@@ -174,6 +211,31 @@ async function readInboxMode(
     .then(svc => svc.getHeartbeatService()
       .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_read_inbox', messageCount: messages.length }))
     .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+
+  // #3351: a filter that matches NOTHING is not an empty inbox — answer the
+  // filter question explicitly, never "votre inbox est vide" (the false
+  // negative that made agents conclude a message did not exist).
+  if (hasFilters && counts.total === 0) {
+    if (args.format === 'json') {
+      return JSON.stringify({
+        machine_id: effectiveMachineId,
+        workspace_id: effectiveWorkspaceId,
+        total: 0,
+        unread: 0,
+        read: 0,
+        filters_applied: { from: fromFilter ?? null, subject_contains: subjectFilter ?? null },
+        ...(partialView ? { partial: true, note: 'Cold start: recent slice only — zero here is not evidence the message does not exist. Pass deep:true for the complete scan.' } : {}),
+        messages: []
+      }, null, 2);
+    }
+    let noMatch = `📭 **Aucun message ne correspond au filtre**\n\n`;
+    noMatch += `**Machine :** ${effectiveMachineId}:${effectiveWorkspaceId}\n`;
+    noMatch += `**Filtre :** from: ${fromFilter ?? '—'} | subject_contains: ${subjectFilter ?? '—'} | statut: ${status}\n`;
+    if (partialView) {
+      noMatch += `\n⏳ _Vue récente (cold start #3292) — zéro ici ne prouve pas l'absence du message. \`deep: true\` pour le scan complet._\n`;
+    }
+    return noMatch;
+  }
 
   // Cas : aucun message. Zero hits on a PARTIAL cache is not evidence of an
   // empty inbox (#3292): the cold-start slice covers only the newest N files of
@@ -211,6 +273,7 @@ Votre inbox est vide pour le moment.
       read: counts.read,
       page: page ?? null,
       per_page: perPage ?? null,
+      ...(hasFilters ? { filters_applied: { from: fromFilter ?? null, subject_contains: subjectFilter ?? null } } : {}),
       ...(partialView ? { partial: true, note: 'Cold start: recent slice only — full pool hydrating in background. Pass deep:true for the complete scan.' } : {}),
       messages: messages.map(msg => ({
         id: msg.id,
@@ -231,6 +294,11 @@ Votre inbox est vide pour le moment.
   result += `**Total :** ${counts.total} message${counts.total > 1 ? 's' : ''} | `;
   result += `🆕 ${counts.unread} non-lu${counts.unread > 1 ? 's' : ''} | `;
   result += `✅ ${counts.read} lu${counts.read > 1 ? 's' : ''}\n`;
+  if (hasFilters) {
+    // #3351: echo the ACTIVE filter — the response must prove the filter was
+    // applied, not just claim a list.
+    result += `🔎 **Filtre :** from: ${fromFilter ?? '—'} | subject_contains: ${subjectFilter ?? '—'}\n`;
+  }
   if (partialView) {
     result += `⏳ _Vue récente (cold start #3292) — hydratation du pool complet en arrière-plan, \`deep: true\` pour forcer le scan complet._\n`;
   }

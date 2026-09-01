@@ -87,11 +87,11 @@ export const MessagesArgsSchema = z.object({
   workspace: z.string().optional().describe('Override workspace filter (#1498). Identifiant de workspace SEUL — la machine reste la vôtre (ou to_machine). Passer "machine:workspace" ici produit une identité-valise inconnue de la flotte (#3177)'),
   to_machine: z.string().optional().describe('Override machine filter (#1498, avance). NB: pas "machineId" — ce param n existe pas et est rejeté depuis #3177'),
 
-  // --- Manage bulk params ---
-  from: z.string().optional().describe('Filtrer par expediteur (bulk)'),
-  before_date: z.string().optional().describe('Filtrer avant date ISO-8601 (bulk)'),
-  subject_contains: z.string().optional().describe('Filtrer par sujet (bulk)'),
-  tag: z.string().optional().describe('Filtrer par tag (bulk)'),
+  // --- Manage bulk params (from/subject_contains also honored on inbox, #3351) ---
+  from: z.string().optional().describe('Filtrer par expediteur — substring insensible a la casse (inbox + bulk)'),
+  before_date: z.string().optional().describe('Filtrer avant date ISO-8601 (bulk uniquement — rejeté sur inbox, #3351)'),
+  subject_contains: z.string().optional().describe('Filtrer par sujet — substring insensible a la casse (inbox + bulk)'),
+  tag: z.string().optional().describe('Filtrer par tag (bulk uniquement — rejeté sur inbox, #3351)'),
 
   // --- Attachments params ---
   uuid: z.string().optional().describe('UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu'),
@@ -187,7 +187,23 @@ export async function roosyncMessages(args: MessagesArgs) {
       });
 
     // --- Read family ---
-    case 'inbox':
+    case 'inbox': {
+      // #3351: from/subject_contains are honored (passed below). The remaining
+      // bulk params (priority, before_date, tag) have NO inbox semantics —
+      // accepted by the flat schema then silently dropped was the exact #3351
+      // trap; fail LOUD and NAMED instead (#3173/#3177).
+      const bulkOnlyParams = (['priority', 'before_date', 'tag'] as const)
+        .filter(p => args[p] !== undefined);
+      if (bulkOnlyParams.length > 0) {
+        throw new StateManagerError(
+          `Paramètre(s) bulk-only pour roosync_messages inbox : ${bulkOnlyParams.join(', ')}. ` +
+          `Ces filtres ne s'appliquent qu'aux actions bulk (bulk_mark_read / bulk_archive). ` +
+          `Un paramètre fourni doit être honoré, jamais ignoré silencieusement (#3351/#3177).`,
+          'VALIDATION_FAILED',
+          'RooSyncMessagesTool',
+          { rejectedParams: bulkOnlyParams, expectedParam: 'from | subject_contains' }
+        );
+      }
       return roosyncRead({
         mode: 'inbox',
         status: args.status,
@@ -197,8 +213,11 @@ export async function roosyncMessages(args: MessagesArgs) {
         workspace: args.workspace,
         to_machine: args.to_machine,
         format: args.format,
-        deep: args.deep
+        deep: args.deep,
+        from: args.from,
+        subject_contains: args.subject_contains
       });
+    }
 
     case 'message':
       return roosyncRead({
