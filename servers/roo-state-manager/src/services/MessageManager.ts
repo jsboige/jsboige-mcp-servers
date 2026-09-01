@@ -203,8 +203,33 @@ export class MessageManager {
   private inboxFullCache: Map<string, Message> = new Map();
   /** Timestamp of last cache build */
   private cacheBuiltAt: number = 0;
+
+  /**
+   * When the cache CONTENT was last read from disk.
+   *
+   * Distinct from `cacheBuiltAt`, which the count fast-path RENEWS without
+   * re-reading anything. That renewal is what made staleness unbounded: an
+   * in-place mutation by another process (markAsRead, amend) leaves the file
+   * COUNT unchanged, so the fast-path kept refreshing the TTL of a cache whose
+   * content nothing had revalidated - for as long as no message was added or
+   * removed. Never renewed by the fast-path, so it bounds that.
+   */
+  private contentBuiltAt: number = 0;
   /** Cache TTL in ms (5 minutes — file count check detects external changes) */
   private static readonly CACHE_TTL_MS = 300_000;
+
+  /**
+   * Hard bound on how long the count heuristic may keep serving content that
+   * nothing has re-read from disk (#3205 follow-up).
+   *
+   * The count check detects files ADDED or REMOVED. It cannot detect an
+   * in-place mutation, which is precisely what `markAsRead` does - so without
+   * this bound a process could report "unread" for hours a message another
+   * process had already handled. Past this bound the call falls through to the
+   * stale-while-revalidate path: the warm cache is still served IMMEDIATELY,
+   * and the re-read happens in the background. Callers never wait for it.
+   */
+  private static readonly CONTENT_REVALIDATE_MS = 900_000;
   /** Max concurrent file reads during cache rebuild (GDrive-safe) */
   private static readonly READ_CONCURRENCY = 50;
   /**
@@ -328,6 +353,7 @@ export class MessageManager {
     this.inboxCache = null;
     this.inboxFullCache.clear();
     this.cacheBuiltAt = 0;
+    this.contentBuiltAt = 0;
     this.lastInboxFileCount = -1;
     this.inboxCachePartial = false;
   }
@@ -457,11 +483,17 @@ export class MessageManager {
     // files are retried (count alone would never trigger one, #3205).
     const negativePruned = this.pruneNegativeCache();
 
-    // If count unchanged and cache exists, refresh TTL without re-reading files
+    // If count unchanged and cache exists, refresh TTL without re-reading files.
+    // Bounded (#3205 follow-up): the count is blind to IN-PLACE mutations, and
+    // this branch renews `cacheBuiltAt`, so on its own it renews indefinitely a
+    // cache nothing has revalidated. Past CONTENT_REVALIDATE_MS we fall through
+    // to the stale-while-revalidate path below, which serves this same warm
+    // cache immediately and re-reads in the background - no caller waits.
     if (
       this.inboxCache !== null &&
       files.length === this.lastInboxFileCount &&
-      !negativePruned
+      !negativePruned &&
+      (now - this.contentBuiltAt) < MessageManager.CONTENT_REVALIDATE_MS
     ) {
       this.cacheBuiltAt = now;
       return { items: this.inboxCache, full: this.inboxFullCache };
@@ -516,6 +548,7 @@ export class MessageManager {
     this.inboxCache = items;
     this.inboxFullCache = full;
     this.cacheBuiltAt = now;
+    this.contentBuiltAt = now;
     this.lastInboxFileCount = -1;
     this.inboxCachePartial = true;
     logger.info(`Inbox cold start: recent slice served (${items.length} msgs from ${readable.length}/${allFiles.length} files) — full pool hydrating in background (#3292)`);
@@ -576,6 +609,7 @@ export class MessageManager {
     this.inboxCache = items;
     this.inboxFullCache = full;
     this.cacheBuiltAt = now;
+    this.contentBuiltAt = now;
     // On a cold-start truncation there is nothing better to serve, so the partial
     // result IS installed — and it must be FLAGGED as such. `false` here would
     // hand a truncated pool to the caller labelled complete, which is exactly the
@@ -1218,6 +1252,7 @@ export class MessageManager {
       this.inboxCache = null;
       this.inboxFullCache = new Map();
       this.cacheBuiltAt = 0;
+      this.contentBuiltAt = 0;
       this.lastInboxFileCount = -1;
       // po-204: the inbox cache can hold messages the caller cannot access
       // (e.g. addressed to a dashed workspace key) — same denial as the disk path.
