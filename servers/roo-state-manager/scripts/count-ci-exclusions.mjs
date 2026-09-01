@@ -1,4 +1,6 @@
-#!/usr/bin/env node
+// No shebang on purpose: the drift-guard test imports this file, and vitest's
+// transform rejects a leading '#!' on CRLF checkouts (Windows autocrlf).
+// Invoke as: node scripts/count-ci-exclusions.mjs
 /**
  * Canonical CI exclusion census for vitest.config.ci.ts (#3322).
  *
