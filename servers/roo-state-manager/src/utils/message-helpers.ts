@@ -336,6 +336,64 @@ export function matchesRecipient(
 }
 
 /**
+ * True when `messageTo` names a machine WITHOUT a workspace (e.g. "myia-ai-01"),
+ * excluding the "all"/"All" broadcast.
+ *
+ * Such a message is visible to EVERY workspace on that machine (see
+ * `matchesRecipient` above). Its read state must therefore be tracked per
+ * reader, exactly as broadcasts already are per machine - a global
+ * `status: 'read'` would hide it from workspaces that never saw it.
+ */
+export function isMachineWideTarget(messageTo: string): boolean {
+  if (messageTo === 'all' || messageTo === 'All') return false;
+  return !parseMachineWorkspace(messageTo).workspaceId;
+}
+
+/**
+ * Read state FOR ONE READER, or `null` when the message uses the global `status`.
+ *
+ * Two classes track their readers individually instead of flipping a global
+ * status, because every one of their recipients receives the same file:
+ *   - broadcasts ("all"/"All")    - per MACHINE,   via `read_by` (#629);
+ *   - machine-wide ("myia-ai-01") - per WORKSPACE, via `read_by_workspace`.
+ *
+ * This is the SINGLE place that decides it. Any consumer computing
+ * `status === 'read'` on its own diverges from what readInbox, getFilteredCount
+ * and roosync_manage report - the exact divergence this function prevents.
+ * It lives here, beside `matchesRecipient` and `isMachineWideTarget`, because
+ * it is a pure predicate over a message and a reader identity: the tool layer
+ * must be able to ask the question without depending on the manager class.
+ *
+ * Typed structurally on purpose - importing `Message` from the service would
+ * make this module depend on its own consumer.
+ */
+export function perReaderStatus(
+  message: { to: string; status?: string; read_by?: string[]; read_by_workspace?: string[] },
+  machineId: string,
+  workspaceId?: string
+): 'read' | 'unread' | null {
+    if (message.to === 'all' || message.to === 'All') {
+      if (!message.read_by) return null;
+      const readerMachineId = parseMachineWorkspace(machineId).machineId;
+      return message.read_by.includes(readerMachineId) ? 'read' : 'unread';
+    }
+    if (isMachineWideTarget(message.to)) {
+      // No workspace on the reader side -> cannot discriminate; fall back to the
+      // global status rather than report every such message as unread forever.
+      if (!workspaceId) return null;
+      const full = canonicalizeFullId(parseMachineWorkspace(machineId).machineId + ':' + workspaceId);
+      if ((message.read_by_workspace ?? []).includes(full)) return 'read';
+      // A message already flipped GLOBALLY has no per-workspace record and never
+      // will: it was consumed under the old semantics, before this tracking
+      // existed. Honour that flag instead of overriding it, or every machine-wide
+      // message ever read on the fleet resurfaces as unread the day this ships.
+      if (message.status === 'read') return null;
+      return 'unread';
+    }
+    return null;
+}
+
+/**
  * Formatte la date en format français lisible
  *
  * @param isoDate Date au format ISO-8601

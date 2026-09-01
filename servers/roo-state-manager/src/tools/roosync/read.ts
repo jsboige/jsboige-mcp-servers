@@ -458,6 +458,13 @@ Le message n'a pas été trouvé dans :
     result += `\n`;
   }
 
+  // Machine-wide targets track readers per WORKSPACE: every workspace of the
+  // machine receives them, so a machine-granular list cannot say who has read.
+  if ((message as any).read_by_workspace?.length) {
+    const readers = (message as any).read_by_workspace as string[];
+    result += `\n**👁️ Lu par (workspaces) :** ${readers.join(', ')}\n`;
+  }
+
   // Multi-reader tracking (#629)
   if ((message as any).read_by?.length) {
     const readBy = (message as any).read_by as string[];

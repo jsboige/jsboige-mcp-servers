@@ -38,7 +38,10 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
     getMessageManager: mockGetMessageManager,
 }));
 
-vi.mock('../../../../src/utils/message-helpers.js', () => ({
+vi.mock('../../../../src/utils/message-helpers.js', async () => ({
+    // perReaderStatus is the single source of truth for read state: stub it and
+    // this test stops exercising the decision it is meant to cover.
+    perReaderStatus: (await vi.importActual<any>('../../../../src/utils/message-helpers.js')).perReaderStatus,
     getLocalMachineId: mockGetLocalMachineId,
     getLocalFullId: vi.fn(() => 'myia-po-2025:roo-extensions'),
     parseMachineWorkspace: mockParseMachineWorkspace,
