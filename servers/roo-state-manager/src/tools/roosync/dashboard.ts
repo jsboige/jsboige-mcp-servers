@@ -2654,6 +2654,13 @@ export interface DashboardResult {
   };
   /** Advisory warning (#2306). Non-blocking hint for agents about suboptimal usage patterns. */
   warning?: string;
+  /**
+   * #3276 idempotent append: true when the append was SKIPPED because an entry
+   * with the same caller-provided `messageId` already exists (transcript-fork
+   * double-execution guard). Present only on `append` results, and only when
+   * the caller passed an explicit messageId.
+   */
+  deduplicated?: boolean;
 }
 
 /**
@@ -3204,7 +3211,51 @@ async function handleAppend(
   // 1. Pending messageId from the Map (custom ID provided to append)
   // 2. args.messageId property (from schema)
   // 3. Generate new ID as fallback
-  const messageIdValue = pendingMessageIds.get(key) || (args as any).messageId || generateMessageId(author.machineId, author.workspace);
+  const pendingCustomId = pendingMessageIds.get(key);
+  const schemaCustomId = (args as any).messageId as string | undefined;
+  const messageIdValue = pendingCustomId || schemaCustomId || generateMessageId(author.machineId, author.workspace);
+
+  // #3276: idempotent append on caller-provided messageId. The transcript-fork
+  // double-execution bug (roo-extensions#3276) executes the same tool_use twice;
+  // both executions run in this process, serialized by withKeyLock (measured
+  // handoff +6/+7 ms), so the second one re-reads the dashboard AFTER the first
+  // persisted its entry. An explicit messageId is therefore honored as an
+  // idempotency key: an id already present in intercom → skip the append
+  // entirely (no second GDrive write, no PG dual-write, no repeated
+  // mentions/cross-posts). Auto-generated ids are unique per call and can
+  // never trip this guard — only opted-in deterministic ids are affected.
+  if (pendingCustomId || schemaCustomId) {
+    const existing = dashboard.intercom.messages.find(m => m.id === messageIdValue);
+    if (existing) {
+      const contentMismatch = (existing.content || '') !== (args.content || '');
+      logger.info('Append deduplicated — explicit messageId already present (#3276)', {
+        key,
+        messageId: messageIdValue,
+        existingTimestamp: existing.timestamp,
+        contentMismatch
+      });
+      return {
+        success: true,
+        action: 'append',
+        key,
+        type: args.type!,
+        request: requestEcho,
+        deduplicated: true,
+        messageCount: dashboard.intercom.messages.length,
+        sizes: buildSizes(dashboard),
+        warning: contentMismatch
+          ? `messageId '${messageIdValue}' existait déjà avec un CONTENU DIFFÉRENT — entrée existante (${existing.timestamp}) conservée, append ignoré`
+          : undefined,
+        durationBreakdown: {
+          totalMs: Date.now() - appendStart,
+          preemptiveCondenseMs: 0,
+          reactiveCondenseMs: 0,
+          writeMs: 0
+        },
+        message: `Message dédupliqué — id '${messageIdValue}' déjà présent (ajouté ${existing.timestamp}) : append ignoré (#3276 idempotence)`
+      };
+    }
+  }
 
   // #1589: Split messages above MAX_INDIVIDUAL_MESSAGE_BYTES into multiple
   // IntercomMessage entries. Each part is an independent message subject to
