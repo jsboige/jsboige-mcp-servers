@@ -192,8 +192,11 @@ export async function roosyncMessages(args: MessagesArgs) {
       // bulk params (priority, before_date, tag) have NO inbox semantics —
       // accepted by the flat schema then silently dropped was the exact #3351
       // trap; fail LOUD and NAMED instead (#3173/#3177).
+      // '' ne compte pas : binding qui sérialise les optionnels vides (friction
+      // po-2025 01/09) — pas une intention d'appelant, et chaque site aval
+      // (manage hasAnyFilter, filtres MessageManager) traite déjà '' comme absent.
       const bulkOnlyParams = (['priority', 'before_date', 'tag'] as const)
-        .filter(p => args[p] !== undefined);
+        .filter(p => args[p] !== undefined && args[p] !== '');
       if (bulkOnlyParams.length > 0) {
         throw new StateManagerError(
           `Paramètre(s) bulk-only pour roosync_messages inbox : ${bulkOnlyParams.join(', ')}. ` +
