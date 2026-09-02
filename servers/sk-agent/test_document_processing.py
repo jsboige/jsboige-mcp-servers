@@ -627,6 +627,101 @@ class TestUnifiedDocumentExtraction:
 
 
 # ---------------------------------------------------------------------------
+# Auto-Mode PDF Routing Tests (#3389)
+# ---------------------------------------------------------------------------
+
+
+class TestAutoModePdfRouting:
+    """Tests for the text-first auto mode added in #3389."""
+
+    def test_auto_mode_with_textual_pdf_uses_text(self, tmp_path):
+        """Auto mode on a textual PDF must route to text extraction, not vision."""
+        import fitz  # PyMuPDF
+
+        pdf_path = tmp_path / "textual.pdf"
+        doc = fitz.open()
+        for i in range(3):
+            page = doc.new_page()
+            page.insert_text((50, 50), "Lorem ipsum dolor sit amet " * 8)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        pages = extract_document_pages(str(pdf_path), mode="auto", max_pages=3)
+        assert len(pages) == 3
+        # All pages should carry text and no images
+        assert all(p.has_text for p in pages)
+        assert all(not p.has_image for p in pages)
+
+    def test_auto_mode_with_empty_pdf_falls_back_to_visual(self, tmp_path):
+        """Auto mode on a PDF without a text layer must fall back to visual."""
+        fake_pdf = tmp_path / "blank.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+        # Probe sees no text → route stays visual; mock the visual pipeline so
+        # we don't need a real PDF render in unit tests.
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 100), color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        fake_image = buf.getvalue()
+
+        with patch(
+            "document_processing._pdf_has_text_layer", return_value=False
+        ), patch(
+            "document_processing._pdf_to_images",
+            return_value=[(fake_image, "image/png")],
+        ):
+            pages = extract_document_pages(str(fake_pdf), mode="auto", max_pages=1)
+
+        assert len(pages) == 1
+        assert pages[0].has_image
+        assert not pages[0].has_text
+
+    def test_pdf_has_text_layer_probe(self, tmp_path):
+        """Probe must detect a real text layer and respect the threshold."""
+        import fitz
+
+        # Textual PDF
+        text_pdf = tmp_path / "text.pdf"
+        doc = fitz.open()
+        for _ in range(2):
+            page = doc.new_page()
+            page.insert_text((50, 50), "Hello world " * 10)  # > 40 chars/page
+        doc.save(str(text_pdf))
+        doc.close()
+
+        assert document_processing._pdf_has_text_layer(str(text_pdf)) is True
+
+        # Empty PDF (no text layer)
+        empty_pdf = tmp_path / "empty.pdf"
+        empty_pdf.write_bytes(b"%PDF-1.4 fake")
+
+        # Probe must not raise on invalid PDFs — fail closed
+        assert document_processing._pdf_has_text_layer(str(empty_pdf)) is False
+
+    def test_auto_mode_routing_is_safe_for_non_pdf(self, tmp_path):
+        """Auto mode on non-PDF formats must keep the historical default (visual)."""
+        # Use a fake PDF suffix that we can rename to .docx to test the
+        # non-PDF branch without needing LibreOffice.
+        fake = tmp_path / "doc.docx"
+        fake.write_bytes(b"not really a docx")
+
+        # For .docx, the probe must NOT be called and the path must stay visual.
+        # The implementation will try LibreOffice/python-docx and may raise; we
+        # only assert the probe was never invoked for non-PDF suffixes.
+        with patch(
+            "document_processing._pdf_has_text_layer"
+        ) as probe, patch(
+            "document_processing._doc_to_images",
+            side_effect=RuntimeError("stop here"),
+        ):
+            with pytest.raises(RuntimeError):
+                extract_document_pages(str(fake), mode="auto", max_pages=1)
+        probe.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Document To Images Tests
 # ---------------------------------------------------------------------------
 

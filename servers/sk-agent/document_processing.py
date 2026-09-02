@@ -62,7 +62,7 @@ SAFETY_MARGIN = 0.8  # Use 80% of context to leave room for prompt/response
 # Document Processing Types
 # ---------------------------------------------------------------------------
 
-DocumentAnalysisMode = Literal["visual", "text", "hybrid"]
+DocumentAnalysisMode = Literal["auto", "visual", "text", "hybrid"]
 
 
 @dataclass
@@ -172,6 +172,45 @@ def set_libreoffice_path(path: str) -> bool:
 # ---------------------------------------------------------------------------
 # PDF Processing
 # ---------------------------------------------------------------------------
+
+
+def _pdf_has_text_layer(
+    pdf_path: str,
+    sample_pages: int = 3,
+    min_chars_per_page: int = 40,
+) -> bool:
+    """Probe whether a PDF has an extractable text layer (#3389).
+
+    Issue #3389 reported that sk-agent routed 3 textual PDFs (36/26/59 pages)
+    through vision-analyst (page-by-page OCR) instead of native text extraction,
+    which is wasteful when the PDF already carries a text layer.
+
+    Strategy: open with PyMuPDF and check the first ``sample_pages`` pages for
+    a non-trivial ``get_text()`` payload. If each sampled page yields more than
+    ``min_chars_per_page`` characters of whitespace-stripped text, we treat the
+    PDF as textual and skip the visual pipeline.
+
+    Returns ``True`` if a text layer was detected, ``False`` otherwise (also
+    on any error — fail-closed toward the existing behaviour).
+    """
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(pdf_path)
+        try:
+            pages_to_check = min(sample_pages, doc.page_count)
+            if pages_to_check == 0:
+                return False
+            for i in range(pages_to_check):
+                text = doc.load_page(i).get_text().strip()
+                if len(text) >= min_chars_per_page:
+                    return True
+            return False
+        finally:
+            doc.close()
+    except Exception as e:
+        log.debug("PDF text-layer probe failed (%s); defaulting to non-textual", e)
+        return False
 
 
 def _pdf_to_images(
@@ -675,7 +714,7 @@ def calculate_max_pages_for_tokens(
 
 def extract_document_pages(
     document_path: str,
-    mode: DocumentAnalysisMode = "visual",
+    mode: DocumentAnalysisMode = "auto",
     max_pages: int = DEFAULT_MAX_PAGES,
     page_range: PageRange | None = None,
     context_window: int | None = None,
@@ -686,7 +725,10 @@ def extract_document_pages(
 
     Args:
         document_path: Path to the document file
-        mode: Analysis mode - "visual" (images), "text" (extracted text), "hybrid" (both)
+        mode: Analysis mode - "auto" (probe and pick text or visual — default,
+            recommended for most use cases), "visual" (images), "text" (extracted
+            text), "hybrid" (both). For PDF, "auto" prefers text extraction when
+            a text layer is detected, falling back to visual for scanned PDFs.
         max_pages: Maximum number of pages/sheets to extract
         page_range: Optional page range (start_page, end_page)
         context_window: Optional context window to auto-limit pages
@@ -700,6 +742,16 @@ def extract_document_pages(
     """
     doc_path = Path(document_path)
     suffix = doc_path.suffix.lower() if doc_path.suffix else ""
+
+    # Auto mode (#3389): for PDFs, probe for a text layer first; if found, use
+    # text extraction (cheap, accurate, no vision round-trip); otherwise fall
+    # back to visual so scanned PDFs still work. Other formats keep their
+    # historical default (visual) — auto-mode routing for them is out of scope.
+    if mode == "auto":
+        if suffix == ".pdf" and _pdf_has_text_layer(document_path):
+            mode = "text"
+        else:
+            mode = "visual"
 
     # Apply page range if specified
     if page_range:
