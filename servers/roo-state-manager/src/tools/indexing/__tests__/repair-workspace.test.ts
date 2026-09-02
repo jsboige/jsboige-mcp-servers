@@ -168,6 +168,28 @@ describe('handleRepairWorkspace (#3344)', () => {
 		expect(mockQdrant.setPayload).toHaveBeenCalledTimes(1);
 	});
 
+	it('probe filter uses IsEmptyCondition with `key` (regression: `field` is a Qdrant 400)', async () => {
+		mockQdrant.scroll.mockReset();
+		mockQdrant.setPayload.mockReset();
+		let probeOpts: any = null;
+		let call = 0;
+		mockQdrant.scroll.mockImplementation(async (collection: string, opts: any) => {
+			call++;
+			if (call === 1) {
+				probeOpts = opts;
+				return { points: [] }; // probe OK → server_filter mode
+			}
+			return { points: [] };
+		});
+
+		await handleRepairWorkspace({});
+
+		// The probe scroll must carry a server-side filter so the repair covers the
+		// WHOLE collection (missing points only) instead of the first ~20k points.
+		expect(probeOpts).not.toBeNull();
+		expect(probeOpts.filter).toEqual({ must: [{ is_empty: { key: 'workspace_name' } }] });
+	});
+
 	it('surfaces scroll failures as a structured error instead of throwing', async () => {
 		mockQdrant.scroll.mockReset();
 		mockQdrant.setPayload.mockReset();
