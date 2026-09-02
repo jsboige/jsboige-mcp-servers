@@ -25,6 +25,7 @@ const mockClient = {
 const mockPoolQuery = vi.fn();
 
 const mockPool = {
+  on: vi.fn(),
   connect: mockConnect,
   query: mockPoolQuery,
   end: mockEnd,
@@ -98,6 +99,21 @@ describe('PgUnifiedStoreReader', () => {
       await reader.init();
 
       expect(mockQuery).toHaveBeenCalledWith('SELECT 1');
+    });
+
+    // #3292 (2026-09-02): idle-client pool errors with no listener crash the
+    // process (observed on the writer during a PG outage). Same guard here.
+    test('init attaches a pool error handler (idle-client errors must not crash)', async () => {
+      const reader = createReader();
+      await reader.init();
+
+      expect(mockPool.on).toHaveBeenCalledWith('error', expect.any(Function));
+
+      const handler = (mockPool.on as ReturnType<typeof vi.fn>).mock.calls.find(
+        c => c[0] === 'error'
+      )?.[1] as (err: Error) => void;
+      expect(handler).toBeTypeOf('function');
+      expect(() => handler(new Error('Connection terminated unexpectedly'))).not.toThrow();
     });
 
     test('close drains the pool', async () => {

@@ -46,6 +46,13 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
       statement_timeout: this.config.statementTimeoutMs ?? 5000,
     });
 
+    // Idle-client errors are emitted on the POOL with no awaited query to
+    // reject — unhandled, they crash the process (see the writer's identical
+    // handler for the #3292 incident note). In-flight reads reject normally.
+    this.pool.on('error', err => {
+      console.warn('[PgUnifiedStoreReader] Idle pool client error — pool stays usable', err?.message ?? err);
+    });
+
     // Verify connectivity
     const client = await this.pool.connect();
     try {

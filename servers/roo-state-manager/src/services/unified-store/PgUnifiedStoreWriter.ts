@@ -134,6 +134,17 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       // SSL is configured via the connection string (sslmode=require)
     });
 
+    // Idle-client errors (network drop, server restart, PG outage) are emitted
+    // on the POOL, not on any awaited query — with no listener, Node treats
+    // them as uncaught and kills the whole process (#3292, 2026-09-02: a
+    // mid-run PG outage crashed the backfill script through exactly this
+    // path, and the same pool lives in every dual-write-armed MCP server).
+    // The pool transparently replaces dead clients; in-flight queries reject
+    // through withRetry, which is where failures are supposed to surface.
+    this.pool.on('error', err => {
+      console.warn('[PgUnifiedStoreWriter] Idle pool client error — pool stays usable', err?.message ?? err);
+    });
+
     // Verify connectivity
     const client = await this.pool.connect();
     try {

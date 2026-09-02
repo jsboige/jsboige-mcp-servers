@@ -26,7 +26,7 @@ import { mapMessageToRow } from '../roosync-channel-dual-write.js';
 const mockQuery = vi.fn();
 const mockConnect = vi.fn();
 const mockClient = { query: mockQuery, release: vi.fn() };
-const mockPool = { connect: mockConnect, query: vi.fn(), end: vi.fn() };
+const mockPool = { on: vi.fn(), connect: mockConnect, query: vi.fn(), end: vi.fn() };
 
 vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 

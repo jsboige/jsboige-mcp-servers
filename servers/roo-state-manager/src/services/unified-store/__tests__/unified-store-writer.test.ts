@@ -25,6 +25,7 @@ const mockClient = {
 const mockPoolQuery = vi.fn();
 
 const mockPool = {
+  on: vi.fn(),
   connect: mockConnect,
   query: mockPoolQuery,
   end: mockEnd,
@@ -113,6 +114,25 @@ describe('PgUnifiedStoreWriter', () => {
       const select1Calls = mockQuery.mock.calls.filter(c => c[0] === 'SELECT 1');
       expect(select1Calls.length).toBe(1);
     });
+
+    // #3292 (2026-09-02): a mid-run PG outage killed the backfill script via an
+    // unhandled pool 'error' event (idle client socket drop). init() must attach
+    // a listener so idle-client errors never crash the process.
+    test('init attaches a pool error handler (idle-client errors must not crash)', async () => {
+      const writer = createWriter();
+      await writer.init();
+
+      expect(mockPool.on).toHaveBeenCalledWith('error', expect.any(Function));
+
+      // Invoking the handler with a connection-drop error must not throw —
+      // that invocation is what Node does when no listener exists... with one.
+      const handler = (mockPool.on as ReturnType<typeof vi.fn>).mock.calls.find(
+        c => c[0] === 'error'
+      )?.[1] as (err: Error) => void;
+      expect(handler).toBeTypeOf('function');
+      expect(() => handler(new Error('Connection terminated unexpectedly'))).not.toThrow();
+    });
+
 
     test('close drains the pool', async () => {
       const writer = createWriter();
