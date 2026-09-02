@@ -11,6 +11,7 @@ import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
 import { getEmbeddingMetrics } from '../../services/task-indexer/VectorIndexer.js';
 import { tryGetSharedStatePath } from '../../utils/shared-state-path.js';
 import { getServerCapabilities } from '../../utils/server-capabilities.js';
@@ -174,6 +175,81 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 }
 
 /**
+ * Vintage du build servi par CE processus.
+ *
+ * Le serveur MCP est un enfant stdio : **un processus par session**, et un
+ * processus charge ses modules une seule fois. Une session interactive longue
+ * continue donc de servir le build qui existait à son démarrage, pendant que
+ * `build/` avance sous elle. Sans cette information, un agent ne peut pas
+ * distinguer « l'outil est cassé » de « mon processus précède le correctif » —
+ * les deux produisent exactement le même symptôme côté appelant (#3351).
+ */
+export interface BuildVintage {
+  sha: string | null;
+  shortSha: string | null;
+  dirty: boolean | null;
+  builtAt: string | null;
+  version: string | null;
+  processStartedAt: string;
+  /** true => le processus a démarré AVANT le build sur disque. null si indéterminable. */
+  processPrecedesBuild: boolean | null;
+  note?: string;
+}
+
+/**
+ * Dérive le verdict de millésime. Fonction pure — exportée pour les tests.
+ *
+ * `processPrecedesBuild: true` ne signifie pas « sert uniformément l'ancien
+ * code » : les modules déjà chargés restent à leur millésime d'origine, mais
+ * tout module chargé paresseusement APRÈS le build est lu depuis le disque, à
+ * jour. Le processus sert donc un **mélange** — c'est précisément ce qui rend
+ * ces incidents irreproductibles d'une machine à l'autre.
+ */
+export function deriveBuildVintage(
+  stamp: Partial<Omit<BuildVintage, 'processStartedAt' | 'processPrecedesBuild' | 'note'>> | null,
+  processStartedAt: Date
+): BuildVintage {
+  const builtAt = stamp?.builtAt ?? null;
+  const builtMs = builtAt ? Date.parse(builtAt) : NaN;
+  const processPrecedesBuild = Number.isNaN(builtMs)
+    ? null
+    : processStartedAt.getTime() < builtMs;
+
+  const vintage: BuildVintage = {
+    sha: stamp?.sha ?? null,
+    shortSha: stamp?.shortSha ?? null,
+    dirty: stamp?.dirty ?? null,
+    builtAt,
+    version: stamp?.version ?? null,
+    processStartedAt: processStartedAt.toISOString(),
+    processPrecedesBuild
+  };
+
+  if (processPrecedesBuild === true) {
+    vintage.note =
+      'Ce processus a démarré avant le build présent sur disque : il sert un mélange de millésimes ' +
+      '(modules déjà chargés = ancien, modules chargés paresseusement ensuite = nouveau). ' +
+      "Un défaut observé ici peut avoir été corrigé depuis. Le geste qui aligne est le redémarrage de la session, pas un rebuild.";
+  } else if (stamp === null) {
+    vintage.note =
+      "Aucun stamp de build (build/build-info.json absent) : exécution depuis les sources, ou build antérieur à l'introduction du stamp.";
+  }
+
+  return vintage;
+}
+
+/** Lit `build/build-info.json` à côté du module compilé. Jamais fatal. */
+async function readBuildStamp(): Promise<Partial<BuildVintage> | null> {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const raw = await fs.readFile(path.resolve(here, '../../build-info.json'), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Gère l'action 'env' (diagnostic d'environnement)
  * Anciennement diagnose_env
  */
@@ -192,6 +268,10 @@ async function handleEnvAction(
       totalMemory: os.totalmem(),
       freeMemory: os.freemem()
     },
+    build: deriveBuildVintage(
+      await readBuildStamp(),
+      new Date(Date.now() - process.uptime() * 1000)
+    ),
     container: {
       dockerHost: process.env.DOCKER_HOST || null,
       isWSL: !!process.env.WSL_DISTRO_NAME,
