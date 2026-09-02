@@ -12,6 +12,7 @@
  *   4. cron/interactive split per machine (workload/cron in ua=).
  *   5. Zero requests ≠ failure (nominal silence distinguished).
  *   6. Never throws; max_output_length bounds for real.
+ *   7. Partial collection declared — GAP confidence reduced explicitly (review F1 #1080).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -219,6 +220,55 @@ describe('boundOutput', () => {
     it('passes through under-budget output untouched', () => {
         expect(boundOutput('short', 500)).toBe('short');
     });
+
+    // Review F2 (#1080): the budget is re-evaluated as rows drop. The frozen
+    // `text.length` condition spliced EVERY histogram row on a marginal overflow.
+    const f2Row = (i: number) =>
+        `  2026-09-02T1${i}:00:00Z-1${i}:30:00Z  ${'#'.repeat(24)} ${String(i).padStart(4)}  (native ${i} · cron 0)`;
+    it('drops only the oldest rows needed — recent buckets survive a marginal overflow', () => {
+        const head = 'header line\nCollection: docker logs …\nHistogram (bucket=30m, rendered to now):';
+        const text = [head, ...Array.from({ length: 50 }, (_, i) => f2Row(i))].join('\n');
+        const budget = text.length - 80; // ~1 row of overflow
+        const out = boundOutput(text, budget);
+        expect(out.length).toBeLessThanOrEqual(budget);
+        expect(out).toContain(f2Row(49)); // newest kept
+        expect(out).toContain(f2Row(48));
+        expect(out).not.toContain(f2Row(0)); // oldest dropped
+        const remainingRows = out.match(/  \d+  \(native/g)?.length ?? 0;
+        expect(remainingRows).toBeGreaterThan(40); // the bulk survives — not ALL dropped
+    });
+    it('still hard-truncates with the honest marker when rows alone cannot fit', () => {
+        // Incompressible head: even dropping ALL rows cannot reach the budget
+        const text = ['H'.repeat(400), 'Histogram (bucket=30m):', ...Array.from({ length: 5 }, (_, i) => f2Row(i))].join('\n');
+        const out = boundOutput(text, 300);
+        expect(out.length).toBeLessThanOrEqual(300);
+        expect(out).toContain('[TRUNCATED at max_output_length=300');
+    });
+});
+
+// ── Collection warning (review F1, #1080) ──────────────────────────────────
+
+describe('renderTrafficReport — collection INCOMPLETE', () => {
+    it('declares partial collection next to the command line, report still renders', () => {
+        const parse = parseClaudishLogLines(INCIDENT_LINES);
+        const report = renderTrafficReport(parse, {
+            bucketMinutes: 30,
+            since: '12h',
+            container: 'claudish-proxy',
+            command: 'docker logs --timestamps --since 12h claudish-proxy',
+            maxOutputLength: 20000,
+            now: NOW,
+            collectionWarning: '⚠ collection INCOMPLETE (exec: Command timed out after 60000 milliseconds) — tail of the window may be missing; GAP verdict confidence reduced.',
+        });
+        expect(report).toContain('⚠ collection INCOMPLETE');
+        expect(report).toContain('GAP verdict confidence reduced');
+        // Partial data is still data — the incident verdict renders, now with reduced confidence
+        expect(report).toContain('GAP: traffic STOPPED at 2026-09-02T13:52:23Z');
+    });
+    it('no warning line when collection was clean', () => {
+        const report = renderIncident();
+        expect(report).not.toContain('collection INCOMPLETE');
+    });
 });
 
 // ── Argument validation (shell-injection guard) ────────────────────────────
@@ -267,6 +317,28 @@ describe('claudishTraffic.handler', () => {
         const res = await claudishTraffic.handler({ bucket_minutes: 30, container: 'x; rm -rf /' });
         const text = (res.content as any)[0].text as string;
         expect(text).toContain('Invalid');
+        expect(exec).not.toHaveBeenCalled();
+    });
+
+    it('flags collection INCOMPLETE when exec fails with partial stdout (review F1, #1080)', async () => {
+        // 60s timeout / 128MB maxBuffer kill exec AFTER stdout was emitted — the corpus
+        // tail is missing and a GAP verdict on it is unreliable. Before the fix, this
+        // rendered as a complete report (the incident failure mode, inverted).
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            cb(new Error('maxBuffer length exceeded'), INCIDENT_LINES.join('\n'), '');
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, since: '12h' });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('⚠ collection INCOMPLETE (exec: maxBuffer length exceeded)');
+        expect(text).toContain('GAP verdict confidence reduced');
+        expect(text).toContain('GAP: traffic STOPPED at 2026-09-02T13:52:23Z');
+    });
+
+    it('rejects non-integer bucket_minutes — the message promise is now enforced', async () => {
+        const res = await claudishTraffic.handler({ bucket_minutes: 2.5 });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('bucket_minutes must be an integer');
         expect(exec).not.toHaveBeenCalled();
     });
 

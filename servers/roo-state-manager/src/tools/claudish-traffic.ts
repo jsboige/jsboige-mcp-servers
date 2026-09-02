@@ -18,6 +18,9 @@
  *   5. Zero requests ≠ failure: docker down / container absent / silent
  *      NOMINAL sidecar (correct by construction) are distinguished.
  *   6. Never throws; max_output_length bounds the output for real (#3171).
+ *   7. Partial collection (exec timeout/maxBuffer with stdout emitted) is
+ *      DECLARED in the report — a missing tail degrades GAP confidence
+ *      explicitly, never silently (review F1, #1080).
  *
  * Format contract (producer read firsthand: claudish
  * packages/cli/src/fork/middleware/request-logger.ts + response-capture.ts):
@@ -167,6 +170,8 @@ export interface RenderOptions {
     command: string;
     maxOutputLength: number;
     now: number;
+    /** Review F1 (#1080): exec died (timeout/maxBuffer) AFTER emitting partial stdout. */
+    collectionWarning?: string;
 }
 
 function fmtAge(ms: number): string {
@@ -214,6 +219,9 @@ export function renderTrafficReport(parse: ClaudishParseResult, opts: RenderOpti
     const sections: string[] = [];
     sections.push(`claudish traffic — container=${opts.container}${opts.machineFilter ? ` (machine filter: ${opts.machineFilter})` : ''}`);
     sections.push(`Collection: ${opts.command}`);
+    if (opts.collectionWarning) {
+        sections.push(opts.collectionWarning);
+    }
     sections.push(`Requested window: --since ${opts.since}${windowStart !== null ? ` (from ${toIso(windowStart)} to now ${toIso(now)})` : ''}`);
     sections.push(
         parse.totalLines > 0
@@ -294,11 +302,16 @@ export function renderTrafficReport(parse: ClaudishParseResult, opts: RenderOpti
 export function boundOutput(text: string, maxOutputLength: number): string {
     if (text.length <= maxOutputLength) return text;
     const lines = text.split('\n');
-    // Keep head (metadata/verdict) and tail (recent buckets); drop middle histogram rows first
+    // Keep head (metadata/verdict) and tail (recent buckets); drop oldest histogram rows first.
+    // Review F2 (#1080): the budget must be RE-EVALUATED as rows drop — testing the
+    // frozen pre-drop `text.length` spliced every row on a marginal overflow. Dropping
+    // a line frees its length + 1 (the newline that joined it).
     const histIdx = lines.findIndex(l => l.startsWith('Histogram (bucket='));
     if (histIdx >= 0) {
-        for (let i = histIdx + 1; i < lines.length && text.length > maxOutputLength; i++) {
+        let len = text.length;
+        for (let i = histIdx + 1; i < lines.length && len > maxOutputLength; i++) {
             if (lines[i].startsWith('  ') && /  \d+  \(native/.test(lines[i])) {
+                len -= lines[i].length + 1;
                 lines.splice(i, 1);
                 i--;
             }
@@ -342,12 +355,12 @@ export const claudishTraffic = {
     inputSchema: {
         type: 'object',
         properties: {
-            bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes (e.g. 5, 30). Buckets are rendered up to the current time.' },
+            bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes, integer (e.g. 5, 30). Buckets are rendered up to the current time.' },
             since: { type: 'string', description: 'docker logs --since window: "30m", "2h", "1h30m", or absolute ISO timestamp. Default "2h". Hub emits 5-6k lines/h.' },
             container: { type: 'string', description: 'Container name. Default "claudish-proxy".' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine header value).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine.' },
-            max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000).' },
+            max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are clamped up to 500).' },
         },
         required: ['bucket_minutes'],
     },
@@ -365,11 +378,12 @@ export const claudishTraffic = {
                 return { content: [{ type: 'text' as const, text: `claudish_traffic: ${invalid}` }] };
             }
             const bucketMinutes = args.bucket_minutes ?? 30;
-            if (!Number.isFinite(bucketMinutes) || bucketMinutes < 1 || bucketMinutes > 24 * 60) {
+            if (!Number.isInteger(bucketMinutes) || bucketMinutes < 1 || bucketMinutes > 24 * 60) {
                 return { content: [{ type: 'text' as const, text: `claudish_traffic: bucket_minutes must be an integer of minutes in [1, 1440], got ${args.bucket_minutes}` }] };
             }
             const since = args.since ?? DEFAULT_SINCE;
             const container = args.container ?? DEFAULT_CONTAINER;
+            // Values below 500 cannot fit the metadata header — clamped up (documented in the schema).
             const maxOutputLength = Math.max(500, args.max_output_length ?? DEFAULT_MAX_OUTPUT_LENGTH);
             const contextArg = args.docker_context ? `--context ${args.docker_context} ` : '';
             const command = `docker ${contextArg}logs --timestamps --since ${since} ${container}`;
@@ -387,6 +401,13 @@ export const claudishTraffic = {
             }
 
             const parse = parseClaudishLogLines(stdout.split('\n'));
+            // Review F1 (#1080): exec may die (60s timeout, 128MB maxBuffer) AFTER a
+            // partial stdout — the corpus tail is then missing, which makes any GAP
+            // verdict unreliable (last observed request older than reality). The report
+            // must say so instead of rendering a truncated corpus as complete.
+            const collectionWarning = errMsg
+                ? `⚠ collection INCOMPLETE (exec: ${errMsg.split('\n')[0]}) — tail of the window may be missing; GAP verdict confidence reduced.`
+                : undefined;
             const report = boundOutput(
                 renderTrafficReport(parse, {
                     bucketMinutes,
@@ -396,6 +417,7 @@ export const claudishTraffic = {
                     command,
                     maxOutputLength,
                     now: Date.now(),
+                    collectionWarning,
                 }),
                 maxOutputLength
             );
