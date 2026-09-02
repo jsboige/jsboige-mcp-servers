@@ -20,6 +20,7 @@ const mockEnd = vi.fn();
 vi.mock('pg', () => ({
   default: {
     Pool: vi.fn(() => ({
+      on: vi.fn(),
       connect: mockConnect,
       end: mockEnd,
       query: mockQuery,

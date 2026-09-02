@@ -59,7 +59,7 @@ vi.mock('../writer-factory.js', () => ({
 
 const mockQuery = vi.fn().mockResolvedValue({ rows: [] });
 const mockConnect = vi.fn().mockResolvedValue({ query: mockQuery, release: vi.fn() });
-const mockPool = { connect: mockConnect, query: mockQuery, end: vi.fn() };
+const mockPool = { on: vi.fn(), connect: mockConnect, query: mockQuery, end: vi.fn() };
 
 vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 
