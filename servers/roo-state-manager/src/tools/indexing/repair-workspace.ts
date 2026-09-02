@@ -193,7 +193,11 @@ export async function handleRepairWorkspace(options: RepairWorkspaceOptions = {}
         // bounded by maxScanPoints either way).
         let filterMode: 'server_filter' | 'client_scan' = 'server_filter';
         let offset: any = undefined;
-        let useFilter: any = { must: [{ is_empty: { field: 'workspace_name' } }] };
+        // #3344: IsEmptyCondition uses `key`, not `field` — the `field` form is a
+        // 400 "Expected some form of condition" on Qdrant, which silently forced the
+        // client_scan fallback (first ~20k points only per call, catastrophic on a
+        // 2M+ collection). Verified live against qdrant.myia.io (server 1.18.2).
+        let useFilter: any = { must: [{ is_empty: { key: 'workspace_name' } }] };
         try {
             await qdrant.scroll(collectionName, {
                 limit: 1,
