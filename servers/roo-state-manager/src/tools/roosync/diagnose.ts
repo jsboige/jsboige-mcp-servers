@@ -193,7 +193,14 @@ export interface BuildVintage {
   processStartedAt: string;
   /** true => le processus a démarré AVANT le build sur disque. null si indéterminable. */
   processPrecedesBuild: boolean | null;
+  /** SHA de la source présente au moment de la lecture (git HEAD du paquet). null si indéterminable. */
+  sourceSha: string | null;
+  /** true => le binaire a été compilé depuis la source présente. null si indéterminable. */
+  buildMatchesSource: boolean | null;
+  /** Note portant sur processus↔build. */
   note?: string;
+  /** Note portant sur build↔source — question ORTHOGONALE à `note`, les deux peuvent coexister. */
+  sourceNote?: string;
 }
 
 /**
@@ -206,8 +213,14 @@ export interface BuildVintage {
  * ces incidents irreproductibles d'une machine à l'autre.
  */
 export function deriveBuildVintage(
-  stamp: Partial<Omit<BuildVintage, 'processStartedAt' | 'processPrecedesBuild' | 'note'>> | null,
-  processStartedAt: Date
+  stamp: Partial<
+    Omit<
+      BuildVintage,
+      'processStartedAt' | 'processPrecedesBuild' | 'note' | 'sourceSha' | 'buildMatchesSource' | 'sourceNote'
+    >
+  > | null,
+  processStartedAt: Date,
+  sourceSha: string | null
 ): BuildVintage {
   const builtAt = stamp?.builtAt ?? null;
   const builtMs = builtAt ? Date.parse(builtAt) : NaN;
@@ -215,14 +228,25 @@ export function deriveBuildVintage(
     ? null
     : processStartedAt.getTime() < builtMs;
 
+  // `processPrecedesBuild` répond « mon processus est-il plus vieux que le binaire ? ».
+  // Elle ne dit RIEN de « ce binaire correspond-il à la source que j'ai sous les yeux ? ».
+  // Sous la consigne « pull + submodule update, jamais de rebuild », le retard du
+  // binaire sur la source est l'état NORMAL de la flotte : sans cette seconde
+  // comparaison, un processus frais sur un build en retard se lit « à jour ».
+  const stampSha = stamp?.sha ?? null;
+  const buildMatchesSource =
+    stampSha === null || sourceSha === null ? null : stampSha === sourceSha;
+
   const vintage: BuildVintage = {
-    sha: stamp?.sha ?? null,
+    sha: stampSha,
     shortSha: stamp?.shortSha ?? null,
     dirty: stamp?.dirty ?? null,
     builtAt,
     version: stamp?.version ?? null,
     processStartedAt: processStartedAt.toISOString(),
-    processPrecedesBuild
+    processPrecedesBuild,
+    sourceSha,
+    buildMatchesSource
   };
 
   if (processPrecedesBuild === true) {
@@ -243,7 +267,50 @@ export function deriveBuildVintage(
       'Millésime **indéterminé** — ne pas en conclure que le processus est à jour.';
   }
 
+  // Notes build↔source. Indépendantes des notes processus↔build ci-dessus :
+  // les deux conditions peuvent être vraies en même temps, et les fondre en une
+  // seule chaîne perdrait l'un des deux signaux.
+  const short = (v: string) => v.slice(0, 8);
+  if (buildMatchesSource === false) {
+    vintage.sourceNote =
+      `Le binaire servi a été compilé depuis ${short(stampSha!)}, mais la source présente est ${short(sourceSha!)} : ` +
+      "la source a avancé sans recompilation. C'est l'état NORMAL sous la consigne « pull + submodule update, " +
+      'jamais de rebuild » — donc un correctif mergé peut être **absent du binaire**. ' +
+      'Ne pas conclure « à jour » de `processPrecedesBuild: false`. ' +
+      "L'alignement demande build ET redémarrage dans le même geste ([INTERACTIVE-ONLY]) — jamais un rebuild seul sur un processus vivant.";
+  } else if (stamp !== null && stampSha === null) {
+    vintage.sourceNote =
+      "Stamp présent mais sans SHA : il a été écrit hors d'un build (le script de stamp refuse de nommer " +
+      "un commit qu'il n'a pas compilé). Le binaire est daté mais non identifié — " +
+      'aucune correspondance avec la source ne peut être affirmée.';
+  } else if (sourceSha === null && stampSha !== null) {
+    vintage.sourceNote =
+      'SHA de la source indéterminable (git indisponible depuis le serveur) : aucune comparaison ' +
+      "build↔source possible — ne pas en conclure que le binaire correspond à la source.";
+  }
+
   return vintage;
+}
+
+/** Lit le SHA de la source présente (git HEAD du paquet). Jamais fatal, jamais bloquant. */
+async function readSourceSha(): Promise<string | null> {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    // build/tools/roosync/diagnose.js -> racine du paquet
+    const pkgRoot = path.resolve(here, '../../..');
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const run = promisify(execFile);
+    const { stdout } = await run('git', ['rev-parse', 'HEAD'], {
+      cwd: pkgRoot,
+      timeout: 2000,
+      windowsHide: true
+    });
+    const sha = stdout.trim();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Lit `build/build-info.json` à côté du module compilé. Jamais fatal. */
@@ -278,7 +345,8 @@ async function handleEnvAction(
     },
     build: deriveBuildVintage(
       await readBuildStamp(),
-      new Date(Date.now() - process.uptime() * 1000)
+      new Date(Date.now() - process.uptime() * 1000),
+      await readSourceSha()
     ),
     container: {
       dockerHost: process.env.DOCKER_HOST || null,
