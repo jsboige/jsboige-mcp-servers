@@ -220,6 +220,26 @@ export const readVscodeLogsDefinition = {
 };
 
 // ============================================================
+// claudish_traffic (#3391)
+// ============================================================
+export const claudishTrafficDefinition = {
+    name: 'claudish_traffic',
+    description: 'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, "GAP: traffic STOPPED at <ts>" déclaratif — répond "ce trafic persiste-t-il ?" sans second appel ni grep. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, pas une panne. Ne throw jamais.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes.' },
+            since: { type: 'string', description: 'docker logs --since window. Default "2h".', default: '2h' },
+            container: { type: 'string', description: 'Container name. Default "claudish-proxy".', default: 'claudish-proxy' },
+            machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine).' },
+            docker_context: { type: 'string', description: 'EXPERIMENTAL: docker --context to query a remote hub.' },
+            max_output_length: { type: 'number', description: 'Hard bound on rendered output chars (default 20000).', default: 20000 }
+        },
+        required: ['bucket_minutes']
+    }
+};
+
+// ============================================================
 // get_mcp_best_practices
 // ============================================================
 // [REMOVED #1935 Cluster D] getMcpBestPracticesDefinition — fused into roosync_diagnose(action: "best-practices")
@@ -716,6 +736,7 @@ export const allToolDefinitions = [
     // #452 Phase 2: codebase_search
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
+    claudishTrafficDefinition,
     // [REMOVED #1841] getMcpBestPracticesDefinition — converted to static doc: docs/mcp-best-practices.md, redirect in registry.ts
     // CONS-10: Export
     exportDataDefinition,

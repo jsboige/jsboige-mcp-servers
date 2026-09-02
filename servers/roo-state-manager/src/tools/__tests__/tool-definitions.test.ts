@@ -17,6 +17,7 @@ import {
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
+    claudishTrafficDefinition,
     // [REMOVED #1935 Cluster D] getMcpBestPracticesDefinition — fused into roosync_diagnose(action: "best-practices")
     exportDataDefinition,
     exportConfigDefinition,
@@ -51,7 +52,7 @@ import {
 // #3254 drift-guard: the zod schema is the handler contract; the static definition is the wire contract
 import { MessagesArgsSchema } from '../roosync/messages.js';
 
-const EXPECTED_TOOL_COUNT = 15; // #512 arbitrage A: lifecycle re-câblé comme action de roosync_diagnose, reste 15 outils servis
+const EXPECTED_TOOL_COUNT = 16; // #3391: claudish_traffic ajouté (15 → 16)
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
@@ -61,6 +62,7 @@ const allDefinitions = [
     roosyncIndexingDefinition,
     codebaseSearchDefinition,
     readVscodeLogsDefinition,
+    claudishTrafficDefinition,
     exportDataDefinition,
     // [REMOVED CONS-8 #603] roosyncInitDefinition — dead code
     roosyncCompareConfigDefinition,
