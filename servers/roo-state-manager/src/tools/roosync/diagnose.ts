@@ -233,6 +233,14 @@ export function deriveBuildVintage(
   } else if (stamp === null) {
     vintage.note =
       "Aucun stamp de build (build/build-info.json absent) : exécution depuis les sources, ou build antérieur à l'introduction du stamp.";
+  } else if (processPrecedesBuild === null) {
+    // Stamp présent mais date inexploitable : ne jamais laisser un `null` nu.
+    // Un null sans explication est précisément le mode d'échec que cet outil
+    // existe pour supprimer (review Hermes, #1076).
+    vintage.note =
+      `Stamp de build présent mais \`builtAt\` inexploitable (${JSON.stringify(builtAt)}) : ` +
+      "aucun ordre ne peut être affirmé entre le démarrage du processus et le build. " +
+      'Millésime **indéterminé** — ne pas en conclure que le processus est à jour.';
   }
 
   return vintage;

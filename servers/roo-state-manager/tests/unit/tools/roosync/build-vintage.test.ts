@@ -55,6 +55,21 @@ describe('deriveBuildVintage', () => {
         expect(v.processPrecedesBuild).toBeNull();
     });
 
+    it('never leaves a bare null: an unreadable builtAt still gets an explanation', () => {
+        // A null without a reason is the very failure mode this tool removes.
+        // Caught in review of #1076 (Hermes): the note branch covered only a
+        // missing file, not a present-but-unparseable stamp.
+        const v = deriveBuildVintage({ ...STAMP, builtAt: 'not-a-date' }, new Date());
+        expect(v.note).toMatch(/indéterminé/i);
+        expect(v.note).toContain('not-a-date');
+    });
+
+    it('explains a stamp whose builtAt is absent altogether', () => {
+        const v = deriveBuildVintage({ ...STAMP, builtAt: null }, new Date());
+        expect(v.processPrecedesBuild).toBeNull();
+        expect(v.note).toMatch(/indéterminé/i);
+    });
+
     it('passes the stamp fields through verbatim', () => {
         const v = deriveBuildVintage({ ...STAMP, dirty: true }, new Date());
         expect(v.sha).toBe(STAMP.sha);
