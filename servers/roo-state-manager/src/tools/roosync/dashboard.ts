@@ -2216,6 +2216,19 @@ async function executeTruncationFallback(
   const dateStr = now.replace(/[:.]/g, '-').substring(0, 19);
   const archivePath = path.join(archiveDir, `${key}-${dateStr}-fallback.md`);
 
+  // #2719 (2026-09-03, web1 meta-analysis + po-204 investigation): the fallback
+  // archive frontmatter carried no machine identity and no cloud-fallback outcome,
+  // making fleet datapoints unattributable — 5 truncation archives could not be
+  // tied to a machine, and "cloud attempted but rejected" was indistinguishable
+  // from "cloud never configured in that process". condensedBy + fallbackError
+  // close both gaps; the archive alone now answers who truncated and why.
+  const fbStats = [failedCalls?.summaryCall?.stats, failedCalls?.statusCall?.stats];
+  const fbErrorCaptured = fbStats.find(s => s?.fallbackAttempted && s.fallbackError);
+  const fallbackError = fbErrorCaptured?.fallbackError
+    ? truncateError(fbErrorCaptured.fallbackError)
+    : fbStats.some(s => s?.fallbackAttempted) ? 'attempted-no-error-captured'
+    : 'not-attempted-or-unconfigured';
+
   const archiveFrontmatter = yaml.dump({
     type: 'archive',
     originalKey: key,
@@ -2224,6 +2237,8 @@ async function executeTruncationFallback(
     llmGenerated: false,
     fallbackTruncation: true,
     circuitBreakerOpen: condenseCB.isOpen,
+    condensedBy: process.env.ROOSYNC_MACHINE_ID || 'unknown',
+    fallbackError,
   });
 
   const archiveMessages = toArchive.map(msg => {
