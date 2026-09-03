@@ -4,7 +4,7 @@
  * The logic-replication tests in index.startup-init.test.ts (#2993(b)) validate a LOCAL
  * reconstruction of the retry gate (`buildEnsureInitialized`). They would stay green if
  * someone deleted the entire retry block from the real `ensureInitialized()` — a regression
- * that locks all 15 tools for the session.
+ * that locks all 16 tools for the session.
  *
  * These tests instantiate the REAL class, mock only the heavy dependencies (StateManager,
  * background services, notifications), and exercise the actual retry path end-to-end:
