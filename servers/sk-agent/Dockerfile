@@ -2,7 +2,7 @@
 # Multi-agent orchestration via Semantic Kernel, exposed as MCP tool server
 #
 # Build:   docker build -t sk-agent .
-# Run:     docker run -p 8100:8100 -v ./sk_agent_config.json:/app/sk_agent_config.json:ro \
+# Run:     docker run -p 127.0.0.1:8100:8100 -v ./sk_agent_config.json:/app/sk_agent_config.json:ro \
 #            -e SK_AGENT_API_KEY=<key> sk-agent
 
 FROM python:3.11-slim
@@ -18,7 +18,7 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt uvicorn
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY sk_agent.py sk_agent_config.py sk_conversations.py \
@@ -28,7 +28,11 @@ COPY sk_agent.py sk_agent_config.py sk_conversations.py \
 RUN npx -y mcp-searxng --help 2>/dev/null || true
 
 # Default: streamable-http mode on port 8100
-ENV SK_AGENT_PORT=8100
+ENV SK_AGENT_HOST=0.0.0.0 \
+    SK_AGENT_PORT=8100
 EXPOSE 8100
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8100/healthz > /dev/null || exit 1
 
 CMD ["python", "sk_agent.py", "streamable-http"]
