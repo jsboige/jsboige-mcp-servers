@@ -310,9 +310,9 @@ Affiche les détails techniques complets (métadonnées des actions) pour une t�
 
 ---
 
-## 📋 Liste Complète des Outils MCP (15 outils)
+## 📋 Liste Complète des Outils MCP (16 outils)
 
-Le roo-state-manager propose **15 outils MCP consolidés** organisés en 9 catégories fonctionnelles (après consolidations CONS-1 à CONS-13).
+Le roo-state-manager propose **16 outils MCP consolidés** organisés en 10 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391).
 
 ### 💬 Conversations & Navigation (1 outil)
 | Outil | Description |
@@ -365,7 +365,12 @@ Le roo-state-manager propose **15 outils MCP consolidés** organisés en 9 caté
 |-------|-------------|
 | `roosync_dashboard` | Shared dashboards (global/machine/workspace) with auto-condensation at 92% (actions: read, write, append, list, delete, read_archive, read_overview, refresh, update) |
 
-**Total : 15 outils MCP consolidés** organisés pour couvrir l'ensemble du cycle de vie de gestion des conversations Roo.
+### 📈 Traffic Monitoring (1 outil)
+| Outil | Description |
+|-------|-------------|
+| `claudish_traffic` | Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme TOUJOURS rendu jusqu'à l'heure courante, split cron/interactif par machine, « GAP: traffic STOPPED at <ts> » déclaratif — répond « ce trafic persiste-t-il ? » sans second appel ni grep. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, pas une panne. Ne throw jamais |
+
+**Total : 16 outils MCP consolidés** organisés pour couvrir l'ensemble du cycle de vie de gestion des conversations Roo.
 
 ---
 

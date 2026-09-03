@@ -299,7 +299,7 @@ describe('#1935 Fusion E: get_status → inventory(type: "status")', () => {
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 15 tools (#512 arbitrage A: lifecycle re-câblé comme action de diagnose)', () => {
+  it('allToolDefinitions should contain 16 tools (#512 arbitrage A: lifecycle re-câblé comme action de diagnose)', () => {
     // Before: 32 tools → #1922 Pass 4 removed 3 deprecated → 29
     // #1841 removed 6 low-usage → 23. allToolDefinitions baseline = 24.
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose: 24 → 23
