@@ -20,10 +20,11 @@ services:
     image: sk-agent:latest
     container_name: sk-agent
     ports:
-      - "8100:8100"
+      - "127.0.0.1:8100:8100"
     environment:
-      - SK_AGENT_API_KEY=${SK_AGENT_API_KEY:-181ecbaa03674f028e4dbb3c7efc8cb6}
+      - SK_AGENT_API_KEY=${SK_AGENT_API_KEY:?Set SK_AGENT_API_KEY in a gitignored environment file}
       - SK_AGENT_CONFIG=/app/sk_agent_config.json
+      - SK_AGENT_HOST=0.0.0.0
     volumes:
       - ./sk_agent_config.json:/app/sk_agent_config.json:ro
     extra_hosts:
