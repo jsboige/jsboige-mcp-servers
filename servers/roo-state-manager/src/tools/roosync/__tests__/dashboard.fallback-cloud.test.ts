@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { roosyncDashboard, resetCondenseCircuitBreaker, isRetryableFallbackError } from '../dashboard.js';
@@ -157,6 +157,22 @@ describe('#2719 cloud-fallback condensation telemetry', { testTimeout: 30000 }, 
       (d: any) => d.outcome === 'fallback-cloud',
     );
     expect(cloudPasses).toHaveLength(0);
+
+    // #2719 observability (2026-09-03): the fallback archive frontmatter must
+    // identify the condensing machine and the cloud-fallback outcome so fleet
+    // truncation datapoints are attributable without machine-local logs.
+    const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
+    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
+    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(
+      path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]),
+      'utf8',
+    );
+    expect(archiveContent).toContain('condensedBy: test-machine');
+    expect(archiveContent).toContain('fallbackError:');
+    // The cloud create rejected with 'z.ai 503 unavailable' — the archive must
+    // carry that error, distinguishing "attempted but rejected" from "unconfigured".
+    expect(archiveContent).toContain('z.ai 503 unavailable');
   });
 
   it('(c) primary ok → outcome `condensed` (fallback NOT flagged, #2719 criterion #6c)', async () => {
