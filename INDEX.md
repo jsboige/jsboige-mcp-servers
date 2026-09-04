@@ -38,11 +38,11 @@ Python Jupyter Notebook operations server (via Papermill).
 
 ## Retired / Disabled Servers
 
-These exist in `servers/` but are removed from active config:
+Retired/disabled servers (first two: code fully removed from `servers/` in 2026-09, Epic #2639 task C):
 
-- `quickfiles-server` — ❌ Retired (replaced by Claude Code native capabilities)
-- `github-projects-mcp` — ❌ Retired (replaced by `gh` CLI)
-- `jupyter-mcp-server` (legacy Node, 152 tools) — ⚠️ Disabled (caused scheduler crash; replaced by `jupyter-papermill-mcp-server`)
+- `quickfiles-server` — ❌ Retired (replaced by Claude Code native capabilities) — code removed 2026-09
+- `github-projects-mcp` — ❌ Retired (replaced by `gh` CLI) — code removed 2026-09
+- `jupyter-mcp-server` (legacy Node, 152 tools) — ⚠️ Disabled, still present in `servers/` (caused scheduler crash; replaced by `jupyter-papermill-mcp-server`)
 
 ## General Docs
 

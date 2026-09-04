@@ -61,11 +61,11 @@ Agent-centric LLM proxy server for Claude Code and Roo Code.
 
 ### Serveurs retirés
 
-Ces serveurs existent dans `servers/` mais sont **retirés du config actif** :
+Serveurs retirés du config actif (les 1er et 3e : code supprimé de `servers/` en 09/2026, Epic #2639 tâche C) :
 
-- `quickfiles-server` — remplacé par les capacités natives de Claude Code
+- `quickfiles-server` — remplacé par les capacités natives de Claude Code (code supprimé 09/2026)
 - `jinavigator-server` — remplacé par markitdown MCP
-- `github-projects-mcp` — remplacé par `gh` CLI
+- `github-projects-mcp` — remplacé par `gh` CLI (code supprimé 09/2026)
 
 ---
 

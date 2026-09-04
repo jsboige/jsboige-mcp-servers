@@ -1,7 +1,0 @@
-/node_modules/
-/dist/
-.env
-
-# MCP Debug logs
-logs/
-*.log
