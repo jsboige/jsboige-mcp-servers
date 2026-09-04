@@ -8,6 +8,12 @@ Supports two config versions:
 
 When v1 config is detected (no config_version field), it is automatically
 migrated to v2 format in memory. The file on disk is not modified.
+
+v2 schemas are validated by ``sk_agent_schemas.SKAgentConfig`` (Pydantic
+v2). The dataclasses declared here remain the in-memory representation
+returned to callers; ``validate_config`` chains the legacy structural
+checks with the Pydantic schema check so that both readable error
+messages and structured type errors surface.
 """
 
 from __future__ import annotations
@@ -18,6 +24,19 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+try:
+    # Pydantic v2 schemas. The import is best-effort: when pydantic is
+    # not installed, the legacy structural checks still run and callers
+    # see a clear error if they explicitly invoke the schema validator.
+    from sk_agent_schemas import (
+        SCHEMA_VERSION,
+        validate_config_payload as _validate_payload_via_pydantic,
+    )
+    _HAS_PYDANTIC_SCHEMA = True
+except ImportError:  # pragma: no cover - exercised only when pydantic missing
+    _HAS_PYDANTIC_SCHEMA = False
+    SCHEMA_VERSION = 2
 
 log = logging.getLogger("sk-agent.config")
 
@@ -590,6 +609,79 @@ def migrate_config_v1_to_v2(raw: dict) -> dict:
     return migrated
 
 
+def _is_schema_shape(raw: dict) -> bool:
+    """Return True when ``raw`` is **plausible** as a schema payload so
+    that the Pydantic v2 schema can validate it.
+
+    Kept for backward compatibility with external callers; the
+    ``validate_config`` function no longer uses this gate, because the
+    schema now accepts legacy field names via
+    ``_normalize_legacy_fields``.
+    """
+    return _is_v2_payload(raw)
+
+
+def _is_v2_payload(raw: dict) -> bool:
+    """True when ``raw`` carries ``config_version >= 2`` and is a dict.
+
+    v1 payloads and non-dict inputs are rejected at this gate.
+    """
+    if not isinstance(raw, dict):
+        return False
+    version = raw.get("config_version", 0)
+    if version < 2:
+        return False
+    return True
+
+
+def _normalise_for_schema(raw: dict) -> dict:
+    """Return a deep-copied payload with the legacy field names the
+    schema expects to translate folded out before validation.
+
+    Mirrors the work done by ``SKAgentConfig._normalize_legacy_fields``
+    (mode="before") at the schema boundary, so the schema still sees a
+    dict whose keys it can read deterministically even though the
+    validator itself runs before the data is bound.
+
+    Kept deliberately small and explicit: any new legacy field name the
+    schema can fold should also be folded here so external tooling
+    that bypasses ``validate_config`` and calls
+    ``validate_config_payload`` directly gets the same shape.
+    """
+    import copy
+
+    if not _is_v2_payload(raw):
+        return raw
+
+    data = copy.deepcopy(raw)
+
+    # mcps -> tools (schema canonical name).
+    if "mcps" in data and "tools" not in data:
+        data["tools"] = data.pop("mcps")
+    elif "mcps" in data:
+        data.pop("mcps")
+
+    # Placeholder api_key -> api_key_env (model-level).
+    for model in data.get("models", []) or []:
+        if not isinstance(model, dict):
+            continue
+        if "api_key" in model and "api_key_env" not in model:
+            val = model["api_key"]
+            from sk_agent_schemas import _API_KEY_PLACEHOLDER_PATTERN
+            if isinstance(val, str) and (
+                __import__("re").fullmatch(_API_KEY_PLACEHOLDER_PATTERN, val)
+            ):
+                model_id = model.get("id", "model")
+                derived = __import__("re").sub(
+                    r"[^A-Z0-9]+", "_", str(model_id).upper()
+                ).strip("_")
+                if derived:
+                    model["api_key_env"] = f"{derived}_API_KEY"
+                model.pop("api_key")
+
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -604,13 +696,36 @@ class ConfigValidationError(Exception):
 
 
 def validate_config(raw: dict) -> list[str]:
-    """Validate a v2 config and return list of error messages (empty = valid)."""
+    """Validate a v2 config and return list of error messages (empty = valid).
+
+    Combines two layers:
+      1. **Legacy structural checks** (the checks this function performed
+         before Pydantic schemas landed): duplicate IDs, dangling
+         references, conversation-type whitelist, etc. These remain in
+         place because they produce very readable error strings the
+         existing test suite asserts on.
+      2. **Pydantic v2 schema validation** (``sk_agent_schemas``): runs
+         after the legacy checks and contributes typed errors
+         (range, pattern, type, reference-integrity) on top.
+
+    The schema accepts legacy field names (``mcps`` -> ``tools``,
+    placeholder ``api_key`` -> ``api_key_env``, etc.) via its
+    ``_normalize_legacy_fields`` validator. To keep the legacy
+    structural checks working on the original payload while the
+    schema validates the normalised one, we run a *copy* through the
+    normalisation step before handing it to Pydantic.
+    """
     errors: list[str] = []
 
     version = raw.get("config_version", 0)
     if version < 2:
         errors.append(f"Invalid config_version: {version} (expected >= 2)")
         return errors  # Can't validate further
+
+    if _HAS_PYDANTIC_SCHEMA:
+        schema_payload = _normalise_for_schema(raw)
+        _, pyd_errors = _validate_payload_via_pydantic(schema_payload)
+        errors.extend(f"[schema] {msg}" for msg in pyd_errors)
 
     # Validate models
     model_ids = set()
@@ -623,16 +738,21 @@ def validate_config(raw: dict) -> list[str]:
         else:
             model_ids.add(mid)
 
-    # Validate MCPs
-    mcp_ids = set()
-    for i, m in enumerate(raw.get("mcps", [])):
-        mid = m.get("id") or m.get("name")
-        if not mid:
-            errors.append(f"mcps[{i}]: missing 'id'")
-        elif mid in mcp_ids:
-            errors.append(f"mcps[{i}]: duplicate id '{mid}'")
-        else:
-            mcp_ids.add(mid)
+    # Validate MCPs / tools. Both keys map to the same registry
+    # (schema name: ``tools``; legacy alias: ``mcps``). The schema
+    # itself folds ``mcps`` -> ``tools`` before validation, but the
+    # legacy structural checks run on the original payload, so we
+    # accept either name here.
+    mcp_ids: set[str] = set()
+    for key in ("mcps", "tools"):
+        for i, m in enumerate(raw.get(key, [])):
+            mid = m.get("id") or m.get("name")
+            if not mid:
+                errors.append(f"{key}[{i}]: missing 'id'")
+            elif mid in mcp_ids:
+                errors.append(f"{key}[{i}]: duplicate id '{mid}'")
+            else:
+                mcp_ids.add(mid)
 
     # Validate agents
     agent_ids = set()
