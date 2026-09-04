@@ -53,6 +53,42 @@ SK_AGENT_DEPTH = int(os.environ.get("SK_AGENT_DEPTH", "0"))
 DEFAULT_MAX_RECURSION_DEPTH = 2
 
 
+def can_spawn_recursive_agent(
+    current_depth: int | None = None,
+    max_depth: int | None = None,
+) -> bool:
+    """Centralized guard for self-inclusion recursion (#3409, parent #1748).
+
+    A child sk-agent process running at ``current_depth + 1`` is allowed iff
+    ``current_depth + 1 <= max_depth``. With ``DEFAULT_MAX_RECURSION_DEPTH = 2``
+    this permits depths 0, 1, 2 (root + 2 levels of self-inclusion) and refuses
+    any deeper attempt — including those reached via ``mcp_overrides`` /
+    ``agent_spec`` / inline agents / dynamic specs. Centralizing this decision
+    keeps the rule authoritative across stdio and streamable-http transports.
+
+    Args:
+        current_depth: Parent's recursion depth. Defaults to ``SK_AGENT_DEPTH``
+            (process-global env var). Pass an explicit value to evaluate a
+            prospective spawn in advance.
+        max_depth: Effective ceiling. Defaults to ``DEFAULT_MAX_RECURSION_DEPTH``
+            (2). Values <= 0 are clamped to refuse all spawns to avoid
+            misconfiguration producing unbounded recursion.
+
+    Returns:
+        True iff spawning a child sk-agent at ``current_depth + 1`` is allowed.
+    """
+    if current_depth is None:
+        current_depth = SK_AGENT_DEPTH
+    if max_depth is None:
+        max_depth = DEFAULT_MAX_RECURSION_DEPTH
+
+    if max_depth <= 0:
+        return False
+    if current_depth < 0:
+        return False
+    return current_depth + 1 <= max_depth
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
