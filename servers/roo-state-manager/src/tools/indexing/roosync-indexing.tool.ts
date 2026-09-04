@@ -41,6 +41,16 @@ function getISOWeek(timestamp: string): string {
 }
 
 /**
+ * #3381 D2: minimum per-tool call count on the window for a published error rate.
+ *
+ * An error rate computed on a handful of calls is noise presented as signal
+ * (1 errored call out of 7 publishes "57.1%"), and downstream trend arrows
+ * inherit the noise. Below this count, `error_rate` is null (rendered "n/a")
+ * instead of a number.
+ */
+export const MIN_CALLS_FOR_ERROR_RATE = 30;
+
+/**
  * Normalize a raw tool name from a JSONL tool_use block into a canonical key.
  *
  * The same tool is recorded under different prefixes across sources:
@@ -1472,7 +1482,9 @@ export async function handleRooSyncIndexing(
                             .sort((a, b) => b[1] - a[1])
                             .map(([rawName, rawCount]) => ({ raw_name: rawName, calls: rawCount })),
                         errors: errorCounts[name] || 0,
-                        error_rate: count > 0 ? +((errorCounts[name] || 0) / count * 100).toFixed(1) : 0,
+                        // #3381 D2: no error rate published below MIN_CALLS_FOR_ERROR_RATE
+                        // calls on the window — a rate on a tiny sample is noise (1/7 → "57.1%").
+                        error_rate: count >= MIN_CALLS_FOR_ERROR_RATE ? +((errorCounts[name] || 0) / count * 100).toFixed(1) : null,
                         retries: retryCounts[name] || 0,
                         retry_rate: count > 0 ? +((retryCounts[name] || 0) / count * 100).toFixed(1) : 0,
                         downstream_actions: downstreamActionCounts[name] || 0,
@@ -1748,9 +1760,9 @@ export async function handleRooSyncIndexing(
                     const rows = latest.tools.slice(0, 20).map((t: any) => {
                         const p: any = prevMap.get(t.tool_name);
                         const callsArrow = p ? (t.calls > p.calls ? '↑' : t.calls < p.calls ? '↓' : '→') : '🆕';
-                        const errorArrow = p ? (t.error_rate > p.error_rate ? '↑' : t.error_rate < p.error_rate ? '↓' : '→') : '-';
+                        const errorArrow = p && t.error_rate != null && p.error_rate != null ? (t.error_rate > p.error_rate ? '↑' : t.error_rate < p.error_rate ? '↓' : '→') : '-';
                         const retryArrow = p ? (t.retry_rate > p.retry_rate ? '↑' : t.retry_rate < p.retry_rate ? '↓' : '→') : '-';
-                        return `| ${t.tool_name} | ${t.calls} | ${callsArrow} | ${t.error_rate}% | ${errorArrow} | ${t.retry_rate}% | ${retryArrow} | ${t.downstream_action_rate ?? '-'}% |`;
+                        return `| ${t.tool_name} | ${t.calls} | ${callsArrow} | ${t.error_rate ?? 'n/a'}${t.error_rate != null ? '%' : ''} | ${errorArrow} | ${t.retry_rate}% | ${retryArrow} | ${t.downstream_action_rate ?? '-'}% |`;
                     });
                     lines.push(`| Tool | Calls | Trend | Err% | Trend | Retry% | Trend | DwnAct% |`);
                     lines.push(`|------|-------|-------|------|-------|--------|-------|--------|`);
@@ -1759,7 +1771,7 @@ export async function handleRooSyncIndexing(
                     lines.push(`| Tool | Calls | Err% | Retry% | DwnAct% |`);
                     lines.push(`|------|-------|------|--------|---------|`);
                     for (const t of latest.tools.slice(0, 20)) {
-                        lines.push(`| ${t.tool_name} | ${t.calls} | ${t.error_rate}% | ${t.retry_rate}% | ${t.downstream_action_rate ?? '-'}% |`);
+                        lines.push(`| ${t.tool_name} | ${t.calls} | ${t.error_rate ?? 'n/a'}${t.error_rate != null ? '%' : ''} | ${t.retry_rate}% | ${t.downstream_action_rate ?? '-'}% |`);
                     }
                 }
                 lines.push(``);
