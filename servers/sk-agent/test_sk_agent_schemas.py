@@ -1011,3 +1011,222 @@ def test_conversation_unknown_agent_is_still_rejected():
     cfg, errors = validate_config_payload(payload)
     assert cfg is None
     assert any("ghost-agent" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Acceptance (REPAIR c.946, follow-up adjoint po-2025
+# msg-20260904T054131-dvipll): two proofs of test still absent on HEAD
+# e06137db.
+#
+# (1) round-trip strict ``cfg2.model_dump() == dumped`` with a fixture
+#     that uses **non-default values** AND at least one **inline agent**
+#     inside a conversation. The adjoint's preflight wants the strict
+#     byte-stable equality, not just the structural check that
+#     ``test_v2_round_trip_model_dump_preserves_shape`` already performs
+#     on the canonical fixture.
+#
+# (2) duplicate-inline-agent-id detection with the fixture shape the
+#     adjoint calls out: ``agents=["a"]`` (single entry) + two inline
+#     agents both ``id="a"``. The existing
+#     ``test_conversation_duplicate_inline_ids_rejected`` uses
+#     ``agents=["a","b"]``; this is a separate fixture that makes the
+#     detection surface from a degenerate reference list (a single id
+#     that the inline definitions duplicate against each other), and
+#     asserts the **exact phrase** ``duplicate inline agent ids`` that
+#     the schema validator emits (cf ``sk_agent_schemas.py:658``).
+# ---------------------------------------------------------------------------
+
+
+def test_v2_model_dump_is_byte_stable_with_inline_agents():
+    """Round-trip equality ``cfg2.model_dump() == dumped`` with a fixture
+    that exercises **non-default values** (temperature, max_tokens,
+    capability flags, env dict, execution profile) AND at least one
+    **inline agent** inside a conversation. This is the strict byte-
+    stable equality the adjoint's preflight asked for.
+
+    The inline agent is the key piece: ``test_v2_round_trip`` and
+    ``test_v2_round_trip_model_dump_preserves_shape`` exercise the
+    canonical ``v2_payload`` fixture which has **no** inline agents, so
+    they cannot regress on inline-agent dumping. Adding an inline agent
+    and asserting ``cfg2.model_dump() == dumped`` proves the schema's
+    ``inline_agents`` round-trip is byte-stable.
+    """
+    payload = {
+        "config_version": 2,
+        "max_recursion_depth": 5,
+        "default_agent": "host",
+        "default_vision_agent": "vision",
+        "system_prompt": "Default host prompt.",
+        "models": [
+            {
+                "id": "glm-5",
+                "base_url": "https://api.z.ai/v4",
+                "api_key_env": "GLM_API_KEY",
+                "model_id": "glm-5",
+                "capabilities": {"vision": False, "thinking": True},
+                "context_window": 200_000,
+                "description": "GLM-5 reasoning",
+            },
+            {
+                "id": "glm-4.6v",
+                "base_url": "https://api.z.ai/v4",
+                "api_key_env": "GLM_API_KEY",
+                "model_id": "glm-4.6v",
+                "capabilities": {"vision": True, "thinking": False},
+                "context_window": 128_000,
+                "description": "GLM-4.6V vision",
+            },
+        ],
+        "tools": [
+            {
+                "id": "searxng",
+                "description": "Web search",
+                "command": "npx",
+                "args": ["-y", "mcp-searxng"],
+                "env": {"SEARXNG_URL": "SEARXNG_URL"},
+            },
+            {
+                "id": "playwright",
+                "description": "Browser",
+                "command": "npx",
+                "args": ["-y", "@playwright/mcp"],
+            },
+        ],
+        "agents": [
+            {
+                "id": "host",
+                "description": "Top-level host agent",
+                "model": "glm-5",
+                "system_prompt": "Top-level host prompt.",
+                "mcps": ["searxng"],
+                "execution": {
+                    "temperature": 0.3,
+                    "max_tokens": 4096,
+                    "memory_collection": "host-memory",
+                },
+            },
+            {
+                "id": "vision",
+                "description": "Top-level vision agent",
+                "model": "glm-4.6v",
+                "system_prompt": "Top-level vision prompt.",
+                "mcps": [],
+            },
+        ],
+        "conversations": [
+            {
+                "id": "inline-roundtrip",
+                "description": "Conversation with an inline override",
+                "type": "group_chat",
+                "agents": ["host", "ephemeral-reviewer"],
+                "max_rounds": 3,
+                "inline_agents": [
+                    {
+                        "id": "ephemeral-reviewer",
+                        "description": "Inline reviewer (non-default)",
+                        "model": "glm-5",
+                        "system_prompt": "Inline reviewer prompt.",
+                        "mcps": ["searxng", "playwright"],
+                        "execution": {
+                            "temperature": 0.7,
+                            "max_tokens": 2048,
+                            "memory_collection": "reviewer-memory",
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+
+    cfg, errors = validate_config_payload(payload)
+    assert cfg is not None, f"validation failed: {errors}"
+
+    # First round-trip: dump then re-validate.
+    dumped = cfg.model_dump()
+    cfg2, errors2 = validate_config_payload(dumped)
+    assert cfg2 is not None, f"second validation failed: {errors2}"
+
+    # **Strict byte-stable equality** the adjoint's preflight asked for.
+    assert cfg2.model_dump() == dumped, (
+        "model_dump did not round-trip byte-stably: "
+        f"dumped={dumped!r}\ncfg2.model_dump()={cfg2.model_dump()!r}"
+    )
+
+    # The inline agent must have survived the round-trip with its
+    # non-default execution profile (temperature 0.7, max_tokens 2048,
+    # memory_collection 'reviewer-memory') — these are exactly the
+    # values a future regression on inline-agent dumping would erase.
+    inline_ephemeral = next(
+        a for c in cfg2.conversations for a in c.inline_agents
+        if a.id == "ephemeral-reviewer"
+    )
+    assert inline_ephemeral.execution.temperature == pytest.approx(0.7)
+    assert inline_ephemeral.execution.max_tokens == 2048
+    assert inline_ephemeral.execution.memory_collection == "reviewer-memory"
+    assert inline_ephemeral.mcps == ["searxng", "playwright"]
+
+
+def test_v2_rejects_duplicate_inline_agent_ids_single_reference():
+    """The fixture the adjoint's preflight asked for:
+
+    - conversation ``agents`` field is a single-element list
+      ``["a"]`` (NOT ``["a", "b"]`` like the existing
+      ``test_conversation_duplicate_inline_ids_rejected`` fixture);
+    - the conversation defines two ``inline_agents`` both ``id="a"``;
+    - the validation error message must contain the **exact phrase**
+      ``duplicate inline agent ids`` emitted by
+      ``sk_agent_schemas.py:658``.
+
+    The single-element reference list is the degenerate case: a
+    reviewer who scans ``agents`` first sees only one id, then the
+    inline duplicates surface against that single reference. This is
+    not the same regression surface as the existing test and must be
+    covered explicitly.
+    """
+    payload = {
+        "config_version": 2,
+        "models": [
+            {
+                "id": "glm-5",
+                "base_url": "https://api.z.ai/v4",
+                "api_key_env": "GLM_API_KEY",
+                "model_id": "glm-5",
+            },
+        ],
+        "agents": [
+            {
+                "id": "host",
+                "model": "glm-5",
+                "mcps": [],
+                "system_prompt": "",
+            },
+        ],
+        "conversations": [
+            {
+                "id": "single-ref-dup-inline",
+                "type": "group_chat",
+                "agents": ["a"],  # single-element reference list
+                "inline_agents": [
+                    {
+                        "id": "a",
+                        "model": "glm-5",
+                        "system_prompt": "first",
+                        "mcps": [],
+                    },
+                    {
+                        "id": "a",  # duplicate inline id
+                        "model": "glm-5",
+                        "system_prompt": "second",
+                        "mcps": [],
+                    },
+                ],
+            },
+        ],
+    }
+    cfg, errors = validate_config_payload(payload)
+    assert cfg is None
+    # Explicit assertion on the exact error phrase.
+    assert any("duplicate inline agent ids" in e for e in errors), (
+        f"expected exact phrase 'duplicate inline agent ids' in errors, "
+        f"got {errors}"
+    )
