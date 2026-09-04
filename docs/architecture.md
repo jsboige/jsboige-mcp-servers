@@ -149,6 +149,20 @@ servers/
 5. **Réponse**: Le serveur MCP renvoie le résultat au LLM
 6. **Intégration**: Le LLM intègre le résultat dans sa réponse
 
+## Arrêt gracieux et drainage des écritures (roo-state-manager)
+
+Le serveur roo-state-manager réplique ses écritures vers PostgreSQL (dual-write). À l'arrêt du serveur, des écritures en vol peuvent être perdues (#3151). Le chemin d'arrêt résout ceci en deux temps (`drainPendingDualWrites`, `roosync-channel-dual-write.ts`):
+
+1. **Attente des opérations miroir enregistrées** — bornée par un timeout, re-vérifiée au fil des nouvelles opérations.
+2. **Fermeture du writer partagé** — `PgUnifiedStoreWriter.close()` appelle `pool.end()` de node-postgres, qui draine: en plus de l'attente explicite ci-dessus, il attend les requêtes déjà confiées à un client. Le writer étant partagé, toutes les voies (dont la voie conversation) sont couvertes par ce même drain.
+
+Comportements aux limites:
+
+- Le drain retourne `false` au timeout et journalise les écritures restantes (potentiellement perdues).
+- Un arrêt brutal (hard kill, ex. TerminateProcess sous Windows) contourne tout le chemin — ce résiduel relève d'une passe de reconcile/backfill, pas du chemin d'arrêt.
+
+Référence: PR #1071 (fix), issue #3151 (constat initial).
+
 ## Sécurité
 
 Les serveurs MCP peuvent implémenter différentes mesures de sécurité:
