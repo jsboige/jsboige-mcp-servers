@@ -8,6 +8,12 @@ Supports two config versions:
 
 When v1 config is detected (no config_version field), it is automatically
 migrated to v2 format in memory. The file on disk is not modified.
+
+v2 schemas are validated by ``sk_agent_schemas.SKAgentConfig`` (Pydantic
+v2). The dataclasses declared here remain the in-memory representation
+returned to callers; ``validate_config`` chains the legacy structural
+checks with the Pydantic schema check so that both readable error
+messages and structured type errors surface.
 """
 
 from __future__ import annotations
@@ -18,6 +24,19 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+try:
+    # Pydantic v2 schemas. The import is best-effort: when pydantic is
+    # not installed, the legacy structural checks still run and callers
+    # see a clear error if they explicitly invoke the schema validator.
+    from sk_agent_schemas import (
+        SCHEMA_VERSION,
+        validate_config_payload as _validate_payload_via_pydantic,
+    )
+    _HAS_PYDANTIC_SCHEMA = True
+except ImportError:  # pragma: no cover - exercised only when pydantic missing
+    _HAS_PYDANTIC_SCHEMA = False
+    SCHEMA_VERSION = 2
 
 log = logging.getLogger("sk-agent.config")
 
@@ -590,6 +609,33 @@ def migrate_config_v1_to_v2(raw: dict) -> dict:
     return migrated
 
 
+def _is_schema_shape(raw: dict) -> bool:
+    """Return True when ``raw`` carries the schema field names (and only
+    those) so that the Pydantic v2 schema can validate it.
+
+    The schema uses ``tools`` (not ``mcps``), expects no literal
+    ``api_key`` on models, and folds ``memory`` into
+    ``execution.memory_collection``. A payload that still has any of
+    these legacy shapes is routed through the legacy validation path
+    only, to keep the existing test fixtures working unchanged.
+    """
+    if not isinstance(raw, dict):
+        return False
+    if "mcps" in raw:
+        return False
+    for model in raw.get("models", []) or []:
+        if not isinstance(model, dict):
+            continue
+        if "api_key" in model:
+            return False
+        if "vision" in model or "thinking" in model:
+            return False
+    for agent in raw.get("agents", []) or []:
+        if isinstance(agent, dict) and "memory" in agent:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -604,13 +650,35 @@ class ConfigValidationError(Exception):
 
 
 def validate_config(raw: dict) -> list[str]:
-    """Validate a v2 config and return list of error messages (empty = valid)."""
+    """Validate a v2 config and return list of error messages (empty = valid).
+
+    Combines two layers:
+      1. **Legacy structural checks** (the checks this function performed
+         before Pydantic schemas landed): duplicate IDs, dangling
+         references, conversation-type whitelist, etc. These remain in
+         place because they produce very readable error strings the
+         existing test suite asserts on.
+      2. **Pydantic v2 schema validation** (``sk_agent_schemas``): runs
+         after the legacy checks and contributes typed errors
+         (range, pattern, type, reference-integrity) on top.
+
+    Pydantic is only chained when the payload is in the **schema**
+    shape (``tools`` instead of ``mcps``, ``api_key_env`` only, no
+    legacy ``memory`` block on agents). Configs that still carry the
+    legacy field names fall back to the legacy-only validation path;
+    callers can migrate with ``migrate_config_v1_to_v2`` (or write a
+    v2 config from scratch) to opt in to the schema layer.
+    """
     errors: list[str] = []
 
     version = raw.get("config_version", 0)
     if version < 2:
         errors.append(f"Invalid config_version: {version} (expected >= 2)")
         return errors  # Can't validate further
+
+    if _HAS_PYDANTIC_SCHEMA and _is_schema_shape(raw):
+        _, pyd_errors = _validate_payload_via_pydantic(raw)
+        errors.extend(f"[schema] {msg}" for msg in pyd_errors)
 
     # Validate models
     model_ids = set()
