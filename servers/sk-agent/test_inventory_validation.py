@@ -176,15 +176,35 @@ def test_readme_v2_example_loads():
 
 
 def test_inventory_generator_check_mode_passes():
-    """generate_inventory.py --check must succeed (no drift)."""
+    """generate_inventory.py --check must succeed on a freshly rendered doc.
+
+    Round-trips through a temp dir: the generator's DEFAULT_DOC_PATH resolves
+    into the PARENT repo (outside this submodule), which a standalone checkout
+    does not have — checking the default path couples the test cross-repo.
+    """
     import subprocess  # noqa: PLC0415
-    result = subprocess.run(
-        [sys.executable, str(HERE / "generate_inventory.py"), "--check"],
-        capture_output=True,
-        text=True,
-        cwd=str(HERE),
-    )
-    assert result.returncode == 0, (
-        f"drift detected:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-    )
-    assert "OK:" in result.stdout
+    import tempfile  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as td:
+        doc = Path(td) / "AGENT_INVENTORY.md"
+        render = subprocess.run(
+            [sys.executable, str(HERE / "generate_inventory.py"),
+             "--doc-path", str(doc)],
+            capture_output=True,
+            text=True,
+            cwd=str(HERE),
+        )
+        assert render.returncode == 0, (
+            f"render failed:\nSTDOUT: {render.stdout}\nSTDERR: {render.stderr}"
+        )
+        result = subprocess.run(
+            [sys.executable, str(HERE / "generate_inventory.py"),
+             "--check", "--doc-path", str(doc)],
+            capture_output=True,
+            text=True,
+            cwd=str(HERE),
+        )
+        assert result.returncode == 0, (
+            f"drift detected:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+        assert "OK:" in result.stdout
