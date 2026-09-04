@@ -115,6 +115,9 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 
 ### v2 Config (agent-centric)
 
+> The block below is validated by `python -m pytest test_inventory_validation.py`.
+> Any change must keep it parseable by `sk_agent_config.validate_config()`.
+
 ```json
 {
   "config_version": 2,
@@ -122,7 +125,22 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
   "default_vision_agent": "vision-analyst",
 
   "models": [
-    { "id": "glm-5", "base_url": "...", "api_key_env": "ZAI_API_KEY", "model_id": "glm-5", "vision": false }
+    {
+      "id": "glm-5",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "model_id": "glm-5",
+      "vision": false,
+      "context_window": 200000
+    },
+    {
+      "id": "glm-4.6v",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "model_id": "glm-4.6v",
+      "vision": true,
+      "context_window": 128000
+    }
   ],
 
   "embeddings": {
@@ -144,6 +162,13 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "system_prompt": "You are a helpful analyst.",
       "mcps": ["searxng"],
       "memory": { "enabled": true, "collection": "analyst-memory" }
+    },
+    {
+      "id": "vision-analyst",
+      "model": "glm-4.6v",
+      "system_prompt": "You are a vision specialist.",
+      "mcps": [],
+      "memory": { "enabled": false }
     }
   ],
 
