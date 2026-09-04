@@ -610,30 +610,76 @@ def migrate_config_v1_to_v2(raw: dict) -> dict:
 
 
 def _is_schema_shape(raw: dict) -> bool:
-    """Return True when ``raw`` carries the schema field names (and only
-    those) so that the Pydantic v2 schema can validate it.
+    """Return True when ``raw`` is **plausible** as a schema payload so
+    that the Pydantic v2 schema can validate it.
 
-    The schema uses ``tools`` (not ``mcps``), expects no literal
-    ``api_key`` on models, and folds ``memory`` into
-    ``execution.memory_collection``. A payload that still has any of
-    these legacy shapes is routed through the legacy validation path
-    only, to keep the existing test fixtures working unchanged.
+    Kept for backward compatibility with external callers; the
+    ``validate_config`` function no longer uses this gate, because the
+    schema now accepts legacy field names via
+    ``_normalize_legacy_fields``.
+    """
+    return _is_v2_payload(raw)
+
+
+def _is_v2_payload(raw: dict) -> bool:
+    """True when ``raw`` carries ``config_version >= 2`` and is a dict.
+
+    v1 payloads and non-dict inputs are rejected at this gate.
     """
     if not isinstance(raw, dict):
         return False
-    if "mcps" in raw:
+    version = raw.get("config_version", 0)
+    if version < 2:
         return False
-    for model in raw.get("models", []) or []:
+    return True
+
+
+def _normalise_for_schema(raw: dict) -> dict:
+    """Return a deep-copied payload with the legacy field names the
+    schema expects to translate folded out before validation.
+
+    Mirrors the work done by ``SKAgentConfig._normalize_legacy_fields``
+    (mode="before") at the schema boundary, so the schema still sees a
+    dict whose keys it can read deterministically even though the
+    validator itself runs before the data is bound.
+
+    Kept deliberately small and explicit: any new legacy field name the
+    schema can fold should also be folded here so external tooling
+    that bypasses ``validate_config`` and calls
+    ``validate_config_payload`` directly gets the same shape.
+    """
+    import copy
+
+    if not _is_v2_payload(raw):
+        return raw
+
+    data = copy.deepcopy(raw)
+
+    # mcps -> tools (schema canonical name).
+    if "mcps" in data and "tools" not in data:
+        data["tools"] = data.pop("mcps")
+    elif "mcps" in data:
+        data.pop("mcps")
+
+    # Placeholder api_key -> api_key_env (model-level).
+    for model in data.get("models", []) or []:
         if not isinstance(model, dict):
             continue
-        if "api_key" in model:
-            return False
-        if "vision" in model or "thinking" in model:
-            return False
-    for agent in raw.get("agents", []) or []:
-        if isinstance(agent, dict) and "memory" in agent:
-            return False
-    return True
+        if "api_key" in model and "api_key_env" not in model:
+            val = model["api_key"]
+            from sk_agent_schemas import _API_KEY_PLACEHOLDER_PATTERN
+            if isinstance(val, str) and (
+                __import__("re").fullmatch(_API_KEY_PLACEHOLDER_PATTERN, val)
+            ):
+                model_id = model.get("id", "model")
+                derived = __import__("re").sub(
+                    r"[^A-Z0-9]+", "_", str(model_id).upper()
+                ).strip("_")
+                if derived:
+                    model["api_key_env"] = f"{derived}_API_KEY"
+                model.pop("api_key")
+
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -662,12 +708,12 @@ def validate_config(raw: dict) -> list[str]:
          after the legacy checks and contributes typed errors
          (range, pattern, type, reference-integrity) on top.
 
-    Pydantic is only chained when the payload is in the **schema**
-    shape (``tools`` instead of ``mcps``, ``api_key_env`` only, no
-    legacy ``memory`` block on agents). Configs that still carry the
-    legacy field names fall back to the legacy-only validation path;
-    callers can migrate with ``migrate_config_v1_to_v2`` (or write a
-    v2 config from scratch) to opt in to the schema layer.
+    The schema accepts legacy field names (``mcps`` -> ``tools``,
+    placeholder ``api_key`` -> ``api_key_env``, etc.) via its
+    ``_normalize_legacy_fields`` validator. To keep the legacy
+    structural checks working on the original payload while the
+    schema validates the normalised one, we run a *copy* through the
+    normalisation step before handing it to Pydantic.
     """
     errors: list[str] = []
 
@@ -676,8 +722,9 @@ def validate_config(raw: dict) -> list[str]:
         errors.append(f"Invalid config_version: {version} (expected >= 2)")
         return errors  # Can't validate further
 
-    if _HAS_PYDANTIC_SCHEMA and _is_schema_shape(raw):
-        _, pyd_errors = _validate_payload_via_pydantic(raw)
+    if _HAS_PYDANTIC_SCHEMA:
+        schema_payload = _normalise_for_schema(raw)
+        _, pyd_errors = _validate_payload_via_pydantic(schema_payload)
         errors.extend(f"[schema] {msg}" for msg in pyd_errors)
 
     # Validate models
@@ -691,16 +738,21 @@ def validate_config(raw: dict) -> list[str]:
         else:
             model_ids.add(mid)
 
-    # Validate MCPs
-    mcp_ids = set()
-    for i, m in enumerate(raw.get("mcps", [])):
-        mid = m.get("id") or m.get("name")
-        if not mid:
-            errors.append(f"mcps[{i}]: missing 'id'")
-        elif mid in mcp_ids:
-            errors.append(f"mcps[{i}]: duplicate id '{mid}'")
-        else:
-            mcp_ids.add(mid)
+    # Validate MCPs / tools. Both keys map to the same registry
+    # (schema name: ``tools``; legacy alias: ``mcps``). The schema
+    # itself folds ``mcps`` -> ``tools`` before validation, but the
+    # legacy structural checks run on the original payload, so we
+    # accept either name here.
+    mcp_ids: set[str] = set()
+    for key in ("mcps", "tools"):
+        for i, m in enumerate(raw.get(key, [])):
+            mid = m.get("id") or m.get("name")
+            if not mid:
+                errors.append(f"{key}[{i}]: missing 'id'")
+            elif mid in mcp_ids:
+                errors.append(f"{key}[{i}]: duplicate id '{mid}'")
+            else:
+                mcp_ids.add(mid)
 
     # Validate agents
     agent_ids = set()

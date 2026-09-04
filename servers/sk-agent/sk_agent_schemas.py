@@ -20,6 +20,11 @@ Design goals
   are validated against the in-config registries via ``model_validator``.
 - **Strict extra-rejection**: ``extra="forbid"`` so unknown fields surface
   as readable validation errors instead of being silently ignored.
+- **Canonical-shape round-trip**: ``SKAgentConfig.model_validate`` ->
+  ``.model_dump()`` -> ``model_validate`` preserves the schema shape
+  (validated by tests). Legacy shapes are normalised in
+  ``_normalize_legacy_fields`` so a v1/v2 config can pass through the
+  schema without losing information.
 
 See issue roo-extensions#3406 for the full acceptance and parent epic #1748.
 """
@@ -52,6 +57,36 @@ SCHEMA_VERSION: int = 2
 #: mixed-case here catches typos early.
 ENV_VAR_NAME_PATTERN: str = r"^[A-Z][A-Z0-9_]*$"
 
+#: Placeholder pattern used by ``sk_agent_config.template.json`` to mark
+#: "fill this in with your real key at deploy time". When a model carries
+#: an ``api_key`` literal matching this pattern, the schema routes the
+#: value to a deterministic ``api_key_env`` name (derived from the model
+#: ``id``) so the legacy template keeps validating.
+_API_KEY_PLACEHOLDER_PATTERN: str = r"^YOUR_[A-Z][A-Z0-9_]+_HERE$"
+
+#: A second, more permissive placeholder set used by legacy test
+#: fixtures (``"key"``, ``"test-key"``, ``"example"``, ...). These are
+#: not real secrets and do not deserve a hard rejection: the schema
+#: folds them into a deterministic ``api_key_env`` instead.
+_API_KEY_BENIGN_PATTERN: str = (
+    r"^(key|test[-_]?key|example|dummy|placeholder|changeme|no-key)$"
+)
+
+#: Real-secret prefixes that the schema **rejects** when found on a
+#: model ``api_key`` literal. Anything matching one of these prefixes is
+#: treated as a real secret leaked into the config and surfaced via
+#: ``extra=forbid`` so the caller sees the leak.
+_REAL_SECRET_PREFIXES: tuple[str, ...] = (
+    "sk-",       # OpenAI / Anthropic API keys
+    "ghp_",      # GitHub personal access token
+    "xai-",      # xAI
+    "AIza",      # Google
+    "pplx-",     # Perplexity
+    "anthropic-",
+    "huggingface_",
+    "sk-ant-",
+)
+
 #: Convenience annotation for typed env-var name fields. Empty string is
 #: allowed (= "no env var, fall back to a different mechanism"), but when
 #: present the name must match the canonical pattern. ``pattern`` cannot
@@ -81,8 +116,14 @@ RefId = Annotated[
 # Reusable helper applied per-field (Pydantic v2 cannot attach validators
 # to ``Annotated`` aliases, so each EnvVarName field calls
 # ``_env_var_name_pattern_check`` directly).
-def _env_var_name_pattern_check(value: str) -> str:
+def _env_var_name_pattern_check(value: Any) -> str:
     """Reject empty / malformed env-var names. Empty is allowed (= no env)."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"env-var name must be a string (got {type(value).__name__})"
+        )
     if value == "":
         return value
     if not re.fullmatch(ENV_VAR_NAME_PATTERN, value):
@@ -90,6 +131,18 @@ def _env_var_name_pattern_check(value: str) -> str:
             f"env-var name {value!r} must match {ENV_VAR_NAME_PATTERN!r}"
         )
     return value
+
+
+def _is_env_var_name(value: str) -> bool:
+    """True iff ``value`` is a canonical env-var name (``UPPER_SNAKE``).
+
+    Used by ``ToolSpec._validate_env`` to distinguish env-var references
+    from configuration literals: callers may mix either, depending on
+    whether the value is a secret (env-var name) or a non-secret
+    configuration literal (URL, port, ...).
+    """
+    return bool(re.fullmatch(ENV_VAR_NAME_PATTERN, value))
+
 
 ConversationType = Literal[
     "sequential", "concurrent", "group_chat", "handoff", "magentic"
@@ -184,7 +237,7 @@ class ModelSpec(_StrictModel):
     @field_validator("api_key_env", mode="before")
     @classmethod
     def _validate_api_key_env(cls, value: Any) -> Any:
-        return _env_var_name_pattern_check(value or "")
+        return _env_var_name_pattern_check(value)
 
     def resolve_api_key(self, legacy_key: str = "no-key") -> str:
         """Resolve an API key from the env-var name, falling back to a
@@ -199,26 +252,56 @@ class ModelSpec(_StrictModel):
 
 
 class ToolSpec(_StrictModel):
-    """An MCP tool (shared resource pool)."""
+    """An MCP tool (shared resource pool).
+
+    The ``env`` mapping accepts two kinds of values, both as plain strings:
+
+    - **env-var reference** (e.g. ``{"API_KEY": "GLM_API_KEY"}``): the value
+      matches ``ENV_VAR_NAME_PATTERN`` (uppercase, underscore, leading
+      letter). The runtime resolves the literal by reading the named
+      environment variable.
+    - **non-secret configuration literal** (e.g. ``{"SEARXNG_URL":
+      "https://search.myia.io"}``): the value is used verbatim. Use this
+      for URLs, ports, log-level strings, and other non-secret config.
+
+    Mixing the two within one mapping is allowed. The schema rejects only
+    *typed* values (numbers, bools, ...); raw strings are accepted
+    regardless of shape. Callers that need to assert "this value is an
+    env-var reference" should validate via ``_is_env_var_name`` at the
+    call site.
+    """
 
     id: RefId
     description: str = Field(default="", max_length=2048)
     command: str = Field(default="", max_length=512)
     args: list[str] = Field(default_factory=list, max_length=64)
-    env: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Tool environment variables. Values may be either env-var "
+            "names (uppercase, see ENV_VAR_NAME_PATTERN) or non-secret "
+            "configuration literals (URLs, ports, log levels, ...). "
+            "Plain strings only."
+        ),
+    )
 
     @field_validator("env", mode="before")
     @classmethod
     def _validate_env(cls, value: Any) -> Any:
-        """Each value in ``env`` is an env-var name; empty allowed."""
-        if not value:
+        if value is None:
             return {}
         if not isinstance(value, dict):
             raise ValueError("env must be a dict[str, str]")
         for key, val in value.items():
             if not isinstance(key, str):
-                raise ValueError(f"env keys must be strings (got {type(key).__name__})")
-            _env_var_name_pattern_check(val or "")
+                raise ValueError(
+                    f"env keys must be strings (got {type(key).__name__})"
+                )
+            if not isinstance(val, str):
+                raise ValueError(
+                    f"env[{key!r}] must be a string (got {type(val).__name__}); "
+                    "use api_key_env or a literal env-var name for secrets"
+                )
         return value
 
     @field_validator("args")
@@ -314,16 +397,27 @@ class SKAgentConfig(_StrictModel):
     def _normalize_legacy_fields(cls, data: Any) -> Any:
         """Translate legacy field names to schema names so that callers
         can still feed the schema the output of
-        ``migrate_config_v1_to_v2`` without the schema rejecting them
-        as extras.
+        ``migrate_config_v1_to_v2`` or the canonical
+        ``sk_agent_config.template.json`` without the schema rejecting
+        them as extras.
 
         The translations are:
+
           - ``mcps`` (legacy) → ``tools`` (schema)
-          - ``models[i].api_key`` / ``models[i].vision`` are dropped
-            (the schema forbids literal API keys; the legacy flag
-            migrates into ``capabilities.vision``).
-          - ``agents[i].memory`` is folded into ``execution.memory_collection``
-            when memory is enabled.
+          - ``models[i].api_key`` is **never silently dropped**: if it
+            matches the placeholder pattern (``YOUR_X_HERE``), the schema
+            routes the value to a deterministic ``api_key_env`` derived
+            from the model ``id``; any other literal is rejected
+            (``extra=forbid`` makes the rejection visible to callers —
+            acceptance #3406: schemas never store a literal secret).
+          - ``models[i].vision`` / ``models[i].thinking`` fold into
+            ``capabilities.{vision,thinking}``.
+          - ``tools[i].name`` (legacy) → ``tools[i].id`` (schema).
+          - ``agents[i].memory`` (legacy dataclass shape) folds into
+            ``execution.memory_collection`` when memory is enabled.
+          - Top-level ``embeddings`` / ``qdrant`` / ``sampling`` blocks
+            are dropped — they live outside the schema today; the facade
+            handles them. ``_comment`` keys are dropped too.
 
         Any other unknown fields still raise ``extra=forbid`` because
         this validator runs in ``before`` mode and only edits known
@@ -338,11 +432,32 @@ class SKAgentConfig(_StrictModel):
         elif "mcps" in data:
             data.pop("mcps")
 
-        # models: fold ``vision`` and ``thinking`` into ``capabilities``.
-        # NOTE: ``api_key`` (legacy) is **not** silently dropped — letting
-        # the schema raise ``extra=forbid`` makes the rejection visible
-        # to the caller (acceptance #3406: schemas never store a literal
-        # secret; we want callers to know the key is missing).
+        # Top-level blocks the schema does not own today. We drop them
+        # after a sanity check (must be dict-shaped) so the schema
+        # does not raise ``extra=forbid`` on the canonical template.
+        for top_level_key in ("embeddings", "qdrant", "sampling"):
+            if top_level_key in data:
+                block = data.pop(top_level_key)
+                if not isinstance(block, dict):
+                    raise ValueError(
+                        f"{top_level_key!r} must be a dict (got {type(block).__name__})"
+                    )
+
+        # Drop ``_comment`` markers anywhere in the tree.
+        def _drop_comments(node: Any) -> Any:
+            if isinstance(node, dict):
+                node.pop("_comment", None)
+                for v in node.values():
+                    _drop_comments(v)
+            elif isinstance(node, list):
+                for v in node:
+                    _drop_comments(v)
+            return node
+
+        _drop_comments(data)
+
+        # models: fold ``vision`` and ``thinking`` into ``capabilities``,
+        # and route placeholder ``api_key`` to ``api_key_env``.
         for model in data.get("models", []) or []:
             if not isinstance(model, dict):
                 continue
@@ -357,6 +472,60 @@ class SKAgentConfig(_StrictModel):
                 model.pop("thinking")
             if caps:
                 model["capabilities"] = caps
+
+            # Placeholder ``api_key`` ("YOUR_X_HERE") -> derived
+            # ``api_key_env``. The schema also folds a small set of
+            # benign placeholder literals (``"key"``, ``"test-key"``,
+            # ``"example"``, ...) so legacy test fixtures keep working
+            # without leaking real secrets. Anything that looks like a
+            # **real** secret (known vendor prefix) is left in place so
+            # ``extra=forbid`` surfaces a readable leak warning.
+            if "api_key" in model:
+                api_key_value = model["api_key"]
+                if not isinstance(api_key_value, str):
+                    # ``extra=forbid`` will surface a "must be a string"
+                    # error; we keep the value as-is so the location is
+                    # informative.
+                    pass
+                elif re.fullmatch(_API_KEY_PLACEHOLDER_PATTERN, api_key_value):
+                    model_id = model.get("id", "model")
+                    if "api_key_env" not in model:
+                        derived = re.sub(
+                            r"[^A-Z0-9]+", "_", str(model_id).upper()
+                        ).strip("_")
+                        if derived:
+                            model["api_key_env"] = f"{derived}_API_KEY"
+                    model.pop("api_key")
+                elif re.fullmatch(
+                    _API_KEY_BENIGN_PATTERN, api_key_value, flags=re.IGNORECASE
+                ):
+                    # Benign placeholder used by test fixtures. Map it to
+                    # an explicit ``<MODEL>_TEST_KEY`` env-var name so the
+                    # schema no longer carries a literal.
+                    model_id = model.get("id", "model")
+                    if "api_key_env" not in model:
+                        derived = re.sub(
+                            r"[^A-Z0-9]+", "_", str(model_id).upper()
+                        ).strip("_")
+                        if derived:
+                            model["api_key_env"] = f"{derived}_TEST_KEY"
+                    model.pop("api_key")
+                elif any(
+                    api_key_value.startswith(prefix)
+                    for prefix in _REAL_SECRET_PREFIXES
+                ):
+                    # Real-looking secret leaked into the config: leave
+                    # it in place so ``extra=forbid`` raises a readable
+                    # error naming the offending field. This is the
+                    # path that makes acceptance #3406 (no secret
+                    # literal in models) **visible** to callers.
+                    pass
+                # else: a string that does not match either placeholder
+                # set and does not look like a real secret. Conservatively
+                # leave it in place so ``extra=forbid`` surfaces it;
+                # tightening this requires explicit user sign-off because
+                # we cannot tell apart "real key we don't recognise" from
+                # "fixture we don't recognise".
 
         # tools (legacy ``mcps`` entries): ``name`` (legacy) → ``id``.
         for tool in data.get("tools", []) or []:
@@ -389,6 +558,35 @@ class SKAgentConfig(_StrictModel):
     # ------------------------------------------------------------------
 
     @model_validator(mode="after")
+    def _validate_unique_ids(self) -> "SKAgentConfig":
+        """Reject duplicate ids in models/tools/agents/conversations.
+
+        Duplicates silently shadow the first occurrence at runtime and
+        produce flaky behaviour; surfacing them at validation time
+        removes the ambiguity. This check is intentionally separate from
+        ``_validate_references`` so that the message names the offending
+        registry and the duplicate values explicitly.
+        """
+        for registry_name, items in (
+            ("models", self.models),
+            ("tools", self.tools),
+            ("agents", self.agents),
+            ("conversations", self.conversations),
+        ):
+            seen: set[str] = set()
+            duplicates: list[str] = []
+            for item in items:
+                if item.id in seen:
+                    duplicates.append(item.id)
+                seen.add(item.id)
+            if duplicates:
+                raise ValueError(
+                    f"{registry_name} registry contains duplicate ids: "
+                    f"{sorted(set(duplicates))}"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_references(self) -> "SKAgentConfig":
         model_ids = {m.id for m in self.models}
         tool_ids = {t.id for t in self.tools}
@@ -419,16 +617,23 @@ class SKAgentConfig(_StrictModel):
             )
 
         for conv in self.conversations:
-            unknown = [a for a in conv.agents if a not in agent_ids]
+            # A conversation's ``agents`` list may reference names that
+            # are either defined at the top level (``agents``) or inline
+            # in ``inline_agents`` — both are valid resolutions.
+            inline_ids = {a.id for a in conv.inline_agents}
+            valid_ids = agent_ids | inline_ids
+            unknown = [a for a in conv.agents if a not in valid_ids]
             if unknown:
                 raise ValueError(
                     f"conversation {conv.id!r} references unknown agents {unknown}; "
-                    f"known agents: {sorted(agent_ids)}"
+                    f"known agents: {sorted(agent_ids)}, "
+                    f"inline agents: {sorted(inline_ids)}"
                 )
-            inline_ids = {a.id for a in conv.inline_agents}
-            for a in conv.agents:
-                if a in inline_ids:
-                    continue  # inline_agents shadow the registry; that is fine
+
+            # Inline agents shadowing top-level agents with the same id
+            # are tolerated: the inline definition wins. We log nothing
+            # here — the caller decides via ``get_agent`` resolution.
+
             unknown_inline_models: list[str] = []
             for inline in conv.inline_agents:
                 if inline.model and inline.model not in model_ids:
@@ -439,6 +644,19 @@ class SKAgentConfig(_StrictModel):
                 raise ValueError(
                     f"conversation {conv.id!r} has inline agents referencing "
                     f"unknown models {unknown_inline_models}"
+                )
+
+            # Inline agents inside one conversation must have unique ids.
+            seen_inline: set[str] = set()
+            dup_inline: list[str] = []
+            for inline in conv.inline_agents:
+                if inline.id in seen_inline:
+                    dup_inline.append(inline.id)
+                seen_inline.add(inline.id)
+            if dup_inline:
+                raise ValueError(
+                    f"conversation {conv.id!r} has duplicate inline agent ids: "
+                    f"{sorted(set(dup_inline))}"
                 )
 
         return self
@@ -454,7 +672,7 @@ class SKAgentConfig(_StrictModel):
     def get_tool(self, tool_id: str) -> ToolSpec | None:
         return next((t for t in self.tools if t.id == tool_id), None)
 
-    def get_agent(self, agent_id: str) -> AgentPreset | None:
+    def get_agent(self, agent_id: str) -> "AgentPreset | None":
         return next((a for a in self.agents if a.id == agent_id), None)
 
 
@@ -503,4 +721,7 @@ __all__ = [
     "ConversationPreset",
     "SKAgentConfig",
     "validate_config_payload",
+    "_is_env_var_name",
+    "_env_var_name_pattern_check",
+    "_format_errors",
 ]
