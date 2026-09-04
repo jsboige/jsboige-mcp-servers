@@ -312,7 +312,9 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 		expect(bash).toBeDefined();
 		expect(bash.calls).toBe(3);
 		expect(bash.errors).toBe(1);
-		expect(bash.error_rate).toBe(33.3);
+		// #3381 D2: 3 calls < MIN_CALLS_FOR_ERROR_RATE (30) -> rate not published.
+		// Detection itself is still asserted above via errors: 1.
+		expect(bash.error_rate).toBeNull();
 	});
 
 	test('does NOT count legitimate sequential same-tool calls as retries (#753)', async () => {
@@ -479,7 +481,8 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 		const read = parsed.tools.find((t: any) => t.tool_name === 'Read');
 		expect(read).toBeDefined();
 		expect(read.errors).toBe(0);
-		expect(read.error_rate).toBe(0);
+		// #3381 D2: 1 call < 30 -> error rate not published.
+		expect(read.error_rate).toBeNull();
 		expect(read.retries).toBe(0);
 		expect(read.retry_rate).toBe(0);
 	});
@@ -523,6 +526,7 @@ describe('tool_usage_stats — error_rate and retry_rate extraction (#549)', () 
 		expect(bash).toBeDefined();
 		expect(bash.calls).toBe(2);
 		expect(bash.errors).toBe(2);
-		expect(bash.error_rate).toBe(100.0);
+		// #3381 D2: 2 calls < 30 -> even a 100% error sample is not published as a rate.
+		expect(bash.error_rate).toBeNull();
 	});
 });
