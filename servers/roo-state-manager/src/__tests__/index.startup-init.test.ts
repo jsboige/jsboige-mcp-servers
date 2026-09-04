@@ -228,7 +228,7 @@ describe('511396f0 — MCP startup initialization timing', () => {
         // #2993: a transient shared-state (GDrive/G:) hiccup during the RooSync
         // preload at the tail of initializeAsync() used to set _initError, which
         // ensureInitialized() then threw on EVERY subsequent call — disabling all
-        // 15 tools for the entire session even after G: recovered. The preload is
+        // 16 tools for the entire session even after G: recovered. The preload is
         // a latency optimization, not a correctness requirement (getRooSyncService
         // is lazy and self-retries via #2017 backoff), so its failure is now caught
         // and logged as a warning rather than failing init.

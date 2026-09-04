@@ -14,6 +14,14 @@
 2. **Node.js 18+** (for Claude Code MCP integration)
 3. **API keys** from z.ai and myia.io
 
+## Transport modes
+
+- **`stdio`** is the local transport for Claude Code, Roo and Zoo. It does not require `SK_AGENT_API_KEY` because the client starts the process directly.
+- **`streamable-http`** is the containerized network transport for OpenWebUI, bots and remote clients. It refuses to start unless `SK_AGENT_API_KEY` is provided. Every MCP request must send `Authorization: Bearer <key>`. A direct process listens on `127.0.0.1` by default; the container explicitly listens on `0.0.0.0`, while the standalone Compose file publishes it on host loopback only. Expose it remotely through the TLS reverse proxy.
+- **`GET /healthz`** is intentionally unauthenticated for Docker and reverse-proxy probes. It reports whether the configuration exists and parses, how many models are enabled, and whether the manager has been initialized. It never returns credentials or endpoint details.
+
+Store `SK_AGENT_API_KEY` only in a gitignored environment file or secret manager. Never put a fallback value in Compose, source code or documentation. Configuration changes use a controlled container restart; partial hot reload is not supported.
+
 ## Deployment Steps
 
 ### 1. Clone/Update Submodule
@@ -38,7 +46,7 @@ python -m venv venv
 .\venv\Scripts\pip install -r requirements.txt
 
 # Or manually:
-pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.7" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
+pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.10" "uvicorn>=0.30" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
 ```
 
 ### 4. Create Configuration File

@@ -384,6 +384,11 @@ export function registerCallToolHandler(
                 result = await m.readVscodeLogs.handler(args as any);
                 break;
             }
+            case 'claudish_traffic': {
+                const m = await import('./claudish-traffic.js');
+                result = await m.claudishTraffic.handler(args as any);
+                break;
+            }
             case 'manage_mcp_settings': {
                 const m = await import('./manage-mcp-settings.js');
                 result = await m.manageMcpSettings.handler(args as any);

@@ -196,7 +196,7 @@ class RooStateManagerServer {
     private _rejectInit!: (error: Error) => void;
     // #2993(b): when init has failed, allow a one-shot retry on the next ensureInitialized()
     // call (after a cooldown) so that a transient GDrive/G: outage at startup doesn't
-    // permanently lock all 15 tools for the session. _initRetryPromise is non-null while
+    // permanently lock all 16 tools for the session. _initRetryPromise is non-null while
     // a retry is in flight — concurrent ensureInitialized() callers share the same retry.
     private _initRetryPromise: Promise<void> | null = null;
     private _lastInitRetryAt: number = 0;
@@ -324,7 +324,7 @@ class RooStateManagerServer {
         // first real tool call even if the preload fails here. A transient ROOSYNC_SHARED_PATH
         // outage at startup (e.g. GoogleDriveFS killed by memory pressure) must NOT be fatal to
         // the whole server: previously a thrown preload propagated to startInit's catch, set
-        // _initError, and locked all 15 tools (incl. semantic search, conversation history) for
+        // _initError, and locked all 16 tools (incl. semantic search, conversation history) for
         // the entire session even after G: recovered. Non-fatal now — recovery happens lazily.
         try {
             const { getRooSyncService: preloadRooSync } = await import('./services/lazy-roosync.js');

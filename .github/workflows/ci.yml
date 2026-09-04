@@ -131,36 +131,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Check main README.md
       run: |
         if [ ! -f README.md ]; then
           echo "Main README.md is missing"
           exit 1
         fi
-    
+
     - name: Check documentation files
       run: |
         if [ ! -d docs ]; then
           echo "Docs directory is missing"
           exit 1
         fi
-        
+
         if [ ! -f docs/getting-started.md ]; then
           echo "getting-started.md is missing"
           exit 1
         fi
-        
+
         if [ ! -f docs/architecture.md ]; then
           echo "architecture.md is missing"
           exit 1
         fi
-        
+
         if [ ! -f docs/troubleshooting.md ]; then
           echo "troubleshooting.md is missing"
           exit 1
         fi
-    
+
     - name: Check server README files
       run: |
         for server in jupyter-mcp-server jinavigator-server roo-state-manager; do
@@ -169,3 +169,24 @@ jobs:
             exit 1
           fi
         done
+
+  test-sk-agent:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r servers/sk-agent/requirements.txt
+        pip install pytest
+
+    - name: Run sk-agent schema, facade and recursion-guard tests
+      run: |
+        cd servers/sk-agent
+        python -m pytest test_sk_agent_schemas.py test_config.py test_recursion_guard.py -v

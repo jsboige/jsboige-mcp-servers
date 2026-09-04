@@ -19,7 +19,7 @@ Après chaque modification de config MCP (manage_mcp_settings(action: "write")),
 
 | MCP | Outils attendus | Rôle |
 |-----|-----------------|------|
-| roo-state-manager | 15 outils | Coordination RooSync, grounding conversationnel |
+| roo-state-manager | 16 outils | Coordination RooSync, grounding conversationnel |
 | win-cli | 9 outils (fork local 0.2.0) | Commandes shell (OBLIGATOIRE pour Roo scheduler) |
 
 **MCPs Standards :**

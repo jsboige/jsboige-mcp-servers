@@ -21,8 +21,9 @@ Architecture:
 Transport modes:
     python sk_agent.py                  -> stdio  (default, for Claude Code / Roo Code)
     python sk_agent.py streamable-http  -> HTTP on port 8100 (for Open WebUI, LAN clients)
+    SK_AGENT_HOST env var               -> override default HTTP host (127.0.0.1)
     SK_AGENT_PORT env var               -> override default HTTP port (8100)
-    SK_AGENT_API_KEY env var            -> require Bearer token auth on HTTP mode (optional)
+    SK_AGENT_API_KEY env var            -> required Bearer token auth in HTTP mode
 
 Core tools (9):
     call_agent(prompt, agent?, attachment?, options?, ...)  -- unified agent call
@@ -105,6 +106,7 @@ from sk_agent_config import (
     CONFIG_PATH,
     SK_AGENT_DEPTH,
     DEFAULT_MAX_RECURSION_DEPTH,
+    can_spawn_recursive_agent,
 )
 from sk_conversations import ConversationRunner, build_run_conversation_description
 
@@ -526,6 +528,26 @@ class SKAgentManager:
             is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.id.lower()
 
             if is_self:
+                # #3409 — enforce centralized recursion ceiling. A child at
+                # depth ``SK_AGENT_DEPTH + 1`` is refused once the ceiling is
+                # reached, regardless of transport (stdio / streamable-http)
+                # or entry point (presets, inline agents, mcp_overrides).
+                max_depth = (
+                    self.config.max_recursion_depth
+                    if self.config is not None
+                    else DEFAULT_MAX_RECURSION_DEPTH
+                )
+                if not can_spawn_recursive_agent(SK_AGENT_DEPTH, max_depth):
+                    log.warning(
+                        "Recursion ceiling reached (current=%d, max=%d): "
+                        "refusing to spawn child sk-agent '%s'",
+                        SK_AGENT_DEPTH,
+                        max_depth,
+                        mcp_cfg.id,
+                    )
+                    self._loading_mcps.discard(mcp_id)
+                    return False
+
                 env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
                 log.info(
                     "Self-inclusion: spawning child sk-agent with depth=%d",
@@ -1552,6 +1574,7 @@ class SKAgentManager:
 
 # Detect transport mode early (needed for FastMCP host/port settings at construction)
 _transport_mode = sys.argv[1] if len(sys.argv) > 1 else "stdio"
+_http_host = os.environ.get("SK_AGENT_HOST", "127.0.0.1")
 _http_port = int(os.environ.get("SK_AGENT_PORT", "8100"))
 _http_api_key = os.environ.get("SK_AGENT_API_KEY", "")
 
@@ -1569,7 +1592,7 @@ if _transport_mode == "streamable-http":
     from mcp.server.fastmcp.server import TransportSecuritySettings
 
     _mcp_kwargs.update(
-        host="0.0.0.0",
+        host=_http_host,
         port=_http_port,
         # Allow Docker containers and LAN clients to connect
         transport_security=TransportSecuritySettings(
@@ -2169,6 +2192,19 @@ async def diagnostics() -> str:
     else:
         result["config_file"] = "missing"
 
+    # Recursion depth telemetry (#3409). Counts only — no model, prompt, or
+    # agent identifiers that could leak configuration.
+    effective_max_depth = DEFAULT_MAX_RECURSION_DEPTH
+    if _manager is not None and _manager.config is not None:
+        effective_max_depth = _manager.config.max_recursion_depth
+    result["recursion"] = {
+        "current_depth": SK_AGENT_DEPTH,
+        "max_depth": effective_max_depth,
+        "can_spawn_child": can_spawn_recursive_agent(
+            SK_AGENT_DEPTH, effective_max_depth
+        ),
+    }
+
     # Manager health
     if _manager is not None:
         result["status"] = "healthy"
@@ -2196,46 +2232,98 @@ async def diagnostics() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _build_http_app():
+    """Build the authenticated HTTP application with a public health probe."""
+    import secrets
+    import time
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    app = mcp_server.streamable_http_app()
+    health_cache: dict[str, Any] = {"expires_at": 0.0, "response": None}
+
+    def health_response() -> JSONResponse:
+        now = time.monotonic()
+        cached = health_cache["response"]
+        if cached is not None and now < health_cache["expires_at"]:
+            return JSONResponse(cached[0], status_code=cached[1])
+
+        config_path = Path(CONFIG_PATH)
+        if not config_path.exists():
+            body = {"status": "unhealthy", "config": "missing"}
+            status_code = 503
+        else:
+            try:
+                config = load_config(str(config_path))
+            except Exception as exc:
+                log.warning("Health check failed to parse sk-agent config: %s", exc)
+                body = {"status": "unhealthy", "config": "invalid"}
+                status_code = 503
+            else:
+                body = {
+                    "status": "healthy",
+                    "config": "valid",
+                    "models_enabled": sum(
+                        1 for model in config.models if model.enabled
+                    ),
+                    "manager": (
+                        "initialized" if _manager is not None else "not_initialized"
+                    ),
+                }
+                status_code = 200
+
+        health_cache.update(
+            response=(body, status_code),
+            expires_at=now + 5.0,
+        )
+        return JSONResponse(body, status_code=status_code)
+
+    class BearerAuthMiddleware(BaseHTTPMiddleware):
+        """Serve health status and reject unauthenticated MCP requests."""
+
+        async def dispatch(self, request: Request, call_next):
+            if request.url.path == "/healthz":
+                return health_response()
+
+            auth = request.headers.get("authorization", "")
+            supplied_key = auth[7:] if auth.startswith("Bearer ") else ""
+            if not supplied_key or not secrets.compare_digest(
+                supplied_key.encode("utf-8"), _http_api_key.encode("utf-8")
+            ):
+                return JSONResponse(
+                    {"error": "Unauthorized – set Authorization: Bearer <SK_AGENT_API_KEY>"},
+                    status_code=401,
+                )
+            return await call_next(request)
+
+    app.add_middleware(BearerAuthMiddleware)
+    return app
+
+
 def main():
     if _transport_mode == "streamable-http":
-        auth_label = "API key required" if _http_api_key else "NO AUTH (open)"
+        if not _http_api_key:
+            raise RuntimeError(
+                "SK_AGENT_API_KEY is required for streamable-http transport"
+            )
+
         log.info(
-            "Starting sk-agent MCP server v2.0 [streamable-http on 0.0.0.0:%d, %s] "
+            "Starting sk-agent MCP server v2.0 "
+            "[streamable-http on %s:%d, API key required] "
             "(config: %s, depth=%d)",
+            _http_host,
             _http_port,
-            auth_label,
             CONFIG_PATH,
             SK_AGENT_DEPTH,
         )
 
-        if _http_api_key:
-            # Inject Bearer token auth middleware, then run with uvicorn directly
-            import uvicorn
-            from starlette.requests import Request
-            from starlette.responses import JSONResponse
-            from starlette.middleware.base import BaseHTTPMiddleware
+        import uvicorn
 
-            app = mcp_server.streamable_http_app()
-
-            class BearerAuthMiddleware(BaseHTTPMiddleware):
-                """Reject HTTP requests that lack a valid Bearer token."""
-
-                async def dispatch(self, request: Request, call_next):
-                    auth = request.headers.get("authorization", "")
-                    if not auth.startswith("Bearer ") or auth[7:] != _http_api_key:
-                        return JSONResponse(
-                            {
-                                "error": "Unauthorized – set Authorization: Bearer <SK_AGENT_API_KEY>"
-                            },
-                            status_code=401,
-                        )
-                    return await call_next(request)
-
-            app.add_middleware(BearerAuthMiddleware)
-            uvicorn.run(app, host="0.0.0.0", port=_http_port, log_level="info")
-        else:
-            log.warning("SK_AGENT_API_KEY not set – HTTP endpoint is unauthenticated!")
-            mcp_server.run(transport="streamable-http")
+        uvicorn.run(
+            _build_http_app(), host=_http_host, port=_http_port, log_level="info"
+        )
     else:
         log.info(
             "Starting sk-agent MCP server v2.0 [stdio] (config: %s, depth=%d)",

@@ -10,6 +10,7 @@
  */
 
 export * from './read-vscode-logs.js';
+export * from './claudish-traffic.js';
 export * from './storage/index.js';
 export * from './rebuild-and-restart.js';
 export { getMcpBestPractices } from './get_mcp_best_practices.js';
