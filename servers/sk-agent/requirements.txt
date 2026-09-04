@@ -1,5 +1,6 @@
 semantic-kernel[mcp]>=1.39
 mcp>=1.10
+pydantic>=2.7
 uvicorn>=0.30
 openai>=1.109
 Pillow>=10.0
