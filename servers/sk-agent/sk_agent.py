@@ -873,9 +873,12 @@ class SKAgentManager:
             attachment_type = classify_attachment(first_attachment) if first_attachment else None
             needs_vision = attachment_type in ("image", "video", "document")
 
-            # If mode=text (or auto with a text layer) for a document, we don't
-            # necessarily need vision — let the document analyzer probe.
-            if attachment_type == "document" and options.get("mode") in ("text", "auto"):
+            # Only mode=text lifts the vision requirement: the caller explicitly
+            # wants text extraction. mode=auto must NOT lift here — the text-layer
+            # probe runs later (_handle_document), and a scanned PDF probed to
+            # "visual" would otherwise hit the vision-capability guard with a
+            # text-only agent already resolved (#3389 review F1).
+            if attachment_type == "document" and options.get("mode") == "text":
                 needs_vision = False
 
             # Resolve agent
@@ -1395,7 +1398,7 @@ class SKAgentManager:
 
         if needs_vision and model_cfg and not model_cfg.vision:
             return {
-                "error": "Agent's model does not support vision for visual/hybrid mode"
+                "error": "Agent's model does not support vision (required for this document's visual content; use a vision-capable agent or mode=text)"
             }
 
         content_items = [

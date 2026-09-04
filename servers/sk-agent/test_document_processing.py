@@ -720,6 +720,45 @@ class TestAutoModePdfRouting:
                 extract_document_pages(str(fake), mode="auto", max_pages=1)
         probe.assert_not_called()
 
+    def test_probe_quorum_hybrid_pdf_routes_visual(self, tmp_path):
+        """Hybrid PDF (1 typeset page + 2 scanned) must NOT route to text (#3389 F2).
+
+        Quorum arbitration: a strict majority of sampled pages must carry a text
+        layer. ANY semantics would route this PDF to text extraction and
+        silently return empty pages for the scanned body.
+        """
+        import fitz
+
+        hybrid = tmp_path / "hybrid.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((50, 50), "Typeset cover page with plenty of text " * 4)
+        doc.new_page()  # scanned: no extractable text
+        doc.new_page()  # scanned: no extractable text
+        doc.save(str(hybrid))
+        doc.close()
+
+        assert document_processing._pdf_has_text_layer(str(hybrid)) is False
+
+    def test_probe_quorum_sparse_cover_textual_body_routes_text(self, tmp_path):
+        """Sparse title page + textual body must still route to text (#3389 F2).
+
+        The quorum (not ALL) lets a near-empty cover page pass when the body
+        pages carry a text layer.
+        """
+        import fitz
+
+        sparse_cover = tmp_path / "sparse-cover.pdf"
+        doc = fitz.open()
+        doc.new_page()  # near-empty title page: 0 chars < threshold
+        for _ in range(2):
+            page = doc.new_page()
+            page.insert_text((50, 50), "Body text " * 10)  # > 40 chars/page
+        doc.save(str(sparse_cover))
+        doc.close()
+
+        assert document_processing._pdf_has_text_layer(str(sparse_cover)) is True
+
 
 # ---------------------------------------------------------------------------
 # Document To Images Tests

@@ -186,9 +186,12 @@ def _pdf_has_text_layer(
     which is wasteful when the PDF already carries a text layer.
 
     Strategy: open with PyMuPDF and check the first ``sample_pages`` pages for
-    a non-trivial ``get_text()`` payload. If each sampled page yields more than
-    ``min_chars_per_page`` characters of whitespace-stripped text, we treat the
-    PDF as textual and skip the visual pipeline.
+    a non-trivial ``get_text()`` payload. The PDF is treated as textual only if
+    a strict majority of the sampled pages yield at least ``min_chars_per_page``
+    characters of whitespace-stripped text. The quorum is deliberate (#3389
+    review F2): a hybrid PDF (typeset cover + scanned body) must fall back to
+    the visual pipeline — slower but correct — rather than route to text
+    extraction and silently return empty pages for the scanned body.
 
     Returns ``True`` if a text layer was detected, ``False`` otherwise (also
     on any error — fail-closed toward the existing behaviour).
@@ -201,10 +204,14 @@ def _pdf_has_text_layer(
             pages_to_check = min(sample_pages, doc.page_count)
             if pages_to_check == 0:
                 return False
+            required = pages_to_check // 2 + 1
+            passed = 0
             for i in range(pages_to_check):
                 text = doc.load_page(i).get_text().strip()
                 if len(text) >= min_chars_per_page:
-                    return True
+                    passed += 1
+                    if passed >= required:
+                        return True
             return False
         finally:
             doc.close()
