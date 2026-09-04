@@ -106,6 +106,7 @@ from sk_agent_config import (
     CONFIG_PATH,
     SK_AGENT_DEPTH,
     DEFAULT_MAX_RECURSION_DEPTH,
+    can_spawn_recursive_agent,
 )
 from sk_conversations import ConversationRunner, build_run_conversation_description
 
@@ -527,6 +528,26 @@ class SKAgentManager:
             is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.id.lower()
 
             if is_self:
+                # #3409 — enforce centralized recursion ceiling. A child at
+                # depth ``SK_AGENT_DEPTH + 1`` is refused once the ceiling is
+                # reached, regardless of transport (stdio / streamable-http)
+                # or entry point (presets, inline agents, mcp_overrides).
+                max_depth = (
+                    self.config.max_recursion_depth
+                    if self.config is not None
+                    else DEFAULT_MAX_RECURSION_DEPTH
+                )
+                if not can_spawn_recursive_agent(SK_AGENT_DEPTH, max_depth):
+                    log.warning(
+                        "Recursion ceiling reached (current=%d, max=%d): "
+                        "refusing to spawn child sk-agent '%s'",
+                        SK_AGENT_DEPTH,
+                        max_depth,
+                        mcp_cfg.id,
+                    )
+                    self._loading_mcps.discard(mcp_id)
+                    return False
+
                 env["SK_AGENT_DEPTH"] = str(SK_AGENT_DEPTH + 1)
                 log.info(
                     "Self-inclusion: spawning child sk-agent with depth=%d",
@@ -2166,6 +2187,19 @@ async def diagnostics() -> str:
             result["config_file"] = f"parse_error: {exc}"
     else:
         result["config_file"] = "missing"
+
+    # Recursion depth telemetry (#3409). Counts only — no model, prompt, or
+    # agent identifiers that could leak configuration.
+    effective_max_depth = DEFAULT_MAX_RECURSION_DEPTH
+    if _manager is not None and _manager.config is not None:
+        effective_max_depth = _manager.config.max_recursion_depth
+    result["recursion"] = {
+        "current_depth": SK_AGENT_DEPTH,
+        "max_depth": effective_max_depth,
+        "can_spawn_child": can_spawn_recursive_agent(
+            SK_AGENT_DEPTH, effective_max_depth
+        ),
+    }
 
     # Manager health
     if _manager is not None:
