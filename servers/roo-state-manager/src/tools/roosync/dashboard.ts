@@ -1036,10 +1036,19 @@ const DASHBOARD_READ_BACKOFF_MS = [500, 1500];
 async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
   const filePath = getDashboardPath(key);
   let lastError: unknown;
+  // #3404 : l'échelle de retry (#1032/#3205) couvre les erreurs fs de LECTURE
+  // uniquement (EBUSY, course write→rename, hydratation DriveFS). Le parse est
+  // sorti du try : une erreur de parse signifie que le contenu a été LU — un
+  // fichier durablement malformant re-lu 3× avec 2 s de backoff ne peut jamais
+  // réussir. Mesuré sur ai-01 : 2 fichiers malformés (rapports compare_config
+  // vidés dans dashboards/) × (500+1500) ms de sleep = 4 s DÉTERMINISTES sur
+  // CHAQUE roosync_dashboard(list) — la marche E2E 277 ms → ~4 340 ms du
+  // 24/08 (bump #1032) au 04/09. Semblable à ENOENT : échec certain → pas de retry.
+  let content: string | null = null;
   for (let attempt = 1; attempt <= DASHBOARD_READ_MAX_ATTEMPTS; attempt++) {
     try {
-      const content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
-      return parseDashboardMarkdown(content, key);
+      content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
+      break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
@@ -1054,8 +1063,11 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
       }
     }
   }
-  logger.error('Erreur lecture dashboard', lastError, { key });
-  throw lastError;
+  if (content === null) {
+    logger.error('Erreur lecture dashboard', lastError, { key });
+    throw lastError;
+  }
+  return parseDashboardMarkdown(content, key);
 }
 
 /**

@@ -2006,6 +2006,31 @@ describe('#3205 résiduel — retry borné readDashboardFromGdrive', () => {
     expect(result.message).toMatch(/introuvable/);
     expect(dashReadCalls).toBe(1); // la sémantique ENOENT→null n'est pas changée
   });
+
+  // #3404 : le retry de #1032 visait les erreurs fs (EBUSY, course write→rename,
+  // hydratation DriveFS) mais enveloppait AUSSI parseDashboardMarkdown. Un contenu
+  // durablement malformant (rapport compare_config vidangé dans dashboards/ —
+  // DASHBOARD.md en prod depuis mars 2026) échoue le parse à CHAQUE tentative :
+  // 500+1500 ms de sleep par clé et par appel. Deux fichiers = 4 s déterministes
+  // sur chaque roosync_dashboard(list) — la marche E2E 277 ms → ~4 340 ms du
+  // 24/08 au 04/09. Le parse est sorti de l'échelle : contenu lu = pas de retry.
+  it('contenu malformé (parse) → échec immédiat, SANS backoff ni re-lecture (#3404)', async () => {
+    const dashDir = path.join(envTmpDir, 'dashboards');
+    await fsp.mkdir(dashDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(dashDir, 'global.md'),
+      '# Dashboard MCP - Comparaison des Configurations\n\n**Généré:** 2026-09-01\n',
+      'utf8'
+    );
+
+    installReadFileHandler(async (p, _n, realRead) => (await realRead(p, 'utf8')) as string);
+
+    await expect(
+      roosyncDashboard({ action: 'read', type: 'global', section: 'all' })
+    ).rejects.toThrow(/frontmatter/);
+
+    expect(dashReadCalls).toBe(1); // le contenu a été LU : une erreur de parse n'est pas transitoire
+  });
 });
 
 // #3205 write-side — verrou append cross-process : la fenêtre read→rename de
