@@ -349,7 +349,7 @@ def build_call_agent_description(config: SKAgentConfig) -> str:
             "  prompt: The question or instruction",
             "  agent: Agent ID (default: auto-select based on attachment type)",
             "  attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)",
-            "  options: JSON string with type-specific params: region ({\"x\":0,\"y\":0,\"width\":100,\"height\":100}), mode (visual/text/hybrid), max_pages, page_range, num_frames",
+            "  options: JSON string with type-specific params: region ({\"x\":0,\"y\":0,\"width\":100,\"height\":100}), mode (auto/visual/text/hybrid), max_pages, page_range, num_frames",
             "  conversation_id: Continue previous conversation",
             "  include_steps: Show intermediate tool/reasoning steps",
             "  model_override: Model ID to use instead of agent default (must be enabled)",
@@ -895,7 +895,11 @@ class SKAgentManager:
             attachment_type = classify_attachment(first_attachment) if first_attachment else None
             needs_vision = attachment_type in ("image", "video", "document")
 
-            # If mode=text for document, we don't necessarily need vision
+            # Only mode=text lifts the vision requirement: the caller explicitly
+            # wants text extraction. mode=auto must NOT lift here — the text-layer
+            # probe runs later (_handle_document), and a scanned PDF probed to
+            # "visual" would otherwise hit the vision-capability guard with a
+            # text-only agent already resolved (#3389 review F1).
             if attachment_type == "document" and options.get("mode") == "text":
                 needs_vision = False
 
@@ -1368,14 +1372,14 @@ class SKAgentManager:
         model_override: str | None = None,
     ) -> dict[str, Any]:
         """Handle document analysis."""
-        mode = options.get("mode", "visual")
+        mode = options.get("mode", "auto")
         max_pages = max(
             1, min(options.get("max_pages", DEFAULT_MAX_PAGES), MAX_PAGES_HARD_LIMIT)
         )
         auto_limit_tokens = options.get("auto_limit_tokens", True)
 
-        if mode not in ("visual", "text", "hybrid"):
-            return {"error": f"Invalid mode '{mode}'. Must be: visual, text, or hybrid"}
+        if mode not in ("auto", "visual", "text", "hybrid"):
+            return {"error": f"Invalid mode '{mode}'. Must be: auto, visual, text, or hybrid"}
 
         # Convert file:/// URI to local path
         document_source = file_uri_to_path(document_source)
@@ -1416,7 +1420,7 @@ class SKAgentManager:
 
         if needs_vision and model_cfg and not model_cfg.vision:
             return {
-                "error": "Agent's model does not support vision for visual/hybrid mode"
+                "error": "Agent's model does not support vision (required for this document's visual content; use a vision-capable agent or mode=text)"
             }
 
         content_items = [

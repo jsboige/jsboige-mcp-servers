@@ -63,8 +63,20 @@
       "model_id": "glm-4.6v",
       "vision": true,
       "thinking": false,
-      "description": "GLM-4.6V vision via z.ai cloud (128K context)",
+      "description": "GLM-4.6V vision via z.ai cloud (128K context). Kept as a vision fallback; primary vision routing now uses glm-5.3-flash (#3389).",
       "context_window": 128000
+    },
+    {
+      "id": "glm-5.3-flash",
+      "enabled": true,
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "model_id": "glm-5.3-flash",
+      "vision": true,
+      "thinking": true,
+      "description": "GLM-5.3-Flash via z.ai cloud — native multimodal (text+vision), 320B/18B active, 1M model context (context_window deliberately capped at 131072 per fleet cost/freshness policy), MIT. Benchmarked ~2x faster than glm-4.6v at ~2x lower cost (list price; ~3x during the 50% promo ending 2026-09-09) for PDF/document workloads (#3389).",
+      "context_window": 131072
     },
     {
       "id": "glm-4.7-flash",
@@ -276,8 +288,8 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist with web context and document conversion. Cloud: GLM-4.6V. Can browse web, search context, and convert PDF/DOCX/XLSX to markdown",
-      "model": "glm-4.6v",
+      "description": "Image and document analysis specialist with web context and document conversion. Cloud: GLM-5.3-Flash (native multimodal, ~2x faster and ~2x cheaper at list price than glm-4.6v — #3389). Can browse web, search context, and convert PDF/DOCX/XLSX to markdown.",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are a vision analysis specialist with web search, browsing, and document conversion capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. Be precise and thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "memory": { "enabled": false }

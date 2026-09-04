@@ -594,6 +594,86 @@ class TestCallAgent:
         result = await manager.call_agent("Hello", agent_id="vision-agent")
         assert result["agent_used"] == "vision-agent"
 
+    @pytest.mark.asyncio
+    async def test_call_agent_document_auto_mode_scanned_pdf_keeps_vision_agent(
+        self, vision_config, tmp_path
+    ):
+        """mode=auto + scanned PDF (no text layer) must keep a vision-capable agent (#3389 F1).
+
+        Regression test: the pre-fix lift treated mode=auto like mode=text and
+        resolved the default (non-vision) agent BEFORE the text-layer probe ran,
+        so a scanned PDF probed to "visual" hit the vision-capability guard and
+        errored out with "Agent's model does not support vision".
+        """
+        import fitz
+
+        scanned = tmp_path / "scanned.pdf"
+        doc = fitz.open()
+        doc.new_page()  # valid page, zero text -> probe returns False -> visual
+        doc.save(str(scanned))
+        doc.close()
+
+        manager = sk_agent.SKAgentManager(vision_config)
+
+        mock_vision = MagicMock()
+
+        async def fake_invoke(**kwargs):
+            resp = MagicMock()
+            resp.__str__ = lambda self: "Described the scan"
+            resp.thread = MagicMock()
+            yield resp
+
+        mock_vision.invoke = fake_invoke
+        manager._sk_agents = {"text-agent": MagicMock(), "vision-agent": mock_vision}
+
+        result = await manager.call_agent(
+            "Describe this",
+            attachment=str(scanned),
+            options={"mode": "auto"},
+        )
+        assert result["agent_used"] == "vision-agent"
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_call_agent_document_text_mode_lifts_vision(
+        self, vision_config, tmp_path
+    ):
+        """Explicit mode=text must still lift the vision requirement (#3389 F1).
+
+        The text-mode lift is the historical behaviour: the caller explicitly
+        wants text extraction, so the default text agent may be used.
+        """
+        import fitz
+
+        textual = tmp_path / "textual.pdf"
+        doc = fitz.open()
+        for _ in range(2):
+            page = doc.new_page()
+            page.insert_text((50, 50), "Hello world " * 10)
+        doc.save(str(textual))
+        doc.close()
+
+        manager = sk_agent.SKAgentManager(vision_config)
+
+        mock_text = MagicMock()
+
+        async def fake_invoke(**kwargs):
+            resp = MagicMock()
+            resp.__str__ = lambda self: "Summarized the text"
+            resp.thread = MagicMock()
+            yield resp
+
+        mock_text.invoke = fake_invoke
+        manager._sk_agents = {"text-agent": mock_text, "vision-agent": MagicMock()}
+
+        result = await manager.call_agent(
+            "Summarize this",
+            attachment=str(textual),
+            options={"mode": "text"},
+        )
+        assert result["agent_used"] == "text-agent"
+        assert "error" not in result
+
 
 # ---------------------------------------------------------------------------
 # Dynamic Description Tests
