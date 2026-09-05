@@ -275,6 +275,28 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
   }
 
   /**
+   * Ids present at or after `sinceId` (#3292 reconcile). Deliberately NOT
+   * wrapped in withRetry: that contract swallows failures (best-effort
+   * writes), but the reconcile needs a failed listing to FAIL its run —
+   * "PG unreachable" must not be mistaken for "0 ids present". Reader
+   * semantics: throws on failure.
+   */
+  async listRooSyncMessageIds(sinceId: string): Promise<string[]> {
+    if (!this.pool) await this.init(); // #2816: no path calls init() explicitly — self-init on first use
+    if (!this.pool) throw new Error('Pool not initialized');
+    const client = await this.pool.connect();
+    try {
+      const { rows } = await client.query(
+        'SELECT id FROM roosync_messages WHERE id >= $1',
+        [sinceId]
+      );
+      return rows.map((r: { id: string }) => r.id);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Column mapping for {@link RooSyncMessageUpdate}. Driving the SET clause from
    * this table rather than from a chain of `if` blocks is deliberate: the previous
    * shape hard-coded `body` and `attachment_refs` in BOTH the early-return guard and

@@ -514,6 +514,9 @@ async function showStats(
   // montrait 0 fichier au-delà de la voie 90 j.
   const pool = await messageManager.getInboxPoolAges();
   const rotation = messageManager.getAutoArchiveStatus();
+  // #3292: reconcile GDrive→PG — même motif d'observabilité que la rotation :
+  // un daemon invisible est un daemon diagnostiqué "jamais tourné".
+  const reconcile = messageManager.getChannelReconcileStatus();
 
   if (format === 'json') {
     return JSON.stringify({
@@ -525,7 +528,8 @@ async function showStats(
       by_priority: stats.by_priority,
       by_sender: stats.by_sender,
       pool_files: pool,
-      rotation
+      rotation,
+      channel_reconcile: reconcile
     }, null, 2);
   }
 
@@ -535,6 +539,17 @@ async function showStats(
   const lastRunLine = rotation.lastRun
     ? `Dernier passage : ${formatDate(rotation.lastRun.at)} — ${rotation.lastRun.archived} archivés en ${rotation.lastRun.durationMs} ms${rotation.lastRun.error ? ` (erreur : ${rotation.lastRun.error})` : ''}`
     : `Aucun passage depuis le démarrage de ce process${rotation.config ? ` (1er run 30 s après boot, puis toutes les ${rotation.config.intervalHours} h)` : ''}`;
+
+  const reconcileLine = reconcile.config
+    ? `${reconcile.running ? '✅ actif' : '⚠️ inactif'} — lookback ${reconcile.config.lookbackDays} j, toutes les ${reconcile.config.intervalHours} h`
+    : process.env.UNIFIED_STORE_DUAL_WRITE === '1' && process.env.UNIFIED_STORE_PG_URL
+      ? '⚠️ jamais démarré sur ce process (dual-write armé — attendu sur un process non redémarré)'
+      : '— (dual-write désarmé sur ce process)';
+  const reconcileLastRunLine = reconcile.lastRun
+    ? (reconcile.lastRun.error
+        ? `Dernier reconcile : ${formatDate(reconcile.lastRun.at)} — erreur : ${reconcile.lastRun.error}`
+        : `Dernier reconcile : ${formatDate(reconcile.lastRun.at)} — ${reconcile.lastRun.result?.status === 'skipped-not-armed' ? 'gate dual-write fermée' : `${reconcile.lastRun.result?.reconciled ?? 0} row(s) réimportée(s) sur ${reconcile.lastRun.result?.candidateIds ?? 0} id(s) fenêtre, ${reconcile.lastRun.result?.errors ?? 0} erreur(s)`} en ${reconcile.lastRun.result?.durationMs ?? 0} ms`)
+    : '';
 
   return `📊 **Statistiques inbox - ${machineId}**
 
@@ -568,6 +583,9 @@ ${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).map(([s, c]) => `|
 
 Rotation : ${rotationLine}
 ${lastRunLine}
+
+Reconcile PG : ${reconcileLine}
+${reconcileLastRunLine}
 
 ---
 

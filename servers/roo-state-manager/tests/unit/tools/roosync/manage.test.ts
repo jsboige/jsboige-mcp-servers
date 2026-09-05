@@ -79,6 +79,8 @@ function setupMM() {
         // #3292: stats action also reads the shared-pool histogram + rotation state
         getInboxPoolAges: vi.fn().mockResolvedValue({ total: 0, d0_7: 0, d7_30: 0, d30_90: 0, d90_plus: 0, undated: 0 }),
         getAutoArchiveStatus: vi.fn().mockReturnValue({ running: false, config: null, lastRun: null }),
+        // #3292: stats also surfaces the GDrive→PG reconcile daemon state
+        getChannelReconcileStatus: vi.fn().mockReturnValue({ running: false, config: null, lastRun: null }),
         cleanupExpiredMessages: mockCleanupExpiredMessages,
         sendExpiryReminders: mockSendExpiryReminders,
     };
@@ -300,6 +302,29 @@ describe('roosync_manage', () => {
             expect(text).not.toContain('toutes les 6 h');
         });
 
+        it('renders the GDrive→PG reconcile daemon state (#3292)', async () => {
+            mockGetInboxStats.mockResolvedValue({
+                total: 0, unread: 0, read: 0,
+                by_priority: {}, by_sender: {},
+            });
+            const mm = setupMM();
+            mm.getChannelReconcileStatus = vi.fn().mockReturnValue({
+                running: true,
+                config: { intervalHours: 12, lookbackDays: 5 },
+                lastRun: {
+                    at: '2026-09-05T00:00:00.000Z',
+                    result: {
+                        status: 'ok', sinceId: 'msg-20260829T000000', candidates: 6, candidateIds: 4,
+                        alreadyPresent: 3, reconciled: 1, skipped: 0, errors: 0, durationMs: 850,
+                    },
+                },
+            });
+            const result = await roosyncManage({ action: 'stats' });
+            const text = result.content[0].text;
+            expect(text).toContain('Reconcile PG : ✅ actif — lookback 5 j, toutes les 12 h');
+            expect(text).toContain('1 row(s) réimportée(s) sur 4 id(s) fenêtre');
+        });
+
         it('stats json format carries pool_files and rotation (#3292)', async () => {
             mockGetInboxStats.mockResolvedValue({
                 total: 0, unread: 0, read: 0,
@@ -309,6 +334,7 @@ describe('roosync_manage', () => {
             const parsed = JSON.parse(result.content[0].text);
             expect(parsed.pool_files).toEqual({ total: 0, d0_7: 0, d7_30: 0, d30_90: 0, d90_plus: 0, undated: 0 });
             expect(parsed.rotation).toEqual({ running: false, config: null, lastRun: null });
+            expect(parsed.channel_reconcile).toEqual({ running: false, config: null, lastRun: null });
         });
     });
 

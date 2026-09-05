@@ -93,7 +93,7 @@ vi.mock('../notifications/ToolUsageInterceptor.js', () => ({
     ToolUsageInterceptor: vi.fn(() => ({})),
 }));
 vi.mock('../services/MessageManager.js', () => ({
-    getMessageManager: vi.fn(() => ({ startAutoArchiveDaemon: vi.fn() })),
+    getMessageManager: vi.fn(() => ({ startAutoArchiveDaemon: vi.fn(), startChannelReconcileDaemon: vi.fn() })),
 }));
 
 // RooSync preload mock
