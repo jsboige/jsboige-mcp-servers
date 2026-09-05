@@ -29,7 +29,18 @@ from semantic_kernel.agents.strategies import (
 )
 from semantic_kernel.contents import ChatMessageContent, AuthorRole
 
+from pydantic import ValidationError
+
 from sk_agent_config import SKAgentConfig, AgentConfig, ConversationConfig
+
+from sk_agent_specs import (
+    MAX_CONVERSATION_ROUNDS,
+    SpecError,
+    effective_conversation_config,
+    format_validation_error,
+    parse_conversation_spec,
+    resolve_conversation_spec,
+)
 
 log = logging.getLogger("sk-agent.conversations")
 
@@ -184,16 +195,22 @@ class ConversationRunner:
         config: SKAgentConfig,
         sk_agents: dict[str, ChatCompletionAgent],
         agent_factory: Callable[[str], Awaitable[ChatCompletionAgent | None]] | None = None,
+        spec_agent_builder: Callable[[AgentConfig], Awaitable[ChatCompletionAgent | None]] | None = None,
     ):
         """
         Args:
             config: The full agent config (for model/agent lookups).
             sk_agents: Map of agent_id -> initialized ChatCompletionAgent from SKAgentManager.
             agent_factory: Async callable to lazily create agents by ID (e.g. manager._get_or_create_agent).
+            spec_agent_builder: Async callable building an ephemeral agent from a
+                resolved AgentConfig (#3407) — used for inline conversation
+                agents that pin a model or carry their own MCPs (reuses the
+                manager's shared pools).
         """
         self.config = config
         self.sk_agents = sk_agents
         self._agent_factory = agent_factory
+        self._spec_agent_builder = spec_agent_builder
 
     def list_conversations(self) -> list[dict]:
         """List available conversation presets."""
@@ -227,6 +244,7 @@ class ConversationRunner:
         prompt: str,
         conversation_id: str | None = None,
         options: dict | None = None,
+        conversation_spec: dict | None = None,
     ) -> dict[str, Any]:
         """Run a multi-agent conversation.
 
@@ -234,21 +252,73 @@ class ConversationRunner:
             prompt: The task/question for the agents.
             conversation_id: ID of the conversation preset to run.
             options: Override options (max_rounds, etc.).
+            conversation_spec: Optional à la carte composition spec (#3407),
+                validated with Pydantic then merged over its base preset
+                (spec.extends > conversation_id > blank base).
 
         Returns:
             Dict with response, agents_used, conversation_type, steps.
         """
         options = options or {}
+        spec_applied = conversation_spec is not None
 
         # Resolve conversation config
-        conv_config = self._resolve_conversation(conversation_id)
-        if not conv_config:
-            available = [c.id for c in self.config.conversations] + list(PRESETS.keys())
-            return {
-                "error": f"Conversation '{conversation_id}' not found. Available: {available}"
-            }
+        if spec_applied:
+            try:
+                spec = parse_conversation_spec(conversation_spec)
+            except ValidationError as exc:
+                return format_validation_error(exc, "conversation_spec")
+
+            # Base preset: spec.extends > conversation_id param > blank base.
+            # An unknown base is refused either way — never silently replaced
+            # by the blank fallback (PR #1091 review, concern 6).
+            base_conv = None
+            base_id = spec.extends or conversation_id
+            if base_id:
+                base_conv = self._resolve_conversation(base_id)
+                if base_conv is None:
+                    available = [c.id for c in self.config.conversations] + list(
+                        PRESETS.keys()
+                    )
+                    return {
+                        "error": f"conversation_spec base '{base_id}' not found",
+                        "details": [f"available conversations: {available}"],
+                    }
+            try:
+                conv_config = resolve_conversation_spec(self.config, spec, base_conv)
+            except SpecError as exc:
+                spec_error: dict[str, Any] = {
+                    "error": f"conversation_spec refused: {exc}"
+                }
+                if exc.details:
+                    spec_error["details"] = exc.details
+                return spec_error
+        else:
+            conv_config = self._resolve_conversation(conversation_id)
+            if not conv_config:
+                available = [c.id for c in self.config.conversations] + list(PRESETS.keys())
+                return {
+                    "error": f"Conversation '{conversation_id}' not found. Available: {available}"
+                }
 
         max_rounds = options.get("max_rounds", conv_config.max_rounds)
+        if spec_applied:
+            # Final validated bound (#3407 / PR #1091 review, concern 6):
+            # the legacy options layer cannot bypass the spec cap after the
+            # spec already resolved — and only an honest int qualifies: a
+            # non-int (str/float/None/…) used to skip the bound entirely via
+            # the isinstance gate, and bool is an int subclass that would
+            # smuggle True/False through (security review M1). Non-spec runs
+            # keep legacy semantics.
+            if isinstance(max_rounds, bool) or not isinstance(max_rounds, int):
+                return {
+                    "error": (
+                        "options.max_rounds must be an integer between "
+                        f"1 and {MAX_CONVERSATION_ROUNDS} "
+                        f"(got {type(max_rounds).__name__})"
+                    ),
+                }
+            max_rounds = max(1, min(max_rounds, MAX_CONVERSATION_ROUNDS))
 
         # Resolve agents for this conversation (async: may trigger lazy creation)
         agents = await self._resolve_conversation_agents(conv_config)
@@ -258,14 +328,24 @@ class ConversationRunner:
         # Build and run the group chat
         try:
             if conv_config.type == "concurrent":
-                return await self._run_concurrent(prompt, agents, conv_config)
+                result = await self._run_concurrent(prompt, agents, conv_config)
             else:
-                return await self._run_group_chat(
+                # sequential / group_chat / magentic / handoff all run the
+                # group-chat path (handoff = round-robin alias, same as
+                # preset-defined handoff conversations).
+                result = await self._run_group_chat(
                     prompt, agents, conv_config, max_rounds
                 )
         except Exception as e:
             log.exception("Conversation '%s' failed", conv_config.id)
             return {"error": str(e)}
+
+        if spec_applied and "error" not in result:
+            result["conversation_spec_applied"] = True
+            result["effective_conversation"] = effective_conversation_config(
+                conv_config
+            )
+        return result
 
     def _resolve_conversation(
         self, conversation_id: str | None
@@ -325,7 +405,21 @@ class ConversationRunner:
             # 3. Check inline agent definitions -> create on-the-fly
             if agent_id in inline_map:
                 inline_cfg = inline_map[agent_id]
-                agent = self._create_inline_agent(inline_cfg)
+                if (
+                    self._spec_agent_builder is not None
+                    and (inline_cfg.mcps or inline_cfg.model)
+                ):
+                    # Spec-composed inline agent (#3407), or any inline agent
+                    # pinning a model: build via the manager's shared pools
+                    # (own kernel + the model's actual service + MCP plugins).
+                    # Without this, a toolless model-pinned inline agent would
+                    # fall through to _create_inline_agent, whose
+                    # unmatched-model fallback silently reuses the first
+                    # available kernel — validated config executing on the
+                    # wrong model (PR #1091 review, concern 5).
+                    agent = await self._spec_agent_builder(inline_cfg)
+                else:
+                    agent = self._create_inline_agent(inline_cfg)
                 if agent:
                     agents.append(agent)
                     continue
@@ -594,6 +688,7 @@ def build_run_conversation_description(config: SKAgentConfig) -> str:
             "  prompt: The research question or topic to deliberate",
             "  conversation: Conversation ID (default: deep-search)",
             "  options: JSON - max_rounds override",
+            "  conversation_spec: JSON composing a conversation à la carte (#3407): {\"extends\":\"<conv_id>\",\"type\":\"sequential|concurrent|group_chat|handoff|magentic\",\"agents\":[...] or \"add_agents\":[],\"remove_agents\":[],\"inline_agents\":[{\"id\":\"...\",\"system_prompt\":\"...\",\"mcps\":{\"replace\":[...]}}],\"max_rounds\":1-50} — agent refs must resolve to configured or inline agents; handoff runs round-robin like group_chat; response carries effective_conversation (no secrets)",
             "  conversation_id: Not used (reserved for future thread continuity)",
         ]
     )
