@@ -350,4 +350,74 @@ describe('claudishTraffic.handler', () => {
         const text = (res.content as any)[0].text as string;
         expect(text).toContain('unexpected failure');
     });
+
+    // ── Container-name fallback (invariant 8, ai-01 05/09) ────────────────────
+
+    it('auto-selects the single discovered claudish* container when the default is absent', async () => {
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            if (_cmd.includes(' ps ')) {
+                cb(null, 'claudish-sidecar\n', '');
+            } else if (_cmd.endsWith('claudish-proxy')) {
+                cb(new Error('exit 1'), '', 'Error response from daemon: No such container: claudish-proxy');
+            } else {
+                cb(null, INCIDENT_LINES.join('\n'), '');
+            }
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, since: '12h' });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain("auto-selected 'claudish-sidecar'");
+        expect(text).toContain('GAP: traffic STOPPED at 2026-09-02T13:52:23Z');
+        expect(text).toContain('Collection: docker logs --timestamps --since 12h claudish-sidecar');
+    });
+
+    it('never silently substitutes an explicitly-passed container — suggests instead', async () => {
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            if (_cmd.includes(' ps ')) {
+                cb(null, 'claudish-sidecar\n', '');
+            } else {
+                cb(new Error('exit 1'), '', 'Error response from daemon: No such container: claudish-proxy');
+            }
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, container: 'claudish-proxy' });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('CONTAINER_NOT_FOUND');
+        expect(text).toContain('Available claudish container(s) here: claudish-sidecar');
+        expect(text).not.toContain('auto-selected');
+        expect(exec).toHaveBeenCalledTimes(2);
+    });
+
+    it('lists candidates without substituting when discovery is ambiguous', async () => {
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            if (_cmd.includes(' ps ')) {
+                cb(null, 'claudish-sidecar\nclaudish-relay\n', '');
+            } else {
+                cb(new Error('exit 1'), '', 'Error: No such container: claudish-proxy');
+            }
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30 });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('CONTAINER_NOT_FOUND');
+        expect(text).toContain('claudish-sidecar, claudish-relay');
+        expect(text).not.toContain('auto-selected');
+        expect(exec).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the plain failure when container discovery itself fails', async () => {
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            if (_cmd.includes(' ps ')) {
+                cb(new Error('exit 1'), '', 'Error response from daemon: Cannot connect to the Docker daemon');
+            } else {
+                cb(new Error('exit 1'), '', 'Error: No such container: claudish-proxy');
+            }
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30 });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('CONTAINER_NOT_FOUND');
+        expect(text).not.toContain('Available claudish container(s)');
+        expect(text).toContain('infrastructure failure, NOT a silent-but-nominal sidecar');
+    });
 });

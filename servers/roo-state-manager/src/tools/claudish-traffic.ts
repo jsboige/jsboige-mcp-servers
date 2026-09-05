@@ -21,6 +21,12 @@
  *   7. Partial collection (exec timeout/maxBuffer with stdout emitted) is
  *      DECLARED in the report — a missing tail degrades GAP confidence
  *      explicitly, never silently (review F1, #1080).
+ *   8. Container-name drift (ai-01 05/09): the default 'claudish-proxy' is
+ *      absent on hosts naming the deployment differently (e.g. 'claudish-sidecar').
+ *      On CONTAINER_NOT_FOUND the tool discovers running claudish* containers and
+ *      auto-substitutes when the default was NOT explicitly pinned and discovery
+ *      is unambiguous (exactly one other candidate); otherwise it names the
+ *      candidates instead of reporting a blind infrastructure failure.
  *
  * Format contract (producer read firsthand: claudish
  * packages/cli/src/fork/middleware/request-logger.ts + response-capture.ts):
@@ -172,6 +178,8 @@ export interface RenderOptions {
     now: number;
     /** Review F1 (#1080): exec died (timeout/maxBuffer) AFTER emitting partial stdout. */
     collectionWarning?: string;
+    /** Invariant 8: default container absent — a claudish* container was auto-selected. */
+    containerNote?: string;
 }
 
 function fmtAge(ms: number): string {
@@ -218,6 +226,9 @@ export function renderTrafficReport(parse: ClaudishParseResult, opts: RenderOpti
 
     const sections: string[] = [];
     sections.push(`claudish traffic — container=${opts.container}${opts.machineFilter ? ` (machine filter: ${opts.machineFilter})` : ''}`);
+    if (opts.containerNote) {
+        sections.push(opts.containerNote);
+    }
     sections.push(`Collection: ${opts.command}`);
     if (opts.collectionWarning) {
         sections.push(opts.collectionWarning);
@@ -346,6 +357,16 @@ function classifyDockerFailure(errMsg: string, stderr: string): string {
     return 'DOCKER_EXEC_ERROR';
 }
 
+// Invariant 8. Names come from docker itself, but they are re-validated by NAME_RE
+// before any of them can reach a command string — same guard as user input.
+async function discoverClaudishContainers(contextArg: string): Promise<string[]> {
+    const { stdout } = await execDockerLogs(`docker ${contextArg}ps --format "{{.Names}}"`);
+    return stdout
+        .split('\n')
+        .map(l => l.trim())
+        .filter(n => n.length > 0 && NAME_RE.test(n) && n.toLowerCase().includes('claudish'));
+}
+
 // ── Tool ───────────────────────────────────────────────────────────────────
 
 export const claudishTraffic = {
@@ -357,7 +378,7 @@ export const claudishTraffic = {
         properties: {
             bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes, integer (e.g. 5, 30). Buckets are rendered up to the current time.' },
             since: { type: 'string', description: 'docker logs --since window: "30m", "2h", "1h30m", or absolute ISO timestamp. Default "2h". Hub emits 5-6k lines/h.' },
-            container: { type: 'string', description: 'Container name. Default "claudish-proxy".' },
+            container: { type: 'string', description: 'Container name. Default "claudish-proxy"; if the default is absent and exactly one other claudish* container runs here, it is auto-selected (with a visible note). An explicitly-passed name is never substituted — candidates are listed instead.' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine header value).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine.' },
             max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are clamped up to 500).' },
@@ -382,31 +403,56 @@ export const claudishTraffic = {
                 return { content: [{ type: 'text' as const, text: `claudish_traffic: bucket_minutes must be an integer of minutes in [1, 1440], got ${args.bucket_minutes}` }] };
             }
             const since = args.since ?? DEFAULT_SINCE;
-            const container = args.container ?? DEFAULT_CONTAINER;
+            let container = args.container ?? DEFAULT_CONTAINER;
             // Values below 500 cannot fit the metadata header — clamped up (documented in the schema).
             const maxOutputLength = Math.max(500, args.max_output_length ?? DEFAULT_MAX_OUTPUT_LENGTH);
             const contextArg = args.docker_context ? `--context ${args.docker_context} ` : '';
-            const command = `docker ${contextArg}logs --timestamps --since ${since} ${container}`;
+            const logsCommand = (name: string) => `docker ${contextArg}logs --timestamps --since ${since} ${name}`;
+            let command = logsCommand(container);
 
-            const { stdout, stderr, errMsg } = await execDockerLogs(command);
-            if (errMsg && stdout.trim() === '') {
-                const kind = classifyDockerFailure(errMsg, stderr);
-                const detail = (stderr || errMsg).split('\n').filter(l => l.trim()).slice(0, 3).join('\n');
-                return {
-                    content: [{
-                        type: 'text' as const,
-                        text: `claudish_traffic: collection FAILED (${kind}) — zero-request states are distinguished from this:\nCommand: ${command}\n${detail}\nNote: ${kind === 'DOCKER_CLI_MISSING' ? 'docker CLI not available here — use docker_context to target the hub remotely (experimental).' : 'This is an infrastructure failure, NOT a silent-but-nominal sidecar.'}`,
-                    }],
-                };
+            let collected = await execDockerLogs(command);
+            let containerNote: string | undefined;
+
+            if (collected.errMsg && collected.stdout.trim() === '') {
+                const kind = classifyDockerFailure(collected.errMsg, collected.stderr);
+                const detail = (collected.stderr || collected.errMsg).split('\n').filter(l => l.trim()).slice(0, 3).join('\n');
+                let candidatesHint = '';
+                if (kind === 'CONTAINER_NOT_FOUND') {
+                    const candidates = await discoverClaudishContainers(contextArg);
+                    const others = candidates.filter(c => c !== container);
+                    // Auto-substitute ONLY the unpinned default, ONLY when discovery is
+                    // unambiguous. An explicitly-passed name is never silently replaced —
+                    // the caller keeps the choice, with the candidates named.
+                    if (args.container === undefined && others.length === 1) {
+                        const retry = await execDockerLogs(logsCommand(others[0]));
+                        if (!retry.errMsg || retry.stdout.trim() !== '') {
+                            containerNote = `ℹ container '${container}' not found — auto-selected '${others[0]}' (docker ps discovery; pass container= to pin).`;
+                            container = others[0];
+                            command = logsCommand(container);
+                            collected = retry;
+                        }
+                    }
+                    if (containerNote === undefined && candidates.length > 0) {
+                        candidatesHint = `\nAvailable claudish container(s) here: ${candidates.join(', ')} — retry with container=<name>.`;
+                    }
+                }
+                if (containerNote === undefined) {
+                    return {
+                        content: [{
+                            type: 'text' as const,
+                            text: `claudish_traffic: collection FAILED (${kind}) — zero-request states are distinguished from this:\nCommand: ${command}\n${detail}${candidatesHint}\nNote: ${kind === 'DOCKER_CLI_MISSING' ? 'docker CLI not available here — use docker_context to target the hub remotely (experimental).' : 'This is an infrastructure failure, NOT a silent-but-nominal sidecar.'}`,
+                        }],
+                    };
+                }
             }
 
-            const parse = parseClaudishLogLines(stdout.split('\n'));
+            const parse = parseClaudishLogLines(collected.stdout.split('\n'));
             // Review F1 (#1080): exec may die (60s timeout, 128MB maxBuffer) AFTER a
             // partial stdout — the corpus tail is then missing, which makes any GAP
             // verdict unreliable (last observed request older than reality). The report
             // must say so instead of rendering a truncated corpus as complete.
-            const collectionWarning = errMsg
-                ? `⚠ collection INCOMPLETE (exec: ${errMsg.split('\n')[0]}) — tail of the window may be missing; GAP verdict confidence reduced.`
+            const collectionWarning = collected.errMsg
+                ? `⚠ collection INCOMPLETE (exec: ${collected.errMsg.split('\n')[0]}) — tail of the window may be missing; GAP verdict confidence reduced.`
                 : undefined;
             const report = boundOutput(
                 renderTrafficReport(parse, {
@@ -418,6 +464,7 @@ export const claudishTraffic = {
                     maxOutputLength,
                     now: Date.now(),
                     collectionWarning,
+                    containerNote,
                 }),
                 maxOutputLength
             );
