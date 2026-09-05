@@ -1,3 +1,6 @@
+# SK 1.42 tightens KernelPlugin names to ^[0-9A-Za-z_]+$ — dashed MCP ids
+# (e.g. win-cli) fail at plugin construction. Prod venv runs 1.41 (verified
+# unaffected); re-check dashed ids before any bump past 1.41. (roo-ext #1091)
 semantic-kernel[mcp]>=1.39
 mcp>=1.10
 pydantic>=2.7

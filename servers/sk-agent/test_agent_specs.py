@@ -184,11 +184,20 @@ class TestSpecValidation:
             {"base_url": "http://evil"},
             {"command": "rm -rf"},
             {"env": {"X": "1"}},
+            # List-form mcps fails as a TYPE error (McpDeltaSpec expects a
+            # dict), NOT extra_forbidden — the container echo must be
+            # suppressed too (found by execution on ai-01's surgical fix).
             {"mcps": [{"id": "evil", "command": "nc"}]},
             {"enabled": True},
         ):
-            with pytest.raises(Exception):
+            with pytest.raises(Exception) as exc_info:
                 parse_agent_spec(privileged)
+            # Refusing the field must not ECHO its value (credentials path):
+            # extra_forbidden names the field; container (dict/list) inputs
+            # on type errors dump the raw payload. Scalars stay echoed.
+            err = format_validation_error(exc_info.value, "agent_spec")
+            assert "(input=" not in json.dumps(err), privileged
+            assert "sk-leak" not in json.dumps(err), privileged
 
     def test_mcp_replace_exclusive_with_add(self):
         with pytest.raises(Exception):

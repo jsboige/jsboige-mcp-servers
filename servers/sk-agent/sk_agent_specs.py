@@ -53,7 +53,17 @@ def format_validation_error(exc: ValidationError, spec_name: str) -> dict[str, A
     details = []
     for err in exc.errors():
         loc = ".".join(str(p) for p in err["loc"]) or "<root>"
-        details.append(f"{spec_name}.{loc}: {err['msg']} (input={err.get('input')!r})")
+        # Refused-value echo policy (#1091): never repeat the input when it
+        # can carry a credential or command. extra_forbidden already names
+        # the field via loc; dict/list inputs on type errors dump the whole
+        # raw payload (e.g. mcps given as a list of {command: ...} blobs —
+        # found by execution: that path is NOT extra_forbidden). Scalars
+        # stay echoed — they carry the debug value for honest typos.
+        input_val = err.get("input")
+        if err["type"] == "extra_forbidden" or isinstance(input_val, (dict, list)):
+            details.append(f"{spec_name}.{loc}: {err['msg']}")
+        else:
+            details.append(f"{spec_name}.{loc}: {err['msg']} (input={input_val!r})")
     return {
         "error": f"{spec_name} validation failed — fix the fields listed in details",
         "spec": spec_name,
