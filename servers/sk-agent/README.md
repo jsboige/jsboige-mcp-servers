@@ -38,7 +38,7 @@ Agents are the central abstraction. Each agent has:
 
 ### Core Tools
 
-#### `call_agent(prompt, agent?, attachment?, options?, conversation_id?, include_steps?)`
+#### `call_agent(prompt, agent?, attachment?, options?, conversation_id?, include_steps?, model_override?, system_prompt?, mcp_overrides?, agent_spec?)`
 
 Unified agent invocation. Routes to the right agent based on content type.
 
@@ -48,14 +48,39 @@ Unified agent invocation. Routes to the right agent based on content type.
 - `options`: JSON string with type-specific params (`region`, `mode`, `max_pages`, `page_range`, `num_frames`)
 - `conversation_id`: Continue previous conversation
 - `include_steps`: Show intermediate tool/reasoning steps
+- `agent_spec`: JSON string composing an agent à la carte (#3407) — model + prompt + capabilities + tools + execution, optionally specializing a preset via `extends`. Precedence per dimension: call-level override > spec > preset > server default. Only server-configured models/MCPs may be referenced; anything else is refused, as are vision-requirement violations and attempts to widen tool-enabling parameters (`github_tools`). The response carries `effective_config` (no secrets).
 
-#### `run_conversation(prompt, conversation?, options?, conversation_id?)`
+```json
+{
+  "extends": "analyst",
+  "model": "glm-5.1",
+  "system_prompt": "You are a terse summarizer.",
+  "mcps": { "replace": [] },
+  "memory": { "enabled": false },
+  "sampling": { "temperature": 0.2, "max_tokens": 512 }
+}
+```
+
+#### `run_conversation(prompt, conversation?, options?, conversation_id?, conversation_spec?)`
 
 Run a multi-agent conversation (DeepSearch, DeepThink, or custom).
 
 - `prompt`: Research question or topic
 - `conversation`: Conversation preset ID (default: `deep-search`)
 - `options`: JSON string with overrides (`max_rounds`)
+- `conversation_spec`: JSON string composing a conversation à la carte (#3407) — agents + coordination + prompts, optionally specializing a preset via `extends`. Agent references must resolve to configured agents or `inline_agents`; `max_rounds` is capped at 50 and the cap holds even through `options`. `handoff` executes through the same round-robin group-chat path as preset-defined handoff conversations. The response carries `effective_conversation` (no secrets).
+
+```json
+{
+  "extends": "deep-think",
+  "type": "sequential",
+  "add_agents": ["analyst"],
+  "inline_agents": [
+    { "id": "scribe", "system_prompt": "You take verbatim notes.", "mcps": { "replace": ["searxng"] } }
+  ],
+  "max_rounds": 4
+}
+```
 
 #### `list_agents()`
 

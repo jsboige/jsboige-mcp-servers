@@ -60,6 +60,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
+from pydantic import ValidationError
 
 from semantic_kernel import Kernel
 from semantic_kernel.functions import KernelArguments
@@ -110,6 +111,14 @@ from sk_agent_config import (
     is_self_referential_mcp,
 )
 from sk_conversations import ConversationRunner, build_run_conversation_description
+from sk_agent_specs import (
+    SpecError,
+    apply_mcp_delta,
+    effective_agent_config,
+    format_validation_error,
+    parse_agent_spec,
+    resolve_agent_spec,
+)
 
 # GitHub PR review plugin
 try:
@@ -356,6 +365,7 @@ def build_call_agent_description(config: SKAgentConfig) -> str:
             "  model_override: Model ID to use instead of agent default (must be enabled)",
             "  system_prompt: Override system prompt for this call",
             "  mcp_overrides: JSON string: {\"replace\":[...]}, {\"add\":[...],\"remove\":[...]}",
+            "  agent_spec: JSON string composing an agent à la carte (#3407): {\"extends\":\"<agent_id>\",\"model\":\"<model_id>\",\"system_prompt\":\"...\",\"mcps\":{\"replace\":[]|\"add\":[],\"remove\":[]},\"memory\":{\"enabled\":false},\"sampling\":{\"temperature\":0..2,\"top_p\":0..1,\"max_tokens\":1..32768}} — precedence: call override > spec > preset > default; only server-configured models/MCPs; tool-enabling parameters cannot be widened; response carries effective_config (no secrets)",
             "  timeout: Max seconds to wait (default: no limit)",
         ]
     )
@@ -658,27 +668,19 @@ class SKAgentManager:
         - {"add": ["searxng"], "remove": ["playwright"]} → delta
         - None or {} → no change (return base_mcps)
 
-        Capability-aware enforcement (#3408, acceptance #3): when both
-        ``agent_capabilities`` and the runtime ``tools`` registry are
-        available, the same default-deny rule that protects the static
-        config protects this per-call override. A client passing
-        ``{"replace": ["open_terminal"]}`` on an agent without ``shell``
-        raises ``ValueError`` with the missing capability, surfaced by the
-        call site as a normal MCP error. Without that context the legacy
-        behaviour is preserved (test parity with ``test_mcp_overrides``).
+        Delegates delta computation to the shared ``apply_mcp_delta``
+        primitive (#3407) so the legacy ``mcp_overrides`` path and the spec
+        path keep identical semantics. Capability-aware enforcement
+        (#3408, acceptance #3) then applies: when both ``agent_capabilities``
+        and the runtime ``tools`` registry are available, the same
+        default-deny rule that protects the static config protects this
+        per-call override. A client passing ``{"replace": ["open_terminal"]}``
+        on an agent without ``shell`` raises ``ValueError`` with the missing
+        capability, surfaced by the call site as a normal MCP error. Without
+        that context the legacy behaviour is preserved (test parity with
+        ``test_mcp_overrides``).
         """
-        if not mcp_overrides:
-            effective = list(base_mcps)
-        elif "replace" in mcp_overrides:
-            effective = list(mcp_overrides["replace"])
-        else:
-            effective = list(base_mcps)
-            for mcp_id in mcp_overrides.get("add", []):
-                if mcp_id not in effective:
-                    effective.append(mcp_id)
-            for mcp_id in mcp_overrides.get("remove", []):
-                if mcp_id in effective:
-                    effective.remove(mcp_id)
+        effective = apply_mcp_delta(base_mcps, mcp_overrides)
 
         if agent_capabilities is None or not getattr(self.config, "mcps", None):
             return effective
@@ -729,6 +731,84 @@ class SKAgentManager:
                     "Agent '%s': MCP '%s' failed to load for override", agent_id, mcp_id
                 )
         return plugins
+
+    async def _build_ephemeral_agent(
+        self,
+        agent_cfg: AgentConfig,
+        memory_source_agent_id: str | None = None,
+        name_prefix: str = "sk-agent-spec",
+    ) -> tuple[ChatCompletionAgent, bool] | None:
+        """Build a per-call ephemeral agent from a resolved AgentConfig (#3407).
+
+        Reuses the shared model pool, the lazy MCP plugin pool
+        (_collect_mcp_plugins — which routes through _ensure_mcp_loaded and
+        therefore the #3409 recursion ceiling) and the plugin assembly of
+        _create_agent — without registering the agent in the persistent
+        per-id maps.
+
+        Memory policy for ephemeral agents: never create new memory stores —
+        only inherit the store of `memory_source_agent_id` when the resolved
+        config keeps memory enabled. Returns (agent, memory_attached).
+        """
+        model_cfg = self.config.get_model(agent_cfg.model) if agent_cfg.model else None
+        if model_cfg is None:
+            default_agent = self.config.get_default_agent()
+            if default_agent:
+                model_cfg = self.config.get_model(default_agent.model)
+        if not model_cfg or not model_cfg.enabled:
+            log.warning(
+                "Ephemeral agent '%s': no enabled model resolved", agent_cfg.id
+            )
+            return None
+        service = self._services.get(model_cfg.id)
+        if not service:
+            log.warning(
+                "Ephemeral agent '%s': model '%s' service not available",
+                agent_cfg.id,
+                model_cfg.id,
+            )
+            return None
+
+        kernel = Kernel()
+        kernel.add_service(service)
+
+        plugins = await self._collect_mcp_plugins(agent_cfg.mcps, agent_cfg.id)
+
+        memory_attached = False
+        if agent_cfg.memory.enabled and HAS_MEMORY:
+            source_id = memory_source_agent_id or agent_cfg.id
+            mem_plugin = self._memory_stores.get(source_id)
+            if mem_plugin:
+                plugins.append(mem_plugin)
+                memory_attached = True
+            else:
+                log.warning(
+                    "Ephemeral agent '%s': memory requested but no store available "
+                    "for '%s' — memory stays off (reported in effective_config)",
+                    agent_cfg.id,
+                    source_id,
+                )
+
+        if HAS_GITHUB_PLUGIN and agent_cfg.parameters.get("github_tools", False):
+            gh_repo = agent_cfg.parameters.get("github_default_repo", "")
+            plugins.append(GitHubPlugin(default_repo=gh_repo))
+
+        safe_name = _sanitize_agent_name(agent_cfg.id)
+        system_prompt = agent_cfg.system_prompt or self.config.system_prompt
+        # Same memory hint as _create_agent, so inherited memory is announced
+        if memory_attached:
+            system_prompt += (
+                "\n\nYou have access to persistent memory. "
+                "Use memory-save to remember important facts and "
+                "memory-recall to retrieve relevant knowledge."
+            )
+        agent = ChatCompletionAgent(
+            kernel=kernel,
+            name=f"{name_prefix}-{safe_name}",
+            instructions=system_prompt,
+            plugins=plugins,
+        )
+        return agent, memory_attached
 
     async def _get_or_create_agent(self, agent_id: str) -> ChatCompletionAgent | None:
         """Get an agent by ID, creating it lazily if needed."""
@@ -910,6 +990,8 @@ class SKAgentManager:
         model_override: str | None = None,
         system_prompt: str | None = None,
         mcp_overrides: dict | None = None,
+        # À la carte composition (#3407)
+        agent_spec: dict | None = None,
     ) -> dict[str, Any]:
         """Unified agent invocation with optional attachment routing.
 
@@ -924,12 +1006,27 @@ class SKAgentManager:
         - mcp_overrides: Replace or modify the agent's MCP tools for this call.
           Dict with optional keys: "replace" (list of mcp_ids to use instead),
           "add" (list of mcp_ids to add), "remove" (list of mcp_ids to remove).
+
+        agent_spec (#3407): optional typed composition spec validated with
+        Pydantic (sk_agent_specs.AgentSpec). Composes an ephemeral agent
+        (model + prompt + capabilities + tools + execution) from an optional
+        `extends` preset. Deterministic precedence per dimension:
+        call-level override > spec field > preset > server default. Specs may
+        only reference server-configured models/MCPs — anything else is
+        refused (including vision-requirement violations and tool-parameter
+        widening). When a spec is given, it consumes model_override /
+        system_prompt / mcp_overrides as the call-level layer of that
+        precedence. The result carries `effective_config` (no secrets).
         """
         if not self.config.agents:
             return {"error": "No agents configured"}
 
+        spec_active = agent_spec is not None
+        spec_effective: dict | None = None
+        spec_model_used: str | None = None
+
         async def _execute() -> dict[str, Any]:
-            nonlocal options
+            nonlocal options, spec_effective, spec_model_used
             options = options or {}
 
             # Normalize attachment to list for multi-image support
@@ -953,32 +1050,134 @@ class SKAgentManager:
             if attachment_type == "document" and options.get("mode") == "text":
                 needs_vision = False
 
-            # Resolve agent
-            resolved_id, agent = await self._resolve_agent(
-                agent_id=agent_id,
-                needs_vision=needs_vision,
-                model_id=model_id,
-            )
+            # --- Resolve agent / agent_spec (#3407) --------------------------
+            # Spec path composes à la carte (call override > spec > preset >
+            # server default); legacy path below is unchanged.
+            spec_sampling_overrides: dict | None = None
+            handler_model_override: str | None = None
 
-            if not resolved_id or not agent:
-                return {"error": "No suitable agent available"}
+            if spec_active:
+                try:
+                    spec = parse_agent_spec(agent_spec)
+                except ValidationError as exc:
+                    return format_validation_error(exc, "agent_spec")
 
-            # Per-call system_prompt override: inject as prompt prefix
-            effective_prompt = prompt
-            if system_prompt:
-                effective_prompt = (
-                    f"<system-override>\n{system_prompt}\n</system-override>\n\n{prompt}"
+                # Base preset: spec.extends > agent_id param > auto-resolution
+                if spec.extends:
+                    base_cfg = self.config.get_agent(spec.extends)
+                    if base_cfg is None:
+                        return {
+                            "error": f"agent_spec.extends '{spec.extends}' not found",
+                            "details": [
+                                "configured agents: "
+                                + (
+                                    ", ".join(a.id for a in self.config.agents)
+                                    or "(none)"
+                                )
+                            ],
+                        }
+                    resolved_id = spec.extends
+                else:
+                    resolved_id, agent = await self._resolve_agent(
+                        agent_id=agent_id,
+                        needs_vision=needs_vision,
+                        model_id=model_id,
+                    )
+                    if not resolved_id or not agent:
+                        return {"error": "No suitable agent available"}
+                    base_cfg = self.config.get_agent(resolved_id)
+
+                try:
+                    merged_cfg, spec_sampling = resolve_agent_spec(
+                        self.config,
+                        spec,
+                        base_cfg,
+                        call_model_override=model_override,
+                        call_system_prompt=system_prompt,
+                        call_mcp_overrides=mcp_overrides,
+                        needs_vision=needs_vision,
+                    )
+                except SpecError as exc:
+                    spec_error: dict[str, Any] = {"error": f"agent_spec refused: {exc}"}
+                    if exc.details:
+                        spec_error["details"] = exc.details
+                    return spec_error
+
+                model_cfg = self.config.get_model(merged_cfg.model)
+                if (
+                    not model_cfg
+                    or not model_cfg.enabled
+                    or merged_cfg.model not in self._services
+                ):
+                    return {
+                        "error": (
+                            f"agent_spec model '{merged_cfg.model}' service "
+                            "not available"
+                        )
+                    }
+
+                built = await self._build_ephemeral_agent(
+                    merged_cfg,
+                    memory_source_agent_id=base_cfg.id if base_cfg else None,
                 )
+                if built is None:
+                    return {
+                        "error": f"agent_spec could not build agent '{merged_cfg.id}'"
+                    }
+                effective_agent, memory_attached = built
+
+                base_model = base_cfg.model if base_cfg else ""
+                effective_id = resolved_id
+                if merged_cfg.model and merged_cfg.model != base_model:
+                    effective_id = f"{resolved_id}[{merged_cfg.model}]"
+                    handler_model_override = merged_cfg.model
+                spec_model_used = merged_cfg.model or None
+                if spec_sampling is not None:
+                    spec_sampling_overrides = spec_sampling.overrides()
+                spec_effective = effective_agent_config(
+                    merged_cfg,
+                    extends=spec.extends or (resolved_id or ""),
+                    sampling=spec_sampling,
+                    memory_active=memory_attached,
+                )
+                log.info(
+                    "Agent spec: base=%s model=%s mcps=%s memory=%s",
+                    spec.extends or resolved_id,
+                    merged_cfg.model,
+                    merged_cfg.mcps,
+                    memory_attached,
+                )
+                # Spec bakes prompts into instructions: never double-inject
+                effective_prompt = prompt
+            else:
+                resolved_id, agent = await self._resolve_agent(
+                    agent_id=agent_id,
+                    needs_vision=needs_vision,
+                    model_id=model_id,
+                )
+
+                if not resolved_id or not agent:
+                    return {"error": "No suitable agent available"}
+
+                # Per-call system_prompt override: inject as prompt prefix
+                effective_prompt = prompt
+                if system_prompt:
+                    effective_prompt = (
+                        f"<system-override>\n{system_prompt}\n</system-override>\n\n{prompt}"
+                    )
+                handler_model_override = model_override
 
             # Per-call model_override: create temporary agent with different model
             # Also handles mcp_overrides (with or without model_override)
-            effective_agent = agent
-            effective_id = resolved_id
+            effective_agent = effective_agent if spec_active else agent
+            effective_id = effective_id if spec_active else resolved_id
             model_used_override = None
 
             # Determine if we need a temporary agent (model_override or mcp_overrides)
             agent_cfg = next((a for a in self.config.agents if a.id == resolved_id), None)
-            needs_temp_agent = bool(model_override) or bool(mcp_overrides)
+            needs_temp_agent = (not spec_active) and (
+                bool(model_override) or bool(mcp_overrides)
+            )
 
             if needs_temp_agent:
                 # Resolve model
@@ -1068,7 +1267,8 @@ class SKAgentManager:
                         conversation_id,
                         include_steps,
                         options.get("zoom_context"),
-                        model_override,
+                        handler_model_override,
+                        spec_sampling_overrides,
                     )
                 else:
                     # Pass single image or list of images
@@ -1080,7 +1280,8 @@ class SKAgentManager:
                         effective_prompt,
                         conversation_id,
                         include_steps,
-                        model_override,
+                        handler_model_override,
+                        spec_sampling_overrides,
                     )
             elif attachment_type == "video":
                 return await self._handle_video(
@@ -1091,7 +1292,8 @@ class SKAgentManager:
                     conversation_id,
                     include_steps,
                     options.get("num_frames", 8),
-                    model_override,
+                    handler_model_override,
+                    spec_sampling_overrides,
                 )
             elif attachment_type == "document":
                 return await self._handle_document(
@@ -1102,7 +1304,8 @@ class SKAgentManager:
                     conversation_id,
                     include_steps,
                     options,
-                    model_override,
+                    handler_model_override,
+                    spec_sampling_overrides,
                 )
             else:
                 return await self._handle_text(
@@ -1111,7 +1314,8 @@ class SKAgentManager:
                     effective_prompt,
                     conversation_id,
                     include_steps,
-                    model_override,
+                    handler_model_override,
+                    spec_sampling_overrides,
                 )
 
         try:
@@ -1124,6 +1328,11 @@ class SKAgentManager:
             if model_override and "error" not in result:
                 result["model_override"] = model_override
                 result["model_used"] = model_override
+            if spec_active and "error" not in result:
+                result["agent_spec_applied"] = True
+                result["effective_config"] = spec_effective
+                if spec_model_used:
+                    result["model_used"] = spec_model_used
             return result
         except asyncio.TimeoutError:
             return {
@@ -1136,13 +1345,18 @@ class SKAgentManager:
     # -----------------------------------------------------------------------
 
     def _get_invoke_kwargs(
-        self, agent_id: str = "", model_override: str | None = None
+        self,
+        agent_id: str = "",
+        model_override: str | None = None,
+        sampling_override: dict | None = None,
     ) -> dict[str, Any]:
         """Build extra kwargs for agent.invoke() with sampling + thinking settings.
 
         Args:
             agent_id: Agent ID (may contain [model_override] suffix from override).
             model_override: If set, use this model's thinking config instead of agent default.
+            sampling_override: Bounded per-call sampling values (#3407) — win over
+                the server-wide settings while preserving the thinking extra_body.
         """
         if not self._execution_settings:
             return {}
@@ -1169,6 +1383,19 @@ class SKAgentManager:
                 max_tokens=settings.max_tokens,
                 extra_body=extra,
             )
+
+        if sampling_override:
+            extra_body = dict(settings.extra_body) if settings.extra_body else None
+            settings = OpenAIChatPromptExecutionSettings(
+                temperature=sampling_override.get(
+                    "temperature", settings.temperature
+                ),
+                top_p=sampling_override.get("top_p", settings.top_p),
+                presence_penalty=settings.presence_penalty,
+                max_tokens=sampling_override.get("max_tokens", settings.max_tokens),
+            )
+            if extra_body:
+                settings.extra_body = extra_body
         return {"arguments": KernelArguments(settings=settings)}
 
     async def _handle_text(
@@ -1179,6 +1406,7 @@ class SKAgentManager:
         conversation_id: str | None,
         include_steps: bool,
         model_override: str | None = None,
+        sampling_override: dict | None = None,
     ) -> dict[str, Any]:
         """Handle text-only prompt."""
         conv_id, thread = self._get_or_create_thread(conversation_id)
@@ -1187,7 +1415,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
+        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1219,6 +1447,7 @@ class SKAgentManager:
         conversation_id: str | None,
         include_steps: bool,
         model_override: str | None = None,
+        sampling_override: dict | None = None,
     ) -> dict[str, Any]:
         """Handle image analysis. Supports single image or list of images."""
         try:
@@ -1241,7 +1470,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
+            invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1278,6 +1507,7 @@ class SKAgentManager:
         include_steps: bool,
         zoom_context: str | None = None,
         model_override: str | None = None,
+        sampling_override: dict | None = None,
     ) -> dict[str, Any]:
         """Handle image region analysis (zoom)."""
         try:
@@ -1318,7 +1548,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
-            invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
+            invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
@@ -1356,6 +1586,7 @@ class SKAgentManager:
         include_steps: bool,
         num_frames: int = 8,
         model_override: str | None = None,
+        sampling_override: dict | None = None,
     ) -> dict[str, Any]:
         """Handle video analysis."""
         # Convert file:/// URI to local path
@@ -1392,7 +1623,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
+        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1431,6 +1662,7 @@ class SKAgentManager:
         include_steps: bool,
         options: dict,
         model_override: str | None = None,
+        sampling_override: dict | None = None,
     ) -> dict[str, Any]:
         """Handle document analysis."""
         mode = options.get("mode", "auto")
@@ -1445,8 +1677,17 @@ class SKAgentManager:
         # Convert file:/// URI to local path
         document_source = file_uri_to_path(document_source)
 
-        # Get context window for auto-limiting
-        model_id = self._get_agent_model_id(agent_id)
+        # Get context window for auto-limiting. Resolve the model the same
+        # way _get_invoke_kwargs does: the explicit override wins, else strip
+        # the "[model]" suffix the spec path bakes into agent ids (#3407) —
+        # a bare agent-id lookup missed those ids, silently disabling both
+        # the vision gate below and the context-window auto-limit (security
+        # review H1: suffix-blind model lookup).
+        if model_override:
+            model_id = model_override
+        else:
+            base_agent_id = agent_id.split("[")[0] if "[" in agent_id else agent_id
+            model_id = self._get_agent_model_id(base_agent_id)
         model_cfg = self.config.get_model(model_id) if model_id else None
         context_window = (
             model_cfg.context_window if (auto_limit_tokens and model_cfg) else None
@@ -1507,7 +1748,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
-        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override)
+        invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
         async for response in agent.invoke(
             messages=message,
             thread=thread,
@@ -1524,7 +1765,7 @@ class SKAgentManager:
             "response": str(final_response) if final_response else "",
             "conversation_id": conv_id,
             "agent_used": agent_id,
-            "model_used": self._get_agent_model_id(agent_id),
+            "model_used": model_id,
             "pages_analyzed": len(pages),
             "mode": mode,
         }
@@ -1685,8 +1926,17 @@ async def _get_manager() -> SKAgentManager:
             _manager = SKAgentManager(_config)
             await _manager.start()
             # Create conversation runner with the manager's agents and lazy factory
+
+            async def _spec_agent_builder(agent_cfg: AgentConfig):
+                """Adapter: ephemeral builder for conversation inline specs (#3407)."""
+                built = await _manager._build_ephemeral_agent(agent_cfg)
+                return built[0] if built else None
+
             _conversation_runner = ConversationRunner(
-                _config, _manager._sk_agents, _manager._get_or_create_agent
+                _config,
+                _manager._sk_agents,
+                _manager._get_or_create_agent,
+                spec_agent_builder=_spec_agent_builder,
             )
             # Update tool descriptions dynamically
             _update_tool_descriptions(_config)
@@ -1748,6 +1998,7 @@ async def call_agent(
     model_override: str = "",
     system_prompt: str = "",
     mcp_overrides: str = "",
+    agent_spec: str = "",
 ) -> str:
     """Send a prompt to an AI agent.
 
@@ -1768,6 +2019,13 @@ async def call_agent(
         mcp_overrides: JSON string to modify agent's MCP tools for this call.
             Format: {"add": ["mcp_id"], "remove": ["mcp_id"]} for delta,
             or {"replace": ["mcp_id1", "mcp_id2"]} for full replacement.
+        agent_spec: JSON string to compose an agent à la carte (#3407): model +
+            prompt + capabilities + tools + execution, optionally specializing
+            a preset via extends. {"extends":"analyst","model":"glm-5.1",
+            "mcps":{"replace":[]},"sampling":{"temperature":0.3}} — precedence:
+            call override > spec > preset > default; only server-configured
+            models/MCPs may be referenced; the response carries
+            effective_config (no secrets).
 
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.
@@ -1814,6 +2072,18 @@ async def call_agent(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid mcp_overrides JSON"}, ensure_ascii=False)
 
+    # Parse agent_spec (#3407)
+    parsed_agent_spec = None
+    if agent_spec:
+        try:
+            parsed = json.loads(agent_spec)
+            if isinstance(parsed, dict):
+                parsed_agent_spec = parsed
+            else:
+                return json.dumps({"error": "agent_spec must be a JSON object"}, ensure_ascii=False)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid agent_spec JSON"}, ensure_ascii=False)
+
     result = await manager.call_agent(
         prompt=prompt,
         agent_id=agent if agent else None,
@@ -1825,6 +2095,7 @@ async def call_agent(
         model_override=model_override if model_override else None,
         system_prompt=system_prompt if system_prompt else None,
         mcp_overrides=parsed_mcp_overrides,
+        agent_spec=parsed_agent_spec,
     )
     return json.dumps(result, ensure_ascii=False)
 
@@ -2153,6 +2424,7 @@ async def run_conversation(
     conversation: str = "",
     options: str = "",
     conversation_id: str = "",
+    conversation_spec: str = "",
 ) -> str:
     """Run a multi-agent conversation.
 
@@ -2161,9 +2433,17 @@ async def run_conversation(
 
     Args:
         prompt: The research question or topic to deliberate.
-        conversation: Conversation preset ID (default: deep-search).
+        conversation: Conversation preset ID (default: deep-search). Ignored
+            when conversation_spec carries its own extends.
         options: JSON string with overrides (max_rounds).
         conversation_id: Reserved for future thread continuity.
+        conversation_spec: JSON string to compose a conversation à la carte
+            (#3407): agents + coordination + prompts, optionally specializing
+            a preset via extends. {"extends":"deep-think","type":"sequential",
+            "add_agents":["analyst"],"inline_agents":[{"id":"socratic",
+            "system_prompt":"..."}],"max_rounds":4} — agent references must
+            resolve to configured agents or inline_agents; the response
+            carries effective_conversation (no secrets).
 
     Returns:
         JSON string with: response, conversation_type, agents_used, rounds, steps.
@@ -2177,10 +2457,25 @@ async def run_conversation(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
 
+    parsed_conversation_spec = None
+    if conversation_spec:
+        try:
+            parsed = json.loads(conversation_spec)
+            if isinstance(parsed, dict):
+                parsed_conversation_spec = parsed
+            else:
+                return json.dumps(
+                    {"error": "conversation_spec must be a JSON object"},
+                    ensure_ascii=False,
+                )
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Invalid conversation_spec JSON"}, ensure_ascii=False)
+
     result = await runner.run(
         prompt=prompt,
         conversation_id=conversation if conversation else None,
         options=opts,
+        conversation_spec=parsed_conversation_spec,
     )
     return json.dumps(result, ensure_ascii=False)
 
