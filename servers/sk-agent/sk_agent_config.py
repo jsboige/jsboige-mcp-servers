@@ -160,6 +160,8 @@ class McpConfig:
     command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    risk_class: str = "read"  # see #3408: ToolRiskClass
+    allowed_capabilities: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> McpConfig:
@@ -169,6 +171,8 @@ class McpConfig:
             command=data.get("command", ""),
             args=data.get("args", []),
             env=data.get("env", {}),
+            risk_class=data.get("risk_class", "read"),
+            allowed_capabilities=list(data.get("allowed_capabilities", [])),
         )
 
     def to_dict(self) -> dict:
@@ -180,6 +184,10 @@ class McpConfig:
         }
         if self.env:
             d["env"] = self.env
+        if self.risk_class != "read":
+            d["risk_class"] = self.risk_class
+        if self.allowed_capabilities:
+            d["allowed_capabilities"] = list(self.allowed_capabilities)
         return d
 
 
@@ -341,6 +349,7 @@ class AgentConfig:
     model: str = ""  # Reference to a ModelConfig.id
     system_prompt: str = ""
     mcps: list[str] = field(default_factory=list)  # References to McpConfig.id
+    capabilities: list[str] = field(default_factory=list)  # see #3408
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     parameters: dict[str, Any] = field(default_factory=dict)
 
@@ -352,12 +361,13 @@ class AgentConfig:
             model=data.get("model", ""),
             system_prompt=data.get("system_prompt", ""),
             mcps=data.get("mcps", []),
+            capabilities=list(data.get("capabilities", [])),
             memory=MemoryConfig.from_dict(data.get("memory")),
             parameters=data.get("parameters", {}),
         )
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "description": self.description,
             "model": self.model,
@@ -366,6 +376,9 @@ class AgentConfig:
             "memory": self.memory.to_dict(),
             "parameters": self.parameters,
         }
+        if self.capabilities:
+            d["capabilities"] = list(self.capabilities)
+        return d
 
 
 ConversationType = Literal[

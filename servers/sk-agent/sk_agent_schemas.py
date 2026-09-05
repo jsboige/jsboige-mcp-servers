@@ -150,6 +150,74 @@ ConversationType = Literal[
 
 
 # ---------------------------------------------------------------------------
+# Capability catalog (issue #3408)
+# ---------------------------------------------------------------------------
+#
+# The catalog enumerates the *advertised* capabilities an agent may claim.
+# Each tool declares the subset of capabilities it requires via
+# ``ToolSpec.allowed_capabilities``; the schema cross-validates that every
+# capability required by an agent's MCPs is in the agent's capability set.
+#
+# The catalog is intentionally a closed set — adding a new capability is
+# a code change, not a config value, because every capability has security
+# semantics ("shell" gates ``risk_class=exec``, "browser" gates
+# ``risk_class=browser``, ...).
+CAPABILITY_CATALOG: tuple[str, ...] = (
+    "web",              # HTTP GET (read-only web content)
+    "browser",          # Interactive browser automation (playwright)
+    "vision",           # Image / video / multimodal inputs
+    "document_text",    # Text extraction from documents (markitdown, ...)
+    "document_visual",  # Visual document analysis (PDF rendered, ...)
+    "repo_read",        # Read repository files (no execution)
+    "github_read",      # Read GitHub artefacts (issues, PRs, ...)
+    "github_write",     # Mutate GitHub artefacts (issue comment, PR review, ...)
+    "shell",            # Spawn a shell process / arbitrary command execution
+    "repl",             # Long-lived interpreter (jupyter, ...)
+    "memory",           # Vector memory write/read
+    "recursive_agents", # Spawn child sk-agent invocations
+)
+
+#: Type alias for the catalog — used as the ``Literal`` basis for
+#: ``AgentPreset.capabilities`` and ``ToolSpec.allowed_capabilities``.
+CapabilityName = Literal[
+    "web",
+    "browser",
+    "vision",
+    "document_text",
+    "document_visual",
+    "repo_read",
+    "github_read",
+    "github_write",
+    "shell",
+    "repl",
+    "memory",
+    "recursive_agents",
+]
+
+
+#: Tool risk classes (issue #3408, scope §2). Default-deny for ``exec``
+#: and ``stateful`` — an agent must explicitly grant the matching
+#: capability (``shell``, ``repl``, ...) before such a tool is allowed.
+ToolRiskClass = Literal["read", "browser", "stateful", "exec"]
+
+#: Mapping ``risk_class`` → minimum capability that must appear in
+#: ``AgentPreset.capabilities`` for the tool to be admitted.
+#:
+#: - ``read``     → no capability required (web, repo_read, ...).
+#: - ``browser``  → ``browser`` capability.
+#: - ``stateful`` → ``memory`` or ``repl`` capability (e.g. self-inclusion
+#:                 plugin carries conversation state).
+#: - ``exec``     → ``shell`` or ``repl`` capability (default-deny on
+#:                 non-shell agents per issue scope §3).
+RISK_CLASS_REQUIRED_CAPABILITIES: dict[str, frozenset[str]] = {
+    "read": frozenset(),
+    "browser": frozenset({"browser"}),
+    "stateful": frozenset({"memory", "repl"}),
+    "exec": frozenset({"shell", "repl"}),
+}
+
+
+# ---------------------------------------------------------------------------
 # Base configuration shared by every schema model
 # ---------------------------------------------------------------------------
 
@@ -254,6 +322,28 @@ class ModelSpec(_StrictModel):
 class ToolSpec(_StrictModel):
     """An MCP tool (shared resource pool).
 
+    Capability & risk (issue #3408)
+    -------------------------------
+    Every tool carries two security-relevant fields:
+
+    - ``risk_class`` (``"read" | "browser" | "stateful" | "exec"``): the
+      threat surface this tool exposes. ``exec`` is default-deny: the
+      schema rejects an agent that lists this tool in its ``mcps`` unless
+      the agent advertises a capability in
+      ``RISK_CLASS_REQUIRED_CAPABILITIES["exec"]`` (``shell`` or ``repl``).
+    - ``allowed_capabilities``: the subset of ``CAPABILITY_CATALOG`` this
+      tool needs to function (e.g. ``playwright`` declares
+      ``["browser", "web"]``; ``open_terminal`` declares ``["shell"]``).
+      The cross-validator rejects an agent that lists this tool unless
+      every element of ``allowed_capabilities`` is in
+      ``AgentPreset.capabilities``.
+
+    Per-call MCP overrides (the ``mcp_overrides`` argument of
+    ``call_agent``) cannot elaborate capabilities: ``sk_agent.py`` calls
+    into the same cross-validator at runtime, so a client passing
+    ``{"replace": ["open_terminal"]}`` on an agent without ``shell`` is
+    rejected with an actionable error rather than silently escalated.
+
     The ``env`` mapping accepts two kinds of values, both as plain strings:
 
     - **env-var reference** (e.g. ``{"API_KEY": "GLM_API_KEY"}``): the value
@@ -282,6 +372,23 @@ class ToolSpec(_StrictModel):
             "names (uppercase, see ENV_VAR_NAME_PATTERN) or non-secret "
             "configuration literals (URLs, ports, log levels, ...). "
             "Plain strings only."
+        ),
+    )
+    risk_class: ToolRiskClass = Field(
+        default="read",
+        description=(
+            "Threat surface class for this tool (issue #3408). "
+            "``exec`` is default-deny unless the agent advertises "
+            "``shell`` or ``repl``."
+        ),
+    )
+    allowed_capabilities: list[CapabilityName] = Field(
+        default_factory=list,
+        max_length=len(CAPABILITY_CATALOG),
+        description=(
+            "Subset of CAPABILITY_CATALOG this tool requires. The agent "
+            "must declare every capability listed here for the tool to "
+            "be reachable in its ``mcps`` list."
         ),
     )
 
@@ -333,6 +440,16 @@ class AgentPreset(_StrictModel):
     )
     system_prompt: str = Field(default="", max_length=32_768)
     mcps: list[RefId] = Field(default_factory=list, max_length=64)
+    capabilities: list[CapabilityName] = Field(
+        default_factory=list,
+        max_length=len(CAPABILITY_CATALOG),
+        description=(
+            "Subset of CAPABILITY_CATALOG this agent is granted. Every "
+            "capability required by an MCP in ``mcps`` (via "
+            "``ToolSpec.allowed_capabilities``) must appear here. Issue "
+            "#3408 acceptance #1 (matrix derived from config)."
+        ),
+    )
     execution: ExecutionProfile = Field(default_factory=ExecutionProfile)
     parameters: dict[str, Any] = Field(default_factory=dict)
 
@@ -659,6 +776,17 @@ class SKAgentConfig(_StrictModel):
                     f"{sorted(set(dup_inline))}"
                 )
 
+            # Capability matrix (issue #3408): inline agents must also
+            # satisfy the same cross-validator as top-level agents.
+            _validate_capability_matrix_inline(
+                conv.id, inline_agents=conv.inline_agents, tools=self.tools
+            )
+
+        # Capability matrix (issue #3408) for top-level agents — accepts
+        # the whole validated config in one call so the helper is reusable
+        # at runtime by ``sk_agent.py`` for override enforcement.
+        _validate_capability_matrix(agents=self.agents, tools=self.tools)
+
         return self
 
     # ------------------------------------------------------------------
@@ -674,6 +802,237 @@ class SKAgentConfig(_StrictModel):
 
     def get_agent(self, agent_id: str) -> "AgentPreset | None":
         return next((a for a in self.agents if a.id == agent_id), None)
+
+
+# ---------------------------------------------------------------------------
+# Capability matrix helpers (issue #3408)
+# ---------------------------------------------------------------------------
+
+
+def _required_capabilities_for(
+    tool_ids: list[str],
+    tools: list[ToolSpec] | list[dict[str, Any]],
+    *,
+    source_label: str = "agent",
+) -> set[str]:
+    """Return the set of capabilities required by ``tool_ids``.
+
+    Accepts either ``ToolSpec`` instances (post-validation) or raw dict
+    payloads (pre-validation, used by ``sk_agent.py`` which holds the
+    legacy dataclass shape). Unrecognised tool ids are ignored — the
+    reference validator in ``_validate_references`` is the canonical
+    surface for those.
+    """
+    tool_index: dict[str, Any] = {}
+    for t in tools:
+        if isinstance(t, dict):
+            tool_id = t.get("id")
+            tool_caps = t.get("allowed_capabilities") or []
+        else:
+            tool_id = getattr(t, "id", None)
+            tool_caps = getattr(t, "allowed_capabilities", []) or []
+        if tool_id:
+            tool_index[tool_id] = tool_caps
+    required: set[str] = set()
+    for tool_id in tool_ids:
+        caps = tool_index.get(tool_id)
+        if caps is None:
+            continue
+        required.update(caps)
+    return required
+
+
+def _tool_lookup(
+    tools: list[ToolSpec] | list[dict[str, Any]], tool_id: str
+) -> Any:
+    """Find a tool by id across ``ToolSpec`` instances and raw dicts."""
+    for t in tools:
+        if isinstance(t, dict):
+            if t.get("id") == tool_id:
+                return t
+        else:
+            if getattr(t, "id", None) == tool_id:
+                return t
+    return None
+
+
+def _tool_risk_class(tool: Any) -> str:
+    """Return the ``risk_class`` of a tool, accepting both shapes."""
+    if isinstance(tool, dict):
+        return tool.get("risk_class", "read") or "read"
+    return getattr(tool, "risk_class", "read") or "read"
+
+
+def _missing_capabilities(
+    required: set[str], granted: set[str]
+) -> list[str]:
+    """Return sorted capabilities required but not granted."""
+    return sorted(required - granted)
+
+
+def _validate_capability_matrix_inline(
+    conversation_id: str,
+    inline_agents: list[AgentPreset],
+    tools: list[ToolSpec],
+) -> None:
+    """Capability matrix for inline agents inside a conversation preset.
+
+    Mirrors the top-level matrix but labels errors with the conversation
+    id so the operator can locate the offending entry without searching
+    through every agent preset.
+    """
+    for inline in inline_agents:
+        granted = set(inline.capabilities)
+        required = _required_capabilities_for(inline.mcps, tools)
+        missing = _missing_capabilities(required, granted)
+        if missing:
+            raise ValueError(
+                f"conversation {conversation_id!r} inline agent {inline.id!r} "
+                f"requires capabilities {missing} not granted; granted={sorted(granted)}"
+            )
+        # risk_class-based default-deny per-tool (issue #3408 §3):
+        # ``exec`` requires ``shell`` or ``repl``; ``browser`` requires
+        # ``browser``; ``stateful`` requires ``memory`` or ``repl``.
+        for tool_id in inline.mcps:
+            tool = _tool_lookup(tools, tool_id)
+            if tool is None:
+                continue
+            risk_class = _tool_risk_class(tool)
+            needed = RISK_CLASS_REQUIRED_CAPABILITIES.get(risk_class, frozenset())
+            if needed and not (granted & needed):
+                raise ValueError(
+                    f"conversation {conversation_id!r} inline agent {inline.id!r} "
+                    f"tool {tool_id!r} risk_class={risk_class!r} requires one of "
+                    f"{sorted(needed)}; granted={sorted(granted)}"
+                )
+
+
+def _validate_capability_matrix(
+    agents: list[AgentPreset], tools: list[ToolSpec]
+) -> None:
+    """Capability matrix for top-level agents (issue #3408 acceptance #1).
+
+    Two checks per agent:
+
+    1. ``allowed_capabilities`` of each MCP must be a subset of
+       ``agent.capabilities``. This is the **least privilege** invariant:
+       the agent cannot use a tool that needs a capability it does not
+       declare.
+    2. ``risk_class=exec | browser | stateful`` enumerates a required
+       capability set in ``RISK_CLASS_REQUIRED_CAPABILITIES``; the agent
+       must intersect that set. This is the **default-deny** invariant
+       (acceptance #2: tools beyond profile are refused).
+
+    Both checks raise ``ValueError`` with the agent id, offending tool
+    ids, missing capabilities, and the granted set so the operator does
+    not have to cross-reference the registries by hand.
+    """
+    for agent in agents:
+        granted = set(agent.capabilities)
+        required = _required_capabilities_for(agent.mcps, tools)
+        missing = _missing_capabilities(required, granted)
+        if missing:
+            raise ValueError(
+                f"agent {agent.id!r} requires capabilities {missing} not granted; "
+                f"granted={sorted(granted)}, mcps={list(agent.mcps)}"
+            )
+        for tool_id in agent.mcps:
+            tool = _tool_lookup(tools, tool_id)
+            if tool is None:
+                continue
+            risk_class = _tool_risk_class(tool)
+            needed = RISK_CLASS_REQUIRED_CAPABILITIES.get(risk_class, frozenset())
+            if needed and not (granted & needed):
+                raise ValueError(
+                    f"agent {agent.id!r} tool {tool_id!r} "
+                    f"risk_class={risk_class!r} requires one of "
+                    f"{sorted(needed)}; granted={sorted(granted)}"
+                )
+
+
+def validate_effective_capabilities(
+    agent_capabilities: list[str],
+    effective_mcp_ids: list[str],
+    tools: list[ToolSpec],
+) -> tuple[set[str], list[str], list[str]]:
+    """Cross-validator reusable at runtime (issue #3408 acceptance #3).
+
+    ``sk_agent.py`` calls this before honouring a per-call
+    ``mcp_overrides`` so a client cannot grant itself capabilities the
+    agent preset does not declare. The function is **read-only** — it
+    does not mutate the config — and returns a structured result the
+    caller can format as an error or log line.
+
+    Returns ``(granted_set, required_set, missing_list)``. ``missing_list``
+    is empty on success. ``granted_set`` defaults ``agent_capabilities``
+    and is returned for convenience so the caller can re-use the set
+    when formatting the error.
+    """
+    granted = set(agent_capabilities)
+    required = _required_capabilities_for(effective_mcp_ids, tools)
+    return granted, required, _missing_capabilities(required, granted)
+
+
+def resolve_effective_mcp_ids(
+    base_mcps: list[str],
+    mcp_overrides: dict | None,
+    *,
+    agent_capabilities: list[str] | None = None,
+    tools: list[ToolSpec] | None = None,
+) -> list[str]:
+    """Effective MCP ids after applying ``mcp_overrides`` (issue #3408).
+
+    When ``agent_capabilities`` and ``tools`` are provided, the same
+    default-deny rule that protects the static config also protects the
+    per-call override: a client cannot ``replace`` ``["open_terminal"]``
+    on an agent that does not declare ``shell``. The check raises
+    ``ValueError`` with the missing capability so the caller can surface
+    the refusal as a normal MCP error (acceptance #2 + #3).
+
+    When the capability context is absent (``agent_capabilities=None`` or
+    ``tools=None``), the function falls back to the legacy behaviour
+    (no privilege check) so legacy callers — and the original
+    ``test_mcp_overrides.py`` suite — keep working unchanged.
+    """
+    if not mcp_overrides:
+        effective = list(base_mcps)
+    elif "replace" in mcp_overrides:
+        effective = list(mcp_overrides["replace"])
+    else:
+        effective = list(base_mcps)
+        for mcp_id in mcp_overrides.get("add", []):
+            if mcp_id not in effective:
+                effective.append(mcp_id)
+        for mcp_id in mcp_overrides.get("remove", []):
+            if mcp_id in effective:
+                effective.remove(mcp_id)
+
+    if agent_capabilities is None or tools is None:
+        return effective
+
+    granted, required, missing = validate_effective_capabilities(
+        agent_capabilities, effective, tools
+    )
+    if missing:
+        raise ValueError(
+            f"mcp_overrides would require capabilities {missing} not granted; "
+            f"effective_mcps={effective}, granted={sorted(granted)}"
+        )
+    # risk_class default-deny on the effective set (the override path
+    # cannot loosen the static rule).
+    for tool_id in effective:
+        tool = _tool_lookup(tools, tool_id)
+        if tool is None:
+            continue
+        risk_class = _tool_risk_class(tool)
+        needed = RISK_CLASS_REQUIRED_CAPABILITIES.get(risk_class, frozenset())
+        if needed and not (granted & needed):
+            raise ValueError(
+                f"mcp_overrides would activate tool {tool_id!r} "
+                f"risk_class={risk_class!r} requiring one of "
+                f"{sorted(needed)}; granted={sorted(granted)}"
+            )
+    return effective
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +1072,10 @@ __all__ = [
     "EnvVarName",
     "RefId",
     "ConversationType",
+    "CAPABILITY_CATALOG",
+    "CapabilityName",
+    "ToolRiskClass",
+    "RISK_CLASS_REQUIRED_CAPABILITIES",
     "CapabilityProfile",
     "ExecutionProfile",
     "ModelSpec",
@@ -721,6 +1084,14 @@ __all__ = [
     "ConversationPreset",
     "SKAgentConfig",
     "validate_config_payload",
+    "validate_effective_capabilities",
+    "resolve_effective_mcp_ids",
+    "_validate_capability_matrix",
+    "_validate_capability_matrix_inline",
+    "_required_capabilities_for",
+    "_missing_capabilities",
+    "_tool_lookup",
+    "_tool_risk_class",
     "_is_env_var_name",
     "_env_var_name_pattern_check",
     "_format_errors",

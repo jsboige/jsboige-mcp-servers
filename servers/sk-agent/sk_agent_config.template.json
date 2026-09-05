@@ -234,26 +234,33 @@
 
   "mcps": [
     {
+      "_comment": "Tool risk class + allowed capabilities (issue #3408). ``exec`` is default-deny unless the agent advertises ``shell``; ``browser`` requires ``browser``; ``stateful`` requires ``memory``/``repl``; ``read`` is the no-capability default.",
       "id": "searxng",
       "description": "Web search via SearXNG",
       "command": "npx",
       "args": ["-y", "mcp-searxng"],
       "env": {
         "SEARXNG_URL": "https://search.myia.io"
-      }
+      },
+      "risk_class": "read",
+      "allowed_capabilities": ["web"]
     },
     {
       "id": "playwright",
       "description": "Browser automation and web scraping",
       "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
+      "args": ["-y", "@playwright/mcp@latest"],
+      "risk_class": "browser",
+      "allowed_capabilities": ["browser", "web"]
     },
     {
       "_comment": "Self-inclusion: DEPLOYMENT MUST REPLACE the placeholder paths below with actual installation paths",
       "id": "sk_agent",
       "description": "Self-inclusion for recursive tool chaining",
       "command": "VENV_PATH/Scripts/python.exe",
-      "args": ["INSTALLATION_PATH/sk_agent.py"]
+      "args": ["INSTALLATION_PATH/sk_agent.py"],
+      "risk_class": "stateful",
+      "allowed_capabilities": ["recursive_agents", "memory"]
     },
     {
       "id": "open_terminal",
@@ -263,24 +270,29 @@
       "env": {
         "OPEN_TERMINAL_URL": "http://open-terminal-myia:8000",
         "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
-      }
+      },
+      "risk_class": "exec",
+      "allowed_capabilities": ["shell", "repo_read"]
     },
     {
       "id": "markitdown",
       "description": "Document conversion (PDF/DOCX/XLSX/PPTX/HTML/images) to Markdown via Microsoft markitdown",
       "command": "markitdown-mcp",
-      "args": []
+      "args": [],
+      "risk_class": "read",
+      "allowed_capabilities": ["document_text", "document_visual"]
     }
   ],
 
   "agents": [
     {
-      "_comment": "=== Core utility agents ===",
+      "_comment": "=== Core utility agents === Capability lists (issue #3408) follow the ``mcps`` they cover — adding a tool without expanding ``capabilities`` is rejected at schema validation time.",
       "id": "analyst",
       "description": "General analyst with web search, document conversion, and memory. Local: Qwen3.6 35B MoE (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1 (45.3/113 coding)",
       "model": "glm-5.1",
       "system_prompt": "You are a helpful analyst with web search, browsing, and document conversion capabilities. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright", "markitdown"],
+      "capabilities": ["web", "browser", "document_text", "document_visual"],
       "memory": {
         "enabled": true,
         "collection": "analyst-memory"
@@ -292,6 +304,7 @@
       "model": "glm-5.3-flash",
       "system_prompt": "You are a vision analysis specialist with web search, browsing, and document conversion capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. Be precise and thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
+      "capabilities": ["web", "browser", "document_text", "document_visual"],
       "memory": { "enabled": false }
     },
     {
@@ -300,6 +313,7 @@
       "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a vision analysis assistant with web search, browsing, and document conversion capabilities. Analyze images carefully, describe what you see, and search for context when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Be concise but thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
+      "capabilities": ["web", "browser", "document_text", "document_visual"],
       "memory": { "enabled": false }
     },
     {
@@ -308,6 +322,7 @@
       "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "You are an agentic coding assistant with terminal access and web search. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use terminal to run commands and search the web for documentation when needed. Always respond in the same language as the user.",
       "mcps": ["open_terminal", "searxng"],
+      "capabilities": ["shell", "repo_read", "web"],
       "memory": { "enabled": false }
     },
     {
@@ -340,6 +355,7 @@
       "model": "glm-5",
       "system_prompt": "You are a helpful analyst powered by GLM-5 with web search, browsing, and document conversion capabilities. Leverage your reasoning strengths for complex analysis. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright", "markitdown"],
+      "capabilities": ["web", "browser", "document_text", "document_visual"],
       "memory": {
         "enabled": true,
         "collection": "analyst-glm5-memory"
@@ -351,6 +367,7 @@
       "model": "glm-5.1-fast",
       "system_prompt": "You are a fast analyst. Provide concise, direct answers without extended reasoning chains. Optimize for speed and clarity. Always respond in the same language as the user.",
       "mcps": ["searxng"],
+      "capabilities": ["web"],
       "memory": { "enabled": false }
     },
     {
@@ -393,6 +410,7 @@
       "model": "glm-5.1",
       "system_prompt": "You are a meticulous investigative researcher with terminal access and document conversion capabilities. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. Use terminal commands to inspect files, run scripts, or verify facts when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
       "mcps": ["searxng", "playwright", "open_terminal", "markitdown"],
+      "capabilities": ["web", "browser", "shell", "repo_read", "document_text", "document_visual"],
       "memory": {
         "enabled": true,
         "collection": "research-memory"
@@ -492,6 +510,7 @@
       "model": "owui-expert-analyste",
       "system_prompt": "[OWUI enriched model: expert-analyste] Delegate to the OWUI custom model's built-in methodology for structured French analysis.",
       "mcps": ["searxng"],
+      "capabilities": ["web"],
       "memory": {
         "enabled": true,
         "collection": "owui-analyst-memory"
