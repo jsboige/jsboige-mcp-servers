@@ -645,7 +645,11 @@ class SKAgentManager:
         )
 
     def _resolve_effective_mcp_ids(
-        self, base_mcps: list[str], mcp_overrides: dict | None
+        self,
+        base_mcps: list[str],
+        mcp_overrides: dict | None,
+        *,
+        agent_capabilities: list[str] | None = None,
     ) -> list[str]:
         """Compute effective MCP IDs given base config and per-call overrides.
 
@@ -653,21 +657,64 @@ class SKAgentManager:
         - {"replace": ["searxng", "open_terminal"]} → full replacement
         - {"add": ["searxng"], "remove": ["playwright"]} → delta
         - None or {} → no change (return base_mcps)
+
+        Capability-aware enforcement (#3408, acceptance #3): when both
+        ``agent_capabilities`` and the runtime ``tools`` registry are
+        available, the same default-deny rule that protects the static
+        config protects this per-call override. A client passing
+        ``{"replace": ["open_terminal"]}`` on an agent without ``shell``
+        raises ``ValueError`` with the missing capability, surfaced by the
+        call site as a normal MCP error. Without that context the legacy
+        behaviour is preserved (test parity with ``test_mcp_overrides``).
         """
         if not mcp_overrides:
-            return base_mcps
+            effective = list(base_mcps)
+        elif "replace" in mcp_overrides:
+            effective = list(mcp_overrides["replace"])
+        else:
+            effective = list(base_mcps)
+            for mcp_id in mcp_overrides.get("add", []):
+                if mcp_id not in effective:
+                    effective.append(mcp_id)
+            for mcp_id in mcp_overrides.get("remove", []):
+                if mcp_id in effective:
+                    effective.remove(mcp_id)
 
-        if "replace" in mcp_overrides:
-            return list(mcp_overrides["replace"])
+        if agent_capabilities is None or not getattr(self.config, "mcps", None):
+            return effective
 
-        result = list(base_mcps)
-        for mcp_id in mcp_overrides.get("add", []):
-            if mcp_id not in result:
-                result.append(mcp_id)
-        for mcp_id in mcp_overrides.get("remove", []):
-            if mcp_id in result:
-                result.remove(mcp_id)
-        return result
+        # Forward the capability check to the schema helper so the rule
+        # lives in one place (issue #3408 acceptance #3: a client cannot
+        # widen rights). The helper raises ValueError with a readable
+        # message; the caller wraps it in an MCP error.
+        from sk_agent_schemas import (
+            RISK_CLASS_REQUIRED_CAPABILITIES,
+            _required_capabilities_for,
+        )
+        tools = list(self.config.mcps)
+        tool_index = {t.id: t for t in tools}
+        granted = set(agent_capabilities)
+        required = _required_capabilities_for(effective, tools)
+        missing = sorted(required - granted)
+        if missing:
+            raise ValueError(
+                f"mcp_overrides would require capabilities {missing} not granted; "
+                f"effective_mcps={effective}, granted={sorted(granted)}"
+            )
+        for tool_id in effective:
+            tool = tool_index.get(tool_id)
+            if tool is None:
+                continue
+            needed = RISK_CLASS_REQUIRED_CAPABILITIES.get(
+                getattr(tool, "risk_class", "read"), frozenset()
+            )
+            if needed and not (granted & needed):
+                raise ValueError(
+                    f"mcp_overrides would activate tool {tool_id!r} "
+                    f"risk_class={getattr(tool, 'risk_class', 'read')!r} "
+                    f"requiring one of {sorted(needed)}; granted={sorted(granted)}"
+                )
+        return effective
 
     async def _collect_mcp_plugins(
         self, mcp_ids: list[str], agent_id: str
@@ -956,7 +1003,18 @@ class SKAgentManager:
 
                 # Resolve effective MCPs
                 base_mcps = list(agent_cfg.mcps) if agent_cfg else []
-                effective_mcps = self._resolve_effective_mcp_ids(base_mcps, mcp_overrides)
+                # Forward the agent's capability set (#3408 acceptance #3)
+                # so a per-call ``mcp_overrides`` cannot widen the agent's
+                # effective rights: replacing ``open_terminal`` on an
+                # agent without ``shell`` raises here and is surfaced as
+                # an MCP error before any plugin is loaded.
+                agent_caps = list(agent_cfg.capabilities) if agent_cfg else None
+                try:
+                    effective_mcps = self._resolve_effective_mcp_ids(
+                        base_mcps, mcp_overrides, agent_capabilities=agent_caps
+                    )
+                except ValueError as cap_err:
+                    return {"error": f"mcp_overrides refused: {cap_err}"}
                 temp_plugins = await self._collect_mcp_plugins(effective_mcps, resolved_id)
 
                 # Add memory if enabled
