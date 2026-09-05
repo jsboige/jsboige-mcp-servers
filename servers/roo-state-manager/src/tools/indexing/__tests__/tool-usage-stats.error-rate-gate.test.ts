@@ -55,6 +55,7 @@ vi.mock('os', async (importOriginal) => {
 vi.mock('../../../utils/shared-state-path.js', () => ({
     getSharedStatePath: () => mockSharedStatePath.value,
     tryGetSharedStatePath: () => mockSharedStatePath.value,
+    assertSharedStoreAccessible: () => {},
 }));
 
 import { handleRooSyncIndexing, MIN_CALLS_FOR_ERROR_RATE } from '../roosync-indexing.tool.js';

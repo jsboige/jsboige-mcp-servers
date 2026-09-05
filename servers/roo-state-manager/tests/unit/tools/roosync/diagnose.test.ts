@@ -66,6 +66,7 @@ vi.mock('../../../../src/utils/shared-state-path.js', () => ({
     tryGetSharedStatePath: vi.fn(() => '/mock/shared-state'),
     getSharedStatePath: vi.fn(() => '/mock/shared-state'),
     isSharedPathAccessible: vi.fn(() => true),
+    assertSharedStoreAccessible: () => {},
 }));
 
 // Mock skeleton-cache.service

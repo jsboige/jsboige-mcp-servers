@@ -29,7 +29,8 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('../../../../src/utils/shared-state-path.js', () => ({
-    getSharedStatePath: vi.fn(() => '/mock/shared-state')
+    getSharedStatePath: vi.fn(() => '/mock/shared-state'),
+    assertSharedStoreAccessible: () => {}
 }));
 
 import { analyzeRooSyncProblems } from '../../../../src/tools/diagnostic/analyze_problems.js';

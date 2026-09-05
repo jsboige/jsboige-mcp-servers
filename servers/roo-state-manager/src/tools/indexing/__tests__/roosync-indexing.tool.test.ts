@@ -47,6 +47,7 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 vi.mock('../../../utils/shared-state-path.js', () => ({
 	getSharedStatePath: () => sharedStatePathHolder.value,
 	tryGetSharedStatePath: () => sharedStatePathHolder.value,
+	assertSharedStoreAccessible: () => {},
 }));
 
 vi.mock('../../../services/task-archiver/index.js', () => ({

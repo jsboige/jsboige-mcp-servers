@@ -35,7 +35,8 @@ const { mockGetSharedStatePath } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../src/utils/shared-state-path.js', () => ({
-    getSharedStatePath: mockGetSharedStatePath
+    getSharedStatePath: mockGetSharedStatePath,
+    assertSharedStoreAccessible: () => {}
 }));
 
 // Mock fs (both promises and sync)

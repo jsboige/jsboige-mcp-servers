@@ -73,6 +73,7 @@ vi.mock('../../../../src/services/lazy-roosync.js', () => ({
 
 vi.mock('../../../../src/utils/shared-state-path.js', () => ({
     getSharedStatePath: mockGetSharedStatePath,
+    assertSharedStoreAccessible: () => {},
 }));
 
 vi.mock('../../../../src/tools/roosync/heartbeat-activity.js', () => ({

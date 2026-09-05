@@ -21,6 +21,7 @@ const {
 // Mock shared-state-path
 vi.mock('../../utils/shared-state-path.js', () => ({
   getSharedStatePath: () => '/fake/shared-state',
+  assertSharedStoreAccessible: () => {},
 }));
 
 // Mock AttachmentManager — constructor returns object with mock methods

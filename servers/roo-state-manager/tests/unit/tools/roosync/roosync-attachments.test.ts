@@ -11,6 +11,7 @@ import type { AttachmentMetadata } from '../../../../src/services/roosync/Attach
 vi.mock('../../../../src/services/roosync/AttachmentManager.js');
 vi.mock('../../../../src/utils/shared-state-path.js', () => ({
   getSharedStatePath: () => '/mock/shared-state',
+  assertSharedStoreAccessible: () => {},
 }));
 
 const mockListAttachments = vi.fn();

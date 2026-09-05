@@ -55,6 +55,7 @@ const { mockGetSharedStatePath } = vi.hoisted(() => ({
 }));
 vi.mock('../../../utils/shared-state-path.js', () => ({
   getSharedStatePath: mockGetSharedStatePath,
+  assertSharedStoreAccessible: () => {},
 }));
 
 // Registry source for collectSystemHealth (#3160): lazy-roosync's getRooSyncService.

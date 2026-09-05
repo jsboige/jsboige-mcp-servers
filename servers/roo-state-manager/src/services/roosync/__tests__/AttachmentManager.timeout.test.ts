@@ -64,6 +64,7 @@ vi.mock('fs', async (importOriginal) => {
 // fixture laid down by `seedAttachment`. Hoisted ref so the factory stays stable.
 vi.mock('../../../utils/shared-state-path.js', () => ({
   getSharedStatePath: () => mocks.sharedStatePath,
+  assertSharedStoreAccessible: () => {},
 }));
 
 // Imported AFTER mocks are registered.

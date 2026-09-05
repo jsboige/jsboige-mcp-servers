@@ -38,7 +38,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
@@ -3088,6 +3088,21 @@ async function handleRead(
   resolvedWorkspace: string,
   requestEcho: DashboardRequestEcho
 ): Promise<DashboardResult> {
+  // #3459: fail-closed. When the shared store root is unreachable, an agent must
+  // be STOPPED, not reassured with "dashboard not found — use createIfNotExists".
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'read',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: (err as Error).message
+    };
+  }
+
   let dashboard = await readDashboardFile(key);
   if (!dashboard) {
     return {
@@ -3231,6 +3246,22 @@ async function handleWrite(
   };
   const content = args.content;
 
+  // #3459: refuser de créer un dashboard fantôme quand le magasin est absent.
+  // createIfNotExists est un piège actif ici : l'appliquer écrit un fichier
+  // dans un store injoignable qui masquera le vrai au retour du montage.
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'write',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: (err as Error).message
+    };
+  }
+
   // #3205 résiduel write-side : read-modify-write sous le verrou append —
   // sans lui, un append concurrent entre le read et le write est écrasé
   // (last-writer-wins), exactement la classe de perte que #1033 corrigeait
@@ -3309,6 +3340,22 @@ async function handleAppend(
     machineId: resolvedMachineId,
     workspace: resolvedWorkspace
   };
+
+  // #3459: refuser de créer un dashboard fantôme quand le magasin est absent.
+  // createIfNotExists est un piège actif ici : l'appliquer écrit un fichier
+  // dans un store injoignable qui masquera le vrai au retour du montage.
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'append',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: (err as Error).message
+    };
+  }
 
   let dashboard = await readDashboardFile(key);
   if (!dashboard) {
@@ -3786,6 +3833,20 @@ async function handleReadOverview(
   args: DashboardArgs,
   requestEcho: DashboardRequestEcho
 ): Promise<DashboardResult> {
+  // #3459: fail-closed — a missing store must not render as "0/3 dashboards".
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'read_overview',
+      key: `overview-${resolvedMachineId}-${resolvedWorkspace}`,
+      type: 'overview',
+      request: requestEcho,
+      message: (err as Error).message
+    };
+  }
+
   // read_overview still uses a small limit since it combines 3 dashboards
   const intercomLimit = args.intercomLimit ?? 5;
   const STATUS_MAX_LENGTH = 2000;
@@ -3864,6 +3925,21 @@ async function handleReadOverview(
 }
 
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
+  // #3459: fail-closed. A missing store must never be reported as "0 dashboards".
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'list',
+      key: '',
+      type: '',
+      request: requestEcho,
+      dashboards: [],
+      message: (err as Error).message
+    };
+  }
+
   // #1410 item 4: auto-cleanup stale worktree dashboards before listing
   const cleanedUp = await cleanupStaleWorktreeDashboards();
 

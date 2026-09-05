@@ -8,6 +8,7 @@
  */
 
 import { getMessageManager } from '../../services/MessageManager.js';
+import { assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { getLocalMachineId, getLocalFullId } from '../../utils/message-helpers.js';
@@ -88,6 +89,9 @@ export async function getMessage(
   logger.info('🔍 Starting get message operation');
 
   try {
+    // #3459: fail-closed. An unreachable store must not render "Message introuvable".
+    assertSharedStoreAccessible();
+
     // Validation des paramètres requis
     if (!args.message_id) {
       throw new MessageManagerError(

@@ -1,0 +1,103 @@
+/**
+ * #3459 — Contrôle positif (fail-closed) : magasin RooSync ABSENT.
+ *
+ * Quand ROOSYNC_SHARED_PATH pointe vers un chemin inexistant (lecteur G: non
+ * monté, magasin déconnecté), CHAQUE lecture d'outil doit échouer avec une
+ * erreur explicite nommant ROOSYNC_SHARED_PATH et son état — jamais rendre une
+ * collection vide indiscernable d'un magasin réellement vide.
+ *
+ * Ce test doit ROUGIR sur le code antérieur à #3459 : l'ancien code retournait
+ * `success:true` + `dashboards: []` (list), « Dashboard introuvable » (read),
+ * « Aucun message » (inbox), « Message introuvable » (get_message),
+ * « Aucune pièce jointe » (attachments).
+ *
+ * @module tests/roosync/fail-closed-store
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as path from 'path';
+import * as os from 'os';
+import { roosyncDashboard } from '../dashboard.js';
+import { roosyncRead } from '../read.js';
+import { getMessage } from '../get_message.js';
+import { roosyncListAttachments } from '../roosync-attachments.tool.js';
+
+// #858 / #864: these modules import a chat client for LLM condensation; keep it
+// inert so a read/list failing on the guard never needs (and never touches) it.
+vi.mock('@/services/openai', () => ({
+  getChatOpenAIClient: () => { throw new Error('No chat API key configured'); },
+  resetChatOpenAIClient: vi.fn(),
+  getLLMModelId: () => 'test-model',
+  getFallbackChatOpenAIClient: () => null,
+  getFallbackLLMModelId: () => 'test-fallback-model',
+}));
+
+// A path guaranteed to be absent on disk — whatever the machine / mount state.
+// A unique per-run suffix means no previous run (or leftover state) can have
+// created it: `existsSync` is `false`, so the fail-closed guard is exercised.
+const MISSING_STORE = path.join(
+  path.resolve(os.tmpdir(), `roosync-failclosed-test-${Date.now()}-${process.pid}`),
+  'shared-state'
+);
+
+describe('roosync fail-closed when store is absent (#3459)', () => {
+  beforeEach(() => {
+    process.env.ROOSYNC_SHARED_PATH = MISSING_STORE;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_CHAT_MODEL_ID;
+    delete process.env.EMBEDDING_API_KEY;
+    delete process.env.EMBEDDING_API_BASE_URL;
+  });
+
+  afterEach(() => {
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+  });
+
+  it('dashboard list fails (not an empty dashboards array)', async () => {
+    const result = await roosyncDashboard({ action: 'list' });
+    expect(result.success).toBe(false);
+    expect(String((result as any).message)).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect((result as any).dashboards).toEqual([]);
+  });
+
+  it('dashboard read fails (not "Dashboard introuvable / utilisez createIfNotExists")', async () => {
+    const result = await roosyncDashboard({ action: 'read', type: 'global' });
+    expect(result.success).toBe(false);
+    expect(String((result as any).message)).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    // The trap: the old message recommended createIfNotExists — which would have
+    // written a phantom dashboard over the absent mount.
+    expect(String((result as any).message)).not.toContain('createIfNotExists');
+  });
+
+  it('dashboard read_overview fails (not "0/3 dashboards")', async () => {
+    const result = await roosyncDashboard({ action: 'read_overview' });
+    expect(result.success).toBe(false);
+    expect(String((result as any).message)).toContain('ROOSYNC_SHARED_PATH inaccessible');
+  });
+
+  it('inbox read fails (not "Aucun message / votre inbox est vide")', async () => {
+    const result = await roosyncRead({ mode: 'inbox' });
+    const text = result.content[0].text;
+    expect(text).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect(text).not.toContain('votre inbox est vide');
+  });
+
+  it('message read fails (not "Message introuvable")', async () => {
+    const result = await getMessage({ message_id: 'does-not-exist' });
+    const text = result.content[0].text;
+    expect(text).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect(text).not.toContain('Message introuvable');
+  });
+
+  it('attachments list fails (not "Aucune pièce jointe trouvée")', async () => {
+    const result = await roosyncListAttachments({ message_id: 'does-not-exist' });
+    const text = result.content[0].text;
+    expect(text).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect(text).not.toContain('Aucune pièce jointe trouvée');
+  });
+});
