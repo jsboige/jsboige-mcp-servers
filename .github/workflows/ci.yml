@@ -186,7 +186,7 @@ jobs:
         pip install -r servers/sk-agent/requirements.txt
         pip install pytest
 
-    - name: Run sk-agent schema, facade, recursion-guard and document-processing tests
+    - name: Run sk-agent schema, facade, recursion-guard, document-processing, spec-composition and capability-matrix tests
       run: |
         cd servers/sk-agent
-        python -m pytest test_sk_agent_schemas.py test_config.py test_recursion_guard.py test_document_processing.py -v
+        python -m pytest test_sk_agent_schemas.py test_config.py test_recursion_guard.py test_document_processing.py test_agent_specs.py test_capability_matrix.py -v
