@@ -107,6 +107,7 @@ from sk_agent_config import (
     SK_AGENT_DEPTH,
     DEFAULT_MAX_RECURSION_DEPTH,
     can_spawn_recursive_agent,
+    is_self_referential_mcp,
 )
 from sk_conversations import ConversationRunner, build_run_conversation_description
 
@@ -523,9 +524,11 @@ class SKAgentManager:
         try:
             env = {**os.environ, **mcp_cfg.env}
 
-            # Detect self-inclusion
-            mcp_args = " ".join(mcp_cfg.args)
-            is_self = "sk_agent.py" in mcp_args or "sk_agent" in mcp_cfg.id.lower()
+            # Detect self-inclusion. #3415: the predicate is centralized in
+            # sk_agent_config so the module launch form (`-m sk_agent`), which
+            # reaches the same server without ever spelling "sk_agent.py",
+            # cannot slip past the ceiling below.
+            is_self = is_self_referential_mcp(mcp_cfg.id, mcp_cfg.args)
 
             if is_self:
                 # #3409 — enforce centralized recursion ceiling. A child at

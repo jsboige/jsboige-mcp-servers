@@ -41,6 +41,7 @@ from sk_agent_config import (
     DEFAULT_MAX_RECURSION_DEPTH,
     SK_AGENT_DEPTH,
     can_spawn_recursive_agent,
+    is_self_referential_mcp,
 )
 
 
@@ -437,3 +438,220 @@ class TestDepthPropagationRegression:
         monkeypatch.setenv("SK_AGENT_DEPTH", "0")
         # Still equal: both were bound at import time, before this setenv.
         assert sk_agent.SK_AGENT_DEPTH == sk_agent_config.SK_AGENT_DEPTH
+
+
+# ---------------------------------------------------------------------------
+# #3415 — self-use rollout. The ceiling of #3409 only binds when self-inclusion
+# is RECOGNIZED, so recognition is the load-bearing half of the guarantee.
+# ---------------------------------------------------------------------------
+
+
+class TestSelfReferentialDetection:
+    """Every launch form that reaches sk_agent.py must be recognized.
+
+    Measured on 2026-09-05 before the fix: ``python -m sk_agent`` is a valid
+    entry point (``importlib.util.find_spec("sk_agent")`` resolves to
+    ``sk_agent.py``, whose ``__main__`` block starts the same server) yet the
+    old predicate — ``"sk_agent.py" in " ".join(args)`` — never saw a ``.py``
+    token and returned False. Self-inclusion went unrecognized, so the #3409
+    ceiling was never consulted and children spawned at ANY depth.
+    """
+
+    def test_script_form_detected(self):
+        assert is_self_referential_mcp("sk-agent", ["sk_agent.py"]) is True
+
+    def test_absolute_script_path_detected(self):
+        assert is_self_referential_mcp(
+            "coordinator", ["C:/srv/sk-agent/sk_agent.py"]
+        ) is True
+
+    def test_windows_backslash_path_detected(self):
+        assert is_self_referential_mcp(
+            "coordinator", [r"C:\srv\sk-agent\sk_agent.py"]
+        ) is True
+
+    def test_module_form_detected(self):
+        # THE REGRESSION: `-m sk_agent` under an id that does not name
+        # sk-agent. Both halves of the old predicate missed this.
+        assert is_self_referential_mcp("deep-thinker", ["-m", "sk_agent"]) is True
+
+    def test_module_form_with_transport_arg_detected(self):
+        assert is_self_referential_mcp(
+            "coordinator", ["-m", "sk_agent", "streamable-http"]
+        ) is True
+
+    def test_dotted_module_form_detected(self):
+        assert is_self_referential_mcp("nested", ["-m", "servers.sk_agent"]) is True
+
+    def test_id_alone_is_sufficient(self):
+        # An id naming sk-agent is self-referential whatever the args.
+        assert is_self_referential_mcp("sk-agent", []) is True
+        assert is_self_referential_mcp("sk_agent", ["--config", "x.json"]) is True
+
+    def test_unrelated_mcp_not_detected(self):
+        assert is_self_referential_mcp("searxng", ["-y", "mcp-searxng"]) is False
+        assert is_self_referential_mcp("playwright", ["-y", "@playwright/mcp"]) is False
+
+    def test_substring_lookalike_not_detected(self):
+        # Tokenized matching: a path merely CONTAINING the stem is not a
+        # self-launch. A joined-string predicate would false-positive here and
+        # refuse a legitimate third-party MCP.
+        assert is_self_referential_mcp(
+            "helper", ["/opt/not_sk_agent_helper/run.py"]
+        ) is False
+        assert is_self_referential_mcp("helper", ["-m", "sk_agent_utils"]) is False
+
+
+class TestModuleFormRespectsCeiling:
+    """End-to-end: the module launch form is subject to the same ceiling.
+
+    These drive ``_ensure_mcp_loaded`` with the SAME discriminators as the
+    #3409 tests (the guard's warning + absence of plugin construction), so a
+    predicate that stopped recognizing the module form turns them red.
+    """
+
+    def test_module_form_refused_at_ceiling(self, monkeypatch, spy_plugin, caplog):
+        from sk_agent import SKAgentManager
+        from sk_agent_config import SKAgentConfig
+
+        config = SKAgentConfig(max_recursion_depth=2)
+        # id deliberately does NOT name sk-agent: detection must come from args.
+        config.mcps.append(_SelfMcpConfig("deep-thinker", args=["-m", "sk_agent"]))
+        manager = SKAgentManager(config)
+        monkeypatch.setattr(sk_agent, "SK_AGENT_DEPTH", 2)
+        monkeypatch.setenv("SK_AGENT_DEPTH", "2")
+
+        with caplog.at_level(logging.WARNING, logger="sk-agent"):
+            result = _run(manager._ensure_mcp_loaded("deep-thinker"))
+
+        assert "Recursion ceiling reached" in caplog.text, (
+            "Module-form self-inclusion must be refused BY THE GUARD"
+        )
+        assert spy_plugin.constructed == [], (
+            "Guard must refuse before constructing the child plugin"
+        )
+        assert result is False
+        assert "deep-thinker" not in manager._mcp_plugins
+        # No orphan bookkeeping left behind by the refusal.
+        assert "deep-thinker" not in manager._loading_mcps
+
+    def test_module_form_below_ceiling_propagates_depth(
+        self, monkeypatch, spy_plugin, caplog
+    ):
+        # Below the ceiling the module form is ALLOWED, and the child must be
+        # handed an incremented depth — otherwise recognition would be a
+        # one-way trip that never terminates.
+        from sk_agent import SKAgentManager
+        from sk_agent_config import SKAgentConfig
+
+        config = SKAgentConfig(max_recursion_depth=2)
+        config.mcps.append(_SelfMcpConfig("deep-thinker", args=["-m", "sk_agent"]))
+        manager = SKAgentManager(config)
+        monkeypatch.setattr(sk_agent, "SK_AGENT_DEPTH", 0)
+        monkeypatch.setenv("SK_AGENT_DEPTH", "0")
+
+        with caplog.at_level(logging.WARNING, logger="sk-agent"):
+            result = _run(manager._ensure_mcp_loaded("deep-thinker"))
+
+        assert len(spy_plugin.constructed) == 1
+        assert "Recursion ceiling reached" not in caplog.text
+        assert result is False  # spy __aenter__ fails — not a guard refusal
+        child_env = spy_plugin.constructed[0]["env"]
+        assert child_env["SK_AGENT_DEPTH"] == "1", (
+            "Child must inherit depth+1 so the ceiling terminates the chain"
+        )
+
+
+class TestTwoLevelTraversalTerminates:
+    """A useful scenario crosses two levels; the third is refused.
+
+    Acceptance #1 and #2 of #3415, asserted as the sequence they describe
+    rather than as isolated points: depths 0 and 1 spawn (root -> 1 -> 2), and
+    the next level is refused, with no orphan bookkeeping at the refusal.
+    """
+
+    def test_depths_zero_and_one_spawn_then_two_refuses(
+        self, monkeypatch, spy_plugin, caplog
+    ):
+        outcomes = []
+        for depth in (0, 1, 2):
+            _SpyPlugin.constructed = []
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="sk-agent"):
+                manager = _build_self_inclusion_manager(
+                    max_recursion_depth=2, depth=depth, monkeypatch=monkeypatch
+                )
+                _run(manager._ensure_mcp_loaded("sk-agent"))
+            outcomes.append(
+                {
+                    "depth": depth,
+                    "constructed": len(spy_plugin.constructed),
+                    "refused": "Recursion ceiling reached" in caplog.text,
+                    "loading": "sk-agent" in manager._loading_mcps,
+                }
+            )
+
+        assert [o["constructed"] for o in outcomes] == [1, 1, 0], (
+            "Two levels must traverse (depth 0 and 1), the third must not"
+        )
+        assert [o["refused"] for o in outcomes] == [False, False, True]
+        # Acceptance #2: refusal leaves nothing half-registered.
+        assert [o["loading"] for o in outcomes] == [False, False, False], (
+            "A refused spawn must not leave the MCP marked as loading"
+        )
+
+
+class TestOverridesCannotWidenViaModuleForm:
+    """Acceptance #3, closing the form the override tests did not reach.
+
+    The #3409 override tests used an sk-agent-named entry, so they passed on
+    the id half of the old predicate. Routing an override through a
+    module-form entry under an unrelated id is the combination that bypassed
+    the ceiling in practice.
+    """
+
+    def test_add_override_of_module_form_still_refused(
+        self, monkeypatch, spy_plugin, caplog
+    ):
+        from sk_agent import SKAgentManager
+        from sk_agent_config import SKAgentConfig
+
+        config = SKAgentConfig(max_recursion_depth=2)
+        config.mcps.append(_SelfMcpConfig("deep-thinker", args=["-m", "sk_agent"]))
+        manager = SKAgentManager(config)
+
+        effective = manager._resolve_effective_mcp_ids(
+            ["searxng"], {"add": ["deep-thinker"]}
+        )
+        assert "deep-thinker" in effective
+
+        monkeypatch.setattr(sk_agent, "SK_AGENT_DEPTH", 2)
+        monkeypatch.setenv("SK_AGENT_DEPTH", "2")
+        with caplog.at_level(logging.WARNING, logger="sk-agent"):
+            result = _run(manager._ensure_mcp_loaded("deep-thinker"))
+
+        assert "Recursion ceiling reached" in caplog.text
+        assert spy_plugin.constructed == []
+        assert result is False
+
+    def test_replace_override_of_module_form_still_refused(
+        self, monkeypatch, spy_plugin, caplog
+    ):
+        from sk_agent import SKAgentManager
+        from sk_agent_config import SKAgentConfig
+
+        config = SKAgentConfig(max_recursion_depth=2)
+        config.mcps.append(_SelfMcpConfig("coordinator", args=["-m", "sk_agent"]))
+        manager = SKAgentManager(config)
+
+        effective = manager._resolve_effective_mcp_ids([], {"replace": ["coordinator"]})
+        assert effective == ["coordinator"]
+
+        monkeypatch.setattr(sk_agent, "SK_AGENT_DEPTH", 3)
+        monkeypatch.setenv("SK_AGENT_DEPTH", "3")
+        with caplog.at_level(logging.WARNING, logger="sk-agent"):
+            result = _run(manager._ensure_mcp_loaded("coordinator"))
+
+        assert "Recursion ceiling reached" in caplog.text
+        assert spy_plugin.constructed == []
+        assert result is False

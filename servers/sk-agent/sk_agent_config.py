@@ -89,6 +89,47 @@ def can_spawn_recursive_agent(
     return current_depth + 1 <= max_depth
 
 
+def is_self_referential_mcp(mcp_id: str, args: list[str]) -> bool:
+    """Detect an MCP entry that launches sk-agent itself (#3415, parent #1748).
+
+    The recursion ceiling only binds when self-inclusion is recognized, so a
+    launch form that escapes this predicate escapes the ceiling entirely. Two
+    forms reach the same ``sk_agent.py``:
+
+    - script form -- ``python .../sk_agent.py`` (matched on the filename);
+    - module form -- ``python -m sk_agent`` (no ``.py`` in the args at all).
+
+    The module form is a valid entry point: ``importlib.util.find_spec
+    ("sk_agent")`` resolves to ``sk_agent.py``, whose ``__main__`` block starts
+    the very same server. Matching only ``"sk_agent.py"`` therefore let
+    ``{"command": "python", "args": ["-m", "sk_agent"]}`` spawn children at any
+    depth. Args are tokenized rather than joined so that an unrelated path such
+    as ``.../not_sk_agent_helper/run.py`` cannot match by substring.
+
+    Args:
+        mcp_id: The MCP entry id, matched case-insensitively on the ``sk_agent``
+            / ``sk-agent`` stem (an id naming sk-agent is self-referential
+            whatever its args).
+        args: The argv tail passed to ``command``.
+
+    Returns:
+        True iff the entry launches sk-agent itself.
+    """
+    normalized_id = (mcp_id or "").lower().replace("-", "_")
+    if "sk_agent" in normalized_id:
+        return True
+
+    for raw in args or []:
+        token = str(raw).replace("\\", "/")
+        # Script form: any path ending in sk_agent.py.
+        if token.rsplit("/", 1)[-1] == "sk_agent.py":
+            return True
+        # Module form: `-m sk_agent` and dotted variants (`pkg.sk_agent`).
+        if token.split(".")[-1] == "sk_agent":
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
