@@ -63,6 +63,17 @@ export interface IUnifiedStoreWriter {
    */
   insertRooSyncMessage(row: RooSyncMessageRow): Promise<void>;
   /**
+   * RooSync channel reconcile (#3292) — ids present in the store at or after
+   * `sinceId` (lexicographic; ids embed their UTC timestamp, so the caller's
+   * date cutoff can be compared as a string). Indexed range scan on the PK.
+   *
+   * Unlike the insert methods this is a READ with reader semantics: it throws
+   * on failure — the reconcile must distinguish "PG says 0" from "PG
+   * unreachable", and treating the latter as the former would re-import the
+   * whole lookback window blind.
+   */
+  listRooSyncMessageIds(sinceId: string): Promise<string[]>;
+  /**
    * RooSync channel — partial update: amend, attachment-ref refresh, and the
    * read / archived / destroyed state transitions (Phase A.2).
    */
@@ -114,6 +125,7 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async upsertConversationOnly(_row: ConversationRow): Promise<void> {}
   async upsertMessages(_rows: MessageRow[]): Promise<void> {}
   async insertRooSyncMessage(_row: RooSyncMessageRow): Promise<void> {}
+  async listRooSyncMessageIds(_sinceId: string): Promise<string[]> { return []; }
   async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
   async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
   async deleteRooSyncAttachment(_uuid: string): Promise<void> {}

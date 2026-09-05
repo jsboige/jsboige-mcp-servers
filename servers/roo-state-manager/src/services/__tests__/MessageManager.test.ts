@@ -1251,6 +1251,44 @@ describe('MessageManager', () => {
     });
   });
 
+  describe('startChannelReconcileDaemon (#3292)', () => {
+    afterEach(() => {
+      messageManager.stopChannelReconcileDaemon();
+    });
+
+    test('status before any start reads as never-run, not "stopped"', () => {
+      const status = messageManager.getChannelReconcileStatus();
+      expect(status).toEqual({ running: false, config: null, lastRun: null });
+    });
+
+    test('start stores config and reports running', () => {
+      messageManager.startChannelReconcileDaemon(6, 7);
+      const status = messageManager.getChannelReconcileStatus();
+      expect(status.running).toBe(true);
+      expect(status.config).toEqual({ intervalHours: 6, lookbackDays: 7 });
+    });
+
+    test('duplicate start is a noop (one timer)', () => {
+      messageManager.startChannelReconcileDaemon(6, 7);
+      messageManager.startChannelReconcileDaemon(1, 1); // ignored — config not overwritten
+      const status = messageManager.getChannelReconcileStatus();
+      expect(status.config).toEqual({ intervalHours: 6, lookbackDays: 7 });
+    });
+
+    test('stop is safe when not running', () => {
+      expect(() => messageManager.stopChannelReconcileDaemon()).not.toThrow();
+    });
+
+    test('stop clears running but config survives (same contract as the archive daemon)', () => {
+      messageManager.startChannelReconcileDaemon(6, 7);
+      messageManager.stopChannelReconcileDaemon();
+      const status = messageManager.getChannelReconcileStatus();
+      expect(status.running).toBe(false);
+      expect(status.config).toEqual({ intervalHours: 6, lookbackDays: 7 });
+      expect(status.lastRun).toBeNull(); // no timer fired in this test — never ran
+    });
+  });
+
   describe('autoArchiveOld — abandoned unread lane (#3150)', () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
 

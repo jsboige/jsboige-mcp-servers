@@ -300,6 +300,12 @@ class RooStateManagerServer {
         // ne doit pas perdre la rotation silencieusement).
         await this.initializeAutoArchive();
 
+        // #3292: reconcile GDrive→PG du canal — referme en continu les classes
+        // de perte dual-write (hard kill, outage PG, régression d'état machine)
+        // qui bloquent la bascule lecture PG #3151. Étape propre, même motif
+        // que l'auto-archive ci-dessus : indépendante des notifications.
+        await this.initializeChannelReconcile();
+
         // Initialize notification system (deferred — pulls in MessageManager 3.8s)
         await this.initializeNotificationSystem();
 
@@ -445,6 +451,31 @@ class RooStateManagerServer {
         const intervalHours = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_INTERVAL_HOURS || '6', 10);
         const unreadMaxAgeDays = parseInt(process.env.MESSAGE_AUTO_ARCHIVE_UNREAD_MAX_AGE_DAYS || '90', 10);
         getMessageManager().startAutoArchiveDaemon(maxAgeDays, intervalHours, unreadMaxAgeDays);
+    }
+
+    /**
+     * Démarre le daemon de reconcile GDrive→PG du canal (#3292).
+     *
+     * Ne démarre QUE sur un process dont le dual-write est armé — sinon le
+     * daemon serait un scan périodique vers un NullUnifiedStoreWriter (le
+     * reconcile lui-même re-vérifie la gate à chaque passe : un process qui
+     * perd son .env en cours de route passe en skipped-not-armed, pas en erreur).
+     * UNIFIED_STORE_CHANNEL_RECONCILE_ENABLED=false l'éteint sans toucher au
+     * dual-write (diagnostic, isolation d'incident).
+     */
+    private async initializeChannelReconcile(): Promise<void> {
+        if (process.env.UNIFIED_STORE_CHANNEL_RECONCILE_ENABLED === 'false') {
+            logger.info('📴 [ChannelReconcile] Désactivé via UNIFIED_STORE_CHANNEL_RECONCILE_ENABLED=false');
+            return;
+        }
+        if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+            logger.info('📴 [ChannelReconcile] Dual-write non armé — daemon non démarré');
+            return;
+        }
+        const { getMessageManager } = await import('./services/MessageManager.js');
+        const intervalHours = parseInt(process.env.UNIFIED_STORE_CHANNEL_RECONCILE_INTERVAL_HOURS || '6', 10);
+        const lookbackDays = parseInt(process.env.UNIFIED_STORE_CHANNEL_RECONCILE_LOOKBACK_DAYS || '7', 10);
+        getMessageManager().startChannelReconcileDaemon(intervalHours, lookbackDays);
     }
 
     /**
