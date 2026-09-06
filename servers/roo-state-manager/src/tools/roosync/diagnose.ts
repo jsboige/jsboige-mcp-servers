@@ -32,8 +32,8 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 // ====================================================================
 
 export const DiagnoseArgsSchema = z.object({
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'])
-    .describe('Operation: env, debug, reset, test, health, lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide)'),
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'])
+    .describe('Operation: env, debug, reset, test, health, lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Vérifier l\'espace disque (action: env)'),
@@ -80,7 +80,7 @@ export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
 export const DiagnoseResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si l\'opération a réussi'),
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'])
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'])
     .describe('Type d\'opération effectuée'),
   timestamp: z.string()
     .describe('Timestamp de l\'opération (ISO 8601)'),
@@ -163,6 +163,27 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
           action: 'best-practices',
           timestamp,
           data: result
+        };
+      }
+
+      // Hot reload of .env credentials/endpoints into this live process.
+      // Lazy import, like the actions above: config-reload pulls the search tool
+      // (for its embedding-client resetter) and there is no reason to load that
+      // graph for an unrelated action.
+      case 'reload': {
+        const m = await import('../../services/config-reload.js');
+        const r = m.reloadConfig();
+        const message = !r.envFileFound
+          ? `Aucun .env lisible en ${r.envPath} — rien rechargé, aucun client réinitialisé.`
+          : r.changed.length === 0
+            ? `.env relu (${r.unchangedCount} clé(s) rechargeable(s) identiques) — aucun changement, aucun client réinitialisé.`
+            : `${r.changed.length} clé(s) changée(s) → ${r.clientsReset.length} client(s) réinitialisé(s).`;
+        return {
+          success: true,
+          action: 'reload',
+          timestamp,
+          message,
+          data: r,
         };
       }
 
