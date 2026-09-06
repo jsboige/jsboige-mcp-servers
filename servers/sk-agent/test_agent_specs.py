@@ -1428,3 +1428,59 @@ class TestToolLayerCompat:
             params = list(inspect.signature(getattr(sk_agent.SKAgentManager, name)).parameters)
             assert params[: len(legacy)] == legacy, name
             assert params[-1] == "sampling_override", name
+
+
+class TestMcpWideningRefused:
+    """agent_spec mcps cannot widen the preset's capability grant (#3408).
+
+    The static matrix and the ``mcp_overrides`` runtime already enforce
+    default-deny; this closes the same vector on the spec composition
+    path (``mcps.replace`` / ``mcps.add`` activating a tool whose
+    ``allowed_capabilities`` or ``risk_class`` exceeds the preset grant).
+    """
+
+    def setup_method(self):
+        self.config = make_config()
+        self.config.mcps.append(
+            McpConfig(
+                id="terminal",
+                command="echo",
+                risk_class="exec",
+                allowed_capabilities=["shell"],
+            )
+        )
+        self.config.agents[0].capabilities = ["web"]  # analyst: web-only
+
+    def test_replace_with_exec_tool_refused(self):
+        base = self.config.get_agent("analyst")
+        spec = AgentSpec(extends="analyst", mcps={"replace": ["terminal"]})
+        with pytest.raises(SpecError) as exc_info:
+            resolve_agent_spec(self.config, spec, base)
+        assert "shell" in str(exc_info.value)
+
+    def test_add_exec_tool_refused(self):
+        base = self.config.get_agent("analyst")
+        spec = AgentSpec(extends="analyst", mcps={"add": ["terminal"]})
+        with pytest.raises(SpecError):
+            resolve_agent_spec(self.config, spec, base)
+
+    def test_replace_within_grant_accepted(self):
+        base = self.config.get_agent("analyst")
+        spec = AgentSpec(extends="analyst", mcps={"replace": ["searxng"]})
+        merged, _ = resolve_agent_spec(self.config, spec, base)
+        assert merged.mcps == ["searxng"]
+
+    def test_narrowing_accepted(self):
+        # Removing tools is always safe.
+        base = self.config.get_agent("vision-analyst")
+        spec = AgentSpec(extends="vision-analyst", mcps={"remove": ["wincli"]})
+        merged, _ = resolve_agent_spec(self.config, spec, base)
+        assert merged.mcps == ["searxng"]
+
+    def test_capabilities_carried_from_preset(self):
+        # The merged agent keeps the preset's grant so downstream runtime
+        # guards (memory / github side-channels) evaluate the real set.
+        base = self.config.get_agent("analyst")
+        spec = AgentSpec(extends="analyst")
+        merged, _ = resolve_agent_spec(self.config, spec, base)
+        assert merged.capabilities == ["web"]

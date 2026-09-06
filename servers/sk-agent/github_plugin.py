@@ -26,8 +26,9 @@ log = logging.getLogger("sk-agent.github")
 class GitHubPlugin:
     """GitHub PR operations via `gh` CLI for automated code reviews."""
 
-    def __init__(self, default_repo: str = ""):
+    def __init__(self, default_repo: str = "", allow_write: bool = True):
         self._default_repo = default_repo
+        self._allow_write = allow_write
 
     def _run_gh(self, args: list[str], timeout: int = 30) -> str:
         """Run a gh CLI command and return stdout."""
@@ -183,6 +184,12 @@ class GitHubPlugin:
             body: Comment body (markdown)
             repo: Repository in owner/repo format
         """
+        if not self._allow_write:
+            raise ValueError(
+                "post_review_comment refused: capability 'github_write' not "
+                "granted (issue #3408 — gh stays read-only outside a "
+                "governed profile)"
+            )
         repo = repo or self._default_repo
         args = ["pr", "comment", str(pr_number), "--body", body]
         if repo:

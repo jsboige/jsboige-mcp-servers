@@ -102,6 +102,7 @@ def v2_payload() -> dict:
                 "model": "glm-5",
                 "system_prompt": "You are an analyst.",
                 "mcps": ["searxng", "playwright"],
+                "capabilities": ["memory"],
                 "execution": {
                     "temperature": 0.2,
                     "max_tokens": 8192,
@@ -1099,6 +1100,7 @@ def test_v2_model_dump_is_byte_stable_with_inline_agents():
                 "model": "glm-5",
                 "system_prompt": "Top-level host prompt.",
                 "mcps": ["searxng"],
+                "capabilities": ["memory"],
                 "execution": {
                     "temperature": 0.3,
                     "max_tokens": 4096,
@@ -1127,6 +1129,7 @@ def test_v2_model_dump_is_byte_stable_with_inline_agents():
                         "model": "glm-5",
                         "system_prompt": "Inline reviewer prompt.",
                         "mcps": ["searxng", "playwright"],
+                        "capabilities": ["memory"],
                         "execution": {
                             "temperature": 0.7,
                             "max_tokens": 2048,
