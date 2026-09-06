@@ -62,7 +62,7 @@ export const MessagesArgsSchema = z.object({
   to: z.string().optional().describe('Destinataire (requis pour send): machine, machine:workspace, ou shorthand (hermes=po-2026:hermes-agent, nanoclaw=ai-01:nanoclaw) #2241'),
   subject: z.string().optional().describe('Sujet (requis pour send)'),
   body: z.string().optional().describe('Corps du message (requis pour send/reply)'),
-  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional().describe('Priorite (defaut: MEDIUM)'),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional().describe('Priorite (defaut: MEDIUM). Send/reply + bulk UNIQUEMENT — rejete sur action inbox (#3351), omettre le champ sur inbox'),
   tags: z.array(z.string()).optional().describe('Tags optionnels'),
   thread_id: z.string().optional().describe('ID du thread pour regroupement'),
   reply_to: z.string().optional().describe('Reference message ID — uniquement pour action="send" (thread un nouveau message sur un message existant). NE PAS utiliser pour action="reply"/"amend"/"mark_read" : voir message_id. #3029'),
@@ -142,6 +142,14 @@ export async function roosyncMessages(args: MessagesArgs) {
       'RooSyncMessagesTool',
       { rejectedParams: unknownKeys, expectedParam: aliasHint.realParam }
     );
+  }
+
+  // #1075 — un binding qui force-inclus les optionnels les sérialise en ''.
+  // La garde inbox (plus bas) tolère déjà '', mais zod rejette '' sur l'enum
+  // AVANT elle (invalid_enum_value) : la tolérance documentée était inatteignable.
+  // On strip '' des champs filtres connus AVANT le parse pour la rendre effective.
+  for (const k of ['priority', 'before_date', 'tag', 'from', 'subject_contains'] as const) {
+    if (args[k] === '') delete (args as Record<string, unknown>)[k];
   }
 
   const parsed = MessagesArgsSchema.strict().parse(args);

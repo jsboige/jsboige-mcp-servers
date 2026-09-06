@@ -424,6 +424,17 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(props).toHaveProperty('message_id');
             expect(props).toHaveProperty('uuid');
         });
+
+        // #3351 résiduel (06/09) : before_date/tag portaient l'avertissement bulk-only
+        // mais priority — le seul des trois que les modèles envoient spontanément sur
+        // inbox — n'avait AUCUNE description. Un champ saillant sans contre-indication
+        // est une invitation ; la garde serveur rejette alors l'appel (fail-loud #1067),
+        // laissant l'inbox illisible pour l'appelant. L'annotation doit survivre ici.
+        it('priority must carry the #3351 inbox-rejection warning on the wire', () => {
+            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, { description?: string }>;
+            expect(props.priority?.description).toMatch(/inbox/i);
+            expect(props.priority?.description).toMatch(/3351/);
+        });
     });
 
     // #3255 drift-guard — same class as #3254: the served schema is the STATIC
