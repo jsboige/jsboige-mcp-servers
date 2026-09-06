@@ -169,4 +169,17 @@ export function resetChatOpenAIClient(): void {
   chatOpenai = null;
 }
 
+/**
+ * Reset the embeddings client singleton, so the next call rebuilds it from the
+ * current `process.env`. Needed by the `.env` hot reload (services/config-reload.ts):
+ * a fleet credential rotation rewrites `.env` under already-running processes, and
+ * without this the task-indexer keeps the revoked key for the life of the host.
+ *
+ * The chat and fallback-chat singletons already had their own resetters above; this
+ * is the third, and it completes the set the reload needs.
+ */
+export function resetEmbeddingOpenAIClient(): void {
+  openai = null;
+}
+
 export default getOpenAIClient;

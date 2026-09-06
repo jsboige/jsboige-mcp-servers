@@ -532,11 +532,11 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices'] },
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'] },
             checkDiskSpace: { type: 'boolean' },
             verbose: { type: 'boolean' },
             clearCache: { type: 'boolean' },
