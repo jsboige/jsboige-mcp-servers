@@ -679,7 +679,7 @@ export const roosyncMessagesDefinition = {
             to: { type: 'string', description: 'machine or machine:workspace' },
             subject: { type: 'string' },
             body: { type: 'string' },
-            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] },
+            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Priority (default MEDIUM) — send/reply + bulk filters ONLY. NOT accepted on action=inbox: omit the field there (rejected as bulk-only, #3351)' },
             tags: { type: 'array', items: { type: 'string' } },
             thread_id: { type: 'string' },
             reply_to: { type: 'string', description: 'Reference message ID — uniquement pour action="send" (thread un nouveau message sur un message existant). NE PAS utiliser pour action="reply"/"amend"/"mark_read" : voir message_id. #3029' },

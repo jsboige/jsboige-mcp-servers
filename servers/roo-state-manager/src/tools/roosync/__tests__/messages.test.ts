@@ -220,8 +220,10 @@ describe('roosync_messages dispatcher', () => {
     // Friction po-2025 01/09 : un binding qui force-inclut les optionnels
     // sérialise les strings vides — '' n'est pas une intention de filtrer,
     // et l'aval le traite déjà comme absent. Le garde ne doit pas le rejeter.
+    // priority:'' inclus 06/09 : sur l'enum, zod rejetait '' AVANT la garde
+    // (invalid_enum_value) — le strip pré-parse le rend toléré comme les autres.
     test('#3351 inbox tolerates binding-serialized empty strings (no bulk-only rejection)', async () => {
-      await roosyncMessages({ action: 'inbox', tag: '', before_date: '', from: '', subject_contains: '' } as any);
+      await roosyncMessages({ action: 'inbox', priority: '', tag: '', before_date: '', from: '', subject_contains: '' } as any);
       expect(mockRead).toHaveBeenCalledWith(
         expect.objectContaining({ mode: 'inbox' })
       );
