@@ -101,3 +101,50 @@ export function isSharedPathAccessible(): boolean {
         return false;
     }
 }
+
+/**
+ * #3459: Signals that the RooSync shared store cannot be reached, so every
+ * read must fail-closed instead of rendering an indistinguishable "empty".
+ *
+ * `path` is null when ROOSYNC_SHARED_PATH could not be resolved at all
+ * (env var unset and no .env fallback); otherwise it is the raw path string
+ * that pointed at a non-existent directory (e.g. `G:\...` when G: is down).
+ */
+export class SharedStoreInaccessibleError extends Error {
+    readonly code = 'ROOSYNC_STORE_INACCESSIBLE';
+    constructor(readonly storePath: string | null) {
+        super(
+            `ROOSYNC_SHARED_PATH inaccessible` +
+            (storePath ? ` (${storePath})` : ' (variable non définie)') +
+            ` : le magasin partagé RooSync est absent du système de fichiers. ` +
+            `Toute lecture est interrompue (fail-closed) — vérifiez le montage du lecteur.`
+        );
+        this.name = 'SharedStoreInaccessibleError';
+    }
+}
+
+/**
+ * #3459: Throws {@link SharedStoreInaccessibleError} when the RooSync shared
+ * store root is not readable (unset, or the directory does not exist on disk).
+ *
+ * This is the fail-closed guard placed at the entry of every read tool and of
+ * the create-when-missing paths. It must be called in preference to letting a
+ * `readFile`/`readdir` catch render a phony "empty" collection.
+ *
+ * @returns The resolved shared path, when the store is reachable.
+ */
+export function assertSharedStoreAccessible(): string {
+    const sharedPath = tryGetSharedStatePath();
+    if (!sharedPath) {
+        throw new SharedStoreInaccessibleError(null);
+    }
+    try {
+        if (!existsSync(sharedPath)) {
+            throw new SharedStoreInaccessibleError(sharedPath);
+        }
+    } catch (err) {
+        if (err instanceof SharedStoreInaccessibleError) throw err;
+        throw new SharedStoreInaccessibleError(sharedPath);
+    }
+    return sharedPath;
+}

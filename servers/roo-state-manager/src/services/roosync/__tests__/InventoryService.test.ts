@@ -23,6 +23,7 @@ vi.mock('os', async (importOriginal) => {
 // Mock getSharedStatePath used in saveToSharedState
 vi.mock('../../../utils/shared-state-path.js', () => ({
   getSharedStatePath: vi.fn(() => '/mock/shared-state'),
+  assertSharedStoreAccessible: () => {},
 }));
 
 // Mock existsSync for saveToSharedState directory creation

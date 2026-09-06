@@ -49,6 +49,7 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
 
 vi.mock('../../../../src/utils/shared-state-path.js', () => ({
     getSharedStatePath: mockGetSharedStatePath,
+    assertSharedStoreAccessible: () => {},
 }));
 
 vi.mock('../../../../src/utils/tool-call-metrics.js', () => ({

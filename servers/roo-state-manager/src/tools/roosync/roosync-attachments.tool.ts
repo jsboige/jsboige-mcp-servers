@@ -11,7 +11,7 @@
 
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 import { getMessageManager } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('RooSyncAttachmentTools');
@@ -46,6 +46,8 @@ export async function roosyncListAttachments(
   logger.info('📎 roosync_list_attachments called', { messageId: args.message_id });
 
   try {
+    // #3459: fail-closed — an unreachable store must not render "Aucune pièce jointe".
+    assertSharedStoreAccessible();
     const sharedStatePath = getSharedStatePath();
     const manager = new AttachmentManager(sharedStatePath);
     // Pass-by-reference accumulator so the tool response can say *how many*

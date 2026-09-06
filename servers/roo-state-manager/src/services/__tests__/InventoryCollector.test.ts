@@ -42,7 +42,8 @@ vi.mock('../../utils/git-helpers.js', () => ({
   })
 }));
 vi.mock('../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: () => '/mock/shared-state'
+  getSharedStatePath: () => '/mock/shared-state',
+  assertSharedStoreAccessible: () => {}
 }));
 
 describe('InventoryCollector', () => {

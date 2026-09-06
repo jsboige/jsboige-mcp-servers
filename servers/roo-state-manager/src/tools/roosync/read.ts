@@ -8,7 +8,7 @@
  */
 
 import { MessageManager, getMessageManager, type MessageListItem } from '../../services/MessageManager.js';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
@@ -566,6 +566,11 @@ export async function roosyncRead(
   logger.info('🔄 Starting roosync_read operation', { mode: args.mode });
 
   try {
+    // #3459: fail-closed at the single entry point for all three modes
+    // (inbox / message / attachments). An unreachable store is an explicit
+    // error, never the silent "your inbox is empty".
+    assertSharedStoreAccessible();
+
     // Validation du mode
     if (!args.mode) {
       throw new MessageManagerError(

@@ -50,6 +50,7 @@ vi.mock('fs/promises', () => ({
 // shared-state-path
 vi.mock('../../../src/utils/shared-state-path.js', () => ({
   getSharedStatePath: () => mockGetSharedStatePath(),
+  assertSharedStoreAccessible: () => {},
 }));
 
 // message-helpers

@@ -97,7 +97,8 @@ vi.mock('../../../services/ConfigService.js', () => ({
 // '../../../utils/shared-state-path.js'. The previous '../../utils/server-helpers.js' targeted a module
 // the SUT never imports, at a path that doesn't exist (src/tools/utils/) → no-op silently.
 vi.mock('../../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: vi.fn(() => testSharedStatePath)
+  getSharedStatePath: vi.fn(() => testSharedStatePath),
+  assertSharedStoreAccessible: () => {}
 }));
 
 // Mock BaselineService

@@ -16,7 +16,8 @@ const { mockGetLocalMachineId } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../utils/shared-state-path.js', () => ({
-	getSharedStatePath: mockGetSharedStatePath
+	getSharedStatePath: mockGetSharedStatePath,
+	assertSharedStoreAccessible: () => {}
 }));
 
 vi.mock('../../../utils/message-helpers.js', () => ({

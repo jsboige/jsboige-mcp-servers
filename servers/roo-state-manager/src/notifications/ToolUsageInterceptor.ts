@@ -26,6 +26,7 @@ import { MessageManager, Message } from '../services/MessageManager.js';
 import { scanDiskForNewTasks } from '../tools/task/disk-scanner.js';
 import { SkeletonHeader } from '../types/conversation.js';
 import { getLocalWorkspaceId } from '../utils/message-helpers.js';
+import { isSharedPathAccessible } from '../utils/shared-state-path.js';
 
 /** Background inbox check interval (ms) */
 const BACKGROUND_CHECK_INTERVAL_MS = 60_000;
@@ -149,6 +150,15 @@ export class ToolUsageInterceptor {
       args?.action === 'read' &&
       args?.type === 'global'
     ) {
+      this.pendingGlobalFooter = null;
+    }
+    // #3459: fail-closed banner. When the shared store is unreachable, the
+    // counts cached from an earlier tick are STALE — publishing them would
+    // assert a read the very same tool cannot honor (the exact contradiction
+    // that made an agent skip a HIGH message). Silence the banner instead and
+    // drop the counters so nothing reposts them on the next call.
+    if (!isSharedPathAccessible()) {
+      this.pendingFooter = null;
       this.pendingGlobalFooter = null;
     }
     let footers = '';
