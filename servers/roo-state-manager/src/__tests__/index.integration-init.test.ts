@@ -358,7 +358,10 @@ describe('#3292 — auto-archive daemon must not be hostage to notifications', (
         const mmMod = await import('../services/MessageManager.js');
         const getMessageManager = vi.mocked(mmMod.getMessageManager);
         const startAutoArchiveDaemon = vi.fn();
-        getMessageManager.mockReturnValue({ startAutoArchiveDaemon } as any);
+        // index.ts re-loads .env at import time (L44), which can re-arm the channel-reconcile
+        // gate AFTER jest.setup.js deleted the vars — so this reduced mock must stay complete
+        // enough for initializeChannelReconcile on dual-write machines (review #1100 F1).
+        getMessageManager.mockReturnValue({ startAutoArchiveDaemon, startChannelReconcileDaemon: vi.fn() } as any);
         return startAutoArchiveDaemon;
     }
 
