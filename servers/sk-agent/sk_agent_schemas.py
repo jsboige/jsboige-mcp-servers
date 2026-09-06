@@ -870,6 +870,29 @@ def _missing_capabilities(
     return sorted(required - granted)
 
 
+def _side_channel_requirements(agent: "AgentPreset") -> dict[str, list[str]]:
+    """Capabilities demanded by non-MCP tool attach channels (#3408).
+
+    Two attach paths bypass the ``mcps`` registry and therefore the
+    ``ToolSpec`` matrix: the GitHub plugin (``parameters.github_tools``)
+    and per-agent vector memory (``execution.memory_collection``, set by
+    the legacy ``memory.enabled`` fold). Mapping each channel to a
+    required capability keeps the default-deny rule over the *whole*
+    effective tool surface, not only MCP plugins.
+
+    ``github_write`` is deliberately NOT required here: the plugin's
+    write function (``post_review_comment``) is runtime-gated on the
+    capability by ``sk_agent.py``, so gh stays read-only unless a
+    profile explicitly declares ``github_write``.
+    """
+    required: dict[str, list[str]] = {}
+    if agent.parameters.get("github_tools"):
+        required["github_tools"] = ["github_read"]
+    if agent.execution.memory_collection:
+        required["memory"] = ["memory"]
+    return required
+
+
 def _validate_capability_matrix_inline(
     conversation_id: str,
     inline_agents: list[AgentPreset],
@@ -904,6 +927,16 @@ def _validate_capability_matrix_inline(
                     f"conversation {conversation_id!r} inline agent {inline.id!r} "
                     f"tool {tool_id!r} risk_class={risk_class!r} requires one of "
                     f"{sorted(needed)}; granted={sorted(granted)}"
+                )
+        # Non-MCP attach channels (github_tools, memory) obey the same
+        # default-deny as the tool matrix (#3408).
+        for channel, needed_caps in _side_channel_requirements(inline).items():
+            missing = sorted(set(needed_caps) - granted)
+            if missing:
+                raise ValueError(
+                    f"conversation {conversation_id!r} inline agent {inline.id!r} "
+                    f"side-channel {channel!r} requires capabilities {missing} "
+                    f"not granted; granted={sorted(granted)}"
                 )
 
 
@@ -947,6 +980,16 @@ def _validate_capability_matrix(
                     f"agent {agent.id!r} tool {tool_id!r} "
                     f"risk_class={risk_class!r} requires one of "
                     f"{sorted(needed)}; granted={sorted(granted)}"
+                )
+        # Non-MCP attach channels (github_tools, memory) obey the same
+        # default-deny as the tool matrix (#3408).
+        for channel, needed_caps in _side_channel_requirements(agent).items():
+            missing = sorted(set(needed_caps) - granted)
+            if missing:
+                raise ValueError(
+                    f"agent {agent.id!r} side-channel {channel!r} requires "
+                    f"capabilities {missing} not granted; "
+                    f"granted={sorted(granted)}"
                 )
 
 
@@ -1087,6 +1130,7 @@ __all__ = [
     "validate_effective_capabilities",
     "resolve_effective_mcp_ids",
     "_validate_capability_matrix",
+    "_side_channel_requirements",
     "_validate_capability_matrix_inline",
     "_required_capabilities_for",
     "_missing_capabilities",

@@ -59,6 +59,8 @@ def _agent_payload(
     *,
     mcps: list[str] | None = None,
     capabilities: list[str] | None = None,
+    parameters: dict | None = None,
+    memory: dict | None = None,
 ) -> dict:
     payload: dict = {
         "id": agent_id,
@@ -67,6 +69,10 @@ def _agent_payload(
     }
     if capabilities is not None:
         payload["capabilities"] = list(capabilities)
+    if parameters is not None:
+        payload["parameters"] = parameters
+    if memory is not None:
+        payload["memory"] = memory
     return payload
 
 
@@ -608,3 +614,239 @@ class TestMatrixDerivationFromConfig:
             }
         )
         assert cfg.tools[0].id == "web_search"
+
+
+# ---------------------------------------------------------------------------
+# Side-channel gating: github_tools + memory (issue #3408 residual scope)
+#
+# The GitHub plugin (``parameters.github_tools``) and per-agent vector
+# memory (``memory.enabled`` -> ``execution.memory_collection``) attach
+# outside the ``mcps`` registry — without an explicit rule the default-deny
+# matrix would not cover the whole effective tool surface.
+# ---------------------------------------------------------------------------
+
+
+class TestSideChannelGithubTools:
+    """``parameters.github_tools`` requires ``github_read``."""
+
+    def test_github_tools_without_github_read_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "agents": [
+                        _agent_payload(
+                            "reviewer",
+                            capabilities=[],
+                            parameters={"github_tools": True},
+                        )
+                    ],
+                }
+            )
+        msg = str(exc_info.value)
+        assert "github_tools" in msg
+        assert "github_read" in msg
+
+    def test_github_tools_with_github_read_accepted(self):
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [
+                    _agent_payload(
+                        "reviewer",
+                        capabilities=["github_read"],
+                        parameters={"github_tools": True},
+                    )
+                ],
+            }
+        )
+        assert cfg.agents[0].parameters["github_tools"] is True
+
+    def test_github_write_alone_does_not_satisfy_read(self):
+        # ``github_write`` governs the write function at runtime; it is
+        # not a substitute for the read requirement.
+        with pytest.raises(ValidationError):
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "agents": [
+                        _agent_payload(
+                            "reviewer",
+                            capabilities=["github_write"],
+                            parameters={"github_tools": True},
+                        )
+                    ],
+                }
+            )
+
+    def test_github_write_alongside_read_accepted(self):
+        # A profile that explicitly declares both gets the full plugin.
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [
+                    _agent_payload(
+                        "governed-reviewer",
+                        capabilities=["github_read", "github_write"],
+                        parameters={"github_tools": True},
+                    )
+                ],
+            }
+        )
+        assert "github_write" in cfg.agents[0].capabilities
+
+    def test_no_github_tools_no_requirement(self):
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [_agent_payload("plain", capabilities=[])],
+            }
+        )
+        assert cfg.agents[0].capabilities == []
+
+    def test_github_tools_false_no_requirement(self):
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [
+                    _agent_payload(
+                        "plain",
+                        capabilities=[],
+                        parameters={"github_tools": False},
+                    )
+                ],
+            }
+        )
+        assert cfg.agents[0].parameters["github_tools"] is False
+
+
+class TestSideChannelMemory:
+    """``memory.enabled`` (legacy shape) requires ``memory``."""
+
+    def test_memory_enabled_without_capability_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "agents": [
+                        _agent_payload(
+                            "analyst",
+                            capabilities=["web"],
+                            memory={"enabled": True},
+                        )
+                    ],
+                }
+            )
+        msg = str(exc_info.value)
+        assert "memory" in msg
+
+    def test_memory_enabled_with_capability_accepted(self):
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [
+                    _agent_payload(
+                        "analyst",
+                        capabilities=["web", "memory"],
+                        memory={"enabled": True},
+                    )
+                ],
+            }
+        )
+        # The legacy fold preserved the collection derivation.
+        assert cfg.agents[0].execution.memory_collection == "analyst-memory"
+
+    def test_memory_disabled_no_requirement(self):
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [
+                    _agent_payload(
+                        "analyst", capabilities=["web"], memory={"enabled": False}
+                    )
+                ],
+            }
+        )
+        assert cfg.agents[0].execution.memory_collection == ""
+
+    def test_canonical_memory_collection_requires_capability(self):
+        # The canonical (non-legacy) shape: ``execution.memory_collection``
+        # set directly is equally gated.
+        with pytest.raises(ValidationError):
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "agents": [
+                        {
+                            "id": "analyst",
+                            "model": "m-fast",
+                            "capabilities": ["web"],
+                            "execution": {"memory_collection": "analyst-memory"},
+                        }
+                    ],
+                }
+            )
+
+    def test_memory_collection_with_capability_accepted(self):
+        cfg = SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "agents": [
+                    {
+                        "id": "analyst",
+                        "model": "m-fast",
+                        "capabilities": ["memory"],
+                        "execution": {"memory_collection": "analyst-memory"},
+                    }
+                ],
+            }
+        )
+        assert cfg.agents[0].execution.memory_collection == "analyst-memory"
+
+
+class TestSideChannelInlineAgents:
+    """Conversation inline agents obey the same side-channel rules."""
+
+    def test_inline_github_tools_without_capability_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "conversations": [
+                        {
+                            "id": "review-chat",
+                            "inline_agents": [
+                                {
+                                    "id": "reviewer",
+                                    "model": "m-fast",
+                                    "parameters": {"github_tools": True},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        msg = str(exc_info.value)
+        assert "review-chat" in msg
+        assert "github_read" in msg
+
+    def test_inline_memory_without_capability_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "conversations": [
+                        {
+                            "id": "mem-chat",
+                            "inline_agents": [
+                                {
+                                    "id": "analyst",
+                                    "model": "m-fast",
+                                    "memory": {"enabled": True},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        assert "memory" in str(exc_info.value)

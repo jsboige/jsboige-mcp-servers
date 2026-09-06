@@ -613,25 +613,51 @@ class SKAgentManager:
                     mcp_id,
                 )
 
-        # Set up memory if enabled
-        if agent_cfg.memory.enabled and HAS_MEMORY:
+        # Set up memory if enabled. #3408: the memory side-channel is gated
+        # on the ``memory`` capability — same default-deny as the MCP matrix.
+        memory_active = agent_cfg.memory.enabled and HAS_MEMORY
+        if memory_active and "memory" not in agent_cfg.capabilities:
+            log.error(
+                "Memory plugin refused for agent '%s': capability 'memory' "
+                "not granted (issue #3408)",
+                agent_id,
+            )
+            memory_active = False
+        if memory_active:
             memory_plugin = await self._setup_memory(agent_cfg, kernel)
             if memory_plugin:
                 agent_plugins.append(memory_plugin)
 
-        # Set up GitHub PR tools if enabled via parameters.github_tools
+        # Set up GitHub PR tools if enabled via parameters.github_tools.
+        # #3408: requires ``github_read``; the write function stays disabled
+        # unless the agent explicitly declares ``github_write``.
         if HAS_GITHUB_PLUGIN and agent_cfg.parameters.get("github_tools", False):
-            gh_repo = agent_cfg.parameters.get("github_default_repo", "")
-            gh_plugin = GitHubPlugin(default_repo=gh_repo)
-            agent_plugins.append(gh_plugin)
-            log.info("GitHub plugin enabled for agent '%s' (repo=%s)", agent_id, gh_repo or "dynamic")
+            caps = set(agent_cfg.capabilities)
+            if "github_read" not in caps:
+                log.error(
+                    "GitHub plugin refused for agent '%s': capability "
+                    "'github_read' not granted (issue #3408)",
+                    agent_id,
+                )
+            else:
+                gh_repo = agent_cfg.parameters.get("github_default_repo", "")
+                gh_plugin = GitHubPlugin(
+                    default_repo=gh_repo, allow_write="github_write" in caps
+                )
+                agent_plugins.append(gh_plugin)
+                log.info(
+                    "GitHub plugin enabled for agent '%s' (repo=%s, write=%s)",
+                    agent_id,
+                    gh_repo or "dynamic",
+                    "github_write" in caps,
+                )
 
         # Create SK agent
         safe_name = _sanitize_agent_name(agent_id)
         system_prompt = agent_cfg.system_prompt or self.config.system_prompt
 
         # Augment prompt with memory hint if memory is active
-        if agent_cfg.memory.enabled and HAS_MEMORY:
+        if memory_active:
             system_prompt += (
                 "\n\nYou have access to persistent memory. "
                 "Use memory-save to remember important facts and "
@@ -776,22 +802,41 @@ class SKAgentManager:
 
         memory_attached = False
         if agent_cfg.memory.enabled and HAS_MEMORY:
-            source_id = memory_source_agent_id or agent_cfg.id
-            mem_plugin = self._memory_stores.get(source_id)
-            if mem_plugin:
-                plugins.append(mem_plugin)
-                memory_attached = True
-            else:
-                log.warning(
-                    "Ephemeral agent '%s': memory requested but no store available "
-                    "for '%s' — memory stays off (reported in effective_config)",
+            if "memory" not in agent_cfg.capabilities:
+                log.error(
+                    "Ephemeral agent '%s': memory refused — capability "
+                    "'memory' not granted (issue #3408)",
                     agent_cfg.id,
-                    source_id,
                 )
+            else:
+                source_id = memory_source_agent_id or agent_cfg.id
+                mem_plugin = self._memory_stores.get(source_id)
+                if mem_plugin:
+                    plugins.append(mem_plugin)
+                    memory_attached = True
+                else:
+                    log.warning(
+                        "Ephemeral agent '%s': memory requested but no store available "
+                        "for '%s' — memory stays off (reported in effective_config)",
+                        agent_cfg.id,
+                        source_id,
+                    )
 
         if HAS_GITHUB_PLUGIN and agent_cfg.parameters.get("github_tools", False):
-            gh_repo = agent_cfg.parameters.get("github_default_repo", "")
-            plugins.append(GitHubPlugin(default_repo=gh_repo))
+            caps = set(agent_cfg.capabilities)
+            if "github_read" not in caps:
+                log.error(
+                    "Ephemeral agent '%s': GitHub plugin refused — capability "
+                    "'github_read' not granted (issue #3408)",
+                    agent_cfg.id,
+                )
+            else:
+                gh_repo = agent_cfg.parameters.get("github_default_repo", "")
+                plugins.append(
+                    GitHubPlugin(
+                        default_repo=gh_repo, allow_write="github_write" in caps
+                    )
+                )
 
         safe_name = _sanitize_agent_name(agent_cfg.id)
         system_prompt = agent_cfg.system_prompt or self.config.system_prompt
@@ -1216,8 +1261,13 @@ class SKAgentManager:
                     return {"error": f"mcp_overrides refused: {cap_err}"}
                 temp_plugins = await self._collect_mcp_plugins(effective_mcps, resolved_id)
 
-                # Add memory if enabled
-                if agent_cfg and agent_cfg.memory.enabled and HAS_MEMORY:
+                # Add memory if enabled (#3408: gated on ``memory`` capability)
+                if (
+                    agent_cfg
+                    and agent_cfg.memory.enabled
+                    and HAS_MEMORY
+                    and "memory" in agent_cfg.capabilities
+                ):
                     mem_plugin = self._memory_stores.get(resolved_id)
                     if mem_plugin:
                         temp_plugins.append(mem_plugin)

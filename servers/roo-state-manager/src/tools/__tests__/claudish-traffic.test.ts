@@ -421,3 +421,118 @@ describe('claudishTraffic.handler', () => {
         expect(text).toContain('infrastructure failure, NOT a silent-but-nominal sidecar');
     });
 });
+// -- Rotation : docker sert l'ANCIEN fichier a `--since` -----------------------
+//
+// Signale par myia-ai-01:claudish (msg-20260906T111731-2sr7e4), reproduit sur
+// ai-01 le 06/09/2026 : claudish-sidecar, up 13,6 h, `--tail 3` rend une ligne
+// vieille de 55 s tandis que `--since 1h` ne rend RIEN. L'outil concluait alors
+// "NOMINAL (no output): idle since before the window, or freshly created".
+//
+// Ce que ces tests gardent : l'outil ne doit affirmer AUCUN etat present quand
+// son corpus s'arrete avant le processus en cours -- ni une silence nominale,
+// ni un arret de trafic.
+describe('renderTrafficReport -- rotated corpus (docker --since sert le fichier tourne)', () => {
+    const baseOpts = {
+        bucketMinutes: 30,
+        since: '1h',
+        container: 'claudish-sidecar',
+        command: 'docker logs --timestamps --since 1h claudish-sidecar',
+        maxOutputLength: 20000,
+    };
+    const now = Date.parse('2026-09-06T11:56:02.000Z');
+    const FRESH = Date.parse('2026-09-06T11:55:07.000Z');   // sonde --tail : il y a 55 s
+
+    it('corpus VIDE + sonde recente => UNKNOWN, jamais "NOMINAL (no output)"', () => {
+        const report = renderTrafficReport(parseClaudishLogLines([]), {
+            ...baseOpts, now, currentTailTs: FRESH,
+        });
+        expect(report).toContain('ROTATED CORPUS');
+        expect(report).toContain('NOTHING AT ALL');
+        expect(report).toContain('UNKNOWN: no verdict possible');
+        expect(report).not.toContain('NOMINAL (no output)');
+        expect(report).not.toContain('NOMINAL (silent)');
+    });
+
+    it('corpus NON vide mais perime + sonde recente => UNKNOWN, jamais "NOMINAL (silent)"', () => {
+        const parse = parseClaudishLogLines([
+            BANNER('2026-09-05T21:15:13.000000000Z'),
+            RESP('2026-09-05T21:45:05.000000000Z'),
+        ]);
+        const report = renderTrafficReport(parse, { ...baseOpts, now, currentTailTs: FRESH });
+        expect(report).toContain('ROTATED CORPUS');
+        expect(report).toContain('2026-09-05T21:45:05Z');   // queue du corpus
+        expect(report).toContain('2026-09-06T11:55:07Z');   // queue du fichier courant
+        expect(report).toContain('UNKNOWN: no verdict possible');
+        expect(report).not.toContain('NOMINAL (silent)');
+    });
+
+    it('invalide AUSSI le GAP -- un arret lu sur le vieux fichier est aussi faux qu une silence', () => {
+        // Sans la garde, ce corpus rend "GAP: traffic STOPPED at 2026-09-02T13:52:23Z".
+        // C'est une affirmation au present tiree de preuves qui s'arretent avant le
+        // processus en cours : elle est fausse exactement comme le NOMINAL.
+        const parse = parseClaudishLogLines(INCIDENT_LINES);
+        const report = renderTrafficReport(parse, {
+            ...baseOpts, since: '12h', now, currentTailTs: FRESH,
+        });
+        expect(report).toContain('UNKNOWN: no verdict possible');
+        expect(report).not.toContain('GAP: traffic STOPPED');
+        expect(report).not.toContain('VERDICT: traffic ACTIVE');
+    });
+
+    it('sonde ABSENTE => comportement anterieur intact (l absence de preuve n est pas une preuve)', () => {
+        const report = renderTrafficReport(parseClaudishLogLines([]), { ...baseOpts, now });
+        expect(report).toContain('NOMINAL (no output)');
+        expect(report).not.toContain('ROTATED CORPUS');
+        expect(report).not.toContain('UNKNOWN: no verdict possible');
+    });
+
+    it('sonde SANS horodatage (null) => pas de rotation deduite', () => {
+        const report = renderTrafficReport(parseClaudishLogLines([]), {
+            ...baseOpts, now, currentTailTs: null,
+        });
+        expect(report).toContain('NOMINAL (no output)');
+        expect(report).not.toContain('ROTATED CORPUS');
+    });
+
+    it('ecart sous la tolerance de 2 min => pas de rotation (derive d horloge entre 2 lectures)', () => {
+        const parse = parseClaudishLogLines([RESP('2026-09-06T11:54:30.000000000Z')]);
+        const report = renderTrafficReport(parse, {
+            ...baseOpts, now, currentTailTs: Date.parse('2026-09-06T11:55:07.000Z'), // +37 s
+        });
+        expect(report).not.toContain('ROTATED CORPUS');
+        expect(report).toContain('NOMINAL (silent)');
+    });
+});
+
+describe('claudishTraffic.handler -- sonde de rotation', () => {
+    beforeEach(() => {
+        vi.mocked(exec).mockReset();
+    });
+
+    it('ne sonde PAS quand la queue du corpus est fraiche (aucun exec superflu)', async () => {
+        const fresh = new Date(Date.now() - 30_000).toISOString().replace('Z', '000000Z');
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            cb(null, REQ(fresh, 'glm-5.2', 'ComposedHandler', 'myia-ai-01', UA_CLI), '');
+            return {} as any;
+        }) as any);
+        await claudishTraffic.handler({ bucket_minutes: 30, container: 'claudish-sidecar' });
+        expect(vi.mocked(exec)).toHaveBeenCalledTimes(1);
+    });
+
+    it('sonde en --tail quand le corpus ne couvre pas le present, et le declare', async () => {
+        const fresh = new Date(Date.now() - 40_000).toISOString().replace('Z', '000000Z');
+        vi.mocked(exec).mockImplementation(((cmd: string, _opts: any, cb: any) => {
+            // `--since` sert le fichier TOURNE (vieux), `--tail` le fichier COURANT.
+            if (cmd.includes('--tail')) cb(null, RESP(fresh), '');
+            else cb(null, RESP('2026-09-05T21:45:05.000000000Z'), '');
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, container: 'claudish-sidecar' });
+        const text = (res.content as any)[0].text as string;
+        expect(vi.mocked(exec)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(exec).mock.calls[1][0]).toContain('--tail');
+        expect(text).toContain('ROTATED CORPUS');
+        expect(text).toContain('UNKNOWN: no verdict possible');
+        expect(text).not.toContain('NOMINAL');
+    });
+});

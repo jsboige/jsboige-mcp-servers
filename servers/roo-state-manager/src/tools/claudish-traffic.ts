@@ -180,6 +180,13 @@ export interface RenderOptions {
     collectionWarning?: string;
     /** Invariant 8: default container absent — a claudish* container was auto-selected. */
     containerNote?: string;
+    /**
+     * Newest line of the container's CURRENT log file, from a bounded `--tail`
+     * probe. `--since` and `--tail` do not read the same file once json-file has
+     * rotated: docker serves the ROTATED file to `--since`, silently and without
+     * concatenating. Undefined when the probe was not run or produced no stamp.
+     */
+    currentTailTs?: number | null;
 }
 
 function fmtAge(ms: number): string {
@@ -251,9 +258,32 @@ export function renderTrafficReport(parse: ClaudishParseResult, opts: RenderOpti
         sections.push(`reqN resets at each banner — process restarted at: ${times.join(', ')}${parse.lifecycleBanners.length > 5 ? ' (+older)' : ''}`);
     }
 
+    // Rotation guard: the head check above only looks at the OLDEST line. A corpus
+    // can be complete-looking and still not describe the running process — that is
+    // what turns "NOMINAL" from a reading into a false assertion. The discriminant
+    // is the CURRENT file's newest line (bounded `--tail` probe), not the corpus.
+    // Measured 2026-09-06 on claudish-sidecar (ai-01): `--tail 3` returned a line 55 s
+    // old while `--since 1h` returned NOTHING on the same container, up for 13.6 h.
+    const rotatedCorpus =
+        opts.currentTailTs != null &&
+        (parse.lastLineTs === null || opts.currentTailTs - parse.lastLineTs > ROTATION_TOLERANCE_MS);
+    if (rotatedCorpus) {
+        const cur = opts.currentTailTs as number;
+        sections.push(
+            `⚠ ROTATED CORPUS: '--since' served lines up to ${parse.lastLineTs === null ? 'NOTHING AT ALL' : toIso(parse.lastLineTs)}, but the container's CURRENT log file ends at ${toIso(cur)} (${fmtAge(now - cur)} ago). docker served the ROTATED file. This corpus does NOT describe the running process — the window is UNKNOWN, not nominal. Re-read with a bounded --tail.`
+        );
+    }
+
     // Verdict (invariant 3) — the incident question answered without a second call
     const lastReq = requests.length > 0 ? requests.reduce((a, r) => (r.ts > a.ts ? r : a)) : null;
-    if (lastReq) {
+    if (rotatedCorpus) {
+        // First branch on purpose: a rotated corpus invalidates EVERY verdict below,
+        // not just the nominal ones. "GAP: traffic STOPPED at <ts>" read off the old
+        // file is exactly as false as "NOMINAL silent" — both assert a present-tense
+        // state from evidence that stops before the current process. Saying "I do not
+        // know" is a different, and more useful, answer than a confident wrong one.
+        sections.push(`UNKNOWN: no verdict possible — this corpus does not cover the running process (see ROTATED CORPUS above). Neither silence nor a stop can be concluded from it.`);
+    } else if (lastReq) {
         const age = now - lastReq.ts;
         if (age > gapThresholdMs) {
             sections.push(`GAP: traffic STOPPED at ${lastReq.tsIso} — ${fmtAge(age)} before now. Any tail-read suggesting "still flowing" is STALE.`);
@@ -334,6 +364,13 @@ export function boundOutput(text: string, maxOutputLength: number): string {
     return text.slice(0, Math.max(0, maxOutputLength - marker.length)) + marker;
 }
 
+// Same 2 min tolerance as the head-gap guard above: below that, clock skew
+// between the two reads is a likelier explanation than a rotation.
+const ROTATION_TOLERANCE_MS = 120_000;
+// One timestamp is all the probe needs; a small N also keeps docker on the
+// current file — large --tail values fall back to the rotated one (measured).
+const TAIL_PROBE_LINES = 5;
+
 // ── Docker exec ────────────────────────────────────────────────────────────
 
 function execDockerLogs(command: string): Promise<{ stdout: string; stderr: string; errMsg: string | null }> {
@@ -372,7 +409,7 @@ async function discoverClaudishContainers(contextArg: string): Promise<string[]>
 export const claudishTraffic = {
     name: 'claudish_traffic',
     description:
-        'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme de trafic TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, ligne déclarative "GAP: traffic STOPPED at <ts>" quand le trafic est arrêté — répond "ce trafic persiste-t-il ?" sans second appel ni grep (#3391, #3174). handler=NativeHandler = seul chemin facturé Anthropic (ComposedHandler = remappé, non facturé). reqN est remis à zéro à chaque bannière de démarrage process. [resp]/[ttft] ne portent pas machine= — les comptages sont request-based. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, PAS une panne. Ne throw jamais.',
+        'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme de trafic TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, ligne déclarative "GAP: traffic STOPPED at <ts>" quand le trafic est arrêté — répond "ce trafic persiste-t-il ?" sans second appel ni grep (#3391, #3174). handler=NativeHandler = seul chemin facturé Anthropic (ComposedHandler = remappé, non facturé). reqN est remis à zéro à chaque bannière de démarrage process. [resp]/[ttft] ne portent pas machine= — les comptages sont request-based. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, PAS une panne — SAUF corpus rotationné : docker sert l’ancien fichier à `--since` sans prévenir, l’outil sonde alors en `--tail` et rend UNKNOWN plutôt qu’un NOMINAL ou un GAP faux. Ne throw jamais.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -408,6 +445,10 @@ export const claudishTraffic = {
             const maxOutputLength = Math.max(500, args.max_output_length ?? DEFAULT_MAX_OUTPUT_LENGTH);
             const contextArg = args.docker_context ? `--context ${args.docker_context} ` : '';
             const logsCommand = (name: string) => `docker ${contextArg}logs --timestamps --since ${since} ${name}`;
+            // Rotation probe: `--tail` is the ONLY mode that reads the CURRENT json-file
+            // segment once docker has rotated (measured on claudish-sidecar, ai-01,
+            // 2026-09-06). N is small on purpose — we need one timestamp, not a corpus.
+            const tailProbeCommand = (name: string) => `docker ${contextArg}logs --timestamps --tail ${TAIL_PROBE_LINES} ${name}`;
             let command = logsCommand(container);
 
             let collected = await execDockerLogs(command);
@@ -447,6 +488,18 @@ export const claudishTraffic = {
             }
 
             const parse = parseClaudishLogLines(collected.stdout.split('\n'));
+            // Probe only when the corpus could produce a WRONG verdict: no lines at all,
+            // or a tail that already lags. A corpus whose last line is recent is served
+            // from the current file by construction — nothing to discriminate, no exec.
+            let currentTailTs: number | null | undefined;
+            const corpusLagMs = parse.lastLineTs === null ? Infinity : Date.now() - parse.lastLineTs;
+            if (corpusLagMs > ROTATION_TOLERANCE_MS) {
+                const probe = await execDockerLogs(tailProbeCommand(container));
+                const probed = parseClaudishLogLines(probe.stdout.split('\n'));
+                // Absence of a probe stamp is NOT evidence of rotation: leave it undefined
+                // so the report keeps its previous behaviour instead of claiming a fault.
+                currentTailTs = probed.lastLineTs;
+            }
             // Review F1 (#1080): exec may die (60s timeout, 128MB maxBuffer) AFTER a
             // partial stdout — the corpus tail is then missing, which makes any GAP
             // verdict unreliable (last observed request older than reality). The report
@@ -465,6 +518,7 @@ export const claudishTraffic = {
                     now: Date.now(),
                     collectionWarning,
                     containerNote,
+                    currentTailTs,
                 }),
                 maxOutputLength
             );

@@ -263,6 +263,47 @@ def _validate_mcp_refs(config: SKAgentConfig, mcp_ids: list[str]) -> None:
         )
 
 
+def _validate_mcps_within_capabilities(
+    config: SKAgentConfig,
+    mcp_ids: list[str],
+    capabilities: list[str],
+    base_id: str,
+) -> None:
+    """Composed mcps must stay within the base preset's capability grant.
+
+    Issue #3408 acceptance #3 (an override can never widen rights), applied
+    to the ``agent_spec`` path: the spec can narrow the tool list but
+    ``mcps.replace``/``add`` cannot activate a tool whose
+    ``allowed_capabilities`` or ``risk_class`` exceeds what the preset
+    declares — the same default-deny the static matrix and the
+    ``mcp_overrides`` runtime already enforce.
+    """
+    from sk_agent_schemas import (
+        RISK_CLASS_REQUIRED_CAPABILITIES,
+        _required_capabilities_for,
+    )
+
+    granted = set(capabilities)
+    required = _required_capabilities_for(mcp_ids, config.mcps)
+    missing = sorted(required - granted)
+    if missing:
+        raise SpecError(
+            f"agent_spec mcps would require capabilities {missing} not "
+            f"granted by preset {base_id or '(anonymous)'}; "
+            f"granted={sorted(granted)}, mcps={list(mcp_ids)}",
+        )
+    for mcp in config.mcps:
+        if mcp.id not in mcp_ids:
+            continue
+        needed = RISK_CLASS_REQUIRED_CAPABILITIES.get(mcp.risk_class, frozenset())
+        if needed and not (granted & needed):
+            raise SpecError(
+                f"agent_spec mcps would activate tool {mcp.id!r} "
+                f"risk_class={mcp.risk_class!r} requiring one of "
+                f"{sorted(needed)}; granted={sorted(granted)}",
+            )
+
+
 def _validate_vision(config: SKAgentConfig, model_id: str) -> None:
     """A vision-requiring attachment must land on a vision-capable model.
 
@@ -339,6 +380,12 @@ def resolve_agent_spec(
         mcps = apply_mcp_delta(mcps, call_mcp_overrides)
     _validate_mcp_refs(config, mcps)
 
+    # --- capabilities (#3408): composed mcps cannot widen the preset's
+    # granted tool surface — same default-deny as the static matrix and the
+    # mcp_overrides path. A spec can narrow tools but never grant new ones.
+    capabilities = list(base.capabilities)
+    _validate_mcps_within_capabilities(config, mcps, capabilities, base.id)
+
     # --- memory (capabilities) ----------------------------------------------
     if spec.memory is not None:
         memory = MemoryConfig(
@@ -373,6 +420,7 @@ def resolve_agent_spec(
         model=model,
         system_prompt=system_prompt,
         mcps=mcps,
+        capabilities=capabilities,
         memory=memory,
         parameters=parameters,
     )
