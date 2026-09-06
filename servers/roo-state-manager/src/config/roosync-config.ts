@@ -330,6 +330,19 @@ export async function registerMachineId(
 
   const registryPath = join(sharedPath, '.machine-registry.json');
 
+  // #3459: fail-closed bootstrap — registering must never persist state under
+  // an absent root (a registry written into a root recreated elsewhere is a
+  // decoy store). Skip with a WARN naming the resolved path instead of
+  // degrading to a generic write error.
+  if (!existsSync(sharedPath)) {
+    logger.warn(
+      `[roosync-config] Racine du magasin RooSync ABSENTE — enregistrement du machineId IGNORÉ (fail-closed #3459). ` +
+      `Aucun registre écrit sous : ${sharedPath}. ` +
+      `Vérifiez le montage du lecteur ou créez la racine avant tout enregistrement de machine.`
+    );
+    return false;
+  }
+
   try {
     let registryData: any = { machines: {} };
 

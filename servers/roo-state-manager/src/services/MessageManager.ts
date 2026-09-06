@@ -317,6 +317,13 @@ export class MessageManager {
   private channelReconcileLastRun: { at: string; result?: ChannelReconcileResult; error?: string } | null = null;
 
   /**
+   * #3459: outcome of the constructor-time directory bootstrap. A literal
+   * union on purpose — "skipped-store-absent" must stay unreadable as
+   * success by the first `if` that consumes it.
+   */
+  readonly bootstrapStatus: 'ensured' | 'skipped-store-absent';
+
+  /**
    * Constructeur du MessageManager
    *
    * @param sharedStatePath Chemin vers le répertoire .shared-state
@@ -339,14 +346,27 @@ export class MessageManager {
     this.archivePath = join(this.messagesPath, 'archive');
 
     // Créer les répertoires si nécessaires
-    this.ensureDirectories();
+    this.bootstrapStatus = this.ensureDirectories();
   }
 
   /**
    * Crée les répertoires de messagerie s'ils n'existent pas
    * @private
    */
-  private ensureDirectories(): void {
+  private ensureDirectories(): 'ensured' | 'skipped-store-absent' {
+    // #3459: fail-closed bootstrap. The recursive mkdir below would recreate
+    // the store root on a host whose ROOSYNC_SHARED_PATH target is absent,
+    // flipping existsSync(sharedPath) to true and silently disarming every
+    // tool-level #3459 guard for the rest of the process lifetime.
+    if (!existsSync(this.sharedStatePath)) {
+      logger.warn(
+        `[MessageManager] Racine du magasin RooSync ABSENTE — bootstrap de la messagerie IGNORÉ (fail-closed #3459). ` +
+        `Aucun répertoire créé sous : ${this.sharedStatePath}. ` +
+        `Vérifiez le montage du lecteur ou créez la racine ; la messagerie ne peut pas fonctionner tant qu'elle est absente.`
+      );
+      return 'skipped-store-absent';
+    }
+
     const dirs = [
       this.messagesPath,
       this.inboxPath,
@@ -364,6 +384,7 @@ export class MessageManager {
         }
       }
     }
+    return 'ensured';
   }
 
   /**

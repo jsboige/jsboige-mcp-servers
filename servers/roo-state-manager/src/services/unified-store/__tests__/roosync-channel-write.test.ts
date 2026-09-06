@@ -176,6 +176,9 @@ describe('MessageManager PG-primary write path', () => {
     mockUpdateRooSyncMessage.mockResolvedValue(undefined);
     mockGetRooSyncMessageById.mockResolvedValue(null);
     testPath = join(tmpdir(), `rsm-pg-primary-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    // #3459: the store root must pre-exist — the constructor no longer
+    // auto-creates it (fail-closed bootstrap).
+    mkdirSync(testPath, { recursive: true });
     messageManager = new MessageManager(testPath);
   });
 
