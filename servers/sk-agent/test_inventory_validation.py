@@ -26,7 +26,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from sk_agent_config import (  # noqa: E402
-    SKAgentConfig,
     load_config,
     validate_config,
 )
@@ -41,9 +40,17 @@ README_PATH = HERE / "README.md"
 
 
 def test_template_loads_without_errors():
-    """The canonical template config must load without errors."""
-    cfg = load_config(str(TEMPLATE_PATH))
-    assert isinstance(cfg, SKAgentConfig)
+    """The canonical template config must load without errors.
+
+    Re-resolves the module at call time: test_recursion_guard reloads
+    sk_agent_config in the same pytest process, and a from-import captured
+    at collection time goes stale (isinstance False against the refreshed
+    class).
+    """
+    import sk_agent_config  # noqa: PLC0415
+
+    cfg = sk_agent_config.load_config(str(TEMPLATE_PATH))
+    assert isinstance(cfg, sk_agent_config.SKAgentConfig)
     assert cfg.config_version == 2
     assert cfg.default_agent == "analyst"
     assert cfg.default_vision_agent == "vision-analyst"
@@ -58,13 +65,15 @@ def test_template_validate_returns_no_errors():
 
 
 def test_template_counts_match_expected_baseline():
-    """Lock in the canonical counts derived from the template (frozen 2026-09-04).
+    """Lock in the canonical counts derived from the template (#3410).
 
-    If you legitimately change these counts, update both the template and the
-    test in the same commit.
+    If you legitimately change these counts, update the template, this test,
+    and the generated parent docs in the same change. 16->17 models: #3389
+    added glm-5.3-flash after the initial freeze; the stale assert sat red
+    unseen because this file was not in the CI pytest list.
     """
     cfg = load_config(str(TEMPLATE_PATH))
-    assert len(cfg.models) == 16, f"models: {len(cfg.models)}"
+    assert len(cfg.models) == 17, f"models: {len(cfg.models)}"
     assert len(cfg.agents) == 32, f"agents: {len(cfg.agents)}"
     assert len(cfg.mcps) == 5, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
@@ -73,7 +82,7 @@ def test_template_counts_match_expected_baseline():
     assert inline_total == 15, f"inline agents: {inline_total}"
 
     enabled = sum(1 for m in cfg.models if m.enabled)
-    assert enabled == 12, f"enabled models: {enabled}"
+    assert enabled == 13, f"enabled models: {enabled}"
 
     mem_agents = sum(1 for a in cfg.agents if a.memory.enabled)
     assert mem_agents == 5, f"memory-enabled agents: {mem_agents}"
@@ -208,3 +217,55 @@ def test_inventory_generator_check_mode_passes():
             f"drift detected:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )
         assert "OK:" in result.stdout
+
+
+def test_deployment_doc_check_detects_drift():
+    """--deployment-doc must pass on matching counts and fail on a stale one.
+
+    Acceptance criterion 1 of #3410: a check FAILS when doc and config
+    diverge. The deployment guide is hand-written, so its counts table is
+    exactly where silent drift lived before.
+    """
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    good = (
+        "# Deployment\n\n"
+        "| Metric | Count | Notes |\n|---|---|---|\n"
+        "| **Models** | 17 | notes |\n"
+        "| **Top-level agents** | 32 | notes |\n"
+        "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
+        "| **Memory-enabled agents** | 5 | notes |\n"
+        "| **MCP plugins** | 5 | notes |\n"
+        "| **Conversations** | 11 | notes |\n"
+    )
+    bad = good.replace(
+        "| **Top-level agents** | 32 |", "| **Top-level agents** | 13 |"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        inv = Path(td) / "AGENT_INVENTORY.md"
+        dep = Path(td) / "deployment.md"
+        render = subprocess.run(
+            [sys.executable, str(HERE / "generate_inventory.py"),
+             "--doc-path", str(inv)],
+            capture_output=True, text=True, cwd=str(HERE),
+        )
+        assert render.returncode == 0, render.stderr
+        for text, expected_ok in ((good, True), (bad, False)):
+            dep.write_text(text, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(HERE / "generate_inventory.py"),
+                 "--check", "--doc-path", str(inv),
+                 "--deployment-doc", str(dep)],
+                capture_output=True, text=True, cwd=str(HERE),
+            )
+            if expected_ok:
+                assert result.returncode == 0, (
+                    f"STDERR: {result.stderr}"
+                )
+                assert "deployment doc counts match" in result.stdout
+            else:
+                assert result.returncode == 1, (
+                    f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+                )
+                assert "agents_total" in result.stderr

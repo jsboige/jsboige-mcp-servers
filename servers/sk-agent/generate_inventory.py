@@ -257,6 +257,35 @@ def check_drift(existing: str, generated: str) -> list[str]:
     return issues
 
 
+# The deployment guide is hand-written (not generated), so its canonical-counts
+# table is the historical drift vector this script exists to close: it
+# announced 13 agents / 4 conversations for months while the template had
+# 32 / 11 (#3410).
+DEPLOYMENT_CHECKS = [
+    (r"\*\*Models\*\*[^|]*\|\s*(\d+)", "models_total"),
+    (r"\*\*Top-level agents\*\*[^|]*\|\s*(\d+)", "agents_total"),
+    (r"\*\*Inline agents\*\*[^|]*\|\s*(\d+)", "agents_inline"),
+    (r"\*\*Memory-enabled agents\*\*[^|]*\|\s*(\d+)", "agents_memory_enabled"),
+    (r"\*\*MCP plugins\*\*[^|]*\|\s*(\d+)", "mcps_total"),
+    (r"\*\*Conversations\*\*[^|]*\|\s*(\d+)", "conversations_total"),
+]
+
+
+def check_deployment_drift(existing: str, inv: dict[str, Any]) -> list[str]:
+    """Check the canonical-counts table of the deployment guide against the
+    template-derived inventory. Returns list of drift issues."""
+    issues = []
+    for pattern, key in DEPLOYMENT_CHECKS:
+        m = re.search(pattern, existing)
+        if m is None:
+            issues.append(f"[{key}] count row not found in deployment doc")
+        elif int(m.group(1)) != inv[key]:
+            issues.append(
+                f"[{key}] drift: deployment doc={m.group(1)}, template={inv[key]}"
+            )
+    return issues
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--check", action="store_true",
@@ -265,6 +294,9 @@ def main() -> int:
                    help="Emit JSON summary of counts to stdout")
     p.add_argument("--doc-path", default=str(DEFAULT_DOC_PATH),
                    help=f"Path to AGENT_INVENTORY.md (default: {DEFAULT_DOC_PATH})")
+    p.add_argument("--deployment-doc", default=None, metavar="PATH",
+                   help="With --check: also verify the canonical-counts table "
+                        "in this doc (e.g. docs/services/sk-agent-deployment.md)")
     args = p.parse_args()
 
     cfg = load_template()
@@ -291,13 +323,23 @@ def main() -> int:
             return 2
         existing = doc_path.read_text(encoding="utf-8")
         issues = check_drift(existing, generated)
+        if args.deployment_doc is not None:
+            dep_path = Path(args.deployment_doc)
+            if not dep_path.exists():
+                print(f"ERROR: deployment doc not found at {dep_path}", file=sys.stderr)
+                return 2
+            issues += check_deployment_drift(
+                dep_path.read_text(encoding="utf-8"), inv
+            )
         if issues:
-            print("DRIFT DETECTED between template config and inventory doc:", file=sys.stderr)
+            print("DRIFT DETECTED between template config and docs:", file=sys.stderr)
             for issue in issues:
                 print(f"  - {issue}", file=sys.stderr)
             print(f"\nRegenerate with: python {Path(__file__).name}", file=sys.stderr)
             return 1
         print("OK: inventory doc matches template config")
+        if args.deployment_doc is not None:
+            print("OK: deployment doc counts match template config")
         return 0
 
     # Default: regenerate the doc
