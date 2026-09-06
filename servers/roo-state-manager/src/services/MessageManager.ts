@@ -47,6 +47,12 @@ import {
   destroyRooSyncMessageInStore,
   purgeArchivedChannelMessages,
 } from './unified-store/roosync-channel-write.js';
+// #3292 — periodic GDrive→PG reconcile: heals the dual-write loss classes
+// (hard kill, PG outage, machine state regression) that block #3151 Phase B.
+import {
+  reconcileChannelFromGDrive,
+  type ChannelReconcileResult,
+} from './unified-store/roosync-channel-reconcile.js';
 import type { RooSyncMessageUpdate } from './unified-store/types.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
@@ -298,6 +304,17 @@ export class MessageManager {
    */
   private autoArchiveConfig: { maxAgeDays: number; intervalHours: number; unreadMaxAgeDays: number } | null = null;
   private autoArchiveLastRun: { at: string; archived: number; durationMs: number; error?: string } | null = null;
+
+  /**
+   * Channel reconcile daemon timer (#3292 — GDrive→PG, heals dual-write loss).
+   * Own timer, not a passenger of the auto-archive runOnce: the two have
+   * independent gates (MESSAGE_AUTO_ARCHIVE_ENABLED vs dual-write armed) and
+   * conflating them would lose the reconcile on every machine that turns the
+   * archive daemon off.
+   */
+  private channelReconcileTimer: NodeJS.Timeout | null = null;
+  private channelReconcileConfig: { intervalHours: number; lookbackDays: number } | null = null;
+  private channelReconcileLastRun: { at: string; result?: ChannelReconcileResult; error?: string } | null = null;
 
   /**
    * Constructeur du MessageManager
@@ -2333,6 +2350,98 @@ export class MessageManager {
       running: this.autoArchiveTimer !== null,
       config: this.autoArchiveConfig,
       lastRun: this.autoArchiveLastRun
+    };
+  }
+
+  /**
+   * Start the GDrive→PG channel reconcile daemon (#3292).
+   *
+   * Closes the three measured dual-write loss classes continuously — hard
+   * kills (the fire-and-forget INSERT never fails, the process just vanishes),
+   * PG outages (INSERT fails while PG is down), and machine state regressions
+   * (dual-write silently stops) — by id-diffing the lookback window of
+   * `messages/{inbox,archive,sent}` against `roosync_messages` and inserting
+   * what is missing (ON CONFLICT DO NOTHING). Any armed machine heals the
+   * whole fleet's pool: the pool is shared.
+   *
+   * Strategy mirrors the auto-archive daemon: initial run 60 s after boot
+   * (staggered +30 s vs the archive daemon's own first pass, so the two
+   * never collide on DriveFS), periodic every `intervalHours`, fire-and-forget
+   * errors, idempotent start.
+   *
+   * Concurrency: safe across machines — the insert is ON CONFLICT DO NOTHING,
+   * so two reconciles racing on the same id converge.
+   *
+   * @param intervalHours Re-run interval (default 6, matches the archive daemon)
+   * @param lookbackDays Re-scan window (default 7 — covers outages and the
+   *   boot-gap of short-lived worker sessions, bounded so a run never degrades
+   *   into the O(pool) scan #3292 was opened for)
+   */
+  startChannelReconcileDaemon(
+    intervalHours: number = 6,
+    lookbackDays: number = 7
+  ): void {
+    if (this.channelReconcileTimer !== null) {
+      logger.warn('ChannelReconcile daemon already running, ignoring duplicate start');
+      return;
+    }
+    this.channelReconcileConfig = { intervalHours, lookbackDays };
+
+    const runOnce = async () => {
+      const at = new Date().toISOString();
+      try {
+        const result = await reconcileChannelFromGDrive({
+          messagesRoot: this.messagesPath,
+          lookbackDays,
+        });
+        this.channelReconcileLastRun = { at, result };
+        if (result.status === 'ok' && result.reconciled > 0) {
+          logger.info(
+            `[ChannelReconcile] Reconciled ${result.reconciled} message(s) into PG ` +
+            `(window ${result.candidateIds} ids / ${result.sinceId}, ${result.errors} error(s))`
+          );
+        }
+      } catch (err) {
+        this.channelReconcileLastRun = {
+          at,
+          error: err instanceof Error ? err.message : String(err),
+        };
+        logger.error('[ChannelReconcile] Run failed', err as Record<string, any>);
+      }
+    };
+
+    // Initial run after 60s — staggered vs the archive daemon's 30s first pass
+    setTimeout(() => { void runOnce(); }, 60_000);
+
+    this.channelReconcileTimer = setInterval(() => { void runOnce(); }, intervalHours * 3600 * 1000);
+    logger.info(`[ChannelReconcile] Daemon started (interval=${intervalHours}h, lookback=${lookbackDays}d)`);
+  }
+
+  /**
+   * Stop the channel reconcile daemon. Used in tests and graceful shutdown.
+   */
+  stopChannelReconcileDaemon(): void {
+    if (this.channelReconcileTimer !== null) {
+      clearInterval(this.channelReconcileTimer);
+      this.channelReconcileTimer = null;
+      logger.info('[ChannelReconcile] Daemon stopped');
+    }
+  }
+
+  /**
+   * Reconcile observability (#3292) — same contract as getAutoArchiveStatus():
+   * lastRun survives a stop so `running: false` + a last run reads as "was
+   * started, then stopped", not "never ran".
+   */
+  getChannelReconcileStatus(): {
+    running: boolean;
+    config: { intervalHours: number; lookbackDays: number } | null;
+    lastRun: { at: string; result?: ChannelReconcileResult; error?: string } | null;
+  } {
+    return {
+      running: this.channelReconcileTimer !== null,
+      config: this.channelReconcileConfig,
+      lastRun: this.channelReconcileLastRun,
     };
   }
 
