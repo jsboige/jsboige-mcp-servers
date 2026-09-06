@@ -409,7 +409,7 @@ async function discoverClaudishContainers(contextArg: string): Promise<string[]>
 export const claudishTraffic = {
     name: 'claudish_traffic',
     description:
-        'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme de trafic TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, ligne déclarative "GAP: traffic STOPPED at <ts>" quand le trafic est arrêté — répond "ce trafic persiste-t-il ?" sans second appel ni grep (#3391, #3174). handler=NativeHandler = seul chemin facturé Anthropic (ComposedHandler = remappé, non facturé). reqN est remis à zéro à chaque bannière de démarrage process. [resp]/[ttft] ne portent pas machine= — les comptages sont request-based. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, PAS une panne. Ne throw jamais.',
+        'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme de trafic TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, ligne déclarative "GAP: traffic STOPPED at <ts>" quand le trafic est arrêté — répond "ce trafic persiste-t-il ?" sans second appel ni grep (#3391, #3174). handler=NativeHandler = seul chemin facturé Anthropic (ComposedHandler = remappé, non facturé). reqN est remis à zéro à chaque bannière de démarrage process. [resp]/[ttft] ne portent pas machine= — les comptages sont request-based. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, PAS une panne — SAUF corpus rotationné : docker sert l’ancien fichier à `--since` sans prévenir, l’outil sonde alors en `--tail` et rend UNKNOWN plutôt qu’un NOMINAL ou un GAP faux. Ne throw jamais.',
     inputSchema: {
         type: 'object',
         properties: {

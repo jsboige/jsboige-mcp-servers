@@ -224,7 +224,7 @@ export const readVscodeLogsDefinition = {
 // ============================================================
 export const claudishTrafficDefinition = {
     name: 'claudish_traffic',
-    description: 'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, "GAP: traffic STOPPED at <ts>" déclaratif — répond "ce trafic persiste-t-il ?" sans second appel ni grep. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, pas une panne. Ne throw jamais.',
+    description: 'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, "GAP: traffic STOPPED at <ts>" déclaratif — répond "ce trafic persiste-t-il ?" sans second appel ni grep. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, pas une panne — SAUF corpus rotationné : docker sert l’ancien fichier à `--since` sans prévenir, l’outil sonde alors en `--tail` et rend UNKNOWN plutôt qu’un NOMINAL ou un GAP faux. Ne throw jamais.',
     inputSchema: {
         type: 'object',
         properties: {
