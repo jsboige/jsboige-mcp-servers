@@ -64,6 +64,7 @@ function makeMockMessageManager(
   return {
     readInbox: vi.fn().mockResolvedValue(unreadItems),
     getMessage: vi.fn((id: string) => Promise.resolve(messageMap[id] ?? null)),
+    isInboxCachePartial: vi.fn().mockReturnValue(false),
   };
 }
 

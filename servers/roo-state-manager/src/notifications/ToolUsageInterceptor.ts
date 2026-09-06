@@ -312,7 +312,11 @@ export class ToolUsageInterceptor {
       return;
     }
 
-    const maxCount = parseInt(process.env.NOTIFICATIONS_MAX_COUNT || String(DEFAULT_MAX_COUNT), 10);
+    // #3488: an env var is always a string — a non-numeric or undefined-typed
+    // value must fall back to the default, not disable the cap silently
+    // (NaN makes every `count > maxCount` comparison false).
+    const parsedMaxCount = parseInt(process.env.NOTIFICATIONS_MAX_COUNT || String(DEFAULT_MAX_COUNT), 10);
+    const maxCount = Number.isFinite(parsedMaxCount) && parsedMaxCount > 0 ? parsedMaxCount : DEFAULT_MAX_COUNT;
     const workspace = getLocalWorkspaceId();
     const machineId = this.config.machineId;
     const count = messages.length;
@@ -320,13 +324,28 @@ export class ToolUsageInterceptor {
 
     const urgentCount = messages.filter(m => m.priority === 'URGENT').length;
     const highCount = messages.filter(m => m.priority === 'HIGH').length;
-    const displayCount = count > maxCount ? `${maxCount}+` : String(count);
+    const capped = count > maxCount;
+    const displayCount = capped ? `${maxCount}+` : String(count);
 
     let footer = `\n[NOTIF] ${displayCount} message(s) non lu(s) en inbox`;
     if (urgentCount > 0) {
       footer += ` (${urgentCount} URGENT)`;
     } else if (highCount > 0) {
       footer += ` (${highCount} HIGH)`;
+    }
+    // #3488: name what the footer counts, or it contradicts every other organ.
+    // The tick reads the same recent-slice base as a non-deep inbox call (so it
+    // can legitimately differ from a deep read), and "N+" is a display cap, not
+    // a count. Three numbers under one word with no scope is the incident.
+    const scopeParts: string[] = [];
+    if (this.messageManager.isInboxCachePartial()) {
+      scopeParts.push('base : tranche récente du cache — pool complet non scanné, deep: true pour mesurer');
+    }
+    if (capped) {
+      scopeParts.push(`${maxCount}+ = plafond d'affichage, pas un compte exact`);
+    }
+    if (scopeParts.length > 0) {
+      footer += ` — ${scopeParts.join(' ; ')}`;
     }
     footer += `. ${machineId}:${workspace}. Use roosync_messages action:"inbox".`;
 
