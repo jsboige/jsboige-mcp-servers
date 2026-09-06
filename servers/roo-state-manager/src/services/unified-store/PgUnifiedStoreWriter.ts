@@ -676,7 +676,68 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     await client.query(sql, params);
   }
 
-  private async upsertMessagesRows(client: pg.PoolClient, rows: MessageRow[]): Promise<void> {
+  /**
+   * #2427 client-side: drop rows the store provably already holds, BEFORE they hit the wire.
+   *
+   * `upsertMessagesRows` ends in `ON CONFLICT (task_id, seq) DO NOTHING`: a row whose
+   * (task_id, seq) already exists is discarded server-side, unchanged. The producer
+   * (`dualWriteConversationToStore`) re-sends the FULL message sequence on every skeleton
+   * refresh -- every 2 min per RSM instance, for every live conversation -- so nearly all
+   * of what travels is destined to be thrown away.
+   *
+   * Measured on ai-01 `postgres_production`, quiet 60 s window (2026-09-06):
+   * 296856 index probes on `messages` for 69 rows actually inserted -- 4302:1. Every
+   * discarded row still costs a unique-index probe, a parsed parameter, and its content
+   * bytes over the link (six of seven machines reach this database through a NAT hairpin,
+   * so the waste also shows up as WAN saturation, not just database load).
+   *
+   * One aggregate query replaces those probes. The fast path applies ONLY when a task's
+   * stored range is provably contiguous (`count = max_seq + 1`) -- `seq` is assigned
+   * contiguously from 0 by `mapSequenceToMessageRows`. If a range has holes (partial
+   * backfill, legacy rows), the assumption does not hold and that task keeps the current
+   * send-everything behaviour: the guard degrades to today's semantics rather than
+   * skipping a row that is genuinely absent.
+   *
+   * Behaviour-preserving by construction: the rows removed here are exactly the rows
+   * `DO NOTHING` would have discarded.
+   */
+  private async selectNewMessageRows(
+    client: pg.PoolClient,
+    rows: MessageRow[]
+  ): Promise<MessageRow[]> {
+    const taskIds = [...new Set(rows.map(r => r.task_id))];
+    const result = await client.query(
+      `SELECT task_id, MAX(seq) AS max_seq, COUNT(*) AS n
+         FROM messages
+        WHERE task_id = ANY($1::text[])
+        GROUP BY task_id`,
+      [taskIds]
+    );
+
+    const highWater = new Map<string, number>();
+    for (const row of result?.rows ?? []) {
+      const maxSeq = Number(row.max_seq);
+      const count = Number(row.n);
+      // Contiguity check: a stored range 0..maxSeq holds exactly maxSeq+1 rows.
+      if (Number.isFinite(maxSeq) && Number.isFinite(count) && count === maxSeq + 1) {
+        highWater.set(row.task_id, maxSeq);
+      }
+    }
+    if (highWater.size === 0) return rows;
+
+    return rows.filter(r => {
+      const mark = highWater.get(r.task_id);
+      return mark === undefined || r.seq > mark;
+    });
+  }
+
+  private async upsertMessagesRows(client: pg.PoolClient, allRows: MessageRow[]): Promise<void> {
+    // #2427 client-side: skip what the store already holds. An empty result means the whole
+    // batch was redundant -- the common case for a conversation re-scanned by the 2-min
+    // refresh worker, and the reason nothing is sent at all in that case.
+    const rows = await this.selectNewMessageRows(client, allRows);
+    if (rows.length === 0) return;
+
     // Batch insert using UNNEST for efficiency (up to 100x faster than individual INSERTs)
     const taskIds: string[] = [];
     const messageIds: (string | null)[] = [];
