@@ -148,6 +148,7 @@ def v2_config() -> dict:
                 "model": "glm-5",
                 "system_prompt": "You are an analyst.",
                 "mcps": ["searxng", "playwright"],
+                "capabilities": ["memory"],
                 "memory": {"enabled": True, "collection": "analyst-memory"},
             },
             {

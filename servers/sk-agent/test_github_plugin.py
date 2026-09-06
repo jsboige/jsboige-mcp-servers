@@ -311,3 +311,31 @@ class TestRunGhEdgeCases:
         result = plugin.get_pr_diff(1)
         data = json.loads(result)
         assert "repo not found" in data["error"]
+
+
+class TestWriteGate:
+    """``allow_write`` gates ``post_review_comment`` (issue #3408: gh
+    read-only outside a profile explicitly declaring ``github_write``)."""
+
+    def test_post_review_comment_allowed_by_default(self):
+        p = GitHubPlugin(default_repo="a/b")
+        with patch("github_plugin.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            result = p.post_review_comment(1, "nit: typo")
+        assert json.loads(result)["status"] == "posted"
+        mock_run.assert_called_once()
+
+    def test_post_review_comment_refused_without_allow_write(self):
+        p = GitHubPlugin(default_repo="a/b", allow_write=False)
+        with patch("github_plugin.subprocess.run") as mock_run:
+            with pytest.raises(ValueError) as exc_info:
+                p.post_review_comment(1, "nit: typo")
+            mock_run.assert_not_called()
+        assert "github_write" in str(exc_info.value)
+
+    def test_read_functions_unaffected_by_allow_write(self):
+        p = GitHubPlugin(default_repo="a/b", allow_write=False)
+        with patch("github_plugin.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="diff")
+            p.get_pr_diff(1)
+        mock_run.assert_called_once()
