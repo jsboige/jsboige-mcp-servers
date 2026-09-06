@@ -516,7 +516,8 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 	});
 
 	test('L352: registerMachineId sets top-level lastUpdated = now', async () => {
-		stableMocks.existsSync.mockReturnValue(false);
+		// Root present, registry file absent (#3459 root precondition).
+		stableMocks.existsSync.mockImplementation((p: any) => !String(p).endsWith('.machine-registry.json'));
 		stableMocks.writeFile.mockResolvedValue(undefined);
 
 		await registerMachineId('first-machine', '/tmp/test-shared', 'init');
@@ -528,7 +529,8 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 	// ─── L355-L366 registerMachineId success path + logger.info ────────────────
 
 	test('L355-L362: registerMachineId success → logger.info + return true', async () => {
-		stableMocks.existsSync.mockReturnValue(false);
+		// Root present, registry file absent (#3459 root precondition).
+		stableMocks.existsSync.mockImplementation((p: any) => !String(p).endsWith('.machine-registry.json'));
 		stableMocks.writeFile.mockResolvedValue(undefined);
 		const result = await registerMachineId('logged-machine', '/tmp/test-shared', 'unit-test');
 		expect(result).toBe(true);
@@ -540,7 +542,8 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 	});
 
 	test('L363-L366: registerMachineId writeFile rejects → return false + logger.error', async () => {
-		stableMocks.existsSync.mockReturnValue(false);
+		// Root present, registry file absent (#3459 root precondition).
+		stableMocks.existsSync.mockImplementation((p: any) => !String(p).endsWith('.machine-registry.json'));
 		stableMocks.writeFile.mockRejectedValue(new Error('disk full'));
 		const result = await registerMachineId('failing-machine', '/tmp/test-shared', 'test');
 		expect(result).toBe(false);

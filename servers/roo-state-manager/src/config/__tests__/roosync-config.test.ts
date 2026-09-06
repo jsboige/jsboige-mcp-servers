@@ -392,7 +392,9 @@ describe('roosync-config', () => {
 		const mockSharedPath = '/tmp/test-shared';
 
 		test('creates new registry when none exists', async () => {
-			stableMocks.existsSync.mockReturnValue(false);
+			// Root present, registry file absent — path-aware because #3459 added
+			// a root-existence precondition distinct from the registry lookup.
+			stableMocks.existsSync.mockImplementation((p: any) => !String(p).endsWith('.machine-registry.json'));
 			stableMocks.writeFile.mockResolvedValue(undefined);
 
 			const result = await registerMachineId('new-machine', mockSharedPath, 'test');

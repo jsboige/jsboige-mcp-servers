@@ -22,6 +22,9 @@ import { roosyncDashboard } from '../dashboard.js';
 import { roosyncRead } from '../read.js';
 import { getMessage } from '../get_message.js';
 import { roosyncListAttachments } from '../roosync-attachments.tool.js';
+import { MessageManager } from '../../../services/MessageManager.js';
+import { registerMachineId } from '../../../config/roosync-config.js';
+import { Logger } from '../../../utils/logger.js';
 
 // #858 / #864: these modules import a chat client for LLM condensation; keep it
 // inert so a read/list failing on the guard never needs (and never touches) it.
@@ -114,5 +117,37 @@ describe('roosync fail-closed when store is absent (#3459)', () => {
     expect(String((result as any).message)).toContain('ROOSYNC_SHARED_PATH inaccessible');
     expect((result as any).archives).toEqual([]);
     expect(existsSync(MISSING_STORE)).toBe(false);
+  });
+
+  it('MessageManager bootstrap skips AND does not recreate the store root (bootstrap disarming)', async () => {
+    // Same disarming class as read_archive above, at bootstrap level: the
+    // constructor's ensureDirectories ran a recursive mkdir under the absent
+    // root, recreating it before any tool guard could fire (#3459).
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    const mm = new MessageManager(MISSING_STORE);
+    expect(mm.bootstrapStatus).toBe('skipped-store-absent');
+    expect(existsSync(MISSING_STORE)).toBe(false);
+    expect(existsSync(path.join(MISSING_STORE, 'messages'))).toBe(false);
+    // The WARN must carry the RESOLVED path (GO #3459): the logical name
+    // alone fixes nothing at 3 a.m.
+    const warned = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warned).toContain(MISSING_STORE);
+    warnSpy.mockRestore();
+  });
+
+  it('registerMachineId skips AND does not persist a decoy registry', async () => {
+    // writeFile cannot create the parent, so the root-creation property is
+    // carried by the MessageManager guard above; the discriminating member
+    // HERE is the WARN — a neutralized guard degrades to a generic write
+    // error with no readable cause, and the mutation counter-check relies
+    // on this assertion to go red.
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    const ok = await registerMachineId('probe-machine', MISSING_STORE, 'unit-test');
+    expect(ok).toBe(false);
+    expect(existsSync(MISSING_STORE)).toBe(false);
+    expect(existsSync(path.join(MISSING_STORE, '.machine-registry.json'))).toBe(false);
+    const warned = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warned).toContain(MISSING_STORE);
+    warnSpy.mockRestore();
   });
 });
