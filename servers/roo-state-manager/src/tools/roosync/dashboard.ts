@@ -4140,6 +4140,22 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
 }
 
 async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
+  // #3459: fail-closed. Le mkdir récursif ci-dessous recréerait la racine du store
+  // et rendrait `existsSync(sharedPath)` vrai pour toutes les autres gardes.
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'read_archive',
+      key,
+      type: args.type ?? '',
+      request: requestEcho,
+      archives: [],
+      message: (err as Error).message
+    };
+  }
+
   const archiveDir = getArchiveDir();
   await fs.mkdir(archiveDir, { recursive: true });
 

@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
+import { existsSync } from 'fs';
 import { roosyncDashboard } from '../dashboard.js';
 import { roosyncRead } from '../read.js';
 import { getMessage } from '../get_message.js';
@@ -99,5 +100,19 @@ describe('roosync fail-closed when store is absent (#3459)', () => {
     const text = result.content[0].text;
     expect(text).toContain('ROOSYNC_SHARED_PATH inaccessible');
     expect(text).not.toContain('Aucune pièce jointe trouvée');
+  });
+
+  it('read_archive fails AND does not recreate the store root (mkdir disarming)', async () => {
+    // #1103 blocking point: handleReadArchive's first instruction is a recursive
+    // mkdir on <sharedStatePath>/dashboards/archive — which ALSO creates the
+    // store root, flipping existsSync(sharedPath) to true forever after and
+    // silently disarming every other #3459 guard. The call must fail closed
+    // AND the absent path must still be absent afterwards — the second member
+    // is the one that actually guards against regression.
+    const result = await roosyncDashboard({ action: 'read_archive', type: 'workspace' });
+    expect(result.success).toBe(false);
+    expect(String((result as any).message)).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect((result as any).archives).toEqual([]);
+    expect(existsSync(MISSING_STORE)).toBe(false);
   });
 });
