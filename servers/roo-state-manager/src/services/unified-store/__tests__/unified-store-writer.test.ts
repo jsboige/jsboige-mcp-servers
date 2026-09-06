@@ -460,4 +460,101 @@ describe('PgUnifiedStoreWriter', () => {
       expect(metrics.upsertsRetried).toBe(0);
     });
   });
+
+  // ─── #2427 client-side: high-water mark on `seq` ─────────────────────
+
+  describe('upsertMessages — high-water mark (#2427 client-side)', () => {
+    /** Route the pre-flight aggregate to `stored`; every other query keeps the default. */
+    function mockStored(stored: Array<{ task_id: string; max_seq: number; n: number }>) {
+      mockQuery.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('MAX(seq)')) {
+          // node-postgres returns bigint/numeric aggregates as strings.
+          return Promise.resolve({
+            rows: stored.map(s => ({
+              task_id: s.task_id,
+              max_seq: String(s.max_seq),
+              n: String(s.n),
+            })),
+            rowCount: stored.length,
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+    }
+
+    function insertCalls() {
+      return mockQuery.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('INSERT INTO messages')
+      );
+    }
+
+    test('a fully-stored batch emits NO insert at all', async () => {
+      const writer = createWriter();
+      await writer.init();
+      mockStored([{ task_id: 'task-123', max_seq: 2, n: 3 }]);
+
+      await writer.upsertMessages([
+        createMessageRow({ seq: 0 }),
+        createMessageRow({ seq: 1 }),
+        createMessageRow({ seq: 2 }),
+      ]);
+
+      // This is the defect being fixed: the 2-min refresh worker re-sends the whole
+      // sequence and `ON CONFLICT DO NOTHING` discards every row server-side.
+      expect(insertCalls()).toHaveLength(0);
+      expect(writer.getMetrics().upsertsFailed).toBe(0);
+    });
+
+    test('only the tail travels when the store holds a prefix', async () => {
+      const writer = createWriter();
+      await writer.init();
+      mockStored([{ task_id: 'task-123', max_seq: 1, n: 2 }]);
+
+      await writer.upsertMessages([
+        createMessageRow({ seq: 0, content: 'old-0' }),
+        createMessageRow({ seq: 1, content: 'old-1' }),
+        createMessageRow({ seq: 2, content: 'new-2' }),
+      ]);
+
+      const calls = insertCalls();
+      expect(calls).toHaveLength(1);
+      const params = calls[0][1] as unknown[];
+      expect(params[2]).toEqual([2]);         // $3 = seq
+      expect(params[4]).toEqual(['new-2']);   // $5 = content
+    });
+
+    test('a NON-contiguous stored range disables the optimisation — everything is sent', async () => {
+      const writer = createWriter();
+      await writer.init();
+      // max_seq=5 but only 3 rows stored => holes. The high-water assumption does not
+      // hold, so the guard must fall back to today's send-everything behaviour rather
+      // than skip a row that is genuinely absent.
+      mockStored([{ task_id: 'task-123', max_seq: 5, n: 3 }]);
+
+      await writer.upsertMessages([
+        createMessageRow({ seq: 0 }),
+        createMessageRow({ seq: 1 }),
+        createMessageRow({ seq: 2 }),
+      ]);
+
+      const calls = insertCalls();
+      expect(calls).toHaveLength(1);
+      expect((calls[0][1] as unknown[])[2]).toEqual([0, 1, 2]);
+    });
+
+    test('a task absent from the store is untouched by the filter', async () => {
+      const writer = createWriter();
+      await writer.init();
+      mockStored([{ task_id: 'other-task', max_seq: 9, n: 10 }]);
+
+      await writer.upsertMessages([
+        createMessageRow({ seq: 0 }),
+        createMessageRow({ seq: 1 }),
+      ]);
+
+      const calls = insertCalls();
+      expect(calls).toHaveLength(1);
+      expect((calls[0][1] as unknown[])[2]).toEqual([0, 1]);
+    });
+  });
 });
