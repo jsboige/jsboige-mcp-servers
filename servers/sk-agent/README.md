@@ -185,6 +185,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "id": "analyst",
       "model": "glm-5",
       "system_prompt": "You are a helpful analyst.",
+      "capabilities": ["memory"],
       "mcps": ["searxng"],
       "memory": { "enabled": true, "collection": "analyst-memory" }
     },
