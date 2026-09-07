@@ -57,11 +57,13 @@ function makeConfig(overrides: Partial<InterceptorConfig> = {}): InterceptorConf
 
 function makeMockMessageManager(
   unreadItems: Array<{ id: string }> = [],
-  messageMap: Record<string, any> = {}
+  messageMap: Record<string, any> = {},
+  inboxCachePartial = false
 ) {
   return {
     readInbox: vi.fn().mockResolvedValue(unreadItems),
     getMessage: vi.fn((id: string) => Promise.resolve(messageMap[id] ?? null)),
+    isInboxCachePartial: vi.fn(() => inboxCachePartial),
   };
 }
 
@@ -789,7 +791,13 @@ describe('ToolUsageInterceptor', () => {
       const result = await interceptor.interceptToolCall('tool', {}, async () => 'r');
       expect(result).toContain('3+ message(s)');
 
-      process.env.NOTIFICATIONS_MAX_COUNT = original;
+      // `= undefined` would ASSIGN the string 'undefined' (env vars are strings),
+      // leaking a NaN into every later footer build in this worker (#3488).
+      if (original === undefined) {
+        delete process.env.NOTIFICATIONS_MAX_COUNT;
+      } else {
+        process.env.NOTIFICATIONS_MAX_COUNT = original;
+      }
       interceptor.dispose();
     });
 
@@ -845,6 +853,74 @@ describe('ToolUsageInterceptor', () => {
       // No background check started, no unread messages
       const result = await interceptor.interceptToolCall('tool', {}, async () => 'plain');
       expect(result).toBe('plain');
+
+      interceptor.dispose();
+    });
+
+    // #3488: the footer must name its scope. The background tick reads the same
+    // recent-slice base as a non-deep inbox call, so on a partial cache it can
+    // legitimately disagree with a deep read — but only if the footer SAYS so.
+    test('footer names the recent-slice base on a partial cache (#3488)', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg }, true);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'footer-target');
+      expect(result).toContain('[NOTIF]');
+      expect(result).toContain('tranche récente du cache');
+      expect(result).toContain('deep: true');
+
+      interceptor.dispose();
+    });
+
+    // #3488: complete cache — no scope caveat, the count IS pool-wide.
+    test('footer carries no slice caveat on a complete cache (#3488)', async () => {
+      const msg = makeMessage({ id: 'msg-1' });
+      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg }, false);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'footer-target');
+      expect(result).toContain('[NOTIF]');
+      expect(result).not.toContain('tranche récente');
+
+      interceptor.dispose();
+    });
+
+    // #3488: "N+" is a display cap, not a count. The incident read three
+    // different numbers (33 / 2 / 0 / 421) under one word — a capped counter
+    // that doesn't say it's capped is one of them.
+    test('footer flags the display cap when unread count exceeds max (#3488)', async () => {
+      const messages = Array.from({ length: 7 }, (_, i) => makeMessage({ id: `msg-${i}` }));
+      const unreadItems = messages.map(m => ({ id: m.id }));
+      const messageMap = Object.fromEntries(messages.map(m => [m.id, m]));
+      const msgManager = makeMockMessageManager(unreadItems, messageMap, false);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService, msgManager as any, conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+
+      const result = await interceptor.interceptToolCall('tool', {}, async () => 'footer-target');
+      expect(result).toContain('5+');
+      expect(result).toContain(`plafond d'affichage`);
+      expect(result).not.toContain('7 message(s)');
 
       interceptor.dispose();
     });

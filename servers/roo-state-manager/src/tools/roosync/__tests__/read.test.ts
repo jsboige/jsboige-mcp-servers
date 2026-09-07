@@ -123,6 +123,42 @@ describe.sequential('roosyncRead', () => {
       expect((result.content[0] as any).text).toContain('Aucun message');
     });
 
+    // #3488: a zero served from a cold-start PARTIAL cache is not a measurement.
+    // Pool > COLD_START_SLICE_SIZE (100) with every message addressed to another
+    // machine: the recent slice holds nothing for the local identity, total=0,
+    // partial=true — the exact shape measured 2026-09-06 (0/0 output next to
+    // 421 real unreads). The output must say what it did NOT scan.
+    test('partial-cache zero names its scope instead of reading as empty (#3488)', async () => {
+      for (let i = 0; i < 101; i++) {
+        await messageManager.sendMessage('sender-x', 'other-machine', `Pool ${i}`, 'B', 'LOW');
+      }
+
+      const result = await roosyncRead({ mode: 'inbox', status: 'unread' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('tranche récente');
+      expect(text).toContain('deep: true');
+      // Not the bare "empty inbox" verdict — the pool was never fully scanned.
+      expect(text).not.toContain('Votre inbox est vide');
+    });
+
+    // #3488: non-zero counts on a partial cache carry the scope suffix too —
+    // "Total: 1" next to an unscanned pool reads as the whole mailbox.
+    test('partial-cache counts carry their scope suffix (#3488)', async () => {
+      for (let i = 0; i < 100; i++) {
+        await messageManager.sendMessage('sender-x', 'other-machine', `Pool ${i}`, 'B', 'LOW');
+      }
+      // Written last = newest file → inside the 100-file recent slice.
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Mine', 'B', 'MEDIUM');
+
+      const result = await roosyncRead({ mode: 'inbox' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('1 message');
+      expect(text).toContain('tranche récente — pool complet non scanné');
+      expect(text).toContain('Mine');
+    });
+
     test('should list messages in inbox', async () => {
       // Créer des messages pour test
       await messageManager.sendMessage(

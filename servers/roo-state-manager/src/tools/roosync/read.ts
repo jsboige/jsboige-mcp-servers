@@ -291,9 +291,14 @@ Votre inbox est vide pour le moment.
 
   // Formater la liste
   let result = `📬 **Boîte de Réception** - ${effectiveMachineId}:${effectiveWorkspaceId}\n\n`;
+  // #3488: the numbers themselves carry their scope. A bare "Total: N" on a
+  // partial cache reads as the whole mailbox — the incident measured a 0/0
+  // output sitting next to 421 real unreads, with nothing in the line to say
+  // the zero was slice-scoped, not a measurement.
+  const scopeSuffix = partialView ? ' *(tranche récente — pool complet non scanné)*' : '';
   result += `**Total :** ${counts.total} message${counts.total > 1 ? 's' : ''} | `;
   result += `🆕 ${counts.unread} non-lu${counts.unread > 1 ? 's' : ''} | `;
-  result += `✅ ${counts.read} lu${counts.read > 1 ? 's' : ''}\n`;
+  result += `✅ ${counts.read} lu${counts.read > 1 ? 's' : ''}${scopeSuffix}\n`;
   if (hasFilters) {
     // #3351: echo the ACTIVE filter — the response must prove the filter was
     // applied, not just claim a list.
@@ -311,7 +316,14 @@ Votre inbox est vide pour le moment.
   result += '\n';
 
   if (messages.length === 0) {
-    result += `_Aucun message pour le filtre "${status}" sur cette page._\n`;
+    // #3488: a zero on a partial cache is not a measurement. Without this, the
+    // output is indistinguishable from a genuinely empty inbox — the exact
+    // false negative measured 2026-09-06 (0/0 served next to 421 unreads).
+    if (partialView && counts.total === 0) {
+      result += `_Zéro dans la tranche récente pour le filtre "${status}" — le pool complet n'a pas été scanné : \`deep: true\` pour mesurer réellement._\n`;
+    } else {
+      result += `_Aucun message pour le filtre "${status}" sur cette page._\n`;
+    }
     return result;
   }
 

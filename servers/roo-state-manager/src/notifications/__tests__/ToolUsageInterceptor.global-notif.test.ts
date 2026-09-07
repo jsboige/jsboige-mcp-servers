@@ -226,6 +226,7 @@ test('inbox and global footers combine on one response', async () => {
         status: 'unread',
         timestamp: '2026-01-01T10:00:00.000Z',
       }),
+      isInboxCachePartial: vi.fn().mockReturnValue(false),
     } as any,
     new Map<string, ConversationSkeleton>(),
     makeConfig({ checkInbox: true })
