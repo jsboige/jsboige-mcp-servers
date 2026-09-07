@@ -1006,10 +1006,11 @@ export class MessageManager {
     perPage?: number,
     deep?: boolean,
     fromFilter?: string,
-    subjectFilter?: string
+    subjectFilter?: string,
+    priorityFilter?: string
   ): Promise<MessageListItem[]> {
     const effectiveWorkspaceId = workspaceId;
-    logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`, { fromFilter, subjectFilter });
+    logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`, { fromFilter, subjectFilter, priorityFilter });
 
     // #3151 Phase B — PG-primary read (env-gated). null = PG unavailable →
     // dégradation gracieuse vers GDrive ci-dessous.
@@ -1020,7 +1021,7 @@ export class MessageManager {
       if (pgItems !== null) {
         // #3351: filters apply BEFORE pagination so limit/page slice the
         // filtered set on the PG path too, never the raw one.
-        const matching = this.applyInboxFilters(pgItems, fromFilter, subjectFilter);
+        const matching = this.applyInboxFilters(pgItems, fromFilter, subjectFilter, priorityFilter);
         logger.info(
           `[channel-pg] inbox served from PG in ${Date.now() - startedAt}ms (${matching.length}/${pgItems.length} items)`
         );
@@ -1073,9 +1074,9 @@ export class MessageManager {
 
       // #3351: sender/subject filters — applied BEFORE pagination (#638) so
       // limit/page slice the FILTERED set. Semantics mirror bulkOperation
-      // (case-insensitive substring, AND logic) so both surfaces read the
-      // pool the same way.
-      const matching = this.applyInboxFilters(filtered, fromFilter, subjectFilter);
+      // (case-insensitive substring, AND logic; priority = exact equality)
+      // so both surfaces read the pool the same way.
+      const matching = this.applyInboxFilters(filtered, fromFilter, subjectFilter, priorityFilter);
 
       // Apply pagination (#638)
       const result = this.paginateItems(matching, limit, page, perPage);
@@ -1091,19 +1092,23 @@ export class MessageManager {
   /**
    * #3351: inbox sender/subject predicates, shared by the PG and cache read
    * paths. Case-insensitive substring match, AND logic when both provided —
-   * the exact semantics of bulkOperation's filters.
+   * the exact semantics of bulkOperation's filters. #3351 suite 07/09:
+   * priority joins as exact equality (enum, mirroring bulkOperation L~2129),
+   * honored instead of rejected after the 06-07/09 retry loops.
    */
   private applyInboxFilters(
     items: MessageListItem[],
     fromFilter?: string,
-    subjectFilter?: string
+    subjectFilter?: string,
+    priorityFilter?: string
   ): MessageListItem[] {
-    if (!fromFilter && !subjectFilter) return items;
+    if (!fromFilter && !subjectFilter && !priorityFilter) return items;
     const from = fromFilter?.toLowerCase();
     const subject = subjectFilter?.toLowerCase();
     return items.filter(m =>
       (!from || m.from.toLowerCase().includes(from)) &&
-      (!subject || m.subject.toLowerCase().includes(subject))
+      (!subject || m.subject.toLowerCase().includes(subject)) &&
+      (!priorityFilter || m.priority === priorityFilter)
     );
   }
 
