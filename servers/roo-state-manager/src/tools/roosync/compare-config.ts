@@ -245,6 +245,19 @@ const EXPECTED_MACHINE_FIELDS: RegExp[] = [
   /(^|\.)osVersion$/,          // system.osVersion
   /(^|\.)platform$/,           // system.platform (win32/linux/darwin)
   /(^|\.)arch$/,               // system.arch (x64/arm64/ia32)
+  // #752: hardware and machine-topology fields are physical/identity facts, not
+  // config drift. The old whitelist only covered systemInfo.*; the inventory also
+  // exposes hardware / gpuDetails / listeningPorts / windowsServices / paths at the
+  // top level, and the array-index diffs ("Élément supprimé à l'index N") for these
+  // are pure noise. On a healthy cluster this produced ~235 WARNINGs (disks, GPU,
+  // 206 listening ports, Windows services, local paths) that buried the 2-3 REAL
+  // config drifts, and the IMPORTANT ones (hardware.cpu.name, paths.*) wrongly
+  // deducted score. Recalculate on non-EXPECTED only (#752 proposal #1/#4).
+  /(^|\.)hardware(\.|$)/,      // hardware.cpu.name / hardware.memory.available / hardware.disks[i] / hardware.gpu
+  /(^|\.)gpuDetails/,          // gpuDetails[i] — per-machine GPU inventory
+  /(^|\.)listeningPorts/,      // listeningPorts[i] — each machine has its own ports
+  /(^|\.)windowsServices/,     // windowsServices.* — docker/wsl/NvContainer per machine
+  /(^|\.)paths(\.|$)/,         // paths.* — local install paths (workspace, etc.)
 ];
 
 /**
