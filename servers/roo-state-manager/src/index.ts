@@ -98,13 +98,13 @@ if (!hasEmbeddingKey) {
     const hasPrimaryKey = !!(process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY);
     const fbModel = process.env.FALLBACK_LLM_MODEL_ID || 'glm-4.7-flash';
     const hasFallbackKey = !!(process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY);
-    console.error(`🧊 Condensation LLM config: primary=${primaryModel} @ ${primaryEndpoint} key=${hasPrimaryKey ? 'OK' : 'MISSING'} | cloud-fallback=${fbModel} key=${hasFallbackKey ? 'OK' : 'MISSING'}`);
+    getDefaultLogger().info(`🧊 Condensation LLM config: primary=${primaryModel} @ ${primaryEndpoint} key=${hasPrimaryKey ? 'OK' : 'MISSING'} | cloud-fallback=${fbModel} key=${hasFallbackKey ? 'OK' : 'MISSING'}`);
     if (!hasPrimaryKey && !hasFallbackKey) {
-        console.error('   ⚠️ NI clé primaire NI fallback configurées → la condensation échouera systématiquement (truncation-only).');
+        getDefaultLogger().warn('   ⚠️ NI clé primaire NI fallback configurées → la condensation échouera systématiquement (truncation-only).');
     } else if (!hasPrimaryKey) {
-        console.error('   ⚠️ Clé primaire (OPENAI_API_KEY) MANQUANTE → chaque condensation passera par la fallback cloud.');
+        getDefaultLogger().warn('   ⚠️ Clé primaire (OPENAI_API_KEY) MANQUANTE → chaque condensation passera par la fallback cloud.');
     } else if (!hasFallbackKey) {
-        console.error('   ⚠️ Clé fallback (FALLBACK_API_KEY) MANQUANTE → pas de filet si le LLM primaire (vLLM) tombe; échec primaire = truncation.');
+        getDefaultLogger().warn('   ⚠️ Clé fallback (FALLBACK_API_KEY) MANQUANTE → pas de filet si le LLM primaire (vLLM) tombe; échec primaire = truncation.');
     }
     // Cohérence modèle/endpoint (#2963, mesuré sur ai-01 les 27-28/07). Les deux
     // valeurs par défaut ci-dessus sont mutuellement incohérentes : le modèle par
@@ -116,7 +116,7 @@ if (!hasEmbeddingKey) {
     // Test indépendant de la chaîne ci-dessus : le défaut survient aussi (et
     // surtout) quand les deux clés sont présentes.
     if (!process.env.OPENAI_BASE_URL && !process.env.OPENAI_CHAT_MODEL_ID) {
-        console.error(`   ⚠️ OPENAI_BASE_URL ET OPENAI_CHAT_MODEL_ID absentes → le SDK route vers api.openai.com en demandant le modèle auto-hébergé "${primaryModel}". Combinaison impossible: la condensation échouera à chaque passage. Définir OPENAI_BASE_URL (endpoint vLLM) dans le .env.`);
+        getDefaultLogger().warn(`   ⚠️ OPENAI_BASE_URL ET OPENAI_CHAT_MODEL_ID absentes → le SDK route vers api.openai.com en demandant le modèle auto-hébergé "${primaryModel}". Combinaison impossible: la condensation échouera à chaque passage. Définir OPENAI_BASE_URL (endpoint vLLM) dans le .env.`);
     }
 }
 
@@ -144,7 +144,7 @@ if (problems.length > 0) {
 // registry.ts (and its zod/zod-to-json-schema chain) loads dynamically in run().
 // This cuts static module evaluation from ~5s to <1s.
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
-import { createLogger } from './utils/logger.js';
+import { createLogger, getDefaultLogger } from './utils/logger.js';
 import { recordToolCall } from './utils/tool-call-metrics.js';
 
 // #2267 / #3205: the global guard's tables moved to ./config/tool-timeouts.js,
