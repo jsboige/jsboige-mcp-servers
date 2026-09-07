@@ -1860,17 +1860,23 @@ export class MessageManager {
 
       // Déplacer vers archive
       const archiveFile = join(this.archivePath, `${messageId}.json`);
-      if (existsSync(archiveFile)) {
-        // #3482 — ré-archivage : le canonique archive/ existe déjà (inbox
-        // résuscitée par la sync après un premier archivage). Réécrire un nom
-        // occupé est exactement le geste qui produit une jumelle ` (N).json`
-        // quand DriveFS est wedgé (1560 mesurées flotte, 07/09, byte-identiques).
-        // L'état archivé étant terminal et le contenu identique, on draine
-        // l'inbox sans réécrire le canonique.
-        logger.info(`Archive canonical already present, skipping rewrite (anti-twin #3482): ${messageId}`);
+      const payload = JSON.stringify(message, null, 2);
+      // #3482 — ré-archivage d'une inbox résuscitée par la sync : le canonique
+      // existe déjà. Réécrire un nom occupé est le geste qui produit une
+      // jumelle ` (N).json` sous DriveFS wedgé (1560 mesurées flotte, 07/09,
+      // byte-identiques) — donc on ne saute QUE sur contenu identique. Une
+      // divergence signifie que la copie inbox porte un état que l'archive
+      // n'a pas (read_by_workspace accumulé par markAsRead après résurrection,
+      // amend) : la sauter la perdrait en silence, l'inbox étant unlink juste
+      // après. On écrit alors, et la garde jumelle signale si DriveFS dévie.
+      const existing = existsSync(archiveFile)
+        ? await fs.readFile(archiveFile, 'utf-8').catch(() => null)
+        : null;
+      if (existing === payload) {
+        logger.info(`Archive canonical identical, skipping rewrite (anti-twin #3482): ${messageId}`);
       } else {
         const writeStartedAtMs = Date.now();
-        await fs.writeFile(archiveFile, JSON.stringify(message, null, 2), 'utf-8');
+        await fs.writeFile(archiveFile, payload, 'utf-8');
         await this.warnIfTwinAppeared(archiveFile, writeStartedAtMs);
       }
 

@@ -9,11 +9,16 @@
  * canonical, DriveFS deviates the rewrite to `id (1).json`.
  *
  * These tests hold both halves of the fix:
- *   1. Re-archive with the canonical already present → the rewrite is SKIPPED
- *      (terminal state, identical content — rewriting an occupied name is the
- *      twin-producing gesture), the inbox is still drained, archiveMessage
+ *   1. Re-archive with the canonical already present and IDENTICAL content →
+ *      the rewrite is SKIPPED (terminal state — rewriting an occupied name is
+ *      the twin-producing gesture), the inbox is still drained, archiveMessage
  *      still returns true (idempotence preserved).
- *   2. First-archive write with a fresh twin sibling in the write window →
+ *   2. Re-archive where the resurrected inbox copy DIVERGED (markAsRead after
+ *      resurrection accumulates read_by_workspace on the inbox copy) → the
+ *      canonical is REWRITTEN with the incoming state — skipping would erase
+ *      that state silently since the inbox is unlinked right after (review
+ *      of #1115: the skip must be conditioned on content, not existence).
+ *   3. First-archive write with a fresh twin sibling in the write window →
  *      loud [MESSAGE-TWIN] logger.error naming the twin — never blocking the
  *      archive itself.
  */
@@ -59,36 +64,66 @@ describe('MessageManager archive twin guard (#3482)', () => {
     rmSync(sharedState, { recursive: true, force: true });
   });
 
-  const seedInbox = (id: string): void => {
+  const seedInbox = (id: string, to: string = READER): void => {
+    // Fixed timestamp: a resurrection must replay the SAME bytes for the
+    // identical-skip test — a wall-clock stamp would make every resurrected
+    // copy diverge from the canonical by construction.
     writeFileSync(
       join(inboxDir, id + '.json'),
       JSON.stringify({
         id,
         from: 'myia-ai-01',
-        to: READER,
+        to,
         subject: 's',
         body: 'b',
         status: 'unread',
-        timestamp: new Date().toISOString()
+        timestamp: '2026-09-07T05:00:00.000Z'
       }),
       'utf8'
     );
   };
 
-  test('re-archive with canonical already present SKIPS the rewrite and still drains the inbox', async () => {
+  test('re-archive with IDENTICAL canonical SKIPS the rewrite and still drains the inbox', async () => {
     const id = 'msg-twintest-resurrected';
     seedInbox(id);
-    // Canonical archived earlier with a distinct marker — a rewrite would
-    // change its bytes (rewritten JSON), a skip must leave them untouched.
     const canonical = join(archiveDir, id + '.json');
-    const originalCanonical = JSON.stringify({ id, status: 'archived', marker: 'v1-original' }, null, 2);
-    writeFileSync(canonical, originalCanonical, 'utf8');
+
+    await manager.archiveMessage(id);
+    const firstArchiveBytes = readFileSync(canonical, 'utf8');
+
+    // Sync resurrection: the inbox copy reappears with the same content.
+    seedInbox(id);
+    const ok = await manager.archiveMessage(id);
+
+    expect(ok).toBe(true);
+    expect(readFileSync(canonical, 'utf8')).toBe(firstArchiveBytes);
+    // Inbox drained — the resurrection is consumed either way.
+    expect(() => readFileSync(join(inboxDir, id + '.json'), 'utf8')).toThrow();
+  });
+
+  test('re-archive after markAsRead on the resurrected copy PRESERVES read_by_workspace in the canonical', async () => {
+    // The path review of #1115 verified: archive → sync resurrects the inbox →
+    // a workspace markAsRead accumulates read_by_workspace on the inbox copy →
+    // re-archive must WRITE that state (skip-on-existence would erase it, the
+    // inbox being unlinked right after — a machine-wide message would then
+    // reappear unread to a reader who had read it).
+    const id = 'msg-twintest-readstate';
+    const machineWideTarget = 'myia-po-2025';
+    seedInbox(id, machineWideTarget);
+    await manager.archiveMessage(id);
+
+    // Resurrection + a workspace of the machine reads the message.
+    seedInbox(id, machineWideTarget);
+    const read = await manager.markAsRead(id, READER);
+    expect(read).toBe(true);
 
     const ok = await manager.archiveMessage(id);
 
     expect(ok).toBe(true);
-    expect(readFileSync(canonical, 'utf8')).toBe(originalCanonical);
-    // Inbox drained — the resurrection is consumed either way.
+    const archived = JSON.parse(readFileSync(join(archiveDir, id + '.json'), 'utf8'));
+    expect(archived.status).toBe('archived');
+    expect(archived.read_by).toContain('myia-po-2025');
+    expect(archived.read_by_workspace).toContain('myia-po-2025:roo-extensions');
     expect(() => readFileSync(join(inboxDir, id + '.json'), 'utf8')).toThrow();
   });
 
