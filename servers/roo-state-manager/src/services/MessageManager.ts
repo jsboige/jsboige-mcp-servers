@@ -9,7 +9,7 @@
  */
 
 import { existsSync, promises as fs, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname, basename } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
@@ -1860,7 +1860,19 @@ export class MessageManager {
 
       // Déplacer vers archive
       const archiveFile = join(this.archivePath, `${messageId}.json`);
-      await fs.writeFile(archiveFile, JSON.stringify(message, null, 2), 'utf-8');
+      if (existsSync(archiveFile)) {
+        // #3482 — ré-archivage : le canonique archive/ existe déjà (inbox
+        // résuscitée par la sync après un premier archivage). Réécrire un nom
+        // occupé est exactement le geste qui produit une jumelle ` (N).json`
+        // quand DriveFS est wedgé (1560 mesurées flotte, 07/09, byte-identiques).
+        // L'état archivé étant terminal et le contenu identique, on draine
+        // l'inbox sans réécrire le canonique.
+        logger.info(`Archive canonical already present, skipping rewrite (anti-twin #3482): ${messageId}`);
+      } else {
+        const writeStartedAtMs = Date.now();
+        await fs.writeFile(archiveFile, JSON.stringify(message, null, 2), 'utf-8');
+        await this.warnIfTwinAppeared(archiveFile, writeStartedAtMs);
+      }
 
       // Supprimer de inbox
       await fs.unlink(inboxFile);
@@ -1872,7 +1884,9 @@ export class MessageManager {
       // Also update sent/ directory if message was sent from this machine
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
+        const sentWriteStartedAtMs = Date.now();
         await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
+        await this.warnIfTwinAppeared(sentPath, sentWriteStartedAtMs);
         logger.info('Message also archived in sent/');
       }
 
@@ -1884,6 +1898,42 @@ export class MessageManager {
       return false;
     }
   }
+
+  /**
+   * #3482 — garde post-écriture anti-jumelle DriveFS : une écriture vers un nom
+   * déjà occupé peut produire `<stem> (N).json` au lieu de remplacer. Un
+   * read-back ne discrimine pas une jumelle byte-identique (le cas mesuré) :
+   * seul un sibling frais dans la fenêtre d'écriture signale la déviation.
+   * Bruyant (logger.error), jamais bloquant.
+   */
+  private async warnIfTwinAppeared(targetFile: string, writeStartedAtMs: number): Promise<void> {
+    try {
+      const dir = dirname(targetFile);
+      const stem = basename(targetFile).replace(/\.json$/, '');
+      const twinRe = new RegExp(
+        '^' + stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\(\\d+\\)\\.json$'
+      );
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (!twinRe.test(entry)) continue;
+        const st = await fs.stat(join(dir, entry));
+        if (st.mtimeMs >= writeStartedAtMs - 1000) {
+          logger.error(
+            `[MESSAGE-TWIN] écriture possiblement déviée (#3482): '${entry}' frais dans la fenêtre d'écriture — DriveFS n'a pas remplacé '${basename(targetFile)}'`,
+            {
+              dir,
+              twin: entry,
+              remediation: 'DriveFS local probablement wedgé — redémarrer DriveFS/VS Code, puis vérifier le canonique'
+            }
+          );
+          return;
+        }
+      }
+    } catch {
+      // La garde ne doit jamais casser l'archivage.
+    }
+  }
+
   /**
    * Modifie le contenu d'un message envoyé (avant lecture)
    *
