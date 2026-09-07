@@ -145,8 +145,10 @@ export async function handleGenerateTraceSummary(
             endIndex: args.endIndex
         };
 
-        // Initialiser le service avec un ExportConfigManager basic
-        // TODO: Intégrer avec le vrai ExportConfigManager du système
+        // Module legacy non enregistré (handler retiré, voir "CLEANUP-2" dans registry.ts).
+        // Conservé par la politique #603 (aucun fichier source supprimé). L'instance locale est
+        // volontairement autonome : l'outil live export_config utilise le manager système
+        // (state.exportConfigManager), pas celui-ci — ne pas "brancher" le manager système ici.
         const exportConfigManager = new ExportConfigManager();
         const summaryService = new TraceSummaryService(exportConfigManager);
 // Générer le résumé
