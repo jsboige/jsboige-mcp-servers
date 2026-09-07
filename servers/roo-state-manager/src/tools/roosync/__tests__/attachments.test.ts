@@ -7,9 +7,10 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const { mockListAttachments, mockGetAttachment, mockGetAttachmentMetadata, mockDeleteAttachment, mockGetMessage, mockListByRefs } = vi.hoisted(() => ({
+const { mockListAttachments, mockGetAttachment, mockReadAttachment, mockGetAttachmentMetadata, mockDeleteAttachment, mockGetMessage, mockListByRefs } = vi.hoisted(() => ({
   mockListAttachments: vi.fn(),
   mockGetAttachment: vi.fn(),
+  mockReadAttachment: vi.fn(),
   mockGetAttachmentMetadata: vi.fn(),
   mockDeleteAttachment: vi.fn(),
   mockGetMessage: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../../../services/roosync/AttachmentManager.js', () => ({
     // #3256 targeted path — mocked at class level like its scan sibling
     listAttachmentsByRefs(...args: any[]) { return mockListByRefs(...args); }
     getAttachment(...args: any[]) { return mockGetAttachment(...args); }
+    readAttachment(...args: any[]) { return mockReadAttachment(...args); }
     getAttachmentMetadata(...args: any[]) { return mockGetAttachmentMetadata(...args); }
     deleteAttachment(...args: any[]) { return mockDeleteAttachment(...args); }
   }
@@ -112,9 +114,32 @@ describe('roosync_get_attachment', () => {
     expect(result.content[0].text).toContain('uuid');
   });
 
-  test('returns error when targetPath is missing', async () => {
-    const result = await roosyncGetAttachment({ uuid: 'some-uuid', targetPath: '' });
-    expect(result.content[0].text).toContain('targetPath');
+  test('returns content inline (base64) when targetPath is omitted (#1105)', async () => {
+    const mockMeta = {
+      uuid: 'uuid-inline', originalName: 'secret.txt', sizeBytes: 5,
+      mimeType: 'text/plain', uploadedAt: '2026-03-13T09:00:00Z', uploaderMachineId: 'myia-po-2025', messageId: 'msg-1'
+    };
+    mockReadAttachment.mockResolvedValue({ content: Buffer.from('hello'), meta: mockMeta });
+    const result = await roosyncGetAttachment({ uuid: 'uuid-inline' });
+    const text = result.content[0].text;
+    expect(text).toContain('✅');
+    expect(text).toContain('uuid-inline');
+    expect(text).toContain('inline');
+    // The blob transits the MCP result: base64 "hello" must be present.
+    expect(text).toContain(Buffer.from('hello').toString('base64'));
+  });
+
+  test('copy mode still uses getAttachment when targetPath is provided', async () => {
+    const mockMeta = {
+      uuid: 'uuid-copy', originalName: 'data.txt', sizeBytes: 5,
+      mimeType: 'text/plain', uploadedAt: '2026-03-13T09:00:00Z', uploaderMachineId: 'myia-po-2025', messageId: 'msg-2'
+    };
+    mockGetAttachment.mockResolvedValue(mockMeta);
+    const result = await roosyncGetAttachment({ uuid: 'uuid-copy', targetPath: '/tmp/data.txt' });
+    expect(mockGetAttachment).toHaveBeenCalledWith('uuid-copy', '/tmp/data.txt');
+    expect(mockReadAttachment).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain('📁');
+    expect(result.content[0].text).toContain('/tmp/data.txt');
   });
 
   test('returns success with metadata on valid download', async () => {
@@ -141,6 +166,16 @@ describe('roosync_get_attachment', () => {
     const result = await roosyncGetAttachment({ uuid: 'uuid-abc', targetPath: '/tmp/out.txt' });
     expect(result.content[0].text).toContain('Erreur');
     expect(result.content[0].text).toContain('disk full');
+  });
+
+  test('ENOENT on destination names targetPath as SERVER-side (#1105)', async () => {
+    const enoent = Object.assign(new Error('ENOENT: no such file or directory, copyfile'), { code: 'ENOENT' });
+    mockGetAttachment.mockRejectedValue(enoent);
+    const result = await roosyncGetAttachment({ uuid: 'uuid-abc', targetPath: '/opt/data/secret.txt' });
+    const text = result.content[0].text;
+    expect(text).toContain('Erreur');
+    expect(text).toContain('côté serveur');
+    expect(text).toContain('Omettez `targetPath`');
   });
 });
 
@@ -216,9 +251,16 @@ describe('roosync_attachments (CONS-7)', () => {
     expect(result.content[0].text).toContain('uuid');
   });
 
-  test('action=get requires targetPath', async () => {
-    const result = await roosyncAttachments({ action: 'get', uuid: 'some-uuid' });
-    expect(result.content[0].text).toContain('targetPath');
+  test('action=get without targetPath returns inline base64 (#1105)', async () => {
+    const mockMeta = {
+      uuid: 'uuid-cons7-inline', originalName: 'sec.txt', sizeBytes: 4,
+      mimeType: 'text/plain', uploadedAt: '2026-03-18T00:00:00Z', uploaderMachineId: 'po-2025', messageId: 'm1'
+    };
+    mockReadAttachment.mockResolvedValue({ content: Buffer.from('data'), meta: mockMeta });
+    const result = await roosyncAttachments({ action: 'get', uuid: 'uuid-cons7-inline' });
+    expect(result.content[0].text).toContain('inline');
+    expect(result.content[0].text).toContain(Buffer.from('data').toString('base64'));
+    expect(result.content[0].text).toContain('uuid-cons7-inline');
   });
 
   test('action=get delegates to roosyncGetAttachment', async () => {

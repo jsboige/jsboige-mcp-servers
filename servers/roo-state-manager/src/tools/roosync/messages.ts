@@ -96,7 +96,7 @@ export const MessagesArgsSchema = z.object({
   // --- Attachments params ---
   uuid: z.string().optional().describe('UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu'),
   filename: z.string().optional().describe('#3256 — alternative a uuid pour attachments_get : nom du fichier, resolu via les refs du message_id fourni'),
-  targetPath: z.string().optional().describe('Chemin local destination (requis pour attachments_get)'),
+  targetPath: z.string().optional().describe('Chemin destination pour attachments_get — #1105 : omettez-le pour recevoir le contenu en base64 dans le résultat MCP (client distant), fournissez-le pour une copie SIDE-SERVEUR (chemin de l hôte RooSync, pas du client)'),
 
   // --- Output format ---
   format: z.enum(['json', 'markdown']).optional().describe('Format de sortie pour inbox/stats')
