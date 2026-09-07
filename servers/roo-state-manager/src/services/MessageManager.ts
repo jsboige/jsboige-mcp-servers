@@ -2542,15 +2542,17 @@ export class MessageManager {
 
       stats.total++;
 
-      // Per-machine read status for broadcasts (#629)
-      const isBroadcast = message.to === 'all' || message.to === 'All';
-      let isUnreadForThisMachine: boolean;
-      if (isBroadcast && message.read_by) {
-        const readerMachineId = parseMachineWorkspace(machineId).machineId;
-        isUnreadForThisMachine = !message.read_by.includes(readerMachineId);
-      } else {
-        isUnreadForThisMachine = message.status === 'unread';
-      }
+      // Per-reader read status: broadcasts (#629) AND machine-wide targets (#1073).
+      // This site used to open-code only the broadcast half and fall through to the
+      // GLOBAL `status` for everything else. But a machine-wide target's global
+      // status stays 'unread' BY DESIGN — flipping it would hide the message from
+      // the workspaces that never saw it — so every such message THIS workspace had
+      // already read was counted unread here, while `readInbox` and
+      // `getFilteredCount` (both on `perReaderStatus`) reported it read.
+      // Measured on ai-01 2026-09-07: 117 of 244, the entire stats/inbox delta.
+      const perReader = perReaderStatus(message, machineId, effectiveWorkspaceId);
+      const isUnreadForThisMachine =
+        perReader !== null ? perReader === 'unread' : message.status === 'unread';
 
       if (isUnreadForThisMachine) {
         stats.unread++;

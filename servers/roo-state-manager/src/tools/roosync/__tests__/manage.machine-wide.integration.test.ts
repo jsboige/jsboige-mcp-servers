@@ -92,6 +92,42 @@ describe('roosyncManage — machine-wide targets (integration)', () => {
     expect(second).toContain(MACHINE + ':' + WS);
   });
 
+  test('getInboxStats agrees with readInbox once the workspace has read it', async () => {
+    const msg = await messageManager.sendMessage(
+      'myia-po-2023:roo-extensions', MACHINE, 'Machine-wide notice', 'body', 'MEDIUM'
+    );
+    await roosyncManage({ action: 'mark_read', message_id: msg.id });
+
+    // Same on-disk state as the test above: read per workspace, globally 'unread'.
+    expect(onDisk(msg.id).status).toBe('unread');
+
+    // A FIFTH decision site. `getInboxStats` open-coded the broadcast half of
+    // perReaderStatus and fell back to the global status for everything else,
+    // so it answered "unread" on a message this workspace had just read — the
+    // `roosync_messages(action:"stats")` surface contradicting action:"inbox"
+    // on the very same mailbox (ai-01, 2026-09-07: 117 unread vs 0).
+    const stats = await messageManager.getInboxStats(MACHINE);
+    const inbox = await messageManager.readInbox(MACHINE, 'unread', undefined, WS);
+
+    expect(stats.total).toBe(1);
+    expect(stats.unread).toBe(0);
+    expect(stats.oldest_unread).toBeNull();
+    expect(inbox).toHaveLength(0);
+    expect(stats.unread).toBe(inbox.length);
+  });
+
+  test('a machine-wide message this workspace has NOT read still counts as unread', async () => {
+    // Negative control: without it, `stats.unread = 0` would also pass on a
+    // predicate that simply never reports unread.
+    await messageManager.sendMessage(
+      'myia-po-2023:roo-extensions', MACHINE, 'Unread notice', 'body', 'MEDIUM'
+    );
+
+    const stats = await messageManager.getInboxStats(MACHINE);
+    expect(stats.unread).toBe(1);
+    expect(stats.oldest_unread).not.toBeNull();
+  });
+
   test('workspace-targeted messages are unaffected', async () => {
     const msg = await messageManager.sendMessage(
       'myia-po-2023:roo-extensions', MACHINE + ':' + WS, 'Targeted', 'body', 'LOW'
