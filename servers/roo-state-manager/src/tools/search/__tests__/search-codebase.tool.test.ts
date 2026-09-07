@@ -853,6 +853,43 @@ describe('search-codebase.tool', () => {
 				expect(mockQdrant.query).not.toHaveBeenCalled();
 			});
 
+			// The diagnostic used to state ONLY the Jaccard arm ("Jaccard >= 0.6 with a
+			// discriminant dir required") while the code accepts a SECOND path since
+			// #2554/#2766: overlap >= 0.6 with >=2 shared discriminant dirs. A caller whose
+			// workspace has exactly 1 discriminant dir and high overlap was told a rule its
+			// input satisfied — so the tool read as lying, and the real requirement (a
+			// SECOND discriminant dir) was undiscoverable from the failure itself.
+			test('the failure diagnostic states the acceptance rule the code actually applies', async () => {
+				mockReaddirSync.mockReturnValue([
+					{ name: 'src', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true },
+					{ name: 'tests', isDirectory: () => true }
+				]);
+				mockQdrant.getCollections.mockResolvedValue({ collections: [{ name: 'ws-someone' }] });
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-someone') return { points_count: 500, status: 'green' };
+					throw new Error('not found');
+				});
+				mockQdrant.scroll.mockResolvedValue({
+					points: [{ payload: { pathSegments: { '0': 'src' } } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/generic-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+
+				// Both arms must be named, or the caller cannot diagnose the overlap path.
+				expect(parsed.message).toMatch(/Jaccard/);
+				expect(parsed.message).toMatch(/overlap/i);
+				// The overlap arm needs TWO discriminant dirs — the single most misleading
+				// omission of the old wording, which said "a discriminant dir required".
+				expect(parsed.message).toMatch(/2 shared discriminant dirs/);
+				// Thresholds are exposed per arm, not as one anonymous number.
+				expect(parsed.content_match_jaccard_threshold).toBe(0.6);
+				expect(parsed.content_match_overlap_threshold).toBe(0.6);
+				expect(parsed.content_match_discriminant_dirs_required)
+					.toEqual({ jaccard_path: 1, overlap_path: 2 });
+			});
+
 			test('hash miss + readdir fails (workspace unmounted) → skip content-match, no crash', async () => {
 				mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
 				mockQdrant.getCollections.mockResolvedValue({
