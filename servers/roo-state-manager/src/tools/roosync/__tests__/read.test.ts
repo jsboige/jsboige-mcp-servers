@@ -390,6 +390,41 @@ describe.sequential('roosyncRead', () => {
       expect(text).toContain('"from": "sender-1"');
       expect(text).toContain('"subject_contains": "rapport"');
     });
+
+    // #3351 suite 07/09 : priority est un filtre inbox (égalité exacte,
+    // miroir de bulkOperation). Avant : rejeté bulk-only → retry-loops
+    // 06-07/09 (LOW réel = intention, MEDIUM = défaut matérialisé).
+    test('priority filters the inbox by exact equality — counts describe the filtered set', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg1', 'B', 'LOW');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg2', 'B', 'HIGH');
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg3', 'B', 'LOW');
+
+      const result = await roosyncRead({ mode: 'inbox', priority: 'LOW' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('2 message');
+      expect(text).not.toContain('Msg2');
+    });
+
+    test('priority zero-match names the filter explicitly (not "inbox vide")', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Msg1', 'B', 'LOW');
+
+      const result = await roosyncRead({ mode: 'inbox', priority: 'URGENT' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('Aucun message ne correspond au filtre');
+      expect(text).toContain('priority: URGENT');
+    });
+
+    test('json format echoes priority in filters_applied', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Rapport', 'B', 'HIGH');
+
+      const result = await roosyncRead({ mode: 'inbox', priority: 'HIGH', format: 'json' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('"filters_applied"');
+      expect(text).toContain('"priority": "HIGH"');
+    });
   });
 
   // ============================================================

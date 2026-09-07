@@ -62,7 +62,7 @@ export const MessagesArgsSchema = z.object({
   to: z.string().optional().describe('Destinataire (requis pour send): machine, machine:workspace, ou shorthand (hermes=po-2026:hermes-agent, nanoclaw=ai-01:nanoclaw) #2241'),
   subject: z.string().optional().describe('Sujet (requis pour send)'),
   body: z.string().optional().describe('Corps du message (requis pour send/reply)'),
-  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional().describe('Priorite (defaut: MEDIUM). Send/reply + bulk UNIQUEMENT — rejete sur action inbox (#3351), omettre le champ sur inbox'),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional().describe('Priorite. Send/reply (defaut serveur MEDIUM si omis — ne pas pre-remplir) + filtre inbox (egalite exacte, #3351 suite 07/09) + filtres bulk'),
   tags: z.array(z.string()).optional().describe('Tags optionnels'),
   thread_id: z.string().optional().describe('ID du thread pour regroupement'),
   reply_to: z.string().optional().describe('Reference message ID — uniquement pour action="send" (thread un nouveau message sur un message existant). NE PAS utiliser pour action="reply"/"amend"/"mark_read" : voir message_id. #3029'),
@@ -196,14 +196,18 @@ export async function roosyncMessages(args: MessagesArgs) {
 
     // --- Read family ---
     case 'inbox': {
-      // #3351: from/subject_contains are honored (passed below). The remaining
-      // bulk params (priority, before_date, tag) have NO inbox semantics —
-      // accepted by the flat schema then silently dropped was the exact #3351
-      // trap; fail LOUD and NAMED instead (#3173/#3177).
+      // #3351: from/subject_contains are honored (passed below), and since
+      // 07/09 so is priority — the 06-07/09 retry loops (sessions IS-2026,
+      // claudish : 20+ rejets identiques en 2 min, valeurs LOW réelles =
+      // intention de filtrer + MEDIUM matérialisé du défaut documenté)
+      // ont montré que le rejet bulk-only de priority produisait une boucle
+      // sans issue : un paramètre fourni doit être HONORÉ (#3177), pas
+      // transformé en erreur que le client réémet à l'identique.
+      // Restent bulk-only : before_date, tag — aucun signal d'usage inbox.
       // '' ne compte pas : binding qui sérialise les optionnels vides (friction
       // po-2025 01/09) — pas une intention d'appelant, et chaque site aval
       // (manage hasAnyFilter, filtres MessageManager) traite déjà '' comme absent.
-      const bulkOnlyParams = (['priority', 'before_date', 'tag'] as const)
+      const bulkOnlyParams = (['before_date', 'tag'] as const)
         .filter(p => args[p] !== undefined && args[p] !== '');
       if (bulkOnlyParams.length > 0) {
         throw new StateManagerError(
@@ -212,7 +216,7 @@ export async function roosyncMessages(args: MessagesArgs) {
           `Un paramètre fourni doit être honoré, jamais ignoré silencieusement (#3351/#3177).`,
           'VALIDATION_FAILED',
           'RooSyncMessagesTool',
-          { rejectedParams: bulkOnlyParams, expectedParam: 'from | subject_contains' }
+          { rejectedParams: bulkOnlyParams, expectedParam: 'from | subject_contains | priority' }
         );
       }
       return roosyncRead({
@@ -226,7 +230,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         format: args.format,
         deep: args.deep,
         from: args.from,
-        subject_contains: args.subject_contains
+        subject_contains: args.subject_contains,
+        priority: args.priority
       });
     }
 

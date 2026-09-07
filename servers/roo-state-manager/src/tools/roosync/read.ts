@@ -63,6 +63,9 @@ interface RooSyncReadArgs {
   /** #3351: filter inbox by subject — case-insensitive substring, same semantics as bulk */
   subject_contains?: string;
 
+  /** #3351 suite 07/09: filter inbox by priority — exact equality, same semantics as bulk */
+  priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
   // Pour mode 'message' et 'attachments'
   /** ID du message à récupérer (requis si mode='message' ou 'attachments') */
   message_id?: string;
@@ -163,14 +166,15 @@ async function readInboxMode(
   // unfiltered path keeps the #638 single-scan flow unchanged).
   const fromFilter = args.from;
   const subjectFilter = args.subject_contains;
-  const hasFilters = !!(fromFilter || subjectFilter);
+  const priorityFilter = args.priority;
+  const hasFilters = !!(fromFilter || subjectFilter || priorityFilter);
 
   let counts: { total: number; unread: number; read: number };
   let messages: MessageListItem[];
   if (hasFilters) {
     const fullSet = await messageManager.readInbox(
       effectiveMachineId, status, undefined, effectiveWorkspaceId,
-      undefined, undefined, args.deep, fromFilter, subjectFilter
+      undefined, undefined, args.deep, fromFilter, subjectFilter, priorityFilter
     );
     const unread = fullSet.filter(m => m.status === 'unread').length;
     counts = { total: fullSet.length, unread, read: fullSet.length - unread };
@@ -223,14 +227,14 @@ async function readInboxMode(
         total: 0,
         unread: 0,
         read: 0,
-        filters_applied: { from: fromFilter ?? null, subject_contains: subjectFilter ?? null },
+        filters_applied: { from: fromFilter ?? null, subject_contains: subjectFilter ?? null, priority: priorityFilter ?? null },
         ...(partialView ? { partial: true, note: 'Cold start: recent slice only — zero here is not evidence the message does not exist. Pass deep:true for the complete scan.' } : {}),
         messages: []
       }, null, 2);
     }
     let noMatch = `📭 **Aucun message ne correspond au filtre**\n\n`;
     noMatch += `**Machine :** ${effectiveMachineId}:${effectiveWorkspaceId}\n`;
-    noMatch += `**Filtre :** from: ${fromFilter ?? '—'} | subject_contains: ${subjectFilter ?? '—'} | statut: ${status}\n`;
+    noMatch += `**Filtre :** from: ${fromFilter ?? '—'} | subject_contains: ${subjectFilter ?? '—'} | priority: ${priorityFilter ?? '—'} | statut: ${status}\n`;
     if (partialView) {
       noMatch += `\n⏳ _Vue récente (cold start #3292) — zéro ici ne prouve pas l'absence du message. \`deep: true\` pour le scan complet._\n`;
     }
@@ -273,7 +277,7 @@ Votre inbox est vide pour le moment.
       read: counts.read,
       page: page ?? null,
       per_page: perPage ?? null,
-      ...(hasFilters ? { filters_applied: { from: fromFilter ?? null, subject_contains: subjectFilter ?? null } } : {}),
+      ...(hasFilters ? { filters_applied: { from: fromFilter ?? null, subject_contains: subjectFilter ?? null, priority: priorityFilter ?? null } } : {}),
       ...(partialView ? { partial: true, note: 'Cold start: recent slice only — full pool hydrating in background. Pass deep:true for the complete scan.' } : {}),
       messages: messages.map(msg => ({
         id: msg.id,
