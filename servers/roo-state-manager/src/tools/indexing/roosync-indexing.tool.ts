@@ -340,12 +340,45 @@ function getToolUsageCacheFilePath(hostname: string, osTmpdir: string): string {
     return path.join(cacheDir, `tool-usage-cache-${hostname}.json`);
 }
 
-/** #753: fail-open cache load — any error/invalid version → empty cache (full scan). */
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+    return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * #753 review (ai-01 2026-09-07): shape validation at load. A readable file carrying the
+ * right version but malformed entries (e.g. perDay: null) would throw inside
+ * mergeFileAggregates on the cache-hit path, which has no try/catch — the tool would fail
+ * on every call without ever rewriting the file (absorbing state). Rejecting the file here
+ * falls back to the miss path, which rebuilds and rewrites it.
+ */
+function isWellFormedToolUsageCache(parsed: unknown): parsed is ToolUsageCacheFile {
+    if (!isPlainRecord(parsed)) return false;
+    if (typeof parsed.version !== 'number' || typeof parsed.normalizer_version !== 'string') return false;
+    if (!isPlainRecord(parsed.files)) return false;
+    for (const entry of Object.values(parsed.files)) {
+        if (!isPlainRecord(entry)) return false;
+        if (typeof entry.mtimeMs !== 'number' || typeof entry.size !== 'number') return false;
+        if (!isPlainRecord(entry.perDay) || !isPlainRecord(entry.fileErrors) || !isPlainRecord(entry.fileRetries)) return false;
+        for (const bucket of Object.values(entry.perDay)) {
+            if (!isPlainRecord(bucket)) return false;
+            if (
+                !isPlainRecord(bucket.toolCounts) || !isPlainRecord(bucket.sourceCounts) ||
+                !isPlainRecord(bucket.downstreamActionCounts) || !isPlainRecord(bucket.rawVariants)
+            ) return false;
+            for (const rawMap of Object.values(bucket.rawVariants)) {
+                if (!isPlainRecord(rawMap)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+/** #753: fail-open cache load — any error / invalid version / malformed shape → empty cache (full scan). */
 async function loadToolUsageCache(cachePath: string, normalizerVersion: string, fs: typeof import('fs/promises')): Promise<ToolUsageCacheFile> {
     try {
         const raw = await fs.readFile(cachePath, 'utf-8');
-        const parsed = JSON.parse(raw) as ToolUsageCacheFile;
-        if (parsed.version !== TOOL_USAGE_CACHE_VERSION || parsed.normalizer_version !== normalizerVersion) {
+        const parsed: unknown = JSON.parse(raw);
+        if (!isWellFormedToolUsageCache(parsed) || parsed.version !== TOOL_USAGE_CACHE_VERSION || parsed.normalizer_version !== normalizerVersion) {
             return { version: TOOL_USAGE_CACHE_VERSION, normalizer_version: normalizerVersion, files: {} };
         }
         return parsed;
@@ -391,6 +424,11 @@ function aggregateToolUsage(
     for (const [day, bucket] of Object.entries(perDay)) {
         // NO_TS_DAY is never date-filtered (matches the current scan, which skips the
         // date check when a message has no timestamp).
+        //
+        // Day-key comparison makes the window inclusive of the WHOLE end day. Pre-#753 the
+        // filter compared timestamps against a midnight-UTC endDate, excluding any end-day
+        // event after 00:00. This is intentional and documented (PR body, tool schema,
+        // CHANGELOG): per-day buckets cannot express sub-day bounds.
         if (day !== NO_TS_DAY && (day < startDay || day > endDay)) continue;
         addCounters(toolCounts, bucket.toolCounts);
         addCounters(sourceCounts, bucket.sourceCounts);

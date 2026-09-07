@@ -230,4 +230,46 @@ describe('tool_usage_stats — incremental cache (#753 Bug 2)', () => {
 		expect(second.cache_misses).toBe(0);
 		expect(second.total_tool_calls).toBe(1);
 	});
+
+	test('readable cache with right versions but malformed entry shape is rejected — no absorbing failure (review ai-01 2026-09-07)', async () => {
+		await writeSession(projDir, 'm1.jsonl', [
+			assistantToolUse('2026-05-20T10:00:00Z', [{ id: 'm1', name: 'Bash' }]),
+		]);
+		const args = { action: 'tool_usage_stats', start_date: '2026-05-19', end_date: '2026-05-21' };
+		await call(args); // populate
+
+		// Corrupt ONLY the entry shape: version + normalizer_version stay valid, perDay becomes null.
+		// This is the case the version checks cannot see: the cache-hit path would throw
+		// Object.entries(null) on every call with no rewrite (absorbing state) before the fix.
+		const cacheFile = cacheFilePath();
+		const raw = JSON.parse(await fs.readFile(cacheFile, 'utf-8'));
+		const firstPath = Object.keys(raw.files)[0];
+		raw.files[firstPath].perDay = null;
+		await fs.writeFile(cacheFile, JSON.stringify(raw), 'utf-8');
+
+		const second = JSON.parse((await call(args)).content[0].text);
+		expect(second.isError).toBeUndefined();
+		expect(second.cache_misses).toBe(1);
+		expect(second.cache_hits).toBe(0);
+		expect(second.total_tool_calls).toBe(1);
+
+		// The rejected file was rewritten well-formed: the NEXT call hits the cache again.
+		const third = JSON.parse((await call(args)).content[0].text);
+		expect(third.cache_hits).toBe(1);
+		expect(third.cache_misses).toBe(0);
+		expect(third.total_tool_calls).toBe(1);
+	});
+
+	test('end_date is inclusive of the whole end day — documented semantics (#753 review)', async () => {
+		// Pre-#753 the filter compared timestamps against a midnight-UTC endDate, so a call
+		// at 18:00 on the end day was EXCLUDED. Day-key comparison counts the whole day.
+		await writeSession(projDir, 'w1.jsonl', [
+			assistantToolUse('2026-05-21T18:00:00Z', [{ id: 'w1', name: 'Bash' }]),
+		]);
+		const res = JSON.parse(
+			(await call({ action: 'tool_usage_stats', start_date: '2026-05-19', end_date: '2026-05-21' })).content[0].text,
+		);
+		expect(res.total_tool_calls).toBe(1);
+		expect(res.tools.find((t: any) => t.tool_name === 'Bash').calls).toBe(1);
+	});
 });
