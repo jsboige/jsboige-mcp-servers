@@ -387,10 +387,13 @@ describe('roosyncCompareConfig (integration)', () => {
       });
 
       expect(result.granularity).toBe('full');
-      // Les paths factices divergent entre les deux inventaires → diff IMPORTANT
+      // Les paths factices divergent entre les deux inventaires → diff de type
+      // "nested", mais downgradé INFO + [EXPECTED] (#752): paths.* sont des
+      // chemins locaux par machine, pas du drift config. Les valeurs sont conservées.
       const pathDiff = findDiff(result, 'paths.rooExtensions');
       expect(pathDiff).toBeDefined();
-      expect(pathDiff!.severity).toBe('IMPORTANT');
+      expect(pathDiff!.severity).toBe('INFO');
+      expect(pathDiff!.description).toContain('[EXPECTED]');
       expect(pathDiff!.source_value).toBe('"/fake/roo-extensions"');
       expect(pathDiff!.target_value).toBe('"/fake/roo-extensions-remote"');
       expectSummaryCoherent(result);

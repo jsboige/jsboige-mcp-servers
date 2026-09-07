@@ -1082,4 +1082,65 @@ describe('compare-config', () => {
 			});
 		}
 	});
+
+	// ============================================================
+	// #752: EXPECTED_MACHINE_FIELDS extended to hardware / topology /
+	// machine-identity sections. A healthy cluster differs in disks, GPU,
+	// listening ports, Windows services and local paths — these are NOT
+	// config drift, yet the old whitelist only covered systemInfo.* so they
+	// surfaced as ~235 WARNING/IMPORTANT items that buried the real signal
+	// (and the IMPORTANT ones wrongly deducted health-view score).
+	// ============================================================
+	describe('#752: EXPECTED_MACHINE_FIELDS downgrades hardware/topology drift to INFO', () => {
+		const MACHINE_TOPOLOGY_PATHS: Array<{ path: string; input: 'IMPORTANT' | 'WARNING' }> = [
+			{ path: 'hardware.cpu.name', input: 'IMPORTANT' },
+			{ path: 'hardware.cpu.cores', input: 'IMPORTANT' },
+			{ path: 'hardware.memory.available', input: 'IMPORTANT' },
+			{ path: 'hardware.disks[2]', input: 'WARNING' },
+			{ path: 'hardware.gpu', input: 'WARNING' },
+			{ path: 'gpuDetails[0].name', input: 'WARNING' },
+			{ path: 'listeningPorts[5]', input: 'WARNING' },
+			{ path: 'windowsServices.docker', input: 'WARNING' },
+			{ path: 'paths.cwd', input: 'IMPORTANT' },
+			{ path: 'paths.workspace', input: 'IMPORTANT' },
+		];
+
+		for (const { path, input } of MACHINE_TOPOLOGY_PATHS) {
+			test(`path "${path}" is treated as machine-identity (downgraded from ${input})`, async () => {
+				mockGetInventory.mockImplementation((machineId: string) => {
+					return machineId === 'ai-01'
+						? Promise.resolve({ inventory: { mcpServers: { 'win-cli': { command: 'node' } } } })
+						: Promise.resolve({ inventory: { mcpServers: { 'win-cli': { command: 'node' } } } });
+				});
+				// Emit the target topology diff AND a real config diff. The control
+				// proves the filter is selective: a genuine config path stays IMPORTANT.
+				mockCompareGranular.mockResolvedValue({
+					sourceLabel: 'ai-01',
+					targetLabel: 'po-2023',
+					diffs: [
+						{ type: 'modified', path, category: 'hardware', severity: input, description: `Different ${path} between machines` },
+						{ type: 'modified', path: 'roo.mcpServers.win-cli.command', category: 'roo_config', severity: 'IMPORTANT', description: 'Different command between machines' },
+					],
+					stats: { added: 0, removed: 0, modified: 2, unchanged: 0 },
+				});
+
+				const result = await roosyncCompareConfig({
+					source: 'ai-01',
+					target: 'po-2023',
+					granularity: 'full',
+				});
+
+				// Target topology diff is downgraded to INFO + [EXPECTED].
+				const drift = result.differences.find(d => d.path === path);
+				expect(drift).toBeDefined();
+				expect(drift!.severity).toBe('INFO');
+				expect(drift!.description).toContain('[EXPECTED]');
+				// The real config diff is NOT downgraded — the filter is selective.
+				const control = result.differences.find(d => d.path === 'roo.mcpServers.win-cli.command');
+				expect(control).toBeDefined();
+				expect(control!.severity).toBe('IMPORTANT');
+				expect(control!.description).not.toContain('[EXPECTED]');
+			});
+		}
+	});
 });
