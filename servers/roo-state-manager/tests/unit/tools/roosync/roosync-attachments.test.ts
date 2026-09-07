@@ -16,6 +16,7 @@ vi.mock('../../../../src/utils/shared-state-path.js', () => ({
 
 const mockListAttachments = vi.fn();
 const mockGetAttachment = vi.fn();
+const mockReadAttachment = vi.fn();
 const mockGetAttachmentMetadata = vi.fn();
 const mockDeleteAttachment = vi.fn();
 
@@ -44,6 +45,7 @@ describe('roosync-attachments.tool', () => {
     vi.mocked(AttachmentManager).mockImplementation(() => ({
       listAttachments: mockListAttachments,
       getAttachment: mockGetAttachment,
+      readAttachment: mockReadAttachment,
       getAttachmentMetadata: mockGetAttachmentMetadata,
       deleteAttachment: mockDeleteAttachment,
     } as any));
@@ -120,9 +122,14 @@ describe('roosync-attachments.tool', () => {
       expect(result.content[0].text).toContain('uuid` requis');
     });
 
-    it('requires targetPath parameter', async () => {
-      const result = await roosyncGetAttachment({ uuid: 'att-001', targetPath: '' });
-      expect(result.content[0].text).toContain('targetPath` requis');
+    it('returns content inline (base64) when targetPath is omitted (#1105)', async () => {
+      mockReadAttachment.mockResolvedValue({ content: Buffer.from('hello'), meta: mockAttachment });
+      const result = await roosyncGetAttachment({ uuid: 'att-001' });
+      const text = result.content[0].text;
+      expect(text).toContain('Pièce jointe récupérée');
+      expect(text).toContain('att-001');
+      expect(text).toContain('inline');
+      expect(text).toContain(Buffer.from('hello').toString('base64'));
     });
 
     it('returns metadata on successful get', async () => {
@@ -188,9 +195,11 @@ describe('roosync-attachments.tool', () => {
       expect(result.content[0].text).toContain('uuid` requis');
     });
 
-    it('get action requires targetPath', async () => {
+    it('get action without targetPath returns inline base64 (#1105)', async () => {
+      mockReadAttachment.mockResolvedValue({ content: Buffer.from('data'), meta: mockAttachment });
       const result = await roosyncAttachments({ action: 'get', uuid: 'att-001' });
-      expect(result.content[0].text).toContain('targetPath` requis');
+      expect(result.content[0].text).toContain('inline');
+      expect(result.content[0].text).toContain(Buffer.from('data').toString('base64'));
     });
 
     it('delegates to delete action with validation', async () => {

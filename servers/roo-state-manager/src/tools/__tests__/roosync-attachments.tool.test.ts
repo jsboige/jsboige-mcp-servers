@@ -9,11 +9,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const {
   mockListAttachments,
   mockGetAttachment,
+  mockReadAttachment,
   mockGetAttachmentMetadata,
   mockDeleteAttachment,
 } = vi.hoisted(() => ({
   mockListAttachments: vi.fn(),
   mockGetAttachment: vi.fn(),
+  mockReadAttachment: vi.fn(),
   mockGetAttachmentMetadata: vi.fn(),
   mockDeleteAttachment: vi.fn(),
 }));
@@ -29,6 +31,7 @@ vi.mock('../../services/roosync/AttachmentManager.js', () => ({
   AttachmentManager: vi.fn(() => ({
     listAttachments: mockListAttachments,
     getAttachment: mockGetAttachment,
+    readAttachment: mockReadAttachment,
     getAttachmentMetadata: mockGetAttachmentMetadata,
     deleteAttachment: mockDeleteAttachment,
   })),
@@ -54,6 +57,7 @@ const SAMPLE_META = {
 beforeEach(() => {
   mockListAttachments.mockClear();
   mockGetAttachment.mockClear();
+  mockReadAttachment.mockClear();
   mockGetAttachmentMetadata.mockClear();
   mockDeleteAttachment.mockClear();
 });
@@ -94,9 +98,14 @@ describe('roosyncGetAttachment', () => {
     expect(result.content[0].text).toContain('uuid');
   });
 
-  it('returns error if targetPath missing', async () => {
-    const result = await roosyncGetAttachment({ uuid: 'abc', targetPath: '' });
-    expect(result.content[0].text).toContain('targetPath');
+  it('returns content inline (base64) when targetPath omitted (#1105)', async () => {
+    mockReadAttachment.mockResolvedValue({ content: Buffer.from('hello'), meta: SAMPLE_META });
+    const result = await roosyncGetAttachment({ uuid: 'abc-123' });
+    const text = result.content[0].text;
+    expect(text).toContain('récupérée');
+    expect(text).toContain('abc-123');
+    expect(text).toContain('inline');
+    expect(text).toContain(Buffer.from('hello').toString('base64'));
   });
 
   it('returns success with metadata', async () => {
@@ -156,9 +165,11 @@ describe('roosyncAttachments (consolidated)', () => {
     expect(result.content[0].text).toContain('uuid');
   });
 
-  it('delegates to get requiring targetPath', async () => {
-    const result = await roosyncAttachments({ action: 'get', uuid: 'abc', targetPath: '' });
-    expect(result.content[0].text).toContain('targetPath');
+  it('delegates to get returning inline base64 when targetPath omitted (#1105)', async () => {
+    mockReadAttachment.mockResolvedValue({ content: Buffer.from('data'), meta: SAMPLE_META });
+    const result = await roosyncAttachments({ action: 'get', uuid: 'abc' });
+    expect(result.content[0].text).toContain('inline');
+    expect(result.content[0].text).toContain(Buffer.from('data').toString('base64'));
   });
 
   it('delegates to delete with validation', async () => {

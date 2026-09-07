@@ -127,7 +127,7 @@ ${rows}
 // ============================================================
 
 export async function roosyncGetAttachment(
-  args: { uuid?: string; targetPath: string; message_id?: string; filename?: string }
+  args: { uuid?: string; targetPath?: string; message_id?: string; filename?: string }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   logger.info('📥 roosync_get_attachment called', { uuid: args.uuid, targetPath: args.targetPath });
 
@@ -153,13 +153,41 @@ export async function roosyncGetAttachment(
     }
     uuid = ref.uuid;
   }
-  if (!args.targetPath) {
-    return { content: [{ type: 'text', text: '❌ Paramètre `targetPath` requis.' }] };
-  }
 
   try {
     const sharedStatePath = getSharedStatePath();
     const manager = new AttachmentManager(sharedStatePath);
+
+    // #1105 — `targetPath` est résolu côté serveur. Sans lui (mode inline), le
+    // contenu est remonté en mémoire et renvoyé en base64 dans le résultat MCP,
+    // pour qu'un client distant (sans montage .shared-state) reçoive le blob au
+    // lieu d'un ENOENT déguisé en échec de source.
+    if (!args.targetPath) {
+      const { content, meta } = await manager.readAttachment(uuid);
+      const b64 = content.toString('base64');
+      const text = `✅ **Pièce jointe récupérée (inline)**
+
+| Champ | Valeur |
+|-------|--------|
+| **UUID** | \`${meta.uuid}\` |
+| **Fichier** | ${meta.originalName} |
+| **Taille** | ${formatSize(content.length)} |
+| **Type** | ${meta.mimeType} |
+| **Uploadé le** | ${meta.uploadedAt} |
+| **Par** | ${meta.uploaderMachineId} |
+| **Message lié** | ${meta.messageId || '—'} |
+
+🔐 **Contenu (base64) :**
+\`\`\`
+${b64}
+\`\`\`
+
+💡 **Mode inline** — \`targetPath\` omis : le contenu voyage dans ce résultat MCP.
+Décodez le base64 côté client (blob). Pour une copie **sur l'hôte**, fournissez
+\`targetPath\` (chemin serveur, pas un chemin du client distant).`;
+      return { content: [{ type: 'text', text }] };
+    }
+
     const meta = await manager.getAttachment(uuid, args.targetPath);
 
     const text = `✅ **Pièce jointe récupérée**
@@ -180,14 +208,23 @@ export async function roosyncGetAttachment(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     logger.error('❌ roosync_get_attachment error', error instanceof Error ? error : new Error(msg));
+    const code = (error as { code?: string } | null)?.code;
+    const isEnoent = code === 'ENOENT';
+    const enoentHint = isEnoent
+      ? `\n\n⚠️ **ENOENT sur la destination ?** \`targetPath\` est résolu **côté serveur** (hôte RooSync), pas chez le client.\nUn chemin de client distant (ex: \`/opt/data/...\` POSIX) n'existe pas sur cet hôte.\n→ **Omettez \`targetPath\`** pour recevoir le contenu en base64 dans ce résultat MCP.`
+      : '';
+    const destCheck = args.targetPath
+      ? `- Le répertoire cible \`${args.targetPath}\` est-il accessible en écriture **sur cet hôte serveur** ?\n  (pas sur la machine du client — voir note ci-dessus)`
+      : '';
+
     return {
       content: [{
         type: 'text',
-        text: `❌ **Erreur roosync_get_attachment :** ${msg}
+        text: `❌ **Erreur roosync_get_attachment :** ${msg}${enoentHint}
 
 **Vérifications :**
 - L'UUID \`${uuid}\` est-il correct ?
-- Le répertoire cible \`${args.targetPath}\` est-il accessible en écriture ?
+${destCheck}
 - Utilisez \`roosync_list_attachments\` pour voir les UUIDs disponibles.`
       }]
     };
@@ -272,7 +309,8 @@ export async function roosyncAttachments(
       if (!args.uuid && !(args.message_id && args.filename)) {
         return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis pour action=get (ou `message_id` + `filename` — #3256).' }] };
       }
-      if (!args.targetPath) return { content: [{ type: 'text', text: '❌ Paramètre `targetPath` requis pour action=get.' }] };
+      // #1105 — `targetPath` devient optionnel : omettez-le pour recevoir le
+      // contenu en base64 (client distant), fournissez-le pour une copie serveur.
       return roosyncGetAttachment({
         uuid: args.uuid,
         targetPath: args.targetPath,
