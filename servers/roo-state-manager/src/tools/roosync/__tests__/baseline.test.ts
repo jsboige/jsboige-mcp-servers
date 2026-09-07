@@ -98,7 +98,13 @@ vi.mock('../../../services/ConfigService.js', () => ({
 // the SUT never imports, at a path that doesn't exist (src/tools/utils/) → no-op silently.
 vi.mock('../../../utils/shared-state-path.js', () => ({
   getSharedStatePath: vi.fn(() => testSharedStatePath),
-  assertSharedStoreAccessible: () => {}
+  assertSharedStoreAccessible: () => {},
+  // #3459: baseline tool routes .rollback/ creation through the helper; the
+  // fixture dir is never pre-created, so the helper must really mkdir.
+  ensureStoreSubdir: (root: string, ...segs: string[]) => {
+    mkdirSync(join(root ?? testSharedStatePath, ...segs), { recursive: true });
+    return 'ensured';
+  }
 }));
 
 // Mock BaselineService

@@ -8,9 +8,10 @@
  * @version 1.0.0
  */
 
-import { existsSync, promises as fs, mkdirSync } from 'fs';
+import { existsSync, promises as fs } from 'fs';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
+import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
@@ -354,37 +355,28 @@ export class MessageManager {
    * @private
    */
   private ensureDirectories(): 'ensured' | 'skipped-store-absent' {
-    // #3459: fail-closed bootstrap. The recursive mkdir below would recreate
-    // the store root on a host whose ROOSYNC_SHARED_PATH target is absent,
-    // flipping existsSync(sharedPath) to true and silently disarming every
-    // tool-level #3459 guard for the rest of the process lifetime.
-    if (!existsSync(this.sharedStatePath)) {
-      logger.warn(
-        `[MessageManager] Racine du magasin RooSync ABSENTE — bootstrap de la messagerie IGNORÉ (fail-closed #3459). ` +
-        `Aucun répertoire créé sous : ${this.sharedStatePath}. ` +
-        `Vérifiez le montage du lecteur ou créez la racine ; la messagerie ne peut pas fonctionner tant qu'elle est absente.`
-      );
-      return 'skipped-store-absent';
-    }
-
-    const dirs = [
-      this.messagesPath,
-      this.inboxPath,
-      this.sentPath,
-      this.archivePath
+    // #3459 (arbitrage b): all store-subdir creation routes through
+    // ensureStoreSubdir — the single sanctioned writer. On an absent root it
+    // skips + WARNs with the resolved path instead of recreating it. mkdir
+    // errors on a PRESENT root (EPERM, GDrive write-lock) stay swallowed
+    // here as before — the constructor must not kill the server boot.
+    const segments: string[][] = [
+      ['messages'],
+      ['messages', 'inbox'],
+      ['messages', 'sent'],
+      ['messages', 'archive'],
     ];
-    
-    for (const dir of dirs) {
-      if (!existsSync(dir)) {
-        try {
-          mkdirSync(dir, { recursive: true });
-          logger.info(`Répertoire créé: ${dir}`);
-        } catch (error) {
-          logger.error(`Erreur création répertoire ${dir}`, error);
+    let worst: 'ensured' | 'skipped-store-absent' = 'ensured';
+    for (const segs of segments) {
+      try {
+        if (ensureStoreSubdir(this.sharedStatePath, ...segs) === 'skipped-store-absent') {
+          worst = 'skipped-store-absent';
         }
+      } catch (error) {
+        logger.error(`Erreur création répertoire ${join(this.messagesPath, ...segs.slice(1))}`, error);
       }
     }
-    return 'ensured';
+    return worst;
   }
 
   /**

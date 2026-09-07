@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
+import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { ConfigDiffService } from './ConfigDiffService.js';
 import { JsonMerger } from '../utils/JsonMerger.js';
@@ -185,7 +186,8 @@ export class ConfigSharingService implements IConfigSharingService {
       this.logger.warn(`La version ${options.version} existe déjà pour ${machineId}, elle sera écrasée.`);
     }
 
-    await fs.mkdir(versionDir, { recursive: true });
+    // #3459 (b): création sous la racine du store via le helper sanctionné
+    ensureStoreSubdir(sharedStatePath, 'configs', machineId, `v${options.version}-${timestamp}`);
 
     // Copie des fichiers depuis le package temporaire
     await this.copyRecursive(options.packagePath, versionDir);

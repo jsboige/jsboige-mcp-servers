@@ -7,7 +7,7 @@ import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, C
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 
 export class InventoryService {
@@ -352,11 +352,8 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
       const sharedStatePath = getSharedStatePath();
       const inventoriesDir = path.join(sharedStatePath, 'inventories');
 
-      // Créer le répertoire s'il n'existe pas
-      if (!existsSync(inventoriesDir)) {
-        console.log(`[InventoryService] 📁 Création du répertoire: ${inventoriesDir}`);
-        await fs.mkdir(inventoriesDir, { recursive: true });
-      }
+      // #3459 (b): création sous la racine via le helper sanctionné
+      ensureStoreSubdir(sharedStatePath, 'inventories');
 
       // Sauvegarder avec un nom simple (sans timestamp) pour que loadRemoteInventory puisse le trouver
       // Format: {machineId}.json

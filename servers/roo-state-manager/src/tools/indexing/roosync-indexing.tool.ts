@@ -28,7 +28,7 @@ import { resetQdrantCollectionTool } from './reset-collection.tool.js';
 import { handleDiagnoseSemanticIndex } from './diagnose-index.tool.js';
 import { handleRepairWorkspace } from './repair-workspace.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 
 /** #2336 D1: Convert ISO timestamp to YYYY-WNN week key */
 function getISOWeek(timestamp: string): string {
@@ -1549,7 +1549,7 @@ export async function handleRooSyncIndexing(
                 // 2. Determine snapshot path
                 const sharedPath = getSharedStatePath();
                 const snapshotsDir = path.join(sharedPath, 'tool-usage-snapshots');
-                await fs.mkdir(snapshotsDir, { recursive: true });
+                ensureStoreSubdir(sharedPath, 'tool-usage-snapshots');
 
                 // #3027: lowercase the hostname so filenames (and the per-machine
                 // grouping in trend_report) are case-insensitive. Pre-fix, ai-01

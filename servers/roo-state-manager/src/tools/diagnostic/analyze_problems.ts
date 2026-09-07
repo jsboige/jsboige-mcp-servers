@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { formatErrorForResponse } from '../../utils/error-format.js';
 
 interface AnalyzeOptions {
@@ -258,7 +258,7 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             // Simplifié pour cet outil MCP qui retourne principalement du JSON
             // Mais on peut écrire le fichier si demandé
             const reportDir = path.join(getSharedStatePath(), 'reports');
-            await fs.mkdir(reportDir, { recursive: true });
+            ensureStoreSubdir(getSharedStatePath(), 'reports');
             reportPath = path.join(reportDir, `PHASE3A-ANALYSE-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
 
             const reportContent = `# Rapport d'Analyse RooSync

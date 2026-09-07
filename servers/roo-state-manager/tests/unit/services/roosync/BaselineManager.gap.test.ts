@@ -29,6 +29,7 @@ vi.mock('fs', () => ({
     rm: vi.fn(),
   },
   existsSync: vi.fn(),
+  mkdirSync: vi.fn(),
 }));
 
 vi.mock('../../../../src/services/BaselineService.js');
@@ -467,8 +468,11 @@ describe('BaselineManager — createRollbackPoint edge cases', () => {
   });
 
   it('throws RooSyncServiceError on mkdir failure', async () => {
-    (existsSync as any).mockReturnValue(false);
-    (fs.mkdir as any).mockRejectedValue(new Error('Disk full'));
+    // #3459: creation is routed through ensureStoreSubdir (sync mkdirSync), so the
+    // failure must come from a post-creation fs op. Trigger it on metadata write;
+    // the store root must be present or the helper fails-closed (skip, no error).
+    (existsSync as any).mockReturnValue(true);
+    (fs.writeFile as any).mockRejectedValue(new Error('Disk full'));
 
     const mgr = await createManager();
     await expect(mgr.createRollbackPoint('decision-x')).rejects.toThrow('Échec création rollback point');

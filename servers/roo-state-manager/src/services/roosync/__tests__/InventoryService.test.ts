@@ -20,15 +20,24 @@ vi.mock('os', async (importOriginal) => {
   };
 });
 
-// Mock getSharedStatePath used in saveToSharedState
-vi.mock('../../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: vi.fn(() => '/mock/shared-state'),
-  assertSharedStoreAccessible: () => {},
-}));
+// Mock getSharedStatePath used in saveToSharedState. #3459: the service routes
+// inventories/ creation through ensureStoreSubdir, so keep the real helper
+// (spread from importOriginal) — it uses the mocked existsSync/mkdirSync below.
+vi.mock('../../../utils/shared-state-path.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../utils/shared-state-path.js')>();
+  return {
+    ...actual,
+    getSharedStatePath: vi.fn(() => '/mock/shared-state'),
+    assertSharedStoreAccessible: () => {},
+  };
+});
 
-// Mock existsSync for saveToSharedState directory creation
+// Mock existsSync for saveToSharedState directory creation. mkdirSync is
+// required: #3459 routes inventories/ creation through ensureStoreSubdir
+// (src/utils/shared-state-path.ts), which import { mkdirSync } from 'fs'.
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
+  mkdirSync: vi.fn(),
 }));
 
 // Mock readJSONFileWithoutBOM for ALL JSON file reads
@@ -590,19 +599,21 @@ describe('InventoryService', () => {
     });
 
     it('should create inventories directory if missing', async () => {
-      // existsSync returns false → mkdir should be called
-      const { existsSync } = await import('fs');
-      vi.mocked(existsSync).mockReturnValue(false);
+      // #3459 fail-closed: ensureStoreSubdir skips if the STORE ROOT is absent.
+      // Stub the root as present but inventories/ as absent so mkdirSync fires.
+      const { existsSync, mkdirSync } = await import('fs');
+      vi.mocked(existsSync).mockImplementation((p) =>
+        String(p).includes('shared-state') && !String(p).includes('inventories')
+      );
 
       vi.mocked(fs.access).mockResolvedValue(undefined);
       mockReadJSONByPath({});
       vi.mocked(fs.writeFile).mockResolvedValue();
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined as any);
 
       await service.getMachineInventory();
 
-      expect(fs.mkdir).toHaveBeenCalled();
-      const mkdirCall = vi.mocked(fs.mkdir).mock.calls.find(
+      expect(mkdirSync).toHaveBeenCalled();
+      const mkdirCall = vi.mocked(mkdirSync).mock.calls.find(
         (call) => call[0].toString().includes('inventories')
       );
       expect(mkdirCall).toBeDefined();

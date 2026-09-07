@@ -13,6 +13,7 @@ import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../../types/errors.js';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { createLogger } from '../../utils/logger.js';
+import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
 
 /**
  * Registre central des machines pour éviter les conflits d'identité
@@ -613,8 +614,8 @@ export class BaselineManager {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const rollbackPath = join(sharedPath, '.rollback', `${decisionId}_${timestamp}`);
 
-      // Créer le répertoire rollback
-      await fs.mkdir(rollbackPath, { recursive: true });
+      // #3459 (b): création sous la racine via le helper sanctionné
+      ensureStoreSubdir(sharedPath, '.rollback', `${decisionId}_${timestamp}`);
 
       // Backup des fichiers critiques
       const filesToBackup = [

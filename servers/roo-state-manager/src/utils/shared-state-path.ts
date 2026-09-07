@@ -12,9 +12,20 @@
  * degrade gracefully instead of crashing when GDrive disconnects.
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { createLogger } from './logger.js';
+
+// Lazily created: `createLogger` probes its log directory at construction
+// (logger.ts ensureLogDirectory → existsSync), which must not fire at module
+// import — the shared-state-path coverage test mocks existsSync to throw and
+// only exercises the accessor functions. Instantiating here would EACCES.
+let subdirLogger: ReturnType<typeof createLogger> | undefined;
+function getSubdirLogger() {
+    if (!subdirLogger) subdirLogger = createLogger('ensureStoreSubdir');
+    return subdirLogger;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -147,4 +158,39 @@ export function assertSharedStoreAccessible(): string {
         throw new SharedStoreInaccessibleError(sharedPath);
     }
     return sharedPath;
+}
+
+/**
+ * #3459: Outcome of a store-subdirectory bootstrap. A literal union on
+ * purpose — "skipped-store-absent" must stay unreadable as success by the
+ * first `if` that consumes it (same reserve as MessageManager.bootstrapStatus).
+ */
+export type StoreSubdirStatus = 'ensured' | 'skipped-store-absent';
+
+/**
+ * #3459 (arbitrage ai-01, option b): the ONLY sanctioned way to create a
+ * directory under the RooSync shared store root. Every direct
+ * `mkdirSync/mkdir(join(<store root>, …))` outside this helper can recreate
+ * the root on a fresh process and silently disarm all the
+ * `assertSharedStoreAccessible` tool guards — the exact hole #1103/#1112
+ * closed for the bootstrap writers. A structural test
+ * (`fail-closed-store-structural.test.ts`) fails the build if a raw mkdir
+ * taking a store-root-derived path appears outside this module.
+ *
+ * Never throws for an absent root: skip + WARN carrying the RESOLVED path
+ * (fail-closed lane — the tool-level guards own the throwing). mkdir errors
+ * on a present root propagate as they would have at the call site.
+ */
+export function ensureStoreSubdir(root: string, ...segments: string[]): StoreSubdirStatus {
+    const target = segments.length > 0 ? join(root, ...segments) : root;
+    if (!existsSync(root)) {
+        getSubdirLogger().warn(
+            `[ensureStoreSubdir] Racine du magasin RooSync ABSENTE — création IGNORÉE (fail-closed #3459). ` +
+            `Aucun répertoire créé sous : ${target}. ` +
+            `Vérifiez le montage du lecteur ou créez la racine avant toute écriture.`
+        );
+        return 'skipped-store-absent';
+    }
+    mkdirSync(target, { recursive: true });
+    return 'ensured';
 }
