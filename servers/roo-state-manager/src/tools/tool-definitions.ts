@@ -463,7 +463,7 @@ export const roosyncConfigDefinition = {
 
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: 'Machine inventory, heartbeat status, system snapshot, cluster health. type="status" for compact RooSync status. type="health" for unified cluster health with score (#2224). Gotcha: use includeDetails:true for full metrics including tool usage stats.',
+    description: 'Machine inventory, heartbeat status, system snapshot, cluster health (drift/score/capabilities). type="status" for compact RooSync status. type="health" for unified CLUSTER health with score (#2224) — distinct from the skeleton-cache health of roosync_diagnose action "health". Gotcha: use includeDetails:true for full metrics including tool usage stats.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -532,7 +532,7 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
     inputSchema: {
         type: 'object',
         properties: {

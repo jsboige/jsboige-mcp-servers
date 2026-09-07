@@ -463,14 +463,14 @@ export function registerCallToolHandler(
            }
 
            // CLEANUP-2: Legacy summary tools handlers retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
-           // Remplacés par roosync_summarize (CONS-12)
+           // Remplacés par roosync_summarize (CONS-12) ; capacité reprise par conversation_browser(action: "summarize")
            // #519: Legacy export tools handlers retirés (CONS-10) - utiliser export_data et export_config
             case 'get_raw_conversation': {
                 const m = await import('./conversation/get-raw.tool.js');
                 result = await m.getRawConversationTool.handler(args as any);
                 break;
             }
-          // CLEANUP-2: getConversationSynthesisTool handler retiré (remplacé par roosync_summarize)
+          // CLEANUP-2: getConversationSynthesisTool handler retiré (capacité reprise par conversation_browser(action: "summarize"))
           // CONS-9: export_task_tree_markdown retiré (remplacé par task_export action='markdown')
 
           // Diagnostic Tools - WP4

@@ -312,7 +312,7 @@ Affiche les détails techniques complets (métadonnées des actions) pour une t�
 
 ## 📋 Liste Complète des Outils MCP (16 outils)
 
-Le roo-state-manager propose **16 outils MCP consolidés** organisés en 10 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391).
+Le roo-state-manager propose **16 outils MCP consolidés** organisés en 10 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391). Nomenclature des numéros CONS : [docs/CONS-CONSOLIDATION-HISTORY.md](docs/CONS-CONSOLIDATION-HISTORY.md).
 
 ### 💬 Conversations & Navigation (1 outil)
 | Outil | Description |
