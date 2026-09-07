@@ -430,10 +430,17 @@ describe('tool-definitions.ts — Schema Validation', () => {
         // inbox — n'avait AUCUNE description. Un champ saillant sans contre-indication
         // est une invitation ; la garde serveur rejette alors l'appel (fail-loud #1067),
         // laissant l'inbox illisible pour l'appelant. L'annotation doit survivre ici.
-        it('priority must carry the #3351 inbox-rejection warning on the wire', () => {
-            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, { description?: string }>;
+        it('priority must carry the #3351 inbox-rejection warning and an empty sentinel on the wire', () => {
+            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, { description?: string; enum?: string[] }>;
             expect(props.priority?.description).toMatch(/inbox/i);
+            expect(props.priority?.description).toMatch(/requires every field/i);
             expect(props.priority?.description).toMatch(/3351/);
+            // Some generated clients expose every flat-schema property as a
+            // required call argument even though JSON Schema only requires
+            // `action`. The handler already strips '' before Zod (#1075), but
+            // without this wire value those clients can only inject a REAL
+            // priority — which inbox correctly rejects as bulk-only.
+            expect(props.priority?.enum).toContain('');
         });
     });
 
