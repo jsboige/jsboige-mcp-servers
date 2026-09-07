@@ -1271,7 +1271,16 @@ async function applyCondensedWithMerge(
   snapshotBefore: Dashboard,
   condensedDashboard: Dashboard
 ): Promise<void> {
-  const current = await readDashboardFile(key);
+  // #3151 Phase C: anchor the delta on the artifact this function is about to
+  // OVERWRITE -- the GDrive file. readDashboardFile() became PG-primary once
+  // UNIFIED_STORE_DASHBOARD_READ_PG shipped, so on a key where PG and the file
+  // diverge it stitches the PG view over the file and drops every message that
+  // exists only on disk. Measured on ai-01 (07/09): 15 of 63 dashboards diverge;
+  // on workspace-CoursIA the two journals share ZERO messages, so a condensation
+  // from a PG-reading host would have erased 23 messages of three other machines.
+  // The docstring above always said "re-reads the file from disk" -- the read gate
+  // silently changed the source, not the intent.
+  const current = await readDashboardFromGdrive(key);
   if (!current) {
     await writeDashboardFile(key, condensedDashboard, { condensed: true });
     return;
