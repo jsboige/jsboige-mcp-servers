@@ -704,8 +704,9 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Default ON; rollback via SKELETON_CLAUDE_TIER=false / SKELETON_ARCHIVE_TIER=false in .env.
         const enableClaudeTier = process.env.SKELETON_CLAUDE_TIER !== 'false';
         const enableArchiveTier = process.env.SKELETON_ARCHIVE_TIER !== 'false';
+        const enablePrewarm = process.env.SKELETON_PREWARM !== 'false';
         SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
-        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'}`);
+        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'} prewarm=${enablePrewarm ? 'ON' : 'OFF'}`);
 
         // Tier 3 cold-start: pre-warm SkeletonCacheService (incl. Tier 3 GDrive archives)
         // in background. The archive tier was ONLY loaded lazily on the first
@@ -714,9 +715,26 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Warming it here (fire-and-forget) lets the first includeArchives call find the
         // cache ready, or await the in-progress load via awaitFreshnessWithBudget (which
         // degrades gracefully to local results + notice instead of hard-failing).
-        SkeletonCacheService.getInstance().warmCache().catch((err: any) => {
-            console.warn('[Skeleton-Worker] Skeleton cache pre-warm failed (non-blocking):', err?.message || err);
-        });
+        //
+        // The pre-warm is a LATENCY optimization, and its cost is paid PER HOST: every MCP
+        // host hydrates its own private copy of the same corpus. Measured on ai-01 (A/B,
+        // same instrument, 70 s after boot): 3217 MB with both tiers pre-warmed, 1092 MB
+        // without Tier 3, 142 MB with neither -- i.e. Tier 3 = 2125 MB/host, Tier 2 =
+        // 950 MB/host, while the MCP server itself is 142 MB. On a machine running many
+        // concurrent hosts (ai-01: 30 hosts = 72 GB of private commit) the trade stops
+        // making sense: 2.1 GB resident in every host to save ~30 s once, on the first
+        // cross-machine browse.
+        //
+        // SKELETON_PREWARM=false skips ONLY the eager hydration. The tiers stay ENABLED --
+        // configure() above is untouched, so the #1747 visibility fix is preserved -- and
+        // load lazily on first use via awaitFreshnessWithBudget, which degrades to local
+        // results + notice rather than failing. Default is ON: behaviour is unchanged
+        // unless a machine opts out.
+        if (enablePrewarm) {
+            SkeletonCacheService.getInstance().warmCache().catch((err: any) => {
+                console.warn('[Skeleton-Worker] Skeleton cache pre-warm failed (non-blocking):', err?.message || err);
+            });
+        }
 
         // ===== ALL NON-BLOCKING (fire-and-forget) =====
 
