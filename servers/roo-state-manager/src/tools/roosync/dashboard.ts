@@ -1420,13 +1420,37 @@ async function appendDashboardIncremental(
 }
 
 /**
- * Crée un dashboard vide avec les valeurs par défaut
+ * Crée un dashboard vide avec les valeurs par défaut.
+ *
+ * #3537 §6.3 (borne vide) — création-seule, par construction : cette fabrique
+ * n'est appelée que sur les branches `if (!dashboard)` des trois chemins de
+ * création (handleWrite l.3431, handleAppend l.3519, cross-post l.3861). Read,
+ * delete, read_archive, read_overview et list ne l'appellent jamais — une
+ * garde ici ne peut donc pas rendre une clé historique illisible.
+ *
+ * Invariant volontairement minimal : refuser de CRÉER un espace de noms dont
+ * le segment de nom est vide ou whitespace (`workspace-`, `machine-`,
+ * `workspace- `). Le schéma accepte `workspace: ""` (z.string().optional(),
+ * sans .min(1)) et le `??` du handler ne remplace pas une chaîne vide — la
+ * fabrique est la seule porte qui ferme ce chemin (clé `workspace-` recensée
+ * dans le store, #3537 §4). Tout le reste passe inchangé : casse (mandat
+ * 2026-05-23), suffixes ` (1)` (deux écrivains vivants, #3482 — fusion =
+ * §6.2 explicite), `.md`/`.bak`/`%3A` — ces formes restent lisibles à jamais
+ * et ne sont JAMAIS rejetées à la dérivation.
  */
-function createEmptyDashboard(
+export function createEmptyDashboard(
   type: NonNullable<DashboardArgs['type']>,
   key: string,
   author: Author
 ): Dashboard {
+  const prefix = type === 'workspace' ? 'workspace-' : type === 'machine' ? 'machine-' : null;
+  if (prefix !== null && key.startsWith(prefix) && key.slice(prefix.length).trim() === '') {
+    throw new Error(
+      `Refus de créer un dashboard ${type} à nom vide : clé dérivée '${key}' ` +
+      `(machineId='${author.machineId}', workspace='${author.workspace}'). ` +
+      `L'appelant a passé workspace/machineId vide — '??' ne remplace pas une chaîne vide (#3537 §6.3).`
+    );
+  }
   const now = new Date().toISOString();
   return {
     type,
