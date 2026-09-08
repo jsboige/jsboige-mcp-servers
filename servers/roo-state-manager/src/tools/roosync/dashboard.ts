@@ -57,6 +57,7 @@ import {
   readDashboardFromPg,
   dualWriteDashboardSync,
   dualWriteDashboardDelete,
+  getDashboardPgReader,
 } from '../../services/unified-store/roosync-dashboard-store.js';
 // #3151 Phase C: markdown parsing + message-id generation extracted to a
 // dependency-light module (backfill script imports it without pulling the LLM
@@ -4375,6 +4376,18 @@ async function cleanupStaleWorktreeDashboards(): Promise<number> {
  *   - source supprimée par défaut (deleteSource) : archivée d'abord
  *     (`archive/<sourceKey>-pre-merge-<ts>.md`), fichier PUIS ligne PG.
  *
+ * Deux gardes d'intégrité (revue #1134) :
+ *   - ANTI-ÉCRASEMENT À L'AVEUGLE : un hôte qui dual-écrit PG sans le lire
+ *     (porte UNIFIED_STORE_DASHBOARD_READ_PG fermée) ferait une union aveugle
+ *     aux messages vivant uniquement en PG, puis écraserait leur journal —
+ *     refus net ; le merge court sur un hôte qui voit ce qu'il écrase, ou
+ *     dans un monde sans PG.
+ *   - HONORE LE DRAPEAU #3482 : si l'écriture cible est soupçonnée d'avoir
+ *     été déviée vers un fork DriveFS ÉTRANGER (≠ la source elle-même — une
+ *     réparation de ` (1)` vivant a par construction un fork frais dans le
+ *     répertoire), la suppression de la source est ABANDONNÉE : elle est
+ *     irréversible et le canonique ne reflète peut-être pas l'union.
+ *
  * Pas de gate d'âge type DASHBOARD_PROTECTION_DAYS : contrairement à delete, le
  * contenu n'est PAS perdu (union dans la cible + archive de sécurité) — fusionner
  * un fork VIVANT est précisément le cas d'usage (la recréation silencieuse reste
@@ -4420,6 +4433,29 @@ async function handleMerge(
     assertSharedStoreAccessible();
   } catch (err) {
     return { ...base, success: false, message: (err as Error).message };
+  }
+
+  // Revue #1134 — garde anti-écrasement-à-l'aveugle : un hôte qui DUAL-ÉCRIT
+  // PG sans le LIRE (porte UNIFIED_STORE_DASHBOARD_READ_PG fermée) ferait une
+  // union qui ne voit que les fichiers, puis dualWriteDashboardSync
+  // remplacerait le journal PG de la cible et dualWriteDashboardDelete
+  // détruirait celui de la source — anéantissant tout message vivant
+  // uniquement en PG, sans archive (l'archive lit le fichier). Conditions
+  // lues sur l'env (miroir exact du writer-factory, sans l'instantier) :
+  // refuser l'asymétrie écrit-sans-lire ; un monde sans PG du tout reste
+  // légitime (rien à écraser).
+  const pgReadable = getDashboardPgReader() !== null;
+  const pgWritable = process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+  if (pgWritable && !pgReadable) {
+    return {
+      ...base,
+      success: false,
+      message:
+        "⛔ REFUSÉ: cet hôte dual-écrit PG (UNIFIED_STORE_DUAL_WRITE=1) sans le lire " +
+        '(UNIFIED_STORE_DASHBOARD_READ_PG≠1) — le merge ferait une union aveugle aux messages présents ' +
+        'uniquement en PG, puis écraserait leur journal. Exécuter le merge depuis un hôte à porte PG ' +
+        'ouverte (ex. myia-ai-01), ou désactiver le dual-write ici.'
+    };
   }
 
   // Relecture des deux côtés par le chemin autoritaire (PG d'abord, fichier en
@@ -4494,8 +4530,44 @@ async function handleMerge(
 
   const writeVerification = await writeDashboardFile(key, merged);
 
+  // Revue #1134 — honore le drapeau #3482 : si l'écriture cible est SOUPÇONNÉE
+  // d'avoir été déviée vers un fork DriveFS ÉTRANGER, la suppression de la
+  // source est abandonnée (irréversible, et le canonique ne reflète peut-être
+  // pas l'union). Exception volonte : si le fork soupçonné EST la source
+  // elle-même, c'est la configuration attendue d'une réparation de fork
+  // vivant — le fichier ` (1)` est frais dans le répertoire par construction,
+  // et le discriminateur d'en-tête canonique (évalué AVANT le scan de
+  // siblings) a déjà vérifié que l'union y a atterri.
+  const sourcePath = getDashboardPath(sourceKey);
+  const suspectedForeignFork =
+    writeVerification.forkSuspected === true && writeVerification.forkPath !== sourcePath;
+
   // --- Retrait de la source : archive préalable (même filet que handleDelete) ---
   let archiveFile: string | null = null;
+  if (deleteSource && suspectedForeignFork) {
+    logger.error(
+      `[MERGE] #3537 §6.2 — suppression de la source ABANDONNÉE : écriture cible soupçonnée d'avoir été déviée (#3482)`,
+      {
+        sourceKey,
+        targetKey: key,
+        forkDetail: writeVerification.forkDetail,
+        forkPath: writeVerification.forkPath,
+        remediation:
+          'DriveFS local probablement wedgé — relire le canonique, redémarrer DriveFS/VS Code, puis re-merger (la source est intacte)'
+      }
+    );
+    return {
+      ...base,
+      success: true,
+      messageCount: mergedMessages.length,
+      writeVerification,
+      message:
+        `Clé '${sourceKey}' fusionnée dans '${key}' : ${mergedMessages.length} msg après union — mais ` +
+        `SUPPRESSION DE LA SOURCE ABANDONNÉE : l'écriture cible est soupçonnée d'avoir été déviée par ` +
+        `DriveFS (#3482 : ${writeVerification.forkDetail ?? 'détection sans détail'}). La source est ` +
+        `INTACTE — relire le canonique, redémarrer DriveFS/VS Code, puis re-merger.`
+    };
+  }
   if (deleteSource) {
     if (source.intercom.messages.length > 0) {
       const archiveDir = getArchiveDir();

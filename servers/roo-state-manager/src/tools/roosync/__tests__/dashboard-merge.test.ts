@@ -340,6 +340,57 @@ describe('action merge — UNION de journaux divergents (fork + cible vivants)',
   });
 });
 
+describe('action merge — gardes d’intégrité (revue #1134)', () => {
+  it('hôte qui dual-écrit PG sans le lire → REFUS (union aveugle, écrasement du journal PG)', async () => {
+    // Asymétrie exacte : writer armé, porte de lecture fermée. La garde lit
+    // l'env (miroir du writer-factory) — aucun writer n’est instantié ici.
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://test:test@localhost:5432/test';
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(false);
+    expect(String(result.message)).toContain('union aveugle');
+    // RIEN n’a bougé : ni fichier, ni dual-write.
+    expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+    expect(fileExists('machine-myia-po-2025.md')).toBe(false);
+    expect(dualWriteSyncSpy).not.toHaveBeenCalled();
+    expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('fork DriveFS ÉTRANGER suspecté sur l’écriture cible → suppression de la source ABANDONNÉE', async () => {
+    // Source = alias (ne matche pas le pattern fork ` (N)` de la cible) ;
+    // un sibling ` (3)` FRAIS simule une déviation DriveFS pendant l’écriture
+    // cible (mtime ≥ fenêtre d’écriture — discriminateur #2 de la garde).
+    seedDashboard('workspace-CoursIA-2.md', 'workspace', '2026-09-08T10:00:00.000Z',
+      [{ id: 'a1', timestamp: '2026-09-08T10:00:00.000Z', content: 'alias msg' }]);
+    seedDashboard('workspace-CoursIA.md', 'workspace', '2026-09-08T11:00:00.000Z',
+      [{ id: 'a2', timestamp: '2026-09-08T11:00:00.000Z', content: 'canonique msg' }]);
+    // Sibling de collision frais, ni source ni canonique.
+    writeFileSync(path.join(dashboardsDir, 'workspace-CoursIA (3).md'), '---\ntype: workspace\n---\n', 'utf8');
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'workspace', workspace: 'CoursIA',
+      sourceKey: 'workspace-CoursIA-2'
+    }) as any;
+
+    // L’union est écrite (succès), MAIS la source survit : sa suppression est
+    // irréversible et le canonique est suspect.
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toContain('SUPPRESSION DE LA SOURCE ABANDONNÉE');
+    expect(result.writeVerification?.forkSuspected).toBe(true);
+    expect(fileExists('workspace-CoursIA-2.md')).toBe(true);
+    expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
+    // La cible a bien reçu l’union (le write est passé, seul le retrait est abandonné).
+    expect(dualWriteSyncSpy).toHaveBeenCalledTimes(1);
+    expect(fileText('workspace-CoursIA.md')).toContain('alias msg');
+  });
+});
+
 describe('action merge — workspace (cas CoursIA-like, cible vivante)', () => {
   it('merge workspace fork → clé dérivée workspace', async () => {
     seedDashboard('workspace-CoursIA (1).md', 'workspace', '2026-09-08T12:53:31.000Z',
