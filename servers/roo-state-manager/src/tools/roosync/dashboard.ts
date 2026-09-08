@@ -4427,6 +4427,18 @@ async function handleMerge(
       message: `⛔ REFUSÉ: la source '${sourceKey}' EST la clé cible — rien à fusionner.`
     };
   }
+  // Revue #1134 — assainissement : sourceKey est la SEULE entrée de chemin
+  // brut de cet outil (toutes les autres actions dérivent leur clé d'entrées
+  // contraintes). Refuser séparateurs, '..' et ':' avant TOUT path.join — un
+  // traversal ne doit ni lire, ni archiver, ni unlink hors du store. (':' est
+  // de toute façon illégal dans un nom de fichier de la flotte Windows.)
+  if (/[\\/:]/.test(sourceKey) || sourceKey.includes('..')) {
+    return {
+      ...base,
+      success: false,
+      message: `⛔ REFUSÉ: sourceKey '${sourceKey}' contient des caractères de chemin (séparateur, '..' ou ':') — une clé est un nom plat tel que listé par action=list, jamais un chemin.`
+    };
+  }
 
   // #3459: fail-closed — ne pas réparer des clés dans un store injoignable.
   try {
@@ -4458,17 +4470,55 @@ async function handleMerge(
     };
   }
 
-  // Relecture des deux côtés par le chemin autoritaire (PG d'abord, fichier en
-  // repli) : la fusion doit partir de ce que la flotte LIT, pas du fichier seul.
-  const source = await readDashboardFile(sourceKey);
-  if (!source) {
+  // Revue #1134 — verrou append CROSS-PROCESS sur les DEUX clés (ordre trié,
+  // cohérent avec le withTwoKeyLocks in-process du dispatcher) : le merge est
+  // un read-modify-write COMPLET du fichier ; sans verrou, un append concurrent
+  // d'une autre machine dans la fenêtre lecture→écriture serait écrasé
+  // (last-writer-wins) — exactement la classe de perte que les chemins
+  // write/append verrouillent déjà (#1033/#3205 résiduel write-side).
+  const holder: CondenseLockInfo = {
+    machineId: author.machineId,
+    workspace: author.workspace,
+    pid: process.pid,
+    acquiredAt: new Date().toISOString()
+  };
+  const [lockA, lockB] = [key, sourceKey].sort();
+  return withAppendLock(lockA, holder, () =>
+    withAppendLock(lockB, holder, () => mergeCriticalSection()));
+
+  async function mergeCriticalSection(): Promise<DashboardResult> {
+  // Relecture des DEUX vues de CHAQUE clé (revue #1134) : vue PG (si la porte
+  // du hôte l'expose) ET vue fichier. Sur une clé où fichier et PG divergent
+  // (15/63 mesurés, #3537 §2), une union fondée sur une seule vue écraserait
+  // les messages vivant uniquement dans l'autre artefact — l'union des vues
+  // DISTINCTES ne peut perdre aucun message, et réconcilie les deux artefacts
+  // d'un même geste.
+  const sourcePg = await readDashboardFromPg(sourceKey);
+  const sourceFileView = await readDashboardFromGdrive(sourceKey);
+  if (!sourcePg && !sourceFileView) {
     return {
       ...base,
       success: false,
       message: `⛔ REFUSÉ: le dashboard source '${sourceKey}' n'existe ni dans le store PG ni sur GDrive — rien à fusionner (les clés listées par action=list font foi).`
     };
   }
-  const target = await readDashboardFile(key);
+  const targetPg = await readDashboardFromPg(key);
+  const targetFileView = await readDashboardFromGdrive(key);
+
+  // Ordre = priorité d'insertion dans l'union (la copie déjà en place gagne
+  // les égalités de timestamp → cible avant source) ET déduplication par
+  // IDENTITÉ d'objet : porte PG fermée, la vue « autoritaire » EST la vue
+  // fichier — la compter deux fois gonflerait les doublons du rapport.
+  const distinctViews: Dashboard[] = [];
+  for (const v of [targetPg ?? targetFileView, targetFileView, sourcePg ?? sourceFileView, sourceFileView]) {
+    if (v && !distinctViews.includes(v)) distinctViews.push(v);
+  }
+
+  const source = (sourcePg ?? sourceFileView)!;
+  const target = targetPg ?? targetFileView ?? null;
+  const sourceViews = new Set<Dashboard>(
+    [sourcePg, sourceFileView].filter((v): v is Dashboard => v !== null)
+  );
 
   // Garde de type : fusionner un workspace dans une clé machine est une erreur
   // d'opérateur, pas une réparation.
@@ -4481,29 +4531,45 @@ async function handleMerge(
     };
   }
 
-  // --- Union des journaux, par id, la copie la plus récente gagne ---
+  // --- Union des journaux de toutes les vues distinctes, par id, la copie au
+  // timestamp le plus récent gagne (égalité → première insérée : cible d'abord) ---
   const byId = new Map<string, IntercomMessage>();
-  for (const m of target?.intercom.messages ?? []) byId.set(m.id, m);
+  let totalSeen = 0;
   let newerSourceWins = 0;
-  for (const m of source.intercom.messages) {
-    const existing = byId.get(m.id);
-    if (!existing) {
-      byId.set(m.id, m);
-    } else if (m.timestamp > existing.timestamp) {
-      byId.set(m.id, m);
-      newerSourceWins++;
-    } // égalité → la copie cible (canonique) reste
+  for (const view of distinctViews) {
+    totalSeen += view.intercom.messages.length;
+    for (const m of view.intercom.messages) {
+      const existing = byId.get(m.id);
+      if (!existing) {
+        byId.set(m.id, m);
+      } else if (m.timestamp > existing.timestamp) {
+        byId.set(m.id, m);
+        if (sourceViews.has(view)) newerSourceWins++;
+      } // égalité → la copie déjà en place reste
+    }
   }
   const mergedMessages = [...byId.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-  const deduped =
-    (target?.intercom.messages.length ?? 0) + source.intercom.messages.length - mergedMessages.length;
+  const deduped = totalSeen - mergedMessages.length;
 
-  // --- Statut : celui du dashboard le plus récemment modifié (égalité → cible) ---
-  const statusFromSource = !target || source.lastModified > target.lastModified;
-  const statusHolder = statusFromSource ? source : target;
-  const lastDiffCommit = target?.status.lastDiffCommit ?? source.status.lastDiffCommit;
-  const lastCondensedAt = [target?.intercom.lastCondensedAt, source.intercom.lastCondensedAt]
+  // --- Statut : celui de la vue la plus récemment modifiée (égalité → cible).
+  // NB : js-yaml parse les timestamps frontmatter non quotés en Date — et
+  // `Date > string ISO` rend TOUJOURS false en JS (ToPrimitive hint number :
+  // epoch vs NaN). Normaliser en ISO avant toute comparaison.
+  const lastModifiedIso = (v: string | Date | undefined): string =>
+    v instanceof Date ? v.toISOString() : String(v ?? '');
+  const statusHolder = distinctViews.reduce<Dashboard>(
+    (best, v) => (lastModifiedIso(v.lastModified) > lastModifiedIso(best.lastModified) ? v : best),
+    distinctViews[0]
+  );
+  const statusFromSource = sourceViews.has(statusHolder);
+  const lastDiffCommit =
+    targetPg?.status.lastDiffCommit ??
+    targetFileView?.status.lastDiffCommit ??
+    source.status.lastDiffCommit;
+  const lastCondensedAt = distinctViews
+    .map(v => v.intercom.lastCondensedAt)
     .filter((v): v is string => v !== undefined)
+    .map(lastModifiedIso)
     .sort()
     .pop();
 
@@ -4520,8 +4586,7 @@ async function handleMerge(
       messages: mergedMessages,
       // Compteur monotone flotte (#3482 verify guard) : ne jamais régresser.
       totalMessages: Math.max(
-        target?.intercom.totalMessages ?? 0,
-        source.intercom.totalMessages,
+        ...distinctViews.map(v => v.intercom.totalMessages ?? 0),
         mergedMessages.length
       ),
       ...(lastCondensedAt !== undefined ? { lastCondensedAt } : {})
@@ -4631,6 +4696,7 @@ async function handleMerge(
         ? `Source archivée${archiveFile ? ` (${archiveFile})` : ''} puis supprimée des deux artefacts.`
         : 'Source préservée (deleteSource=false).')
   };
+  }
 }
 
 async function handleDelete(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {

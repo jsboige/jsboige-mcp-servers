@@ -29,10 +29,13 @@ import * as os from 'os';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 
 // Spies sur le chemin dual-write PG — la preuve que le merge écrit/retire
-// la moitié PG, pas seulement le fichier. Le reste du module store reste RÉEL.
-const { dualWriteSyncSpy, dualWriteDeleteSpy } = vi.hoisted(() => ({
+// la moitié PG, pas seulement le fichier. Le reste du module store reste RÉEL,
+// sauf readDashboardFromPg (contrôlable : simule la vue PG d'un hôte à porte
+// ouverte — défaut null = pas de vue PG, comme une porte fermée).
+const { dualWriteSyncSpy, dualWriteDeleteSpy, pgReadSpy } = vi.hoisted(() => ({
   dualWriteSyncSpy: vi.fn(),
   dualWriteDeleteSpy: vi.fn(),
+  pgReadSpy: vi.fn(),
 }));
 vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -40,6 +43,7 @@ vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (imp
     ...actual,
     dualWriteDashboardSync: dualWriteSyncSpy,
     dualWriteDashboardDelete: dualWriteDeleteSpy,
+    readDashboardFromPg: pgReadSpy,
   };
 });
 
@@ -149,6 +153,10 @@ beforeEach(() => {
 
   dualWriteSyncSpy.mockClear();
   dualWriteDeleteSpy.mockClear();
+  // Défaut : pas de vue PG (équivalent porte fermée SANS la refuse
+  // d'asymétrie — le writer est aussi OFF dans cet env).
+  pgReadSpy.mockReset();
+  pgReadSpy.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -388,6 +396,69 @@ describe('action merge — gardes d’intégrité (revue #1134)', () => {
     // La cible a bien reçu l’union (le write est passé, seul le retrait est abandonné).
     expect(dualWriteSyncSpy).toHaveBeenCalledTimes(1);
     expect(fileText('workspace-CoursIA.md')).toContain('alias msg');
+  });
+});
+
+describe('action merge — gardes d’intégrité, 2e série (revue #1134, bis)', () => {
+  it('sourceKey = chemin (traversal) → REFUS avant tout path.join, rien touché', async () => {
+    mkdirSync(dashboardsDir, { recursive: true });
+    for (const bad of ['../../secret', 'a/b', 'a\\b', 'C:\\x', 'a:b', '..']) {
+      const result = await roosyncDashboard({
+        action: 'merge', type: 'machine', machineId: 'myia-po-2025', sourceKey: bad
+      }) as any;
+      expect(result.success, `sourceKey '${bad}' doit être refusé`).toBe(false);
+      expect(String(result.message)).toContain('caractères de chemin');
+    }
+    // Aucun fichier créé nulle part dans le store.
+    expect(readdirSync(dashboardsDir).length).toBe(0);
+    expect(dualWriteSyncSpy).not.toHaveBeenCalled();
+    expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('union des QUATRE vues : un message PG-seul ET un message fichier-seul survivent tous deux', async () => {
+    // Divergence mesurée #3537 §2 (15/63) : la vue PG de la cible ne contient
+    // PAS le message fichier-seul, et le fichier ne contient PAS le message
+    // PG-seul. Une union fondée sur une seule vue en écraserait un des deux.
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z',
+      [{ id: 'f1', timestamp: '2026-09-08T12:48:00.000Z', content: 'f1 — fichier seul (source)' }]);
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-08T11:00:00.000Z',
+      [{ id: 'f2', timestamp: '2026-09-08T11:00:00.000Z', content: 'f2 — fichier seul (cible)' }]);
+    const pgOnlyView = {
+      type: 'machine' as const,
+      key: 'machine-myia-po-2025',
+      lastModified: '2026-09-08T10:00:00.000Z',
+      lastModifiedBy: { machineId: 'pg', workspace: 'pg' },
+      status: { markdown: '*Statut PG (le plus ancien — ne doit PAS gagner).*' },
+      intercom: {
+        messages: [{
+          id: 'p1', timestamp: '2026-09-08T10:00:00.000Z',
+          author: { machineId: 'pg', workspace: 'pg' },
+          content: 'p1 — PG seul (cible)'
+        }],
+        totalMessages: 1
+      }
+    };
+    pgReadSpy.mockImplementation(async (k: string) =>
+      k === 'machine-myia-po-2025' ? pgOnlyView : null);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.messageCount).toBe(3);
+    const merged = fileText('machine-myia-po-2025.md');
+    // Les trois messages — chaque artefact contribuait un message que l'autre
+    // ne voyait pas — sont dans la cible.
+    expect(merged).toContain('f1 — fichier seul (source)');
+    expect(merged).toContain('f2 — fichier seul (cible)');
+    expect(merged).toContain('p1 — PG seul (cible)');
+    // Statut : la vue la plus RÉCENTE (fichier source 12:48) gagne, pas la vue PG.
+    expect(merged).toContain('Statut de machine-myia-po-2025 (1).md');
+    expect(merged).not.toContain('Statut PG');
+    expect(fileExists('machine-myia-po-2025 (1).md')).toBe(false);
+    expect(dualWriteDeleteSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)');
   });
 });
 
