@@ -1420,13 +1420,29 @@ async function appendDashboardIncremental(
 }
 
 /**
- * Crée un dashboard vide avec les valeurs par défaut
+ * Crée un dashboard vide avec les valeurs par défaut.
+ *
+ * #3537 §6.4 — une clé de dashboard naît **implicitement** de la première
+ * écriture qui la nomme : rien n'échoue, un espace de noms inédit apparaît, et
+ * aucun lecteur n'apprend jamais qu'il existe. C'est ce silence — pas le fork
+ * DriveFS — qui a laissé `workspace-CoursIA (1)`, `workspace-` (nom vide),
+ * `workspace-jsboi` (tronqué), `workspace-…%3ACoursIA-2` (URL-encodé) et des
+ * résidus `.bak` vivre des mois durant au rang de clés de plein droit.
+ *
+ * Le WARN vit ici, dans la fabrique, et non aux trois sites d'appel (write,
+ * append, cross-post) : une quatrième création future est bruyante sans que
+ * personne ait à y penser. La fabrique n'est appelée que dans les branches
+ * `if (!dashboard)` — elle ne peut donc pas japper sur une clé existante.
  */
-function createEmptyDashboard(
+export function createEmptyDashboard(
   type: NonNullable<DashboardArgs['type']>,
   key: string,
   author: Author
 ): Dashboard {
+  logger.warn(
+    `[NEW-KEY] création d'un espace de noms dashboard inédit : '${key}' — aucun lecteur ne le connaît`,
+    { key, type, machineId: author.machineId, workspace: author.workspace }
+  );
   const now = new Date().toISOString();
   return {
     type,
