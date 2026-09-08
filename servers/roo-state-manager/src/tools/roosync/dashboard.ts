@@ -599,6 +599,18 @@ async function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 // This ensures custom IDs are available across function boundaries
 const pendingMessageIds = new Map<string, string>();
 
+/**
+ * #3537 §6.2 — verrou in-process sur DEUX clés (merge source → cible).
+ * Ordre lexicographique FIXE : deux merges concurrents A→B et B→A acquièrent
+ * dans le même ordre, sinon ils s'interbloqueraient chacun sur la clé que
+ * l'autre tient.
+ */
+async function withTwoKeyLocks<T>(keyA: string, keyB: string, fn: () => Promise<T>): Promise<T> {
+  if (keyA === keyB) return withKeyLock(keyA, fn);
+  const [first, second] = [keyA, keyB].sort();
+  return withKeyLock(first, () => withKeyLock(second, fn));
+}
+
 // #2464: Condensation loop prevention — hash cache.
 // Before each condensation, compute SHA-256 of the messages that would be
 // condensed (toArchive). If the hash matches the last successful condensation
@@ -608,10 +620,78 @@ const lastCondenseHash = new Map<string, string>();
 
 // === Utilitaires ===
 
+// #3537 §6.3 — normalisation des entrées de dérivation. Chaque règle ci-dessous
+// répond à une classe de pollution mesurée dans le recensement des 61 clés
+// (issue §4) ; les entrées propres passent inchangées (les règles sont des
+// no-ops sur elles). Cas laissé DEHORS, délibérément : la casse (cf. 2026-05-23
+// ci-dessous — lowercaser forkerait les clés case-preserved existantes) et le
+// rewrite po-XXXX → myia-po-XXXX (convention flotte, pas une propriété du
+// serveur ; réconcilier les clés EXISTANTES relève de l'action merge §6.2).
+
+/** Résidu d'encodage URL ('%3A') — décodé une fois ; un '%' littéral invalide survit tel quel. */
+function decodeUrlResidue(value: string): string {
+  if (!/%[0-9a-fA-F]{2}/.test(value)) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Résidu de nom de fichier promu au rang de clé ('workspace-CoursIA.md.bak',
+ * 'workspace-CoursIA-2.md.bak.c360') : retire les segments '.md' / '.bak' /
+ * '.bak.<seg>' finaux, itérativement. Un nom légitime 'foo.md' est plié vers
+ * 'foo' — normalisation voulue : '.md' n'est pas un nom de workspace, c'est le
+ * reflet d'un caller qui a passé un chemin de FICHIER dashboard.
+ */
+function stripFilenameResidue(value: string): string {
+  let out = value;
+  for (;;) {
+    if (/\.md$/i.test(out)) {
+      out = out.slice(0, -3);
+      continue;
+    }
+    const bak = out.match(/\.bak(\.[A-Za-z0-9]+)?$/i);
+    if (bak) {
+      out = out.slice(0, out.length - bak[0].length);
+      continue;
+    }
+    return out;
+  }
+}
+
+/** Suffixe plateforme-arch ('myia-po-2025-win32-x64' → 'myia-po-2025'). */
+const PLATFORM_ARCH_SUFFIX = /-(?:win32|linux|darwin|freebsd|openbsd)-(?:x64|arm64|ia32|ppc64|s390x)$/;
+
+function normalizeMachineIdInput(machineId: string): string {
+  let value = decodeUrlResidue(machineId.trim());
+  value = value.replace(PLATFORM_ARCH_SUFFIX, '');
+  return value;
+}
+
+function normalizeWorkspaceInput(workspace: string): string {
+  let value = decodeUrlResidue(workspace.trim());
+  // Formes composées portant un ':' — adressage RooSync 'machine:workspace'
+  // ('myia-po-2025%3ACoursIA-2' mesuré dans le recensement) et lettres de
+  // lecteur ('C:\...'). La composante utile est APRÈS le dernier ':' dans les
+  // deux cas. Bonus Windows : un ':' est illégal dans un nom de fichier NTFS —
+  // le garder produirait une clé impossible à matérialiser en fichier.
+  const colon = value.lastIndexOf(':');
+  if (colon !== -1) {
+    value = value.slice(colon + 1);
+  }
+  return value;
+}
+
 /**
  * Construit la clé dashboard à partir du type et des paramètres
+ *
+ * Exporté pour les tests de normalisation #3537 §6.3 (précédent createEmptyDashboard,
+ * #1132) : la dérivation est une fonction pure, la tester directement évite de
+ * passer par des écritures de fichiers juste pour lire la clé résultante.
  */
-function buildDashboardKey(
+export function buildDashboardKey(
   type: DashboardArgs['type'],
   machineId: string,
   workspace: string
@@ -619,13 +699,20 @@ function buildDashboardKey(
   switch (type) {
     case 'global':
       return 'global';
-    case 'machine':
-      // Guard against double-prefix (e.g., machine-machine-foo)
-      const cleanMachineId = machineId.startsWith('machine-') ? machineId.slice('machine-'.length) : machineId;
+    case 'machine': {
+      // #3537 §6.3 — trim + décodage URL + retrait du suffixe plateforme-arch,
+      // PUIS guard anti double-préfixe (e.g., machine-machine-foo)
+      const normalized = normalizeMachineIdInput(machineId);
+      const cleanMachineId = normalized.startsWith('machine-') ? normalized.slice('machine-'.length) : normalized;
       return `machine-${cleanMachineId}`;
+    }
     case 'workspace': {
+      // #3537 §6.3 — trim + décodage URL + split ':' composé/lecteur, PUIS
+      // guard anti double-préfixe, PUIS basename, PUIS retrait du résidu
+      // '.md'/'.bak' final.
+      const normalized = normalizeWorkspaceInput(workspace);
       // Guard against double-prefix (e.g., workspace-workspace-Argumentum → #1409 item 2)
-      const cleanWorkspace = workspace.startsWith('workspace-') ? workspace.slice('workspace-'.length) : workspace;
+      const cleanWorkspace = normalized.startsWith('workspace-') ? normalized.slice('workspace-'.length) : normalized;
       // 2026-05-23: collapse to the directory basename only. Callers sometimes pass
       // a full path-style workspace (d:\CoursIA, g:\Mon Drive\...\CoursIA) which used
       // to produce scattered orphan dashboards (workspace-d--CoursIA.md,
@@ -635,7 +722,7 @@ function buildDashboardKey(
       // lowercases, which would mismatch the existing case-preserved files (CoursIA,
       // Argumentum, 2025-Epita-Intelligence-Symbolique). If the value is already a bare
       // name (no separators), basename() returns it unchanged.
-      const baseName = path.basename(cleanWorkspace.replace(/\\/g, '/'));
+      const baseName = stripFilenameResidue(path.basename(cleanWorkspace.replace(/\\/g, '/')));
       return `workspace-${baseName}`;
     }
     default:
@@ -3091,6 +3178,13 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
 
     case 'delete':
       return withKeyLock(key, () => handleDelete(key, args, requestEcho));
+      case 'merge':
+        // #3537 §6.2 — deux clés verrouillées (source + cible), ordre trié
+        // anti-interblocage. La cible vient de la dérivation standard
+        // (type/machineId/workspace), la source de sourceKey (clé brute).
+        return withTwoKeyLocks((args.sourceKey ?? '').trim(), key, () =>
+          handleMerge(key, args, resolvedMachineId, resolvedWorkspace, requestEcho)
+        );
       case 'read_archive':
         return handleReadArchive(key, args, requestEcho);
       default:
@@ -4259,6 +4353,212 @@ async function cleanupStaleWorktreeDashboards(): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/**
+ * #3537 §6.2 — Fusion d'une clé fork/parasite dans la clé cible.
+ *
+ * Pourquoi cette action existe : un dashboard vit dans DEUX artefacts co-égaux
+ * (fichier GDrive `.shared-state/dashboards/<key>.md` + tables PG
+ * `roosync_dashboards`/`roosync_dashboard_messages`, #3151 Phase C). Un geste
+ * de système de fichiers (renommer/supprimer un ` (1)`) ne répare que la moitié
+ * fichier et laisse la moitié PG — celle que servent les hôtes à porte PG
+ * ouverte — intacte, SANS erreur. Seul le canal API écrit les deux
+ * (writeDashboardFile → dualWriteDashboardSync, unlink → dualWriteDashboardDelete).
+ *
+ * Sémantique :
+ *   - journal : union par id de message ; sur doublon, la copie au timestamp le
+ *     plus récent gagne (égalité → cible, canonique). Tri par timestamp.
+ *   - statut : celui du dashboard au lastModified le plus récent.
+ *   - cible absente : chemin RENAME pur (le contenu de la source devient la
+ *     cible sous la clé canonique — cas po-2025 : canonique manquant).
+ *   - source supprimée par défaut (deleteSource) : archivée d'abord
+ *     (`archive/<sourceKey>-pre-merge-<ts>.md`), fichier PUIS ligne PG.
+ *
+ * Pas de gate d'âge type DASHBOARD_PROTECTION_DAYS : contrairement à delete, le
+ * contenu n'est PAS perdu (union dans la cible + archive de sécurité) — fusionner
+ * un fork VIVANT est précisément le cas d'usage (la recréation silencieuse reste
+ * couverte par le WARN [NEW-KEY] de createEmptyDashboard, #3537 §6.4).
+ */
+async function handleMerge(
+  key: string,
+  args: DashboardArgs,
+  resolvedMachineId: string,
+  resolvedWorkspace: string,
+  requestEcho: DashboardRequestEcho
+): Promise<DashboardResult> {
+  const sourceKey = (args.sourceKey ?? '').trim();
+  const deleteSource = args.deleteSource !== false; // défaut: true
+  const author: Author = args.author ?? {
+    machineId: resolvedMachineId,
+    workspace: resolvedWorkspace
+  };
+  const base: Pick<DashboardResult, 'action' | 'key' | 'type' | 'request'> = {
+    action: 'merge',
+    key,
+    type: args.type ?? '',
+    request: requestEcho
+  };
+
+  if (!sourceKey) {
+    return {
+      ...base,
+      success: false,
+      message: "⛔ REFUSÉ: sourceKey est requis pour action=merge — clé brute telle que listée par action=list (ex. 'machine-myia-po-2025 (1)')."
+    };
+  }
+  if (sourceKey === key) {
+    return {
+      ...base,
+      success: false,
+      message: `⛔ REFUSÉ: la source '${sourceKey}' EST la clé cible — rien à fusionner.`
+    };
+  }
+
+  // #3459: fail-closed — ne pas réparer des clés dans un store injoignable.
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return { ...base, success: false, message: (err as Error).message };
+  }
+
+  // Relecture des deux côtés par le chemin autoritaire (PG d'abord, fichier en
+  // repli) : la fusion doit partir de ce que la flotte LIT, pas du fichier seul.
+  const source = await readDashboardFile(sourceKey);
+  if (!source) {
+    return {
+      ...base,
+      success: false,
+      message: `⛔ REFUSÉ: le dashboard source '${sourceKey}' n'existe ni dans le store PG ni sur GDrive — rien à fusionner (les clés listées par action=list font foi).`
+    };
+  }
+  const target = await readDashboardFile(key);
+
+  // Garde de type : fusionner un workspace dans une clé machine est une erreur
+  // d'opérateur, pas une réparation.
+  const targetType = target?.type ?? args.type!;
+  if (source.type !== targetType) {
+    return {
+      ...base,
+      success: false,
+      message: `⛔ REFUSÉ: type mismatch — la source '${sourceKey}' est de type '${source.type}', la cible '${key}' de type '${targetType}'.`
+    };
+  }
+
+  // --- Union des journaux, par id, la copie la plus récente gagne ---
+  const byId = new Map<string, IntercomMessage>();
+  for (const m of target?.intercom.messages ?? []) byId.set(m.id, m);
+  let newerSourceWins = 0;
+  for (const m of source.intercom.messages) {
+    const existing = byId.get(m.id);
+    if (!existing) {
+      byId.set(m.id, m);
+    } else if (m.timestamp > existing.timestamp) {
+      byId.set(m.id, m);
+      newerSourceWins++;
+    } // égalité → la copie cible (canonique) reste
+  }
+  const mergedMessages = [...byId.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const deduped =
+    (target?.intercom.messages.length ?? 0) + source.intercom.messages.length - mergedMessages.length;
+
+  // --- Statut : celui du dashboard le plus récemment modifié (égalité → cible) ---
+  const statusFromSource = !target || source.lastModified > target.lastModified;
+  const statusHolder = statusFromSource ? source : target;
+  const lastDiffCommit = target?.status.lastDiffCommit ?? source.status.lastDiffCommit;
+  const lastCondensedAt = [target?.intercom.lastCondensedAt, source.intercom.lastCondensedAt]
+    .filter((v): v is string => v !== undefined)
+    .sort()
+    .pop();
+
+  const merged: Dashboard = {
+    type: targetType,
+    key,
+    lastModified: new Date().toISOString(),
+    lastModifiedBy: author,
+    status: {
+      markdown: statusHolder?.status.markdown ?? '',
+      ...(lastDiffCommit !== undefined ? { lastDiffCommit } : {})
+    },
+    intercom: {
+      messages: mergedMessages,
+      // Compteur monotone flotte (#3482 verify guard) : ne jamais régresser.
+      totalMessages: Math.max(
+        target?.intercom.totalMessages ?? 0,
+        source.intercom.totalMessages,
+        mergedMessages.length
+      ),
+      ...(lastCondensedAt !== undefined ? { lastCondensedAt } : {})
+    }
+  };
+
+  const writeVerification = await writeDashboardFile(key, merged);
+
+  // --- Retrait de la source : archive préalable (même filet que handleDelete) ---
+  let archiveFile: string | null = null;
+  if (deleteSource) {
+    if (source.intercom.messages.length > 0) {
+      const archiveDir = getArchiveDir();
+      await fs.mkdir(archiveDir, { recursive: true });
+      const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      archiveFile = `${sourceKey}-pre-merge-${now}.md`;
+      const archivePath = path.join(archiveDir, archiveFile);
+      // Le fichier brut d'abord (fidèle à l'artefact) ; si la clé n'existe qu'en
+      // PG, sérialiser l'objet lu — l'archive ne doit jamais être vide par
+      // construction.
+      try {
+        const originalContent = await fs.readFile(getDashboardPath(sourceKey), 'utf8');
+        await fs.writeFile(archivePath, originalContent, 'utf8');
+      } catch {
+        await fs.writeFile(
+          archivePath,
+          `---\ntype: ${source.type}\nlastModified: ${source.lastModified}\nsourceKey: ${sourceKey}\nmergedInto: ${key}\n---\n\n## Status\n\n${source.status.markdown || '*Aucun contenu.*'}\n\n## Intercom (${source.intercom.messages.length} messages)\n\n${source.intercom.messages
+            .map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n\n${m.content}`)
+            .join('\n\n---\n\n')}\n`,
+          'utf8'
+        );
+      }
+    }
+    try {
+      await fs.unlink(getDashboardPath(sourceKey));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // ENOENT : clé PG-only — la ligne PG reste à supprimer ci-dessous.
+    }
+    await dualWriteDashboardDelete(sourceKey);
+    logger.warn(`[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' puis supprimée (les DEUX artefacts)`, {
+      sourceKey,
+      targetKey: key,
+      sourceMessages: source.intercom.messages.length,
+      targetMessages: target?.intercom.messages.length ?? 0,
+      mergedMessages: mergedMessages.length,
+      deduped,
+      archiveFile,
+      by: author
+    });
+  } else {
+    logger.warn(`[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; source PRÉSERVÉE (deleteSource=false)`, {
+      sourceKey,
+      targetKey: key,
+      mergedMessages: mergedMessages.length
+    });
+  }
+
+  return {
+    ...base,
+    success: true,
+    messageCount: mergedMessages.length,
+    writeVerification,
+    message:
+      `Clé '${sourceKey}' fusionnée dans '${key}' : ${source.intercom.messages.length} msg(source) ∪ ` +
+      `${target?.intercom.messages.length ?? 0} msg(cible) → ${mergedMessages.length} msg ` +
+      `(${deduped} doublon(s) par id, ${newerSourceWins} résolu(s) vers la copie plus récente ; ` +
+      `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}). ` +
+      `Statut retenu : ${statusFromSource ? 'source' : 'cible'} (lastModified plus récent). ` +
+      (deleteSource
+        ? `Source archivée${archiveFile ? ` (${archiveFile})` : ''} puis supprimée des deux artefacts.`
+        : 'Source préservée (deleteSource=false).')
+  };
 }
 
 async function handleDelete(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {

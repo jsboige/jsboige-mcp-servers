@@ -136,7 +136,7 @@ export interface DashboardFrontmatter {
 // === Dashboard Args Schema (unified for all actions) ===
 
 export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'list', 'delete', 'read_archive', 'read_overview', 'refresh', 'update'])
+  action: z.enum(['read', 'write', 'append', 'list', 'delete', 'merge', 'read_archive', 'read_overview', 'refresh', 'update'])
     .describe('Action to perform. Note: "condense" removed — auto-condensation handles space management at 92% threshold.'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
@@ -190,6 +190,12 @@ export const DashboardArgsSchema = z.object({
   archiveFile: z.string().optional()
     .describe('(read_archive) Archive filename (omit to list)'),
 
+  // Pour merge (#3537 §6.2)
+  sourceKey: z.string().optional()
+    .describe('(merge) Raw source key to merge INTO this dashboard (exact key as listed by action=list, e.g. "machine-myia-po-2025 (1)"). Its intercom journal is unioned into the target (by message id, latest timestamp wins), the freshest status is kept, then the source key is archived and removed from BOTH artifacts (file + PG). This is the only operation that repairs a fork key in the store — filesystem gestures (cp/mv/rm) are inert on the PG half.'),
+  deleteSource: z.boolean().optional()
+    .describe('(merge) Remove the source key after the merge (default: true). Set false to keep the fork key alive (its content is still unioned into the target).'),
+
   // Pour refresh (#1935 Cluster B)
   baseline: z.string().optional()
     .describe('(refresh) Baseline machine (default: myia-ai-01)'),
@@ -217,7 +223,7 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Gotchas: (1) Only 3 types exist: global, machine, workspace. (2) If response contains "written to file:", use Read tool on that file path. (3) Auto-condensation at 92% — no manual condense needed.',
+  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, merge, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Gotchas: (1) Only 3 types exist: global, machine, workspace. (2) If response contains "written to file:", use Read tool on that file path. (3) Auto-condensation at 92% — no manual condense needed. (4) merge is the only key-repair operation (fork/twin keys) — pass the raw sourceKey listed by action=list; it writes BOTH artifacts (GDrive file + PG) and archives the source before removing it.',
   inputSchema: (() => {
     const schema = zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' }) as any;
     // #2307 Phase 2: Removed blanket 'type' required push — Zod .refine() now handles
