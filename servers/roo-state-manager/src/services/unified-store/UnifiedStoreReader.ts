@@ -37,11 +37,52 @@ export interface UnifiedStoreReaderConfig {
   statementTimeoutMs?: number;
 }
 
+/**
+ * Filters for the conversation LIST read path (list_conversations PG tier).
+ *
+ * Deliberately narrow: only what SQL can bound cheaply. Workspace matching is
+ * NOT expressed here — the stored `workspace` values are heterogeneous in case
+ * and drive letter (measured 2026-09-07: `d:/roo-extensions` 3579,
+ * `d:/dev/roo-extensions` 922, `c:/dev/roo-extensions` 745, `D:/roo-extensions`
+ * 273), so the caller applies its existing `workspacePathMatch: normalized`
+ * semantics in JS. SQL narrows the candidate set; JS decides.
+ */
+export interface ConversationListFilters {
+  /** Exact machine_id match, case-insensitive (mirrors the caller's own lowercase compare). */
+  machineId?: string;
+  /**
+   * Hard cap, applied after `ORDER BY last_ts DESC NULLS LAST` — truncation
+   * therefore drops the OLDEST rows, which is also the caller's default sort.
+   * The caller reports whether the cap was reached rather than truncating silently.
+   */
+  limit?: number;
+}
+
+/**
+ * A `conversations` row plus the label fallback the list path needs.
+ *
+ * `title` is NULL on 79.8% of rows (measured 2026-09-07 over 12,887 rows: zoo
+ * 92.9%, roo 54.6%, claude 0%) because the dual-write maps
+ * `skeleton.metadata?.title ?? null`. Serving those rows on `title` alone would
+ * REGRESS the displayed label versus the existing tiers, so the reader carries
+ * the first user message and the caller coalesces. Measured coverage of that
+ * coalesce on po-2025: 1113/1114 rows labelled (99.9%) vs 20.2% on title alone.
+ */
+export interface ConversationListRow extends ConversationRow {
+  /** Content of the lowest-seq `role = 'user'` message, or null when the task has none. */
+  first_user_message: string | null;
+}
+
 export interface IUnifiedStoreReader {
   init(): Promise<void>;
   close(): Promise<void>;
   /** Lookup a single conversation by task_id. */
   getConversation(taskId: string): Promise<ConversationRow | null>;
+  /**
+   * List conversations for the list_conversations PG tier, newest `last_ts`
+   * first, each carrying its first user message as a label fallback.
+   */
+  listConversations(filters?: ConversationListFilters): Promise<ConversationListRow[]>;
   /** Lookup messages for a conversation, ordered by seq ASC. */
   getMessages(taskId: string, opts?: { limit?: number; offset?: number }): Promise<MessageRow[]>;
   /**
@@ -88,6 +129,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   async init(): Promise<void> {}
   async close(): Promise<void> {}
   async getConversation(_taskId: string): Promise<ConversationRow | null> { return null; }
+  async listConversations(_filters?: ConversationListFilters): Promise<ConversationListRow[]> { return []; }
   async getMessages(_taskId: string, _opts?: { limit?: number; offset?: number }): Promise<MessageRow[]> { return []; }
   async joinFromQdrant(
     _qdrantHits: Array<{ task_id: string; score: number }>,
