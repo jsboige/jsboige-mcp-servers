@@ -35,11 +35,18 @@ vi.mock('../task-indexer.js', () => ({
     getHostIdentifier: vi.fn().mockReturnValue('test-host'),
 }));
 
+// Spies STABLES entre appels : `getInstance()` renvoyait un objet neuf a chaque
+// appel, donc le `warmCache` observe n'etait jamais celui qui avait ete appele.
+const skeletonCache = vi.hoisted(() => ({
+    configure: vi.fn(),
+    warmCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../skeleton-cache.service.js', () => ({
     SkeletonCacheService: {
-        configure: vi.fn(),
+        configure: skeletonCache.configure,
         getInstance: () => ({
-            warmCache: vi.fn().mockResolvedValue(undefined),
+            warmCache: skeletonCache.warmCache,
             getCacheTierStats: vi.fn().mockResolvedValue({
                 tier1_roo: 0,
                 tier2_claude: 0,
@@ -76,6 +83,16 @@ import { StateManager } from '../state-manager.service.js';
 import { indexTaskSemanticTool } from '../../tools/indexing/index-task.tool.js';
 
 const ENV_VAR = 'ROO_INDEXING_ENABLED';
+
+// `mockReset: true` (vitest.config.unit.ts, herite par la config CI) efface
+// l'IMPLEMENTATION des spies apres chaque test, pas seulement leurs appels : une
+// valeur posee a la creation du spy ne survit qu'au premier test du fichier. Comme
+// `warmCache` est desormais un spy PARTAGE (voir le mock plus haut), sa valeur de
+// retour se repose ici pour TOUS les tests -- y compris ceux qui appellent
+// initializeBackgroundServices sans s'interesser au prechauffage.
+beforeEach(() => {
+    skeletonCache.warmCache.mockResolvedValue(undefined);
+});
 
 describe('P0 kill-switch ROO_INDEXING_ENABLED', () => {
     const originalValue = process.env[ENV_VAR];
@@ -186,5 +203,73 @@ describe('P0 persistance du curseur lastSkeletonRefreshAt', () => {
         await fs.mkdir(skeletonsDir, { recursive: true });
         await fs.writeFile(path.join(skeletonsDir, 'indexer-state.json'), '{not json', 'utf8');
         await expect(loadPersistedIndexerCursor()).resolves.toBe(0);
+    });
+});
+
+describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le sont pas', () => {
+    // Le prechauffage est une optimisation de LATENCE dont le cout est paye PAR HOTE :
+    // chaque hote MCP hydrate sa copie privee du meme corpus (mesure ai-01 : Tier 3 =
+    // 2125 Mo/hote, Tier 2 = 950 Mo/hote, serveur seul = 142 Mo). Sur une machine a
+    // 30 hotes, 2,1 Go resident partout pour economiser ~30 s une fois.
+    //
+    // Le piege que ces tests gardent : eteindre le prechauffage en eteignant un TIER.
+    // #1747 a precisement ALLUME les tiers 2 et 3 pour rendre visibles les sessions
+    // Claude et les archives cross-machine ; les eteindre serait le coup de pendule
+    // inverse. D'ou l'assertion sur `configure` dans CHAQUE cas.
+    const PREWARM = 'SKELETON_PREWARM';
+    const originalPrewarm = process.env[PREWARM];
+    const originalIndexing = process.env[ENV_VAR];
+
+    beforeEach(() => {
+        // Hermetisme : sans ca, initializeBackgroundServices arme de vrais setInterval
+        // qui survivent au test. Le bloc prechauffage s'execute AVANT ce kill-switch,
+        // il n'est donc pas masque par lui.
+        process.env[ENV_VAR] = 'false';
+    });
+
+    afterEach(() => {
+        if (originalPrewarm === undefined) delete process.env[PREWARM];
+        else process.env[PREWARM] = originalPrewarm;
+        if (originalIndexing === undefined) delete process.env[ENV_VAR];
+        else process.env[ENV_VAR] = originalIndexing;
+    });
+
+    it('defaut (variable absente) : le prechauffage a lieu — la flotte est inchangee', async () => {
+        delete process.env[PREWARM];
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
+    });
+
+    it("SKELETON_PREWARM='false' : AUCUN prechauffage", async () => {
+        // Falsification : avant le patch, warmCache() etait appele inconditionnellement —
+        // ce test rougit si la garde disparait.
+        process.env[PREWARM] = 'false';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
+    });
+
+    it("SKELETON_PREWARM='false' : les tiers 2 et 3 restent ALLUMES (#1747 preserve)", async () => {
+        process.env[PREWARM] = 'false';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.configure).toHaveBeenCalledWith({
+            enableClaudeTier: true,
+            enableArchiveTier: true,
+        });
+    });
+
+    it("seule la chaine exacte 'false' desactive le prechauffage", async () => {
+        // Meme convention que SKELETON_*_TIER et ROO_INDEXING_ENABLED : une valeur
+        // inattendue ne doit pas eteindre silencieusement une optimisation.
+        process.env[PREWARM] = '0';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
     });
 });
