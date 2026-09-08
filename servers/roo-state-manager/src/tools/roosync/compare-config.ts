@@ -15,6 +15,17 @@ import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roos
 import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
 import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
 import { RooSettingsService, SYNC_SAFE_KEYS } from '../../services/RooSettingsService.js';
+import {
+  ClaudeSettingsService,
+  readClaudeSettingsFile,
+  findLatestClaudeSettingsSnapshot,
+  projectSettingsSafe,
+  redactValue,
+  KEY_PATH_SEVERITY,
+  ALLOWED_KEY_PATHS,
+  ClaudeSettingsSnapshot,
+} from '../../services/ClaudeSettingsService.js';
+import { HarmonizationCampaignService } from '../../services/HarmonizationCampaignService.js';
 import { promises as fsPromises } from 'fs';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -122,6 +133,17 @@ function formatValue(value: any, path: string): string | undefined {
   let prepared: any;
   if (isSensitivePath(path)) {
     return maskSecretValue(value);
+  }
+  if (/BASE_URL$/i.test(path)) {
+    // #3545 défaut #1 : une BASE_URL peut embarquer des credentials (userinfo)
+    // ou une query sensible. redactValue masque mais préserve le FAIT que les
+    // credentials existent (ne fabrique pas de conformité) — jamais le raw.
+    prepared = redactValue(path, value);
+    if (typeof prepared === 'string') {
+      return `"${truncateMiddle(prepared, MAX_VALUE_LENGTH - 2)}"`;
+    }
+    if (prepared === null) return 'null';
+    return String(prepared);
   }
   prepared = maskSensitiveInObject(value, path);
   if (typeof prepared === 'string') {
@@ -322,8 +344,8 @@ export const CompareConfigArgsSchema = z.object({
     .describe('ID de la machine cible (optionnel, défaut: remote_machine)'),
   force_refresh: z.boolean().optional()
     .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)'),
-  granularity: z.enum(['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full']).optional()
-    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète GranularDiffDetector)'),
+  granularity: z.enum(['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'full']).optional()
+    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude-settings (~/.claude/settings.json picker CC, #3545 — snapshot publié vs live, secrets masqués, exemptés de campagne honorés), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète GranularDiffDetector)'),
   filter: z.string().optional()
     .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)'),
   detail: z.enum(['values', 'paths']).optional()
@@ -338,7 +360,7 @@ export type CompareConfigArgs = z.infer<typeof CompareConfigArgsSchema>;
 export const CompareConfigResultSchema = z.object({
   source: z.string().describe('Machine source'),
   target: z.string().describe('Machine cible'),
-  granularity: z.string().optional().describe('Granularité de comparaison (mcp, mode, settings, claude, modes-yaml, full)'),
+  granularity: z.string().optional().describe('Granularité de comparaison (mcp, mode, settings, claude-settings, claude, modes-yaml, full)'),
   host_id: z.string().optional().describe('Identifiant de l\'hôte local'),
   differences: z.array(z.object({
     category: z.string().describe('Catégorie de différence'),
@@ -472,6 +494,14 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       const detail = args.detail ?? 'values';
       const settingsResult = await compareSettings(sourceMachineId, targetMachineId, service, args.filter, detail);
       return withRosterCheck(settingsResult, config, service);
+    }
+
+    // #3545 — Claude Code settings.json (picker CC) : live local vs snapshot publié,
+    // avec discrimination missing/empty/invalid/stale et exemptés de campagne.
+    if (args.granularity === 'claude-settings') {
+      const detail = args.detail ?? 'values';
+      const claudeSettingsResult = await compareClaudeSettings(sourceMachineId, targetMachineId, service, args.filter, detail);
+      return withRosterCheck(claudeSettingsResult, config, service);
     }
 
     // Si granularity est fourni, utiliser GranularDiffDetector
@@ -742,6 +772,11 @@ const SETTINGS_CATEGORIES: Record<string, { severity: string; label: string }> =
 
 /**
  * Compare settings between local machine and target machine's published settings
+ *
+ * #3545 — garde de couverture : un côté absent/illisible de la baseline publiée
+ * rend un statut « non couvert » (un seul diff), JAMAIS N diffs fantômes
+ * `present_absent` (symptôme mesuré 08/09 : 80/80 identiques sur deux cibles
+ * différentes — la section était absente des baselines, le diff ne mesurait rien).
  */
 async function compareSettings(
   sourceMachineId: string,
@@ -755,7 +790,10 @@ async function compareSettings(
   // 1. Load source settings (local machine = live from state.vscdb)
   const settingsService = new RooSettingsService();
   let sourceSettings: Record<string, unknown> = {};
+  let sourcePresent = true;
+  let sourceError: string | undefined;
   let sourceLabel = sourceMachineId;
+  let sourceSnapshotAt: string | undefined;
 
   const config = service.getConfig();
   const isSourceLocal = sourceMachineId === config.machineId;
@@ -767,22 +805,59 @@ async function compareSettings(
       sourceLabel = `${sourceMachineId} (live)`;
     } catch (err) {
       // Fallback to published settings
-      sourceSettings = await loadPublishedSettings(service, sourceMachineId);
+      const lookup = await loadPublishedSettingsEx(service, sourceMachineId);
+      sourceSettings = lookup.settings;
+      sourcePresent = lookup.found;
+      sourceError = lookup.error;
+      sourceSnapshotAt = lookup.snapshotAt;
       sourceLabel = `${sourceMachineId} (published)`;
     }
   } else {
-    sourceSettings = await loadPublishedSettings(service, sourceMachineId);
+    const lookup = await loadPublishedSettingsEx(service, sourceMachineId);
+    sourceSettings = lookup.settings;
+    sourcePresent = lookup.found;
+    sourceError = lookup.error;
+    sourceSnapshotAt = lookup.snapshotAt;
     sourceLabel = `${sourceMachineId} (published)`;
   }
 
   // 2. Load target settings (always from published GDrive)
-  const targetSettings = await loadPublishedSettings(service, targetMachineId);
+  const targetLookup = await loadPublishedSettingsEx(service, targetMachineId);
+  const targetSettings = targetLookup.settings;
+  const targetPresent = targetLookup.found;
+  const targetError = targetLookup.error;
 
-  if (Object.keys(sourceSettings).length === 0 && Object.keys(targetSettings).length === 0) {
+  // Garde de couverture (#3545) — statut « non couvert », pas de diffs fantômes
+  const notCovered = (
+    side: 'source' | 'target',
+    machineId: string,
+    reason: 'not-found' | 'read-error',
+    detailMsg?: string
+  ): CompareConfigResult => ({
+    source: sourceLabel,
+    target: `${targetMachineId} (published)`,
+    granularity: 'settings',
+    host_id: config.machineId,
+    differences: [{
+      category: 'roo_settings',
+      severity: reason === 'read-error' ? 'CRITICAL' : 'WARNING',
+      path: `settings.coverage.${side}`,
+      description: reason === 'not-found'
+        ? `Settings ${side} NON COUVERTS : aucun snapshot publié trouvé pour ${machineId}. Un diff « ${side} → ${side === 'source' ? 'cible' : 'source'} » serait un artefact (clés toutes present_absent), pas un drift réel — il ne mesure rien.`
+        : `Settings ${side} ILLISIBLES pour ${machineId}: ${detailMsg || 'erreur de lecture'}. Aucun diff émis tant que la baseline n'est pas réparée.`,
+      action: `Exécuter roosync_config(action: "publish", targets: ["settings"], …) sur ${machineId}, puis relancer la comparaison.`
+    }],
+    summary: reason === 'read-error'
+      ? { total: 1, critical: 1, important: 0, warning: 0, info: 0 }
+      : { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+  });
+
+  if (!sourcePresent && !targetPresent) {
     return {
       source: sourceLabel,
       target: `${targetMachineId} (published)`,
       granularity: 'settings',
+      host_id: config.machineId,
       differences: [{
         category: 'roo_settings',
         severity: 'WARNING',
@@ -791,6 +866,54 @@ async function compareSettings(
         action: 'Publier les settings des deux machines'
       }],
       summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+    };
+  }
+  if (!sourcePresent) {
+    return notCovered('source', sourceMachineId, 'not-found');
+  }
+  if (!targetPresent) {
+    return notCovered('target', targetMachineId, 'not-found');
+  }
+  if (sourceError) {
+    return notCovered('source', sourceMachineId, 'read-error', sourceError);
+  }
+  if (targetError) {
+    return notCovered('target', targetMachineId, 'read-error', targetError);
+  }
+
+  // Staleness soft (INFO) — la baseline existe mais vieillit
+  const STALE_WARN_MS = 7 * 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  for (const [side, snapAt] of [['source', sourceSnapshotAt], ['target', targetLookup.snapshotAt]] as const) {
+    if (snapAt) {
+      const ageMs = nowMs - Date.parse(snapAt);
+      if (Number.isFinite(ageMs) && ageMs > STALE_WARN_MS) {
+        differences.push({
+          category: 'roo_settings',
+          severity: 'INFO',
+          path: `settings.coverage.${side}.stale`,
+          description: `Baseline ${side} âgée de ${Math.floor(ageMs / (24 * 60 * 60 * 1000))} j (${snapAt}) — les diffs ci-dessous mesurent cet instantané, pas l'état live.`,
+          action: `Re-publier les settings de la machine ${side === 'source' ? sourceMachineId : targetMachineId} pour rafraîchir la baseline.`
+        });
+      }
+    }
+  }
+
+  if (Object.keys(sourceSettings).length === 0 && Object.keys(targetSettings).length === 0) {
+    differences.push({
+      category: 'roo_settings',
+      severity: 'WARNING',
+      path: 'settings',
+      description: 'Snapshots présents des deux côtés mais AUCUNE clé sync-safe — collecte dégradée ou settings vides. Le diff clé par clé ne mesurerait rien.',
+      action: 'Vérifier la collecte state.vscdb sur les deux machines (extractSettings safe)'
+    });
+    return {
+      source: sourceLabel,
+      target: `${targetMachineId} (published)`,
+      granularity: 'settings',
+      host_id: config.machineId,
+      differences,
+      summary: { total: differences.length, critical: 0, important: 0, warning: 1, info: differences.length - 1 }
     };
   }
 
@@ -873,60 +996,395 @@ async function compareSettings(
   return result;
 }
 
+// ===========================================================================
+// #3545 — granularity 'claude-settings' : ~/.claude/settings.json (picker CC)
+// ===========================================================================
+
+/** Seuils de staleness des snapshots (config via env). */
+function claudeSettingsStaleThresholds(): { warnMs: number; hardMs: number } {
+  const warnDays = Number(process.env.CLAUDE_SETTINGS_STALE_WARN_DAYS || 7);
+  const hardDays = Number(process.env.CLAUDE_SETTINGS_STALE_HARD_DAYS || 30);
+  const day = 24 * 60 * 60 * 1000;
+  return {
+    warnMs: (Number.isFinite(warnDays) && warnDays > 0 ? warnDays : 7) * day,
+    hardMs: (Number.isFinite(hardDays) && hardDays > 0 ? hardDays : 30) * day,
+  };
+}
+
+interface ClaudeSettingsSide {
+  label: string;
+  /** ok = couvert et comparable. Autres = non couvert (garde avant tout diff clé). */
+  coverage: 'ok' | 'invalid' | 'no-snapshot' | 'hard-stale';
+  coverageDetail?: string;
+  /** Carte chemin => valeur (allow-list harmonisation uniquement). */
+  harmonization: Record<string, unknown>;
+  collectedAt?: string;
+  /** État observé du fichier sur la machine (truthful diffs). */
+  observedState?: string;
+}
+
+async function loadClaudeSettingsSide(
+  machineId: string,
+  isLocal: boolean,
+  sharedStatePath: string | undefined,
+  nowMs: number
+): Promise<ClaudeSettingsSide> {
+  if (isLocal) {
+    const service = new ClaudeSettingsService();
+    const read = await readClaudeSettingsFile(service.getPath());
+    if (read.state === 'invalid') {
+      return {
+        label: `${machineId} (live)`,
+        coverage: 'invalid',
+        coverageDetail: read.error,
+        harmonization: {},
+        observedState: read.state,
+      };
+    }
+    return {
+      label: `${machineId} (live)`,
+      coverage: 'ok',
+      // Redacté (#3545 défaut #1) : la projection locale est publiée redactée
+      // dans le snapshot ; pour que la comparaison live-vs-snapshot d'une même
+      // machine ne fabrique pas de faux diff, le côté live est redacté aussi.
+      harmonization: projectSettingsSafe(read.settings),
+      observedState: read.state,
+    };
+  }
+
+  if (!sharedStatePath) {
+    return {
+      label: `${machineId} (published)`,
+      coverage: 'no-snapshot',
+      coverageDetail: 'ROOSYNC_SHARED_PATH indisponible',
+      harmonization: {},
+    };
+  }
+  const lookup = await findLatestClaudeSettingsSnapshot(sharedStatePath, machineId);
+  if (!lookup.found || !lookup.snapshot) {
+    return {
+      label: `${machineId} (published)`,
+      coverage: 'no-snapshot',
+      coverageDetail: 'aucun snapshot claude-settings publié (roosync_config targets: ["claude-settings"])',
+      harmonization: {},
+    };
+  }
+  const snap: ClaudeSettingsSnapshot = lookup.snapshot;
+  if (snap.state === 'invalid') {
+    return {
+      label: `${machineId} (published)`,
+      coverage: 'invalid',
+      coverageDetail: `snapshot du ${snap.collectedAt} : fichier source illisible à la collecte (${snap.error || 'invalide'})`,
+      harmonization: {},
+      collectedAt: snap.collectedAt,
+      observedState: snap.state,
+    };
+  }
+  const { warnMs, hardMs } = claudeSettingsStaleThresholds();
+  const collectedMs = Date.parse(snap.collectedAt);
+  const ageMs = Number.isFinite(collectedMs) ? nowMs - collectedMs : Infinity;
+  if (Number.isFinite(collectedMs) && ageMs > hardMs) {
+    return {
+      label: `${machineId} (published ${snap.collectedAt.slice(0, 10)})`,
+      coverage: 'hard-stale',
+      coverageDetail: `snapshot âgé de ${Math.floor(ageMs / (24 * 60 * 60 * 1000))} j (> seuil dur) — diff non émis, baseline à re-collecter`,
+      harmonization: {},
+      collectedAt: snap.collectedAt,
+      observedState: snap.state,
+    };
+  }
+  return {
+    label: `${machineId} (published${snap.collectedAt ? ` ${snap.collectedAt.slice(0, 10)}` : ''})`,
+    coverage: 'ok',
+    coverageDetail: ageMs > warnMs
+      ? `snapshot âgé de ${Math.floor(ageMs / (24 * 60 * 60 * 1000))} j`
+      : undefined,
+    harmonization: snap.harmonization,
+    collectedAt: snap.collectedAt,
+    observedState: snap.state,
+  };
+}
+
+/**
+ * Compare ~/.claude/settings.json : source (live si locale, sinon snapshot
+ * publié) vs cible (snapshot publié, ou live si cible locale).
+ *
+ * Garde de couverture : un côté sans snapshot valide => statut « non couvert »
+ * (un seul diff), jamais de diffs fantômes. Côtés couverts mais observés
+ * missing/empty => diffs clé par clé VRAIS (l'absence est un état mesuré).
+ * Secrets masqués (#3044) ; exemptés de campagnes actives honorés.
+ */
+async function compareClaudeSettings(
+  sourceMachineId: string,
+  targetMachineId: string,
+  service: any,
+  filter?: string,
+  detail: 'values' | 'paths' = 'values'
+): Promise<CompareConfigResult> {
+  const config = service.getConfig();
+  const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || config.sharedStatePath;
+  const nowMs = Date.now();
+
+  const source = await loadClaudeSettingsSide(sourceMachineId, sourceMachineId === config.machineId, sharedStatePath, nowMs);
+  const target = await loadClaudeSettingsSide(targetMachineId, targetMachineId === config.machineId, sharedStatePath, nowMs);
+
+  const differences: VibeSyncDiff[] = [];
+  const includeValues = detail === 'values';
+
+  // Garde de couverture — statut, pas de diffs fantômes
+  const uncovered = (side: ClaudeSettingsSide, which: 'source' | 'target'): CompareConfigResult => {
+    const sev = side.coverage === 'invalid' ? 'CRITICAL' : 'WARNING';
+    return {
+      source: source.label,
+      target: target.label,
+      granularity: 'claude-settings',
+      host_id: config.machineId,
+      differences: [{
+        category: 'claude_settings',
+        severity: sev,
+        path: `claude-settings.coverage.${which}`,
+        description: `Côté ${which} (${side.label}) NON COUVERT — ${side.coverageDetail || side.coverage}. Un diff « ${which} → ${which === 'source' ? 'cible' : 'source'} » serait un artefact de collecte, pas un drift : il ne mesure rien (#3545).`,
+        action: side.coverage === 'no-snapshot'
+          ? `Publier un snapshot : roosync_config(action: "publish", targets: ["claude-settings"], …) sur ${which === 'source' ? sourceMachineId : targetMachineId}, puis relancer.`
+          : `Réparer le fichier/la collecte sur ${which === 'source' ? sourceMachineId : targetMachineId}, re-publier, puis relancer.`
+      }],
+      summary: sev === 'CRITICAL'
+        ? { total: 1, critical: 1, important: 0, warning: 0, info: 0 }
+        : { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+    };
+  };
+
+  if (source.coverage !== 'ok' && target.coverage !== 'ok') {
+    // Les deux non couverts — un seul statut, mention des deux côtés
+    return {
+      source: source.label,
+      target: target.label,
+      granularity: 'claude-settings',
+      host_id: config.machineId,
+      differences: [{
+        category: 'claude_settings',
+        severity: source.coverage === 'invalid' || target.coverage === 'invalid' ? 'CRITICAL' : 'WARNING',
+        path: 'claude-settings.coverage.both',
+        description: `Aucun côté couvert : source (${source.coverage}${source.coverageDetail ? ` — ${source.coverageDetail}` : ''}), cible (${target.coverage}${target.coverageDetail ? ` — ${target.coverageDetail}` : ''}). Rien à comparer — publier les snapshots des deux machines d'abord.`,
+        action: 'roosync_config(action: "publish", targets: ["claude-settings"]) sur les deux machines, puis relancer.'
+      }],
+      summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+    };
+  }
+  if (source.coverage !== 'ok') return uncovered(source, 'source');
+  if (target.coverage !== 'ok') return uncovered(target, 'target');
+
+  // Staleness soft (INFO) — diffs émis mais mesurés contre ce snapshot
+  for (const [side, which] of [[source, 'source'], [target, 'target']] as const) {
+    if (side.coverageDetail) {
+      differences.push({
+        category: 'claude_settings',
+        severity: 'INFO',
+        path: `claude-settings.coverage.${which}.stale`,
+        description: `Baseline ${which} vieillissante : ${side.coverageDetail}. Les diffs ci-dessous mesurent cet instantané.`,
+        action: 'Re-publier le snapshot claude-settings pour rafraîchir.'
+      });
+    }
+  }
+
+  // États observés annexes (missing/empty) — signal explicite, pas une erreur
+  for (const [side, which] of [[source, 'source'], [target, 'target']] as const) {
+    if (side.observedState === 'missing' || side.observedState === 'empty') {
+      differences.push({
+        category: 'claude_settings',
+        severity: 'INFO',
+        path: `claude-settings.observed.${which}`,
+        description: `Settings observés « ${side.observedState} » côté ${which} (${side.label}) — état réel mesuré au moment de la lecture${side.collectedAt ? ` (${side.collectedAt})` : ''}, pas un artefact de collecte.`
+      });
+    }
+  }
+
+  // Exemptions des campagnes actives (#3545 défaut #5) — avec provenance et
+  // détection de conflit. Un chemin exempté par une campagne mais requis (dans
+  // le canon) par une autre est EXPOSÉ (diff INFO), jamais silencieusement
+  // supprimé du compare.
+  let exemptSource: Set<string> = new Set();
+  let exemptTarget: Set<string> = new Set();
+  try {
+    if (sharedStatePath) {
+      const exemptResult = await HarmonizationCampaignService.loadActiveExceptions(sharedStatePath, 'claude-settings');
+      exemptSource = new Set(exemptResult.byMachine[sourceMachineId] || []);
+      exemptTarget = new Set(exemptResult.byMachine[targetMachineId] || []);
+      for (const c of exemptResult.conflicts) {
+        const affected = c.machine === sourceMachineId ? 'source' : c.machine === targetMachineId ? 'target' : null;
+        if (affected) {
+          differences.push({
+            category: 'claude_settings',
+            severity: 'WARNING',
+            path: `claude-settings.exemption-conflict.${affected}.${c.path}`,
+            description: `Chemin « ${c.path} » EXEMPTÉ par la campagne ${c.exemptedBy.join(', ')} mais REQUIS (dans le canon) par ${c.requiredBy.join(', ')} pour ${c.machine} — pas une exemption effective, le diff clé ci-dessous reste mesuré (#3545).`,
+            action: 'Trancher le conflit d exemption entre campagnes avant d harmoniser.',
+          });
+        }
+      }
+    }
+  } catch { /* best-effort */ }
+
+  // Diff clé par clé (allow-list uniquement)
+  const allPaths = [...new Set([...Object.keys(source.harmonization), ...Object.keys(target.harmonization)])]
+    .filter(p => (ALLOWED_KEY_PATHS as readonly string[]).includes(p))
+    .filter(p => !exemptSource.has(p) && !exemptTarget.has(p))
+    .sort();
+
+  for (const path of allPaths) {
+    const srcVal = source.harmonization[path];
+    const tgtVal = target.harmonization[path];
+    if (JSON.stringify(srcVal) === JSON.stringify(tgtVal)) continue;
+
+    const severity = KEY_PATH_SEVERITY[path] || 'INFO';
+    if (filter) {
+      const f = filter.toLowerCase();
+      if (!path.toLowerCase().includes(f) && !srcVal?.toString().toLowerCase().includes(f) && !tgtVal?.toString().toLowerCase().includes(f)) {
+        continue;
+      }
+    }
+
+    let description: string;
+    if (srcVal === undefined) {
+      description = `« ${path} » absent sur source (${source.label}), présent sur cible`;
+    } else if (tgtVal === undefined) {
+      description = `« ${path} » présent sur source, absent sur cible (${target.label})`;
+    } else {
+      description = `« ${path} » diffère entre source (${source.label}) et cible (${target.label})`;
+    }
+    if (exemptSource.has(path) || exemptTarget.has(path)) continue; // déjà filtré — défense en profondeur
+
+    differences.push({
+      category: 'claude_settings',
+      severity,
+      path: `claude-settings.${path}`,
+      description,
+      action: severity === 'CRITICAL' ? 'Arbitrer via roosync_harmonization (canon) ou aligner manuellement' : undefined,
+      source_value: includeValues ? formatValue(srcVal, path) : undefined,
+      target_value: includeValues ? formatValue(tgtVal, path) : undefined,
+    });
+  }
+
+  const severityOrder: Record<string, number> = { CRITICAL: 0, IMPORTANT: 1, WARNING: 2, INFO: 3 };
+  differences.sort((a, b) => (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4));
+
+  const summary = {
+    total: differences.length,
+    critical: differences.filter(d => d.severity === 'CRITICAL').length,
+    important: differences.filter(d => d.severity === 'IMPORTANT').length,
+    warning: differences.filter(d => d.severity === 'WARNING').length,
+    info: differences.filter(d => d.severity === 'INFO').length
+  };
+
+  const result: CompareConfigResult = {
+    source: source.label,
+    target: target.label,
+    granularity: 'claude-settings',
+    host_id: config.machineId,
+    differences,
+    summary
+  };
+
+  if (includeValues) {
+    result.harmonization_candidates = buildHarmonizationCandidates(differences);
+  }
+
+  return result;
+}
+
+/**
+ * Résultat discriminé d'une recherche de settings publiés (#3545).
+ * `{}` retourné pour « absent » confondait missing / vide / illisible et
+ * fabriquait 80 diffs fantômes `present_absent` quand la baseline cible
+ * n'avait tout simplement pas la section.
+ */
+export interface PublishedSettingsLookup {
+  found: boolean;
+  settings: Record<string, unknown>;
+  /** Trouvé mais illisible/invalide — CRITICAL côté compare. */
+  error?: string;
+  /** Date du snapshot (mtime ISO) — staleness. */
+  snapshotAt?: string;
+  path?: string;
+}
+
 /**
  * Load published settings from GDrive for a specific machine
  * Checks multiple locations:
  * 1. configs/{machineId}/roo-settings-safe.json (standalone, from Python script)
  * 2. configs/{machineId}/latest versioned package with roo-settings/roo-settings.json
  */
-async function loadPublishedSettings(service: any, machineId: string): Promise<Record<string, unknown>> {
+async function loadPublishedSettingsEx(service: any, machineId: string): Promise<PublishedSettingsLookup> {
   const config = service.getConfig();
   const sharedStatePath = process.env.ROOSYNC_SHARED_PATH || config.sharedStatePath;
 
-  if (!sharedStatePath) return {};
+  if (!sharedStatePath) return { found: false, settings: {} };
 
   const configsDir = join(sharedStatePath, 'configs', machineId);
-  if (!existsSync(configsDir)) return {};
+  if (!existsSync(configsDir)) return { found: false, settings: {} };
 
-  // Try standalone files (multiple naming conventions from Python script)
+  /** Candidat parsé (ok) ou rejeté (illisible/corrompu) — pour retenir le
+   * diagnostic ET continuer le fallback (#3545 défaut #4). */
+  type Candidate = { ok: true; lookup: PublishedSettingsLookup } | { ok: false; rejected: { path: string; error: string } };
+
+  const readCandidate = async (path: string): Promise<Candidate> => {
+    let raw: string;
+    try {
+      raw = await fsPromises.readFile(path, 'utf-8');
+    } catch (err) {
+      return { ok: false, rejected: { path, error: `lecture: ${err instanceof Error ? err.message : String(err)}` } };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      return { ok: false, rejected: { path, error: `JSON invalide: ${err instanceof Error ? err.message : String(err)}` } };
+    }
+    // stat best-effort : un échec de stat ne doit JAMAIS dégrader une lecture
+    // réussie en « snapshot illisible » (la staleness est optionnelle).
+    let snapshotAt: string | undefined;
+    try {
+      snapshotAt = (await fsPromises.stat(path)).mtime.toISOString();
+    } catch { /* staleness indisponible — non bloquant */ }
+    return { ok: true, lookup: { found: true, settings: parsed.settings ?? parsed, snapshotAt, path } };
+  };
+
+  const rejected: Array<{ path: string; error: string }> = [];
+
+  // Standalone files (multiple naming conventions from Python script)
   const standaloneNames = [
     'roo-settings-safe.json',
     'roo-settings.json',
     'settings-extract.json',
   ];
-
   for (const name of standaloneNames) {
     const path = join(configsDir, name);
     if (existsSync(path)) {
-      try {
-        const raw = await fsPromises.readFile(path, 'utf-8');
-        const parsed = JSON.parse(raw);
-        return parsed.settings ?? parsed;
-      } catch (err) {
-        console.warn(`[compare-config] Failed to read settings file ${name}:`, err instanceof Error ? err.message : String(err));
-        continue;
-      }
+      const r = await readCandidate(path);
+      if (r.ok) return r.lookup;
+      rejected.push(r.rejected); // corrompu : on N'ARRÊTE PAS, on tente le fallback
     }
   }
 
-  // Try dated standalone files (e.g., settings-extract-2026-02-28.json)
+  // Dated standalone files (e.g., settings-extract-2026-02-28.json)
   try {
     const entries = await fsPromises.readdir(configsDir);
     const settingsFiles = entries
       .filter(e => e.startsWith('settings-extract') && e.endsWith('.json'))
       .sort()
       .reverse();
-
-    if (settingsFiles.length > 0) {
-      const raw = await fsPromises.readFile(join(configsDir, settingsFiles[0]), 'utf-8');
-      const parsed = JSON.parse(raw);
-      return parsed.settings ?? parsed;
+    for (const name of settingsFiles) {
+      const path = join(configsDir, name);
+      const r = await readCandidate(path);
+      if (r.ok) return r.lookup;
+      rejected.push(r.rejected);
     }
   } catch (err) {
     console.warn('[compare-config] Failed to list dated standalone settings files:', err instanceof Error ? err.message : String(err));
   }
 
-  // Try versioned packages (find latest with roo-settings)
+  // Versioned packages (find latest with roo-settings) — le fallback restauré
+  // quand un standalone est corrompu mais qu'un paquet versionné est valide.
   try {
     const entries = await fsPromises.readdir(configsDir, { withFileTypes: true });
     const versionDirs = entries
@@ -938,16 +1396,32 @@ async function loadPublishedSettings(service: any, machineId: string): Promise<R
     for (const dir of versionDirs) {
       const settingsPath = join(configsDir, dir, 'roo-settings', 'roo-settings.json');
       if (existsSync(settingsPath)) {
-        const raw = await fsPromises.readFile(settingsPath, 'utf-8');
-        const parsed = JSON.parse(raw);
-        return parsed.settings ?? parsed;
+        const r = await readCandidate(settingsPath);
+        if (r.ok) return r.lookup;
+        rejected.push(r.rejected);
       }
     }
   } catch (err) {
     console.warn('[compare-config] Failed to find versioned packages:', err instanceof Error ? err.message : String(err));
   }
 
-  return {};
+  // #3545 défaut #4 : ne JAMAIS convertir silencieusement une erreur de PARSE en
+  // ABSENCE. Si des candidats existent mais sont tous illisibles/corrompus, on
+  // retourne un read-error (CRITICAL côté compare), pas un « rien trouvé ».
+  if (rejected.length > 0) {
+    const last = rejected[rejected.length - 1];
+    const summary = rejected
+      .map(r => `${r.path.split(/[\\/]/).slice(-2).join('/')}: ${r.error}`)
+      .join(' | ');
+    return {
+      found: true,
+      settings: {},
+      error: `tous les candidats illisibles (${rejected.length}) — ${summary}`,
+      path: last.path,
+    };
+  }
+
+  return { found: false, settings: {} };
 }
 
 /**

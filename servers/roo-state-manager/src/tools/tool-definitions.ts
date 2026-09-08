@@ -356,14 +356,14 @@ export const roosyncInitDefinition = {
 
 export const roosyncCompareConfigDefinition = {
     name: 'roosync_compare_config',
-    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration.',
+    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration. #3545: granularity "claude-settings" compares ~/.claude/settings.json (picker CC) live-vs-published with coverage statuses (missing/empty/invalid/stale → "non couvert", never phantom diffs) and campaign exemptions honored.',
     inputSchema: {
         type: 'object',
         properties: {
             source: { type: 'string', description: 'Default: local machineId (alias "local-machine"). Remote machines: real machineId, e.g. "myia-ai-01"' },
             target: { type: 'string', description: 'Default: first other machine in roster (sorted). "local-machine" or real machineId — NOT "remote"' },
             force_refresh: { type: 'boolean' },
-            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'] },
+            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'full'] },
             filter: { type: 'string', description: 'Path filter e.g. "jupyter"' },
             detail: { type: 'string', enum: ['values', 'paths'], description: 'Default: values. values = each diff carries source_value/target_value (masked, truncated) + harmonization_candidates section. paths = historical lightweight render (paths + description only).' }
         },
@@ -438,7 +438,7 @@ export const roosyncBaselineDefinition = {
 
 export const roosyncConfigDefinition = {
     name: 'roosync_config',
-    description: 'Config management. Actions: collect (local), publish (GDrive), apply (from GDrive), apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<name>.',
+    description: 'Config management. Actions: collect (local), publish (GDrive), apply (from GDrive), apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (masked snapshot of ~/.claude/settings.json for COMPARISON only — apply requires an explicit canon, #3545), modes-yaml, mcp:<name>.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -446,7 +446,7 @@ export const roosyncConfigDefinition = {
             machineId: { type: 'string' },
             dryRun: { type: 'boolean' },
             scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'user=~/.claude.json, project=.mcp.json, settings=~/.claude/settings.json' },
-            targets: { type: 'array', items: { type: 'string' }, description: 'Default: ["modes", "mcp"]' },
+            targets: { type: 'array', items: { type: 'string' }, description: 'Default: ["modes", "mcp"]. claude-settings = masked snapshot (collect/publish). Apply of claude-settings requires claude-settings/canon.json in the package (explicit allow-listed keys) — a comparison snapshot is rejected as apply payload (#3545)' },
             packagePath: { type: 'string', description: 'Publish only. Omit with targets for collect+publish atomically' },
             version: { type: 'string', description: 'Required for publish. Default for apply: "latest"' },
             description: { type: 'string', description: 'Required for publish' },
@@ -455,6 +455,42 @@ export const roosyncConfigDefinition = {
             sourceMachineId: { type: 'string', description: 'For model-configs.json' },
             validate: { type: 'boolean', description: 'Validate config is effectively applied after write (default: false)' },
             targetExtension: { type: 'string', enum: ['roo', 'zoo'], description: 'Target extension for vscdb writes. "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. Default: "roo" (#2543)' }
+        },
+        required: ['action'],
+        additionalProperties: false
+    }
+};
+
+// #3545 — Primitive campagne d'harmonisation flotte (~/.claude/settings.json)
+export const roosyncHarmonizationDefinition = {
+    name: 'roosync_harmonization',
+    description: 'Fleet harmonization campaign primitive (#3545): explicit immutable versioned canon for ~/.claude/settings.json, machine:workspace DM dispatch, live-read confirmations bound to canon hash, idempotent reminders (cooldown, failures never marked sent), per-machine exceptions, re-drift detection, close gating. Actions: create, dispatch, remind, apply (LOCAL machine only), confirm (live re-read — a claimed hash never counts), status (which machine is NOT harmonized, in one call), list, close. No daemon: reminders ride the existing coordinator cadence.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            action: { type: 'string', enum: ['create', 'dispatch', 'remind', 'apply', 'confirm', 'status', 'list', 'close'] },
+            campaign_id: { type: 'string', description: 'Required for all actions except create/list. E.g. "hc-claude-settings-2026.09.08-1"' },
+            target_file: { type: 'string', enum: ['claude-settings'], description: 'create only' },
+            canon: {
+                type: 'object',
+                description: 'create only. Explicit allow-listed keys => scalar values; secrets and non-allow-listed paths rejected. Allowed: env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL, env.ANTHROPIC_CUSTOM_MODEL_OPTION, env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, env.*_TIMEOUT, model, modelMap.{opus,sonnet,haiku,fable} (#3545)',
+                properties: {
+                    version: { type: 'string' },
+                    mode: { type: 'string', enum: ['ensure-present', 'enforce-value'] },
+                    keys: { type: 'object', additionalProperties: { type: ['string', 'number', 'boolean'] } },
+                    description: { type: 'string' }
+                },
+                required: ['version', 'mode', 'keys']
+            },
+            fleet: { type: 'array', items: { type: 'string' }, description: 'create only. "machine" or "machine:workspace" entries' },
+            exceptions: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } }, description: 'create only. machineId => exempted key paths' },
+            force: { type: 'boolean', description: 'dispatch: resend; remind: ignore cooldown; close: close despite missing confirmations (reason required)' },
+            cooldown_hours: { type: 'number', description: 'remind: default 12' },
+            dry_run: { type: 'boolean', description: 'apply: no write, no backup' },
+            backup: { type: 'boolean', description: 'apply: default true' },
+            claimed_hash: { type: 'string', description: 'NEVER counted as confirmation — live re-read prevails' },
+            reason: { type: 'string', description: 'close: required with force' },
+            include_closed: { type: 'boolean', description: 'list: include closed campaigns' }
         },
         required: ['action'],
         additionalProperties: false
@@ -752,6 +788,8 @@ export const allToolDefinitions = [
     // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort (never operationalized), redirect in registry.ts
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
+    // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)
+    roosyncHarmonizationDefinition,
     roosyncInventoryDefinition,
     // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas d'outil standalone.
     // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call

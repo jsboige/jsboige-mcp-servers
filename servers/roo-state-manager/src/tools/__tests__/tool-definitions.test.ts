@@ -31,6 +31,7 @@ import {
     roosyncDecisionDefinition,
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
+    roosyncHarmonizationDefinition, // #3545 — campagne d'harmonisation flotte
     roosyncInventoryDefinition,
     // #1320: Lifecycle re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas de définition standalone.
     // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
@@ -52,7 +53,7 @@ import {
 // #3254 drift-guard: the zod schema is the handler contract; the static definition is the wire contract
 import { MessagesArgsSchema } from '../roosync/messages.js';
 
-const EXPECTED_TOOL_COUNT = 16; // #3391: claudish_traffic ajouté (15 → 16)
+const EXPECTED_TOOL_COUNT = 17; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17)
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
@@ -70,6 +71,8 @@ const allDefinitions = [
     // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
+    // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)
+    roosyncHarmonizationDefinition,
     roosyncInventoryDefinition,
     // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
     roosyncMcpManagementDefinition,
