@@ -4607,7 +4607,13 @@ async function handleMerge(
   const suspectedForeignFork =
     writeVerification.forkSuspected === true && writeVerification.forkPath !== sourcePath;
 
-  // --- Retrait de la source : archive préalable (même filet que handleDelete) ---
+  // --- Retrait de la source : archive préalable (même filet que handleDelete).
+  // Revue #1134 (mineur) : archiver dès qu'il y a du CONTENU, pas seulement
+  // des messages — une source statut-seul (0 message, Status non trivial) doit
+  // elle aussi survivre à son retrait, faute de quoi son statut ne persiste
+  // que s'il était le plus frais.
+  const sourceHasContent =
+    source.intercom.messages.length > 0 || (source.status.markdown ?? '').trim().length > 0;
   let archiveFile: string | null = null;
   if (deleteSource && suspectedForeignFork) {
     logger.error(
@@ -4634,7 +4640,7 @@ async function handleMerge(
     };
   }
   if (deleteSource) {
-    if (source.intercom.messages.length > 0) {
+    if (sourceHasContent) {
       const archiveDir = getArchiveDir();
       await fs.mkdir(archiveDir, { recursive: true });
       const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);

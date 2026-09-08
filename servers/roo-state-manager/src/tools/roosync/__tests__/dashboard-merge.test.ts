@@ -460,6 +460,26 @@ describe('action merge — gardes d’intégrité, 2e série (revue #1134, bis)'
     expect(fileExists('machine-myia-po-2025 (1).md')).toBe(false);
     expect(dualWriteDeleteSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)');
   });
+
+  it('source statut-seul (0 message) → ARCHIVÉE quand même avant retrait (revue #1134 mineur)', async () => {
+    // 0 message mais Status non trivial : sans la garde, cette source serait
+    // supprimée des deux artefacts SANS archive — son statut ne survivrait
+    // que s'il était le plus frais.
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T09:00:00.000Z', []);
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-08T13:00:00.000Z', [M.m2]);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(fileExists('machine-myia-po-2025 (1).md')).toBe(false);
+    const archiveDir = path.join(dashboardsDir, 'archive');
+    const archives = readdirSync(archiveDir).filter(f => f.startsWith('machine-myia-po-2025 (1)-pre-merge-'));
+    expect(archives.length).toBe(1);
+    expect(readFileSync(path.join(archiveDir, archives[0]), 'utf8')).toContain('Statut de machine-myia-po-2025 (1).md');
+  });
 });
 
 describe('action merge — workspace (cas CoursIA-like, cible vivante)', () => {
