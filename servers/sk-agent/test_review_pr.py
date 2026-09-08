@@ -1,9 +1,12 @@
 """Tests for review_pr tool — tier mapping, prompt generation, options parsing."""
 
+import asyncio
 import json
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
+
+from sk_agent import review_pr
 
 
 # --- Pure logic extracted from review_pr for testability ---
@@ -341,3 +344,54 @@ class TestFormatReviewResultErrorPropagation:
         parsed = json.loads(output)
         assert parsed["response"] == ""
         assert "error" not in parsed
+
+
+# --- #1587 S1: integration tests against the REAL review_pr (not the copies above) ---
+
+
+class TestReviewPrRealFunction:
+    """#1587 S1: the real review_pr in sk_agent.py must propagate call_agent
+    errors. The helpers above are copies — they would not catch a regression
+    in the actual tool implementation, which is what S1 guards against."""
+
+    @staticmethod
+    def _manager_returning(result: dict) -> MagicMock:
+        mgr = MagicMock()
+        mgr.call_agent = AsyncMock(return_value=result)
+        return mgr
+
+    def test_timeout_error_propagated(self):
+        mgr = self._manager_returning(
+            {"error": "call_agent timed out after 180s", "timeout": 180}
+        )
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(
+                review_pr(repo="jsboige/roo-extensions", pr_number=123, tier=2)
+            )
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "timed out" in parsed["error"]
+        assert "response" not in parsed
+        assert parsed["agent_used"] == "integration-reviewer"
+        assert parsed["tier"] == 2
+        assert parsed["timeout_used"] == 180
+
+    def test_agent_resolution_error_propagated(self):
+        mgr = self._manager_returning({"error": "Agent 'nope' not found"})
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(
+                review_pr(repo="owner/repo", pr_number=1, tier=1)
+            )
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "not found" in parsed["error"]
+        assert "response" not in parsed
+
+    def test_success_response_kept(self):
+        mgr = self._manager_returning({"response": "LGTM", "model_used": "glm-5"})
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=1))
+        parsed = json.loads(out)
+        assert parsed["response"] == "LGTM"
+        assert "error" not in parsed
+        assert parsed["tier"] == 1
