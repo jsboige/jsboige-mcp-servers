@@ -99,6 +99,14 @@ describe('buildDashboardKey — normalisation #3537 §6.3', () => {
 
     it(" '%' littéral invalide survit tel quel (le décodage n'avale pas un nom légitime)", () => {
       expect(buildDashboardKey('workspace', 'local', '100%_load')).toBe('workspace-100%_load');
+      // Décodage restreint au résidu mesuré '%3A' : un '%20' littéral n'est PAS
+      // muté en espace (revue #1134 — pas de classe de pollution derrière).
+      expect(buildDashboardKey('workspace', 'local', '100%20load')).toBe('workspace-100%20load');
+    });
+
+    it('machineId : résidu .md/.bak retiré par symétrie avec la branche workspace', () => {
+      expect(buildDashboardKey('machine', 'CoursIA.md.bak', 'x')).toBe('machine-CoursIA');
+      expect(buildDashboardKey('machine', 'myia-po-2025.md', 'x')).toBe('machine-myia-po-2025');
     });
 
     it('clé vide inchangée à la dérivation — le refus reste création-seule (PR #1133)', () => {

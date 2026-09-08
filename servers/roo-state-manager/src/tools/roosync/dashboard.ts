@@ -629,14 +629,15 @@ const lastCondenseHash = new Map<string, string>();
 // rewrite po-XXXX → myia-po-XXXX (convention flotte, pas une propriété du
 // serveur ; réconcilier les clés EXISTANTES relève de l'action merge §6.2).
 
-/** Résidu d'encodage URL ('%3A') — décodé une fois ; un '%' littéral invalide survit tel quel. */
+/**
+ * Résidu d'encodage URL mesuré dans le recensement : '%3A' (deux-points de
+ * l'adressage composé). Décodage VOLONTAIREMENT restreint à ce seul token —
+ * un decodeURIComponent complet décoderait aussi des '%XX' littéraux
+ * légitimes ('100%20' → espace), une classe de mutisation silencieuse sans
+ * pollution mesurée derrière (revue #1134, suggestion mineure).
+ */
 function decodeUrlResidue(value: string): string {
-  if (!/%[0-9a-fA-F]{2}/.test(value)) return value;
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
+  return value.replace(/%3A/gi, ':');
 }
 
 /**
@@ -668,6 +669,10 @@ const PLATFORM_ARCH_SUFFIX = /-(?:win32|linux|darwin|freebsd|openbsd)-(?:x64|arm
 function normalizeMachineIdInput(machineId: string): string {
   let value = decodeUrlResidue(machineId.trim());
   value = value.replace(PLATFORM_ARCH_SUFFIX, '');
+  // Symétrie avec la branche workspace : le résidu '.md'/'.bak' n'a pas de
+  // classe mesurée côté machine dans le recensement, mais le même caller qui
+  // pollue un workspace polluerait un machineId — la garde est gratuite.
+  value = stripFilenameResidue(value);
   return value;
 }
 
@@ -4699,7 +4704,9 @@ async function handleMerge(
       `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}). ` +
       `Statut retenu : ${statusFromSource ? 'source' : 'cible'} (lastModified plus récent). ` +
       (deleteSource
-        ? `Source archivée${archiveFile ? ` (${archiveFile})` : ''} puis supprimée des deux artefacts.`
+        ? archiveFile
+          ? `Source archivée (${archiveFile}) puis supprimée des deux artefacts.`
+          : 'Source supprimée des deux artefacts (aucun contenu à archiver).'
         : 'Source préservée (deleteSource=false).')
   };
   }
