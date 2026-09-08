@@ -1,5 +1,13 @@
 # Changelog - Roo State Manager
 
+## [Unreleased]
+
+### Changed
+- **tool_usage_stats — bornes de fenêtre inclusives du jour entier (#753, PR #1123)** : le filtre de fenêtre compare désormais des clés de jour (`YYYY-MM-DD`) au lieu d'horodatages contre un `endDate` à minuit UTC. Conséquence : **le jour de fin est compté en entier** — `end_date: '2026-05-21'` inclut désormais les appels du 21/05 à 10:00 (exclus avant). Toute comparaison `trend_report` / `save_snapshot` à cheval sur ce changement verra les chiffres du jour de fin monter sans autre explication. L'attribution des actions aval change aussi aux bornes : une action assistant hors fenêtre suivant un `tool_use` en fenêtre est attribuée au jour du `tool_use`.
+
+### Fixed
+- **tool_usage_stats — cache « lisible mais mal formé » ne casse plus l'outil (review ai-01 2026-09-07)** : `loadToolUsageCache` valide désormais la forme des entrées (perDay/buckets/records non nuls) en plus de `version` et `normalizer_version`. Un fichier cache corrompu ciblé (ex. `perDay: null`, versions correctes) tombait sur un chemin cache-hit sans try/catch → `TypeError` à chaque appel, fichier jamais réécrit ni invalidé (état absorbant). Rejeté au chargement, il retombe sur le chemin miss qui reconstruit et réécrit le cache.
+
 ## [2.0.0] - 2025-10-16
 
 ### 🎉 Messagerie RooSync Phase 2 - PRODUCTION READY

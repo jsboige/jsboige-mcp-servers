@@ -178,7 +178,7 @@ export const roosyncIndexingDefinition = {
             error_class: { type: 'string', enum: ['all', 'claude_session_not_found', 'file_not_found', 'access_denied', 'permission_denied', 'invalid_format', 'corrupted_data', 'quota_exceeded', 'auth_failed', 'network_timeout', 'service_503', 'rate_limit', 'connection_reset', 'dns_failure', 'embedding_timeout', 'unknown'], description: 'For cleanup_failed. Filter by error class (default: all).' },
             max_cleanup_tasks: { type: 'number', description: 'For cleanup_failed. Cap on skeletons to reset per call (default: 100).', default: 100 },
             start_date: { type: 'string', description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.' },
-            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now.' }
+            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now. Inclusive: the whole end day is counted (day-key comparison, #753).' }
         },
         required: ['action']
     }

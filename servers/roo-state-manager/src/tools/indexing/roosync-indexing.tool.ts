@@ -13,6 +13,7 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 // #2766 S2+ P1 follow-up — dead-letter classification helpers used by both
 // the status tool (retrofit fallback for legacy `idx.errorClass === undefined`
@@ -76,6 +77,374 @@ export function normalizeToolName(rawName: string): string {
         return parts[parts.length - 1] || name;
     }
     return name;
+}
+
+// --- #753 Bug 2: incremental per-file cache for tool_usage_stats ------------
+// The full-scan re-parses every JSONL on each call (~88s on ai-01). Closed files
+// never change, so per-file aggregates are cached keyed by (path, mtimeMs, size);
+// only new/modified files are re-parsed. Per-day buckets (po-2025 2026-07-19,
+// Option A) keep arbitrary [start,end] re-filtering without a re-scan.
+// Errors/retries are stored file-level: the current scan computes them over the
+// WHOLE file's sequential tool_result sequence (user messages are NOT date-filtered),
+// so day-bucketing them would change behavior at the window boundary.
+const NO_TS_DAY = '__untimed__';
+const TOOL_USAGE_CACHE_VERSION = 2;
+
+interface DayBucket {
+    toolCounts: Record<string, number>;
+    rawVariants: Record<string, Record<string, number>>;
+    sourceCounts: Record<string, number>;
+    downstreamActionCounts: Record<string, number>;
+}
+
+interface FileAggregates {
+    perDay: Record<string, DayBucket>;
+    fileErrors: Record<string, number>;
+    fileRetries: Record<string, number>;
+}
+
+interface ToolUsageCacheEntry {
+    mtimeMs: number;
+    size: number;
+    source: 'roo' | 'claude';
+    perDay: Record<string, DayBucket>;
+    fileErrors: Record<string, number>;
+    fileRetries: Record<string, number>;
+}
+
+interface ToolUsageCacheFile {
+    version: number;
+    normalizer_version: string;
+    files: Record<string, ToolUsageCacheEntry>;
+}
+
+function emptyDayBucket(): DayBucket {
+    return { toolCounts: {}, rawVariants: {}, sourceCounts: {}, downstreamActionCounts: {} };
+}
+
+function emptyFileAggregates(): FileAggregates {
+    return { perDay: {}, fileErrors: {}, fileRetries: {} };
+}
+
+/** #753: day key (YYYY-MM-DD, UTC) for a message; NO_TS_DAY when untimed. */
+function fmtDay(ts: Date): string {
+    return ts.toISOString().slice(0, 10);
+}
+
+function addCounters(dst: Record<string, number>, src: Record<string, number>): void {
+    for (const [k, v] of Object.entries(src)) {
+        dst[k] = (dst[k] || 0) + v;
+    }
+}
+
+/** #753: invalidate the whole cache if normalizeToolName's source changes. */
+function getToolUsageNormalizerVersion(): string {
+    return createHash('sha1').update(normalizeToolName.toString()).digest('hex').slice(0, 12);
+}
+
+/** Merge one file's cached/parsed aggregates into the running accumulation. */
+function mergeFileAggregates(
+    into: { perDay: Record<string, DayBucket>; errorCounts: Record<string, number>; retryCounts: Record<string, number> },
+    fileAgg: FileAggregates,
+): void {
+    for (const [day, bucket] of Object.entries(fileAgg.perDay)) {
+        const t = into.perDay[day] || (into.perDay[day] = emptyDayBucket());
+        addCounters(t.toolCounts, bucket.toolCounts);
+        addCounters(t.sourceCounts, bucket.sourceCounts);
+        addCounters(t.downstreamActionCounts, bucket.downstreamActionCounts);
+        for (const [tool, rawMap] of Object.entries(bucket.rawVariants)) {
+            const rt = t.rawVariants[tool] || (t.rawVariants[tool] = {});
+            addCounters(rt, rawMap);
+        }
+    }
+    addCounters(into.errorCounts, fileAgg.fileErrors);
+    addCounters(into.retryCounts, fileAgg.fileRetries);
+}
+
+/** #753: parse a Roo api_conversation_history.json into per-file aggregates. Throws on unreadable/invalid JSON. */
+async function parseRooFileAggregates(apiPath: string): Promise<FileAggregates> {
+    const fs = await import('fs/promises');
+    let content: string;
+    try {
+        content = await fs.readFile(apiPath, 'utf-8');
+    } catch {
+        throw new Error(`unreadable Roo file: ${apiPath}`);
+    }
+    if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+    let messages: any[];
+    try {
+        const data = JSON.parse(content);
+        messages = Array.isArray(data) ? data : (data?.messages || []);
+    } catch {
+        throw new Error(`invalid Roo JSON: ${apiPath}`);
+    }
+    return scanRooMessages(messages);
+}
+
+function scanRooMessages(messages: any[]): FileAggregates {
+    const agg = emptyFileAggregates();
+    const localIdMap = new Map<string, string>();
+    let lastToolName = '';
+    const lastCallErrored: Record<string, boolean> = {};
+    interface ToolUseRecord { toolName: string; msgIdx: number; }
+    const toolUseRecords: ToolUseRecord[] = [];
+
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!Array.isArray(msg.content)) continue;
+        const ts = msg.ts ? new Date(msg.ts) : null;
+        const dayKey = ts ? fmtDay(ts) : NO_TS_DAY;
+
+        if (msg.role === 'assistant') {
+            for (const block of msg.content) {
+                if (block.type === 'tool_use' && block.name) {
+                    const toolName = normalizeToolName(block.name);
+                    const bucket = agg.perDay[dayKey] || (agg.perDay[dayKey] = emptyDayBucket());
+                    bucket.toolCounts[toolName] = (bucket.toolCounts[toolName] || 0) + 1;
+                    const rawBucket = bucket.rawVariants[toolName] || (bucket.rawVariants[toolName] = {});
+                    rawBucket[block.name] = (rawBucket[block.name] || 0) + 1;
+                    bucket.sourceCounts['roo'] = (bucket.sourceCounts['roo'] || 0) + 1;
+
+                    if (block.id) localIdMap.set(block.id, toolName);
+                    // #753: retry only when the same tool is called right after an errored call of it.
+                    if (lastToolName === toolName && lastCallErrored[toolName]) {
+                        agg.fileRetries[toolName] = (agg.fileRetries[toolName] || 0) + 1;
+                    }
+                    lastToolName = toolName;
+                    toolUseRecords.push({ toolName, msgIdx: i });
+                }
+            }
+        } else if (msg.role === 'user') {
+            for (const block of msg.content) {
+                if (block.type === 'tool_result') {
+                    const toolUseId = block.tool_use_id;
+                    const isError = block.is_error === true;
+                    if (toolUseId) {
+                        const toolName = localIdMap.get(toolUseId);
+                        if (toolName) {
+                            lastCallErrored[toolName] = isError;
+                            if (isError) agg.fileErrors[toolName] = (agg.fileErrors[toolName] || 0) + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // #2336 D2: downstream-action = tool_use followed by a non-tool assistant message.
+    for (const rec of toolUseRecords) {
+        for (let j = rec.msgIdx + 1; j < messages.length; j++) {
+            const nextMsg = messages[j];
+            if (nextMsg.role !== 'assistant' || !Array.isArray(nextMsg.content)) continue;
+            const hasNonToolContent = nextMsg.content.some((b: any) => b.type !== 'tool_use');
+            if (hasNonToolContent) {
+                const toolUseTs = messages[rec.msgIdx]?.ts ? new Date(messages[rec.msgIdx].ts) : null;
+                const key = toolUseTs ? fmtDay(toolUseTs) : NO_TS_DAY;
+                const bucket = agg.perDay[key] || (agg.perDay[key] = emptyDayBucket());
+                bucket.downstreamActionCounts[rec.toolName] = (bucket.downstreamActionCounts[rec.toolName] || 0) + 1;
+            }
+            break;
+        }
+    }
+    return agg;
+}
+
+/** #753: parse a Claude Code *.jsonl session into per-file aggregates. Throws on unreadable stream. */
+async function parseClaudeFileAggregates(jsonlPath: string): Promise<FileAggregates> {
+    const agg = emptyFileAggregates();
+    const localIdMap = new Map<string, string>();
+    let lastToolName = '';
+    const lastCallErrored: Record<string, boolean> = {};
+    let prevAssistantToolUses: string[] = [];
+    let prevAssistantTs: Date | null = null;
+
+    try {
+        const { createReadStream } = await import('fs');
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: createReadStream(jsonlPath, 'utf-8'), crlfDelay: Infinity });
+
+        for await (const line of rl) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let entry: any;
+            try { entry = JSON.parse(trimmed); } catch { continue; }
+            const message = entry.message || entry;
+
+            if (message.role === 'assistant' && Array.isArray(message.content)) {
+                const tsRaw = entry.timestamp || message.timestamp;
+                const ts = tsRaw ? new Date(tsRaw) : null;
+                const dayKey = ts ? fmtDay(ts) : NO_TS_DAY;
+                const hasNonToolContent = message.content.some((b: any) => b.type !== 'tool_use');
+
+                // #2336 D2: attribute downstream action to the previous message's tool_uses.
+                if (hasNonToolContent && prevAssistantToolUses.length > 0) {
+                    const prevDay = prevAssistantTs ? fmtDay(prevAssistantTs) : NO_TS_DAY;
+                    const bucket = agg.perDay[prevDay] || (agg.perDay[prevDay] = emptyDayBucket());
+                    for (const prevTool of prevAssistantToolUses) {
+                        bucket.downstreamActionCounts[prevTool] = (bucket.downstreamActionCounts[prevTool] || 0) + 1;
+                    }
+                }
+
+                const currentToolUses: string[] = [];
+                for (const block of message.content) {
+                    if (block.type === 'tool_use' && block.name) {
+                        const toolName = normalizeToolName(block.name);
+                        const bucket = agg.perDay[dayKey] || (agg.perDay[dayKey] = emptyDayBucket());
+                        bucket.toolCounts[toolName] = (bucket.toolCounts[toolName] || 0) + 1;
+                        const rawBucket = bucket.rawVariants[toolName] || (bucket.rawVariants[toolName] = {});
+                        rawBucket[block.name] = (rawBucket[block.name] || 0) + 1;
+                        bucket.sourceCounts['claude-code'] = (bucket.sourceCounts['claude-code'] || 0) + 1;
+
+                        const toolUseId = block.id || block.toolUse?.id;
+                        if (toolUseId) localIdMap.set(toolUseId, toolName);
+                        if (lastToolName === toolName && lastCallErrored[toolName]) {
+                            agg.fileRetries[toolName] = (agg.fileRetries[toolName] || 0) + 1;
+                        }
+                        lastToolName = toolName;
+                        currentToolUses.push(toolName);
+                    }
+                }
+
+                if (currentToolUses.length > 0 && !hasNonToolContent) {
+                    prevAssistantToolUses = currentToolUses;
+                    prevAssistantTs = ts;
+                } else {
+                    prevAssistantToolUses = [];
+                    prevAssistantTs = null;
+                }
+            } else if (message.role === 'user' && Array.isArray(message.content)) {
+                for (const block of message.content) {
+                    if (block.type === 'tool_result') {
+                        const toolUseId = block.tool_use_id || block.toolResult?.tool_use_id;
+                        const isError = block.is_error === true || block.toolResult?.is_error === true;
+                        if (toolUseId) {
+                            const toolName = localIdMap.get(toolUseId);
+                            if (toolName) {
+                                lastCallErrored[toolName] = isError;
+                                if (isError) agg.fileErrors[toolName] = (agg.fileErrors[toolName] || 0) + 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        throw new Error(`unreadable Claude session: ${jsonlPath}`);
+    }
+    return agg;
+}
+
+/** #753: cache file path (hostname-scoped; env override for test isolation). */
+function getToolUsageCacheFilePath(hostname: string, osTmpdir: string): string {
+    const cacheDir = process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR || path.join(osTmpdir, 'roo-state-manager-cache');
+    return path.join(cacheDir, `tool-usage-cache-${hostname}.json`);
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+    return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * #753 review (ai-01 2026-09-07): shape validation at load. A readable file carrying the
+ * right version but malformed entries (e.g. perDay: null) would throw inside
+ * mergeFileAggregates on the cache-hit path, which has no try/catch — the tool would fail
+ * on every call without ever rewriting the file (absorbing state). Rejecting the file here
+ * falls back to the miss path, which rebuilds and rewrites it.
+ */
+function isWellFormedToolUsageCache(parsed: unknown): parsed is ToolUsageCacheFile {
+    if (!isPlainRecord(parsed)) return false;
+    if (typeof parsed.version !== 'number' || typeof parsed.normalizer_version !== 'string') return false;
+    if (!isPlainRecord(parsed.files)) return false;
+    for (const entry of Object.values(parsed.files)) {
+        if (!isPlainRecord(entry)) return false;
+        if (typeof entry.mtimeMs !== 'number' || typeof entry.size !== 'number') return false;
+        if (!isPlainRecord(entry.perDay) || !isPlainRecord(entry.fileErrors) || !isPlainRecord(entry.fileRetries)) return false;
+        for (const bucket of Object.values(entry.perDay)) {
+            if (!isPlainRecord(bucket)) return false;
+            if (
+                !isPlainRecord(bucket.toolCounts) || !isPlainRecord(bucket.sourceCounts) ||
+                !isPlainRecord(bucket.downstreamActionCounts) || !isPlainRecord(bucket.rawVariants)
+            ) return false;
+            for (const rawMap of Object.values(bucket.rawVariants)) {
+                if (!isPlainRecord(rawMap)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+/** #753: fail-open cache load — any error / invalid version / malformed shape → empty cache (full scan). */
+async function loadToolUsageCache(cachePath: string, normalizerVersion: string, fs: typeof import('fs/promises')): Promise<ToolUsageCacheFile> {
+    try {
+        const raw = await fs.readFile(cachePath, 'utf-8');
+        const parsed: unknown = JSON.parse(raw);
+        if (!isWellFormedToolUsageCache(parsed) || parsed.version !== TOOL_USAGE_CACHE_VERSION || parsed.normalizer_version !== normalizerVersion) {
+            return { version: TOOL_USAGE_CACHE_VERSION, normalizer_version: normalizerVersion, files: {} };
+        }
+        return parsed;
+    } catch {
+        return { version: TOOL_USAGE_CACHE_VERSION, normalizer_version: normalizerVersion, files: {} };
+    }
+}
+
+/** #753: atomic cache write (tmp+rename). Fail-open — cache must never break the scan. */
+async function saveToolUsageCache(cachePath: string, cache: ToolUsageCacheFile, fs: typeof import('fs/promises')): Promise<void> {
+    try {
+        await fs.mkdir(path.dirname(cachePath), { recursive: true });
+        const tmpPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+        await fs.writeFile(tmpPath, JSON.stringify(cache), 'utf-8');
+        await fs.rename(tmpPath, cachePath);
+    } catch {
+        // fail-open
+    }
+}
+
+/** #753: reduce merged per-day buckets back into the global tool_usage_stats aggregates. */
+function aggregateToolUsage(
+    perDay: Record<string, DayBucket>,
+    startDate: Date,
+    endDate: Date,
+): {
+    toolCounts: Record<string, number>;
+    weeklyBuckets: Record<string, Record<string, number>>;
+    rawVariants: Record<string, Record<string, number>>;
+    sourceCounts: Record<string, number>;
+    downstreamActionCounts: Record<string, number>;
+    totalCalls: number;
+} {
+    const toolCounts: Record<string, number> = {};
+    const weeklyBuckets: Record<string, Record<string, number>> = {};
+    const rawVariants: Record<string, Record<string, number>> = {};
+    const sourceCounts: Record<string, number> = {};
+    const downstreamActionCounts: Record<string, number> = {};
+    const startDay = fmtDay(startDate);
+    const endDay = fmtDay(endDate);
+    let totalCalls = 0;
+
+    for (const [day, bucket] of Object.entries(perDay)) {
+        // NO_TS_DAY is never date-filtered (matches the current scan, which skips the
+        // date check when a message has no timestamp).
+        //
+        // Day-key comparison makes the window inclusive of the WHOLE end day. Pre-#753 the
+        // filter compared timestamps against a midnight-UTC endDate, excluding any end-day
+        // event after 00:00. This is intentional and documented (PR body, tool schema,
+        // CHANGELOG): per-day buckets cannot express sub-day bounds.
+        if (day !== NO_TS_DAY && (day < startDay || day > endDay)) continue;
+        addCounters(toolCounts, bucket.toolCounts);
+        addCounters(sourceCounts, bucket.sourceCounts);
+        addCounters(downstreamActionCounts, bucket.downstreamActionCounts);
+        for (const [tool, rawMap] of Object.entries(bucket.rawVariants)) {
+            const rt = rawVariants[tool] || (rawVariants[tool] = {});
+            addCounters(rt, rawMap);
+        }
+        totalCalls += Object.values(bucket.toolCounts).reduce((s, c) => s + c, 0);
+        if (day !== NO_TS_DAY) {
+            const weekKey = getISOWeek(`${day}T00:00:00Z`);
+            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
+            addCounters(weeklyBuckets[weekKey], bucket.toolCounts);
+        }
+    }
+    return { toolCounts, weeklyBuckets, rawVariants, sourceCounts, downstreamActionCounts, totalCalls };
 }
 
 /**
@@ -1222,17 +1591,26 @@ export async function handleRooSyncIndexing(
                     return { isError: true, content: [{ type: 'text', text: 'Invalid start_date or end_date format. Use ISO 8601 or YYYY-MM-DD.' }] };
                 }
 
-                const toolCounts: Record<string, number> = {};
-                const weeklyBuckets: Record<string, Record<string, number>> = {};
-                const errorCounts: Record<string, number> = {};
-                const retryCounts: Record<string, number> = {};
-                const sourceCounts: Record<string, number> = {};
-                const downstreamActionCounts: Record<string, number> = {}; // #2336 D2: tool_use followed by non-tool action
-                // #2336: raw tool-name counts per normalized key — keep raw and normalized identity
-                // side by side so naming drift stays debuggable after aggregation.
-                const rawVariants: Record<string, Record<string, number>> = {};
+                // #753 Bug 2: incremental per-file cache (path, mtimeMs, size). Closed files
+                // never change, so their per-file aggregates are cached and only new/modified
+                // files are re-parsed (was a full ~88s scan on every call). Per-day buckets
+                // (po-2025 2026-07-19, Option A) keep arbitrary [start,end] re-filtering.
+                const mergedPerDay: Record<string, DayBucket> = {};
+                const mergedErrorCounts: Record<string, number> = {};
+                const mergedRetryCounts: Record<string, number> = {};
+                const normalizerVersion = getToolUsageNormalizerVersion();
+                const cachePath = getToolUsageCacheFilePath(os.hostname(), os.tmpdir());
+                const usageCache = await loadToolUsageCache(cachePath, normalizerVersion, fs);
+                const discoveredPaths = new Set<string>();
                 let totalCalls = 0;
                 let filesScanned = 0;
+                let cacheHits = 0;
+                let cacheMisses = 0;
+                let cacheDirty = false;
+
+                const absorbEntry = (fileAgg: FileAggregates): void => {
+                    mergeFileAggregates({ perDay: mergedPerDay, errorCounts: mergedErrorCounts, retryCounts: mergedRetryCounts }, fileAgg);
+                };
 
                 // --- Scan Roo tasks (api_conversation_history.json) ---
                 const storageLocations = await RooStorageDetector.detectStorageLocations();
@@ -1243,103 +1621,27 @@ export async function handleRooSyncIndexing(
 
                     for (const taskId of taskDirs) {
                         const apiPath = path.join(tasksPath, taskId, 'api_conversation_history.json');
-                        let content: string;
-                        try {
-                            content = await fs.readFile(apiPath, 'utf-8');
-                            if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
-                        } catch { continue; }
-
                         filesScanned++;
-                        let messages: any[];
-                        try {
-                            const data = JSON.parse(content);
-                            messages = Array.isArray(data) ? data : (data?.messages || []);
-                        } catch { continue; }
 
-                        // Per-conversation tracking for error matching and retry detection
-                        const localIdMap = new Map<string, string>();
-                        let lastToolName = '';
-                        const lastCallErrored: Record<string, boolean> = {};
+                        let st;
+                        try { st = await fs.stat(apiPath); } catch { continue; }
+                        discoveredPaths.add(apiPath);
 
-                        // #2336 D2: Track tool_use positions for downstream-action detection.
-                        // downstream-action = tool_use followed by an assistant message with non-tool content
-                        // (reasoning, text, edit — NOT another identical tool call).
-                        interface ToolUseRecord { toolName: string; msgIdx: number; }
-                        const toolUseRecords: ToolUseRecord[] = [];
-
-                        for (let i = 0; i < messages.length; i++) {
-                            const msg = messages[i];
-                            if (!Array.isArray(msg.content)) continue;
-                            const ts = msg.ts ? new Date(msg.ts) : null;
-
-                            if (msg.role === 'assistant') {
-                                if (ts && (ts < startDate || ts > endDate)) continue;
-
-                                for (const block of msg.content) {
-                                    if (block.type === 'tool_use' && block.name) {
-                                        totalCalls++;
-                                        const toolName = normalizeToolName(block.name);
-                                        toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
-                                        const rawBucket = rawVariants[toolName] || (rawVariants[toolName] = {});
-                                        rawBucket[block.name] = (rawBucket[block.name] || 0) + 1;
-                                        sourceCounts['roo'] = (sourceCounts['roo'] || 0) + 1;
-
-                                        // Track tool_use_id → tool_name for error matching
-                                        if (block.id) localIdMap.set(block.id, toolName);
-
-                                        // Retry detection: same tool called again right after an ERRORED call
-                                        // of the same tool (#753 — previously counted any sequential use).
-                                        if (lastToolName === toolName && lastCallErrored[toolName]) {
-                                            retryCounts[toolName] = (retryCounts[toolName] || 0) + 1;
-                                        }
-                                        lastToolName = toolName;
-
-                                        // #2336 D2: record position for downstream-action scan
-                                        toolUseRecords.push({ toolName, msgIdx: i });
-
-                                        if (ts) {
-                                            const weekKey = getISOWeek(ts.toISOString());
-                                            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
-                                            weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
-                                        }
-                                    }
-                                }
-                            } else if (msg.role === 'user') {
-                                // Scan tool_result blocks for error detection + retry-gating
-                                for (const block of msg.content) {
-                                    if (block.type === 'tool_result') {
-                                        const toolUseId = block.tool_use_id;
-                                        const isError = block.is_error === true;
-                                        if (toolUseId) {
-                                            const toolName = localIdMap.get(toolUseId);
-                                            if (toolName) {
-                                                // Track latest result status per tool (gates retry detection #753)
-                                                lastCallErrored[toolName] = isError;
-                                                if (isError) {
-                                                    errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        const cached = usageCache.files[apiPath];
+                        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+                            cacheHits++;
+                            absorbEntry({ perDay: cached.perDay, fileErrors: cached.fileErrors, fileRetries: cached.fileRetries });
+                            continue;
                         }
 
-                        // #2336 D2: Compute downstream-action rate for Roo conversation.
-                        // For each tool_use, check if the next assistant message has non-tool content.
-                        for (const rec of toolUseRecords) {
-                            for (let j = rec.msgIdx + 1; j < messages.length; j++) {
-                                const nextMsg = messages[j];
-                                if (nextMsg.role !== 'assistant' || !Array.isArray(nextMsg.content)) continue;
-                                // Found the next assistant message — check if it has non-tool_use content
-                                const hasNonToolContent = nextMsg.content.some(
-                                    (b: any) => b.type !== 'tool_use'
-                                );
-                                if (hasNonToolContent) {
-                                    downstreamActionCounts[rec.toolName] = (downstreamActionCounts[rec.toolName] || 0) + 1;
-                                }
-                                break; // Only check the first assistant message after the tool_use
-                            }
+                        cacheMisses++;
+                        try {
+                            const fileAgg = await parseRooFileAggregates(apiPath);
+                            usageCache.files[apiPath] = { mtimeMs: st.mtimeMs, size: st.size, source: 'roo', perDay: fileAgg.perDay, fileErrors: fileAgg.fileErrors, fileRetries: fileAgg.fileRetries };
+                            cacheDirty = true;
+                            absorbEntry(fileAgg);
+                        } catch {
+                            // unreadable/invalid → cache miss, do not cache (fail-open)
                         }
                     }
                 }
@@ -1362,115 +1664,54 @@ export async function handleRooSyncIndexing(
                         const jsonlPath = path.join(projPath, jsonlFile);
                         filesScanned++;
 
-                        // Per-session tracking for error matching and retry detection
-                        const localIdMap = new Map<string, string>();
-                        let lastToolName = '';
-                        const lastCallErrored: Record<string, boolean> = {};
+                        let jstat;
+                        try { jstat = await fs.stat(jsonlPath); } catch { continue; }
+                        discoveredPaths.add(jsonlPath);
 
-                        // #2336 D2: Track tool_use names from previous assistant message for downstream-action.
-                        // When we see an assistant message with non-tool content, we attribute
-                        // downstream-action to all tool_uses from the previous assistant message.
-                        let prevAssistantToolUses: string[] = [];
+                        const cached = usageCache.files[jsonlPath];
+                        if (cached && cached.mtimeMs === jstat.mtimeMs && cached.size === jstat.size) {
+                            cacheHits++;
+                            absorbEntry({ perDay: cached.perDay, fileErrors: cached.fileErrors, fileRetries: cached.fileRetries });
+                            continue;
+                        }
 
-                        // Read JSONL line-by-line to handle large files
-                        const { createReadStream } = await import('fs');
-                        const readline = await import('readline');
-                        const rl = readline.createInterface({ input: createReadStream(jsonlPath, 'utf-8'), crlfDelay: Infinity });
-
-                        for await (const line of rl) {
-                            const trimmed = line.trim();
-                            if (!trimmed) continue;
-                            let entry: any;
-                            try { entry = JSON.parse(trimmed); } catch { continue; }
-
-                            // Claude Code JSONL: each line has { type, message, timestamp, ... }
-                            const message = entry.message || entry;
-
-                            if (message.role === 'assistant' && Array.isArray(message.content)) {
-                                const tsRaw = entry.timestamp || message.timestamp;
-                                const ts = tsRaw ? new Date(tsRaw) : null;
-                                if (ts && (ts < startDate || ts > endDate)) {
-                                    prevAssistantToolUses = [];
-                                    continue;
-                                }
-
-                                // #2336 D2: Check if this assistant message has non-tool content
-                                // (meaning previous tool_uses led to productive action)
-                                const hasNonToolContent = message.content.some(
-                                    (b: any) => b.type !== 'tool_use'
-                                );
-                                if (hasNonToolContent && prevAssistantToolUses.length > 0) {
-                                    for (const prevTool of prevAssistantToolUses) {
-                                        downstreamActionCounts[prevTool] = (downstreamActionCounts[prevTool] || 0) + 1;
-                                    }
-                                }
-
-                                // Collect tool_uses from this message for next-iteration check
-                                const currentToolUses: string[] = [];
-
-                                for (const block of message.content) {
-                                    if (block.type === 'tool_use' && block.name) {
-                                        totalCalls++;
-                                        const toolName = normalizeToolName(block.name);
-                                        toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
-                                        const rawBucket = rawVariants[toolName] || (rawVariants[toolName] = {});
-                                        rawBucket[block.name] = (rawBucket[block.name] || 0) + 1;
-                                        sourceCounts['claude-code'] = (sourceCounts['claude-code'] || 0) + 1;
-
-                                        // Track tool_use_id → tool_name for error matching
-                                        const toolUseId = block.id || block.toolUse?.id;
-                                        if (toolUseId) localIdMap.set(toolUseId, toolName);
-
-                                        // Retry detection: same tool called again right after an ERRORED call
-                                        // of the same tool (#753 — previously counted any sequential use).
-                                        if (lastToolName === toolName && lastCallErrored[toolName]) {
-                                            retryCounts[toolName] = (retryCounts[toolName] || 0) + 1;
-                                        }
-                                        lastToolName = toolName;
-
-                                        currentToolUses.push(toolName);
-
-                                        if (ts) {
-                                            const weekKey = getISOWeek(ts.toISOString());
-                                            if (!weeklyBuckets[weekKey]) weeklyBuckets[weekKey] = {};
-                                            weeklyBuckets[weekKey][toolName] = (weeklyBuckets[weekKey][toolName] || 0) + 1;
-                                        }
-                                    }
-                                }
-
-                                // #2336 D2: If this message has ONLY tool_uses (no text/thinking),
-                                // those tools haven't led to downstream action yet — check next message.
-                                // If this message has BOTH tool_uses AND non-tool content, the
-                                // non-tool content is itself a downstream action for the tool_uses
-                                // in the SAME message (but we only count cross-message to avoid
-                                // inflating counts — same-message is just the agent calling+reasoning).
-                                if (currentToolUses.length > 0 && !hasNonToolContent) {
-                                    prevAssistantToolUses = currentToolUses;
-                                } else {
-                                    prevAssistantToolUses = [];
-                                }
-                            } else if (message.role === 'user' && Array.isArray(message.content)) {
-                                // Scan tool_result blocks for error detection + retry-gating
-                                for (const block of message.content) {
-                                    if (block.type === 'tool_result') {
-                                        const toolUseId = block.tool_use_id || block.toolResult?.tool_use_id;
-                                        const isError = block.is_error === true || block.toolResult?.is_error === true;
-                                        if (toolUseId) {
-                                            const toolName = localIdMap.get(toolUseId);
-                                            if (toolName) {
-                                                // Track latest result status per tool (gates retry detection #753)
-                                                lastCallErrored[toolName] = isError;
-                                                if (isError) {
-                                                    errorCounts[toolName] = (errorCounts[toolName] || 0) + 1;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        cacheMisses++;
+                        try {
+                            const fileAgg = await parseClaudeFileAggregates(jsonlPath);
+                            usageCache.files[jsonlPath] = { mtimeMs: jstat.mtimeMs, size: jstat.size, source: 'claude', perDay: fileAgg.perDay, fileErrors: fileAgg.fileErrors, fileRetries: fileAgg.fileRetries };
+                            cacheDirty = true;
+                            absorbEntry(fileAgg);
+                        } catch {
+                            // unreadable → cache miss, do not cache (fail-open)
                         }
                     }
                 }
+
+                // #753 GC: drop cache entries whose files no longer exist (only when discovery was real).
+                if (discoveredPaths.size > 0) {
+                    for (const cachedPath of Object.keys(usageCache.files)) {
+                        if (!discoveredPaths.has(cachedPath)) {
+                            delete usageCache.files[cachedPath];
+                            cacheDirty = true;
+                        }
+                    }
+                }
+
+                // #753: persist only when something changed (misses or GC) — skip the write on a pure-hit scan.
+                if (cacheDirty) {
+                    await saveToolUsageCache(cachePath, usageCache, fs);
+                }
+
+                // --- Finalize aggregates from the merged per-day buckets ---
+                const agg = aggregateToolUsage(mergedPerDay, startDate, endDate);
+                const toolCounts = agg.toolCounts;
+                const weeklyBuckets = agg.weeklyBuckets;
+                const rawVariants = agg.rawVariants;
+                const sourceCounts = agg.sourceCounts;
+                const downstreamActionCounts = agg.downstreamActionCounts;
+                const errorCounts = mergedErrorCounts;
+                const retryCounts = mergedRetryCounts;
+                totalCalls = agg.totalCalls;
 
                 // Sort tools by count descending
                 const sortedTools = Object.entries(toolCounts)
@@ -1516,6 +1757,8 @@ export async function handleRooSyncIndexing(
                                 weeks: sortedWeeks.length,
                             },
                             files_scanned: filesScanned,
+                            cache_hits: cacheHits,
+                            cache_misses: cacheMisses,
                             total_tool_calls: totalCalls,
                             unique_tools: Object.keys(toolCounts).length,
                             source_distribution: sourceCounts,
