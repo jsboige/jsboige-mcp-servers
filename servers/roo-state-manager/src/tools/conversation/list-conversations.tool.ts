@@ -5,6 +5,10 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
+import {
+    getConversationListPgReader,
+    loadPgConversationTier,
+} from '../../services/unified-store/conversation-list-store.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import { normalizeWorkspaceId } from '../../utils/message-helpers.js';
 import { scanDiskForNewTasks } from '../task/disk-scanner.js';
@@ -687,6 +691,53 @@ export const listConversationsTool = {
             tier3Info = { status: tier3Status, cache_age_ms: cacheAgeMs };
         }
 
+        // Tier PG (unified store) — opt-in behind UNIFIED_STORE_CONVERSATION_READ_PG.
+        //
+        // ADDITIVE, like Tier 3: it contributes only taskIds no earlier tier
+        // produced, and every filter below (workspace, dates, machineId,
+        // pendingSubtaskOnly, contentPattern) applies to its rows unchanged. With
+        // the gate off, `getConversationListPgReader()` returns null and this
+        // block is a single env-var read — the previous behavior, exactly.
+        //
+        // Why it exists (measured 2026-09-07, same question, machine po-2025):
+        // Tier 3 answers cross-machine in 430 rows / 32.1 s; PG answers it in
+        // 1,114 rows / 14.0 ms server-side. It is coverage + latency, NOT a fix
+        // for a broken filter — the machineId filter works.
+        let pgTierInfo: {
+            status: 'ready' | 'failed';
+            rows_read: number;
+            contributed: number;
+            truncated: boolean;
+            duration_ms: number;
+            error?: string;
+        } | undefined;
+        if (getConversationListPgReader()) {
+            // Dedup against EVERY tier already loaded (Roo cache + Claude + archives),
+            // not just conversationCache: a local skeleton always wins over its PG row,
+            // which carries no sequence.
+            const alreadyPresent = new Set(allSkeletons.map(s => s.taskId));
+            const pgStart = Date.now();
+            const pgResult = await loadPgConversationTier(
+                args.machineId && args.machineId.trim().length > 0
+                    ? { machineId: args.machineId.trim() }
+                    : {},
+                alreadyPresent,
+            );
+            const pgDuration = Date.now() - pgStart;
+            if (pgResult.skeletons.length > 0) {
+                allSkeletons = allSkeletons.concat(pgResult.skeletons);
+                console.log(`[list_conversations] PG tier contributed ${pgResult.skeletons.length} conversations (${pgResult.rows_read} rows read, ${pgDuration}ms)`);
+            }
+            pgTierInfo = {
+                status: pgResult.status,
+                rows_read: pgResult.rows_read,
+                contributed: pgResult.skeletons.length,
+                truncated: pgResult.truncated,
+                duration_ms: pgDuration,
+                ...(pgResult.error ? { error: pgResult.error } : {}),
+            };
+        }
+
         // Filtrage par workspace
         let workspaceFilteredCount = 0;
         if (args.workspace) {
@@ -1034,6 +1085,7 @@ export const listConversationsTool = {
                 has_next: page < totalPages,
             },
             ...(tier3Info ? { tier3: tier3Info } : {}),
+            ...(pgTierInfo ? { pg_tier: pgTierInfo } : {}),
             ...(archiveNotice ? { notice: archiveNotice } : {}),
         }, null, 2);
 
