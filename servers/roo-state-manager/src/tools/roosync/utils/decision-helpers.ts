@@ -434,9 +434,12 @@ export function createBackup(
 
   try {
     // Créer le répertoire de backup s'il n'existe pas
+    // #3459: mkdir NON récursif — le parent doit être pré-ensuré par
+    // ensureStoreSubdir à l'appelant. Un mkdir récursif ici recréerait la
+    // racine du store si un appelant oubliait la pré-garde.
     const { mkdirSync, copyFileSync, existsSync } = require('fs');
     if (!existsSync(backupDir)) {
-      mkdirSync(backupDir, { recursive: true });
+      mkdirSync(backupDir);
     }
 
     const backedUpFiles: string[] = [];

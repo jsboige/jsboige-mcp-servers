@@ -9,17 +9,26 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { BaselineManager, RollbackRestoreResult } from '../BaselineManager.js';
 import { RooSyncServiceError } from '../../RooSyncService.js';
 
 describe('BaselineManager - Système de Rollback', () => {
   let baselineManager: BaselineManager;
   let mockConfig: any;
+  let sharedRoot: string;
 
   beforeEach(() => {
+    // #3459: la racine du store doit PRÉEXISTER — createRollbackPoint route sa
+    // création de sous-répertoire par ensureStoreSubdir, qui skippe (fail-closed)
+    // sur racine absente au lieu de la recréer. Racine temp réelle, fraîche
+    // par test pour éviter qu'un rollback créé n'en cascade vers le suivant.
+    sharedRoot = mkdtempSync(join(tmpdir(), 'rsm-rollback-test-'));
     mockConfig = {
       machineId: 'test-machine',
-      sharedPath: '/tmp/test-rollback',
+      sharedPath: sharedRoot,
       cacheEnabled: true,
       cacheTTL: 300000
     };
@@ -48,6 +57,7 @@ describe('BaselineManager - Système de Rollback', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    rmSync(sharedRoot, { recursive: true, force: true });
   });
 
   describe('createRollbackPoint', () => {
@@ -64,6 +74,27 @@ describe('BaselineManager - Système de Rollback', () => {
 
       // Vérifier que la création fonctionne sans erreur
       await expect(baselineManager.createRollbackPoint(decisionId)).resolves.not.toThrow();
+    });
+
+    it('#3459: racine du store absente → échec fail-closed, la racine reste absente', async () => {
+      // Contrôle négatif du contrat fail-closed : ensureStoreSubdir skippe sur
+      // racine absente, l'écriture suivante meurt en ENOENT, et surtout AUCUN
+      // répertoire n'est créé — la racine doit rester absente après l'opération.
+      const absentRoot = mkdtempSync(join(tmpdir(), 'rsm-rollback-absent-'));
+      rmSync(absentRoot, { recursive: true, force: true });
+
+      const absentManager = new BaselineManager(
+        { ...mockConfig, sharedPath: absentRoot },
+        { loadBaseline: vi.fn(), updateBaseline: vi.fn() } as any,
+        { listDiffs: vi.fn() } as any,
+        { getState: vi.fn(), getActiveBaseline: vi.fn(), getMachineMappings: vi.fn() } as any
+      );
+
+      await expect(absentManager.createRollbackPoint('absent-decision'))
+        .rejects.toMatchObject({ code: 'ROLLBACK_CREATION_FAILED' });
+
+      const { existsSync } = await import('fs');
+      expect(existsSync(absentRoot)).toBe(false);
     });
   });
 
