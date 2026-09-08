@@ -1882,7 +1882,10 @@ FORMAT :
       // #2267 follow-up: do NOT retry a timeout. A hung endpoint won't recover in a
       // 2-8s backoff — retrying just burns another full CONDENSE_LLM_TIMEOUT_MS. Fail
       // fast to the truncation fallback. (502/empty errors still retry below.)
-      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
+      // #1130: also fail fast on non-retryable errors (401/403 auth): reuses the
+      // fallback's classifier so a dead primary fails over to the cloud fallback on
+      // attempt 1 instead of burning LLM_MAX_RETRIES on a call that can't heal.
+      if (!isTimeout && isRetryableFallbackError(error) && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -2091,7 +2094,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
       // #2267 follow-up: do NOT retry a timeout (see generateLLMSummary catch).
-      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
+      // #1130: also fail fast on non-retryable errors (401/403 auth) — see generateLLMSummary.
+      if (!isTimeout && isRetryableFallbackError(error) && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
