@@ -177,13 +177,8 @@ export { roosyncDiagnose } from './diagnose.js';
 
 // Export des outils de dashboard (T3.17)
 export { roosyncRefreshDashboard } from './refresh-dashboard.js';
-// #546: Dashboard hiérarchique
-export { roosyncUpdateDashboard, UpdateDashboardArgsSchema, UpdateDashboardResultSchema } from './update-dashboard.js';
-
-export type {
-	UpdateDashboardArgs,
-	UpdateDashboardResult
-} from './update-dashboard.js';
+// #3549: roosyncUpdateDashboard (legacy DASHBOARD.md monolithique) supprimé —
+// action=update de roosync_dashboard est v3-native (create-or-replace).
 
 // [REMOVED] Dead *ToolMetadata imports — the roosyncTools array that consumed them
 // was removed (#1470, orphan never used by registry.ts). The MCP tool definitions

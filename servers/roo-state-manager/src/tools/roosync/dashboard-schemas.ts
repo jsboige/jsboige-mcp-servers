@@ -140,7 +140,7 @@ export const DashboardArgsSchema = z.object({
     .describe('Action to perform. Note: "condense" removed — auto-condensation handles space management at 92% threshold.'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
-    .describe('REQUIRED for read/write/append/delete/read_archive. Only list/read_overview/refresh/update may omit it.'),
+    .describe('REQUIRED for read/write/append/update/delete/read_archive. Only list/read_overview/refresh may omit it.'),
 
   machineId: z.string().optional()
     .describe('Machine ID (default: local)'),
@@ -150,7 +150,7 @@ export const DashboardArgsSchema = z.object({
 
   // Pour read/update — section semantics depend on action
   section: z.enum(['status', 'intercom', 'all', 'machine', 'global', 'decisions', 'metrics']).optional()
-    .describe('Section to read (status/intercom/all) or update (machine/global/intercom/decisions/metrics)'),
+    .describe('Section to read (status/intercom/all) or update (v3: status only — create-or-replace on the same keys as write; legacy machine/global/decisions/metrics sections of the monolithic DASHBOARD.md no longer exist). Default for update: status.'),
   intercomLimit: z.number().optional()
     .describe('Max messages to return (default: all)'),
   mentionsOnly: z.boolean().optional()
@@ -196,13 +196,15 @@ export const DashboardArgsSchema = z.object({
   outputDir: z.string().optional()
     .describe('(refresh) Output directory (default: $ROOSYNC_SHARED_PATH/dashboards)'),
 
-  // Pour update (#1935 Cluster B)
+  // Pour update (#1935 Cluster B, réécrit v3 #3549)
   mode: z.enum(['replace', 'append', 'prepend']).optional()
-    .describe('(update) Update mode: replace, append, prepend (default: replace)')
+    .describe('(update) Update mode for the status section: replace, append, prepend (default: replace)')
 }).passthrough().refine(
-  // #2307 Phase 2: type is required EXCEPT for actions that don't need it
+  // #2307 Phase 2: type is required EXCEPT for actions that don't need it.
+  // #3549: update rejoint la famille v3 — même exigence de type que
+  // read/write/append pour dériver la même clé.
   (data) => {
-    const TYPE_OPTIONAL_ACTIONS = ['list', 'read_overview', 'refresh', 'update'];
+    const TYPE_OPTIONAL_ACTIONS = ['list', 'read_overview', 'refresh'];
     if (TYPE_OPTIONAL_ACTIONS.includes(data.action)) return true;
     return !!data.type;
   },
@@ -217,7 +219,7 @@ export type DashboardArgs = z.infer<typeof DashboardArgsSchema> & Record<string,
 
 export const dashboardToolMetadata = {
   name: 'roosync_dashboard',
-  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, read_archive, read_overview, refresh, update. Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Gotchas: (1) Only 3 types exist: global, machine, workspace. (2) If response contains "written to file:", use Read tool on that file path. (3) Auto-condensation at 92% — no manual condense needed.',
+  description: 'Shared dashboards (global/machine/workspace). Actions: read, write, append, list, delete, read_archive, read_overview, refresh, update (v3 create-or-replace on the status section, same keys as write; intercom is append-only via append). Team stages supported. For agent-parseable output, use format="json" on read/read_overview actions. Default is human-readable markdown. Gotchas: (1) Only 3 types exist: global, machine, workspace. (2) If response contains "written to file:", use Read tool on that file path. (3) Auto-condensation at 92% — no manual condense needed.',
   inputSchema: (() => {
     const schema = zodToJsonSchema(DashboardArgsSchema as any, { target: 'openApi3' }) as any;
     // #2307 Phase 2: Removed blanket 'type' required push — Zod .refine() now handles

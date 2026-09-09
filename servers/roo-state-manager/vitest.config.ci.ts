@@ -13,11 +13,11 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 31 test-file entries + 4 tests-directory globs
+ * Exclusion census: 30 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
- * Last audit: 2026-08-31 (#3322) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
+ * Last audit: 2026-09-09 (#3549) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import unitConfig from './vitest.config.unit.js';
@@ -94,7 +94,8 @@ export default mergeConfig(unitConfig, defineConfig({
       'src/tools/roosync/__tests__/decision.integration.test.ts',
       'src/tools/roosync/__tests__/diagnose.integration.test.ts',
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
-      'src/tools/roosync/__tests__/update-dashboard.integration.test.ts',
+      // update-dashboard.integration.test.ts removed with its module (#3549) —
+      // update est v3-native, couvert en CI par dashboard-update-v3.test.ts
       // Live LLM endpoint, opt-in via LLM_LIVE_INTEGRATION=1 — 502 repro (#1578)
       'src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts',
       'tests/unit/tools/roosync/baseline.test.ts',

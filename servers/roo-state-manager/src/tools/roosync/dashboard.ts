@@ -3050,12 +3050,12 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
     return handleReadOverview(resolvedMachineId, resolvedWorkspace, args, requestEcho);
   }
 
-  // #1935 Cluster B: refresh/update actions delegate to legacy tools
+  // #1935 Cluster B: refresh delegates to the inventory tool (no dashboard key).
+  // update (#3549 Option A) rejoint le chemin v3 commun : type requis, même
+  // buildDashboardKey que read/write/append, mêmes verrous — routé dans le
+  // switch ci-dessous. La délégation legacy vers DASHBOARD.md est supprimée.
   if (args.action === 'refresh') {
     return handleRefresh(args, requestEcho);
-  }
-  if (args.action === 'update') {
-    return handleUpdate(args, requestEcho);
   }
 
   if (!args.type) {
@@ -3087,6 +3087,12 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
         // Serialized: prevents concurrent condensations producing duplicate archives
         return withKeyLock(key, () =>
           handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
+        );
+      case 'update':
+        // #3549: update = read-modify-write v3, même discipline de sérialisation
+        // que write/append (per-key + cross-process append lock dans le handler)
+        return withKeyLock(key, () =>
+          handleUpdate(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
         );
 
     case 'delete':
@@ -4464,7 +4470,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
   }
 }
 
-// === #1935 Cluster B: refresh/update handlers ===
+// === #1935 Cluster B: refresh handler (update a rejoint le chemin v3 commun, #3549) ===
 
 async function handleRefresh(
   args: DashboardArgs,
@@ -4488,33 +4494,135 @@ async function handleRefresh(
   };
 }
 
+/**
+ * #3549 Option A — update v3 create-or-replace.
+ *
+ * Même contrat que write/append : clé dérivée par buildDashboardKey (le
+ * routage principal l'a déjà calculée), verrou append cross-process pour le
+ * read-modify-write, dual-write fichier + PostgreSQL via writeDashboardFile,
+ * garde anti-fork #3482 et garde store #3459 héritées gratuitement.
+ *
+ * Sémantique create-or-replace : un dashboard absent est créé avec le contenu
+ * fourni (mode ignoré — il n'y a rien à fusionner) ; un dashboard existant
+ * voit sa section ciblée fusionnée selon mode. Les sections legacy
+ * machine/global/decisions/metrics du DASHBOARD.md monolithique n'existent
+ * pas dans le store v3 : elles sont rejetées avec guidage, sans fallback.
+ */
 async function handleUpdate(
+  key: string,
   args: DashboardArgs,
+  createIfNotExists: boolean,
+  resolvedMachineId: string,
+  resolvedWorkspace: string,
   requestEcho: DashboardRequestEcho
 ): Promise<DashboardResult> {
-  if (!args.section || !['machine', 'global', 'intercom', 'decisions', 'metrics'].includes(args.section)) {
-    throw new Error('section (machine/global/intercom/decisions/metrics) est requis pour action=update');
+  const section = args.section ?? 'status';
+  if (section !== 'status') {
+    if (section === 'intercom') {
+      throw new Error(
+        "action=update ne cible pas la section intercom : l'intercom v3 est append-only (action=append crée les messages, la condensation est le seul retrait)."
+      );
+    }
+    throw new Error(
+      `action=update cible les sections v3 (section='status' par défaut). ` +
+      `La section '${section}' n'existe pas dans le store v3 : machine/global/decisions/metrics ` +
+      `étaient des titres du DASHBOARD.md monolithique legacy, retiré. ` +
+      `Utiliser type=global|machine|workspace + section=status pour éditer le statut du dashboard correspondant.`
+    );
   }
   if (!args.content) {
     throw new Error('content est requis pour action=update');
   }
-  const { roosyncUpdateDashboard } = await import('./update-dashboard.js');
-  const result = await roosyncUpdateDashboard({
-    section: args.section as 'machine' | 'global' | 'intercom' | 'decisions' | 'metrics',
-    content: args.content,
-    machine: args.machineId,
-    workspace: args.workspace,
-    mode: args.mode
+
+  const mode = args.mode ?? 'replace';
+  const author: Author = args.author ?? {
+    machineId: resolvedMachineId,
+    workspace: resolvedWorkspace
+  };
+  const content = args.content;
+
+  // #3459 (parité write) : refuser de créer un dashboard fantôme quand le
+  // magasin est absent — l'écriture atterrirait dans un store injoignable.
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'update',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: (err as Error).message
+    };
+  }
+
+  // Read-modify-write sous le verrou append cross-process — sans lui, un
+  // append concurrent entre le read et le write serait écrasé (même classe
+  // de perte que #3205/#1033, parité write).
+  let notFound = false;
+  let dashboard: Dashboard | null = null;
+  const holder: CondenseLockInfo = {
+    machineId: author.machineId,
+    workspace: author.workspace,
+    pid: process.pid,
+    acquiredAt: new Date().toISOString()
+  };
+  await withAppendLock(key, holder, async () => {
+    let current = await readDashboardFile(key);
+    let created = false;
+    if (!current) {
+      if (!createIfNotExists) {
+        notFound = true;
+        return;
+      }
+      current = createEmptyDashboard(args.type!, key, author);
+      created = true;
+    }
+    const existing = current.status.markdown;
+    // Create-or-replace : sur création, le contenu fourni EST la section —
+    // fusionner avec le placeholder '*Aucun contenu.*' n'a pas de sens.
+    let merged: string;
+    if (created || mode === 'replace') {
+      merged = content;
+    } else if (mode === 'append') {
+      merged = `${existing}\n\n${content}`;
+    } else {
+      merged = `${content}\n\n${existing}`;
+    }
+    const updated: Dashboard = {
+      ...current,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: author,
+      status: {
+        markdown: merged,
+        lastDiffCommit: current.status.lastDiffCommit
+      }
+    };
+    await writeDashboardFile(key, updated);
+    dashboard = updated;
   });
+
+  if (notFound || !dashboard) {
+    return {
+      success: false,
+      action: 'update',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: `Dashboard '${key}' introuvable et createIfNotExists=false`
+    };
+  }
+
+  // #1791 (parité write) : auto-register heartbeat, fire-and-forget
+  recordRooSyncActivityAsync('dashboard-write', { key, type: args.type, action: 'update' });
+
   return {
-    success: result.success,
+    success: true,
     action: 'update',
-    key: 'hierarchical',
-    type: 'hierarchical',
+    key,
+    type: args.type!,
     request: requestEcho,
-    data: result as unknown as Partial<Dashboard>,
-    message: result.success
-      ? `Section '${result.section}' mise à jour (${result.mode})`
-      : `Erreur mise à jour: ${result.dashboardPath ?? 'unknown'}`
+    sizes: buildSizes(dashboard),
+    message: `Section 'status' mise à jour (${mode}) pour dashboard '${key}'`
   };
 }

@@ -1,5 +1,10 @@
 /**
- * Tests for #1935 Cluster B: refresh/update sub-actions in roosync_dashboard
+ * Tests for #1935 Cluster B: refresh sub-action in roosync_dashboard.
+ *
+ * #3549: update a quitté ce cluster — il est v3-native (même chemin de clé que
+ * read/write/append) et est couvert par dashboard-update-v3.test.ts. La
+ * délégation legacy vers update-dashboard.js (DASHBOARD.md monolithique) est
+ * supprimée avec le module.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -11,14 +16,6 @@ vi.mock('../refresh-dashboard.js', () => ({
   roosyncRefreshDashboard: (...args: any[]) => mockRefreshDashboard(...args),
   RefreshDashboardArgsSchema: {},
   RefreshDashboardResultSchema: {}
-}));
-
-// Mock update-dashboard module
-const mockUpdateDashboard = vi.fn();
-vi.mock('../update-dashboard.js', () => ({
-  roosyncUpdateDashboard: (...args: any[]) => mockUpdateDashboard(...args),
-  UpdateDashboardArgsSchema: {},
-  UpdateDashboardResultSchema: {}
 }));
 
 // Mock OpenAI for condensation
@@ -98,100 +95,6 @@ describe('roosync_dashboard Cluster B (#1935)', () => {
       mockRefreshDashboard.mockRejectedValue(new Error('PowerShell not found'));
 
       await expect(roosyncDashboard({ action: 'refresh' })).rejects.toThrow('PowerShell not found');
-    });
-  });
-
-  describe('action: update', () => {
-    it('should delegate to roosyncUpdateDashboard', async () => {
-      mockUpdateDashboard.mockResolvedValue({
-        success: true,
-        dashboardPath: '/tmp/DASHBOARD.md',
-        section: 'machine',
-        mode: 'replace',
-        timestamp: '2026-05-03T20:00:00Z'
-      });
-
-      const result = await roosyncDashboard({
-        action: 'update',
-        section: 'machine',
-        content: '## Status\nAll good',
-        machineId: 'test-machine',
-        workspace: 'roo-extensions',
-        mode: 'replace'
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('update');
-      expect(mockUpdateDashboard).toHaveBeenCalledWith({
-        section: 'machine',
-        content: '## Status\nAll good',
-        machine: 'test-machine',
-        workspace: 'roo-extensions',
-        mode: 'replace'
-      });
-    });
-
-    it('should reject missing section', async () => {
-      await expect(roosyncDashboard({
-        action: 'update',
-        content: 'test'
-      })).rejects.toThrow('section');
-    });
-
-    it('should reject invalid section values', async () => {
-      await expect(roosyncDashboard({
-        action: 'update',
-        section: 'status',
-        content: 'test'
-      })).rejects.toThrow('section');
-    });
-
-    it('should reject missing content', async () => {
-      await expect(roosyncDashboard({
-        action: 'update',
-        section: 'global'
-      })).rejects.toThrow('content');
-    });
-
-    it('should handle all valid sections', async () => {
-      const sections = ['machine', 'global', 'intercom', 'decisions', 'metrics'] as const;
-      mockUpdateDashboard.mockResolvedValue({
-        success: true,
-        dashboardPath: '/tmp/DASHBOARD.md',
-        section: 'global',
-        mode: 'replace',
-        timestamp: '2026-05-03T20:00:00Z'
-      });
-
-      for (const section of sections) {
-        const result = await roosyncDashboard({
-          action: 'update',
-          section,
-          content: `Content for ${section}`
-        });
-        expect(result.success).toBe(true);
-      }
-    });
-
-    it('should map machineId to machine param', async () => {
-      mockUpdateDashboard.mockResolvedValue({
-        success: true,
-        dashboardPath: '/tmp/DASHBOARD.md',
-        section: 'machine',
-        mode: 'replace',
-        timestamp: '2026-05-03T20:00:00Z'
-      });
-
-      await roosyncDashboard({
-        action: 'update',
-        section: 'machine',
-        content: 'test',
-        machineId: 'myia-po-2026'
-      });
-
-      expect(mockUpdateDashboard).toHaveBeenCalledWith(
-        expect.objectContaining({ machine: 'myia-po-2026' })
-      );
     });
   });
 });
