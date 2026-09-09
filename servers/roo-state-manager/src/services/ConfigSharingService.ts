@@ -32,6 +32,13 @@ import { readJSONFileWithoutBOM, readFileWithoutBOM } from '../utils/encoding-he
 import { RollbackManager } from './RollbackManager.js';
 import { ConfigHealthCheckService, type ConfigType as HealthCheckConfigType } from './ConfigHealthCheckService.js';
 import { ServicesConfigService } from './ServicesConfigService.js';
+import {
+  ClaudeSettingsService,
+  validateCanon,
+  applyCanonToFile,
+  buildSnapshot,
+  CanonPayload,
+} from './ClaudeSettingsService.js';
 import yaml from 'js-yaml';
 import { SchtasksConfigService, type SchtaskConfig } from './SchtasksConfigService.js';
 
@@ -119,6 +126,13 @@ export class ConfigSharingService implements IConfigSharingService {
     if (options.targets.includes('claude-config')) {
       const claudeConfigFiles = await this.collectClaudeConfig(tempDir);
       manifest.files.push(...claudeConfigFiles);
+    }
+
+    // #3545 — Collecte de ~/.claude/settings.json (picker Claude Code) en snapshot
+    // masqué (comparaison) — ce n'est PAS un payload d'apply.
+    if (options.targets.includes('claude-settings')) {
+      const claudeSettingsFiles = await this.collectClaudeSettings(tempDir);
+      manifest.files.push(...claudeSettingsFiles);
     }
 
     // Collecte de custom_modes.yaml (modes globaux Roo) - #603 B2.1
@@ -474,6 +488,44 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
+      // #3545 — claude-settings target : apply UNIQUEMENT d'un canon explicite.
+      // Un snapshot de comparaison (claude-settings.json) n'est JAMAIS un payload
+      // d'apply : rejet explicite. Jamais appliqué implicitement via applyAll.
+      const hasClaudeSettingsTarget = options.targets?.includes('claude-settings') || false;
+      if (hasClaudeSettingsTarget) {
+        const canonPath = join(configDir, 'claude-settings', 'canon.json');
+        const snapshotPath = join(configDir, 'claude-settings', 'claude-settings.json');
+        try {
+          if (existsSync(canonPath)) {
+            const canonRaw = await readJSONFileWithoutBOM<CanonPayload>(canonPath);
+            const validation = validateCanon(canonRaw);
+            if (!validation.valid) {
+              errors.push(`claude-settings: canon.json invalide — ${validation.problems.join(' ; ')}`);
+            } else {
+              const service = new ClaudeSettingsService();
+              const result = await applyCanonToFile(service.getPath(), canonRaw, {
+                dryRun: options.dryRun,
+                backup: options.backup !== false,
+              });
+              if (!options.dryRun) {
+                filesApplied++;
+              }
+              this.logger.info(
+                `Claude settings canon appliqué (${canonRaw.mode}): ${result.changes.filter(c => c.action === 'set').length} posées, ${result.skipped.length} ignorées`
+              );
+            }
+          } else if (existsSync(snapshotPath)) {
+            errors.push(
+              'claude-settings: le paquet ne contient qu’un SNAPSHOT de comparaison (claude-settings.json) — un apply exige claude-settings/canon.json (clés explicites allow-listées). Un snapshot n’est pas un payload d’apply (#3545).'
+            );
+          } else {
+            errors.push('claude-settings: aucun fichier claude-settings dans le paquet source.');
+          }
+        } catch (csErr) {
+          errors.push(`Claude settings apply failed: ${csErr instanceof Error ? csErr.message : String(csErr)}`);
+        }
+      }
+
       this.logger.info('Targets de configuration', {
         applyAll,
         hasMcpTarget,
@@ -483,6 +535,7 @@ export class ConfigSharingService implements IConfigSharingService {
         hasModelConfigsTarget,
         hasRulesTarget,
         hasSettingsTarget,
+        hasClaudeSettingsTarget,
         hasSchedulesTarget,
         mcpServerNames
       });
@@ -494,7 +547,9 @@ export class ConfigSharingService implements IConfigSharingService {
           let shouldProcess = false;
           
           if (applyAll) {
-            shouldProcess = true;
+            // #3545 — claude-settings n'est JAMAIS appliqué implicitement :
+            // apply sélectif explicite uniquement (canon.json validé).
+            shouldProcess = !file.path.startsWith('claude-settings/');
           } else if (file.path.startsWith('roo-modes/')) {
             shouldProcess = hasModesTarget;
           } else if (file.path === 'mcp-settings/mcp_settings.json') {
@@ -513,6 +568,9 @@ export class ConfigSharingService implements IConfigSharingService {
             shouldProcess = hasClaudeConfigTarget;
           } else if (file.path.startsWith('modes-yaml/')) {
             shouldProcess = hasModesYamlTarget;
+          } else if (file.path.startsWith('claude-settings/')) {
+            // #3545 — géré par le bloc dédié ci-dessus (canon uniquement), pas de copy
+            shouldProcess = false;
           } else if (file.path.startsWith('schedules/')) {
             shouldProcess = hasSchedulesTarget;
           } else if (file.path.startsWith('mcp-settings/')) {
@@ -1906,6 +1964,49 @@ export class ConfigSharingService implements IConfigSharingService {
       this.logger.info(`Claude Code config collectée depuis: ${claudeJsonPath}`);
     } catch (error) {
       this.logger.error(`Erreur lors de la collecte de ~/.claude.json: ${error}`);
+    }
+
+    return files;
+  }
+
+  /**
+   * #3545 — Collecte ~/.claude/settings.json en snapshot de COMPARAISON.
+   *
+   * Le snapshot embarque : état du fichier (missing/empty/invalid/ok),
+   * projection harmonisation (allow-list uniquement), digests des clés env
+   * sensibles, NOMS des autres clés top-level (permissions/hooks : présence
+   * seulement). Aucune valeur sensible n'y figure jamais.
+   *
+   * Un snapshot n'est pas un apply payload : applyConfig n'accepte que
+   * claude-settings/canon.json (clés explicites validées).
+   */
+  private async collectClaudeSettings(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const settingsDir = join(tempDir, 'claude-settings');
+    await fs.mkdir(settingsDir, { recursive: true });
+
+    try {
+      const service = new ClaudeSettingsService();
+      const read = await service.read();
+      const machineId = process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown';
+      const snapshot = buildSnapshot(read, machineId, new Date().toISOString());
+
+      const destPath = join(settingsDir, 'claude-settings.json');
+      await fs.writeFile(destPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+
+      const hash = await this.calculateHash(destPath);
+      const stats = await fs.stat(destPath);
+
+      files.push({
+        path: 'claude-settings/claude-settings.json',
+        hash,
+        type: 'claude_settings',
+        size: stats.size,
+      });
+
+      this.logger.info(`Claude settings snapshot collecté (${read.state}): ${service.getPath()}`);
+    } catch (error) {
+      this.logger.error(`Erreur lors de la collecte de ~/.claude/settings.json: ${error}`);
     }
 
     return files;

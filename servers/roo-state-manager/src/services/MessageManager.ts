@@ -9,7 +9,7 @@
  */
 
 import { existsSync, promises as fs } from 'fs';
-import { join } from 'path';
+import { join, dirname, basename } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
@@ -998,10 +998,11 @@ export class MessageManager {
     perPage?: number,
     deep?: boolean,
     fromFilter?: string,
-    subjectFilter?: string
+    subjectFilter?: string,
+    priorityFilter?: string
   ): Promise<MessageListItem[]> {
     const effectiveWorkspaceId = workspaceId;
-    logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`, { fromFilter, subjectFilter });
+    logger.info(`Reading inbox for: ${machineId}${effectiveWorkspaceId ? ':' + effectiveWorkspaceId : ''}`, { fromFilter, subjectFilter, priorityFilter });
 
     // #3151 Phase B — PG-primary read (env-gated). null = PG unavailable →
     // dégradation gracieuse vers GDrive ci-dessous.
@@ -1012,7 +1013,7 @@ export class MessageManager {
       if (pgItems !== null) {
         // #3351: filters apply BEFORE pagination so limit/page slice the
         // filtered set on the PG path too, never the raw one.
-        const matching = this.applyInboxFilters(pgItems, fromFilter, subjectFilter);
+        const matching = this.applyInboxFilters(pgItems, fromFilter, subjectFilter, priorityFilter);
         logger.info(
           `[channel-pg] inbox served from PG in ${Date.now() - startedAt}ms (${matching.length}/${pgItems.length} items)`
         );
@@ -1065,9 +1066,9 @@ export class MessageManager {
 
       // #3351: sender/subject filters — applied BEFORE pagination (#638) so
       // limit/page slice the FILTERED set. Semantics mirror bulkOperation
-      // (case-insensitive substring, AND logic) so both surfaces read the
-      // pool the same way.
-      const matching = this.applyInboxFilters(filtered, fromFilter, subjectFilter);
+      // (case-insensitive substring, AND logic; priority = exact equality)
+      // so both surfaces read the pool the same way.
+      const matching = this.applyInboxFilters(filtered, fromFilter, subjectFilter, priorityFilter);
 
       // Apply pagination (#638)
       const result = this.paginateItems(matching, limit, page, perPage);
@@ -1083,19 +1084,23 @@ export class MessageManager {
   /**
    * #3351: inbox sender/subject predicates, shared by the PG and cache read
    * paths. Case-insensitive substring match, AND logic when both provided —
-   * the exact semantics of bulkOperation's filters.
+   * the exact semantics of bulkOperation's filters. #3351 suite 07/09:
+   * priority joins as exact equality (enum, mirroring bulkOperation L~2129),
+   * honored instead of rejected after the 06-07/09 retry loops.
    */
   private applyInboxFilters(
     items: MessageListItem[],
     fromFilter?: string,
-    subjectFilter?: string
+    subjectFilter?: string,
+    priorityFilter?: string
   ): MessageListItem[] {
-    if (!fromFilter && !subjectFilter) return items;
+    if (!fromFilter && !subjectFilter && !priorityFilter) return items;
     const from = fromFilter?.toLowerCase();
     const subject = subjectFilter?.toLowerCase();
     return items.filter(m =>
       (!from || m.from.toLowerCase().includes(from)) &&
-      (!subject || m.subject.toLowerCase().includes(subject))
+      (!subject || m.subject.toLowerCase().includes(subject)) &&
+      (!priorityFilter || m.priority === priorityFilter)
     );
   }
 
@@ -1852,7 +1857,25 @@ export class MessageManager {
 
       // Déplacer vers archive
       const archiveFile = join(this.archivePath, `${messageId}.json`);
-      await fs.writeFile(archiveFile, JSON.stringify(message, null, 2), 'utf-8');
+      const payload = JSON.stringify(message, null, 2);
+      // #3482 — ré-archivage d'une inbox résuscitée par la sync : le canonique
+      // existe déjà. Réécrire un nom occupé est le geste qui produit une
+      // jumelle ` (N).json` sous DriveFS wedgé (1560 mesurées flotte, 07/09,
+      // byte-identiques) — donc on ne saute QUE sur contenu identique. Une
+      // divergence signifie que la copie inbox porte un état que l'archive
+      // n'a pas (read_by_workspace accumulé par markAsRead après résurrection,
+      // amend) : la sauter la perdrait en silence, l'inbox étant unlink juste
+      // après. On écrit alors, et la garde jumelle signale si DriveFS dévie.
+      const existing = existsSync(archiveFile)
+        ? await fs.readFile(archiveFile, 'utf-8').catch(() => null)
+        : null;
+      if (existing === payload) {
+        logger.info(`Archive canonical identical, skipping rewrite (anti-twin #3482): ${messageId}`);
+      } else {
+        const writeStartedAtMs = Date.now();
+        await fs.writeFile(archiveFile, payload, 'utf-8');
+        await this.warnIfTwinAppeared(archiveFile, writeStartedAtMs);
+      }
 
       // Supprimer de inbox
       await fs.unlink(inboxFile);
@@ -1864,7 +1887,9 @@ export class MessageManager {
       // Also update sent/ directory if message was sent from this machine
       const sentPath = join(this.sentPath, `${messageId}.json`);
       if (existsSync(sentPath)) {
+        const sentWriteStartedAtMs = Date.now();
         await fs.writeFile(sentPath, JSON.stringify(message, null, 2), 'utf-8');
+        await this.warnIfTwinAppeared(sentPath, sentWriteStartedAtMs);
         logger.info('Message also archived in sent/');
       }
 
@@ -1876,6 +1901,42 @@ export class MessageManager {
       return false;
     }
   }
+
+  /**
+   * #3482 — garde post-écriture anti-jumelle DriveFS : une écriture vers un nom
+   * déjà occupé peut produire `<stem> (N).json` au lieu de remplacer. Un
+   * read-back ne discrimine pas une jumelle byte-identique (le cas mesuré) :
+   * seul un sibling frais dans la fenêtre d'écriture signale la déviation.
+   * Bruyant (logger.error), jamais bloquant.
+   */
+  private async warnIfTwinAppeared(targetFile: string, writeStartedAtMs: number): Promise<void> {
+    try {
+      const dir = dirname(targetFile);
+      const stem = basename(targetFile).replace(/\.json$/, '');
+      const twinRe = new RegExp(
+        '^' + stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\(\\d+\\)\\.json$'
+      );
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (!twinRe.test(entry)) continue;
+        const st = await fs.stat(join(dir, entry));
+        if (st.mtimeMs >= writeStartedAtMs - 1000) {
+          logger.error(
+            `[MESSAGE-TWIN] écriture possiblement déviée (#3482): '${entry}' frais dans la fenêtre d'écriture — DriveFS n'a pas remplacé '${basename(targetFile)}'`,
+            {
+              dir,
+              twin: entry,
+              remediation: 'DriveFS local probablement wedgé — redémarrer DriveFS/VS Code, puis vérifier le canonique'
+            }
+          );
+          return;
+        }
+      }
+    } catch {
+      // La garde ne doit jamais casser l'archivage.
+    }
+  }
+
   /**
    * Modifie le contenu d'un message envoyé (avant lecture)
    *
@@ -2534,15 +2595,17 @@ export class MessageManager {
 
       stats.total++;
 
-      // Per-machine read status for broadcasts (#629)
-      const isBroadcast = message.to === 'all' || message.to === 'All';
-      let isUnreadForThisMachine: boolean;
-      if (isBroadcast && message.read_by) {
-        const readerMachineId = parseMachineWorkspace(machineId).machineId;
-        isUnreadForThisMachine = !message.read_by.includes(readerMachineId);
-      } else {
-        isUnreadForThisMachine = message.status === 'unread';
-      }
+      // Per-reader read status: broadcasts (#629) AND machine-wide targets (#1073).
+      // This site used to open-code only the broadcast half and fall through to the
+      // GLOBAL `status` for everything else. But a machine-wide target's global
+      // status stays 'unread' BY DESIGN — flipping it would hide the message from
+      // the workspaces that never saw it — so every such message THIS workspace had
+      // already read was counted unread here, while `readInbox` and
+      // `getFilteredCount` (both on `perReaderStatus`) reported it read.
+      // Measured on ai-01 2026-09-07: 117 of 244, the entire stats/inbox delta.
+      const perReader = perReaderStatus(message, machineId, effectiveWorkspaceId);
+      const isUnreadForThisMachine =
+        perReader !== null ? perReader === 'unread' : message.status === 'unread';
 
       if (isUnreadForThisMachine) {
         stats.unread++;

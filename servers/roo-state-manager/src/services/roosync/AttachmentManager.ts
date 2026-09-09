@@ -593,6 +593,42 @@ export class AttachmentManager {
   }
 
   /**
+   * Lit le contenu d'un attachment en mémoire (mode inline, #1105).
+   *
+   * `getAttachment` copie vers un `targetPath` résolu **côté serveur** : un client
+   * MCP distant (pas de montage local du .shared-state) ne peut pas écrire vers
+   * son propre chemin, et un chemin POSIX client (`/opt/data/...`) est interprété
+   * comme un chemin local de l'hôte → ENOENT déguisé en échec de source. Ce retour
+   * (contenu brut + métadonnées) laisse l'appelant rendre le blob en base64 au lieu
+   * d'échouer sur la destination.
+   */
+  async readAttachment(uuid: string): Promise<{ content: Buffer; meta: AttachmentMetadata }> {
+    const meta = await this.getAttachmentMetadata(uuid);
+    if (!meta) {
+      throw new Error(`Attachment introuvable: ${uuid}`);
+    }
+
+    const sourceFile = join(this.attachmentsPath, uuid, meta.originalName);
+    if (!existsSync(sourceFile)) {
+      throw new Error(`Fichier attachment introuvable: ${uuid}/${meta.originalName}`);
+    }
+
+    // Même garde de timeout que la copie : un source cloud-only bloque readFile
+    // comme copyFile (#818 follow-up), et un Buffer partiel n'a pas de sens ici.
+    const content = await withReadTimeout(
+      fs.readFile(sourceFile),
+      this.readTimeoutMs,
+      `content-inline:${uuid}`,
+    );
+    if (content === null) {
+      throw new Error(`Attachment content indisponible (cloud-only?): ${uuid}/${meta.originalName}`);
+    }
+    logger.info('📥 Attachment read inline', { uuid, sizeBytes: content.length });
+
+    return { content, meta };
+  }
+
+  /**
    * Supprime un attachment et son répertoire UUID
    *
    * @param uuid UUID de la pièce jointe à supprimer

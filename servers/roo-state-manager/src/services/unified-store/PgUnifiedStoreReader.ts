@@ -24,7 +24,12 @@ import type {
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
 } from './types.js';
-import type { IUnifiedStoreReader, UnifiedStoreReaderConfig } from './UnifiedStoreReader.js';
+import type {
+  IUnifiedStoreReader,
+  UnifiedStoreReaderConfig,
+  ConversationListFilters,
+  ConversationListRow,
+} from './UnifiedStoreReader.js';
 
 export class PgUnifiedStoreReader implements IUnifiedStoreReader {
   private pool: pg.Pool | null = null;
@@ -223,6 +228,55 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
     if (result.rows.length === 0) return null;
     return this.mapConversationRow(result.rows[0]);
+  }
+
+  /**
+   * List conversations for the list_conversations PG tier.
+   *
+   * The LEFT JOIN LATERAL rides `messages_task_seq_unique (task_id, seq)` —
+   * the UNIQUE constraint declared in migrations/001, so no index is added
+   * here. Measured on the live store 2026-09-07 (12,887 conversations /
+   * 2,773,371 messages): machine-filtered, 1,114 rows returned, all buffers
+   * cached, `Execution Time: 14.0 ms` (the LATERAL itself: 1,114 index
+   * searches, 0.006 ms each). The `conversations` scan is sequential and stays
+   * so deliberately — at this row count an index would be speculative code.
+   */
+  async listConversations(filters?: ConversationListFilters): Promise<ConversationListRow[]> {
+    // Self-init + THROW, like the RooSync reads above — not the `return []` of
+    // getConversation/getMessages. No path calls init() explicitly (#2816), so
+    // `return []` on a null pool would render a silently EMPTY tier that is
+    // indistinguishable from "PG holds nothing for this filter". A throw is
+    // caught by the caller and surfaced as pg_tier.status=failed with the error.
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const machineId = filters?.machineId?.trim() || null;
+    const limit = filters?.limit ?? 5000;
+
+    const result = await this.pool.query(
+      `WITH c AS (
+         SELECT * FROM conversations
+         WHERE ($1::text IS NULL OR LOWER(machine_id) = LOWER($1))
+         ORDER BY last_ts DESC NULLS LAST
+         LIMIT $2
+       )
+       SELECT c.*, m.content AS first_user_message
+       FROM c
+       LEFT JOIN LATERAL (
+         SELECT content FROM messages
+         WHERE messages.task_id = c.task_id
+           AND messages.role = 'user'
+           AND messages.content IS NOT NULL
+         ORDER BY messages.seq ASC
+         LIMIT 1
+       ) m ON TRUE`,
+      [machineId, limit],
+    );
+
+    return result.rows.map(row => ({
+      ...this.mapConversationRow(row),
+      first_user_message: row.first_user_message ?? null,
+    }));
   }
 
   async getMessages(

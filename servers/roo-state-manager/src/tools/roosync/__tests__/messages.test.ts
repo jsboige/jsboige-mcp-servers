@@ -211,10 +211,22 @@ describe('roosync_messages dispatcher', () => {
       await expect(
         roosyncMessages({ action: 'inbox', before_date: '2026-08-01' } as any)
       ).rejects.toThrow(/bulk-only.*before_date/);
-      await expect(
-        roosyncMessages({ action: 'inbox', priority: 'HIGH' } as any)
-      ).rejects.toThrow(/bulk-only.*priority/);
       expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    // #3351 suite 07/09 : priority n'est PLUS bulk-only — les retry-loops
+    // 06-07/09 (LOW réels = intention de filtrer, MEDIUM matérialisé du
+    // défaut documenté) ont montré qu'un rejet sans issue brûlait les
+    // sessions. Il est honoré comme from/subject_contains.
+    test('#3351-suite inbox passes priority to roosyncRead (no longer rejected)', async () => {
+      await roosyncMessages({ action: 'inbox', priority: 'LOW' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'inbox', priority: 'LOW' })
+      );
+      await roosyncMessages({ action: 'inbox', priority: 'MEDIUM' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'inbox', priority: 'MEDIUM' })
+      );
     });
 
     // Friction po-2025 01/09 : un binding qui force-inclut les optionnels

@@ -178,7 +178,7 @@ export const roosyncIndexingDefinition = {
             error_class: { type: 'string', enum: ['all', 'claude_session_not_found', 'file_not_found', 'access_denied', 'permission_denied', 'invalid_format', 'corrupted_data', 'quota_exceeded', 'auth_failed', 'network_timeout', 'service_503', 'rate_limit', 'connection_reset', 'dns_failure', 'embedding_timeout', 'unknown'], description: 'For cleanup_failed. Filter by error class (default: all).' },
             max_cleanup_tasks: { type: 'number', description: 'For cleanup_failed. Cap on skeletons to reset per call (default: 100).', default: 100 },
             start_date: { type: 'string', description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.' },
-            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now.' }
+            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now. Inclusive: the whole end day is counted (day-key comparison, #753).' }
         },
         required: ['action']
     }
@@ -356,14 +356,14 @@ export const roosyncInitDefinition = {
 
 export const roosyncCompareConfigDefinition = {
     name: 'roosync_compare_config',
-    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration.',
+    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration. #3545: granularity "claude-settings" compares ~/.claude/settings.json (picker CC) live-vs-published with coverage statuses (missing/empty/invalid/stale → "non couvert", never phantom diffs) and campaign exemptions honored.',
     inputSchema: {
         type: 'object',
         properties: {
             source: { type: 'string', description: 'Default: local machineId (alias "local-machine"). Remote machines: real machineId, e.g. "myia-ai-01"' },
             target: { type: 'string', description: 'Default: first other machine in roster (sorted). "local-machine" or real machineId — NOT "remote"' },
             force_refresh: { type: 'boolean' },
-            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude', 'modes-yaml', 'full'] },
+            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'full'] },
             filter: { type: 'string', description: 'Path filter e.g. "jupyter"' },
             detail: { type: 'string', enum: ['values', 'paths'], description: 'Default: values. values = each diff carries source_value/target_value (masked, truncated) + harmonization_candidates section. paths = historical lightweight render (paths + description only).' }
         },
@@ -438,7 +438,7 @@ export const roosyncBaselineDefinition = {
 
 export const roosyncConfigDefinition = {
     name: 'roosync_config',
-    description: 'Config management. Actions: collect (local), publish (GDrive), apply (from GDrive), apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, modes-yaml, mcp:<name>.',
+    description: 'Config management. Actions: collect (local), publish (GDrive), apply (from GDrive), apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (masked snapshot of ~/.claude/settings.json for COMPARISON only — apply requires an explicit canon, #3545), modes-yaml, mcp:<name>.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -446,7 +446,7 @@ export const roosyncConfigDefinition = {
             machineId: { type: 'string' },
             dryRun: { type: 'boolean' },
             scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'user=~/.claude.json, project=.mcp.json, settings=~/.claude/settings.json' },
-            targets: { type: 'array', items: { type: 'string' }, description: 'Default: ["modes", "mcp"]' },
+            targets: { type: 'array', items: { type: 'string' }, description: 'Default: ["modes", "mcp"]. claude-settings = masked snapshot (collect/publish). Apply of claude-settings requires claude-settings/canon.json in the package (explicit allow-listed keys) — a comparison snapshot is rejected as apply payload (#3545)' },
             packagePath: { type: 'string', description: 'Publish only. Omit with targets for collect+publish atomically' },
             version: { type: 'string', description: 'Required for publish. Default for apply: "latest"' },
             description: { type: 'string', description: 'Required for publish' },
@@ -461,9 +461,45 @@ export const roosyncConfigDefinition = {
     }
 };
 
+// #3545 — Primitive campagne d'harmonisation flotte (~/.claude/settings.json)
+export const roosyncHarmonizationDefinition = {
+    name: 'roosync_harmonization',
+    description: 'Fleet harmonization campaign primitive (#3545): explicit immutable versioned canon for ~/.claude/settings.json, machine:workspace DM dispatch, live-read confirmations bound to canon hash, idempotent reminders (cooldown, failures never marked sent), per-machine exceptions, re-drift detection, close gating. Actions: create, dispatch, remind, apply (LOCAL machine only), confirm (live re-read — a claimed hash never counts), status (which machine is NOT harmonized, in one call), list, close. No daemon: reminders ride the existing coordinator cadence.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            action: { type: 'string', enum: ['create', 'dispatch', 'remind', 'apply', 'confirm', 'status', 'list', 'close'] },
+            campaign_id: { type: 'string', description: 'Required for all actions except create/list. E.g. "hc-claude-settings-2026.09.08-1"' },
+            target_file: { type: 'string', enum: ['claude-settings'], description: 'create only' },
+            canon: {
+                type: 'object',
+                description: 'create only. Explicit allow-listed keys => scalar values; secrets and non-allow-listed paths rejected. Allowed: env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL, env.ANTHROPIC_CUSTOM_MODEL_OPTION, env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, env.*_TIMEOUT, model, modelMap.{opus,sonnet,haiku,fable} (#3545)',
+                properties: {
+                    version: { type: 'string' },
+                    mode: { type: 'string', enum: ['ensure-present', 'enforce-value'] },
+                    keys: { type: 'object', additionalProperties: { type: ['string', 'number', 'boolean'] } },
+                    description: { type: 'string' }
+                },
+                required: ['version', 'mode', 'keys']
+            },
+            fleet: { type: 'array', items: { type: 'string' }, description: 'create only. "machine" or "machine:workspace" entries' },
+            exceptions: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } }, description: 'create only. machineId => exempted key paths' },
+            force: { type: 'boolean', description: 'dispatch: resend; remind: ignore cooldown; close: close despite missing confirmations (reason required)' },
+            cooldown_hours: { type: 'number', description: 'remind: default 12' },
+            dry_run: { type: 'boolean', description: 'apply: no write, no backup' },
+            backup: { type: 'boolean', description: 'apply: default true' },
+            claimed_hash: { type: 'string', description: 'NEVER counted as confirmation — live re-read prevails' },
+            reason: { type: 'string', description: 'close: required with force' },
+            include_closed: { type: 'boolean', description: 'list: include closed campaigns' }
+        },
+        required: ['action'],
+        additionalProperties: false
+    }
+};
+
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
-    description: 'Machine inventory, heartbeat status, system snapshot, cluster health. type="status" for compact RooSync status. type="health" for unified cluster health with score (#2224). Gotcha: use includeDetails:true for full metrics including tool usage stats.',
+    description: 'Machine inventory, heartbeat status, system snapshot, cluster health (drift/score/capabilities). type="status" for compact RooSync status. type="health" for unified CLUSTER health with score (#2224) — distinct from the skeleton-cache health of roosync_diagnose action "health". Gotcha: use includeDetails:true for full metrics including tool usage stats.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -532,7 +568,7 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton cache), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -679,7 +715,7 @@ export const roosyncMessagesDefinition = {
             to: { type: 'string', description: 'machine or machine:workspace' },
             subject: { type: 'string' },
             body: { type: 'string' },
-            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Priority (default MEDIUM) — send/reply + bulk filters ONLY. NOT accepted on action=inbox: omit the field there (rejected as bulk-only, #3351)' },
+            priority: { type: 'string', enum: ['', 'LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Priority — send/reply (server defaults to MEDIUM when omitted; do NOT pre-fill) + inbox filter (exact equality) + bulk filters. On action=inbox, omit it, or send "" when your binding requires every field; a real value filters. #3351 suite 07/09' },
             tags: { type: 'array', items: { type: 'string' } },
             thread_id: { type: 'string' },
             reply_to: { type: 'string', description: 'Reference message ID — uniquement pour action="send" (thread un nouveau message sur un message existant). NE PAS utiliser pour action="reply"/"amend"/"mark_read" : voir message_id. #3029' },
@@ -752,6 +788,8 @@ export const allToolDefinitions = [
     // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort (never operationalized), redirect in registry.ts
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
+    // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)
+    roosyncHarmonizationDefinition,
     roosyncInventoryDefinition,
     // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas d'outil standalone.
     // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call

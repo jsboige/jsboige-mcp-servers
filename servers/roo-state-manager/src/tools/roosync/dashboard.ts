@@ -1071,13 +1071,117 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
 }
 
 /**
+ * #3482 — Résultat de la vérification post-écriture (garde anti-fork DriveFS).
+ */
+export interface WriteVerifyResult {
+  forkSuspected: boolean;
+  forkDetail?: string;
+  forkPath?: string;
+}
+
+/**
+ * #3482 — Vérifie qu'une écriture dashboard a bien atterri sur le fichier
+ * canonique et n'a pas été déviée par DriveFS/Windows vers un fork
+ * `<stem> (N).md` (incident mesuré 06/09 : un [ASK USER] urgent est resté
+ * invisible du canonique pendant que le writer croyait réussir).
+ *
+ * Deux discriminateurs, dans l'ordre :
+ * 1. Relire l'en-tête du canonique. `totalMessages` est un compteur monotone
+ *    flotte — un found PLUS PETIT que l'attendu signifie que NOTRE écriture
+ *    n'y est pas ; un found plus GRAND signifie qu'un writer concurrent a
+ *    gagné APRÈS notre rename (nominal, pas un fork). Clock-independent,
+ *    contrairement à lastModified (skew inter-machines, cf heartbeats c.303).
+ *    Fallback lastModified (compare lexicographique ISO) si totalMessages
+ *    absent de l'en-tête.
+ * 2. Scanner le répertoire pour un sibling de collision Windows
+ *    `<stem> (N).md` dont le mtime tombe dans la fenêtre de CETTE écriture —
+ *    un fork archivé ancien ne doit pas armer la garde.
+ *
+ * Jamais throw : une vérification elle-même défaillante rend
+ * { forkSuspected: false } (invérifiable ≠ suspecté) pour ne pas casser le
+ * chemin d'écriture.
+ */
+export async function verifyDashboardWriteLanded(
+  filePath: string,
+  expected: { lastModified: string; totalMessages: number },
+  writeStartedAtMs: number
+): Promise<WriteVerifyResult> {
+  try {
+    const fh = await fs.open(filePath, 'r');
+    let foundTotal: number | null = null;
+    let foundLastModified: string | null = null;
+    try {
+      const buf = Buffer.alloc(1024);
+      const { bytesRead } = await fh.read(buf, 0, 1024, 0);
+      const head = buf.toString('utf8', 0, bytesRead);
+      const mTotal = head.match(/^totalMessages:\s*(\d+)\s*$/m);
+      if (mTotal) foundTotal = parseInt(mTotal[1], 10);
+      const mLm = head.match(/^lastModified:\s*(?:'([^']+)'|"([^"]+)"|(\S+))/m);
+      foundLastModified = mLm ? (mLm[1] ?? mLm[2] ?? mLm[3] ?? null) : null;
+    } finally {
+      await fh.close();
+    }
+
+    if (foundTotal !== null) {
+      if (foundTotal < expected.totalMessages) {
+        return {
+          forkSuspected: true,
+          forkDetail: `totalMessages canonique ${foundTotal} < attendu ${expected.totalMessages} — l'écriture n'a pas atterri sur le canonique`
+        };
+      }
+    } else if (foundLastModified !== null && foundLastModified < expected.lastModified) {
+      return {
+        forkSuspected: true,
+        forkDetail: `lastModified canonique '${foundLastModified}' antérieur à l'écriture '${expected.lastModified}'`
+      };
+    }
+
+    const dir = path.dirname(filePath);
+    const stem = path.basename(filePath).replace(/\.md$/, '');
+    const forkRe = new RegExp(
+      '^' + stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\(\\d+\\)\\.md$'
+    );
+    const entries = await fs.readdir(dir);
+    for (const entry of entries) {
+      if (!forkRe.test(entry)) continue;
+      const forkPath = path.join(dir, entry);
+      const st = await fs.stat(forkPath);
+      if (st.mtimeMs >= writeStartedAtMs - 1000) {
+        return {
+          forkSuspected: true,
+          forkDetail: `fork frais dans la fenêtre d'écriture: ${entry}`,
+          forkPath
+        };
+      }
+    }
+    return { forkSuspected: false };
+  } catch (err) {
+    logger.debug('Vérification post-écriture impossible (non bloquant)', {
+      filePath,
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return { forkSuspected: false };
+  }
+}
+
+function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult): void {
+  logger.error('[DASHBOARD-FORK] écriture possiblement déviée (#3482) — le canonique ne reflète pas cette écriture', {
+    key,
+    path: filePath,
+    detail: wv.forkDetail,
+    forkPath: wv.forkPath,
+    remediation: 'DriveFS local probablement wedgé — relire le canonique, redémarrer DriveFS/VS Code de la machine, puis re-poster si absent (intercom-protocol §append expiré)'
+  });
+}
+
+/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(
   key: string,
   dashboard: Dashboard,
   opts?: { condensed?: boolean }
-): Promise<void> {
+): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
   ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
@@ -1127,9 +1231,19 @@ ${statusSection}
 ${intercomSection}
 `;
 
+  const writeStartedAtMs = Date.now();
   await fs.writeFile(tmpPath, content, 'utf8');
   await fs.rename(tmpPath, filePath);
   logger.debug('Dashboard écrit', { key, path: filePath });
+
+  // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
+  // on a ` (N).md` fork. Loud error + result flag; never throws (the write
+  // itself must not be undone by its verification).
+  const wv = await verifyDashboardWriteLanded(filePath, {
+    lastModified: dashboard.lastModified,
+    totalMessages: dashboard.intercom.totalMessages
+  }, writeStartedAtMs);
+  if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
 
   // #3151 Phase C — dual-write to PG (roosync_dashboards + journal). AWAITED,
   // never-throwing: PG becomes the read-primary store, so the mirror must be
@@ -1141,6 +1255,7 @@ ${intercomSection}
   // appends from the other machines (GDrive parity: condensation is the sole
   // operation that removes intercom messages).
   await dualWriteDashboardSync(dashboard, opts);
+  return wv;
 }
 
 /**
@@ -1156,7 +1271,16 @@ async function applyCondensedWithMerge(
   snapshotBefore: Dashboard,
   condensedDashboard: Dashboard
 ): Promise<void> {
-  const current = await readDashboardFile(key);
+  // #3151 Phase C: anchor the delta on the artifact this function is about to
+  // OVERWRITE -- the GDrive file. readDashboardFile() became PG-primary once
+  // UNIFIED_STORE_DASHBOARD_READ_PG shipped, so on a key where PG and the file
+  // diverge it stitches the PG view over the file and drops every message that
+  // exists only on disk. Measured on ai-01 (07/09): 15 of 63 dashboards diverge;
+  // on workspace-CoursIA the two journals share ZERO messages, so a condensation
+  // from a PG-reading host would have erased 23 messages of three other machines.
+  // The docstring above always said "re-reads the file from disk" -- the read gate
+  // silently changed the source, not the intent.
+  const current = await readDashboardFromGdrive(key);
   if (!current) {
     await writeDashboardFile(key, condensedDashboard, { condensed: true });
     return;
@@ -1210,7 +1334,7 @@ async function appendDashboardIncremental(
   key: string,
   dashboard: Dashboard,
   newMessageCount: number
-): Promise<void> {
+): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
   ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
@@ -1228,6 +1352,7 @@ async function appendDashboardIncremental(
     acquiredAt: new Date().toISOString()
   };
   const lockOwned = await acquireAppendLock(key, holder);
+  let wv: WriteVerifyResult = { forkSuspected: false };
   try {
     let existing: string;
     try {
@@ -1268,30 +1393,84 @@ async function appendDashboardIncremental(
       result = fmReplaced.trimEnd() + '\n\n---\n\n' + newBlock + '\n';
     }
 
+    const writeStartedAtMs = Date.now();
     await fs.writeFile(tmpPath, result, 'utf8');
     await fs.rename(tmpPath, filePath);
     logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
+
+    // #3482 — post-write guard (même contrat que writeDashboardFile) : un
+    // append « réussi » peut avoir été dévié vers un fork ` (N).md`.
+    wv = await verifyDashboardWriteLanded(filePath, {
+      lastModified: dashboard.lastModified,
+      totalMessages: dashboard.intercom.totalMessages
+    }, writeStartedAtMs);
   } finally {
     if (lockOwned) {
       await releaseAppendLock(key, holder);
     }
   }
+  if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
 
   // #3151 Phase C — dual-write the appended journal rows to PG. Same awaited,
   // never-throwing contract as writeDashboardFile: the incremental file append
   // stays the primary write; PG mirrors it (append-first is what makes the
   // condense-after phase below safe to fail).
   await dualWriteDashboardSync(dashboard);
+  return wv;
 }
 
 /**
- * Crée un dashboard vide avec les valeurs par défaut
+ * Crée un dashboard vide avec les valeurs par défaut.
+ *
+ * #3537 §6.4 — une clé de dashboard naît **implicitement** de la première
+ * écriture qui la nomme : rien n'échoue, un espace de noms inédit apparaît, et
+ * aucun lecteur n'apprend jamais qu'il existe. C'est ce silence — pas le fork
+ * DriveFS — qui a laissé `workspace-CoursIA (1)`, `workspace-` (nom vide),
+ * `workspace-jsboi` (tronqué), `workspace-…%3ACoursIA-2` (URL-encodé) et des
+ * résidus `.bak` vivre des mois durant au rang de clés de plein droit.
+ *
+ * Le WARN vit ici, dans la fabrique, et non aux trois sites d'appel (write,
+ * append, cross-post) : une quatrième création future est bruyante sans que
+ * personne ait à y penser. La fabrique n'est appelée que dans les branches
+ * `if (!dashboard)` — elle ne peut donc pas japper sur une clé existante.
+ *
+ * #3537 §6.3 (borne vide) — création-seule, par construction : cette fabrique
+ * n'est appelée que sur les branches `if (!dashboard)` des trois chemins de
+ * création (handleWrite, handleAppend, cross-post). Read, delete, read_archive,
+ * read_overview et list ne l'appellent jamais — une garde ici ne peut donc pas
+ * rendre une clé historique illisible.
+ *
+ * Invariant volontairement minimal : refuser de CRÉER un espace de noms dont
+ * le segment de nom est vide ou whitespace (`workspace-`, `machine-`,
+ * `workspace- `). Le schéma accepte `workspace: ""` (z.string().optional(),
+ * sans .min(1)) et le `??` du handler ne remplace pas une chaîne vide — la
+ * fabrique est la seule porte qui ferme ce chemin (clé `workspace-` recensée
+ * dans le store, #3537 §4). Tout le reste passe inchangé : casse (mandat
+ * 2026-05-23), suffixes ` (1)` (deux écrivains vivants, #3482 — fusion =
+ * §6.2 explicite), `.md`/`.bak`/`%3A` — ces formes restent lisibles à jamais
+ * et ne sont JAMAIS rejetées à la dérivation.
+ *
+ * Ordre délibéré garde → WARN : une clé refusée ne jette AUCUN `[NEW-KEY]` —
+ * l'erreur de refus est le signal plus fort ; le WARN ne parle que des clés
+ * qui passent la garde.
  */
-function createEmptyDashboard(
+export function createEmptyDashboard(
   type: NonNullable<DashboardArgs['type']>,
   key: string,
   author: Author
 ): Dashboard {
+  const prefix = type === 'workspace' ? 'workspace-' : type === 'machine' ? 'machine-' : null;
+  if (prefix !== null && key.startsWith(prefix) && key.slice(prefix.length).trim() === '') {
+    throw new Error(
+      `Refus de créer un dashboard ${type} à nom vide : clé dérivée '${key}' ` +
+      `(machineId='${author.machineId}', workspace='${author.workspace}'). ` +
+      `L'appelant a passé workspace/machineId vide — '??' ne remplace pas une chaîne vide (#3537 §6.3).`
+    );
+  }
+  logger.warn(
+    `[NEW-KEY] création d'un espace de noms dashboard inédit : '${key}' — aucun lecteur ne le connaît`,
+    { key, type, machineId: author.machineId, workspace: author.workspace }
+  );
   const now = new Date().toISOString();
   return {
     type,
@@ -1747,7 +1926,10 @@ FORMAT :
       // #2267 follow-up: do NOT retry a timeout. A hung endpoint won't recover in a
       // 2-8s backoff — retrying just burns another full CONDENSE_LLM_TIMEOUT_MS. Fail
       // fast to the truncation fallback. (502/empty errors still retry below.)
-      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
+      // #1130: also fail fast on non-retryable errors (401/403 auth): reuses the
+      // fallback's classifier so a dead primary fails over to the cloud fallback on
+      // attempt 1 instead of burning LLM_MAX_RETRIES on a call that can't heal.
+      if (!isTimeout && isRetryableFallbackError(error) && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -1956,7 +2138,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
       // #2267 follow-up: do NOT retry a timeout (see generateLLMSummary catch).
-      if (!isTimeout && attempt < LLM_MAX_RETRIES) {
+      // #1130: also fail fast on non-retryable errors (401/403 auth) — see generateLLMSummary.
+      if (!isTimeout && isRetryableFallbackError(error) && attempt < LLM_MAX_RETRIES) {
         const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
         logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -2767,6 +2950,14 @@ export interface DashboardResult {
    */
   splitCount?: number;
   /**
+   * #3482 — post-write fork verification. Present ONLY when the write is
+   * suspected to have been deviated by DriveFS/Windows to a ` (N).md` fork
+   * (canonical didn't reflect our write, or a fresh collision-named sibling
+   * appeared in the write window). Absent = write verified landed (or the
+   * verification itself was unavailable — never blocks the write path).
+   */
+  writeVerification?: WriteVerifyResult;
+  /**
    * Wall-clock breakdown of the append call (#1589). Populated on every
    * `append` result so operators can attribute latency to condensation phases
    * vs disk write vs other work without tailing MCP logs. Times are in ms.
@@ -3507,7 +3698,7 @@ async function handleAppend(
   let finalDashboard = updatedDashboard;
 
   const tWrite = Date.now();
-  await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
+  const writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
   writeMs = Date.now() - tWrite;
 
   // === CONDENSE-AFTER: best-effort condensation ===
@@ -3812,13 +4003,14 @@ async function handleAppend(
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
+    writeVerification: writeVerify.forkSuspected ? writeVerify : undefined,
     durationBreakdown: {
       totalMs,
       preemptiveCondenseMs,
       reactiveCondenseMs,
       writeMs
     },
-    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}`
+    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
   };
 }
 

@@ -31,6 +31,7 @@ import {
     roosyncDecisionDefinition,
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
+    roosyncHarmonizationDefinition, // #3545 — campagne d'harmonisation flotte
     roosyncInventoryDefinition,
     // #1320: Lifecycle re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas de définition standalone.
     // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
@@ -52,7 +53,7 @@ import {
 // #3254 drift-guard: the zod schema is the handler contract; the static definition is the wire contract
 import { MessagesArgsSchema } from '../roosync/messages.js';
 
-const EXPECTED_TOOL_COUNT = 16; // #3391: claudish_traffic ajouté (15 → 16)
+const EXPECTED_TOOL_COUNT = 17; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17)
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
@@ -70,6 +71,8 @@ const allDefinitions = [
     // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
+    // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)
+    roosyncHarmonizationDefinition,
     roosyncInventoryDefinition,
     // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
     roosyncMcpManagementDefinition,
@@ -430,10 +433,17 @@ describe('tool-definitions.ts — Schema Validation', () => {
         // inbox — n'avait AUCUNE description. Un champ saillant sans contre-indication
         // est une invitation ; la garde serveur rejette alors l'appel (fail-loud #1067),
         // laissant l'inbox illisible pour l'appelant. L'annotation doit survivre ici.
-        it('priority must carry the #3351 inbox-rejection warning on the wire', () => {
-            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, { description?: string }>;
+        it('priority must carry the #3351 inbox-rejection warning and an empty sentinel on the wire', () => {
+            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, { description?: string; enum?: string[] }>;
             expect(props.priority?.description).toMatch(/inbox/i);
+            expect(props.priority?.description).toMatch(/requires every field/i);
             expect(props.priority?.description).toMatch(/3351/);
+            // Some generated clients expose every flat-schema property as a
+            // required call argument even though JSON Schema only requires
+            // `action`. The handler already strips '' before Zod (#1075), but
+            // without this wire value those clients can only inject a REAL
+            // priority — which inbox correctly rejects as bulk-only.
+            expect(props.priority?.enum).toContain('');
         });
     });
 

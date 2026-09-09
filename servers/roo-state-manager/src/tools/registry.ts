@@ -78,6 +78,7 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_health_view: ['sharedPath'], // #2224: backward-compat redirect → inventory(type: "health")
 	roosync_config: ['sharedPath'],
 	roosync_compare_config: ['sharedPath'],
+	roosync_harmonization: ['sharedPath'], // #3545 — campagne d'harmonisation (store partagé)
 	// [REMOVED CONS-8 #603] roosync_list_diffs, roosync_decision, roosync_init — dead tools
 	roosync_diagnose: ['sharedPath'],
 	roosync_baseline: ['sharedPath'],
@@ -463,14 +464,14 @@ export function registerCallToolHandler(
            }
 
            // CLEANUP-2: Legacy summary tools handlers retirés (generate_trace_summary, generate_cluster_summary, get_conversation_synthesis)
-           // Remplacés par roosync_summarize (CONS-12)
+           // Remplacés par roosync_summarize (CONS-12) ; capacité reprise par conversation_browser(action: "summarize")
            // #519: Legacy export tools handlers retirés (CONS-10) - utiliser export_data et export_config
             case 'get_raw_conversation': {
                 const m = await import('./conversation/get-raw.tool.js');
                 result = await m.getRawConversationTool.handler(args as any);
                 break;
             }
-          // CLEANUP-2: getConversationSynthesisTool handler retiré (remplacé par roosync_summarize)
+          // CLEANUP-2: getConversationSynthesisTool handler retiré (capacité reprise par conversation_browser(action: "summarize"))
           // CONS-9: export_task_tree_markdown retiré (remplacé par task_export action='markdown')
 
           // Diagnostic Tools - WP4
@@ -608,6 +609,17 @@ export function registerCallToolHandler(
               try {
                   const m = await import('./roosync/config.js');
                   const roosyncResult = await m.roosyncConfig(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          }
+          // #3545 — campagne d'harmonisation flotte (canon, dispatch, confirmations, relances, drift)
+          case 'roosync_harmonization': {
+              try {
+                  const m = await import('./roosync/harmonization.js');
+                  const roosyncResult = await m.roosyncHarmonization(args as any);
                   result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
               } catch (error) {
                   result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
