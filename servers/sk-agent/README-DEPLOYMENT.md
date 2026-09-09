@@ -17,10 +17,26 @@
 ## Transport modes
 
 - **`stdio`** is the local transport for Claude Code, Roo and Zoo. It does not require `SK_AGENT_API_KEY` because the client starts the process directly.
-- **`streamable-http`** is the containerized network transport for OpenWebUI, bots and remote clients. It refuses to start unless `SK_AGENT_API_KEY` is provided. Every MCP request must send `Authorization: Bearer <key>`. A direct process listens on `127.0.0.1` by default; the container explicitly listens on `0.0.0.0`, while the standalone Compose file publishes it on host loopback only. Expose it remotely through the TLS reverse proxy.
+- **`streamable-http`** is the containerized network transport for OpenWebUI, bots and remote clients. It refuses to start unless `SK_AGENT_API_KEY` is provided. Every MCP request must send `Authorization: Bearer <key>`. A direct process listens on `127.0.0.1` by default; the container explicitly listens on `0.0.0.0`, while the standalone Compose file publishes it on host loopback by default. Expose it remotely only through the TLS reverse proxy; when that proxy runs on another host, set `SK_AGENT_BIND` to the specific LAN address that the proxy reaches.
 - **`GET /healthz`** is intentionally unauthenticated for Docker and reverse-proxy probes. It reports whether the configuration exists and parses, how many models are enabled, and whether the manager has been initialized. It never returns credentials or endpoint details.
 
 Store `SK_AGENT_API_KEY` only in a gitignored environment file or secret manager. Never put a fallback value in Compose, source code or documentation. Configuration changes use a controlled container restart; partial hot reload is not supported.
+
+### Compose host binding
+
+The standalone Compose file binds host port 8100 to `127.0.0.1` by default. Keep this default when the TLS reverse proxy runs on the same host.
+
+If the reverse proxy runs on another machine, set `SK_AGENT_BIND` in the same gitignored environment file to the container host's specific LAN address, then recreate the container:
+
+```dotenv
+SK_AGENT_BIND=192.0.2.10
+```
+
+```bash
+docker compose -f docker-compose.sk-agent.yml up -d --force-recreate
+```
+
+Do not use `0.0.0.0` unless binding every host interface is explicitly required. The Bearer authentication remains mandatory regardless of the host binding.
 
 ## Deployment Steps
 
