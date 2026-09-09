@@ -6,6 +6,8 @@
 #   docker compose -f docker-compose.sk-agent.yml down
 #   docker compose -f docker-compose.sk-agent.yml logs -f
 #
+# Host binding defaults to loopback. Set SK_AGENT_BIND to a specific host/LAN
+# address only when a remote reverse proxy must reach this container.
 # Config: sk_agent_config.json is bind-mounted read-only.
 # After editing config, restart: docker compose -f docker-compose.sk-agent.yml up -d --force-recreate
 #
@@ -20,7 +22,7 @@ services:
     image: sk-agent:latest
     container_name: sk-agent
     ports:
-      - "127.0.0.1:8100:8100"
+      - "${SK_AGENT_BIND:-127.0.0.1}:8100:8100"
     environment:
       - SK_AGENT_API_KEY=${SK_AGENT_API_KEY:?Set SK_AGENT_API_KEY in a gitignored environment file}
       - SK_AGENT_CONFIG=/app/sk_agent_config.json
