@@ -7,3 +7,4 @@ venv/
 
 # Config with API keys (use template instead)
 sk_agent_config.json
+sk_agent_config.json.bak-*
