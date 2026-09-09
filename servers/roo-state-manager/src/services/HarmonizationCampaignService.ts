@@ -70,6 +70,7 @@ import {
   isAllowedKeyPath,
   findLatestClaudeSettingsSnapshot,
 } from './ClaudeSettingsService.js';
+import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 
 const logger: Logger = createLogger('HarmonizationCampaign');
 
@@ -376,6 +377,26 @@ export class HarmonizationCampaignService {
 
   // ------------------------------------------------------------- persistance
 
+  /**
+   * #3459 — toute création de sous-répertoire du store passe par le writer
+   * sanctionné `ensureStoreSubdir`. Racine absente => refus typé : elle doit
+   * rester absente jusqu'au bout de l'opération (contrat d'en-tête « racine
+   * shared absente => erreur, pas de mode dégradé » — le mkdir récursif brut
+   * de #1135 le violait en recréant la racine et désarmait les gardes
+   * assertSharedStoreAccessible du processus).
+   */
+  private ensureCampaignStoreDir(...segments: string[]): string {
+    const status = ensureStoreSubdir(this.deps.sharedStatePath, 'harmonization', 'campaigns', ...segments);
+    if (status !== 'ensured') {
+      throw new HarmonizationCampaignError(
+        `Racine du store RooSync absente — écriture sous harmonization/campaigns refusée (fail-closed #3459).`,
+        'STORE_ABSENT',
+        { subdir: join('harmonization', 'campaigns', ...segments) }
+      );
+    }
+    return join(this.campaignsDir, ...segments);
+  }
+
   private campaignPath(id: string): string {
     // id vient de nous ou est validé (pattern hc-...), pas de traversal
     if (!/^hc-[a-z0-9._-]+$/i.test(id)) {
@@ -409,7 +430,7 @@ export class HarmonizationCampaignService {
 
   /** Création exclusive (O_EXCL) — deux creates simultanés ne passent pas tous les deux. */
   private async saveNew(record: HarmonizationCampaignRecord): Promise<void> {
-    await fs.mkdir(this.campaignsDir, { recursive: true });
+    this.ensureCampaignStoreDir();
     const path = this.campaignPath(record.id);
     const payload = stableJson(record);
     let handle;
@@ -443,7 +464,7 @@ export class HarmonizationCampaignService {
    */
   private async save(record: HarmonizationCampaignRecord, expectedRev: number): Promise<void> {
     const path = this.campaignPath(record.id);
-    await fs.mkdir(this.campaignsDir, { recursive: true });
+    this.ensureCampaignStoreDir();
     let currentRev = 0;
     if (existsSync(path)) {
       try {
@@ -541,7 +562,7 @@ export class HarmonizationCampaignService {
    * pas. Ce verrou même-hôte est le mécanisme qui sérialise en pratique.
    */
   private async acquireCoordinatorLock(id: string): Promise<() => Promise<void>> {
-    await fs.mkdir(this.campaignsDir, { recursive: true });
+    this.ensureCampaignStoreDir();
     const lockPath = join(this.campaignsDir, `${id}.lock`);
     const token = this.eventIdGen();
     const nowMs = this.now().getTime();
@@ -714,8 +735,7 @@ export class HarmonizationCampaignService {
       throw new HarmonizationCampaignError('eventId invalide (chemin interdit)', 'INVALID_EVENT_ID', { eventId });
     }
     const payload = stableJson({ ...obs, eventId });
-    const dir = this.machineEventsDir(id, obs.machine);
-    await fs.mkdir(dir, { recursive: true });
+    const dir = this.ensureCampaignStoreDir(id, 'events', obs.machine);
     const path = join(dir, `${eventId}.json`);
     let handle;
     try {

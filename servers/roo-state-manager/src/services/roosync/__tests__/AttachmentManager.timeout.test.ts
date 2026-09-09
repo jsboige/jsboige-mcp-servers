@@ -62,10 +62,14 @@ vi.mock('fs', async (importOriginal) => {
 // shared-state-path mock: returns the per-test temp dir so the real
 // AttachmentManager (which the tool instantiates internally) reads from the
 // fixture laid down by `seedAttachment`. Hoisted ref so the factory stays stable.
-vi.mock('../../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: () => mocks.sharedStatePath,
-  assertSharedStoreAccessible: () => {},
-}));
+vi.mock('../../../utils/shared-state-path.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../utils/shared-state-path.js')>();
+  return {
+    ...actual,
+    getSharedStatePath: () => mocks.sharedStatePath,
+    assertSharedStoreAccessible: () => {},
+  };
+});
 
 // Imported AFTER mocks are registered.
 import { AttachmentManager } from '../AttachmentManager.js';

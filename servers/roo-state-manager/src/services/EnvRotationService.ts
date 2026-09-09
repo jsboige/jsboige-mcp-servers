@@ -11,6 +11,7 @@ import { promises as fs } from 'fs';
 import { join, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createLogger, Logger } from '../utils/logger.js';
+import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32; // 256 bits
@@ -174,9 +175,7 @@ export class EnvRotationService {
     error?: string;
   }): Promise<void> {
     const envDir = join(sharedStatePath, 'env');
-    if (!existsSync(envDir)) {
-      mkdirSync(envDir, { recursive: true });
-    }
+    ensureStoreSubdir(sharedStatePath, 'env');
     const auditPath = join(envDir, 'audit.jsonl');
     const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() }) + '\n';
     try {
@@ -247,7 +246,7 @@ export class EnvRotationService {
 
     // Write to shared state
     const envDir = join(sharedStatePath, 'env', service);
-    mkdirSync(envDir, { recursive: true });
+    ensureStoreSubdir(sharedStatePath, 'env', service);
 
     const encryptedPath = join(envDir, `${version}.enc`);
     await fs.writeFile(encryptedPath, wire, { mode: 0o600 });

@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'fs';
 import { join, resolve, dirname } from 'path';
-import { existsSync, copyFileSync, mkdirSync, statSync } from 'fs';
+import { existsSync, copyFileSync, statSync } from 'fs';
 import {
   BaselineConfig,
   BaselineFileConfig,
@@ -34,7 +34,7 @@ import { BaselineLoader } from './baseline/BaselineLoader.js';
 import { DifferenceDetector } from './baseline/DifferenceDetector.js';
 import { ChangeApplier } from './baseline/ChangeApplier.js';
 import { ConfigValidator } from './baseline/ConfigValidator.js';
-import { getSharedStatePath } from '../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 
 /**
  * Service BaselineService - Cœur de l'architecture baseline-driven
@@ -143,9 +143,7 @@ export class BaselineService {
         // #571: Créer le répertoire baselines si nécessaire
         if (machineId) {
           const baselineDir = join(sharedPath, 'baselines');
-          if (!existsSync(baselineDir)) {
-            mkdirSync(baselineDir, { recursive: true });
-          }
+          ensureStoreSubdir(sharedPath, 'baselines');
           // Écrire dans le fichier machine
           const machineBaselinePath = join(baselineDir, `${machineId}.json`);
           await fs.writeFile(machineBaselinePath, JSON.stringify(defaultBaselineFile, null, 2), 'utf-8');
@@ -223,9 +221,7 @@ export class BaselineService {
         // #571: Créer le répertoire baselines si nécessaire
         if (machineId) {
           const baselineDir = join(sharedPath, 'baselines');
-          if (!existsSync(baselineDir)) {
-            mkdirSync(baselineDir, { recursive: true });
-          }
+          ensureStoreSubdir(sharedPath, 'baselines');
           targetPath = join(baselineDir, `${machineId}.json`);
         }
 
@@ -530,11 +526,8 @@ export class BaselineService {
       const baselineDir = join(sharedPath, 'baselines');
       const machineBaselinePath = join(baselineDir, `${newBaseline.machineId}.json`);
 
-      // S'assurer que le répertoire baselines existe
-      if (!existsSync(baselineDir)) {
-        await fs.mkdir(baselineDir, { recursive: true });
-        this.logInfo('Répertoire baselines créé', { path: baselineDir });
-      }
+      // #3459 (b): le seul chemin sanctionné de création sous la racine du store
+      ensureStoreSubdir(sharedPath, 'baselines');
 
       // Sauvegarder l'ancienne baseline si demandé
       if (options.createBackup && existsSync(machineBaselinePath)) {

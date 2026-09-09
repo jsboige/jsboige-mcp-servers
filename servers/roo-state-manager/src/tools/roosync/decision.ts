@@ -22,6 +22,7 @@ import {
   createBackup,
   restoreBackup
 } from './utils/decision-helpers.js';
+import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { roosyncDecisionInfo, RooSyncDecisionInfoResult } from './decision-info.js';
 
 /**
@@ -265,6 +266,16 @@ export async function roosyncDecision(args: RooSyncDecisionArgs): Promise<RooSyn
         if (existsSync(roadmapPath)) filesToBackup.push(roadmapPath);
 
         if (filesToBackup.length > 0) {
+          // #3459 (b): le répertoire de backup passe par le writer sanctionné. Sur
+          // racine du store absente, le skip doit ARRÊTER l'opération — poursuivre
+          // vers createBackup laisserait son mkdir recréer l'arborescence depuis la
+          // racine et désarmer les gardes assertSharedStoreAccessible du process.
+          const backupRootStatus = ensureStoreSubdir(config.sharedPath, 'decisions', 'backups');
+          if (backupRootStatus === 'skipped-store-absent') {
+            throw new Error(
+              `Racine du store RooSync absente — backup impossible (fail-closed #3459): ${config.sharedPath}`
+            );
+          }
           const backupDir = join(config.sharedPath, 'decisions', 'backups');
           const backupInfo = createBackup(filesToBackup, backupDir);
           executionLog.push(`[INFO] Backup créé: ${backupInfo.files.length} fichier(s) dans ${backupInfo.backupDir}`);

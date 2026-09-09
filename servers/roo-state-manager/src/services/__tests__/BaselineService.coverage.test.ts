@@ -53,9 +53,13 @@ const {
 // Deterministic shared-state path — mocked at the SUT-import depth
 // (SUT imports '../utils/shared-state-path.js' from src/services/;
 //  from this test in src/services/__tests__/ that is '../../utils/...').
-vi.mock('../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: () => '/test/shared',
-}));
+vi.mock('../../utils/shared-state-path.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/shared-state-path.js')>();
+  return {
+    ...actual,
+    getSharedStatePath: () => '/test/shared',
+  };
+});
 
 // Full fs mock — INCLUDING mkdirSync (the nominal suite's mock omits it,
 // which is why the #571 default-create branches are cold).
@@ -261,7 +265,9 @@ describe('BaselineService — coverage complement (#833 C3)', () => {
   });
 
   it('loadBaseline(machineId): creates a default in baselines/ (mkdirSync) when nothing exists', async () => {
-    vi.mocked(existsSync).mockReturnValue(false); // machine, legacy, and baselineDir all absent
+    // #3459 fail-closed: ensureStoreSubdir skips if the STORE ROOT is absent, so
+    // stub the root present but every subpath (machine, legacy, baselineDir) absent.
+    vi.mocked(existsSync).mockImplementation((p) => np(p) === '/test/shared');
     mockBaselineLoaderInstance.loadBaseline.mockResolvedValue({ machineId: 'm1', version: '2.1.0' });
 
     await service.loadBaseline('m1');
@@ -270,13 +276,19 @@ describe('BaselineService — coverage complement (#833 C3)', () => {
     expect(np(vi.mocked(fs.writeFile).mock.calls[0][0])).toContain('baselines/m1.json');
   });
 
-  it('loadBaseline(machineId): skips mkdirSync when baselines/ already exists', async () => {
-    vi.mocked(existsSync).mockImplementation((p) => np(p).includes('/baselines') && !np(p).endsWith('.json'));
+  it('loadBaseline(machineId): fails closed — no baselines dir mkdir when the store root is absent', async () => {
+    // #3459: ensureStoreSubdir skips creation when the STORE ROOT (not the subdir)
+    // is missing. The old "skip when baselines/ already exists" optimization is
+    // superseded by the root guard; here the root is absent, so no baselines path
+    // may be handed to mkdirSync (the helper still logs — that logs-dir mkdir is
+    // `roo-state-manager-logs`, not `baselines`).
+    vi.mocked(existsSync).mockReturnValue(false);
     mockBaselineLoaderInstance.loadBaseline.mockResolvedValue({ machineId: 'm1', version: '2.1.0' });
 
     await service.loadBaseline('m1');
 
-    expect(mkdirSync).not.toHaveBeenCalled();
+    const baselinesMkdir = vi.mocked(mkdirSync).mock.calls.some((c) => /baselines/.test(String(c[0])));
+    expect(baselinesMkdir).toBe(false);
     expect(np(vi.mocked(fs.writeFile).mock.calls[0][0])).toContain('baselines/m1.json');
   });
 
@@ -294,7 +306,8 @@ describe('BaselineService — coverage complement (#833 C3)', () => {
 
   it('readBaselineFile(machineId): creates a default (mkdirSync + machine path) and uses "default-machine" when ROOSYNC_MACHINE_ID is unset', async () => {
     delete process.env.ROOSYNC_MACHINE_ID; // exercise createDefaultBaseline `|| 'default-machine'`
-    vi.mocked(existsSync).mockReturnValue(false);
+    // #3459 fail-closed: stub the store root present, all subpaths absent.
+    vi.mocked(existsSync).mockImplementation((p) => np(p) === '/test/shared');
 
     const res = await service.readBaselineFile('m3');
 

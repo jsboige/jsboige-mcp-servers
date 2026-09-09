@@ -7,7 +7,9 @@
  * @module tools/roosync/utils/decision-helpers.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Define mock functions using hoisted pattern before vi.mock()
 const mockFsFunctions = vi.hoisted(() => ({
@@ -218,19 +220,29 @@ describe('Interface - exports', () => {
 
 describe('createBackup', () => {
   let createBackup: typeof import('../../../../src/tools/roosync/utils/decision-helpers.js').createBackup;
+  let backupRoot: string;
+  let realFs: typeof import('node:fs');
 
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
     const module = await import('../../../../src/tools/roosync/utils/decision-helpers.js');
     createBackup = module.createBackup;
+    // #3459 : createBackup fait require('fs') (échappe au mock 'fs') et son mkdir
+    // est non récursif — le parent doit être un répertoire temp réel pré-créé,
+    // obtenu via importActual (le mock 'fs' capte aussi le specifier node:fs).
+    realFs = await vi.importActual<typeof import('node:fs')>('fs');
+    backupRoot = realFs.mkdtempSync(join(tmpdir(), 'decision-helpers-backup-'));
+  });
+
+  afterEach(() => {
+    realFs.rmSync(backupRoot, { recursive: true, force: true });
   });
 
   it('devrait retourner un objet avec les propriétés attendues', () => {
     const files = ['/path/to/file1.txt'];
-    const backupPath = '/tmp/backups';
 
-    const result = createBackup(files, backupPath);
+    const result = createBackup(files, backupRoot);
 
     expect(result).toHaveProperty('timestamp');
     expect(result).toHaveProperty('files');
@@ -239,10 +251,9 @@ describe('createBackup', () => {
 
   it('devrait gérer les fichiers inexistants sans erreur', () => {
     const files = ['/nonexistent/file.txt'];
-    const backupPath = '/tmp/backups';
 
     // Ne devrait pas lancer d'erreur même si le fichier n'existe pas
-    expect(() => createBackup(files, backupPath)).not.toThrow();
+    expect(() => createBackup(files, backupRoot)).not.toThrow();
   });
 });
 

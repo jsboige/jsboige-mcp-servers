@@ -30,9 +30,13 @@ vi.mock('child_process', () => ({
 
 // The SUT (src/services/InventoryCollector.ts) imports `../utils/shared-state-path.js` = src/utils/...
 // From this test file (src/services/__tests__/) that same module is `../../utils/shared-state-path.js`.
-vi.mock('../../utils/shared-state-path.js', () => ({
-  getSharedStatePath: vi.fn(() => '/mock/shared'),
-}));
+vi.mock('../../utils/shared-state-path.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/shared-state-path.js')>();
+  return {
+    ...actual,
+    getSharedStatePath: vi.fn(() => '/mock/shared'),
+  };
+});
 
 vi.mock('../../utils/logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
@@ -54,6 +58,9 @@ vi.mock('fs', () => {
   const api = {
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
+    // #3459: InventoryCollector routes inventories/ creation through
+    // ensureStoreSubdir, which imports { mkdirSync } from 'fs'.
+    mkdirSync: vi.fn(),
     promises,
   };
   return { ...api, default: api };

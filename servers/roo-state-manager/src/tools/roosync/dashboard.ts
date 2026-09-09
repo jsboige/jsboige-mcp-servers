@@ -38,7 +38,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
-import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
@@ -1183,7 +1183,7 @@ async function writeDashboardFile(
   opts?: { condensed?: boolean }
 ): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
-  await fs.mkdir(dir, { recursive: true });
+  ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
   const tmpPath = `${filePath}.tmp`;
 
@@ -1336,7 +1336,7 @@ async function appendDashboardIncremental(
   newMessageCount: number
 ): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
-  await fs.mkdir(dir, { recursive: true });
+  ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
   const tmpPath = `${filePath}.tmp`;
 
@@ -2407,7 +2407,7 @@ async function executeTruncationFallback(
 
   // Write archive file with template summary
   const archiveDir = getArchiveDir();
-  await fs.mkdir(archiveDir, { recursive: true });
+  ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
   const dateStr = now.replace(/[:.]/g, '-').substring(0, 19);
   const archivePath = path.join(archiveDir, `${key}-${dateStr}-fallback.md`);
 
@@ -2758,7 +2758,7 @@ async function condenseIntercom(
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
-  await fs.mkdir(archiveDir, { recursive: true });
+  ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
   const dateStr = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
   const archivePath = path.join(archiveDir, `${key}-${dateStr}.md`);
 
@@ -4137,7 +4137,7 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
 
   const dir = getDashboardsDir();
   try {
-    await fs.mkdir(dir, { recursive: true });
+    ensureStoreSubdir(getSharedStatePath(), 'dashboards');
     const files = await fs.readdir(dir);
     const mdFiles = files.filter(f => f.endsWith('.md') && !f.endsWith('.tmp'));
     const summaries: DashboardSummary[] = [];
@@ -4237,7 +4237,7 @@ async function cleanupStaleWorktreeDashboards(): Promise<number> {
 
         if (ageDays >= DASHBOARD_PROTECTION_DAYS && sizes.statusLength < WORKTREE_CLEANUP_MAX_STATUS_LENGTH) {
           const archiveDir = getArchiveDir();
-          await fs.mkdir(archiveDir, { recursive: true });
+          ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
           const archivePath = path.join(archiveDir, `${key}-wt-cleanup-${timestamp}.md`);
           const originalPath = path.join(dir, file);
@@ -4288,7 +4288,7 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
       // Archive before deleting (safety net for dashboards older than threshold)
       if (dashboard.intercom?.messages?.length > 0) {
         const archiveDir = getArchiveDir();
-        await fs.mkdir(archiveDir, { recursive: true });
+        ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
         const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const archivePath = path.join(archiveDir, `${key}-pre-delete-${now}.md`);
         const originalContent = await fs.readFile(filePath, 'utf8');
@@ -4349,7 +4349,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
   }
 
   const archiveDir = getArchiveDir();
-  await fs.mkdir(archiveDir, { recursive: true });
+  ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
 
   if (!args.archiveFile) {
     // Lister toutes les archives pour cette clé

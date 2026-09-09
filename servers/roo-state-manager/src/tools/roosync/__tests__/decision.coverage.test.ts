@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
     restoreBackup: vi.fn(),
     // decision-info
     roosyncDecisionInfo: vi.fn(),
+    // shared-state-path (#3459: apply route le backup via ensureStoreSubdir)
+    ensureStoreSubdir: vi.fn(),
     // fs (dynamic imports dans apply/rollback)
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
@@ -75,6 +77,12 @@ vi.mock('../decision-info.js', () => ({
     roosyncDecisionInfo: mocks.roosyncDecisionInfo,
 }));
 
+// #3459: decision.ts appelle ensureStoreSubdir avant createBackup — mocké pour
+// piloter les deux statuts ('ensured' par défaut, 'skipped-store-absent' à la carte).
+vi.mock('../../../utils/shared-state-path.js', () => ({
+    ensureStoreSubdir: mocks.ensureStoreSubdir,
+}));
+
 // fs dynamic imports : await import('fs') → mock
 vi.mock('fs', () => ({
     existsSync: mocks.existsSync,
@@ -100,6 +108,7 @@ beforeEach(() => {
     mocks.moveDecisionFile.mockReturnValue(undefined);
     mocks.updateRoadmapStatus.mockReturnValue(undefined);
     mocks.createBackup.mockReturnValue({ files: ['/shared/decisions/pending/DEC-001.json'], backupDir: '/shared/decisions/backups' });
+    mocks.ensureStoreSubdir.mockReturnValue('ensured');
     mocks.restoreBackup.mockReturnValue(['/shared/decisions/pending/DEC-001.json']);
     mocks.roosyncDecisionInfo.mockResolvedValue({ success: true, decisionId: 'DEC-001', action: 'info' });
 });
@@ -196,6 +205,24 @@ describe('roosyncDecision — coverage complement (cold branches)', () => {
             expect(mocks.createBackup).not.toHaveBeenCalled();
             const opts = mocks.formatDecisionResult.mock.calls[0][5];
             expect(opts.rollbackAvailable).toBe(false);
+        });
+
+        test('#3459: store root absent (skipped-store-absent) → fails closed, createBackup NOT called', async () => {
+            mocks.existsSync.mockReturnValue(true); // fichiers présents → branche backup
+            mocks.ensureStoreSubdir.mockReturnValue('skipped-store-absent');
+            const result = await roosyncDecision({ action: 'apply', decisionId: 'DEC-001' } as any);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Impossible de créer le backup');
+            expect(result.error).toContain('fail-closed #3459');
+            expect(mocks.createBackup).not.toHaveBeenCalled(); // la racine reste absente
+        });
+
+        test('#3459: store root absent + force=true → continue sans backup (WARN)', async () => {
+            mocks.existsSync.mockReturnValue(true);
+            mocks.ensureStoreSubdir.mockReturnValue('skipped-store-absent');
+            const result = await roosyncDecision({ action: 'apply', decisionId: 'DEC-001', force: true } as any);
+            expect(mocks.createBackup).not.toHaveBeenCalled();
+            expect(result).toBe(SENTINEL_RESULT); // formatDecisionResult — succès forcé
         });
 
         test('returns error when backup throws and force not set', async () => {

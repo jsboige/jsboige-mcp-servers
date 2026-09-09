@@ -12,7 +12,7 @@ import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roos
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { InventoryCollector } from '../../services/InventoryCollector.js';
@@ -265,9 +265,7 @@ async function handleUpdateAction(args: BaselineArgs, timestamp: string): Promis
         try {
           // S'assurer que le répertoire .rollback existe
           const rollbackDir = join(config.sharedPath, '.rollback');
-          if (!existsSync(rollbackDir)) {
-            mkdirSync(rollbackDir, { recursive: true });
-          }
+          ensureStoreSubdir(config.sharedPath, '.rollback');
           copyFileSync(baselinePath, backupPath);
           getLogger().info('✅ Baseline backup created', { backupPath, sourcePath: baselinePath });
         } catch (backupError) {
@@ -626,14 +624,9 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
       backupPath = join(sharedPath, '.rollback', `sync-config.ref.backup.${backupTimestamp}.json`);
 
       const backupDir = join(sharedPath, '.rollback');
-      if (!existsSync(backupDir)) {
-        // #2962 follow-up (ai-01 deep-file item 2): `execSync('mkdir -p ...')` goes through
-        // cmd.exe on Windows, where `-p` is not a flag → the mkdir fails, caught by the
-        // surrounding catch (warn-only) → backup dir silently not created before the
-        // writeFileSync below. Use the cross-platform node API instead (mkdirSync recursive
-        // == `mkdir -p` semantics). backupDir is absolute (sharedPath-derived), so no cwd.
-        mkdirSync(backupDir, { recursive: true });
-      }
+      // #3459 (b): création sous la racine via le helper sanctionné (remplace le
+      // mkdirSync récursif du follow-up #2962 — mêmes sémantiques mkdir -p).
+      ensureStoreSubdir(sharedPath, '.rollback');
 
       writeFileSync(backupPath, JSON.stringify(currentBaseline, null, 2), 'utf-8');
       backupCreated = true;

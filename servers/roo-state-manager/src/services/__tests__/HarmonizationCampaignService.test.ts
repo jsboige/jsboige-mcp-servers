@@ -153,6 +153,14 @@ describe('createCampaign', () => {
     expect(onDisk.canon.version).toBe('2026.09.08-1');
   });
 
+  test('#3459 fail-closed : racine du store absente => STORE_ABSENT, la racine N EST PAS recréée', async () => {
+    const absentRoot = join(fakeShared, 'absent-store-root'); // volontairement absent
+    const svc = makeService('myia-ai-01', { sharedStatePath: absentRoot });
+    await expect(svc.createCampaign(defaultCanonInput())).rejects.toThrow(/Racine du store RooSync absente/);
+    // la racine doit rester absente — le writer sanctionné refuse, aucun mkdir récursif ne la recrée
+    expect(existsSync(absentRoot)).toBe(false);
+  });
+
   test('canon invalide rejeté (chemin non allow-listé)', async () => {
     const svc = makeService();
     const input = defaultCanonInput();

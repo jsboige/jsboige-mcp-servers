@@ -14,10 +14,11 @@
  * @version 1.0.0
  */
 
-import { existsSync, promises as fs, mkdirSync } from 'fs';
+import { existsSync, promises as fs } from 'fs';
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../utils/logger.js';
+import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
 // #3151 Phase A — attachment payload dual-write to PG (bytea, env-gated, never throws)
 import { dualWriteRooSyncAttachmentToStore } from '../unified-store/roosync-channel-dual-write.js';
 
@@ -190,6 +191,7 @@ function withReadTimeout<T>(promise: Promise<T>, ms: number, label: string): Pro
  * Service de gestion des pièces jointes RooSync
  */
 export class AttachmentManager {
+  private readonly sharedStatePath: string;
   private attachmentsPath: string;
   private readonly readTimeoutMs: number;
 
@@ -224,6 +226,7 @@ export class AttachmentManager {
     readTimeoutMs: number = ATTACHMENT_READ_TIMEOUT_MS,
     private readonly completenessTtlMs: number = DEFAULT_COMPLETENESS_TTL_MS,
   ) {
+    this.sharedStatePath = sharedStatePath;
     this.attachmentsPath = join(sharedStatePath, 'attachments');
     this.readTimeoutMs = readTimeoutMs;
   }
@@ -245,9 +248,7 @@ export class AttachmentManager {
    * S'assure que le répertoire de base des attachments existe
    */
   private ensureAttachmentsDir(): void {
-    if (!existsSync(this.attachmentsPath)) {
-      mkdirSync(this.attachmentsPath, { recursive: true });
-    }
+    ensureStoreSubdir(this.sharedStatePath, 'attachments');
   }
 
   /**
@@ -276,8 +277,8 @@ export class AttachmentManager {
     const uuid = randomUUID();
     const attachmentDir = join(this.attachmentsPath, uuid);
 
-    // Créer le répertoire UUID
-    await fs.mkdir(attachmentDir, { recursive: true });
+    // #3459 (b): création sous la racine via le helper sanctionné
+    ensureStoreSubdir(this.sharedStatePath, 'attachments', uuid);
 
     // Copier le fichier
     const targetFilePath = join(attachmentDir, resolvedFilename);

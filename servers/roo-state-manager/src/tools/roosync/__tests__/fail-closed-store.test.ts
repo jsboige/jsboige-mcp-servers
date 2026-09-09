@@ -17,13 +17,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import { roosyncDashboard } from '../dashboard.js';
 import { roosyncRead } from '../read.js';
 import { getMessage } from '../get_message.js';
 import { roosyncListAttachments } from '../roosync-attachments.tool.js';
 import { MessageManager } from '../../../services/MessageManager.js';
+import { BaselineService } from '../../../services/BaselineService.js';
 import { registerMachineId } from '../../../config/roosync-config.js';
+import { ensureStoreSubdir } from '../../../utils/shared-state-path.js';
 import { Logger } from '../../../utils/logger.js';
 
 // #858 / #864: these modules import a chat client for LLM condensation; keep it
@@ -60,6 +62,10 @@ describe('roosync fail-closed when store is absent (#3459)', () => {
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    // #3459: a mutated guard in ONE test must not poison the next (the
+    // recreated root makes every later root-absence assertion fail as a
+    // cascade). Each test leaves the absent store absent.
+    rmSync(MISSING_STORE, { recursive: true, force: true });
   });
 
   it('dashboard list fails (not an empty dashboards array)', async () => {
@@ -149,5 +155,56 @@ describe('roosync fail-closed when store is absent (#3459)', () => {
     const warned = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(warned).toContain(MISSING_STORE);
     warnSpy.mockRestore();
+  });
+
+  it('ensureStoreSubdir skips AND does not recreate the store root (arbitrage #3459 option b)', () => {
+    // The centralized helper owns ALL store-subdir creation. Neutralized, its
+    // guard recreates the root — the mutation counter-check detects it here
+    // AND in the MessageManager test above (both route through it).
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    const status = ensureStoreSubdir(MISSING_STORE, 'baselines');
+    expect(status).toBe('skipped-store-absent');
+    expect(existsSync(MISSING_STORE)).toBe(false);
+    expect(existsSync(path.join(MISSING_STORE, 'baselines'))).toBe(false);
+    const warned = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warned).toContain(MISSING_STORE);
+    warnSpy.mockRestore();
+  });
+
+  it('ensureStoreSubdir ensures silently when the root IS present (reverse — no false alert)', () => {
+    // Arbitration counter-requirement: a legitimate call on a healthy store
+    // must produce NO alert — otherwise the guard is noise and gets muted.
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    mkdirSync(MISSING_STORE, { recursive: true });
+    try {
+      const status = ensureStoreSubdir(MISSING_STORE, 'probe-subdir');
+      expect(status).toBe('ensured');
+      expect(existsSync(path.join(MISSING_STORE, 'probe-subdir'))).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      rmSync(MISSING_STORE, { recursive: true, force: true });
+    }
+    warnSpy.mockRestore();
+  });
+
+  it('BaselineService lazy writer skips AND does not recreate the store root', async () => {
+    // Residual-writer class from the arbitration audit: loadBaseline's
+    // self-heal path used to mkdirSync(join(sharedPath,'baselines')) — a
+    // single call on a fresh process recreated the root. Now routes through
+    // ensureStoreSubdir: whatever loadBaseline returns or throws, the absent
+    // root must still be absent afterwards.
+    const svc = new BaselineService(
+      { getSharedStatePath: () => MISSING_STORE, getBaselineServiceConfig: () => ({}) as any, getConfigVersion: async () => null },
+      {} as any,
+      {} as any
+    );
+    try {
+      await svc.loadBaseline('probe-machine');
+    } catch {
+      // ENOENT on the baseline write is the expected fail lane — the
+      // discriminating member is the root-absence assertion below.
+    }
+    expect(existsSync(MISSING_STORE)).toBe(false);
+    expect(existsSync(path.join(MISSING_STORE, 'baselines'))).toBe(false);
   });
 });

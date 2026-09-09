@@ -17,7 +17,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createLogger, type Logger } from '../../utils/logger.js';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
-import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { recordRooSyncActivityAsync } from '../roosync/heartbeat-activity.js';
 
 const logger: Logger = createLogger('ClaimTool');
@@ -108,8 +108,7 @@ async function readClaims(): Promise<ClaimsFile> {
 
 async function writeClaims(data: ClaimsFile): Promise<void> {
 	const filePath = getClaimsFilePath();
-	const dir = path.dirname(filePath);
-	await fs.mkdir(dir, { recursive: true });
+	ensureStoreSubdir(getSharedStatePath(), 'claims');
 	data.last_updated = new Date().toISOString();
 	await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }

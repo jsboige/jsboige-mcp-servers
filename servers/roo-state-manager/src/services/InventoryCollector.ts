@@ -17,7 +17,7 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { createLogger, Logger } from '../utils/logger.js';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
-import { getSharedStatePath } from '../utils/shared-state-path.js';
+import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -694,11 +694,8 @@ export class InventoryCollector {
       const sharedStatePath = getSharedStatePath();
       const inventoriesDir = join(sharedStatePath, 'inventories');
 
-      // Créer le répertoire s'il n'existe pas
-      if (!existsSync(inventoriesDir)) {
-        this.logger.info(`📁 Création du répertoire: ${inventoriesDir}`);
-        await fs.mkdir(inventoriesDir, { recursive: true });
-      }
+      // #3459 (b): création sous la racine via le helper sanctionné
+      ensureStoreSubdir(sharedStatePath, 'inventories');
 
       // Générer le nom de fichier avec timestamp
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');

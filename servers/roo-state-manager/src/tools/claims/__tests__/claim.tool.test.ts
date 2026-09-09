@@ -6,6 +6,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { mkdirSync } from 'fs';
 
 const { mockGetSharedStatePath } = vi.hoisted(() => ({
 	mockGetSharedStatePath: vi.fn()
@@ -15,10 +16,21 @@ const { mockGetLocalMachineId } = vi.hoisted(() => ({
 	mockGetLocalMachineId: vi.fn()
 }));
 
-vi.mock('../../../utils/shared-state-path.js', () => ({
-	getSharedStatePath: mockGetSharedStatePath,
-	assertSharedStoreAccessible: () => {}
-}));
+vi.mock('../../../utils/shared-state-path.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../../../utils/shared-state-path.js')>();
+	return {
+		...actual,
+		getSharedStatePath: mockGetSharedStatePath,
+		assertSharedStoreAccessible: () => {},
+		// #3459: the tool routes claims/ creation through the helper; the test pins
+		// getSharedStatePath to a fresh temp dir, so the helper must really mkdir
+		// (the fixture dir is never pre-created).
+		ensureStoreSubdir: (root: string, ...segs: string[]) => {
+			mkdirSync(path.join(root ?? mockGetSharedStatePath(), ...segs), { recursive: true });
+			return 'ensured';
+		}
+	};
+});
 
 vi.mock('../../../utils/message-helpers.js', () => ({
 	getLocalMachineId: mockGetLocalMachineId

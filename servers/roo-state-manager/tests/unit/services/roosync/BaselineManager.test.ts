@@ -3,7 +3,7 @@ import { BaselineManager } from '../../../../src/services/roosync/BaselineManage
 import { RooSyncConfig } from '../../../../src/config/roosync-config.js';
 import { BaselineService } from '../../../../src/services/BaselineService.js';
 import { ConfigComparator } from '../../../../src/services/roosync/ConfigComparator.js';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
 
 vi.mock('fs', () => ({
@@ -23,6 +23,7 @@ vi.mock('fs', () => ({
         unlink: vi.fn(),
     },
     existsSync: vi.fn(),
+    mkdirSync: vi.fn(),
 }));
 
 vi.mock('../../../../src/services/BaselineService.js');
@@ -115,14 +116,14 @@ describe('BaselineManager', () => {
 
     describe('createRollbackPoint', () => {
         it('should create rollback point', async () => {
-            (fs.mkdir as any).mockResolvedValue(undefined);
             (existsSync as any).mockReturnValue(true);
             (fs.copyFile as any).mockResolvedValue(undefined);
             (fs.writeFile as any).mockResolvedValue(undefined);
 
             await manager.createRollbackPoint('decision-1');
 
-            expect(fs.mkdir).toHaveBeenCalled();
+            // #3459: rollback dir creation is routed through ensureStoreSubdir → sync mkdirSync.
+            expect(mkdirSync).toHaveBeenCalled();
             expect(fs.copyFile).toHaveBeenCalled();
             expect(fs.writeFile).toHaveBeenCalled();
         });

@@ -74,11 +74,18 @@ vi.mock('os', async (importOriginal) => {
 });
 
 // Avoid hitting the real shared-state path on save_snapshot / trend_report.
-vi.mock('../../../utils/shared-state-path.js', () => ({
-    getSharedStatePath: () => sharedStatePathHolder.value,
-    tryGetSharedStatePath: () => sharedStatePathHolder.value,
-    assertSharedStoreAccessible: () => {},
-}));
+// #3459: save_snapshot routes tool-usage-snapshots/ creation through
+// ensureStoreSubdir, so keep the real helper (spread from importOriginal) —
+// it creates under the tmpDir held by sharedStatePathHolder, never the real store.
+vi.mock('../../../utils/shared-state-path.js', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../utils/shared-state-path.js')>();
+    return {
+        ...actual,
+        getSharedStatePath: () => sharedStatePathHolder.value,
+        tryGetSharedStatePath: () => sharedStatePathHolder.value,
+        assertSharedStoreAccessible: () => {},
+    };
+});
 
 import { handleRooSyncIndexing } from '../roosync-indexing.tool.js';
 

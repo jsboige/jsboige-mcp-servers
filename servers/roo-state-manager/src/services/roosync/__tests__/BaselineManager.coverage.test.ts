@@ -36,6 +36,9 @@ vi.mock('fs', () => ({
   promises: mockFs,
   existsSync: mockExistsSync,
   constants: { R_OK: 4 },
+  // #3459: BaselineManager.createRollbackPoint routes .rollback/ creation
+  // through ensureStoreSubdir, which imports { mkdirSync } from 'fs'.
+  mkdirSync: vi.fn(),
 }));
 
 import { BaselineManager } from '../BaselineManager.js';
@@ -321,7 +324,10 @@ describe('BaselineManager.createRollbackPoint', () => {
   });
 
   it('wraps a filesystem failure in ROLLBACK_CREATION_FAILED', async () => {
-    mockFs.mkdir.mockRejectedValue(new Error('EACCES'));
+    // #3459: creation is routed through ensureStoreSubdir (sync mkdirSync), so the
+    // failure must come from a post-creation fs op. Trigger it on metadata write.
+    mockExistsSync.mockReturnValue(true); // store root present → creation attempted
+    mockFs.writeFile.mockRejectedValue(new Error('EACCES'));
     const mgr = await makeManager();
 
     // catch → RooSyncServiceError (BaselineManager.ts:647-652).
