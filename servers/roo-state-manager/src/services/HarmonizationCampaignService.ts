@@ -30,16 +30,24 @@
  *    contrôle. Le verrou est RÉCUPÉRABLE : un détenteur crashé (kill/OOM, qui
  *    ne passe jamais au finally) ne bloque plus indéfiniment — son lock
  *    périmé (TTL explicite, COORDINATOR_LOCK_TTL_MS) est récupéré À GAGNANT
- *    UNIQUE (détachement rename atomique : un seul récupérateur gagne, les
- *    autres refusent CONCURRENT_WRITE — revue passe 3), et le release
- *    détache-then-vérifie vers une quarantaine à token unique : un détenteur
- *    qui reprend la main NE PEUT PAS supprimer le lock du nouveau détenteur,
- *    y compris si le remplacement survient exactement entre lecture et
- *    suppression (TOCTOU fermé). Un exclusive-create sur DriveFS
- *    asynchronement répliqué n'est PAS un verrou distribué : il sérialise les
- *    sessions du MÊME hôte (FS local cohérent) ; la contention inter-hôtes
- *    est prévenue par l'ownership (un seul propriétaire) et documentée comme
- *    best-effort. Aucune promesse de single-writer distribué.
+ *    UNIQUE pour la course simultanée TESTÉE même-hôte (détachement rename
+ *    atomique : un seul récupérateur gagne, les autres refusent
+ *    CONCURRENT_WRITE — revue passe 3), et le release détache-then-vérifie
+ *    vers une quarantaine à token unique : un détenteur qui reprend la main
+ *    ne supprime pas le lock du nouveau détenteur, y compris si le
+ *    remplacement survient exactement entre lecture et suppression (fenêtre
+ *    testée fermée). LIMITE EXPLICITE (revue passe 4) : ce protocole n'est NI
+ *    un verrou distribué NI une garantie d'exclusion pour TOUS les
+ *    interleavings imbriqués de récupération/remplacement (un détachement
+ *    transitoire du lock d'un tiers laisse le chemin libre le temps de la
+ *    restauration par link — deux sessions peuvent y être actives ; dégâts
+ *    bornés aux DMs/bookkeeping, WARNING). `fs.link` (restauration) n'a pas
+ *    été exercé sur DriveFS — tests sur FS local uniquement. Un
+ *    exclusive-create sur DriveFS asynchronement répliqué n'est PAS un verrou
+ *    distribué : il sérialise les sessions du MÊME hôte (FS local cohérent) ;
+ *    la contention inter-hôtes est prévenue par l'ownership (un seul
+ *    propriétaire) et documentée comme best-effort. Aucune promesse de
+ *    single-writer distribué.
  *  - Aucun daemon/cron : `remind` est appelé par le coordinateur sur sa cadence.
  *
  * Persistance : fichier JSON par campagne sous {shared}/harmonization/campaigns/,
@@ -499,24 +507,32 @@ export class HarmonizationCampaignService {
   /**
    * Verrou exclusive-create pour sérialiser les mutations coordinator du même
    * hôte — RÉCUPÉRABLE après crash (défaut review #2) et récupération À
-   * GAGNANT UNIQUE (revue passe 3) :
+   * GAGNANT UNIQUE pour la course simultanée TESTÉE (revue passe 3, limite
+   * explicitée passe 4) :
    *  - le lock porte `{owner, token, acquiredAt, expiresAt}` ;
    *  - un lock FRAIS (expiresAt non atteint) => refus CONCURRENT_WRITE ;
    *  - un lock PÉRIMÉ (détenteur crashé) => DÉTACHEMENT par rename vers une
    *    quarantaine `{id}.lock.stale-{tokenPérimé}` : le rename est ATOMIQUE,
-   *    UN SEUL récupérateur gagne la course (les autres reçoivent ENOENT =>
-   *    refus CONCURRENT_WRITE). Le gagnant VÉRIFIE le contenu détaché :
-   *    s'il ne correspond pas au lock périmé lu (un remplacement est survenu
-   *    entre lecture et détachement), il est RESTAURÉ par link conditionnel
-   *    et nous refusons — jamais supprimé. Seulement après vérification :
-   *    suppression de la quarantaine (chemin à token unique) puis open 'wx'
-   *    du nouveau lock ; EEXIST => un tiers a pris la place libre => refus.
-   *    Un unlink nu (sans rename-gate) laisserait l'entrelacement où le
-   *    perdant supprime le lock FRAIS du gagnant puis gagne le wx à son
-   *    tour : deux détenteurs. Le rename-gate ferme mécaniquement ce cas.
+   *    UN SEUL récupérateur gagne la course simultanée (les autres reçoivent
+   *    ENOENT => refus CONCURRENT_WRITE). Le gagnant VÉRIFIE le contenu
+   *    détaché : s'il ne correspond pas au lock périmé lu (un remplacement
+   *    est survenu entre lecture et détachement), il est RESTAURÉ par link
+   *    conditionnel et nous refusons — jamais supprimé. Seulement après
+   *    vérification : suppression de la quarantaine (chemin à token unique)
+   *    puis open 'wx' du nouveau lock ; EEXIST => un tiers a pris la place
+   *    libre => refus. Un unlink nu (sans rename-gate) laisserait
+   *    l'entrelacement où le perdant supprime le lock FRAIS du gagnant puis
+   *    gagne le wx à son tour : deux détenteurs — le rename-gate ferme ce cas
+   *    testé.
    *  - release : détachement vers une quarantaine À NOTRE TOKEN UNIQUE puis
-   *    vérification — la suppression n'a PLUS de fenêtre TOCTOU (voir
-   *    releaseCoordinatorLock).
+   *    vérification — la suppression n'a plus de fenêtre lecture→suppression
+   *    sur le chemin vivant (voir releaseCoordinatorLock).
+   * LIMITE EXPLICITE (revue passe 4) : PAS une garantie d'exclusion pour
+   * TOUS les interleavings imbriqués — pendant la fenêtre de restauration
+   * par link d'un lock détaché transitoirement, le chemin vivant est libre
+   * et une tierce session peut l'acquérir : deux sessions peuvent être
+   * actives (dégâts bornés aux DMs/bookkeeping, WARNING). `fs.link`
+   * (restauration) n'a pas été exercé sur DriveFS — tests sur FS local.
    * Pas un verrou distribué : exclusive-create/DriveFS asynchrone = best-effort
    * même hôte. Portée RÉELLE du `rev` (documentée, bornée) : save() est un
    * check-then-write NON atomique — deux writers partis du même rev peuvent
@@ -631,10 +647,10 @@ export class HarmonizationCampaignService {
   }
 
   /**
-   * Libère le verrou coordinateur SANS fenêtre TOCTOU (revue passe 3).
-   * L'ancien protocole lecture-token→unlink pouvait supprimer un lock REMPLACÉ
-   * entre les deux opérations (récupération survenue dans la fenêtre). Le
-   * nouveau protocole ne supprime JAMAIS le chemin vivant :
+   * Libère le verrou coordinateur SANS suppression directe du chemin vivant
+   * (revue passe 3). L'ancien protocole lecture-token→unlink pouvait
+   * supprimer un lock REMPLACÉ entre les deux opérations (récupération survenue
+   * dans la fenêtre). Le protocole actuel :
    *  1. lecture : token ≠ nôtre => no-op (détenu/remplacé par un autre) ;
    *  2. détachement atomique vers une quarantaine dont le NOM EMBARQUE NOTRE
    *     token unique (`{id}.lock.rm-{token}`) — seul notre propre release y
@@ -644,6 +660,11 @@ export class HarmonizationCampaignService {
    *     nôtre (remplacement survenu dans la fenêtre) => RESTAURATION par
    *     link conditionnel — le lock du nouveau détenteur n'est jamais
    *     supprimé, au pire brièvement détaché puis restauré.
+   * LIMITE EXPLICITE (revue passe 4) : pendant la brève fenêtre de
+   * détachement-avant-restauration, le chemin vivant est libre — une tierce
+   * session peut l'acquérir et être active en même temps que le détenteur
+   * remplacé (dégâts bornés aux DMs/bookkeeping, WARNING ; pas une garantie
+   * d'exclusion universelle). `fs.link` n'a pas été exercé sur DriveFS.
    */
   private async releaseCoordinatorLock(lockPath: string, token: string): Promise<void> {
     let current: CoordinatorLock | null = null;

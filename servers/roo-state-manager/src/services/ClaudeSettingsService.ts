@@ -148,9 +148,11 @@ export function looksLikeSecretValue(value: string): boolean {
  * `auth`, `sig`, `api_key`, `x-api-key`, `access_token`, `secretKey`,
  * `myAuthToken`… sont couverts ; `design`, `signal`, `author` (qui ne
  * contiennent `sig`/`auth` que comme sous-chaîne) restent lisibles. Découpage :
- * séparateurs non alphanumériques + frontière camelCase, mot comparé (en
- * minuscules) à un ensemble fermé. Une valeur courte qu'aucune heuristique de
- * CONTENU ne détecte (ex. `?auth=3f9b2c`) reste couverte par le NOM.
+ * séparateurs non alphanumériques + frontière camelCase + transitions
+ * lettre↔chiffre (`token2`, `key2`, `apikey2`, `sig2`, `auth0` — revue passe
+ * 4), mot comparé (en minuscules) à un ensemble fermé. Une valeur courte
+ * qu'aucune heuristique de CONTENU ne détecte (ex. `?auth=3f9b2c`) reste
+ * couverte par le NOM.
  */
 const SENSITIVE_QUERY_WORDS = new Set([
   'key', 'keys', 'token', 'tokens', 'secret', 'secrets', 'signature', 'signatures',
@@ -162,10 +164,15 @@ const SENSITIVE_QUERY_WORDS = new Set([
 
 function isSensitiveQueryParamName(key: string): boolean {
   if (!key) return false;
-  // Frontière camelCase ('secretKey' → 'secret Key') puis séparateurs non
-  // alphanumériques ('x-api-key' → ['x','api','key']).
+  // Frontières : camelCase ('secretKey' → 'secret Key'), séparateurs non
+  // alphanumériques ('x-api-key' → ['x','api','key']) ET transitions
+  // lettre↔chiffre ('token2'/'auth0' → ['token','2']/['auth','0'] — régression
+  // revue passe 4 : le suffixe numérique d'un mot sensible reste couvert,
+  // sans que 'design2'/'signal1' ne deviennent sensibles pour autant).
   const words = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([a-zA-Z])([0-9])/g, '$1 $2')
+    .replace(/([0-9])([a-zA-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean);

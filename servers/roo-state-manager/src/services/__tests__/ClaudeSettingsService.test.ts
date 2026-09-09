@@ -520,6 +520,30 @@ describe('redactValue — non-divulgation à la frontière d observation (défau
     expect(String(out)).toMatch(/myAuthToken=<redacted:sha256=[0-9a-f]{16}>/);
   });
 
+  test('suffixe numérique sur mot sensible couvert — token2/key2/apikey2/sig2/auth0 (régression revue passe 4)', () => {
+    // La version mot-entier SANS frontière lettre↔chiffre avait régressé la
+    // couverture de la version par sous-chaîne : '?token2=abc123' était
+    // publié brut. Frontière lettre→chiffre => ['token','2'] => couvert.
+    const cases: Array<[string, string]> = [
+      ['token2', 'abz2'],
+      ['key2', 'kxy9'],
+      ['apikey2', 'ap7z'],
+      ['sig2', 'sg5x'],
+      ['auth0', 'au3w'],
+    ];
+    for (const [param, secretVal] of cases) {
+      const out = redactValue('env.ANTHROPIC_BASE_URL', `https://relay.example/v1?${param}=${secretVal}`);
+      expect(String(out), `param ${param} : valeur jamais publiée`).not.toContain(secretVal);
+      expect(String(out), `param ${param} : marqueur empreinte présent`)
+        .toMatch(new RegExp(`${param}=<redacted:sha256=[0-9a-f]{16}>`));
+    }
+    // Acquis conservés : les bénins à suffixe numérique restent lisibles.
+    const benign = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/v1?design2=light&author3=mb&signal1=low');
+    expect(String(benign)).toContain('design2=light');
+    expect(String(benign)).toContain('author3=mb');
+    expect(String(benign)).toContain('signal1=low');
+  });
+
   test('idempotence : une valeur déjà redactée (nouveaux marqueurs) retournée telle quelle', () => {
     const once = redactValue('env.ANTHROPIC_BASE_URL', 'https://user:pw@relay.example/v1?auth=3f9b2z');
     expect(typeof once).toBe('string');

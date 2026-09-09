@@ -11,9 +11,13 @@
  *  - confirm/apply opèrent UNIQUEMENT sur la machine locale.
  *  - Pas de verrou distribué : mutations coordinateur sérialisées par un verrou
  *    local {id}.lock (owner/token/TTL explicite, récupération à GAGNANT UNIQUE
- *    après crash, release sans fenêtre TOCTOU) ; le `rev` de save() DÉTECTE
- *    les écritures concurrentes (check-then-write non atomique, détection
- *    best-effort) ; contention inter-hôtes prévenue par l'ownership.
+ *    pour la course simultanée testée même-hôte, release sans suppression
+ *    directe du chemin vivant) — NI verrou distribué NI garantie d'exclusion
+ *    pour tous les interleavings imbriqués (fenêtre transitoire de
+ *    restauration, dégâts bornés aux DMs/bookkeeping) ; le `rev` de save()
+ *    DÉTECTE les écritures concurrentes (check-then-write non atomique,
+ *    détection best-effort) ; contention inter-hôtes prévenue par
+ *    l'ownership.
  *  - Dispatch vers sa propre machine:workspace est refusé par MessageManager
  *    (anti-auto-message) : le coordinateur apply/confirm sa machine directement.
  */

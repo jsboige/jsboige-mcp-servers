@@ -103,10 +103,13 @@ restent liées à son hash).
   `https://h` en `https://h/`). Le côté live local est redacté comme le
   snapshot : une machine comparée à son propre snapshot ne voit pas de faux
   diff. La détection des query sensibles se fait **sur le nom, par MOT ENTIER**
-  (revue passe 3) : `auth`, `sig`, `api_key`, `x-api-key`, `access_token`,
-  `secretKey`, `myAuthToken`… sont couverts (frontières : séparateurs non
-  alphanumériques + camelCase), tandis que `design`, `signal`, `author` —
-  qui ne contiennent `sig`/`auth` que comme sous-chaîne — restent lisibles.
+  (revue passe 3 + frontières lettre↔chiffre passe 4) : `auth`, `sig`,
+  `api_key`, `x-api-key`, `access_token`, `secretKey`, `myAuthToken`, et les
+  suffixés numériques `token2`/`key2`/`apikey2`/`sig2`/`auth0`… sont couverts
+  (frontières : séparateurs non alphanumériques + camelCase + transitions
+  lettre↔chiffre), tandis que `design`, `signal`, `author` — qui ne
+  contiennent `sig`/`auth` que comme sous-chaîne — restent lisibles (suffixe
+  numérique compris : `design2`, `signal1`, `author3`).
   `?auth=3f9b2c` (valeur courte qu'aucune heuristique de contenu ne détecte)
   est couverte par le NOM du paramètre.
 - **Snapshot ≠ apply payload** : `apply` n'accepte que `canon.json` validé ;
@@ -150,13 +153,22 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
   `link` conditionnel, jamais supprimé) puis recrée le lock par `open 'wx'`
   (EEXIST => un tiers a pris la place => refus). Un unlink nu ou un
   tmp+rename laissaient l'entrelacement « le perdant supprime le lock frais
-  du gagnant puis gagne à son tour » : deux détenteurs — fermé
-  mécaniquement. Le **release ferme le TOCTOU lecture→unlink** (revue passe
-  3) : détachement vers une quarantaine à NOTRE token unique
-  (`{id}.lock.rm-{token}`), vérification du détaché, suppression seulement si
-  vérifié (fenêtre nulle : chemin unique par token) — un lock REMPLACÉ dans
-  la fenêtre est restauré par `link` conditionnel, jamais supprimé. Un lock
-  frais => refus `CONCURRENT_WRITE`. **Portée RÉELLE du `rev`** (bornée,
+  du gagnant puis gagne à son tour » : deux détenteurs — entrelacement fermé
+  par le rename-gate **pour la course simultanée testée**. Le **release ne
+  supprime jamais le chemin vivant** (revue passe 3) : détachement vers une
+  quarantaine à NOTRE token unique (`{id}.lock.rm-{token}`), vérification du
+  détaché, suppression seulement si vérifié (fenêtre nulle : chemin unique
+  par token) — un lock REMPLACÉ dans la fenêtre lecture→suppression est
+  restauré par `link` conditionnel, jamais supprimé. Un lock frais => refus
+  `CONCURRENT_WRITE`. **LIMITE EXPLICITE (revue passe 4)** : le protocole
+  ferme la course simultanée testée sur un même hôte mais n'est **ni** un
+  verrou distribué **ni** une garantie d'exclusion pour tous les
+  interleavings imbriqués de récupération/remplacement — pendant la fenêtre
+  de restauration d'un lock transitoirement détaché, le chemin vivant est
+  libre et une tierce session peut l'acquérir (deux sessions actives,
+  dégâts bornés aux DMs/bookkeeping, WARNING). **`fs.link` (restauration)
+  n'a pas été exercé sur DriveFS** — tests sur FS local uniquement.
+  **Portée RÉELLE du `rev`** (bornée,
   revue passe 3) : `save()` est un check-then-write NON atomique — deux
   writers partis du même `rev=N` peuvent tous deux écrire `rev=N+1` dans la
   fenêtre lecture→rename (last-writer-wins, perte possible) ; le `rev`
@@ -204,17 +216,23 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 
 - **Pas de verrou distribué.** Les mutations coordinateur sont sérialisées entre
   sessions du même hôte (verrou exclusive-create, owner/token/TTL 30 min,
-  récupération à gagnant unique, release sans fenêtre TOCTOU) ; la contention
-  inter-hôte est prévenue par l'ownership, non par un lock distribué — la
-  garantie de single-writer distribué n'est **pas** promesse. **Portée réelle
+  récupération à gagnant unique pour la course simultanée testée, release sans
+  suppression directe du chemin vivant) ; la contention inter-hôte est prévenue
+  par l'ownership, non par un lock distribué — la garantie de single-writer
+  distribué n'est **pas** promesse. **Limite explicite (revue passe 4)** : le
+  protocole **n'est pas** une garantie d'exclusion pour tous les
+  interleavings imbriqués de récupération/remplacement — pendant la fenêtre de
+  restauration d'un lock transitoirement détaché, une tierce session peut
+  acquérir le chemin libre (deux sessions actives, dégâts bornés aux
+  DMs/bookkeeping, WARNING) ; `fs.link` (restauration) n'a pas été exercé sur
+  DriveFS. **Portée réelle
   du `rev` (bornée, revue passe 3)** : check-then-write NON atomique — deux
   writers partis du même rev peuvent tous deux écrire rev+1 dans la fenêtre
   lecture→rename (last-writer-wins, une mise à jour peut être perdue) ; le
   `rev` DÉTECTE la divergence avant/après écriture, il ne l'empêche pas
-  mécaniquement. La double détention simultanée étant rendue mécaniquement
-  impossible pour les sessions du même hôte par la récupération à gagnant
-  unique, le `rev` n'a en pratique qu'un writer actif par hôte — mais cette
-  propriété découle du verrou, pas du `rev`. Le compromis du TTL : une
+  mécaniquement — le verrou même-hôte réduit en pratique le nombre de writers,
+  mais cette propriété découle du verrou (best-effort, pas du `rev`), pas
+  d'une impossibilité de double détention. Le compromis du TTL : une
   mutation qui durerait PLUS que le TTL verrait son lock récupéré par
   d'autres ; son `save` serait alors en concurrence de rev (détection
   best-effort, pas une garantie) — le TTL généreux (30 min vs des opérations
@@ -254,12 +272,14 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 
 ## Tests
 
-- `src/services/__tests__/ClaudeSettingsService.test.ts` (56 tests) — états,
+- `src/services/__tests__/ClaudeSettingsService.test.ts` (57 tests) — états,
   projections, `projectSettingsSafe`/`redactValue` (redaction URL + idempotence,
   défaut #1), **discrimination non réversible** (userinfo/query différents =>
   marqueurs différents, revue passe 2), **fail-closed des query auth/sig/
   api-key à valeurs courtes** (revue passe 2), **matching par mot entier**
-  (design/signal/author lisibles, camelCase couvert, revue passe 3), masquage
+  (design/signal/author lisibles, camelCase couvert, revue passe 3 ;
+  suffixes numériques `token2`/`key2`/… couverts sans rendre `design2`
+  sensible — revue passe 4), masquage
   des secrets à la sérialisation, validation canon (positif + rejets, modelMap
   défaut #6), apply (préservation/dry-run/idempotence/fail-closed/concurrent/
   backup), localisateur de snapshot.
