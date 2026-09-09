@@ -1,6 +1,6 @@
 # Recensement des exclusions CI — `vitest.config.ci.ts`
 
-**Dernier audit :** 2026-08-31 (#3322)
+**Dernier audit :** 2026-09-09 (#3549)
 **Mesure canonique :** `node scripts/count-ci-exclusions.mjs` (script, jamais à la main)
 **Drift-guard :** `tests/unit/ci-exclusion-drift-guard.test.ts` — échoue si le header du config dérive ou si une entrée ghost apparaît
 
@@ -8,9 +8,9 @@
 
 ## Mesures canoniques
 
-| Mesure | Valeur (2026-08-31) | Méthode |
+| Mesure | Valeur (2026-09-09) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **31** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **30** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
 | Fichiers effectivement non collectés en CI (vs run local) | **22** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
@@ -32,11 +32,12 @@ demande via `--collect`.
 | `servers/roo-state-manager/README.md` | « 33 platform-dependent test files » | comptait 2 ghosts ; « platform-dependent » inexact (GDrive/live/stress ≠ plateforme) |
 
 Alignement #3322 : toutes les sources citent désormais **« 31 fichiers de tests déclarés »** (unité :
-entrées de fichiers déclarées dans le config CI).
+entrées de fichiers déclarées dans le config CI). **#3549 (2026-09-09) :** `update-dashboard.integration.test.ts`
+retiré avec son module (update v3-native, couvert en CI) → **30 entrées**.
 
 ---
 
-## Les 31 entrées fichiers de test
+## Les 30 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -63,7 +64,7 @@ Dépendent de l'état réel GDrive/RooSync partagé (production), pas de mocks.
 | `src/tools/roosync/__tests__/machines.smoke.test.ts` | 3 | non |
 | `src/tools/roosync/__tests__/list-diffs.smoke.test.ts` | 3 | non |
 
-### APPDATA/GDRIVE — 9 entrées, 8 effectives (202 tests) + 1 no-op
+### APPDATA/GDRIVE — 8 entrées, 7 effectives (175 tests) + 1 no-op
 
 Intégrations contre le vrai GDrive (chemins Windows + état partagé).
 
@@ -75,7 +76,6 @@ Intégrations contre le vrai GDrive (chemins Windows + état partagé).
 | `src/tools/roosync/__tests__/decision.integration.test.ts` | 28 | non |
 | `src/tools/roosync/__tests__/diagnose.integration.test.ts` | 23 | non |
 | `src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts` | 13 | non |
-| `src/tools/roosync/__tests__/update-dashboard.integration.test.ts` | 27 | non |
 | `src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts` | 0 (no-op) | #1578 |
 | `tests/unit/tools/roosync/baseline.test.ts` | 20 | non |
 
@@ -118,7 +118,7 @@ collecte 0 test sans la variable, l'exclusion est déclarative mais sans effet s
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+5+9+7+1+1+1+1 = 31 · effectif : 22 fichiers / 404 tests**
+**Total déclaré : 6+5+8+7+1+1+1+1 = 30 · effectif : dernière mesure 2026-08-31 — 22 fichiers / 404 tests, à re-mesurer via `--collect` après #3549 (retrait d'un fichier effectif, 27 tests)**
 
 ---
 

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- **roosync_dashboard update — réécriture v3 create-or-replace (roo-extensions#3549, Option A)** : `action:"update"` rejoint le chemin v3 commun — `type` désormais **requis** (même clé que read/write/append), section `status` par défaut, modes replace/append/prepend, création du dashboard absent avec le contenu fourni, dual-write fichier + PostgreSQL, verrous et gardes de write (#3459/#3482/#1791). **Breaking** : les sections legacy `machine`/`global`/`decisions`/`metrics` (titres du `DASHBOARD.md` monolithique) et `intercom` (append-only → `action=append`) sont rejetées avec guidage v3. L'outil legacy `update-dashboard.ts` et ses 3 fichiers de tests (64 tests) sont supprimés ; l'exclusion CI associée disparaît (31→30, census aligné).
 - **tool_usage_stats — bornes de fenêtre inclusives du jour entier (#753, PR #1123)** : le filtre de fenêtre compare désormais des clés de jour (`YYYY-MM-DD`) au lieu d'horodatages contre un `endDate` à minuit UTC. Conséquence : **le jour de fin est compté en entier** — `end_date: '2026-05-21'` inclut désormais les appels du 21/05 à 10:00 (exclus avant). Toute comparaison `trend_report` / `save_snapshot` à cheval sur ce changement verra les chiffres du jour de fin monter sans autre explication. L'attribution des actions aval change aussi aux bornes : une action assistant hors fenêtre suivant un `tool_use` en fenêtre est attribuée au jour du `tool_use`.
 
 ### Fixed
