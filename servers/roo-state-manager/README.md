@@ -310,9 +310,9 @@ Affiche les détails techniques complets (métadonnées des actions) pour une t�
 
 ---
 
-## 📋 Liste Complète des Outils MCP (16 outils)
+## 📋 Liste Complète des Outils MCP (17 outils)
 
-Le roo-state-manager propose **16 outils MCP consolidés** organisés en 10 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391). Nomenclature des numéros CONS : [docs/CONS-CONSOLIDATION-HISTORY.md](docs/CONS-CONSOLIDATION-HISTORY.md).
+Le roo-state-manager propose **17 outils MCP consolidés** organisés en 10 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391 + roosync_harmonization #3545). Nomenclature des numéros CONS : [docs/CONS-CONSOLIDATION-HISTORY.md](docs/CONS-CONSOLIDATION-HISTORY.md).
 
 ### 💬 Conversations & Navigation (1 outil)
 | Outil | Description |
@@ -336,11 +336,12 @@ Le roo-state-manager propose **16 outils MCP consolidés** organisés en 10 cat�
 |-------|-------------|
 | `read_vscode_logs` | Read latest VSCode Extension Host, Renderer, and Roo-Code logs |
 
-### ⚙️ Configuration (3 outils)
+### ⚙️ Configuration (4 outils)
 | Outil | Description |
 |-------|-------------|
-| `roosync_compare_config` | Compare configs between machines (levels: Config, Environment, Hardware, Software, System) |
-| `roosync_config` | Config management (actions: collect, publish, apply, apply_profile; targets: modes, mcp, profiles, etc.) |
+| `roosync_compare_config` | Compare configs between machines (levels: Config, Environment, Hardware, Software, System; granularity `claude-settings` pour ~/.claude/settings.json avec statuts de couverture, #3545) |
+| `roosync_config` | Config management (actions: collect, publish, apply, apply_profile; targets: modes, mcp, profiles, claude-settings, etc.) |
+| `roosync_harmonization` | Campagne d'harmonisation flotte (~/.claude/settings.json) : canon immuable versionné, dispatch machine:workspace, confirmations par relecture live, relances idempotentes, re-détection de drift, close gating (#3545) |
 | `roosync_mcp_management` | MCP server management (actions: manage, rebuild, touch; subactions: read, write, backup, update_server, toggle_server) |
 
 ### 📋 Inventory & Baseline (2 outils)
@@ -370,7 +371,7 @@ Le roo-state-manager propose **16 outils MCP consolidés** organisés en 10 cat�
 |-------|-------------|
 | `claudish_traffic` | Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme TOUJOURS rendu jusqu'à l'heure courante, split cron/interactif par machine, « GAP: traffic STOPPED at <ts> » déclaratif — répond « ce trafic persiste-t-il ? » sans second appel ni grep. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, pas une panne. Ne throw jamais |
 
-**Total : 16 outils MCP consolidés** organisés pour couvrir l'ensemble du cycle de vie de gestion des conversations Roo.
+**Total : 17 outils MCP consolidés** organisés pour couvrir l'ensemble du cycle de vie de gestion des conversations Roo.
 
 ---
 

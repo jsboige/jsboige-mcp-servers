@@ -642,6 +642,76 @@ describe('compare-config', () => {
 			}
 		});
 
+		test('settings granularity: standalone corrompu => fallback vers le paquet versionné valide (défaut review #4)', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				mockExtractSettings.mockResolvedValue({
+					settings: { currentApiConfigName: 'Production GLM-5', autoCondenseContextPercent: 80 },
+					metadata: { machine: 'ai-01', keysCount: 2, totalKeys: 2, mode: 'safe' }
+				});
+				mockGetConfig.mockReturnValue({ machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path' });
+				// Le standalone existe mais est CORROMPU ; le paquet versionné existe et est VALIDE.
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					if (norm.includes('roo-settings/roo-settings.json')) return true;
+					return false;
+				});
+				mockReadFile.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('roo-settings-safe.json')) return Promise.resolve('{broken json');
+					if (norm.includes('roo-settings/roo-settings.json')) {
+						return Promise.resolve(JSON.stringify({ settings: { currentApiConfigName: 'Dev Local', autoCondenseContextPercent: 50 } }));
+					}
+					return Promise.resolve('{}');
+				});
+				mockReaddir.mockResolvedValue([{ name: 'v1.0.0-2026-09-08', isDirectory: () => true }]);
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+				// PAS de read-error : le fallback a trouvé le paquet versionné (défaut #4 corrigé).
+				expect(result.differences.find(d => d.path === 'settings.coverage.target')).toBeUndefined();
+				// Le diff clé prouve qu'il a utilisé le paquet versionné (Dev vs Production).
+				const profileDiff = result.differences.find(d => d.path === 'settings.currentApiConfigName');
+				expect(profileDiff).toBeDefined();
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
+		test('settings granularity: tous les candidats illisibles => read-error CRITICAL, PAS absence (défaut review #4)', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				mockExtractSettings.mockResolvedValue({
+					settings: { currentApiConfigName: 'Production' },
+					metadata: { machine: 'ai-01', keysCount: 1, totalKeys: 1, mode: 'safe' }
+				});
+				mockGetConfig.mockReturnValue({ machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path' });
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					if (norm.includes('roo-settings/roo-settings.json')) return true;
+					return false;
+				});
+				// TOUS les candidats sont corrompus (parse error) — JAMAIS convertis en absence.
+				mockReadFile.mockResolvedValue(Promise.resolve('{broken json'));
+				mockReaddir.mockResolvedValue([{ name: 'v1.0.0-2026-09-08', isDirectory: () => true }]);
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+				const cov = result.differences.find(d => d.path === 'settings.coverage.target');
+				expect(cov).toBeDefined();
+				expect(cov!.severity).toBe('CRITICAL');
+				expect(cov!.description).toMatch(/ILLISIBLE|illisible|corrompu/);
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
 		test('mode granularity compares Roo modes between machines', async () => {
 			mockGetInventory.mockResolvedValue({
 				inventory: {

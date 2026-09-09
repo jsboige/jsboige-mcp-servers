@@ -12,7 +12,7 @@ export type ClaudeCodeScope = 'user' | 'project' | 'settings';
 export interface ConfigManifestFile {
   path: string;
   hash: string;
-  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'roo_settings' | 'claude_config' | 'modes_yaml' | 'schedules_config' | 'other';
+  type: 'mode_definition' | 'mcp_config' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'roo_settings' | 'claude_config' | 'claude_settings' | 'modes_yaml' | 'schedules_config' | 'other';
   size: number;
 }
 
@@ -24,7 +24,7 @@ export interface ConfigManifest {
   files: ConfigManifestFile[];
 }
 
-export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'modes-yaml' | 'schtasks' | 'schedules' | `mcp:${string}` | `services:${string}` | `env:${string}`;
+export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'claude-settings' | 'modes-yaml' | 'schtasks' | 'schedules' | `mcp:${string}` | `services:${string}` | `env:${string}`;
 
 export interface CollectConfigOptions {
   targets: ConfigTarget[];
