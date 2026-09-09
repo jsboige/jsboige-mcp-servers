@@ -25,12 +25,18 @@
  *    sur la preuve participant.
  *  - Mutations coordinateur : dispatches/reminders/close = opérations du
  *    PROPRIÉTAIRE (createdBy) uniquement, sérialisées par un verrou
- *    exclusive-create local ({campaigns}/{id}.lock) + jeton de concurrence
- *    optimiste (rev) en point de contrôle. Un exclusive-create sur DriveFS
- *    asynchronement répliqué n'est PAS un verrou distribué : il sérialise les
- *    sessions du MÊME hôte (FS local cohérent) ; la contention inter-hôtes est
- *    prévenue par l'ownership (un seul propriétaire) et documentée comme
- *    best-effort. Aucune promesse de single-writer distribué.
+ *    exclusive-create local ({campaigns}/{id}.lock, métadonnées owner/token/
+ *    acquiredAt/expiresAt) + jeton de concurrence optimiste (rev) en point de
+ *    contrôle. Le verrou est RÉCUPÉRABLE : un détenteur crashé (kill/OOM, qui
+ *    ne passe jamais au finally) ne bloque plus indéfiniment — son lock
+ *    périmé (TTL explicite, COORDINATOR_LOCK_TTL_MS) est récupéré par
+ *    écrasement atomique, et le release par token garantit qu'un détenteur
+ *    qui reprend la main NE PEUT PAS supprimer le lock du nouveau détenteur
+ *    (défaut review #2). Un exclusive-create sur DriveFS asynchronement
+ *    répliqué n'est PAS un verrou distribué : il sérialise les sessions du
+ *    MÊME hôte (FS local cohérent) ; la contention inter-hôtes est prévenue
+ *    par l'ownership (un seul propriétaire) et documentée comme best-effort.
+ *    Aucune promesse de single-writer distribué.
  *  - Aucun daemon/cron : `remind` est appelé par le coordinateur sur sa cadence.
  *
  * Persistance : fichier JSON par campagne sous {shared}/harmonization/campaigns/,
@@ -77,6 +83,29 @@ export interface CampaignDispatchEntry {
 export interface CampaignReminderEntry {
   at: string;
   messageId: string;
+}
+
+/**
+ * Péremption EXPLICITE du verrou coordinateur (défaut review #2) : un
+ * détenteur crashé (kill/OOM après acquisition) ne bloque plus indéfiniment
+ * dispatch/remind/close — son lock devient récupérable après TTL. Généreux :
+ * les mutations coordinateur durent des secondes ; 30 min couvre une pause
+ * longue sans permettre un vol de lock en cours d'opération.
+ */
+export const COORDINATOR_LOCK_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Métadonnées du verrou coordinateur `{campaigns}/{id}.lock` (défaut review #2) :
+ * owner (machine), token unique par acquisition (le release ne supprime QUE le
+ * lock qui porte notre token — un détenteur qui reprend la main après crash ne
+ * peut pas supprimer le lock du nouveau détenteur), acquiredAt/expiresAt
+ * (politique de péremption + récupération).
+ */
+export interface CoordinatorLock {
+  owner: string;
+  token: string;
+  acquiredAt: string;
+  expiresAt: string;
 }
 
 /** Confirmation immuable (événement) — jamais réécrite (append-only). */
@@ -418,24 +447,91 @@ export class HarmonizationCampaignService {
     }
   }
 
-  /** Verrou exclusive-create pour sérialiser les mutations coordinator du même hôte. */
+  /**
+   * Verrou exclusive-create pour sérialiser les mutations coordinator du même
+   * hôte — RÉCUPÉRABLE après crash (défaut review #2) :
+   *  - le lock porte `{owner, token, acquiredAt, expiresAt}` ;
+   *  - un lock FRAIS (expiresAt non atteint) => refus CONCURRENT_WRITE ;
+   *  - un lock PÉRIMÉ (détenteur crashé : kill/OOM, jamais passé au finally)
+   *    => récupération par écrasement atomique tmp+rename ;
+   *  - le release ne supprime le lock QUE s'il porte encore NOTRE token : un
+   *    détenteur qui reprend la main après un crash (dont le lock périmé a été
+   *    récupéré) ne peut PAS supprimer le lock du nouveau détenteur.
+   * Pas un verrou distribué : exclusive-create/DriveFS asynchrone = best-effort
+   * même hôte ; la cohérence des DONNÉES reste portée par le CAS `rev` (le vol
+   * d'un lock volé ne peut pas corrompre le record — le save échoue sur rev).
+   */
   private async acquireCoordinatorLock(id: string): Promise<() => Promise<void>> {
     await fs.mkdir(this.campaignsDir, { recursive: true });
     const lockPath = join(this.campaignsDir, `${id}.lock`);
+    const token = this.eventIdGen();
+    const nowMs = this.now().getTime();
+    const meta: CoordinatorLock = {
+      owner: this.deps.machineId,
+      token,
+      acquiredAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs + COORDINATOR_LOCK_TTL_MS).toISOString(),
+    };
+
+    let created = false;
     let handle;
     try {
       handle = await fs.open(lockPath, 'wx');
-    } catch {
-      throw new HarmonizationCampaignError(
-        `Opération coordinateur concurrente sur ${id} (verrou ${id}.lock présent — une autre session du propriétaire agit) — relire et rejouer.`,
-        'CONCURRENT_WRITE',
-        { id }
-      );
+      created = true;
+      try {
+        await handle.writeFile(stableJson(meta), 'utf-8');
+      } finally {
+        await handle.close();
+      }
+    } catch (err) {
+      if (created) {
+        // Lock créé par nous mais écriture échouée : on en est propriétaire,
+        // on le retire pour ne pas laisser un lock vide permanent.
+        try { await fs.unlink(lockPath); } catch { /* best-effort */ }
+      }
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'EEXIST') throw err;
+
+      // Lock présent : juger sa fraîcheur — métadonnées si lisibles, sinon
+      // mtime du fichier (lock corrompu = vraisemblablement un crash d'écriture).
+      let existing: CoordinatorLock | null = null;
+      let mtimeMs = 0;
+      try {
+        const [raw, st] = await Promise.all([fs.readFile(lockPath, 'utf-8'), fs.stat(lockPath)]);
+        mtimeMs = st.mtimeMs;
+        existing = JSON.parse(raw) as CoordinatorLock;
+      } catch { /* illisible — fraîcheur par mtime seule */ }
+      const freshUntilMs = existing && typeof existing.expiresAt === 'string' && !Number.isNaN(Date.parse(existing.expiresAt))
+        ? Date.parse(existing.expiresAt)
+        : mtimeMs + COORDINATOR_LOCK_TTL_MS;
+      if (nowMs < freshUntilMs) {
+        throw new HarmonizationCampaignError(
+          `Opération coordinateur concurrente sur ${id} (verrou ${id}.lock détenu par ${existing?.owner ?? '?'} jusqu'à ${new Date(freshUntilMs).toISOString()} — une autre session du propriétaire agit) — relire et rejouer.`,
+          'CONCURRENT_WRITE',
+          { id, lockOwner: existing?.owner, expiresAt: existing?.expiresAt }
+        );
+      }
+      // Lock PÉRIMÉ (détenteur crashé) — récupération : écrasement atomique.
+      const tmp = `${lockPath}.tmp-${process.pid}-${nowMs}-${token.slice(0, 6)}`;
+      await fs.writeFile(tmp, stableJson(meta), 'utf-8');
+      await fs.rename(tmp, lockPath);
     }
-    return async () => {
-      try { await handle.close(); } catch { /* déjà fermé */ }
-      try { await fs.unlink(lockPath); } catch { /* déjà supprimé */ }
-    };
+    return () => this.releaseCoordinatorLock(lockPath, token);
+  }
+
+  /**
+   * Libère le verrou coordinateur UNIQUEMENT s'il porte encore NOTRE token
+   * (défaut review #2) : après récupération d'un lock périmé, le détenteur
+   * précédent (qui reprend la main après son crash) ne peut PAS supprimer le
+   * lock du nouveau détenteur — son release est un no-op silencieux.
+   */
+  private async releaseCoordinatorLock(lockPath: string, token: string): Promise<void> {
+    let current: CoordinatorLock | null = null;
+    try {
+      current = JSON.parse(await fs.readFile(lockPath, 'utf-8')) as CoordinatorLock;
+    } catch { return; /* lock absent/illisible — rien à libérer */ }
+    if (!current || current.token !== token) return; // détenu par un autre — pas le nôtre
+    try { await fs.unlink(lockPath); } catch { /* déjà supprimé */ }
   }
 
   private assertOwner(record: HarmonizationCampaignRecord): void {
@@ -519,9 +615,18 @@ export class HarmonizationCampaignService {
     };
   }
 
+  /**
+   * Confirmation valide = un événement 'confirm' récent LIÉ au canon courant.
+   * La provenance 'live-read' est STRUCTURELLE : le type
+   * CampaignConfirmedObservation n'admet que source: 'live-read' (confirm()
+   * écrit exclusivement depuis une relecture live) — re-vérifier
+   * `c.provenance === 'live-read'` était tautologique (toujours vrai) et a été
+   * retiré (défaut review mineur). Le champ `provenance` de la confirmation
+   * dérivée reste publié à titre documentaire.
+   */
   private async hasValidConfirmation(record: HarmonizationCampaignRecord, machine: string): Promise<boolean> {
     const c = await this.latestConfirmation(record, machine);
-    return !!c && c.canonHash === record.canon.hash && c.provenance === 'live-read';
+    return !!c && c.canonHash === record.canon.hash;
   }
 
   private async lastFailedAttempt(record: HarmonizationCampaignRecord, machine: string): Promise<CampaignFailedObservation | undefined> {
@@ -836,6 +941,17 @@ Applique puis confirme :
   ): Promise<{ status: 'confirmed' | 'mismatch' | 'unreadable'; observedHash?: string; detail: string }> {
     const record = await this.load(id);
     const machine = this.deps.machineId;
+
+    // Refus sur campagne fermée (défaut review mineur) : une confirmation ne
+    // doit pas s'accumuler sur une campagne close — plus personne ne la lit,
+    // et close gating l'ignore de toute façon. Bump de version pour ré-harmoniser.
+    if (record.status === 'closed') {
+      throw new HarmonizationCampaignError(
+        `Campagne ${id} fermée le ${record.closedAt ?? '?'} — confirmation refusée. Créer une nouvelle version (canon immuable) pour ré-harmoniser.`,
+        'CAMPAIGN_CLOSED',
+        { id, closedAt: record.closedAt }
+      );
+    }
 
     const read = await readClaudeSettingsFile(this.deps.settingsPath);
     if (read.state === 'missing' || read.state === 'invalid') {

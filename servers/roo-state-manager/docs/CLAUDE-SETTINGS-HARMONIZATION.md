@@ -61,7 +61,7 @@ N diffs `present_absent` (fix du 80/80 mesuré le 08/09).
 create   → canon {version, mode, keys} + fleet ["machine"|"machine:workspace"] [+ exceptions {machine: [chemins]}]
 dispatch → DM par destinataire (idempotent, force=true pour renvoyer)
 apply    → applique le canon au settings LOCAL uniquement (dry_run supporté)
-confirm  → RELIT le settings local en live, atteste le hash observé
+confirm  → RELIT le settings local en live, atteste le hash observé (refusé sur campagne fermée)
 remind   → relance les non-confirmés (cooldown 12 h par défaut, idempotent)
 status   → par machine : confirmation + alignment (aligned/drifted/no-snapshot/…) en UN appel
 list     → campagnes (actives par défaut)
@@ -86,16 +86,25 @@ restent liées à son hash).
 - **Valeurs de canon validées** : scalaires uniquement ; patterns secrets
   rejetés (`sk-`, `ghp_`, hex-64, `BEGIN PRIVATE KEY`, `Bearer`, `token=…`) ;
   les `*_BASE_URL` doivent être http(s), sans credentials inline, sans query à
-  paramètre suspect. `modelMap.*` est couvert **par tier** (chemin point
+  paramètre suspect (fail-closed : `key`/`token`/`secret`/`signature`/
+  `password`/`credential` **et** `auth`/`sig`/`api_key`/`apikey`/`x-api-key`/
+  `access_key`/`access_token`/`private_key`/`session`/`nonce`/`bearer`).
+  `modelMap.*` est couvert **par tier** (chemin point
   scalaire) — un objet `modelMap` opaque est rejeté (scalaires uniquement).
 - **Redaction à la frontière d'observation** (`redactValue`) : une `*_BASE_URL`
-  est scrubée (userinfo → `<credentials@>`, query sensible → `<redacted>`)
-  dans le snapshot ET l'affichage de compare — jamais le raw, y compris pour
-  une URL malformée (digest complet). La redaction est **idempotente** et
-  préserve le path/order d'origine (ne normalise pas `https://h` en `https://h/`),
-  si bien que deux URL distinctes restent distinctes (pas de conformité
-  fabriquée). Le côté live local est redacté comme le snapshot : une machine
-  comparée à son propre snapshot ne voit pas de faux diff.
+  est scrubée (userinfo → `<credentials:sha256=…>`, valeur de query sensible →
+  `<redacted:sha256=…>`) dans le snapshot ET l'affichage de compare — jamais le
+  raw, y compris pour une URL malformée (digest complet). L'empreinte est
+  **non réversible** (sha256, sens unique) mais **discriminante** : deux
+  credentials DIFFÉRENTS sur le même host/path produisent deux marqueurs
+  différents — compare_config voit la divergence (cohérent avec `confirm()`),
+  la redaction ne fabrique NI conformité NI alignement. La redaction est
+  **idempotente** et préserve le path/order d'origine (ne normalise pas
+  `https://h` en `https://h/`). Le côté live local est redacté comme le
+  snapshot : une machine comparée à son propre snapshot ne voit pas de faux
+  diff. La détection des query sensibles est **fail-closed sur le nom** :
+  `?auth=3f9b2c` (valeur courte qu'aucune heuristique de contenu ne détecte)
+  est couverte par le NOM du paramètre.
 - **Snapshot ≠ apply payload** : `apply` n'accepte que `canon.json` validé ;
   un snapshot est rejeté avec un message explicite.
 - **ensure-present par défaut** : les choix existants de la machine (fenêtre,
@@ -122,14 +131,23 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
   jamais réécrit). Deux confirmations simultanées — machines différentes OU
   sessions du même hôte — produisent deux événements disjoints ; aucune
   confirmation ne peut en effacer une autre.
-- **Mutations coordinateur = propriétaire sauf (défaut #2).** `dispatch`,
-  `remind`, `close` ne s'exécutent que si `createdBy === machineId`
-  (sinon `NOT_OWNER`), sérialisées par un verrou exclusive-create local
-  (`{campaigns}/{id}.lock`) + jeton d'optimisme `rev` (CAS en point de
-  contrôle). Un exclusive-create sur DriveFS asynchrone n'est **pas** un verrou
-  distribué : il sérialise les sessions du même hôte (FS local cohérent) ; la
-  contention inter-hôte est prévenue par l'ownership. **Aucune promesse de
-  single-writer distribué** — documentation explicite.
+- **Mutations coordinateur = propriétaire sauf (défaut #2), verrou RÉCUPÉRABLE
+  (revue passe 2).** `dispatch`, `remind`, `close` ne s'exécutent que si
+  `createdBy === machineId` (sinon `NOT_OWNER`), sérialisées par un verrou
+  exclusive-create local (`{campaigns}/{id}.lock`) portant
+  `{owner, token, acquiredAt, expiresAt}` + jeton d'optimisme `rev` (CAS en
+  point de contrôle). **Politique de péremption explicite** (TTL
+  `COORDINATOR_LOCK_TTL_MS`, 30 min) : un détenteur crashé (kill/OOM, jamais
+  passé au `finally`) ne bloque plus indéfiniment — son lock périmé est
+  **récupéré** par écrasement atomique (tmp+rename), et le **release par
+  token** garantit qu'un détenteur qui reprend la main après son crash ne peut
+  PAS supprimer le lock du nouveau détenteur. Un lock frais => refus
+  `CONCURRENT_WRITE`. Un exclusive-create sur DriveFS asynchrone n'est **pas**
+  un verrou distribué : il sérialise les sessions du même hôte (FS local
+  cohérent) ; la contention inter-hôte est prévenue par l'ownership, et la
+  cohérence des DONNÉES reste portée par le CAS `rev` (le vol d'un lock volé
+  ne peut pas corrompre le record — le save échoue sur rev). **Aucune promesse
+  de single-writer distribué** — documentation explicite.
 - **États disjoints + close gating sur preuve fraîche (défaut #3).** Le
   `status` dérive un état courant autoritaire (`state`) : `confirmed` exige
   preuve fraîche ET évidence courante alignée. Une confirmation historique ne
@@ -168,11 +186,15 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 ## Limitations assumées
 
 - **Pas de verrou distribué.** Les mutations coordinateur sont sérialisées entre
-  sessions du même hôte (verrou exclusive-create + `rev` CAS) ; la contention
-  inter-hôte est prévenue par l'ownership, non par un lock distribué — la
-  garantie de single-writer distribué n'est **pas** promesse. La preuve
-  participant, elle, est immuable et n'a nul besoin de lock : des événements
-  disjoints ne se perdent jamais.
+  sessions du même hôte (verrou exclusive-create, owner/token/TTL 30 min
+  récupérable, + `rev` CAS) ; la contention inter-hôte est prévenue par
+  l'ownership, non par un lock distribué — la garantie de single-writer
+  distribué n'est **pas** promesse. Le compromis du TTL : une mutation
+  coordinateur qui durerait PLUS que le TTL verrait son lock récupéré par
+  d'autres — son `save` échouerait alors sur `rev` (CAS), sans corruption ; le
+  TTL généreux (30 min vs des opérations de secondes) rend ce cas théorique.
+  La preuve participant, elle, est immuable et n'a nul besoin de lock : des
+  événements disjoints ne se perdent jamais.
 - **Le distant n'est jamais écrit.** `apply`/`confirm` opèrent sur la machine
   locale ; les machines distantes appliquent leur canon via le DM de dispatch.
 - **Drift distant = snapshot publié.** Le status distant compare au dernier
@@ -206,20 +228,28 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 
 ## Tests
 
-- `src/services/__tests__/ClaudeSettingsService.test.ts` (49 tests) — états,
+- `src/services/__tests__/ClaudeSettingsService.test.ts` (54 tests) — états,
   projections, `projectSettingsSafe`/`redactValue` (redaction URL + idempotence,
-  défaut #1), masquage des secrets à la sérialisation, validation canon (positif
-  + rejets, modelMap défaut #6), apply (préservation/dry-run/idempotence/
-  fail-closed/concurrent/backup), localisateur de snapshot.
-- `src/services/__tests__/HarmonizationCampaignService.test.ts` (27 tests) —
+  défaut #1), **discrimination non réversible** (userinfo/query différents =>
+  marqueurs différents, revue passe 2), **fail-closed des query auth/sig/
+  api-key à valeurs courtes** (revue passe 2), masquage des secrets à la
+  sérialisation, validation canon (positif + rejets, modelMap défaut #6),
+  apply (préservation/dry-run/idempotence/fail-closed/concurrent/backup),
+  localisateur de snapshot.
+- `src/services/__tests__/HarmonizationCampaignService.test.ts` (29 tests) —
   cycle de vie, immuabilité, claimed-hash jamais compté, relances idempotentes,
-  **concurrence** (événements immuables disjoints, verrou + ownership, défaut #2),
-  **états disjoints** (confirm-then-drift/missing/unreadable, défaut #3),
-  **exemptions avec provenance + conflits** (défaut #5), close gating, fail closed.
-- `src/tools/roosync/__tests__/compare-claude-settings.test.ts` (18 tests) —
+  **concurrence** (événements immuables disjoints, verrou + ownership, défaut
+  #2), **verrou récupérable** (frais refusé / périmé récupéré / l'ancien
+  détenteur ne peut pas supprimer le lock du nouveau, revue passe 2),
+  **confirm refusé sur campagne fermée** (revue passe 2), **états disjoints**
+  (confirm-then-drift/missing/unreadable, défaut #3), **exemptions avec
+  provenance + conflits** (défaut #5), close gating, fail closed.
+- `src/tools/roosync/__tests__/compare-claude-settings.test.ts` (20 tests) —
   garde de couverture (plus de fantômes), staleness soft/dur, diffs véridiques,
   exemptions + conflits (défaut #5), non-divulgation des credentials de
-  BASE_URL (défaut #1), modelMap par tier (défaut #6), detail=paths.
+  BASE_URL (défaut #1), **deux userinfo différents sur le même host/path =>
+  un diff produit** (revue passe 2, exigence explicite de la revue), modelMap
+  par tier (défaut #6), detail=paths.
 - `src/tools/roosync/__tests__/compare-config.test.ts` (63 tests) — + fallback
   Roo settings : standalone corrompu → paquet versionné ; tous candidats
   corrompus → read-error, jamais absence (défaut #4).

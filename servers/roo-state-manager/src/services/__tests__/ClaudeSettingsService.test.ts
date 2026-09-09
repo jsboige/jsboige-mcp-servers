@@ -416,16 +416,16 @@ describe('maskSecretValue', () => {
 });
 
 describe('redactValue — non-divulgation à la frontière d observation (défaut review #1)', () => {
-  test('BASE_URL avec credentials inline : userinfo masqué, jamais le raw', () => {
+  test('BASE_URL avec credentials inline : userinfo masqué avec empreinte, jamais le raw', () => {
     const out = redactValue('env.ANTHROPIC_BASE_URL', 'https://user:secret@relay.example/v1');
-    expect(String(out)).toBe('https://<credentials@>relay.example/v1');
+    expect(String(out)).toMatch(/^https:\/\/<credentials:sha256=[0-9a-f]{16}>@relay\.example\/v1$/);
     expect(String(out)).not.toContain('user');
     expect(String(out)).not.toContain('secret');
   });
 
-  test('BASE_URL avec query sensible : paramètre masqué, jamais la valeur, le non-sensible reste', () => {
+  test('BASE_URL avec query sensible : valeur masquée avec empreinte, le non-sensible reste', () => {
     const out = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/?token=abc123&channel=gpt');
-    expect(String(out)).toBe('https://relay.example/?token=<redacted>&channel=gpt');
+    expect(String(out)).toMatch(/^https:\/\/relay\.example\/\?token=<redacted:sha256=[0-9a-f]{16}>&channel=gpt$/);
     expect(String(out)).not.toContain('abc123');
   });
 
@@ -452,6 +452,61 @@ describe('redactValue — non-divulgation à la frontière d observation (défau
     expect(String(withCred)).not.toBe(String(noCred));
   });
 
+  test('userinfo DIFFÉRENTS sur même host/path => marqueurs DIFFÉRENTS (discrimination non réversible, défaut review #1)', () => {
+    const a = redactValue('env.ANTHROPIC_BASE_URL', 'https://user1:pw1@relay.example/v1');
+    const b = redactValue('env.ANTHROPIC_BASE_URL', 'https://user2:pw2@relay.example/v1');
+    // PAS de faux alignement : compare_config doit voir la divergence.
+    expect(a).not.toBe(b);
+    // host/path préservés ; les secrets ne fuient pas.
+    expect(String(a)).toContain('relay.example/v1');
+    expect(String(b)).toContain('relay.example/v1');
+    for (const leak of ['user1', 'pw1', 'user2', 'pw2']) {
+      expect(String(a)).not.toContain(leak);
+      expect(String(b)).not.toContain(leak);
+    }
+  });
+
+  test('valeurs de query secrètes DIFFÉRENTES => marqueurs DIFFÉRENTS (pas de conformité fabriquée)', () => {
+    const a = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/v1?auth=zulu9');
+    const b = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/v1?auth=omega7');
+    expect(a).not.toBe(b);
+    // non-divulgation : la valeur n'est attachée nulle part ('z'/'m'/'g'/'o'
+    // hors alphabet hex => impossible de la retrouver dans l'empreinte).
+    expect(String(a)).not.toContain('zulu9');
+    expect(String(b)).not.toContain('omega7');
+  });
+
+  test('query auth/sig/api-key avec valeurs COURTES => redacted, fail-closed (défaut review #3)', () => {
+    // Valeurs courtes qu'AUCUNE heuristique de contenu ne détecte — seul le
+    // NOM du paramètre doit déclencher la redaction (frontière publique).
+    const cases: Array<[string, string]> = [
+      ['auth', '3f9b2z'],   // exemple de la revue (variante non-hex)
+      ['sig', 'abz2'],
+      ['api_key', 'zz9'],
+      ['x-api-key', 'kx7'],
+      ['access_token', 'ty1'],
+    ];
+    for (const [param, secretVal] of cases) {
+      const out = redactValue('env.ANTHROPIC_BASE_URL', `https://relay.example/v1?${param}=${secretVal}`);
+      expect(String(out), `param ${param} : valeur jamais publiée`).not.toContain(secretVal);
+      expect(String(out), `param ${param} : marqueur empreinte présent`)
+        .toMatch(new RegExp(`${param.replace(/[-_]/g, '[-_]')}=<redacted:sha256=[0-9a-f]{16}>`));
+    }
+  });
+
+  test('param non sensible préservé tel quel (la redaction ne masque pas tout)', () => {
+    const out = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/v1?mode=fast&auth=3f9b2z');
+    expect(String(out)).toContain('mode=fast');
+    expect(String(out)).not.toContain('3f9b2z');
+  });
+
+  test('idempotence : une valeur déjà redactée (nouveaux marqueurs) retournée telle quelle', () => {
+    const once = redactValue('env.ANTHROPIC_BASE_URL', 'https://user:pw@relay.example/v1?auth=3f9b2z');
+    expect(typeof once).toBe('string');
+    const twice = redactValue('env.ANTHROPIC_BASE_URL', once as string);
+    expect(twice).toBe(once); // pas de double-hash (empreinte de l'empreinte)
+  });
+
   test('valeurs non sensibles (modèles, nombres) inchangées', () => {
     expect(redactValue('modelMap.opus', 'claude-opus-5[1m]')).toBe('claude-opus-5[1m]');
     expect(redactValue('env.CLAUDE_CODE_AUTO_COMPACT_WINDOW', 280000)).toBe(280000);
@@ -462,7 +517,7 @@ describe('redactValue — non-divulgation à la frontière d observation (défau
       env: { ANTHROPIC_BASE_URL: 'https://user:secret@relay.example', ANTHROPIC_API_KEY: 'sk-ant-leak' },
       model: 'sonnet',
     });
-    expect(String(p['env.ANTHROPIC_BASE_URL'])).toContain('<credentials@>');
+    expect(String(p['env.ANTHROPIC_BASE_URL'])).toContain('<credentials:sha256=');
     expect(String(p['env.ANTHROPIC_BASE_URL'])).not.toContain('secret');
     expect(p).not.toHaveProperty('env.ANTHROPIC_API_KEY');
     expect(p['model']).toBe('sonnet');
@@ -478,7 +533,7 @@ describe('buildSnapshot — BASE_URL sensible jamais publiée (défaut review #1
     const serialized = JSON.stringify(snap);
     expect(serialized).not.toContain('topsecret');
     expect(serialized).not.toContain('admin');
-    expect(String(snap.harmonization['env.ANTHROPIC_BASE_URL'])).toContain('<credentials@>');
+    expect(String(snap.harmonization['env.ANTHROPIC_BASE_URL'])).toContain('<credentials:sha256=');
   });
 });
 

@@ -142,8 +142,17 @@ export function looksLikeSecretValue(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some(p => p.test(value));
 }
 
-/** Paramètres de query suspects dans une URL (clé). */
-const URL_QUERY_FORBIDDEN_PARAMS = /key|token|secret|signature|password|credential/i;
+/**
+ * Paramètres de query suspects dans une URL (clé) — FAIL-CLOSED (défaut review
+ * #3) : couvre les familles usuelles d'auth (`auth`, `sig`, `api_key`,
+ * `apikey`, `x-api-key`, `access_key/token`, `private_key`, `session`, `nonce`,
+ * `bearer`) en plus des familles historiques. Une valeur courte qu'aucune
+ * heuristique de CONTENU ne détecte (ex. `?auth=3f9b2c`) reste couverte par le
+ * NOM du paramètre — sur cette frontière publique, la sous-redaction fuit,
+ * la sur-redaction (ex. `design=` contient `sig`) ne divulgue rien.
+ */
+const URL_QUERY_FORBIDDEN_PARAMS =
+  /key|token|secret|signature|password|passwd|credential|auth|authorization|authentication|sig|apikey|api[_-]?key|access[_-]?(key|token)|private[_-]?key|session|nonce|bearer/i;
 
 /**
  * Validation d'une valeur de canon. Retourne [] si sûre, sinon la liste des
@@ -294,6 +303,19 @@ export function maskSecretValue(value: unknown): string {
 }
 
 /**
+ * Empreinte NON RÉVERSIBLE d'un composant secret (sha256, préfixe 16 hex —
+ * défaut review #1) : discrimine deux secrets DISTINCTS dans la représentation
+ * de comparaison sans les exposer. Deux userinfo (ou deux valeurs de query
+ * sensibles) différents produisent deux marqueurs différents => compare_config
+ * voit la divergence (pas de conformité fabriquée) ; le secret lui-même ne
+ * quitte jamais la machine (sens unique). Déterministe : le même secret
+ * produit toujours la même empreinte, sur les deux côtés d'une comparaison.
+ */
+function secretDigest(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex').substring(0, 16);
+}
+
+/**
  * Redaction d'une valeur pour publication/comparaison — jamais de credential raw.
  *
  * #3545 défaut (review) #1 — `projectSettings` recopiait les valeurs allow-listées
@@ -302,23 +324,28 @@ export function maskSecretValue(value: unknown): string {
  * partagés et la sortie de compare. Cette fonction protège TOUS les chemins de
  * publication/affichage, y compris les valeurs malformées/inattendues.
  *
- * IMPORTANT — sémantique d'alignement séparée de la redaction : un userinfo ou
- * une query sensible n'est pas supprimé mais REMPLACÉ par un marqueur
- * (`<credentials@>`, `<redacted>`). Deux URLs identiques restent identiques
- * après redaction ; une URL AVEC credentials et une URL SANS restent distinctes
- * (la redaction ne peut PAS fabriquer une conformité là où il y a une
- * divergence). Une URL malformée est entièrement masquée (digest) — jamais
- * publiée brute.
+ * IMPORTANT — sémantique d'alignement séparée de la redaction, et DISCRIMINATION
+ * non réversible (défaut review #1, passe 2) : un userinfo est remplacé par
+ * `<credentials:sha256=…>` et une valeur de query sensible par
+ * `<redacted:sha256=…>`, où `…` est l'empreinte sha256 (sens unique) du composant
+ * secret. Deux URLs identiques restent identiques ; deux secrets DIFFÉRENTS sur
+ * le même host/path produisent deux marqueurs DIFFÉRENTS — compare_config voit
+ * la divergence (cohérent avec confirm(), qui travaille sur mesures réelles) et
+ * la redaction ne peut fabriquer NI une conformité NI un alignement. Le secret
+ * lui-même n'est jamais exposé. Une URL malformée est entièrement masquée
+ * (digest) — jamais publiée brute.
  */
 export function redactValue(path: string, value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'string') return value;
   // Idempotence : une valeur déjà redactée doit retourner telle quelle — sinon
   // projectSettingsSafe puis formatValue (même chemin) re-redacteraient et
-  // 'https://<credentials@>...' serait dégradé en digest (défaut review #1).
+  // 'https://<credentials:sha256=…>@…' serait dégradé en digest (défaut review #1).
   if (
-    value.includes('<credentials@>') ||
+    value.includes('<credentials@>') || // marqueurs hérités (anciens snapshots)
     value.includes('<redacted>') ||
+    value.includes('<credentials:sha256=') || // marqueurs courants (empreinte)
+    value.includes('<redacted:sha256=') ||
     /^<set:len=\d+:sha256=[0-9a-f]{8}>$/.test(value)
   ) {
     return value;
@@ -340,21 +367,31 @@ export function redactValue(path: string, value: unknown): unknown {
     // fabriquerait une conformité entre des URL distinctes.
     let out = value;
     if (url.username || url.password) {
-      // le userinfo est le premier '//x@' — sûr car url.username/password le confirment.
-      out = out.replace(/\/\/[^@/]+@/, '//<credentials@>');
+      // le userinfo est le premier '//x@' — sûr car url.username/password le
+      // confirment. L'empreinte (non réversible) du userinfo garde la
+      // discrimination : deux credentials différents => deux marqueurs
+      // différents (défaut review #1), sans jamais exposer le raw.
+      const m = /\/\/([^@/]+)@/.exec(out);
+      const userinfoSecret = m ? m[1] : `${url.username}:${url.password}`;
+      out = out.replace(/\/\/[^@/]+@/, `//<credentials:sha256=${secretDigest(userinfoSecret)}>@`);
     }
     const sensitiveParams = [...url.searchParams.keys()].filter(
       k => URL_QUERY_FORBIDDEN_PARAMS.test(k) || looksLikeSecretValue(url.searchParams.get(k) || '')
     );
     if (sensitiveParams.length > 0) {
       // Reconstruit la query en préservant l'ordre et les valeurs non sensibles,
-      // en remplaçant la VALEUR des paramètres sensibles par un marqueur lisible
-      // (pas d'encodage URL qui transformerait '<redacted>' en '%3Credacted%3E').
+      // en remplaçant la VALEUR des paramètres sensibles par un marqueur
+      // EMPREINTE (non réversible : deux valeurs différentes => deux marqueurs
+      // différents) — pas d'encodage URL qui transformerait le marqueur en
+      // '%3C…%3E'.
       const sensitive = new Set(sensitiveParams);
       const parts = url.search.slice(1).split('&').map(pair => {
         const eq = pair.indexOf('=');
         const k = eq >= 0 ? pair.slice(0, eq) : pair;
-        if (sensitive.has(k)) return `${k}=<redacted>`;
+        if (sensitive.has(k)) {
+          const decoded = url.searchParams.get(k) ?? (eq >= 0 ? pair.slice(eq + 1) : '');
+          return `${k}=<redacted:sha256=${secretDigest(decoded)}>`;
+        }
         return pair;
       });
       out = out.replace(/\?[^#]*/, `?${parts.join('&')}`);

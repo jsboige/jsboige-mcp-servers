@@ -22,6 +22,7 @@ import {
   HarmonizationCampaignService,
   SendMessageFn,
   CreateCampaignInput,
+  COORDINATOR_LOCK_TTL_MS,
 } from '../HarmonizationCampaignService.js';
 import { buildSnapshot, readClaudeSettingsFile, hashProjection, projectSettings } from '../ClaudeSettingsService.js';
 
@@ -108,6 +109,26 @@ function readEvents(campaignId: string, machine: string): Array<Record<string, u
 
 function readConfirmations(campaignId: string, machine: string): Array<Record<string, unknown>> {
   return readEvents(campaignId, machine).filter(e => e.kind === 'confirm');
+}
+
+/** Chemin du verrou coordinateur d'une campagne (défaut review #2). */
+function lockPathOf(campaignId: string): string {
+  return join(fakeShared, 'harmonization', 'campaigns', `${campaignId}.lock`);
+}
+
+/**
+ * Écrit un verrou coordinateur valide (simule un détenteur existant — frais
+ * ou crashé selon `acquiredAgoMs` vs COORDINATOR_LOCK_TTL_MS).
+ */
+function writeCoordinatorLock(campaignId: string, token: string, acquiredAgoMs: number): void {
+  mkdirSync(join(fakeShared, 'harmonization', 'campaigns'), { recursive: true });
+  const acquiredMs = clockMs - acquiredAgoMs;
+  writeFileSync(lockPathOf(campaignId), JSON.stringify({
+    owner: 'myia-ai-01',
+    token,
+    acquiredAt: new Date(acquiredMs).toISOString(),
+    expiresAt: new Date(acquiredMs + COORDINATOR_LOCK_TTL_MS).toISOString(),
+  }), 'utf-8');
 }
 
 afterEach(() => {
@@ -288,18 +309,50 @@ describe('concurrence — preuve participant immuable (défaut #2)', () => {
     expect(readConfirmations(rec.id, 'myia-po-2024')).toHaveLength(1);
   });
 
-  test('mutation coordinateur sous verrou : un dispatch concurrent est refusé (CONCURRENT_WRITE)', async () => {
+  test('mutation coordinateur sous verrou : un dispatch concurrent est refusé (CONCURRENT_WRITE) — lock FRAIS', async () => {
     const svc = makeService('myia-ai-01');
     const rec = await svc.createCampaign(defaultCanonInput());
-    // Verrou posé par une "autre session" du propriétaire => la mutation est refusée.
-    const lockDir = join(fakeShared, 'harmonization', 'campaigns');
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(join(lockDir, `${rec.id}.lock`), 'x');
+    // Verrou FRAIS posé par une "autre session" du propriétaire (acquis il y a
+    // 1 min, TTL 30 min — péremption non atteinte) => la mutation est refusée.
+    writeCoordinatorLock(rec.id, 'other-session-token', 60_000);
     await expect(svc.dispatch(rec.id)).rejects.toThrow(/concurrent/i);
     // verrou relâché => dispatch passe (aucune perte silencieuse).
-    rmSync(join(lockDir, `${rec.id}.lock`), { force: true });
+    rmSync(lockPathOf(rec.id), { force: true });
     const r = await svc.dispatch(rec.id);
     expect(r.sent).toHaveLength(2);
+  });
+
+  test('verrou coordinateur PÉRIMÉ (détenteur crashé) => RÉCUPÉRÉ, plus de blocage permanent (défaut review #2)', async () => {
+    const svc = makeService('myia-ai-01');
+    const rec = await svc.createCampaign(defaultCanonInput());
+    // Détenteur killé/OOM après acquisition, jamais passé au finally :
+    // lock acquis il y a TTL+1 ms — périmé au regard de la politique explicite.
+    writeCoordinatorLock(rec.id, 'crashed-holder', COORDINATOR_LOCK_TTL_MS + 1);
+    // La mutation du nouveau détenteur passe (récupération du lock périmé).
+    const r = await svc.dispatch(rec.id);
+    expect(r.sent).toHaveLength(2);
+    // Le lock de récupération a été relâché proprement en finally (token match).
+    expect(existsSync(lockPathOf(rec.id))).toBe(false);
+  });
+
+  test('le détenteur précédent ne peut PAS supprimer le lock du nouveau détenteur (release par token, défaut review #2)', async () => {
+    const svc = makeService('myia-ai-01');
+    const rec = await svc.createCampaign(defaultCanonInput());
+    const lockPath = lockPathOf(rec.id);
+    // Détenteur A crashé : lock périmé.
+    writeCoordinatorLock(rec.id, 'token-A-crashed', COORDINATOR_LOCK_TTL_MS + 1);
+    // Nouveau détenteur B récupère le lock périmé (token B généré).
+    const releaseB = await (svc as any).acquireCoordinatorLock(rec.id);
+    const lockB = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token: string };
+    expect(lockB.token).not.toBe('token-A-crashed');
+    // Le détenteur A "ressuscite" et exécute SON finally de release.
+    await (svc as any).releaseCoordinatorLock(lockPath, 'token-A-crashed');
+    // Le lock de B est INTACT — le release de A est un no-op.
+    const stillB = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token: string };
+    expect(stillB.token).toBe(lockB.token);
+    // Le release de B supprime bien SON propre lock.
+    await releaseB();
+    expect(existsSync(lockPath)).toBe(false);
   });
 
   test('mutation coordinateur : le propriétaire seul peut exécuter (ownership)', async () => {
@@ -468,6 +521,9 @@ describe('close — gating', () => {
     // dispatch/relance refusés sur campagne fermée
     await expect(svc.dispatch(rec.id)).rejects.toThrow(/fermée/);
     await expect(svc.remind(rec.id)).rejects.toThrow(/fermée/);
+    // confirm refusé sur campagne fermée (défaut review mineur) : une
+    // confirmation ne s'accumule pas sur une campagne close.
+    await expect(svc.confirm(rec.id)).rejects.toThrow(/fermée/);
   });
 
   test('fermeture propre quand toute la flotte est confirmée', async () => {

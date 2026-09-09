@@ -9,7 +9,10 @@
  * Limitations assumées (docs/CLAUDE-SETTINGS-HARMONIZATION.md) :
  *  - Canon immuable : changer = nouvelle version = nouvelle campagne.
  *  - confirm/apply opèrent UNIQUEMENT sur la machine locale.
- *  - Pas de verrou distribué : write atomique + relecture, collisions best-effort.
+ *  - Pas de verrou distribué : mutations coordinateur sérialisées par un verrou
+ *    local {id}.lock (owner/token/TTL explicite, RÉCUPÉRABLE après crash,
+ *    release par token) + CAS `rev` ; contention inter-hôtes prévenue par
+ *    l'ownership, best-effort documenté.
  *  - Dispatch vers sa propre machine:workspace est refusé par MessageManager
  *    (anti-auto-message) : le coordinateur apply/confirm sa machine directement.
  */

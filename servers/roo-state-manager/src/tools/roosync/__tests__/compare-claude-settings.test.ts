@@ -38,6 +38,7 @@ vi.mock('../../../services/RooSyncService.js', () => ({
 }));
 
 import { CompareConfigArgsSchema, roosyncCompareConfig } from '../compare-config.js';
+import { redactValue } from '../../../services/ClaudeSettingsService.js';
 
 let fakeShared: string;
 let fakeHome: string;
@@ -299,11 +300,45 @@ describe('Défaut review — non-divulgation des credentials de BASE_URL (défau
     publishRemoteSnapshot({ 'env.ANTHROPIC_BASE_URL': 'https://other-relay.example' });
     const result = await roosyncCompareConfig({ granularity: 'claude-settings', target: REMOTE });
     const urlDiff = result.differences.find(d => d.path === 'claude-settings.env.ANTHROPIC_BASE_URL');
-    expect(urlDiff?.source_value).toContain('<credentials@>');
+    expect(urlDiff?.source_value).toContain('<credentials:sha256=');
     expect(urlDiff?.target_value).toContain('https://other-relay.example');
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('topsecret');
     expect(serialized).not.toContain('admin');
+  });
+
+  test('userinfo DIFFÉRENTS sur le même host/path => un diff est produit (pas de faux alignement, défaut review #1)', async () => {
+    // Deux BASE_URL qui ne diffèrent QUE par les credentials. Le snapshot
+    // publié est déjà redacté (comme en production, via buildSnapshot) : sans
+    // discrimination non réversible, les deux côtés collapseaient sur le même
+    // marqueur et compare_config fabriquait un alignement que confirm() dément.
+    writeLocalSettings({
+      env: { ANTHROPIC_BASE_URL: 'https://user1:pw1@relay.example/v1' },
+    });
+    publishRemoteSnapshot({
+      'env.ANTHROPIC_BASE_URL': redactValue('env.ANTHROPIC_BASE_URL', 'https://user2:pw2@relay.example/v1'),
+    });
+    const result = await roosyncCompareConfig({ granularity: 'claude-settings', target: REMOTE });
+    const urlDiff = result.differences.find(d => d.path === 'claude-settings.env.ANTHROPIC_BASE_URL');
+    expect(urlDiff).toBeDefined(); // le diff EXISTE — pas de conformité fabriquée
+    expect(String(urlDiff?.source_value)).not.toBe(String(urlDiff?.target_value));
+    // et les credentials ne fuient pas dans la sortie
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('user1');
+    expect(serialized).not.toContain('pw1');
+    expect(serialized).not.toContain('user2');
+    expect(serialized).not.toContain('pw2');
+  });
+
+  test('userinfo IDENTIQUES sur le même host/path => pas de faux diff (empreinte déterministe)', async () => {
+    writeLocalSettings({
+      env: { ANTHROPIC_BASE_URL: 'https://user1:pw1@relay.example/v1' },
+    });
+    publishRemoteSnapshot({
+      'env.ANTHROPIC_BASE_URL': redactValue('env.ANTHROPIC_BASE_URL', 'https://user1:pw1@relay.example/v1'),
+    });
+    const result = await roosyncCompareConfig({ granularity: 'claude-settings', target: REMOTE });
+    expect(result.differences.filter(d => d.path.startsWith('claude-settings.env'))).toHaveLength(0);
   });
 
   test('BASE_URL propre identique des deux côtés => pas de faux diff malgré redaction', async () => {
