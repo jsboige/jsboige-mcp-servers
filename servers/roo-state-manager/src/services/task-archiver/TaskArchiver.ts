@@ -136,11 +136,15 @@ function transformClaudeCodeJsonl(jsonlLines: ClaudeCodeJsonlLine[]): ArchivedTa
  * stockage de masse, jamais consulte a chaud — elles doivent donc vivre a cote de
  * `.shared-state`, pas dedans, pour rester cloud-only.
  *
- * La resolution tolere les deux emplacements pendant la bascule de la flotte :
- * tant que les donnees n'ont pas ete deplacees, une machine deja a jour continue
- * de lire l'ancien chemin. L'ordre entre le deploiement du code et le deplacement
- * des donnees n'a donc pas d'importance, dans un sens comme dans l'autre.
+ * #3562 (09/09/2026) : la migration des donnees est jouee — le legacy
+ * `.shared-state/task-archive` (~7 700 archives, 7 machines) a ete deplace vers
+ * le sibling puis supprime. Le fallback legacy reste pour couvrir la fenetre de
+ * propagation Drive, mais sa re-detection pendant que le sibling est actif
+ * signale un hote pre-#608 (restart non joue) qui ecrit encore dans la zone
+ * epinglee : WARN une fois par process.
  */
+let warnedLegacyReappeared = false;
+
 function getArchiveBasePath(): string {
     if (process.env.ROOSYNC_ARCHIVE_PATH) {
         return process.env.ROOSYNC_ARCHIVE_PATH;
@@ -148,11 +152,19 @@ function getArchiveBasePath(): string {
 
     const shared = path.resolve(getSharedStatePath());
     const primary = path.join(path.dirname(shared), 'task-archive');
+    const legacy = path.join(shared, 'task-archive');
     if (existsSync(primary)) {
+        if (!warnedLegacyReappeared && existsSync(legacy)) {
+            warnedLegacyReappeared = true;
+            console.warn(
+                `[ARCHIVE] Anti-retour #3562: ${legacy} existe alors que ${primary} est actif — ` +
+                `un hote pre-#608 ecrit encore dans .shared-state (restart du). ` +
+                `Re-sweeper la migration apres le restart des hotes en dette.`
+            );
+        }
         return primary;
     }
 
-    const legacy = path.join(shared, 'task-archive');
     if (existsSync(legacy)) {
         return legacy;
     }

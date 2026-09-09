@@ -571,4 +571,26 @@ describe('TaskArchiver — racine d\'archive hors zone epinglee (#608)', () => {
 		expect(await resolvedBase()).toBe('/mock/elsewhere/archives');
 		expect(mockExistsSync).not.toHaveBeenCalled();
 	});
+
+	test('#3562 — WARN une seule fois si le legacy re-apparait avec le sibling actif', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			// Sibling ET legacy simultanement : le legacy re-cree par un hote
+			// pre-#608 ne doit pas detourner la resolution, seulement warn.
+			mockExistsSync.mockImplementation(() => true);
+
+			const first = await resolvedBase();
+			const second = await resolvedBase();
+
+			expect(first).not.toContain('.shared-state');
+			expect(second).not.toContain('.shared-state');
+			const legacyWarns = warnSpy.mock.calls.filter(
+				(c: any[]) => String(c[0]).includes('pre-#608')
+			);
+			expect(legacyWarns.length).toBe(1);
+			expect(String(legacyWarns[0][0])).toContain('.shared-state');
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
 });
