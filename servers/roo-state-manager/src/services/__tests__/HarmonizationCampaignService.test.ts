@@ -22,6 +22,7 @@ import {
   HarmonizationCampaignService,
   SendMessageFn,
   CreateCampaignInput,
+  CampaignServiceDeps,
   COORDINATOR_LOCK_TTL_MS,
 } from '../HarmonizationCampaignService.js';
 import { buildSnapshot, readClaudeSettingsFile, hashProjection, projectSettings } from '../ClaudeSettingsService.js';
@@ -42,7 +43,10 @@ const sendMessage: SendMessageFn = async (from, to, subject, body, _priority, ta
   return { id: `msg-${++seq}` };
 };
 
-function makeService(machineId = 'myia-ai-01'): HarmonizationCampaignService {
+function makeService(
+  machineId = 'myia-ai-01',
+  extra: Partial<CampaignServiceDeps> = {}
+): HarmonizationCampaignService {
   return new HarmonizationCampaignService({
     sharedStatePath: fakeShared,
     machineId,
@@ -50,6 +54,7 @@ function makeService(machineId = 'myia-ai-01'): HarmonizationCampaignService {
     fromFullId: `${machineId}:roo-extensions`,
     sendMessage,
     now: () => new Date(clockMs),
+    ...extra,
   });
 }
 
@@ -353,6 +358,84 @@ describe('concurrence — preuve participant immuable (défaut #2)', () => {
     // Le release de B supprime bien SON propre lock.
     await releaseB();
     expect(existsSync(lockPath)).toBe(false);
+  });
+
+  test('récupération CONCURRENTE du même lock périmé : exactement 1 succès + 1 CONCURRENT_WRITE (revue passe 3)', async () => {
+    const svcA = makeService('myia-ai-01');
+    const rec = await svcA.createCampaign(defaultCanonInput());
+    // Lock périmé (détenteur crashé) observé SIMULTANÉMENT par deux sessions
+    // du même propriétaire (cron + interactive).
+    writeCoordinatorLock(rec.id, 'token-stale', COORDINATOR_LOCK_TTL_MS + 1);
+    const svcB = makeService('myia-ai-01');
+    const results = await Promise.allSettled([
+      (svcA as any).acquireCoordinatorLock(rec.id),
+      (svcB as any).acquireCoordinatorLock(rec.id),
+    ]);
+    const fulfilled = results.filter(r => r.status === 'fulfilled');
+    const rejected = results.filter(r => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const reason = (rejected[0] as PromiseRejectedResult).reason;
+    expect([reason.code, reason.message].join(' ')).toMatch(/CONCURRENT_WRITE|concurrent/i);
+    // Le gagnant détient un lock frais à SON token (pas celui du périmé).
+    const lockAfter = JSON.parse(readFileSync(lockPathOf(rec.id), 'utf-8')) as { token: string };
+    expect(lockAfter.token).not.toBe('token-stale');
+    // Le libérer supprime bien le lock ; aucune quarantaine orpheline.
+    const releaseWinner = (fulfilled[0] as PromiseFulfilledResult<() => Promise<void>>).value;
+    await releaseWinner();
+    expect(existsSync(lockPathOf(rec.id))).toBe(false);
+    const campaignsDir = join(fakeShared, 'harmonization', 'campaigns');
+    expect(readdirSync(campaignsDir).filter(f => f.includes('.stale-') || f.includes('.rm-'))).toEqual([]);
+  });
+
+  test('récupération adverse : un autre récupérateur qui complète dans la fenêtre garde son lock, nous refusons (revue passe 3)', async () => {
+    const svc = makeService('myia-ai-01');
+    const rec = await svc.createCampaign(defaultCanonInput());
+    const lockPath = lockPathOf(rec.id);
+    writeCoordinatorLock(rec.id, 'token-stale', COORDINATOR_LOCK_TTL_MS + 1);
+    // A lit le lock périmé, puis B complète une récupération ENTIÈRE dans la
+    // fenêtre lecture→détachement de A (l'entrelacement que l'unlink nu ou le
+    // rename last-writer-wins ne ferment pas).
+    const holderB: Array<() => Promise<void>> = [];
+    const svcA = makeService('myia-ai-01', {
+      _testInterposeAfterStaleRead: async () => {
+        const svcB = makeService('myia-ai-01');
+        holderB.push(await (svcB as any).acquireCoordinatorLock(rec.id));
+      },
+    });
+    await expect((svcA as any).acquireCoordinatorLock(rec.id)).rejects.toThrow(/remplacé|concurrent/i);
+    // Le lock de B est INTACT (restauré, jamais supprimé par A).
+    const after = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token: string };
+    expect(after.token).not.toBe('token-stale');
+    expect(after.token).toBeTruthy();
+    // Aucune quarantaine orpheline ; le release de B fonctionne.
+    const campaignsDir = join(fakeShared, 'harmonization', 'campaigns');
+    expect(readdirSync(campaignsDir).filter(f => f.includes('.stale-') || f.includes('.rm-'))).toEqual([]);
+    await holderB[0]();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  test('release TOCTOU : un lock REMPLACÉ entre lecture et suppression n est JAMAIS supprimé (revue passe 3)', async () => {
+    const svc = makeService('myia-ai-01');
+    const rec = await svc.createCampaign(defaultCanonInput());
+    const lockPath = lockPathOf(rec.id);
+    // Détenteur A en place (lock encore frais au moment de SA lecture).
+    writeCoordinatorLock(rec.id, 'token-A', 60_000);
+    // La release de A lit SON token (match), puis le lock est REMPLACÉ par
+    // celui de B (récupération post-TTL) exactement dans la fenêtre
+    // lecture→suppression — l'ancien protocole supprimait le lock de B.
+    const svcA = makeService('myia-ai-01', {
+      _testInterposeRelease: async () => {
+        writeCoordinatorLock(rec.id, 'token-B-new', 60_000);
+      },
+    });
+    await (svcA as any).releaseCoordinatorLock(lockPath, 'token-A');
+    // Le lock de B SURVIT (détaché puis restauré par link conditionnel).
+    const after = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token: string };
+    expect(after.token).toBe('token-B-new');
+    // Aucune quarantaine orpheline.
+    const campaignsDir = join(fakeShared, 'harmonization', 'campaigns');
+    expect(readdirSync(campaignsDir).filter(f => f.includes('.stale-') || f.includes('.rm-'))).toEqual([]);
   });
 
   test('mutation coordinateur : le propriétaire seul peut exécuter (ownership)', async () => {

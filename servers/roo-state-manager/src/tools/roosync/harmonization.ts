@@ -10,9 +10,10 @@
  *  - Canon immuable : changer = nouvelle version = nouvelle campagne.
  *  - confirm/apply opèrent UNIQUEMENT sur la machine locale.
  *  - Pas de verrou distribué : mutations coordinateur sérialisées par un verrou
- *    local {id}.lock (owner/token/TTL explicite, RÉCUPÉRABLE après crash,
- *    release par token) + CAS `rev` ; contention inter-hôtes prévenue par
- *    l'ownership, best-effort documenté.
+ *    local {id}.lock (owner/token/TTL explicite, récupération à GAGNANT UNIQUE
+ *    après crash, release sans fenêtre TOCTOU) ; le `rev` de save() DÉTECTE
+ *    les écritures concurrentes (check-then-write non atomique, détection
+ *    best-effort) ; contention inter-hôtes prévenue par l'ownership.
  *  - Dispatch vers sa propre machine:workspace est refusé par MessageManager
  *    (anti-auto-message) : le coordinateur apply/confirm sa machine directement.
  */

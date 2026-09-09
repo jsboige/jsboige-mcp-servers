@@ -500,6 +500,26 @@ describe('redactValue — non-divulgation à la frontière d observation (défau
     expect(String(out)).not.toContain('3f9b2z');
   });
 
+  test('design/signal/author restent lisibles — matching par MOT ENTIER, pas sous-chaîne (réserve revue passe 3)', () => {
+    // Ces noms ne contiennent « sig »/« auth » que comme SOUS-CHAÎNE : la
+    // sur-redaction par sous-chaîne est terminée, sans trou côté fail-closed
+    // (auth reste couvert dans la même URL).
+    const out = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/v1?design=dark&signal=high&author=jd&auth=3f9b2z');
+    expect(String(out)).toContain('design=dark');
+    expect(String(out)).toContain('signal=high');
+    expect(String(out)).toContain('author=jd');
+    expect(String(out)).not.toContain('3f9b2z');
+    expect(String(out)).toMatch(/auth=<redacted:sha256=[0-9a-f]{16}>/);
+  });
+
+  test('variantes camelCase couvertes par frontière de mot (secretKey, myAuthToken)', () => {
+    const out = redactValue('env.ANTHROPIC_BASE_URL', 'https://relay.example/v1?secretKey=sq7&myAuthToken=mt9');
+    expect(String(out)).not.toContain('sq7');
+    expect(String(out)).not.toContain('mt9');
+    expect(String(out)).toMatch(/secretKey=<redacted:sha256=[0-9a-f]{16}>/);
+    expect(String(out)).toMatch(/myAuthToken=<redacted:sha256=[0-9a-f]{16}>/);
+  });
+
   test('idempotence : une valeur déjà redactée (nouveaux marqueurs) retournée telle quelle', () => {
     const once = redactValue('env.ANTHROPIC_BASE_URL', 'https://user:pw@relay.example/v1?auth=3f9b2z');
     expect(typeof once).toBe('string');

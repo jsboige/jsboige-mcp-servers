@@ -143,16 +143,34 @@ export function looksLikeSecretValue(value: string): boolean {
 }
 
 /**
- * Paramètres de query suspects dans une URL (clé) — FAIL-CLOSED (défaut review
- * #3) : couvre les familles usuelles d'auth (`auth`, `sig`, `api_key`,
- * `apikey`, `x-api-key`, `access_key/token`, `private_key`, `session`, `nonce`,
- * `bearer`) en plus des familles historiques. Une valeur courte qu'aucune
- * heuristique de CONTENU ne détecte (ex. `?auth=3f9b2c`) reste couverte par le
- * NOM du paramètre — sur cette frontière publique, la sous-redaction fuit,
- * la sur-redaction (ex. `design=` contient `sig`) ne divulgue rien.
+ * Noms de paramètres de query sensibles — matching PAR MOT ENTIER (défaut
+ * review #3 + réserve passe 3 : fin de la sur-redaction par sous-chaîne).
+ * `auth`, `sig`, `api_key`, `x-api-key`, `access_token`, `secretKey`,
+ * `myAuthToken`… sont couverts ; `design`, `signal`, `author` (qui ne
+ * contiennent `sig`/`auth` que comme sous-chaîne) restent lisibles. Découpage :
+ * séparateurs non alphanumériques + frontière camelCase, mot comparé (en
+ * minuscules) à un ensemble fermé. Une valeur courte qu'aucune heuristique de
+ * CONTENU ne détecte (ex. `?auth=3f9b2c`) reste couverte par le NOM.
  */
-const URL_QUERY_FORBIDDEN_PARAMS =
-  /key|token|secret|signature|password|passwd|credential|auth|authorization|authentication|sig|apikey|api[_-]?key|access[_-]?(key|token)|private[_-]?key|session|nonce|bearer/i;
+const SENSITIVE_QUERY_WORDS = new Set([
+  'key', 'keys', 'token', 'tokens', 'secret', 'secrets', 'signature', 'signatures',
+  'password', 'passwd', 'passphrase', 'credential', 'credentials',
+  'auth', 'authorization', 'authentication', 'sig',
+  'apikey', 'session', 'sessionid', 'nonce', 'bearer',
+  'accesskey', 'accesstoken', 'privatekey', 'authkey',
+]);
+
+function isSensitiveQueryParamName(key: string): boolean {
+  if (!key) return false;
+  // Frontière camelCase ('secretKey' → 'secret Key') puis séparateurs non
+  // alphanumériques ('x-api-key' → ['x','api','key']).
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return words.some(w => SENSITIVE_QUERY_WORDS.has(w));
+}
 
 /**
  * Validation d'une valeur de canon. Retourne [] si sûre, sinon la liste des
@@ -196,7 +214,7 @@ export function validateCanonValue(path: string, value: unknown): string[] {
       problems.push('credentials inline dans l’URL (user:pass@)');
     }
     for (const [k] of url.searchParams) {
-      if (URL_QUERY_FORBIDDEN_PARAMS.test(k)) {
+      if (isSensitiveQueryParamName(k)) {
         problems.push(`paramètre de query interdit: ${k}`);
       }
     }
@@ -376,7 +394,7 @@ export function redactValue(path: string, value: unknown): unknown {
       out = out.replace(/\/\/[^@/]+@/, `//<credentials:sha256=${secretDigest(userinfoSecret)}>@`);
     }
     const sensitiveParams = [...url.searchParams.keys()].filter(
-      k => URL_QUERY_FORBIDDEN_PARAMS.test(k) || looksLikeSecretValue(url.searchParams.get(k) || '')
+      k => isSensitiveQueryParamName(k) || looksLikeSecretValue(url.searchParams.get(k) || '')
     );
     if (sensitiveParams.length > 0) {
       // Reconstruit la query en préservant l'ordre et les valeurs non sensibles,

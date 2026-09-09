@@ -102,7 +102,11 @@ restent liées à son hash).
   **idempotente** et préserve le path/order d'origine (ne normalise pas
   `https://h` en `https://h/`). Le côté live local est redacté comme le
   snapshot : une machine comparée à son propre snapshot ne voit pas de faux
-  diff. La détection des query sensibles est **fail-closed sur le nom** :
+  diff. La détection des query sensibles se fait **sur le nom, par MOT ENTIER**
+  (revue passe 3) : `auth`, `sig`, `api_key`, `x-api-key`, `access_token`,
+  `secretKey`, `myAuthToken`… sont couverts (frontières : séparateurs non
+  alphanumériques + camelCase), tandis que `design`, `signal`, `author` —
+  qui ne contiennent `sig`/`auth` que comme sous-chaîne — restent lisibles.
   `?auth=3f9b2c` (valeur courte qu'aucune heuristique de contenu ne détecte)
   est couverte par le NOM du paramètre.
 - **Snapshot ≠ apply payload** : `apply` n'accepte que `canon.json` validé ;
@@ -132,22 +136,35 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
   sessions du même hôte — produisent deux événements disjoints ; aucune
   confirmation ne peut en effacer une autre.
 - **Mutations coordinateur = propriétaire sauf (défaut #2), verrou RÉCUPÉRABLE
-  (revue passe 2).** `dispatch`, `remind`, `close` ne s'exécutent que si
-  `createdBy === machineId` (sinon `NOT_OWNER`), sérialisées par un verrou
-  exclusive-create local (`{campaigns}/{id}.lock`) portant
-  `{owner, token, acquiredAt, expiresAt}` + jeton d'optimisme `rev` (CAS en
-  point de contrôle). **Politique de péremption explicite** (TTL
-  `COORDINATOR_LOCK_TTL_MS`, 30 min) : un détenteur crashé (kill/OOM, jamais
-  passé au `finally`) ne bloque plus indéfiniment — son lock périmé est
-  **récupéré** par écrasement atomique (tmp+rename), et le **release par
-  token** garantit qu'un détenteur qui reprend la main après son crash ne peut
-  PAS supprimer le lock du nouveau détenteur. Un lock frais => refus
-  `CONCURRENT_WRITE`. Un exclusive-create sur DriveFS asynchrone n'est **pas**
-  un verrou distribué : il sérialise les sessions du même hôte (FS local
-  cohérent) ; la contention inter-hôte est prévenue par l'ownership, et la
-  cohérence des DONNÉES reste portée par le CAS `rev` (le vol d'un lock volé
-  ne peut pas corrompre le record — le save échoue sur rev). **Aucune promesse
-  de single-writer distribué** — documentation explicite.
+  À GAGNANT UNIQUE (revues passes 2+3).** `dispatch`, `remind`, `close` ne
+  s'exécutent que si `createdBy === machineId` (sinon `NOT_OWNER`), sérialisées
+  par un verrou exclusive-create local (`{campaigns}/{id}.lock`) portant
+  `{owner, token, acquiredAt, expiresAt}`. **Politique de péremption
+  explicite** (TTL `COORDINATOR_LOCK_TTL_MS`, 30 min) : un détenteur crashé
+  (kill/OOM, jamais passé au `finally`) ne bloque plus indéfiniment. La
+  **récupération est À GAGNANT UNIQUE** (revue passe 3) : le lock périmé est
+  DÉTACHÉ par `rename` atomique vers une quarantaine
+  `{id}.lock.stale-{tokenPérimé}` — un SEUL récupérateur gagne la course (les
+  autres reçoivent ENOENT => refus `CONCURRENT_WRITE`), le gagnant VÉRIFIE le
+  contenu détaché (un remplacement survenu dans la fenêtre est RESTAURÉ par
+  `link` conditionnel, jamais supprimé) puis recrée le lock par `open 'wx'`
+  (EEXIST => un tiers a pris la place => refus). Un unlink nu ou un
+  tmp+rename laissaient l'entrelacement « le perdant supprime le lock frais
+  du gagnant puis gagne à son tour » : deux détenteurs — fermé
+  mécaniquement. Le **release ferme le TOCTOU lecture→unlink** (revue passe
+  3) : détachement vers une quarantaine à NOTRE token unique
+  (`{id}.lock.rm-{token}`), vérification du détaché, suppression seulement si
+  vérifié (fenêtre nulle : chemin unique par token) — un lock REMPLACÉ dans
+  la fenêtre est restauré par `link` conditionnel, jamais supprimé. Un lock
+  frais => refus `CONCURRENT_WRITE`. **Portée RÉELLE du `rev`** (bornée,
+  revue passe 3) : `save()` est un check-then-write NON atomique — deux
+  writers partis du même `rev=N` peuvent tous deux écrire `rev=N+1` dans la
+  fenêtre lecture→rename (last-writer-wins, perte possible) ; le `rev`
+  DÉTECTE la divergence, il ne l'empêche pas — c'est le verrou même-hôte qui
+  sérialise en pratique. Un exclusive-create sur DriveFS asynchrone n'est
+  **pas** un verrou distribué : il sérialise les sessions du même hôte (FS
+  local cohérent) ; la contention inter-hôte est prévenue par l'ownership.
+  **Aucune promesse de single-writer distribué** — documentation explicite.
 - **États disjoints + close gating sur preuve fraîche (défaut #3).** Le
   `status` dérive un état courant autoritaire (`state`) : `confirmed` exige
   preuve fraîche ET évidence courante alignée. Une confirmation historique ne
@@ -186,15 +203,24 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 ## Limitations assumées
 
 - **Pas de verrou distribué.** Les mutations coordinateur sont sérialisées entre
-  sessions du même hôte (verrou exclusive-create, owner/token/TTL 30 min
-  récupérable, + `rev` CAS) ; la contention inter-hôte est prévenue par
-  l'ownership, non par un lock distribué — la garantie de single-writer
-  distribué n'est **pas** promesse. Le compromis du TTL : une mutation
-  coordinateur qui durerait PLUS que le TTL verrait son lock récupéré par
-  d'autres — son `save` échouerait alors sur `rev` (CAS), sans corruption ; le
-  TTL généreux (30 min vs des opérations de secondes) rend ce cas théorique.
-  La preuve participant, elle, est immuable et n'a nul besoin de lock : des
-  événements disjoints ne se perdent jamais.
+  sessions du même hôte (verrou exclusive-create, owner/token/TTL 30 min,
+  récupération à gagnant unique, release sans fenêtre TOCTOU) ; la contention
+  inter-hôte est prévenue par l'ownership, non par un lock distribué — la
+  garantie de single-writer distribué n'est **pas** promesse. **Portée réelle
+  du `rev` (bornée, revue passe 3)** : check-then-write NON atomique — deux
+  writers partis du même rev peuvent tous deux écrire rev+1 dans la fenêtre
+  lecture→rename (last-writer-wins, une mise à jour peut être perdue) ; le
+  `rev` DÉTECTE la divergence avant/après écriture, il ne l'empêche pas
+  mécaniquement. La double détention simultanée étant rendue mécaniquement
+  impossible pour les sessions du même hôte par la récupération à gagnant
+  unique, le `rev` n'a en pratique qu'un writer actif par hôte — mais cette
+  propriété découle du verrou, pas du `rev`. Le compromis du TTL : une
+  mutation qui durerait PLUS que le TTL verrait son lock récupéré par
+  d'autres ; son `save` serait alors en concurrence de rev (détection
+  best-effort, pas une garantie) — le TTL généreux (30 min vs des opérations
+  de secondes) rend ce cas théorique. La preuve participant, elle, est
+  immuable et n'a nul besoin de lock : des événements disjoints ne se perdent
+  jamais.
 - **Le distant n'est jamais écrit.** `apply`/`confirm` opèrent sur la machine
   locale ; les machines distantes appliquent leur canon via le DM de dispatch.
 - **Drift distant = snapshot publié.** Le status distant compare au dernier
@@ -228,22 +254,28 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 
 ## Tests
 
-- `src/services/__tests__/ClaudeSettingsService.test.ts` (54 tests) — états,
+- `src/services/__tests__/ClaudeSettingsService.test.ts` (56 tests) — états,
   projections, `projectSettingsSafe`/`redactValue` (redaction URL + idempotence,
   défaut #1), **discrimination non réversible** (userinfo/query différents =>
   marqueurs différents, revue passe 2), **fail-closed des query auth/sig/
-  api-key à valeurs courtes** (revue passe 2), masquage des secrets à la
-  sérialisation, validation canon (positif + rejets, modelMap défaut #6),
-  apply (préservation/dry-run/idempotence/fail-closed/concurrent/backup),
-  localisateur de snapshot.
-- `src/services/__tests__/HarmonizationCampaignService.test.ts` (29 tests) —
+  api-key à valeurs courtes** (revue passe 2), **matching par mot entier**
+  (design/signal/author lisibles, camelCase couvert, revue passe 3), masquage
+  des secrets à la sérialisation, validation canon (positif + rejets, modelMap
+  défaut #6), apply (préservation/dry-run/idempotence/fail-closed/concurrent/
+  backup), localisateur de snapshot.
+- `src/services/__tests__/HarmonizationCampaignService.test.ts` (32 tests) —
   cycle de vie, immuabilité, claimed-hash jamais compté, relances idempotentes,
   **concurrence** (événements immuables disjoints, verrou + ownership, défaut
   #2), **verrou récupérable** (frais refusé / périmé récupéré / l'ancien
   détenteur ne peut pas supprimer le lock du nouveau, revue passe 2),
-  **confirm refusé sur campagne fermée** (revue passe 2), **états disjoints**
-  (confirm-then-drift/missing/unreadable, défaut #3), **exemptions avec
-  provenance + conflits** (défaut #5), close gating, fail closed.
+  **récupération à gagnant unique** (2 acquisitions concurrentes du même lock
+  périmé => exactement 1 succès + 1 CONCURRENT_WRITE ; récupération adverse :
+  celui qui complète dans la fenêtre garde son lock, l'autre refuse ; release
+  TOCTOU : un lock remplacé dans la fenêtre lecture→suppression n'est jamais
+  supprimé — revue passe 3), **confirm refusé sur campagne fermée** (revue
+  passe 2), **états disjoints** (confirm-then-drift/missing/unreadable,
+  défaut #3), **exemptions avec provenance + conflits** (défaut #5), close
+  gating, fail closed.
 - `src/tools/roosync/__tests__/compare-claude-settings.test.ts` (20 tests) —
   garde de couverture (plus de fantômes), staleness soft/dur, diffs véridiques,
   exemptions + conflits (défaut #5), non-divulgation des credentials de

@@ -29,14 +29,17 @@
  *    acquiredAt/expiresAt) + jeton de concurrence optimiste (rev) en point de
  *    contrôle. Le verrou est RÉCUPÉRABLE : un détenteur crashé (kill/OOM, qui
  *    ne passe jamais au finally) ne bloque plus indéfiniment — son lock
- *    périmé (TTL explicite, COORDINATOR_LOCK_TTL_MS) est récupéré par
- *    écrasement atomique, et le release par token garantit qu'un détenteur
- *    qui reprend la main NE PEUT PAS supprimer le lock du nouveau détenteur
- *    (défaut review #2). Un exclusive-create sur DriveFS asynchronement
- *    répliqué n'est PAS un verrou distribué : il sérialise les sessions du
- *    MÊME hôte (FS local cohérent) ; la contention inter-hôtes est prévenue
- *    par l'ownership (un seul propriétaire) et documentée comme best-effort.
- *    Aucune promesse de single-writer distribué.
+ *    périmé (TTL explicite, COORDINATOR_LOCK_TTL_MS) est récupéré À GAGNANT
+ *    UNIQUE (détachement rename atomique : un seul récupérateur gagne, les
+ *    autres refusent CONCURRENT_WRITE — revue passe 3), et le release
+ *    détache-then-vérifie vers une quarantaine à token unique : un détenteur
+ *    qui reprend la main NE PEUT PAS supprimer le lock du nouveau détenteur,
+ *    y compris si le remplacement survient exactement entre lecture et
+ *    suppression (TOCTOU fermé). Un exclusive-create sur DriveFS
+ *    asynchronement répliqué n'est PAS un verrou distribué : il sérialise les
+ *    sessions du MÊME hôte (FS local cohérent) ; la contention inter-hôtes
+ *    est prévenue par l'ownership (un seul propriétaire) et documentée comme
+ *    best-effort. Aucune promesse de single-writer distribué.
  *  - Aucun daemon/cron : `remind` est appelé par le coordinateur sur sa cadence.
  *
  * Persistance : fichier JSON par campagne sous {shared}/harmonization/campaigns/,
@@ -191,6 +194,18 @@ export interface CampaignServiceDeps {
   now?: () => Date;
   /** Générateur d'ID d'événement (immutable, unique) — injectable (tests déterministes). Default: randomUUID. */
   eventIdGen?: () => string;
+  /**
+   * Seam TEST-ONLY (revue passe 3) : interposé entre la lecture du lock PÉRIMÉ
+   * et son détachement — permet de simuler DÉTERMINISTEMENT qu'un autre
+   * récupérateur complète sa récupération exactement dans cette fenêtre.
+   */
+  _testInterposeAfterStaleRead?: () => Promise<void>;
+  /**
+   * Seam TEST-ONLY (revue passe 3) : interposé entre la lecture du token au
+   * release et le détachement — simule un REMPLACEMENT du lock exactement
+   * dans la fenêtre lecture→suppression (TOCTOU).
+   */
+  _testInterposeRelease?: () => Promise<void>;
 }
 
 export interface CreateCampaignInput {
@@ -408,10 +423,15 @@ export class HarmonizationCampaignService {
 
   /**
    * Write atomique (tmp+rename) avec verrou d'optimisme (rev) + relecture.
-   * Le point de contrôle `rev` est adjacent à un verrou exclusive-create posé
-   * par l'appelant (mutations coordinateur). Si le rev relu diffère de celui
-   * attendu, une ConcurrentWriteError est levée : l'appelant relit et rejoue.
-   * Aucune promesse de verrou distribué (documenté).
+   * PORTÉE RÉELLE du `rev` (revue passe 3, bornée) : c'est un check-then-write
+   * NON atomique — deux writers partis du même `rev=N` peuvent TOUS DEUX
+   * écrire `rev=N+1` dans la fenêtre lecture→rename (last-writer-wins : la
+   * relecture du NUMÉRO ne distingue pas les CONTENUS, une mise à jour peut
+   * être perdue). Le `rev` DÉTECTE la divergence (avant et après écriture),
+   * il ne l'empêche pas mécaniquement. Ce qui sérialise en pratique : le
+   * verrou coordinateur même-hôte (gagnant unique) posé par l'appelant.
+   * Inter-hôtes : best-effort documenté, aucune promesse de single-writer
+   * distribué.
    */
   private async save(record: HarmonizationCampaignRecord, expectedRev: number): Promise<void> {
     const path = this.campaignPath(record.id);
@@ -448,18 +468,61 @@ export class HarmonizationCampaignService {
   }
 
   /**
+   * Lit le token d'un fichier lock (null si absent/illisible/token absent).
+   */
+  private async readLockToken(path: string): Promise<string | null> {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path, 'utf-8')) as CoordinatorLock;
+      return typeof parsed.token === 'string' ? parsed.token : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Restaure conditionnellement un lock détaché à tort : `link` est un
+   * create-if-absent ATOMIQUE — il ne peut JAMAIS écraser un lock plus récent
+   * qui occuperait le chemin. Si le chemin est occupé (EEXIST), le détaché
+   * reste en quarantaine comme preuve (jamais supprimé par nous).
+   */
+  private async restoreQuarantinedLock(quarantinePath: string, lockPath: string): Promise<void> {
+    try {
+      await fs.link(quarantinePath, lockPath); // atomique, échoue si lockPath existe
+      try { await fs.unlink(quarantinePath); } catch { /* best-effort */ }
+    } catch {
+      logger.warn(
+        `Lock détaché à tort non restaurable (${lockPath} occupé) — conservé en quarantaine ${quarantinePath} (preuve, jamais supprimé automatiquement).`
+      );
+    }
+  }
+
+  /**
    * Verrou exclusive-create pour sérialiser les mutations coordinator du même
-   * hôte — RÉCUPÉRABLE après crash (défaut review #2) :
+   * hôte — RÉCUPÉRABLE après crash (défaut review #2) et récupération À
+   * GAGNANT UNIQUE (revue passe 3) :
    *  - le lock porte `{owner, token, acquiredAt, expiresAt}` ;
    *  - un lock FRAIS (expiresAt non atteint) => refus CONCURRENT_WRITE ;
-   *  - un lock PÉRIMÉ (détenteur crashé : kill/OOM, jamais passé au finally)
-   *    => récupération par écrasement atomique tmp+rename ;
-   *  - le release ne supprime le lock QUE s'il porte encore NOTRE token : un
-   *    détenteur qui reprend la main après un crash (dont le lock périmé a été
-   *    récupéré) ne peut PAS supprimer le lock du nouveau détenteur.
+   *  - un lock PÉRIMÉ (détenteur crashé) => DÉTACHEMENT par rename vers une
+   *    quarantaine `{id}.lock.stale-{tokenPérimé}` : le rename est ATOMIQUE,
+   *    UN SEUL récupérateur gagne la course (les autres reçoivent ENOENT =>
+   *    refus CONCURRENT_WRITE). Le gagnant VÉRIFIE le contenu détaché :
+   *    s'il ne correspond pas au lock périmé lu (un remplacement est survenu
+   *    entre lecture et détachement), il est RESTAURÉ par link conditionnel
+   *    et nous refusons — jamais supprimé. Seulement après vérification :
+   *    suppression de la quarantaine (chemin à token unique) puis open 'wx'
+   *    du nouveau lock ; EEXIST => un tiers a pris la place libre => refus.
+   *    Un unlink nu (sans rename-gate) laisserait l'entrelacement où le
+   *    perdant supprime le lock FRAIS du gagnant puis gagne le wx à son
+   *    tour : deux détenteurs. Le rename-gate ferme mécaniquement ce cas.
+   *  - release : détachement vers une quarantaine À NOTRE TOKEN UNIQUE puis
+   *    vérification — la suppression n'a PLUS de fenêtre TOCTOU (voir
+   *    releaseCoordinatorLock).
    * Pas un verrou distribué : exclusive-create/DriveFS asynchrone = best-effort
-   * même hôte ; la cohérence des DONNÉES reste portée par le CAS `rev` (le vol
-   * d'un lock volé ne peut pas corrompre le record — le save échoue sur rev).
+   * même hôte. Portée RÉELLE du `rev` (documentée, bornée) : save() est un
+   * check-then-write NON atomique — deux writers partis du même rev peuvent
+   * tous deux écrire rev=N+1 dans la fenêtre lecture→rename (last-writer-wins,
+   * perte possible) ; `rev` DÉTECTE la divergence après coup, il ne l'empêche
+   * pas. Ce verrou même-hôte est le mécanisme qui sérialise en pratique.
    */
   private async acquireCoordinatorLock(id: string): Promise<() => Promise<void>> {
     await fs.mkdir(this.campaignsDir, { recursive: true });
@@ -485,7 +548,8 @@ export class HarmonizationCampaignService {
       }
     } catch (err) {
       if (created) {
-        // Lock créé par nous mais écriture échouée : on en est propriétaire,
+        // Lock créé par nous mais écriture échouée : on en est propriétaire
+        // (create exclusif gagné, personne d'autre ne peut créer ce chemin),
         // on le retire pour ne pas laisser un lock vide permanent.
         try { await fs.unlink(lockPath); } catch { /* best-effort */ }
       }
@@ -511,19 +575,75 @@ export class HarmonizationCampaignService {
           { id, lockOwner: existing?.owner, expiresAt: existing?.expiresAt }
         );
       }
-      // Lock PÉRIMÉ (détenteur crashé) — récupération : écrasement atomique.
-      const tmp = `${lockPath}.tmp-${process.pid}-${nowMs}-${token.slice(0, 6)}`;
-      await fs.writeFile(tmp, stableJson(meta), 'utf-8');
-      await fs.rename(tmp, lockPath);
+      // Lock PÉRIMÉ — seam test-only : simule un récupérateur concurrent
+      // complétant SA récupération exactement dans la fenêtre lecture→détachement.
+      if (this.deps._testInterposeAfterStaleRead) await this.deps._testInterposeAfterStaleRead();
+
+      // Récupération À GAGNANT UNIQUE : le rename est la course atomique.
+      const staleToken = existing?.token ?? `corrupt-${mtimeMs}`;
+      const quarantine = `${lockPath}.stale-${staleToken}`;
+      try {
+        await fs.rename(lockPath, quarantine);
+      } catch {
+        // ENOENT : un autre récupérateur a détaché le lock périmé avant nous.
+        throw new HarmonizationCampaignError(
+          `Récupération concurrente du verrou ${id}.lock perdue (un autre récupérateur a détaché le lock périmé) — relire et rejouer.`,
+          'CONCURRENT_WRITE',
+          { id }
+        );
+      }
+      // Vérification du détaché : s'il ne correspond PAS au lock périmé lu,
+      // un remplacement est survenu dans la fenêtre — restaurer, refuser.
+      const detachedToken = await this.readLockToken(quarantine);
+      const detachedMatchesStale = existing
+        ? detachedToken === existing.token
+        : detachedToken === null; // lock illisible lu ⇒ détaché toujours illisible
+      if (!detachedMatchesStale) {
+        await this.restoreQuarantinedLock(quarantine, lockPath);
+        throw new HarmonizationCampaignError(
+          `Récupération du verrou ${id}.lock abandonnée : le lock a été remplacé pendant la récupération (restauré, jamais supprimé) — relire et rejouer.`,
+          'CONCURRENT_WRITE',
+          { id }
+        );
+      }
+      // Quarantaine vérifiée (chemin à token périmé unique, contenu confirmé) :
+      // suppression sans fenêtre — personne d'autre n'écrit ce chemin.
+      try { await fs.unlink(quarantine); } catch { /* best-effort */ }
+
+      // Place libre : création exclusive du nouveau lock. EEXIST = un tiers
+      // (nouvelle session) a pris la place entre-temps => il détient, nous refusons.
+      try {
+        const h2 = await fs.open(lockPath, 'wx');
+        try {
+          await h2.writeFile(stableJson(meta), 'utf-8');
+        } finally {
+          await h2.close();
+        }
+      } catch {
+        throw new HarmonizationCampaignError(
+          `Récupération du verrou ${id}.lock : la place libre a été prise par une autre session — relire et rejouer.`,
+          'CONCURRENT_WRITE',
+          { id }
+        );
+      }
     }
     return () => this.releaseCoordinatorLock(lockPath, token);
   }
 
   /**
-   * Libère le verrou coordinateur UNIQUEMENT s'il porte encore NOTRE token
-   * (défaut review #2) : après récupération d'un lock périmé, le détenteur
-   * précédent (qui reprend la main après son crash) ne peut PAS supprimer le
-   * lock du nouveau détenteur — son release est un no-op silencieux.
+   * Libère le verrou coordinateur SANS fenêtre TOCTOU (revue passe 3).
+   * L'ancien protocole lecture-token→unlink pouvait supprimer un lock REMPLACÉ
+   * entre les deux opérations (récupération survenue dans la fenêtre). Le
+   * nouveau protocole ne supprime JAMAIS le chemin vivant :
+   *  1. lecture : token ≠ nôtre => no-op (détenu/remplacé par un autre) ;
+   *  2. détachement atomique vers une quarantaine dont le NOM EMBARQUE NOTRE
+   *     token unique (`{id}.lock.rm-{token}`) — seul notre propre release y
+   *     écrit, personne ne peut y substituer un contenu ;
+   *  3. vérification du détaché : nôtre => suppression de la quarantaine
+   *     (fenêtre nulle : chemin unique par token, contenu vérifié) ; pas
+   *     nôtre (remplacement survenu dans la fenêtre) => RESTAURATION par
+   *     link conditionnel — le lock du nouveau détenteur n'est jamais
+   *     supprimé, au pire brièvement détaché puis restauré.
    */
   private async releaseCoordinatorLock(lockPath: string, token: string): Promise<void> {
     let current: CoordinatorLock | null = null;
@@ -531,7 +651,20 @@ export class HarmonizationCampaignService {
       current = JSON.parse(await fs.readFile(lockPath, 'utf-8')) as CoordinatorLock;
     } catch { return; /* lock absent/illisible — rien à libérer */ }
     if (!current || current.token !== token) return; // détenu par un autre — pas le nôtre
-    try { await fs.unlink(lockPath); } catch { /* déjà supprimé */ }
+    // Seam test-only : simule un remplacement du lock exactement entre la
+    // lecture ci-dessus et le détachement ci-dessous (la fenêtre TOCTOU).
+    if (this.deps._testInterposeRelease) await this.deps._testInterposeRelease();
+    const quarantine = `${lockPath}.rm-${token}`;
+    try {
+      await fs.rename(lockPath, quarantine);
+    } catch { return; /* déjà supprimé/détaché */ }
+    const detachedToken = await this.readLockToken(quarantine);
+    if (detachedToken !== token) {
+      // Un remplacement est survenu dans la fenêtre : ce n'est PAS notre lock.
+      await this.restoreQuarantinedLock(quarantine, lockPath);
+      return;
+    }
+    try { await fs.unlink(quarantine); } catch { /* best-effort */ }
   }
 
   private assertOwner(record: HarmonizationCampaignRecord): void {
