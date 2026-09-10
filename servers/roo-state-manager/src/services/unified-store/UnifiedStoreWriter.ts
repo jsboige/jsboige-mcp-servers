@@ -108,11 +108,47 @@ export interface IUnifiedStoreWriter {
     messages: RooSyncDashboardMessageRow[],
     opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<void>;
+  /**
+   * RooSync dashboards — same transaction as syncRooSyncDashboard, but the
+   * outcome is RETURNED instead of swallowed (rework #1134, review ask 2).
+   *
+   * The legacy void methods route through withRetry, which absorbs every
+   * failure mode silently (breaker skip, deterministic #3342 fail-fast,
+   * retry exhaustion) — correct for fire-and-forget dual-writes, but a caller
+   * that is about to make an IRREVERSIBLE decision on the assumption "PG now
+   * holds this" (e.g. removing the source key of a merge) must be able to
+   * distinguish "written" from "silently skipped".
+   */
+  syncRooSyncDashboardChecked(
+    row: RooSyncDashboardRow,
+    messages: RooSyncDashboardMessageRow[],
+    opts?: { backfill?: boolean; condensed?: boolean }
+  ): Promise<UnifiedStoreWriteOutcome>;
   /** RooSync dashboards — drop dashboard + journal (cascade) when the GDrive file is deleted. */
   deleteRooSyncDashboard(key: string): Promise<void>;
+  /** RooSync dashboards — same delete, outcome returned instead of swallowed (rework #1134). */
+  deleteRooSyncDashboardChecked(key: string): Promise<UnifiedStoreWriteOutcome>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
+
+/**
+ * Discriminated outcome of a checked write (rework #1134, review ask 2).
+ *
+ * - `written` — the transaction committed.
+ * - `disabled` — no PG half configured on this host (Null writer): nothing was
+ *   expected, nothing was lost. Callers gate destructive follow-ups on
+ *   `ok || reason === 'disabled'`.
+ * - `breaker-skip` — circuit breaker OPEN, the write was never attempted.
+ * - `deterministic` — SQLSTATE class 22 (#3342): same payload fails forever.
+ * - `exhausted` — retries spent, last error in `detail`.
+ */
+export type UnifiedStoreWriteOutcome =
+  | { ok: true; reason: 'written' }
+  | { ok: false; reason: 'disabled' }
+  | { ok: false; reason: 'breaker-skip'; detail: string }
+  | { ok: false; reason: 'deterministic'; detail: string }
+  | { ok: false; reason: 'exhausted'; detail: string };
 
 /**
  * Null object — used when the env var UNIFIED_STORE_DUAL_WRITE is unset/false.
@@ -135,6 +171,16 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
     _messages: RooSyncDashboardMessageRow[],
     _opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<void> {}
+  async syncRooSyncDashboardChecked(
+    _row: RooSyncDashboardRow,
+    _messages: RooSyncDashboardMessageRow[],
+    _opts?: { backfill?: boolean; condensed?: boolean }
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return { ok: false, reason: 'disabled' };
+  }
   async deleteRooSyncDashboard(_key: string): Promise<void> {}
+  async deleteRooSyncDashboardChecked(_key: string): Promise<UnifiedStoreWriteOutcome> {
+    return { ok: false, reason: 'disabled' };
+  }
   async ping(): Promise<boolean> { return false; }
 }

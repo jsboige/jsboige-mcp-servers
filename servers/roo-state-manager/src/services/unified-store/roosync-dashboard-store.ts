@@ -33,6 +33,7 @@ import type {
   RooSyncDashboardMessageRow,
 } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
+import type { UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { createLogger } from '../../utils/logger.js';
@@ -231,6 +232,45 @@ export async function dualWriteDashboardDelete(key: string): Promise<void> {
       key,
       error: String(error),
     });
+  }
+}
+
+/**
+ * Checked variants (rework #1134, review ask 2): the PG half's outcome is
+ * RETURNED, not swallowed. Callers that are about to make an irreversible
+ * decision predicated on "PG now holds (or no longer holds) this" — the merge
+ * action gating its source removal on the target sync — must use these. The
+ * Null writer resolves `{ ok: false, reason: 'disabled' }`: a host with no PG
+ * half has nothing at stake there, which callers treat as acceptable.
+ *
+ * Idempotent by construction (upsert / DELETE by key) — calling a checked
+ * variant right after its void sibling re-runs the same payload harmlessly.
+ */
+export async function dualWriteDashboardSyncChecked(
+  dashboard: Dashboard,
+  opts?: { condensed?: boolean }
+): Promise<UnifiedStoreWriteOutcome> {
+  try {
+    const { row, messages } = mapDashboardToRows(dashboard);
+    return await getUnifiedStoreWriter().syncRooSyncDashboardChecked(row, messages, opts);
+  } catch (error) {
+    logger.warn('[dashboard-pg] checked dual-write sync failed', {
+      key: dashboard.key,
+      condensed: opts?.condensed === true,
+      error: String(error),
+    });
+    return { ok: false, reason: 'exhausted', detail: String(error) };
+  }
+}
+
+export async function dualWriteDashboardDeleteChecked(
+  key: string
+): Promise<UnifiedStoreWriteOutcome> {
+  try {
+    return await getUnifiedStoreWriter().deleteRooSyncDashboardChecked(key);
+  } catch (error) {
+    logger.warn('[dashboard-pg] checked dual-write delete failed', { key, error: String(error) });
+    return { ok: false, reason: 'exhausted', detail: String(error) };
   }
 }
 
