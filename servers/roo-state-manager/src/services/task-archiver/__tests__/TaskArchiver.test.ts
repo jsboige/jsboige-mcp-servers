@@ -8,6 +8,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 
 // Mock external dependencies before importing
 const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir, mockExistsSync } = vi.hoisted(() => ({
@@ -571,26 +572,129 @@ describe('TaskArchiver — racine d\'archive hors zone epinglee (#608)', () => {
 		expect(await resolvedBase()).toBe('/mock/elsewhere/archives');
 		expect(mockExistsSync).not.toHaveBeenCalled();
 	});
+});
 
-	test('#3562 — WARN une seule fois si le legacy re-apparait avec le sibling actif', async () => {
-		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		try {
-			// Sibling ET legacy simultanement : le legacy re-cree par un hote
-			// pre-#608 ne doit pas detourner la resolution, seulement warn.
-			mockExistsSync.mockImplementation(() => true);
+// ============================================================
+// roo-extensions#3562 — Observabilite de la selection effective.
+//
+// Chaque scenario re-importe un module FRAIS (vi.resetModules + import
+// dynamique) pour remettre a zero les flags warn-once module-level :
+// l'ordre d'execution des tests ne peut ni consommer ni masquer un WARN.
+// Les 5 cas de la resolution sont couverts : override, ni l'un ni l'autre,
+// sibling seul, legacy seul (fallback EFFECTIF), coexistence.
+// ============================================================
+describe("TaskArchiver — WARN de la selection effective (#3562)", () => {
+	const savedShared = process.env.ROOSYNC_SHARED_PATH;
+	const savedArchive = process.env.ROOSYNC_ARCHIVE_PATH;
 
-			const first = await resolvedBase();
-			const second = await resolvedBase();
+	beforeEach(() => {
+		vi.clearAllMocks();
+		process.env.ROOSYNC_SHARED_PATH = '/mock/RooSync/.shared-state';
+		delete process.env.ROOSYNC_ARCHIVE_PATH;
+		mockExistsSync.mockReturnValue(false);
+		mockReaddir.mockResolvedValue([]);
+	});
 
-			expect(first).not.toContain('.shared-state');
-			expect(second).not.toContain('.shared-state');
-			const legacyWarns = warnSpy.mock.calls.filter(
-				(c: any[]) => String(c[0]).includes('pre-#608')
-			);
-			expect(legacyWarns.length).toBe(1);
-			expect(String(legacyWarns[0][0])).toContain('.shared-state');
-		} finally {
-			warnSpy.mockRestore();
-		}
+	afterEach(() => {
+		if (savedShared === undefined) delete process.env.ROOSYNC_SHARED_PATH;
+		else process.env.ROOSYNC_SHARED_PATH = savedShared;
+		if (savedArchive === undefined) delete process.env.ROOSYNC_ARCHIVE_PATH;
+		else process.env.ROOSYNC_ARCHIVE_PATH = savedArchive;
+	});
+
+	type FreshModule = typeof import('../TaskArchiver.js');
+
+	let warnSpy: MockInstance;
+
+	/** Import frais + resolution ; retourne la base ET les WARN [ARCHIVE] emis. */
+	async function freshResolve(): Promise<{ base: string; archiveWarns: string[] }> {
+		vi.resetModules();
+		const mod = (await import('../TaskArchiver.js')) as FreshModule;
+		await mod.TaskArchiver.listArchivedTasks();
+		const base = mockReaddir.mock.calls[0][0] as string;
+		const archiveWarns = warnSpy.mock.calls
+			.map((c: unknown[]) => String(c[0]))
+			.filter((s) => s.includes('[ARCHIVE]'));
+		return { base, archiveWarns };
+	}
+
+	beforeEach(() => {
+		warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		warnSpy.mockRestore();
+	});
+
+	test('override : ROOSYNC_ARCHIVE_PATH prime, zero existsSync, zero WARN', async () => {
+		process.env.ROOSYNC_ARCHIVE_PATH = '/mock/elsewhere/archives';
+
+		const { base, archiveWarns } = await freshResolve();
+
+		expect(base).toBe('/mock/elsewhere/archives');
+		expect(mockExistsSync).not.toHaveBeenCalled();
+		expect(archiveWarns).toEqual([]);
+	});
+
+	test('ni sibling ni legacy : sibling par defaut, zero WARN', async () => {
+		const { base, archiveWarns } = await freshResolve();
+
+		expect(base).not.toContain('.shared-state');
+		expect(base.endsWith('task-archive')).toBe(true);
+		expect(archiveWarns).toEqual([]);
+	});
+
+	test('sibling seul : sibling selectionne, zero WARN', async () => {
+		mockExistsSync.mockImplementation((p: unknown) => !String(p).includes('.shared-state'));
+
+		const { base, archiveWarns } = await freshResolve();
+
+		expect(base).not.toContain('.shared-state');
+		expect(archiveWarns).toEqual([]);
+	});
+
+	test('legacy seul : fallback EFFECTIF — WARN precis exactement une fois, pas de warn coexistence', async () => {
+		mockExistsSync.mockImplementation((p: unknown) => String(p).includes('.shared-state'));
+
+		const first = await freshResolve();
+		// Deuxieme resolution DANS LE MEME module : le warn-once doit tenir.
+		const mod = (await import('../TaskArchiver.js')) as FreshModule;
+		await mod.TaskArchiver.listArchivedTasks();
+		const secondBase = mockReaddir.mock.calls[1][0] as string;
+		const archiveWarns = warnSpy.mock.calls
+			.map((c: unknown[]) => String(c[0]))
+			.filter((s) => s.includes('[ARCHIVE]'));
+
+		expect(first.base).toContain('.shared-state');
+		expect(secondBase).toContain('.shared-state');
+		expect(secondBase).toBe(first.base);
+		const fallbackWarns = archiveWarns.filter((s) => s.includes('resout la racine legacy'));
+		expect(fallbackWarns.length).toBe(1);
+		expect(fallbackWarns[0]).toContain('.shared-state');
+		expect(fallbackWarns[0]).toContain('invisible');
+		// Le signal de coexistence ne doit PAS etre emis sur ce chemin.
+		expect(archiveWarns.some((s) => s.includes('alors que'))).toBe(false);
+	});
+
+	test('coexistence : sibling selectionne, WARN non-attributif exactement une fois, pas de warn fallback', async () => {
+		mockExistsSync.mockImplementation(() => true);
+
+		const first = await freshResolve();
+		const mod = (await import('../TaskArchiver.js')) as FreshModule;
+		await mod.TaskArchiver.listArchivedTasks();
+		const archiveWarns = warnSpy.mock.calls
+			.map((c: unknown[]) => String(c[0]))
+			.filter((s) => s.includes('[ARCHIVE]'));
+
+		expect(first.base).not.toContain('.shared-state');
+		const coexistWarns = archiveWarns.filter((s) => s.includes('alors que'));
+		expect(coexistWarns.length).toBe(1);
+		expect(coexistWarns[0]).toContain('.shared-state');
+		// Non-attributif : les deux hypotheses sont presentees sans trancher.
+		expect(coexistWarns[0]).toContain('propagation Drive');
+		expect(coexistWarns[0]).toContain('non tranche');
+		expect(coexistWarns[0]).not.toContain('ecrit encore');
+		// La resolution n'est pas detournee et le fallback n'est pas selectionne.
+		expect(archiveWarns.some((s) => s.includes('resout la racine legacy'))).toBe(false);
 	});
 });
