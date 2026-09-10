@@ -508,7 +508,8 @@ export class SkeletonCacheService {
     /**
      * #1244 Couche 1.1 — Tier 3: Charger les archives cross-machine depuis GDrive.
      *
-     * Lit `.shared-state/task-archive/<machineId>/<taskId>.json.gz` via
+     * Lit `task-archive/<machineId>/<taskId>.json.gz` (sibling de `.shared-state`,
+     * jsboige-mcp-servers#608 / roo-extensions#3562) via
      * `TaskArchiver`, convertit chaque archive en `ConversationSkeleton` via
      * `archiveToSkeleton()`, et merge dans le cache. Les collisions sont
      * resolues en faveur des tiers chauds (local Roo/Claude > archive remote).

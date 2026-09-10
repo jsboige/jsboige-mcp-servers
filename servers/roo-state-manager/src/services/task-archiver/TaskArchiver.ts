@@ -130,17 +130,25 @@ function transformClaudeCodeJsonl(jsonlLines: ClaudeCodeJsonlLine[]): ArchivedTa
 /**
  * Racine des archives de taches.
  *
- * #608 — `.shared-state` est marque "disponible hors connexion" dans Google Drive
- * sur toutes les machines : tout ce qui vit dessous est materialise en entier sur
- * chaque disque et re-telecharge a chaque rotation. Les archives de taches sont un
- * stockage de masse, jamais consulte a chaud — elles doivent donc vivre a cote de
- * `.shared-state`, pas dedans, pour rester cloud-only.
+ * jsboige-mcp-servers#608 — `.shared-state` est marque "disponible hors connexion"
+ * dans Google Drive sur toutes les machines : tout ce qui vit dessous est
+ * materialise en entier sur chaque disque et re-telecharge a chaque rotation.
+ * Les archives de taches sont un stockage de masse, jamais consulte a chaud —
+ * elles doivent donc vivre a cote de `.shared-state`, pas dedans, pour rester
+ * cloud-only.
  *
- * La resolution tolere les deux emplacements pendant la bascule de la flotte :
- * tant que les donnees n'ont pas ete deplacees, une machine deja a jour continue
- * de lire l'ancien chemin. L'ordre entre le deploiement du code et le deplacement
- * des donnees n'a donc pas d'importance, dans un sens comme dans l'autre.
+ * roo-extensions#3562 (09/09/2026) : la migration des donnees est jouee — le
+ * legacy `.shared-state/task-archive` (~7 700 archives, 7 machines) a ete
+ * deplace vers le sibling puis supprime. Le fallback legacy reste pour couvrir
+ * la fenetre de propagation Drive. Observabilite veridique, deux signaux WARN
+ * distincts, une fois par process chacun :
+ * - ce process selectionne EFFECTIVEMENT le legacy (sibling invisible) ;
+ * - coexistence legacy + sibling actif — NON attributif : propagation Drive ou
+ *   ecrivain pre-#608 ne sont pas tranchables sans preuve d'ecriture recente.
  */
+let warnedLegacyFallbackSelected = false;
+let warnedLegacyCoexistence = false;
+
 function getArchiveBasePath(): string {
     if (process.env.ROOSYNC_ARCHIVE_PATH) {
         return process.env.ROOSYNC_ARCHIVE_PATH;
@@ -148,12 +156,28 @@ function getArchiveBasePath(): string {
 
     const shared = path.resolve(getSharedStatePath());
     const primary = path.join(path.dirname(shared), 'task-archive');
+    const legacy = path.join(shared, 'task-archive');
     if (existsSync(primary)) {
+        if (!warnedLegacyCoexistence && existsSync(legacy)) {
+            warnedLegacyCoexistence = true;
+            console.warn(
+                `[ARCHIVE] #3562: ${legacy} existe alors que ${primary} est actif — ` +
+                `propagation Drive en cours ou ecrivain pre-#608 (non tranche sans preuve ` +
+                `d'ecriture recente). La resolution n'est pas detournee : sibling.`
+            );
+        }
         return primary;
     }
 
-    const legacy = path.join(shared, 'task-archive');
     if (existsSync(legacy)) {
+        if (!warnedLegacyFallbackSelected) {
+            warnedLegacyFallbackSelected = true;
+            console.warn(
+                `[ARCHIVE] #3562: ce process resout la racine legacy ${legacy} ` +
+                `(sibling ${primary} invisible) — fenetre de propagation Drive ou etat ` +
+                `disque pre-migration ; les ecritures d'archives continuent dans .shared-state.`
+            );
+        }
         return legacy;
     }
 
