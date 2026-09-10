@@ -355,6 +355,28 @@ describe('conversation_browser', () => {
 			);
 		});
 
+		test('#3174 strips neutral wire sentinels before validating and delegating view', async () => {
+			const result = await handleConversationBrowser(
+				{
+					action: 'view', task_id: 'task-abc', detail_level: 'summary',
+					conversation_id: '', taskId: '', detailLevel: null,
+					startIndex: null, endIndex: null, smart_truncation: null
+				},
+				mockCache,
+				mockEnsureCache
+			);
+
+			expect(result.isError).toBeFalsy();
+			expect(mockViewHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					task_id: 'task-abc',
+					detail_level: 'summary',
+					smart_truncation: undefined
+				}),
+				mockCache
+			);
+		});
+
 		test('passes view_mode and truncate', async () => {
 			await handleConversationBrowser(
 				{
@@ -449,6 +471,62 @@ describe('conversation_browser', () => {
 				type: 'text',
 				text: '## Summary\nDetails here'
 			});
+		});
+
+		test('#3174 strips nullable view and range sentinels before summarize delegation', async () => {
+			const result = await handleConversationBrowser(
+				{
+					action: 'summarize', summarize_type: 'trace', taskId: 'task-1',
+					detail_level: '', view_mode: null, detailLevel: null,
+					startIndex: null, endIndex: null
+				},
+				mockCache,
+				mockEnsureCache,
+				undefined,
+				mockGetSkeleton,
+				mockFindChildren
+			);
+
+			expect(result.isError).toBeFalsy();
+			expect(mockHandleSummarize).toHaveBeenCalledWith(
+				expect.objectContaining({
+					taskId: 'task-1',
+					detailLevel: undefined,
+					startIndex: undefined,
+					endIndex: undefined
+				}),
+				mockGetSkeleton,
+				mockFindChildren
+			);
+		});
+
+		test('#3174 preserves an explicitly invalid summarize range for fail-loud validation', async () => {
+			mockHandleSummarize.mockImplementationOnce(async (args: any) => {
+				if (args.startIndex >= args.endIndex) {
+					throw new Error(`Invalid range: startIndex (${args.startIndex}) >= endIndex (${args.endIndex}).`);
+				}
+				return 'unreachable';
+			});
+
+			const result = await handleConversationBrowser(
+				{
+					action: 'summarize', summarize_type: 'trace', taskId: 'task-1',
+					startIndex: 1, endIndex: 0
+				},
+				mockCache,
+				mockEnsureCache,
+				undefined,
+				mockGetSkeleton,
+				mockFindChildren
+			);
+
+			expect(result.isError).toBe(true);
+			expect(getTextContent(result)).toContain('startIndex (1) >= endIndex (0)');
+			expect(mockHandleSummarize).toHaveBeenCalledWith(
+				expect.objectContaining({ startIndex: 1, endIndex: 0 }),
+				mockGetSkeleton,
+				mockFindChildren
+			);
 		});
 
 		test('passes all summarize options', async () => {
@@ -554,10 +632,10 @@ describe('conversation_browser', () => {
 			expect(mockHandleGetConversationSynthesis).not.toHaveBeenCalled();
 		});
 
-		test('synthesis is listed in the summarize_type schema enum', async () => {
+		test('synthesis remains absent from the served summarize_type schema while disabled', async () => {
 			const { conversationBrowserTool } = await import('../conversation-browser.js');
 			const summarizeTypeEnum = (conversationBrowserTool.inputSchema as any).properties.summarize_type.enum;
-			expect(summarizeTypeEnum).toContain('synthesis');
+			expect(summarizeTypeEnum).not.toContain('synthesis');
 		});
 	});
 

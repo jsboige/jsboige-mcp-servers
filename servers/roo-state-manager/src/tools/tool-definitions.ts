@@ -13,6 +13,41 @@
 
 import { dashboardToolMetadata } from './roosync/dashboard-schemas.js';
 
+type ToolPropertySchema = {
+    type: string;
+    enum?: readonly unknown[];
+    default?: unknown;
+    [key: string]: unknown;
+};
+
+/**
+ * Flat multi-action schemas are rendered by some clients as one required signature.
+ * Keep every non-action field explicitly nullable on the wire so those clients have
+ * a lossless “not applicable” value. Defaults belong to action handlers, not here:
+ * a schema default from another action would otherwise become a real argument.
+ */
+function nullableConversationProperties<T extends Record<string, ToolPropertySchema>>(
+    properties: T
+): Record<keyof T, Record<string, unknown>> {
+    return Object.fromEntries(
+        Object.entries(properties).map(([name, property]) => {
+            const { default: _wireDefault, ...schema } = property;
+            const nullable: Record<string, unknown> = {
+                ...schema,
+                type: [property.type, 'null']
+            };
+
+            if (property.enum) {
+                nullable.enum = property.type === 'string'
+                    ? [...property.enum, '', null]
+                    : [...property.enum, null];
+            }
+
+            return [name, nullable];
+        })
+    ) as Record<keyof T, Record<string, unknown>>;
+}
+
 // ============================================================
 // conversation_browser
 // ============================================================
@@ -23,37 +58,38 @@ export const conversationBrowserDefinition = {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'], description: 'Start with "list" to discover task IDs.' },
-            // --- list ---
+            ...nullableConversationProperties({
+                // --- list ---
             limit: { type: 'number', description: '[list] Max conversations to return.' },
             page: { type: 'number', description: '[list] Page number (1-based). Default: 1.' },
             per_page: { type: 'number', description: '[list] Results per page (10-100). Default: 10.' },
-            sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'], default: 'lastActivity' },
-            sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+            sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'] },
             pendingSubtaskOnly: { type: 'boolean' },
             contentPattern: { type: 'string' },
-            workspacePathMatch: { type: 'string', enum: ['exact', 'normalized', 'substring'], default: 'normalized', description: '[list] Workspace matching strategy.' },
+            workspacePathMatch: { type: 'string', enum: ['exact', 'normalized', 'substring'], description: '[list] Workspace matching strategy.' },
             startDate: { type: 'string', description: '[list] Start date filter (ISO 8601 or YYYY-MM-DD).' },
             endDate: { type: 'string', description: '[list] End date filter (ISO 8601 or YYYY-MM-DD).' },
             machineId: { type: 'string', description: '[list] Filter by machine ID.' },
-            includeArchives: { type: 'boolean', default: true, description: '[list] Include cross-machine GDrive archives (Tier 3).' },
+            includeArchives: { type: 'boolean', description: '[list] Include cross-machine GDrive archives (Tier 3).' },
             // #3255 — camelCase on the wire, like the adjacent includeArchives (registry dispatch passes raw args).
-            waitForArchives: { type: 'boolean', default: false, description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; response carries tier3.status=loading otherwise.' },
+            waitForArchives: { type: 'boolean', description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; response carries tier3.status=loading otherwise.' },
             // --- tree ---
             conversation_id: { type: 'string', description: '[tree] Conversation ID.' },
             max_depth: { type: 'number', description: '[tree] Max tree depth.' },
-            include_siblings: { type: 'boolean', default: true },
-            output_format: { type: 'string', enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'], default: 'json' },
+            include_siblings: { type: 'boolean' },
+            output_format: { type: 'string', enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'] },
             current_task_id: { type: 'string' },
-            truncate_instruction: { type: 'number', default: 80 },
-            show_metadata: { type: 'boolean', default: false },
+            truncate_instruction: { type: 'number' },
+            show_metadata: { type: 'boolean' },
             // --- current/view ---
             workspace: { type: 'string' },
             task_id: { type: 'string' },
-            view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'], default: 'chain' },
-            detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'], default: 'skeleton' },
-            truncate: { type: 'number', description: '0 = smart truncation.', default: 0 },
-            max_output_length: { type: 'number', default: 300000 },
-            smart_truncation: { type: 'boolean', default: false },
+            view_mode: { type: 'string', enum: ['single', 'chain', 'cluster'] },
+            detail_level: { type: 'string', enum: ['skeleton', 'summary', 'full'] },
+            truncate: { type: 'number', description: '0 = smart truncation.' },
+            max_output_length: { type: 'number' },
+            smart_truncation: { type: 'boolean' },
             smart_truncation_config: { type: 'object', properties: { gradientStrength: { type: 'number' }, minPreservationRate: { type: 'number' }, maxTruncationRate: { type: 'number' } } },
             messageStart: { type: 'number', description: '[view] 0-based start index (inclusive).' },
             messageEnd: { type: 'number', description: '[view] 0-based end index (exclusive).' },
@@ -61,30 +97,31 @@ export const conversationBrowserDefinition = {
             // --- summarize ---
             summarize_type: { type: 'string', enum: ['trace', 'cluster'], description: 'trace=stats/timeline, cluster=parent-child. Note: synthesis disabled (#788).' },
             taskId: { type: 'string' },
-            source: { type: 'string', enum: ['roo', 'claude', 'all'], default: 'roo' },
+            source: { type: 'string', enum: ['roo', 'claude', 'all'] },
             filePath: { type: 'string' },
-            summarize_output_format: { type: 'string', enum: ['markdown', 'html', 'json'], default: 'markdown' },
-            detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'Messages', 'Summary', 'UserOnly'], default: 'Full', description: 'NoTools = alias of Compact (#881). NoToolParams = tool params masked, results kept (debug).' },
-            truncationChars: { type: 'number', description: '0 = no truncation.', default: 0 },
-            compactStats: { type: 'boolean', default: false },
-            includeCss: { type: 'boolean', default: false, description: 'Opt-in (#3178, défaut false).' },
-            generateToc: { type: 'boolean', default: true },
+            summarize_output_format: { type: 'string', enum: ['markdown', 'html', 'json'] },
+            detailLevel: { type: 'string', enum: ['Full', 'NoTools', 'NoToolParams', 'Compact', 'NoResults', 'Messages', 'Summary', 'UserOnly'], description: 'NoTools = alias of Compact (#881). NoToolParams = tool params masked, results kept (debug).' },
+            truncationChars: { type: 'number', description: '0 = no truncation.' },
+            compactStats: { type: 'boolean' },
+            includeCss: { type: 'boolean', description: 'Opt-in (#3178, défaut false).' },
+            generateToc: { type: 'boolean' },
             startIndex: { type: 'number', description: '1-based.' },
             endIndex: { type: 'number' },
             childTaskIds: { type: 'array', items: { type: 'string' } },
-            clusterMode: { type: 'string', enum: ['aggregated', 'detailed', 'comparative'], default: 'aggregated' },
-            includeClusterStats: { type: 'boolean', default: true },
-            crossTaskAnalysis: { type: 'boolean', default: false },
-            maxClusterDepth: { type: 'number', default: 10 },
-            clusterSortBy: { type: 'string', enum: ['chronological', 'size', 'activity', 'alphabetical'], default: 'chronological' },
-            includeClusterTimeline: { type: 'boolean', default: false },
-            clusterTruncationChars: { type: 'number', default: 0 },
-            showTaskRelationships: { type: 'boolean', default: true },
+            clusterMode: { type: 'string', enum: ['aggregated', 'detailed', 'comparative'] },
+            includeClusterStats: { type: 'boolean' },
+            crossTaskAnalysis: { type: 'boolean' },
+            maxClusterDepth: { type: 'number' },
+            clusterSortBy: { type: 'string', enum: ['chronological', 'size', 'activity', 'alphabetical'] },
+            includeClusterTimeline: { type: 'boolean' },
+            clusterTruncationChars: { type: 'number' },
+            showTaskRelationships: { type: 'boolean' },
             // --- rebuild ---
-            force_rebuild: { type: 'boolean', description: 'Rebuild all (slow). Default: missing/stale only.', default: false },
+            force_rebuild: { type: 'boolean', description: 'Rebuild all (slow). Default: missing/stale only.' },
             task_ids: { type: 'array', items: { type: 'string' } },
             sources: { type: 'array', items: { type: 'string', enum: ['roo', 'claude', 'archive'] }, description: '[rebuild] Skeleton sources. Default: ["roo"].' },
-            reindex: { type: 'boolean', default: false, description: '[rebuild] Force Qdrant reindex for all built skeletons.' }
+            reindex: { type: 'boolean', description: '[rebuild] Force Qdrant reindex for all built skeletons.' }
+            })
         },
         required: ['action']
     }
