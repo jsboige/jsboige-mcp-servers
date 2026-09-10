@@ -52,6 +52,7 @@ import {
 } from '../tool-definitions.js';
 // #3254 drift-guard: the zod schema is the handler contract; the static definition is the wire contract
 import { MessagesArgsSchema } from '../roosync/messages.js';
+import { conversationBrowserTool } from '../conversation/conversation-browser.js';
 
 const EXPECTED_TOOL_COUNT = 17; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17)
 
@@ -139,11 +140,14 @@ describe('tool-definitions.ts — Schema Validation', () => {
                 for (const [propName, propSchema] of Object.entries(def.inputSchema.properties)) {
                     const p = propSchema as Record<string, unknown>;
                     expect(p).toHaveProperty('type');
-                    expect(typeof p.type).toBe('string');
-                    expect(['string', 'number', 'boolean', 'integer', 'object', 'array']).toContain(p.type);
-                    if (p.type === 'string' && 'enum' in p) {
+                    const types = Array.isArray(p.type) ? p.type : [p.type];
+                    expect(types.length).toBeGreaterThan(0);
+                    for (const type of types) {
+                        expect(['string', 'number', 'boolean', 'integer', 'object', 'array', 'null']).toContain(type);
+                    }
+                    if (types.includes('string') && 'enum' in p) {
                         expect(Array.isArray(p.enum)).toBe(true);
-                        expect(p.enum.length).toBeGreaterThan(0);
+                        expect((p.enum as unknown[]).length).toBeGreaterThan(0);
                     }
                     if ('description' in p) {
                         expect(typeof p.description).toBe('string');
@@ -204,11 +208,35 @@ describe('tool-definitions.ts — Schema Validation', () => {
         // leaving Compact and NoToolParams unreachable via the tool.
         it('conversation_browser detailLevel enum must match DetailLevelStrategyFactory registrations (#3196)', () => {
             const detailLevelProp = conversationBrowserDefinition.inputSchema.properties.detailLevel as Record<string, unknown>;
-            const schemaEnum = (detailLevelProp.enum as string[]).slice().sort();
+            const schemaEnum = (detailLevelProp.enum as unknown[])
+                .filter((value): value is string => typeof value === 'string' && value !== '')
+                .sort();
             const factoryLevels = DetailLevelStrategyFactory.getSupportedDetailLevels().slice().sort();
             expect(schemaEnum).toEqual(factoryLevels);
             expect(schemaEnum).toContain('Compact');
             expect(schemaEnum).toContain('NoToolParams');
+        });
+
+        it('conversation_browser exposes neutral sentinels without cross-action defaults (#3174)', () => {
+            const schema = conversationBrowserDefinition.inputSchema;
+            expect(schema.required).toEqual(['action']);
+
+            for (const [name, rawProperty] of Object.entries(schema.properties)) {
+                if (name === 'action') continue;
+                const property = rawProperty as Record<string, unknown>;
+                expect(property.type, name).toEqual(expect.arrayContaining(['null']));
+                expect(property, name).not.toHaveProperty('default');
+                if (Array.isArray(property.enum)) {
+                    expect(property.enum, name).toContain(null);
+                    if ((property.type as string[]).includes('string')) {
+                        expect(property.enum, name).toContain('');
+                    }
+                }
+            }
+        });
+
+        it('conversation_browser handler metadata reuses the schema served by tools/list (#3174)', () => {
+            expect(conversationBrowserTool).toBe(conversationBrowserDefinition);
         });
 
         it('roosync_search should support semantic, text, and diagnose', () => {
