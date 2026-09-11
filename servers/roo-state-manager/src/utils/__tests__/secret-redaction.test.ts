@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { redactKnownSecretValues } from '../secret-redaction.js';
+import { redactKnownSecretValues, createKnownValueMasker } from '../secret-redaction.js';
 
 /** Valeur de la fuite fondatrice #3584 : clé d'API nue, 64 hexadécimaux, sans nom. */
 const LEAKED_KEY = '89ed6fb1'.padEnd(64, 'a1b2c3d4'.slice(0, 8));
@@ -96,5 +96,23 @@ describe('redactKnownSecretValues', () => {
 
         expect(out).not.toContain(LEAKED_KEY);
         expect(out).not.toContain(LEAKED_KEY.slice(0, 8));
+    });
+});
+
+describe('createKnownValueMasker (#3584 — index préconstruit une fois par passe)', () => {
+    it('est équivalent à redactKnownSecretValues, sur plusieurs textes successifs', () => {
+        const env = { EMBEDDINGS_API_KEY: LEAKED_KEY };
+        const mask = createKnownValueMasker(env);
+
+        const first = `clé active : ${LEAKED_KEY} (fin)`;
+        expect(mask(first)).toBe(redactKnownSecretValues(first, env));
+        // Réutilisable : le second appel ne doit pas dépendre d'un état du premier.
+        expect(mask(first)).toContain('<redacted:EMBEDDINGS_API_KEY>');
+        expect(mask('texte sans secret')).toBe('texte sans secret');
+    });
+
+    it("ne masque rien quand l'env ne porte aucun secret (masqueur identité)", () => {
+        const mask = createKnownValueMasker({ PATH: '/usr/bin', HOME: '/home/x' } as NodeJS.ProcessEnv);
+        expect(mask(`valeur ${LEAKED_KEY}`)).toBe(`valeur ${LEAKED_KEY}`);
     });
 });

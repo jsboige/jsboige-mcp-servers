@@ -39,7 +39,7 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
-import { redactKnownSecretValues } from '../../utils/secret-redaction.js';
+import { redactKnownSecretValues, createKnownValueMasker } from '../../utils/secret-redaction.js';
 import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
@@ -1317,8 +1317,21 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
  *    capable de masquer une valeur NUE. C'est la fuite fondatrice : une clé d'API de
  *    64 hexadécimaux publiée sans nom de variable, indistinguable par sa forme d'un
  *    SHA ou d'un hash quelconque (cf. en-tête de `utils/secret-redaction.ts`).
+ *
+ * Le pré-filtre `FORM_LAYER_MARKER` court-circuite la couche forme quand le texte ne
+ * porte AUCUN de ses marqueurs : cinq regexes sur un intercom entier par condensation
+ * (#3584 rétention) pesaient assez pour faire basculer des tests au chrono serré
+ * (#2463, #2719) — le scan d'un texte sans marqueur est du travail pur perdu. La
+ * couche valeur connue court TOUJOURS : une valeur nue n'a par définition aucun
+ * marqueur, c'est le cas fondateur.
  */
-const maskSecretText = (text: string): string => redactKnownSecretValues(redactSecrets(text));
+const FORM_LAYER_MARKER = /sk-|gh[opsur]_|xox|Bearer|API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY/i;
+
+const maskSecretText = (text: string): string => {
+    const formLayerNeeded = FORM_LAYER_MARKER.test(text);
+    const afterForm = formLayerNeeded ? redactSecrets(text) : text;
+    return redactKnownSecretValues(afterForm);
+};
 
 /**
  * Masque une LISTE de messages, et rend la liste d'origine — par identité de
@@ -1333,10 +1346,17 @@ const maskSecretText = (text: string): string => redactKnownSecretValues(redactS
  * commit, même jeu d'échecs.
  */
 function redactMessagesForPublication(key: string, messages: IntercomMessage[]): IntercomMessage[] {
+  // L'index des valeurs secrètes connues est préconstruit UNE fois pour tout
+  // l'intercom : le reconstruire par message est du travail perdu (~0,31 ms × N,
+  // mesuré sur un `env` de 128 entrées). Voir `createKnownValueMasker`.
+  const maskKnownValues = createKnownValueMasker();
+  const maskOne = (text: string): string =>
+    maskKnownValues(FORM_LAYER_MARKER.test(text) ? redactSecrets(text) : text);
+
   let messagesMasked = 0;
   const masked = messages.map(msg => {
     const raw = msg.content ?? '';
-    const out = maskSecretText(raw);
+    const out = maskOne(raw);
     if (out === raw) return msg;
     messagesMasked++;
     return { ...msg, content: out };
@@ -2878,12 +2898,20 @@ async function condenseIntercom(
     return dashboard; // Rien à condenser
   }
 
-  const toArchive = messages.slice(0, messages.length - keepCount);
-  const toKeep = messages.slice(messages.length - keepCount);
+  // #3584 (volet rétention) — masquer AVANT toute dérivation. Les messages écrits
+  // avant le garde de publication (#1144, posé dans writeDashboardFile) n'ont
+  // jamais traversé la frontière ; or TOUS les dérivés de la condensation partent
+  // de ces valeurs : prompts LLM (generateStatusUpdate / generateLLMSummary — le
+  // secret ne doit pas transiter vers le provider, limite 2 de #1144), archives
+  // des chemins succès ET fallback — écrites par fs.writeFile direct, hors
+  // writeDashboardFile (limite 3) —, tâche synthétique Qdrant du fallback, et
+  // intercom réécrit au retour (auto-nettoyage du dashboard vivant au premier
+  // cycle qui suit une fuite).
+  const safeMessages = redactMessagesForPublication(key, messages);
+  const previousStatus = maskSecretText(dashboard.status.markdown);
 
-  // #858 : Générer les résumés LLM AVANT d'archiver
-  // Pass ALL messages to status update so LLM sees full context
-  const previousStatus = dashboard.status.markdown;
+  const toArchive = safeMessages.slice(0, safeMessages.length - keepCount);
+  const toKeep = safeMessages.slice(safeMessages.length - keepCount);
 
   // #1792: If circuit breaker is open, skip LLM calls entirely and do truncation fallback
   if (condenseCBShouldBypass()) {
@@ -2904,7 +2932,7 @@ async function condenseIntercom(
   // via the existing null-check below.
   const tParallel = Date.now();
   const [statusCall, summaryCall] = await Promise.all([
-    generateStatusUpdate(previousStatus, messages, toArchive.length, key),
+    generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key),
     generateLLMSummary(toArchive)
   ]);
   if (diagnostic) {
@@ -3306,6 +3334,11 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
         // que write/append (per-key + cross-process append lock dans le handler)
         return withKeyLock(key, () =>
           handleUpdate(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
+        );
+      case 'scrub':
+        // #3584 (retrait) : même discipline read-modify-write sérialisée que write.
+        return withKeyLock(key, () =>
+          handleScrub(key, args, resolvedMachineId, resolvedWorkspace, requestEcho)
         );
 
     case 'delete':
@@ -3781,6 +3814,114 @@ async function handleWrite(
     request: requestEcho,
     sizes: buildSizes(dashboard),
     message: `Status mis à jour pour dashboard '${key}'`
+  };
+}
+
+/**
+ * #3584 (volet retrait) — action `scrub` : masque RÉTROACTIVEMENT le dashboard vivant.
+ *
+ * Le garde #1144 masque à l'écriture ; la condensation masque à la relecture depuis
+ * #3584-rétention ; entre les deux, un secret publié AVANT ces gardes reste lisible
+ * dans l'intercom vivant — potentiellement des jours, si le seuil de condensation
+ * de 92 % n'est pas franchi. `scrub` referme cette fenêtre À LA DEMANDE : relire,
+ * masquer, réécrire via writeDashboardFile — donc fichier G: ET miroir PG d'un
+ * coup, sous les mêmes verrous que write (read-modify-write).
+ *
+ * Le masquage par valeur ne connaît que les secrets que CE process détient dans
+ * son `process.env` (cf. utils/secret-redaction.ts) : l'exécuter depuis un siège
+ * NON-détenteur ne masque rien — et ne prouve donc rien. Ne couvre QUE le
+ * dashboard vivant — archives et journal PG historique relèvent de la procédure
+ * manuelle (docs/harness/reference/secret-withdrawal-procedure.md, repo parent).
+ */
+async function handleScrub(
+  key: string,
+  args: DashboardArgs,
+  resolvedMachineId: string,
+  resolvedWorkspace: string,
+  requestEcho: DashboardRequestEcho
+): Promise<DashboardResult> {
+  // #3459: même fail-closed que write/append — pas de scrub d'un store injoignable.
+  try {
+    assertSharedStoreAccessible();
+  } catch (err) {
+    return {
+      success: false,
+      action: 'scrub',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: (err as Error).message
+    };
+  }
+
+  const holder: CondenseLockInfo = {
+    machineId: resolvedMachineId,
+    workspace: resolvedWorkspace,
+    pid: process.pid,
+    acquiredAt: new Date().toISOString()
+  };
+
+  let notFound = false;
+  let statusMasked = false;
+  let messagesMasked = 0;
+
+  await withAppendLock(key, holder, async () => {
+    const current = await readDashboardFile(key);
+    if (!current) {
+      notFound = true;
+      return;
+    }
+
+    const statusRaw = current.status.markdown ?? '';
+    const statusOut = maskSecretText(statusRaw);
+    statusMasked = statusOut !== statusRaw;
+
+    let maskedCount = 0;
+    const maskedMessages = current.intercom.messages.map(msg => {
+      const raw = msg.content ?? '';
+      const out = maskSecretText(raw);
+      if (out === raw) return msg;
+      maskedCount++;
+      return { ...msg, content: out };
+    });
+    messagesMasked = maskedCount;
+
+    const updated: Dashboard = {
+      ...current,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: { machineId: resolvedMachineId, workspace: resolvedWorkspace },
+      status: statusMasked ? { ...current.status, markdown: statusOut } : current.status,
+      intercom: { ...current.intercom, messages: maskedMessages }
+    };
+    await writeDashboardFile(key, updated);
+  });
+
+  if (notFound) {
+    return {
+      success: false,
+      action: 'scrub',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message: `Dashboard '${key}' introuvable`
+    };
+  }
+
+  logger.warn('[DASHBOARD-SCRUB] retrait rétroactif exécuté (#3584)', {
+    key,
+    statusMasked,
+    messagesMasked
+  });
+
+  return {
+    success: true,
+    action: 'scrub',
+    key,
+    type: args.type!,
+    request: requestEcho,
+    message: `Scrub #3584 '${key}' : ${messagesMasked} message(s) masqué(s)`
+      + `${statusMasked ? ' + section status' : ''} — fichier et miroir PG réécrits. `
+      + `Archives et journal PG historiques : voir secret-withdrawal-procedure (repo parent).`
   };
 }
 
@@ -4527,7 +4668,8 @@ async function cleanupStaleWorktreeDashboards(): Promise<number> {
           const archivePath = path.join(archiveDir, `${key}-wt-cleanup-${timestamp}.md`);
           const originalPath = path.join(dir, file);
           const content = await fs.readFile(originalPath, 'utf8');
-          await fs.writeFile(archivePath, content, 'utf8');
+          // #3584 (rétention) — copie hors writeDashboardFile : masquer (cf. pre-delete).
+          await fs.writeFile(archivePath, maskSecretText(content), 'utf8');
           await fs.unlink(originalPath);
           archived++;
           logger.info('Archived stale worktree dashboard', {
@@ -4924,11 +5066,12 @@ async function handleMerge(
       // retirée) — sérialiser la vue PG pour que l'archive ne soit jamais
       // vide par construction.
       if (sourceHasContent) {
+        // #3584 (rétention) — sérialisation de la vue PG hors writeDashboardFile : masquer.
         await fs.writeFile(
           archivePath,
-          `---\ntype: ${source.type}\nlastModified: ${source.lastModified}\nsourceKey: ${sourceKey}\nmergedInto: ${key}\n---\n\n## Status\n\n${source.status.markdown || '*Aucun contenu.*'}\n\n## Intercom (${source.intercom.messages.length} messages)\n\n${source.intercom.messages
+          maskSecretText(`---\ntype: ${source.type}\nlastModified: ${source.lastModified}\nsourceKey: ${sourceKey}\nmergedInto: ${key}\n---\n\n## Status\n\n${source.status.markdown || '*Aucun contenu.*'}\n\n## Intercom (${source.intercom.messages.length} messages)\n\n${source.intercom.messages
             .map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n\n${m.content}`)
-            .join('\n\n---\n\n')}\n`,
+            .join('\n\n---\n\n')}\n`),
           'utf8'
         );
       } else {
@@ -5109,7 +5252,10 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
         const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const archivePath = path.join(archiveDir, `${key}-pre-delete-${now}.md`);
         const originalContent = await fs.readFile(filePath, 'utf8');
-        await fs.writeFile(archivePath, originalContent, 'utf8');
+        // #3584 (rétention) — cette copie ne traverse PAS writeDashboardFile :
+        // masquer ici, sinon un secret publié avant le garde #1144 repart en
+        // copie intégrale au moment même où l'original est détruit.
+        await fs.writeFile(archivePath, maskSecretText(originalContent), 'utf8');
         logger.info('Dashboard archived before deletion', { key, archivePath, messageCount: dashboard.intercom.messages.length });
       }
     }

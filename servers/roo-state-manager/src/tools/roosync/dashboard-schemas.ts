@@ -136,8 +136,8 @@ export interface DashboardFrontmatter {
 // === Dashboard Args Schema (unified for all actions) ===
 
 export const DashboardArgsSchema = z.object({
-  action: z.enum(['read', 'write', 'append', 'list', 'delete', 'merge', 'read_archive', 'read_overview', 'refresh', 'update'])
-    .describe('Action to perform. Note: "condense" removed — auto-condensation handles space management at 92% threshold.'),
+  action: z.enum(['read', 'write', 'append', 'list', 'delete', 'merge', 'read_archive', 'read_overview', 'refresh', 'update', 'scrub'])
+    .describe('Action to perform. Note: "condense" removed — auto-condensation handles space management at 92% threshold. "scrub" (#3584) retroactively masks secrets in the LIVE dashboard (file + PG mirror) — only knows secrets held in this process env; archives/journal history need the manual withdrawal procedure.'),
 
   type: z.enum(['global', 'machine', 'workspace']).optional()
     .describe('REQUIRED for read/write/append/update/delete/read_archive. Only list/read_overview/refresh may omit it.'),
