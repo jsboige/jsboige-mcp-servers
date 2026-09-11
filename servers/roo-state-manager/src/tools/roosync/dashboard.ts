@@ -39,6 +39,8 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { redactKnownSecretValues } from '../../utils/secret-redaction.js';
+import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
@@ -1306,6 +1308,80 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
 }
 
 /**
+ * #3584 — masque les secrets au franchissement de la frontière de PUBLICATION.
+ *
+ * Deux couches complémentaires, aucune ne suffisant seule :
+ *  - `redactSecrets` attrape les formes auto-descriptives (`sk-…`, `ghp_…`, `NAME=VALUE`)
+ *    quel que soit le détenteur du secret ;
+ *  - `redactKnownSecretValues` attrape les valeurs connues de CE process — seule couche
+ *    capable de masquer une valeur NUE. C'est la fuite fondatrice : une clé d'API de
+ *    64 hexadécimaux publiée sans nom de variable, indistinguable par sa forme d'un
+ *    SHA ou d'un hash quelconque (cf. en-tête de `utils/secret-redaction.ts`).
+ */
+const maskSecretText = (text: string): string => redactKnownSecretValues(redactSecrets(text));
+
+/**
+ * Masque une LISTE de messages, et rend la liste d'origine — par identité de
+ * référence — quand rien n'a bougé, pour que l'appelant puisse le tester.
+ *
+ * Extrait de `redactForPublication` parce que l'append n'a à masquer QUE ses messages
+ * NEUFS : les anciens ont déjà traversé cette même frontière à leur propre écriture
+ * et sont relus du disque déjà masqués. Repasser tout l'intercom à chaque append est
+ * quadratique : mesuré le 11/09 sur le test « breaks the vicious circle » de
+ * `dashboard.test.ts` — 8243 ms sans, 14121 ms avec (+71 %) — contre un `testTimeout`
+ * de 15 000 ms. C'est un rouge CI déterministe, pas un flake : rerun sur le MÊME
+ * commit, même jeu d'échecs.
+ */
+function redactMessagesForPublication(key: string, messages: IntercomMessage[]): IntercomMessage[] {
+  let messagesMasked = 0;
+  const masked = messages.map(msg => {
+    const raw = msg.content ?? '';
+    const out = maskSecretText(raw);
+    if (out === raw) return msg;
+    messagesMasked++;
+    return { ...msg, content: out };
+  });
+
+  if (messagesMasked === 0) return messages;
+
+  // Jamais la valeur, ni sa longueur, ni son empreinte : le NOM de variable et le
+  // compte suffisent à l'opérateur. Ce log est le seul signal qu'un auteur reçoit
+  // que son message a été altéré — sans lui, il croirait avoir publié tel quel.
+  logger.warn('[DASHBOARD-REDACTION] secret masqué à la publication (#3584)', {
+    key,
+    statusMasked: false,
+    messagesMasked
+  });
+
+  return masked;
+}
+
+function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
+  const statusRaw = dashboard.status.markdown ?? '';
+  const statusMasked = maskSecretText(statusRaw);
+  const statusChanged = statusMasked !== statusRaw;
+
+  const messages = redactMessagesForPublication(key, dashboard.intercom.messages);
+  const messagesChanged = messages !== dashboard.intercom.messages;
+
+  if (statusChanged) {
+    logger.warn('[DASHBOARD-REDACTION] secret masqué à la publication (#3584)', {
+      key,
+      statusMasked: true,
+      messagesMasked: 0
+    });
+  }
+
+  if (!statusChanged && !messagesChanged) return dashboard;
+
+  return {
+    ...dashboard,
+    status: statusChanged ? { ...dashboard.status, markdown: statusMasked } : dashboard.status,
+    intercom: messagesChanged ? { ...dashboard.intercom, messages } : dashboard.intercom
+  };
+}
+
+/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(
@@ -1313,6 +1389,12 @@ async function writeDashboardFile(
   dashboard: Dashboard,
   opts?: { condensed?: boolean }
 ): Promise<WriteVerifyResult> {
+  // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
+  // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
+  // tous les chemins d'écriture (append, write, merge, cross-post, condensation) le
+  // traversent. Un masquage posé plus haut ne couvrirait que l'append.
+  dashboard = redactForPublication(key, dashboard);
+
   const dir = getDashboardsDir();
   ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
@@ -3869,12 +3951,25 @@ async function handleAppend(
     }
   }
 
+  // #3584 — masquer ICI, sur l'objet, et non seulement dans `writeDashboardFile`.
+  // Le chemin d'append primaire (`appendDashboardIncremental`, #3151) ne traverse
+  // `writeDashboardFile` qu'en **fallback**, quand le fichier est absent ; dès qu'il
+  // existe — le cas de production, et celui de la fuite fondatrice — il rend le bloc
+  // neuf et alimente `dualWriteDashboardSync` sans masque. Poser le masque sur
+  // l'objet couvre les deux sinks d'un seul geste, et fait en outre que la
+  // condensation ci-dessous n'envoie plus la valeur brute au provider LLM.
+  //
+  // Seuls les messages NEUFS sont masqués : les anciens sont relus du disque, où ils
+  // sont déjà passés par cette frontière. Masquer tout l'intercom à chaque append
+  // coûtait +71 % sur le plus gros test d'append (cf. `redactMessagesForPublication`).
+  const redactedNewMessages = redactMessagesForPublication(key, newMessages);
+
   const updatedDashboard: Dashboard = {
     ...dashboard,
     lastModified: now,
     lastModifiedBy: author,
     intercom: {
-      messages: [...dashboard.intercom.messages, ...newMessages],
+      messages: [...dashboard.intercom.messages, ...redactedNewMessages],
       totalMessages: dashboard.intercom.totalMessages + newMessages.length,
       lastCondensedAt: dashboard.intercom.lastCondensedAt
     }
