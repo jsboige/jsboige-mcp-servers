@@ -20,6 +20,21 @@ yarn-error.log
 .env.bak*
 .env.old
 
+# Secrets ad-hoc déposés dans l'arbre par les lanes (rotation de clés, sondes).
+# Mesuré le 11/09 : `.env.newkey-rotation-20260910`, `relay-emb-key.txt`,
+# `relay-embeddings-newkey.txt`, `probe-hermes.txt` étaient NON suivis **et**
+# NON ignorés — un `git add -A` les publiait. Les gabarits versionnés restent
+# suivis, d'où les négations : `.env.example`, `.env.template` et
+# `.env.postgres.local.example` sont trackés et ne doivent pas disparaître.
+# Rien n'est supprimé ici (pas de preuve de préservation) — seule la porte
+# d'une publication accidentelle est fermée.
+.env.*
+!.env.example
+!.env.template
+!.env.postgres.local.example
+relay-*.txt
+probe-*.txt
+
 # Logs
 logs/
 *.log
