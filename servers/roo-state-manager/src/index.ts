@@ -49,6 +49,7 @@ if (envResult.error) {
 // #1635: Resilient env validation — degrade instead of crash.
 // Missing env vars are tracked as degraded capabilities; tools return errors instead.
 import { getServerCapabilities } from './utils/server-capabilities.js';
+import { resolveChatApiKey } from './services/chat-key.js';
 
 const ENV_VAR_CAPABILITIES: Record<string, 'sharedPath' | 'qdrant' | 'embeddings'> = {
     ROOSYNC_SHARED_PATH: 'sharedPath',
@@ -95,14 +96,14 @@ if (!hasEmbeddingKey) {
 {
     const primaryModel = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
     const primaryEndpoint = process.env.OPENAI_BASE_URL || '(OpenAI cloud default)';
-    const hasPrimaryKey = !!(process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY);
+    const chatKey = resolveChatApiKey();
     const fbModel = process.env.FALLBACK_LLM_MODEL_ID || 'glm-4.7-flash';
     const hasFallbackKey = !!(process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY);
-    getDefaultLogger().info(`🧊 Condensation LLM config: primary=${primaryModel} @ ${primaryEndpoint} key=${hasPrimaryKey ? 'OK' : 'MISSING'} | cloud-fallback=${fbModel} key=${hasFallbackKey ? 'OK' : 'MISSING'}`);
-    if (!hasPrimaryKey && !hasFallbackKey) {
+    getDefaultLogger().info(`🧊 Condensation LLM config: primary=${primaryModel} @ ${primaryEndpoint} key=${chatKey ? chatKey.source : 'MISSING'} | cloud-fallback=${fbModel} key=${hasFallbackKey ? 'OK' : 'MISSING'}`);
+    if (!chatKey && !hasFallbackKey) {
         getDefaultLogger().warn('   ⚠️ NI clé primaire NI fallback configurées → la condensation échouera systématiquement (truncation-only).');
-    } else if (!hasPrimaryKey) {
-        getDefaultLogger().warn('   ⚠️ Clé primaire (OPENAI_API_KEY) MANQUANTE → chaque condensation passera par la fallback cloud.');
+    } else if (!chatKey) {
+        getDefaultLogger().warn('   ⚠️ Clé chat absente (ni VLLM_API_KEY_MEDIUM ni OPENAI_API_KEY) → chaque condensation passera par la fallback cloud. EMBEDDING_API_KEY n\'est pas une clé chat.');
     } else if (!hasFallbackKey) {
         getDefaultLogger().warn('   ⚠️ Clé fallback (FALLBACK_API_KEY) MANQUANTE → pas de filet si le LLM primaire (vLLM) tombe; échec primaire = truncation.');
     }

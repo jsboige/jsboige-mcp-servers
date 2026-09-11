@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { StateManagerError } from '../types/errors.js';
+import { resolveChatApiKey } from './chat-key.js';
 
 let openai: OpenAI | null = null;
 let chatOpenai: OpenAI | null = null;
@@ -57,22 +58,26 @@ function getOpenAIClient(): OpenAI {
 
 /**
  * Get OpenAI-compatible client for chat/synthesis operations.
- * Uses OPENAI_API_KEY with the standard OPENAI_BASE_URL env var (auto-supported by SDK).
+ * Key resolution lives in services/chat-key.ts (VLLM_API_KEY_MEDIUM first, then
+ * OPENAI_API_KEY) and is shared with the boot banner so the two cannot drift.
+ * EMBEDDING_API_KEY is deliberately never consulted: it belongs to the embeddings
+ * service, and presenting it to the chat endpoint fabricates a 401 on every
+ * condensation, masking the real cause (no chat key configured) behind auth
+ * failures that surface only as truncation.
  * The OpenAI Node.js SDK automatically reads OPENAI_BASE_URL from environment.
- * Falls back to EMBEDDING_API_KEY if OPENAI_API_KEY is not set.
  */
 export function getChatOpenAIClient(): OpenAI {
   if (!chatOpenai) {
-    // Use OPENAI_API_KEY for chat, fallback to EMBEDDING_API_KEY
-    const apiKey = process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY;
-    if (!apiKey) {
+    const resolved = resolveChatApiKey();
+    if (!resolved) {
       throw new StateManagerError(
-        'No chat API key configured. Set OPENAI_API_KEY or EMBEDDING_API_KEY.',
+        'No chat API key configured. Set VLLM_API_KEY_MEDIUM or OPENAI_API_KEY. EMBEDDING_API_KEY is not used for chat.',
         'OPENAI_API_KEY_MISSING',
         'ChatOpenAIClient',
-        { envVar: 'OPENAI_API_KEY' }
+        { envVar: 'VLLM_API_KEY_MEDIUM', alsoAccepts: 'OPENAI_API_KEY' }
       );
     }
+    const apiKey = resolved.apiKey;
     // OpenAI SDK automatically reads OPENAI_BASE_URL from env.
     // #1497: explicit maxRetries=0 and long timeout. The SDK default maxRetries=2
     // triggers exponential backoff on 5xx/connection errors and can silently

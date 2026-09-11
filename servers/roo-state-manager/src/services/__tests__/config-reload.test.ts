@@ -31,7 +31,7 @@ const savedEnv: Record<string, string | undefined> = {};
 
 /** Keys these tests touch — saved and restored so no test leaks into the next. */
 const TOUCHED = [
-  'OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'QDRANT_URL', 'QDRANT_API_KEY',
+  'OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'VLLM_API_KEY_MEDIUM', 'QDRANT_URL', 'QDRANT_API_KEY',
   'ZAI_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME',
   'ROOSYNC_SHARED_PATH', 'NODE_ENV', 'EMBEDDING_BATCH_SIZE',
 ];
@@ -112,6 +112,23 @@ describe('reloadConfig — client invalidation follows the keys that changed', (
     expect(resetChatOpenAIClient).toHaveBeenCalledTimes(1);
     expect(resetEmbeddingOpenAIClient).toHaveBeenCalledTimes(1);
     expect(resetCodebaseEmbeddingClient).toHaveBeenCalledTimes(1);
+    expect(resetQdrantClient).not.toHaveBeenCalled();
+  });
+
+  it('a rotated VLLM_API_KEY_MEDIUM resets ONLY the chat client (fleet rotation name)', () => {
+    // VLLM_API_KEY_MEDIUM is the canonical fleet name for the vLLM tier the chat
+    // endpoint points at. Rotating it must rebuild the chat client and nothing
+    // else — the embedding clients never read that name.
+    process.env.VLLM_API_KEY_MEDIUM = 'pre-rotation';
+    writeEnv('VLLM_API_KEY_MEDIUM=post-rotation\n');
+
+    const report = reloadConfig(envPath);
+
+    expect(report.changed.map((c) => c.key)).toEqual(['VLLM_API_KEY_MEDIUM']);
+    expect(report.clientsReset).toEqual(['chatClient']);
+    expect(resetChatOpenAIClient).toHaveBeenCalledTimes(1);
+    expect(resetEmbeddingOpenAIClient).not.toHaveBeenCalled();
+    expect(resetCodebaseEmbeddingClient).not.toHaveBeenCalled();
     expect(resetQdrantClient).not.toHaveBeenCalled();
   });
 

@@ -46,6 +46,7 @@ import { resetCodebaseEmbeddingClient } from '../tools/search/search-codebase.to
  */
 export const RELOADABLE_ENV_KEYS = [
   // Chat / synthesis (getChatOpenAIClient, getLLMModelId)
+  'VLLM_API_KEY_MEDIUM',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'OPENAI_CHAT_MODEL_ID',
@@ -74,7 +75,7 @@ export type ReloadableEnvKey = typeof RELOADABLE_ENV_KEYS[number];
 const CLIENT_DEPENDENCIES: Record<string, readonly string[]> = {
   embeddingClient: ['EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_TIMEOUT_MS'],
   codebaseEmbeddingClient: ['EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_TIMEOUT_MS'],
-  chatClient: ['OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'OPENAI_BASE_URL'],
+  chatClient: ['VLLM_API_KEY_MEDIUM', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
   fallbackChatClient: ['ZAI_API_KEY', 'FALLBACK_API_KEY', 'ZAI_BASE_URL', 'FALLBACK_BASE_URL', 'FALLBACK_TIMEOUT_MS'],
   qdrantClient: ['QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_TIMEOUT_MS'],
 };
