@@ -670,6 +670,7 @@ describe('dashboardToolMetadata', () => {
     expect(actionEnum).toContain('read_overview');
     expect(actionEnum).toContain('refresh');
     expect(actionEnum).toContain('update');
+    expect(actionEnum).toContain('scrub'); // #3584 — retrait rétroactif
   });
 
   it('inputSchema type enum includes 3 dashboard types', () => {
