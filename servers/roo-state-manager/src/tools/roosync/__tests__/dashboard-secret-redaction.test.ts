@@ -89,6 +89,38 @@ describe('roosync_dashboard — secret redaction at the publication boundary (#3
         expect(content).toContain('consommateur non migré');
     });
 
+    // Le premier append se fait sur un dossier fraîchement `mkdtemp` : le fichier
+    // n'existe pas, `appendDashboardIncremental` tombe dans son fallback et traverse
+    // `writeDashboardFile`. En production le dashboard existe TOUJOURS, donc c'est le
+    // fast-path qui court — celui de la fuite fondatrice #3584. Ces deux cas créent
+    // le fichier d'abord, pour que l'append qui porte le secret emprunte ce chemin.
+    it('append fast-path (dashboard existant) : le FICHIER est masqué', async () => {
+        await roosyncDashboard({ action: 'append', type: 'workspace',
+            content: 'message anodin sans secret', createIfNotExists: true });
+        await roosyncDashboard({ action: 'append', type: 'workspace',
+            content: `[WARN] clé active : ${LEAKED_KEY} — consommateur non migré`,
+            createIfNotExists: true });
+
+        const file = await readFile(path.join(tmpDir, 'dashboards', 'workspace-test-workspace.md'), 'utf8');
+        expect(file).not.toContain(LEAKED_KEY);
+        expect(file).toContain('<redacted:EMBEDDINGS_API_KEY>');
+        expect(file).toContain('message anodin sans secret');
+    });
+
+    it('append fast-path (dashboard existant) : le MIROIR PG est masqué', async () => {
+        await roosyncDashboard({ action: 'append', type: 'workspace',
+            content: 'message anodin sans secret', createIfNotExists: true });
+        await roosyncDashboard({ action: 'append', type: 'workspace',
+            content: `[WARN] clé active : ${LEAKED_KEY} — consommateur non migré`,
+            createIfNotExists: true });
+
+        const synced = mockDualWriteDashboardSync.mock.calls.at(-1)![0];
+        expect(JSON.stringify(synced)).not.toContain(LEAKED_KEY);
+        const last = synced.intercom.messages.at(-1)!.content;
+        expect(last).toContain('<redacted:EMBEDDINGS_API_KEY>');
+        expect(last).toContain('consommateur non migré');
+    });
+
     it('write: a bare secret in the status section is masked', async () => {
         await roosyncDashboard({
             action: 'write',

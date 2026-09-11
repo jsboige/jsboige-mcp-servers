@@ -3922,7 +3922,14 @@ async function handleAppend(
     }
   }
 
-  const updatedDashboard: Dashboard = {
+  // #3584 — masquer ICI, sur l'objet, et non seulement dans `writeDashboardFile`.
+  // Le chemin d'append primaire (`appendDashboardIncremental`, #3151) ne traverse
+  // `writeDashboardFile` qu'en **fallback**, quand le fichier est absent ; dès qu'il
+  // existe — le cas de production, et celui de la fuite fondatrice — il rend le bloc
+  // neuf et alimente `dualWriteDashboardSync` sans masque. Poser le masque sur
+  // l'objet couvre les deux sinks d'un seul geste, et fait en outre que la
+  // condensation ci-dessous n'envoie plus la valeur brute au provider LLM.
+  const updatedDashboard: Dashboard = redactForPublication(key, {
     ...dashboard,
     lastModified: now,
     lastModifiedBy: author,
@@ -3931,7 +3938,7 @@ async function handleAppend(
       totalMessages: dashboard.intercom.totalMessages + newMessages.length,
       lastCondensedAt: dashboard.intercom.lastCondensedAt
     }
-  };
+  });
 
   // === WRITE-FIRST: persist message to disk immediately ===
   // The message is guaranteed to be on disk before any condensation attempt.
