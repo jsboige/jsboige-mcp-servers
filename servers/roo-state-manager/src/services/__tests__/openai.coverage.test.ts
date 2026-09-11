@@ -11,8 +11,10 @@
  * never exercised, plus several env-var fallback arms:
  *
  * - **`getChatOpenAIClient` (L61-87) — ENTIRELY UNTESTED**: not a single test calls it.
- *   Cold: L64 `OPENAI_API_KEY || EMBEDDING_API_KEY` precedence (OPENAI wins, EMBEDDING
- *   fallback — the REVERSE of getOpenAIClient), L65-71 no-key-throws ('No chat API key
+ *   Cold: key resolution via services/chat-key.ts (VLLM_API_KEY_MEDIUM first, then
+ *   OPENAI_API_KEY — never EMBEDDING_API_KEY, fleet incident 2026-09-11: the old
+ *   `|| EMBEDDING_API_KEY` fallback pointed the chat client at another service's key,
+ *   fabricating 401s on every condensation), no-key-throws ('No chat API key
  *   configured' / OPENAI_API_KEY_MISSING / ChatOpenAIClient), L80-84 config
  *   (maxRetries=0 + hardcoded timeout=1800000, no env override), singleton, reset.
  * - **`getLLMModelId` (L93-94) — ENTIRELY UNTESTED**: default 'qwen3.6-35b-a3b' +
@@ -55,6 +57,7 @@ describe('openai — branch coverage (#833 C3, source-grounded)', () => {
         delete process.env.EMBEDDING_DIMENSIONS;
         delete process.env.EMBEDDING_API_KEY;
         delete process.env.OPENAI_API_KEY;
+        delete process.env.VLLM_API_KEY_MEDIUM;
         delete process.env.EMBEDDING_API_BASE_URL;
         delete process.env.EMBEDDING_TIMEOUT_MS;
         delete process.env.OPENAI_CHAT_MODEL_ID;
@@ -118,12 +121,20 @@ describe('openai — branch coverage (#833 C3, source-grounded)', () => {
     // getChatOpenAIClient (L61-87) — ENTIRELY UNTESTED in base
     // ============================================================
     describe('getChatOpenAIClient — cold function (L61-87)', () => {
-        test('throws OPENAI_API_KEY_MISSING when neither OPENAI_API_KEY nor EMBEDDING_API_KEY set (L65-71)', async () => {
+        test('throws OPENAI_API_KEY_MISSING when neither VLLM_API_KEY_MEDIUM nor OPENAI_API_KEY set — even with EMBEDDING_API_KEY present (L71-78)', async () => {
+            // MUTATION COUNTER-TEST (fleet incident 2026-09-11): the old fallback
+            // `OPENAI_API_KEY || EMBEDDING_API_KEY` made init SUCCEED on an
+            // embeddings-only env, silently pointing the chat client at another
+            // service's key → fabricated 401s on every condensation, surfaced only
+            // as truncation. Re-adding `|| EMBEDDING_API_KEY` (in openai.ts or in
+            // chat-key.ts) makes this init succeed and REDDENS this test.
+            process.env.EMBEDDING_API_KEY = 'embed-only-key';
             const { getChatOpenAIClient } = await import('../openai.js');
             expect(() => getChatOpenAIClient()).toThrow('No chat API key configured');
+            expect(MockOpenAI).not.toHaveBeenCalled();
         });
 
-        test('uses OPENAI_API_KEY when set (L64 first operand — precedence)', async () => {
+        test('uses OPENAI_API_KEY when set alone (chat-key second operand)', async () => {
             process.env.OPENAI_API_KEY = 'chat-key';
             MockOpenAI.mockImplementation(function () { return { mock: true }; });
 
@@ -136,29 +147,32 @@ describe('openai — branch coverage (#833 C3, source-grounded)', () => {
             );
         });
 
-        test('falls back to EMBEDDING_API_KEY when OPENAI_API_KEY unset (L64 second operand)', async () => {
-            // REVERSE precedence vs getOpenAIClient: chat prefers OPENAI_API_KEY, embed prefers EMBEDDING_API_KEY.
-            process.env.EMBEDDING_API_KEY = 'embed-key';
+        test('uses VLLM_API_KEY_MEDIUM when set alone (chat-key first operand — fleet canonical name)', async () => {
+            process.env.VLLM_API_KEY_MEDIUM = 'vllm-key';
             MockOpenAI.mockImplementation(function () { return { mock: true }; });
 
             const { getChatOpenAIClient } = await import('../openai.js');
             getChatOpenAIClient();
 
             expect(MockOpenAI).toHaveBeenCalledWith(
-                expect.objectContaining({ apiKey: 'embed-key' }),
+                expect.objectContaining({ apiKey: 'vllm-key' }),
             );
         });
 
-        test('prefers OPENAI_API_KEY over EMBEDDING_API_KEY when both set (L64 precedence)', async () => {
-            process.env.OPENAI_API_KEY = 'chat-wins';
-            process.env.EMBEDDING_API_KEY = 'embed-loses';
+        test('prefers VLLM_API_KEY_MEDIUM over OPENAI_API_KEY when both set; EMBEDDING_API_KEY never reaches the chat client', async () => {
+            process.env.VLLM_API_KEY_MEDIUM = 'vllm-wins';
+            process.env.OPENAI_API_KEY = 'openai-loses';
+            process.env.EMBEDDING_API_KEY = 'embed-never';
             MockOpenAI.mockImplementation(function () { return { mock: true }; });
 
             const { getChatOpenAIClient } = await import('../openai.js');
             getChatOpenAIClient();
 
             expect(MockOpenAI).toHaveBeenCalledWith(
-                expect.objectContaining({ apiKey: 'chat-wins' }),
+                expect.objectContaining({ apiKey: 'vllm-wins' }),
+            );
+            expect(MockOpenAI).not.toHaveBeenCalledWith(
+                expect.objectContaining({ apiKey: 'embed-never' }),
             );
         });
 
@@ -217,6 +231,30 @@ describe('openai — branch coverage (#833 C3, source-grounded)', () => {
             resetChatOpenAIClient();
             getChatOpenAIClient();
             expect(MockOpenAI).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    // ============================================================
+    // resolveChatApiKey (services/chat-key.ts) — source naming shared
+    // by the client and the boot banner
+    // ============================================================
+    describe('resolveChatApiKey — source naming (chat-key.ts)', () => {
+        test('VLLM_API_KEY_MEDIUM alone → { apiKey, source: VLLM_API_KEY_MEDIUM }', async () => {
+            process.env.VLLM_API_KEY_MEDIUM = 'v';
+            const { resolveChatApiKey } = await import('../chat-key.js');
+            expect(resolveChatApiKey()).toEqual({ apiKey: 'v', source: 'VLLM_API_KEY_MEDIUM' });
+        });
+
+        test('OPENAI_API_KEY fallback → source OPENAI_API_KEY', async () => {
+            process.env.OPENAI_API_KEY = 'o';
+            const { resolveChatApiKey } = await import('../chat-key.js');
+            expect(resolveChatApiKey()).toEqual({ apiKey: 'o', source: 'OPENAI_API_KEY' });
+        });
+
+        test('null when neither set — EMBEDDING_API_KEY does not qualify as a chat key', async () => {
+            process.env.EMBEDDING_API_KEY = 'e';
+            const { resolveChatApiKey } = await import('../chat-key.js');
+            expect(resolveChatApiKey()).toBeNull();
         });
     });
 
