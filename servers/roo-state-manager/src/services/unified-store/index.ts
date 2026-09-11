@@ -23,7 +23,7 @@ export type {
 } from './types.js';
 
 export { NullUnifiedStoreWriter } from './UnifiedStoreWriter.js';
-export type { IUnifiedStoreWriter, UnifiedStoreWriterConfig } from './UnifiedStoreWriter.js';
+export type { IUnifiedStoreWriter, UnifiedStoreWriterConfig, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 
 export { PgUnifiedStoreWriter } from './PgUnifiedStoreWriter.js';
 

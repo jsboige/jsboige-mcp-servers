@@ -29,7 +29,7 @@ import type {
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
 } from './types.js';
-import type { IUnifiedStoreWriter, UnifiedStoreWriterConfig } from './UnifiedStoreWriter.js';
+import type { IUnifiedStoreWriter, UnifiedStoreWriterConfig, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 
 // ─── Circuit Breaker ───────────────────────────────────────────────
 
@@ -482,6 +482,30 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     messages: RooSyncDashboardMessageRow[],
     opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<void> {
+    await this.withRetry('syncRooSyncDashboard', () =>
+      this.syncRooSyncDashboardTx(row, messages, opts));
+  }
+
+  /**
+   * Checked variant (rework #1134, review ask 2): the outcome is returned
+   * instead of swallowed, so a caller about to take an irreversible decision
+   * on "PG holds this now" can verify it. Same transaction, same idempotency —
+   * safe to call after the legacy void path already ran the same payload.
+   */
+  async syncRooSyncDashboardChecked(
+    row: RooSyncDashboardRow,
+    messages: RooSyncDashboardMessageRow[],
+    opts?: { backfill?: boolean; condensed?: boolean }
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return this.withRetryResult('syncRooSyncDashboard', () =>
+      this.syncRooSyncDashboardTx(row, messages, opts));
+  }
+
+  private async syncRooSyncDashboardTx(
+    row: RooSyncDashboardRow,
+    messages: RooSyncDashboardMessageRow[],
+    opts?: { backfill?: boolean; condensed?: boolean }
+  ): Promise<void> {
     // Backfill mode: pure INSERT DO NOTHING everywhere, no archive stamping —
     // see the interface doc. A file snapshot racing a live sync must never
     // overwrite fresher PG state or archive live messages.
@@ -489,7 +513,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     // Condensation write: the only caller allowed to stamp archived_at — see
     // the interface doc and the stamp block below.
     const condensed = opts?.condensed === true;
-    await this.withRetry('syncRooSyncDashboard', async () => {
+    {
       if (!this.pool) await this.init();
       if (!this.pool) throw new Error('Pool not initialized');
       const client = await this.pool.connect();
@@ -580,7 +604,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       } finally {
         client.release();
       }
-    });
+    }
   }
 
   /**
@@ -589,16 +613,25 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
    * GDrive keep the legacy copy, Phase D keeps GDrive as read-only archive.
    */
   async deleteRooSyncDashboard(key: string): Promise<void> {
-    await this.withRetry('deleteRooSyncDashboard', async () => {
-      if (!this.pool) await this.init();
-      if (!this.pool) throw new Error('Pool not initialized');
-      const client = await this.pool.connect();
-      try {
-        await client.query('DELETE FROM roosync_dashboards WHERE key = $1', [key]);
-      } finally {
-        client.release();
-      }
-    });
+    await this.withRetry('deleteRooSyncDashboard', () =>
+      this.deleteRooSyncDashboardTx(key));
+  }
+
+  /** Checked variant (rework #1134) — outcome returned instead of swallowed. */
+  async deleteRooSyncDashboardChecked(key: string): Promise<UnifiedStoreWriteOutcome> {
+    return this.withRetryResult('deleteRooSyncDashboard', () =>
+      this.deleteRooSyncDashboardTx(key));
+  }
+
+  private async deleteRooSyncDashboardTx(key: string): Promise<void> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+    const client = await this.pool.connect();
+    try {
+      await client.query('DELETE FROM roosync_dashboards WHERE key = $1', [key]);
+    } finally {
+      client.release();
+    }
   }
 
   // ─── Query Helpers ────────────────────────────────────────────
@@ -794,14 +827,30 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
 
   // ─── Retry + Circuit Breaker ──────────────────────────────────
 
+  /**
+   * Legacy best-effort wrapper (void contract unchanged for all existing
+   * callers): runs the work through withRetryResult and DISCARDS the outcome.
+   */
   private async withRetry(label: string, fn: () => Promise<void>): Promise<void> {
+    await this.withRetryResult(label, fn);
+  }
+
+  /**
+   * Same retry/breaker discipline as the legacy withRetry, but every terminal
+   * state is RETURNED instead of silently absorbed (rework #1134, review ask
+   * 2): breaker-skip, deterministic #3342 fail-fast, and retry exhaustion are
+   * distinguishable from a commit. The legacy void path delegates here, so the
+   * two can never drift apart.
+   */
+  private async withRetryResult(label: string, fn: () => Promise<void>): Promise<UnifiedStoreWriteOutcome> {
     this.metrics.upsertsTotal++;
 
     if (!this.breaker.allow()) {
       this.metrics.upsertsFailed++;
       const state = this.breaker.getState();
+      const detail = `circuit breaker ${state}`;
       console.warn(`[PgUnifiedStoreWriter] Circuit breaker ${state}, skipping ${label}`);
-      return; // best-effort: skip silently (writer failure never blocks caller)
+      return { ok: false, reason: 'breaker-skip', detail };
     }
 
     let lastError: Error | null = null;
@@ -810,7 +859,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
         await fn();
         this.breaker.recordSuccess();
         this.metrics.upsertsSuccess++;
-        return;
+        return { ok: true, reason: 'written' };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
 
@@ -825,7 +874,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
           console.error(
             `[PgUnifiedStoreWriter] ${label} failed (deterministic data error, not retried): ${lastError.message}`
           );
-          return;
+          return { ok: false, reason: 'deterministic', detail: lastError.message };
         }
 
         if (attempt < this.maxRetries) {
@@ -853,6 +902,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     console.error(
       `[PgUnifiedStoreWriter] ${label} failed after ${this.maxRetries + 1} attempts: ${lastError?.message}. Circuit breaker: ${this.breaker.getState()}`
     );
+    return { ok: false, reason: 'exhausted', detail: lastError?.message ?? 'unknown error' };
   }
 
   // ─── Observability ────────────────────────────────────────────

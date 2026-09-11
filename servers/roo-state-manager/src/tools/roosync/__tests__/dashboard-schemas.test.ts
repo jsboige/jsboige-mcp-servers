@@ -656,7 +656,7 @@ describe('dashboardToolMetadata', () => {
     expect(schema.properties.type).toBeDefined();
   });
 
-  it('inputSchema action enum includes 9 actions (condense removed)', () => {
+  it('inputSchema action enum includes 10 actions (condense removed, merge added #3537 §6.2)', () => {
     const schema = dashboardToolMetadata.inputSchema as any;
     const actionEnum = schema.properties.action.enum;
     expect(actionEnum).toContain('read');
@@ -665,6 +665,7 @@ describe('dashboardToolMetadata', () => {
     expect(actionEnum).not.toContain('condense');
     expect(actionEnum).toContain('list');
     expect(actionEnum).toContain('delete');
+    expect(actionEnum).toContain('merge');
     expect(actionEnum).toContain('read_archive');
     expect(actionEnum).toContain('read_overview');
     expect(actionEnum).toContain('refresh');

@@ -163,6 +163,24 @@ Comportements aux limites:
 
 Référence: PR #1071 (fix), issue #3151 (constat initial).
 
+## Dashboards RooSync : deux cibles co-égales, une porte de lecture par hôte (#3537 §6.1)
+
+Un dashboard RooSync vit dans **deux artefacts co-égaux**, dont aucun ne dérive de l'autre:
+
+| | Chemin | Code |
+|---|---|---|
+| **Écriture** | `tmp → rename` sur le `.md` GDrive (garde anti-fork #3482), **puis** `dualWriteDashboardSync` vers `roosync_dashboards` + `roosync_dashboard_messages` | `dashboard.ts` (writeDashboardFile) puis `roosync-dashboard-store.ts` |
+| **Lecture** | **PG d'abord**, fichier GDrive en **repli** — sur échec PG *ou clé absente* (protection anti-sous-affichage) | `readDashboardFile` → `readDashboardFromPg` / `readDashboardFromGdrive` |
+| **La porte** | `UNIFIED_STORE_DASHBOARD_READ_PG !== '1'` → lecture fichier uniquement | `roosync-dashboard-store.ts` (`getDashboardPgReader`) |
+
+**Il n'y a PAS de source de vérité globale** : elle dépend du `.env` de chaque hôte. Un hôte à porte PG ouverte lit PG (et verra la divergence fichier↔PG), un hôte à porte fermée lit le fichier. C'est pourquoi deux fichiers byte-identiques peuvent rendre deux lectures différentes selon la clé interrogée, et pourquoi aucune des deux ne correspond forcément au disque.
+
+**Conséquence opératoire (le piège)**: un geste de système de fichiers (`cp`, `mv`, `rm`, renommage d'un ` (1).md`) n'écrit que la moitié fichier — PG ne le voit jamais, aucune erreur n'est émise. « Ça répare pour les hôtes qui lisent le fichier, et rien pour ceux qui lisent PG. » **Le seul canal qui écrit les deux artefacts est l'API MCP** — c'est le rôle de l'action `merge` (§6.2, `handleMerge`): union des QUATRE vues (PG + fichier de chaque clé) par id, statut le plus récent retenu, upsert PG de la cible **vérifié** (outcome checked) avant tout retrait, puis source archivée par **renommage atomique** et retirée des deux artefacts — ligne PG en dernier. Le verrou append cross-process des deux clés y est **fail-closed** (`withAppendLockRequired`) : pas de verrou, pas de merge.
+
+Divergence connue et désamorcée: `applyCondensedWithMerge` s'ancre volontairement sur `readDashboardFromGdrive` (l'artefact qu'elle écrase) — mesuré 07/09: 15/63 dashboards divergent; ne PAS repointer la condensation sur la lecture PG sans re-mesurer.
+
+Référence: issue roo-extensions #3537 (recensement 1 613 paires fork, 0 perte), #3482 (garde anti-fork DriveFS), #3151 Phase C (dual-write PG), PR #1134 (rework : verrous fail-closed + persistance PG vérifiée).
+
 ## Sécurité
 
 Les serveurs MCP peuvent implémenter différentes mesures de sécurité:
