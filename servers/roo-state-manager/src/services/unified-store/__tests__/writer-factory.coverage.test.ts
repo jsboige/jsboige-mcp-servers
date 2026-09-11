@@ -7,7 +7,7 @@
  *   - L45 enabled branch (UNIFIED_STORE_DUAL_WRITE=1 + PG_URL) with masking
  *   - L52 else branch (Null fallback)
  *   - L58 resetWriterInstance
- *   - L66-80 maskConnectionString (via console.info spy on enabled branch)
+ *   - L66-80 maskConnectionString (via console.error spy on enabled branch)
  *
  * No pg connection attempted (factory only calls `new PgUnifiedStoreWriter`
  * — the Pool is built lazily in init()).
@@ -159,18 +159,21 @@ describe('writer-factory — singleton behavior', () => {
   });
 });
 
-describe('writer-factory — console.info emission with credential masking', () => {
+describe('writer-factory — stderr emission with credential masking', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
   let infoSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
     clearUnifiedStoreEnv();
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    errorSpy.mockRestore();
     infoSpy.mockRestore();
     resetWriterInstance();
   });
@@ -180,8 +183,9 @@ describe('writer-factory — console.info emission with credential masking', () 
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://alice:s3cret@db.host:5432/mydb');
     getUnifiedStoreWriter();
 
-    expect(infoSpy).toHaveBeenCalledTimes(1);
-    const [firstArg] = infoSpy.mock.calls[0];
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy).not.toHaveBeenCalled();
+    const [firstArg] = errorSpy.mock.calls[0];
     expect(firstArg).toContain('Dual-write ENABLED');
     expect(firstArg).toContain('alice:***@db.host');
     expect(firstArg).not.toContain('s3cret');
@@ -189,8 +193,9 @@ describe('writer-factory — console.info emission with credential masking', () 
 
   test('DISABLED branch logs "[UnifiedStore] Dual-write DISABLED"', () => {
     getUnifiedStoreWriter();
-    expect(infoSpy).toHaveBeenCalledTimes(1);
-    const [firstArg] = infoSpy.mock.calls[0];
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy).not.toHaveBeenCalled();
+    const [firstArg] = errorSpy.mock.calls[0];
     expect(firstArg).toContain('Dual-write DISABLED');
     expect(firstArg).toContain('NullUnifiedStoreWriter');
   });
@@ -201,8 +206,9 @@ describe('writer-factory — console.info emission with credential masking', () 
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'totally not a url');
     getUnifiedStoreWriter();
 
-    expect(infoSpy).toHaveBeenCalledTimes(1);
-    const [firstArg] = infoSpy.mock.calls[0];
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy).not.toHaveBeenCalled();
+    const [firstArg] = errorSpy.mock.calls[0];
     expect(firstArg).toContain('<invalid-url>');
   });
 
@@ -213,7 +219,7 @@ describe('writer-factory — console.info emission with credential masking', () 
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://user@host:5432/db');
     getUnifiedStoreWriter();
 
-    const [firstArg] = infoSpy.mock.calls[0];
+    const [firstArg] = errorSpy.mock.calls[0];
     expect(firstArg).toContain('postgres://user@host:5432/db');
   });
 
@@ -225,20 +231,21 @@ describe('writer-factory — console.info emission with credential masking', () 
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'http://alice:pw@');
     getUnifiedStoreWriter();
 
-    const [firstArg] = infoSpy.mock.calls[0];
+    const [firstArg] = errorSpy.mock.calls[0];
     expect(firstArg).not.toContain(':pw@');
     expect(firstArg).not.toContain('alice:pw');
     expect(firstArg).toContain('<invalid-url>');
   });
 
-  test('singleton — second call does NOT re-emit console.info', () => {
+  test('singleton — second call does NOT re-emit stderr log', () => {
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', '1');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
     getUnifiedStoreWriter();
     getUnifiedStoreWriter();
     getUnifiedStoreWriter();
     // First call logs, subsequent returns the cached instance — no extra log.
-    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -247,7 +254,7 @@ describe('writer-factory — env-var edge cases', () => {
     resetWriterInstance();
     vi.unstubAllEnvs();
     clearUnifiedStoreEnv();
-    vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {

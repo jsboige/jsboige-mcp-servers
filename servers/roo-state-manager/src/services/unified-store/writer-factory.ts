@@ -32,7 +32,7 @@ export function getUnifiedStoreWriter(): IUnifiedStoreWriter {
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
 
   if (dualWrite === '1' && pgUrl) {
-    console.info(
+    console.error(
       `[UnifiedStore] Dual-write ENABLED — connecting to ${maskConnectionString(pgUrl)}`
     );
     instance = new PgUnifiedStoreWriter({
@@ -41,7 +41,7 @@ export function getUnifiedStoreWriter(): IUnifiedStoreWriter {
       statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '5000', 10),
     });
   } else {
-    console.info('[UnifiedStore] Dual-write DISABLED — using NullUnifiedStoreWriter');
+    console.error('[UnifiedStore] Dual-write DISABLED — using NullUnifiedStoreWriter');
     instance = new NullUnifiedStoreWriter();
   }
 

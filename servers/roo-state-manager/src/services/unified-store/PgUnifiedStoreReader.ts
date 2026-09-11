@@ -67,7 +67,7 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     }
 
     this.initialized = true;
-    console.info('[PgUnifiedStoreReader] Pool initialized and connected');
+    console.error('[PgUnifiedStoreReader] Pool initialized and connected');
   }
 
   async close(): Promise<void> {
@@ -75,7 +75,7 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
       await this.pool.end();
       this.pool = null;
       this.initialized = false;
-      console.info('[PgUnifiedStoreReader] Pool drained');
+      console.error('[PgUnifiedStoreReader] Pool drained');
     }
   }
 

@@ -154,7 +154,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     }
 
     this.initialized = true;
-    console.info('[PgUnifiedStoreWriter] Pool initialized and connected');
+    console.error('[PgUnifiedStoreWriter] Pool initialized and connected');
   }
 
   async close(): Promise<void> {
@@ -162,7 +162,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       await this.pool.end();
       this.pool = null;
       this.initialized = false;
-      console.info('[PgUnifiedStoreWriter] Pool drained');
+      console.error('[PgUnifiedStoreWriter] Pool drained');
     }
   }
 
