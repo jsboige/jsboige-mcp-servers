@@ -1318,37 +1318,66 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
  *    64 hexadécimaux publiée sans nom de variable, indistinguable par sa forme d'un
  *    SHA ou d'un hash quelconque (cf. en-tête de `utils/secret-redaction.ts`).
  */
-function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
-  const mask = (text: string): string => redactKnownSecretValues(redactSecrets(text));
+const maskSecretText = (text: string): string => redactKnownSecretValues(redactSecrets(text));
 
-  const statusRaw = dashboard.status.markdown ?? '';
-  const statusMasked = mask(statusRaw);
-  const statusChanged = statusMasked !== statusRaw;
-
+/**
+ * Masque une LISTE de messages, et rend la liste d'origine — par identité de
+ * référence — quand rien n'a bougé, pour que l'appelant puisse le tester.
+ *
+ * Extrait de `redactForPublication` parce que l'append n'a à masquer QUE ses messages
+ * NEUFS : les anciens ont déjà traversé cette même frontière à leur propre écriture
+ * et sont relus du disque déjà masqués. Repasser tout l'intercom à chaque append est
+ * quadratique : mesuré le 11/09 sur le test « breaks the vicious circle » de
+ * `dashboard.test.ts` — 8243 ms sans, 14121 ms avec (+71 %) — contre un `testTimeout`
+ * de 15 000 ms. C'est un rouge CI déterministe, pas un flake : rerun sur le MÊME
+ * commit, même jeu d'échecs.
+ */
+function redactMessagesForPublication(key: string, messages: IntercomMessage[]): IntercomMessage[] {
   let messagesMasked = 0;
-  const messages = dashboard.intercom.messages.map(msg => {
+  const masked = messages.map(msg => {
     const raw = msg.content ?? '';
-    const masked = mask(raw);
-    if (masked === raw) return msg;
+    const out = maskSecretText(raw);
+    if (out === raw) return msg;
     messagesMasked++;
-    return { ...msg, content: masked };
+    return { ...msg, content: out };
   });
 
-  if (!statusChanged && messagesMasked === 0) return dashboard;
+  if (messagesMasked === 0) return messages;
 
   // Jamais la valeur, ni sa longueur, ni son empreinte : le NOM de variable et le
   // compte suffisent à l'opérateur. Ce log est le seul signal qu'un auteur reçoit
   // que son message a été altéré — sans lui, il croirait avoir publié tel quel.
   logger.warn('[DASHBOARD-REDACTION] secret masqué à la publication (#3584)', {
     key,
-    statusMasked: statusChanged,
+    statusMasked: false,
     messagesMasked
   });
+
+  return masked;
+}
+
+function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
+  const statusRaw = dashboard.status.markdown ?? '';
+  const statusMasked = maskSecretText(statusRaw);
+  const statusChanged = statusMasked !== statusRaw;
+
+  const messages = redactMessagesForPublication(key, dashboard.intercom.messages);
+  const messagesChanged = messages !== dashboard.intercom.messages;
+
+  if (statusChanged) {
+    logger.warn('[DASHBOARD-REDACTION] secret masqué à la publication (#3584)', {
+      key,
+      statusMasked: true,
+      messagesMasked: 0
+    });
+  }
+
+  if (!statusChanged && !messagesChanged) return dashboard;
 
   return {
     ...dashboard,
     status: statusChanged ? { ...dashboard.status, markdown: statusMasked } : dashboard.status,
-    intercom: messagesMasked > 0 ? { ...dashboard.intercom, messages } : dashboard.intercom
+    intercom: messagesChanged ? { ...dashboard.intercom, messages } : dashboard.intercom
   };
 }
 
@@ -3929,16 +3958,22 @@ async function handleAppend(
   // neuf et alimente `dualWriteDashboardSync` sans masque. Poser le masque sur
   // l'objet couvre les deux sinks d'un seul geste, et fait en outre que la
   // condensation ci-dessous n'envoie plus la valeur brute au provider LLM.
-  const updatedDashboard: Dashboard = redactForPublication(key, {
+  //
+  // Seuls les messages NEUFS sont masqués : les anciens sont relus du disque, où ils
+  // sont déjà passés par cette frontière. Masquer tout l'intercom à chaque append
+  // coûtait +71 % sur le plus gros test d'append (cf. `redactMessagesForPublication`).
+  const redactedNewMessages = redactMessagesForPublication(key, newMessages);
+
+  const updatedDashboard: Dashboard = {
     ...dashboard,
     lastModified: now,
     lastModifiedBy: author,
     intercom: {
-      messages: [...dashboard.intercom.messages, ...newMessages],
+      messages: [...dashboard.intercom.messages, ...redactedNewMessages],
       totalMessages: dashboard.intercom.totalMessages + newMessages.length,
       lastCondensedAt: dashboard.intercom.lastCondensedAt
     }
-  });
+  };
 
   // === WRITE-FIRST: persist message to disk immediately ===
   // The message is guaranteed to be on disk before any condensation attempt.
