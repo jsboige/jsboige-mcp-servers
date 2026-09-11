@@ -4846,14 +4846,17 @@ async function handleMerge(
     // lecture initiale n'avait pas vus (append concurrent dans la fenêtre
     // lecture→rename), ils sont réintégrés et la cible réécrite — le retrait
     // ne doit jamais être l'occasion de perdre une écriture vivante.
-    let reUnoinedCount = 0;
+    let reUnionedCount = 0;
+    let reUnionPersisted = true;
+    let reUnionFailDetail: string | null = null;
     if (renamedFromDisk) {
       try {
         const archivedText = await fs.readFile(archivePath, 'utf8');
         const reparsed = parseDashboardMarkdown(archivedText, sourceKey);
         const unseen = reparsed.intercom.messages.filter(m => !byId.has(m.id));
         if (unseen.length > 0) {
-          reUnoinedCount = unseen.length;
+          reUnionedCount = unseen.length;
+          reUnionPersisted = false; // fail-closed : ne compte comme persistée qu'une fois confirmée en PG
           for (const m of unseen) byId.set(m.id, m);
           mergedMessages = [...byId.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
           merged = {
@@ -4866,12 +4869,33 @@ async function handleMerge(
             }
           };
           await writeDashboardFile(key, merged);
-          await dualWriteDashboardSyncChecked(merged);
+          // Rework #1134 (review ai-01 11/09) — même geste que le chemin nominal :
+          // l'outcome du re-sync PG décide. Sur une erreur déterministe (liée au
+          // payload réintégré), le delete — qui ne porte pas ce payload — réussirait
+          // quand même et détruirait la seule ligne PG détentrice de ces messages ;
+          // les writes suivants rejoueraient la même erreur : pas de cicatrisation.
+          const reSyncOutcome = await dualWriteDashboardSyncChecked(merged);
+          const reSyncPersisted = reSyncOutcome.ok || reSyncOutcome.reason === 'disabled';
+          reUnionPersisted = reSyncPersisted;
+          if (!reSyncPersisted) {
+            reUnionFailDetail = ` (${reSyncOutcome.reason}${reSyncOutcome.detail ? ` : ${reSyncOutcome.detail}` : ''})`;
+            logger.error(
+              `[MERGE] #3537 §6.2 — re-union post-rename écrite dans le FICHIER cible mais PG ne l'a PAS persistée : suppression de la ligne PG source DIFFÉRÉE`,
+              {
+                sourceKey,
+                targetKey: key,
+                reSyncOutcome,
+                reUnionedCount
+              }
+            );
+          }
         }
       } catch (error) {
         // La re-union est un filet : son échec n'invalide pas le merge (l'union
-        // initiale est déjà écrite), mais il DOIT être visible.
-        logger.warn('[MERGE] re-union post-rename : re-parse de l\'archive échoué', {
+        // initiale est déjà écrite), mais il DOIT être visible. Si des messages
+        // avaient été réclamés (reUnionedCount > 0) sans confirmation du sync,
+        // reUnionPersisted reste false — le delete PG sera différé.
+        logger.warn('[MERGE] re-union post-rename : re-parse ou réécriture de l\'archive échoué', {
           sourceKey,
           archivePath,
           error: String(error)
@@ -4881,9 +4905,26 @@ async function handleMerge(
 
     // Suppression PG en DERNIER : tant qu'elle n'a pas eu lieu, la ligne PG
     // de la source survit — un hôte à porte PG ouverte qui lit la clé entre
-    // temps voit encore son journal (l'union l'a déjà capturé).
-    const delOutcome = await dualWriteDashboardDeleteChecked(sourceKey);
-    const pgDeleted = delOutcome.ok || delOutcome.reason === 'disabled';
+    // temps voit encore son journal (l'union l'a déjà capturé). Gate re-union
+    // (review ai-01) : si la re-union n'est pas confirmée en PG, la ligne PG de
+    // la source reste la seule trace PG des messages réintégrés — le delete ne
+    // s'exécute pas (retrait partiel, rapporté ci-dessous).
+    const delOutcome = reUnionPersisted
+      ? await dualWriteDashboardDeleteChecked(sourceKey)
+      : undefined;
+    const pgDeleted = delOutcome !== undefined && (delOutcome.ok || delOutcome.reason === 'disabled');
+    let pgDispositionNote = '';
+    if (delOutcome === undefined) {
+      pgDispositionNote =
+        `. ⚠️ Suppression de la ligne PG de la source DIFFÉRÉE : la re-union post-rename ` +
+        `(${reUnionedCount} msg réintégré(s)) n'est pas confirmée en PG` +
+        `${reUnionFailDetail ?? ' (chaîne interrompue avant confirmation)'} — la ligne PG de la source ` +
+        `est la seule trace PG des messages réintégrés. Réessayer le merge une fois PG revenu (l'union est idempotente).`;
+    } else if (!(delOutcome.ok || delOutcome.reason === 'disabled')) {
+      pgDispositionNote =
+        `. ⚠️ La ligne PG de la source n'a PAS été supprimée (${delOutcome.reason}${delOutcome.detail ? ` : ${delOutcome.detail}` : ''}) — ` +
+        `retrait partiel : moitié fichier faite, moitié PG résiduelle. Le contenu est préservé (union + archive).`;
+    }
 
     // Re-stat : un append concurrent post-rename recrée le fichier source.
     // C'est une écriture VIVANTE (jamais écrasée) — mais l'opérateur doit
@@ -4899,7 +4940,7 @@ async function handleMerge(
     logger.warn(
       pgDeleted
         ? `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' puis supprimée (les DEUX artefacts)`
-        : `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; retrait PG ÉCHOUÉ — ligne PG résiduelle`,
+        : `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; retrait PG ÉCHOUÉ/DIFFÉRÉ — ligne PG résiduelle`,
       {
         sourceKey,
         targetKey: key,
@@ -4908,8 +4949,9 @@ async function handleMerge(
         mergedMessages: mergedMessages.length,
         deduped,
         archiveFile,
-        reUnoinedCount,
-        pgDeleteOutcome: delOutcome,
+        reUnionedCount,
+        pgDeleteOutcome:
+          delOutcome ?? { ok: false, reason: 'deferred-reunion-sync', detail: 're-union post-rename non confirmée en PG' },
         sourceRecreated,
         by: author
       }
@@ -4919,10 +4961,8 @@ async function handleMerge(
       (archiveFile
         ? `Source archivée (${archiveFile}) par renommage atomique puis supprimée des deux artefacts`
         : 'Source supprimée des deux artefacts (aucun contenu à archiver)') +
-      (reUnoinedCount > 0 ? ` — re-union post-rename : ${reUnoinedCount} msg(s) réintégré(s)` : '') +
-      (!pgDeleted
-        ? `. ⚠️ La ligne PG de la source n'a PAS été supprimée (${delOutcome.reason}${delOutcome.detail ? ` : ${delOutcome.detail}` : ''}) — retrait partiel : moitié fichier faite, moitié PG résiduelle. Le contenu est préservé (union + archive).`
-        : '') +
+      (reUnionedCount > 0 ? ` — re-union post-rename : ${reUnionedCount} msg(s) réintégré(s)` : '') +
+      pgDispositionNote +
       (sourceRecreated
         ? `. ⚠️ Le fichier source a été RECREE après le merge (append concurrent) — la clé '${sourceKey}' respire à nouveau ; relire avant tout nouveau merge.`
         : '');
