@@ -28,7 +28,7 @@ export function getUnifiedStoreReader(): IUnifiedStoreReader {
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
 
   if (dualWrite === '1' && pgUrl) {
-    console.info('[UnifiedStore] Reader ENABLED — connecting to Postgres');
+    console.error('[UnifiedStore] Reader ENABLED — connecting to Postgres');
     instance = new PgUnifiedStoreReader({
       connectionString: pgUrl,
       poolMax: parseInt(process.env.UNIFIED_STORE_POOL_MAX ?? '5', 10),
