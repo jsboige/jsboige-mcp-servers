@@ -12,8 +12,18 @@
  *    medium tier that OPENAI_BASE_URL points at. Fleet credential rotations
  *    operate on the VLLM_* names; one name per secret is what makes a rotation
  *    survive (giving the same secret a second name is how this incident started).
- *  - OPENAI_API_KEY — generic OpenAI-compatible/cloud deployments where
- *    OPENAI_BASE_URL is unset or points elsewhere.
+ *  - OPENAI_API_KEY — generic OpenAI-compatible fallback, consulted only when
+ *    VLLM_API_KEY_MEDIUM is absent.
+ *
+ * The order is UNCONDITIONAL: OPENAI_BASE_URL is never read here. That matters,
+ * because it leaves one residual shape (review myia-po-204 on PR #1147): a seat
+ * pointing OPENAI_BASE_URL at a cloud endpoint while still carrying a stale
+ * VLLM_API_KEY_MEDIUM would present the stale name — the symmetric form of the
+ * defect this file repairs. No measured seat has that shape (po-204, web1 and
+ * ai-01 all point at the medium tier), so the branch is deliberately NOT added:
+ * resolving per endpoint needs an endpoint-to-key-name mapping, not a second
+ * guess at which name is live. Should a cloud-pointing seat appear, that mapping
+ * belongs here.
  *
  * Shared by the client (services/openai.ts) and the boot banner (index.ts) so the
  * two cannot drift. Kept dependency-free on purpose: index.ts imports it at boot.
