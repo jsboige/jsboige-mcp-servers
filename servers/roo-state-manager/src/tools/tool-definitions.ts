@@ -560,7 +560,7 @@ export const roosyncInventoryDefinition = {
 // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 
 // #1320: Lifecycle state machine → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
-// Standalone tool retiré — RSM sert 16 outils (15 + claudish_traffic #3391).
+// Standalone tool retiré — RSM sert 17 outils (16 + roosync_harmonization #3545).
 
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
