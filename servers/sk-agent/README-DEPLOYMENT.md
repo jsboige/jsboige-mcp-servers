@@ -2,11 +2,15 @@
 
 ## Overview
 
-**sk-agent** is a Python-based MCP server that provides LLM capabilities with 4 models:
-- **glm-4.6v** - Vision model (z.ai cloud)
-- **glm-5** - Text model (z.ai cloud)
-- **zwz-8b** - Fast local text (myia.io self-hosted)
-- **glm-4.7-flash** - Fast local text (myia.io self-hosted)
+**sk-agent** is a Python-based MCP server that routes LLM work through a pool of named agents backed by 17 models (z.ai cloud, local vLLM, OWUI proxies — `sk_agent_config.template.json` is the canonical list):
+
+- **Vision routing** — default vision agent `vision-analyst` runs **glm-5.3-flash** (native multimodal, 131K ctx); **glm-4.6v** is kept as vision fallback only (#3389)
+- **Text routing** — default agent `analyst` runs glm-5.1 (200K ctx)
+- **Local/cheap lanes** — qwen3.6-35b, glm-4.7-flash and OWUI wrappers for coding and fast tasks
+
+### Document routing (PDF)
+
+Documents are handled **text-first** (#3389): analysis mode `auto` (the default, recommended) probes the PDF for a text layer (PyMuPDF, majority quorum of sampled pages). Textual PDFs go through native text extraction; only scanned/image PDFs fall back to page-by-page vision. Other modes: `visual` (always images), `text` (extracted text only), `hybrid` (both).
 
 ## Prerequisites
 
@@ -67,73 +71,56 @@ pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.10" "uvicorn>=0.30" "openai>=1.
 
 ### 4. Create Configuration File
 
-Create `sk_agent_config.json`:
+Create `sk_agent_config.json` from the template — the canonical, up-to-date structure (config v2: agent-based routing, MCP risk classes):
+
+```powershell
+Copy-Item sk_agent_config.template.json sk_agent_config.json
+# then fill in API keys per model block and adjust agents/mcps for the machine
+```
+
+v2 shape (excerpt — top-level defaults plus one entry of each kind; see the template for the full pool):
 
 ```json
 {
-  "default_ask_model": "glm-5",
-  "default_vision_model": "glm-4.6v",
+  "config_version": 2,
   "max_recursion_depth": 2,
+  "default_agent": "analyst",
+  "default_vision_agent": "vision-analyst",
   "models": [
     {
-      "id": "glm-4.6v",
+      "id": "glm-5.3-flash",
       "enabled": true,
       "base_url": "https://api.z.ai/api/coding/paas/v4",
       "api_key": "YOUR_ZAI_API_KEY",
-      "model_id": "glm-4.6v",
+      "model_id": "glm-5.3-flash",
       "vision": true,
-      "description": "Vision model (GLM-4.6V via z.ai)",
-      "context_window": 128000
-    },
-    {
-      "id": "glm-5",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key": "YOUR_ZAI_API_KEY",
-      "model_id": "glm-5",
-      "vision": false,
-      "description": "Text model (GLM-5 via z.ai)",
-      "context_window": 200000
-    },
-    {
-      "id": "zwz-8b",
-      "enabled": true,
-      "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MYIA_KEY",
-      "model_id": "zwz-8b",
-      "vision": false,
-      "description": "Fast local text (ZwZ 8B AWQ)",
+      "thinking": true,
+      "description": "GLM-5.3-Flash via z.ai cloud — native multimodal (text+vision)",
       "context_window": 131072
-    },
+    }
+  ],
+  "agents": [
     {
-      "id": "glm-4.7-flash",
-      "enabled": true,
-      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MYIA_KEY",
-      "model_id": "glm-4.7-flash",
-      "vision": false,
-      "description": "Fast local text (GLM-4.7-Flash AWQ)",
-      "context_window": 131072
+      "id": "vision-analyst",
+      "model": "glm-5.3-flash",
+      "mcps": ["searxng", "playwright", "markitdown"],
+      "capabilities": ["web", "browser", "document_text", "document_visual"]
     }
   ],
   "mcps": [
     {
-      "name": "searxng",
+      "id": "searxng",
       "description": "Web search via SearXNG",
       "command": "npx",
       "args": ["-y", "mcp-searxng"],
-      "env": { "SEARXNG_URL": "https://search.myia.io" }
-    },
-    {
-      "name": "playwright",
-      "description": "Browser automation",
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
+      "risk_class": "read",
+      "allowed_capabilities": ["web"]
     }
-  ],
-  "system_prompt": "You are a helpful assistant with access to web search and browser tools. Always respond in the same language as the user."
+  ]
 }
 ```
+
+> Legacy v1 keys (`default_ask_model`, `default_vision_model`) no longer exist — defaults are agent IDs now (`default_agent`, `default_vision_agent`).
 
 ### 5. Add to Claude Code MCP Settings
 
@@ -201,12 +188,15 @@ mcp__sk-agent__analyze_image("https://example.com/image.png", "Describe this")
 
 | Machine | Status | Notes |
 |---------|--------|-------|
-| myia-po-2026 | ✅ DONE | Lead deployment, tested |
-| myia-ai-01 | ⏳ TODO | Coordinator machine |
-| myia-po-2023 | ⏳ TODO | |
-| myia-po-2024 | ⏳ TODO | |
-| myia-po-2025 | ⏳ TODO | |
-| myia-web1 | ⏳ TODO | (2GB RAM - may need adjustments) |
+| myia-po-2026 | ✅ DONE | Lead deployment, tested — #3389 config sync (glm-5.3-flash) pending |
+| myia-ai-01 | ✅ DONE | Config synced to template 2026-09-09 (#3389) |
+| myia-po-2023 | ✅ DONE | Config synced 2026-09-09 (#3389) |
+| myia-po-2024 | ✅ DONE | Config synced 2026-09-09 (#3389) |
+| myia-po-2025 | ✅ DONE | Config synced 2026-09-06 (#3389) |
+| myia-web1 | ✅ DONE | Deployed (2GB RAM); stdio re-validated 2026-09-11 (#3411) |
+| myia-po-2027 | ➖ N/A | sk-agent not deployed (Claude-only machine) |
+
+*Config-sync state as of 2026-09-11. Local `sk_agent_config.json` files are gitignored — rows reflect issue-thread reports, verify per machine before relying on one.*
 
 ## API Keys Reference
 
