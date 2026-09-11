@@ -39,6 +39,8 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { redactKnownSecretValues } from '../../utils/secret-redaction.js';
+import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
@@ -1306,6 +1308,51 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
 }
 
 /**
+ * #3584 — masque les secrets au franchissement de la frontière de PUBLICATION.
+ *
+ * Deux couches complémentaires, aucune ne suffisant seule :
+ *  - `redactSecrets` attrape les formes auto-descriptives (`sk-…`, `ghp_…`, `NAME=VALUE`)
+ *    quel que soit le détenteur du secret ;
+ *  - `redactKnownSecretValues` attrape les valeurs connues de CE process — seule couche
+ *    capable de masquer une valeur NUE. C'est la fuite fondatrice : une clé d'API de
+ *    64 hexadécimaux publiée sans nom de variable, indistinguable par sa forme d'un
+ *    SHA ou d'un hash quelconque (cf. en-tête de `utils/secret-redaction.ts`).
+ */
+function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
+  const mask = (text: string): string => redactKnownSecretValues(redactSecrets(text));
+
+  const statusRaw = dashboard.status.markdown ?? '';
+  const statusMasked = mask(statusRaw);
+  const statusChanged = statusMasked !== statusRaw;
+
+  let messagesMasked = 0;
+  const messages = dashboard.intercom.messages.map(msg => {
+    const raw = msg.content ?? '';
+    const masked = mask(raw);
+    if (masked === raw) return msg;
+    messagesMasked++;
+    return { ...msg, content: masked };
+  });
+
+  if (!statusChanged && messagesMasked === 0) return dashboard;
+
+  // Jamais la valeur, ni sa longueur, ni son empreinte : le NOM de variable et le
+  // compte suffisent à l'opérateur. Ce log est le seul signal qu'un auteur reçoit
+  // que son message a été altéré — sans lui, il croirait avoir publié tel quel.
+  logger.warn('[DASHBOARD-REDACTION] secret masqué à la publication (#3584)', {
+    key,
+    statusMasked: statusChanged,
+    messagesMasked
+  });
+
+  return {
+    ...dashboard,
+    status: statusChanged ? { ...dashboard.status, markdown: statusMasked } : dashboard.status,
+    intercom: messagesMasked > 0 ? { ...dashboard.intercom, messages } : dashboard.intercom
+  };
+}
+
+/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(
@@ -1313,6 +1360,12 @@ async function writeDashboardFile(
   dashboard: Dashboard,
   opts?: { condensed?: boolean }
 ): Promise<WriteVerifyResult> {
+  // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
+  // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
+  // tous les chemins d'écriture (append, write, merge, cross-post, condensation) le
+  // traversent. Un masquage posé plus haut ne couvrirait que l'append.
+  dashboard = redactForPublication(key, dashboard);
+
   const dir = getDashboardsDir();
   ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
