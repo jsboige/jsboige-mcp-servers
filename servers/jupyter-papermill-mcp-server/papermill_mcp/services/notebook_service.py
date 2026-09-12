@@ -505,7 +505,6 @@ class NotebookService:
             Dictionary with system information
         """
         try:
-            import datetime
             import os
             import platform
             import sys
