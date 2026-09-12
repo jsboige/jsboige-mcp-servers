@@ -159,6 +159,19 @@ describe('search-codebase.tool', () => {
 			// Windows paths should have more variants due to case and separator differences
 			expect(winVariants.length).toBeGreaterThanOrEqual(unixVariants.length);
 		});
+
+		test('drive-letter case convergence: d:\\ and D:\\ inputs generate the SAME variant set (mixed-case rest)', () => {
+			// Fleet investigation 2026-09-12 (CoursIA-2 collection_not_found): an
+			// uppercase-drive input never generated the lowercase-drive spellings
+			// (rest preserved), so D:\ queries could not reach an index hashed under
+			// d:\ when the path carries uppercase past the drive. The mirror branch
+			// makes both inputs converge on one variant set.
+			const upper = getWorkspaceCollectionVariants('D:\\dev\\CoursIA-2');
+			const lower = getWorkspaceCollectionVariants('d:\\dev\\CoursIA-2');
+			expect(new Set(upper)).toEqual(new Set(lower));
+			expect(upper).toContain(getWorkspaceCollectionName('d:\\dev\\CoursIA-2'));
+			expect(lower).toContain(getWorkspaceCollectionName('D:\\dev\\CoursIA-2'));
+		});
 	});
 
 		// ============================================================
