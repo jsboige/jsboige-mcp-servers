@@ -1506,6 +1506,25 @@ describe('MessageManager', () => {
       expect(err.message).toContain('basename');
     });
 
+    test('getMessage: denied error hints at proxy-chain caller identity (#3591)', async () => {
+      // Fleet reproduction of the po-2026 cron seat: machine-scope message,
+      // caller resolved server-side as the proxy host instead of the seat —
+      // neither recipient nor sender, so denied. The error must name both
+      // identities AND hint at the chain class, or operators chase the
+      // addressing convention for days (≥5 documented).
+      const msg = await messageManager.sendMessage(
+        'myia-po-2023:roo-extensions', 'myia-po-2026', 'HIGH lane', 'Body', 'HIGH'
+      );
+      const callerId = 'myia-ai-01:roo-extensions';
+      const err = await messageManager.getMessage(msg.id, callerId)
+        .catch((e: any) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.code).toBe(MessageManagerErrorCode.ACCESS_DENIED);
+      expect(err.message).toContain('myia-po-2026');
+      expect(err.message).toContain(callerId);
+      expect(err.message).toContain('#3591');
+    });
+
     test('getMessage: allows reading messages targeted to same machine (no workspace)', async () => {
       const msg = await messageManager.sendMessage(
         'sender', 'machine-a', 'Test', 'Body', 'MEDIUM'
