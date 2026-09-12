@@ -59,10 +59,15 @@ N diffs `present_absent` (fix du 80/80 mesuré le 08/09).
 
 ```
 create   → canon {version, mode, keys} + fleet ["machine"|"machine:workspace"] [+ exceptions {machine: [chemins]}]
-dispatch → DM par destinataire (idempotent, force=true pour renvoyer)
+dispatch → DM par destinataire (idempotent, force=true pour renvoyer) — prescrit apply → confirm → publish
 apply    → applique le canon au settings LOCAL uniquement (dry_run supporté)
 confirm  → RELIT le settings local en live, atteste le hash observé (refusé sur campagne fermée)
-remind   → relance les non-confirmés (cooldown 12 h par défaut, idempotent)
+publish  → (roosync_config) publie le snapshot APRÈS le confirm — sans lui, la machine
+           reste « no-snapshot » pour ses pairs et la campagne ne peut pas converger
+remind   → relance les machines NON confirmées au sens de l'état disjoint courant
+           (no-snapshot / snapshot-stale / drifted / missing / unreadable / stale-canon /
+           aligned-unconfirmed — cooldown 12 h par défaut, idempotent ; la machine
+           locale du coordinateur est skippée avec la recette directe, pas de DM à soi-même)
 status   → par machine : confirmation + alignment (aligned/drifted/no-snapshot/…) en UN appel
 list     → campagnes (actives par défaut)
 close    → refusé tant que toute la flotte n'a pas confirmé (force+reason requis sinon)
