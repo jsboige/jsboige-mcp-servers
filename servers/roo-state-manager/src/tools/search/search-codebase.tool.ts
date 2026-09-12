@@ -90,6 +90,18 @@ export function getWorkspaceCollectionVariants(workspacePath: string): string[] 
 		// canonical forward-slash hash (convergence gap caught by the #3344 test).
 		variants.add(upper.replace(/\\/g, '/'));
 	}
+	// 6. Lowercase drive letter — the MIRROR of branch 5. Without it, an
+	// uppercase-drive input (VS Code CWD, e.g. D:\dev\CoursIA-2) never generated
+	// the lowercase-drive spellings with the rest of the case preserved, so a
+	// query could not reach an index hashed under d:\… whenever the path carries
+	// uppercase past the drive letter (fleet investigation 2026-09-12, CoursIA-2
+	// collection_not_found: d:\ and D:\ inputs must generate the SAME variant set).
+	if (/^[A-Z]:/.test(cleaned)) {
+		const lower = cleaned[0].toLowerCase() + cleaned.slice(1);
+		variants.add(lower);
+		variants.add(lower.replace(/\//g, '\\'));
+		variants.add(lower.replace(/\\/g, '/'));
+	}
 
 	// Generate collection names for each variant
 	return [...variants].map(v => {
