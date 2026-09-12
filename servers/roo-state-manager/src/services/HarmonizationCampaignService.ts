@@ -11,7 +11,12 @@
  *  - Confirmations : la machine cible relit SON settings.json en live et
  *    atteste le hash observé. Un hash fourni par l'appelant ('claimed')
  *    n'est JAMAIS compté comme confirmation.
- *  - Relances idempotentes (cooldown), échecs d'envoi jamais marqués envoyés.
+ *  - Relances idempotentes (cooldown), ciblant l'ÉTAT DISJOINT courant (pas la
+ *    seule confirmation) : une machine confirmée mais sans snapshot publié
+ *    (no-snapshot / snapshot-stale) reste relançable — sans ça, la campagne ne
+ *    peut pas converger par ses propres leviers (#3545). Le DM prescrit la
+ *    recette complète apply → confirm → publish. Échecs d'envoi jamais marqués
+ *    envoyés.
  *  - Re-détection de drift : hash canon vs projection live (machine locale)
  *    ou vs dernier snapshot publié (machines distantes).
  *
@@ -789,20 +794,6 @@ export class HarmonizationCampaignService {
     };
   }
 
-  /**
-   * Confirmation valide = un événement 'confirm' récent LIÉ au canon courant.
-   * La provenance 'live-read' est STRUCTURELLE : le type
-   * CampaignConfirmedObservation n'admet que source: 'live-read' (confirm()
-   * écrit exclusivement depuis une relecture live) — re-vérifier
-   * `c.provenance === 'live-read'` était tautologique (toujours vrai) et a été
-   * retiré (défaut review mineur). Le champ `provenance` de la confirmation
-   * dérivée reste publié à titre documentaire.
-   */
-  private async hasValidConfirmation(record: HarmonizationCampaignRecord, machine: string): Promise<boolean> {
-    const c = await this.latestConfirmation(record, machine);
-    return !!c && c.canonHash === record.canon.hash;
-  }
-
   private async lastFailedAttempt(record: HarmonizationCampaignRecord, machine: string): Promise<CampaignFailedObservation | undefined> {
     const events = await this.loadObservations(record.id, machine);
     const fails = events.filter(e => e.kind === 'failed') as CampaignFailedObservation[];
@@ -935,6 +926,7 @@ ${exemptLine}
 1. Simuler : \`roosync_harmonization(action: "apply", campaign_id: "${record.id}", dry_run: true)\`
 2. Appliquer : \`roosync_harmonization(action: "apply", campaign_id: "${record.id}")\`
 3. Confirmer (relit ton settings.json en live, atteste le hash) : \`roosync_harmonization(action: "confirm", campaign_id: "${record.id}")\`
+4. Publier ton snapshot : \`roosync_config(action: "publish", targets: ["claude-settings"])\` — APRÈS le confirm, et obligatoire : sans snapshot publié, ton alignement reste INVISIBLE pour le coordinateur et tes pairs (état « no-snapshot ») ; un snapshot antérieur au confirm rend « snapshot-stale »
 
 Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : intouchables.
 `;
@@ -1031,6 +1023,20 @@ Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : int
     return observed;
   }
 
+  /** Conseil ciblé par état disjoint — le rappel prescrit l'étape MANQUANTE. */
+  private reminderHint(state: MachineState): string {
+    switch (state) {
+      case 'no-snapshot': return "aucun snapshot claude-settings publié — ton alignement est INVISIBLE pour le coordinateur (publish requis)";
+      case 'snapshot-stale': return "ton snapshot publié est ANTÉRIEUR à ta confirmation — republier après re-confirm";
+      case 'drifted': return "ta projection (live ou dernier snapshot publié) diverge du canon";
+      case 'missing': return "ton settings.json local est absent";
+      case 'unreadable': return "ton settings.json local est illisible";
+      case 'stale-canon': return "ta confirmation est liée à un canon antérieur — re-confirmer";
+      case 'aligned-unconfirmed': return "alignement constaté mais pas de confirmation valide";
+      default: return state;
+    }
+  }
+
   async remind(
     id: string,
     options: { cooldownHours?: number; force?: boolean } = {}
@@ -1050,8 +1056,20 @@ Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : int
 
       for (const recipient of record.fleet) {
         const machine = recipient.split(':')[0];
-        if (await this.hasValidConfirmation(record, machine)) {
-          skipped.push({ to: recipient, reason: 'confirmé' });
+        // #3545 : la relance cible l'ALIGNEMENT (état disjoint courant), pas la
+        // seule confirmation. Une machine confirmée mais sans snapshot publié
+        // (no-snapshot / snapshot-stale) doit rester relançable — sinon elle ne
+        // peut jamais basculer dans la métrique lue par ses pairs et la campagne
+        // ne converge pas par ses propres leviers.
+        const st = await this.computeMachineStatus(record, recipient);
+        if (st.state === 'confirmed') {
+          skipped.push({ to: recipient, reason: 'confirmé (état frais — alignement visible)' });
+          continue;
+        }
+        if (machine === this.deps.machineId) {
+          // MessageManager refuse le DM vers soi-même (anti-auto-message) : la
+          // machine du coordinateur exécute la recette directement.
+          skipped.push({ to: recipient, reason: 'machine locale (coordinateur) — exécuter apply/confirm puis roosync_config publish directement' });
           continue;
         }
         const history = record.reminders[machine] || [];
@@ -1064,12 +1082,13 @@ Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : int
           }
         }
         const failCount = (await this.loadObservations(record.id, machine)).filter(e => e.kind === 'failed').length;
-        const subject = `[HARMONIZATION] Rappel — ${id} en attente de ta confirmation`;
+        const subject = `[HARMONIZATION] Rappel — ${id} en attente de ton alignement`;
         const body = `Relance de la campagne \`${record.id}\` (canon v${record.canon.version}).
-Ta machine n'a pas encore de confirmation valide (tentatives échouées: ${failCount}).
-Applique puis confirme :
-1. \`roosync_harmonization(action: "apply", campaign_id: "${record.id}")\`
+État actuel de ta machine : **${st.state}** — ${this.reminderHint(st.state)} (tentatives échouées : ${failCount}).
+Recette pour atteindre l'état « confirmé » vu du coordinateur :
+1. \`roosync_harmonization(action: "apply", campaign_id: "${record.id}")\` — idempotent si déjà aligné
 2. \`roosync_harmonization(action: "confirm", campaign_id: "${record.id}")\`
+3. \`roosync_config(action: "publish", targets: ["claude-settings"])\` — APRÈS le confirm : le snapshot doit être plus récent que la confirmation (sinon état « snapshot-stale »)
 `;
         try {
           const msg = await this.deps.sendMessage(
@@ -1208,82 +1227,90 @@ Applique puis confirme :
     }
   }
 
+  /**
+   * État disjoint d'UN destinataire — source unique partagée par status() et
+   * remind() : la relance cible exactement ce que status rapporte, jamais une
+   * lecture divergente (alignment live machine locale / snapshot publié distant).
+   */
+  private async computeMachineStatus(record: HarmonizationCampaignRecord, recipient: string): Promise<MachineCampaignStatus> {
+    const machine = recipient.split(':')[0];
+    const dispatch = record.dispatches[recipient];
+    const confirmation = await this.latestConfirmation(record, machine);
+    const lastFailed = await this.lastFailedAttempt(record, machine);
+
+    let confirmationState: MachineCampaignStatus['confirmationState'] = 'none';
+    if (confirmation) {
+      if (confirmation.canonHash !== record.canon.hash) confirmationState = 'stale-canon';
+      else confirmationState = 'confirmed';
+    }
+
+    // Alignment : live pour la machine locale, snapshot publié pour les autres.
+    let alignment: MachineCampaignStatus['alignment'] = 'no-snapshot';
+    let alignmentDetail: string | undefined;
+    const exceptions = record.exceptions[machine] || [];
+
+    if (machine === this.deps.machineId) {
+      const read = await readClaudeSettingsFile(this.deps.settingsPath);
+      if (read.state === 'invalid') {
+        alignment = 'unreadable';
+        alignmentDetail = read.error;
+      } else if (read.state === 'missing') {
+        alignment = 'missing';
+      } else {
+        const observed = hashProjection(this.observedOverCanonScope(record, machine, read.settings));
+        alignment = observed === this.canonHashForMachine(record, machine) ? 'aligned' : 'drifted';
+      }
+    } else {
+      const snap = await findLatestClaudeSettingsSnapshot(this.deps.sharedStatePath, machine);
+      if (snap.found && snap.snapshot) {
+        const restricted: Record<string, unknown> = {};
+        for (const p of Object.keys(record.canon.keys)) {
+          if (exceptions.includes(p)) continue;
+          const v = snap.snapshot.harmonization[p];
+          if (v !== undefined) restricted[p] = v;
+        }
+        const observed = hashProjection(restricted);
+        if (observed === this.canonHashForMachine(record, machine)) {
+          alignment = 'aligned';
+          if (confirmation && snap.snapshot.collectedAt && confirmation.confirmedAt && snap.snapshot.collectedAt < confirmation.confirmedAt) {
+            alignment = 'snapshot-stale';
+            alignmentDetail = `snapshot ${snap.snapshot.collectedAt} antérieur à la confirmation ${confirmation.confirmedAt} — live distant inconnu`;
+          }
+        } else {
+          alignment = 'drifted';
+          alignmentDetail = `snapshot du ${snap.snapshot.collectedAt} diverge du canon`;
+        }
+      } else {
+        alignment = 'no-snapshot';
+        alignmentDetail = 'aucun snapshot claude-settings publié par cette machine';
+      }
+    }
+
+    // drift courant => la confirmation devient mismatch-latest (déjà dérivée).
+    if (confirmationState === 'confirmed' && alignment === 'drifted') confirmationState = 'mismatch-latest';
+
+    const state = this.disjointState(confirmationState, alignment);
+    const reminders = record.reminders[machine] || [];
+    return {
+      recipient,
+      dispatched: !!dispatch,
+      lastDispatchAt: dispatch?.at,
+      confirmationState,
+      confirmedAt: confirmation?.confirmedAt,
+      lastFailedAttempt: lastFailed,
+      alignment,
+      alignmentDetail,
+      state,
+      reminderCount: reminders.length,
+      lastReminderAt: reminders[reminders.length - 1]?.at,
+    };
+  }
+
   async status(id: string): Promise<CampaignStatusResult> {
     const record = await this.load(id);
     const machines: MachineCampaignStatus[] = [];
-
     for (const recipient of record.fleet) {
-      const machine = recipient.split(':')[0];
-      const dispatch = record.dispatches[recipient];
-      const confirmation = await this.latestConfirmation(record, machine);
-      const lastFailed = await this.lastFailedAttempt(record, machine);
-
-      let confirmationState: MachineCampaignStatus['confirmationState'] = 'none';
-      if (confirmation) {
-        if (confirmation.canonHash !== record.canon.hash) confirmationState = 'stale-canon';
-        else confirmationState = 'confirmed';
-      }
-
-      // Alignment : live pour la machine locale, snapshot publié pour les autres.
-      let alignment: MachineCampaignStatus['alignment'] = 'no-snapshot';
-      let alignmentDetail: string | undefined;
-      const exceptions = record.exceptions[machine] || [];
-
-      if (machine === this.deps.machineId) {
-        const read = await readClaudeSettingsFile(this.deps.settingsPath);
-        if (read.state === 'invalid') {
-          alignment = 'unreadable';
-          alignmentDetail = read.error;
-        } else if (read.state === 'missing') {
-          alignment = 'missing';
-        } else {
-          const observed = hashProjection(this.observedOverCanonScope(record, machine, read.settings));
-          alignment = observed === this.canonHashForMachine(record, machine) ? 'aligned' : 'drifted';
-        }
-      } else {
-        const snap = await findLatestClaudeSettingsSnapshot(this.deps.sharedStatePath, machine);
-        if (snap.found && snap.snapshot) {
-          const restricted: Record<string, unknown> = {};
-          for (const p of Object.keys(record.canon.keys)) {
-            if (exceptions.includes(p)) continue;
-            const v = snap.snapshot.harmonization[p];
-            if (v !== undefined) restricted[p] = v;
-          }
-          const observed = hashProjection(restricted);
-          if (observed === this.canonHashForMachine(record, machine)) {
-            alignment = 'aligned';
-            if (confirmation && snap.snapshot.collectedAt && confirmation.confirmedAt && snap.snapshot.collectedAt < confirmation.confirmedAt) {
-              alignment = 'snapshot-stale';
-              alignmentDetail = `snapshot ${snap.snapshot.collectedAt} antérieur à la confirmation ${confirmation.confirmedAt} — live distant inconnu`;
-            }
-          } else {
-            alignment = 'drifted';
-            alignmentDetail = `snapshot du ${snap.snapshot.collectedAt} diverge du canon`;
-          }
-        } else {
-          alignment = 'no-snapshot';
-          alignmentDetail = 'aucun snapshot claude-settings publié par cette machine';
-        }
-      }
-
-      // drift courant => la confirmation devient mismatch-latest (déjà dérivée).
-      if (confirmationState === 'confirmed' && alignment === 'drifted') confirmationState = 'mismatch-latest';
-
-      const state = this.disjointState(confirmationState, alignment);
-      const reminders = record.reminders[machine] || [];
-      machines.push({
-        recipient,
-        dispatched: !!dispatch,
-        lastDispatchAt: dispatch?.at,
-        confirmationState,
-        confirmedAt: confirmation?.confirmedAt,
-        lastFailedAttempt: lastFailed,
-        alignment,
-        alignmentDetail,
-        state,
-        reminderCount: reminders.length,
-        lastReminderAt: reminders[reminders.length - 1]?.at,
-      });
+      machines.push(await this.computeMachineStatus(record, recipient));
     }
 
     const confirmed = machines.filter(m => m.state === 'confirmed').length;

@@ -200,6 +200,11 @@ describe('dispatch', () => {
     expect(sentMessages[0].subject).toContain('[HARMONIZATION]');
     expect(sentMessages[0].body).toContain('roosync_harmonization');
     expect(sentMessages[0].body).toContain('ensure-present');
+    // #3545 : le dispatch prescrit AUSSI la publication du snapshot (sans elle,
+    // la machine reste « no-snapshot » pour ses pairs — campagne non convergente).
+    expect(sentMessages[0].body).toContain('roosync_config');
+    expect(sentMessages[0].body).toContain('claude-settings');
+    expect(sentMessages[0].body).toMatch(/APRÈS le confirm/);
 
     const r2 = await svc.dispatch(rec.id);
     expect(r2.sent).toHaveLength(0);
@@ -462,16 +467,20 @@ describe('remind — idempotence et échecs', () => {
     const rec = await svc.createCampaign(input);
     await svc.dispatch(rec.id);
 
-    // myia-po-2023 confirme (on simule depuis SA machine)
+    // myia-po-2023 confirme ET publie un snapshot POST-confirmation (vu du
+    // coordinateur : confirmé complet — alignement visible)
     const svcPo23 = makeService('myia-po-2023');
     writeLocalSettings({ env: {} });
     await svcPo23.apply(rec.id);
-    await svcPo23.confirm(rec.id);
+    await svcPo23.confirm(rec.id); // confirmedAt = 12:00
+    await publishSnapshot('myia-po-2023', {
+      env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+    }, '2026-09-08T12:05:00Z'); // postérieur au confirm => pas snapshot-stale
 
     // relance : po-2023 skipped (confirmé), po-2024 relancé
     const r1 = await svc.remind(rec.id, { cooldownHours: 12 });
     expect(r1.sent.map(s => s.to)).toEqual(['myia-po-2024']);
-    expect(r1.skipped.some(s => s.reason === 'confirmé')).toBe(true);
+    expect(r1.skipped.some(s => s.reason.startsWith('confirmé'))).toBe(true);
 
     // re-relance immédiate : cooldown => skipped
     const r2 = await svc.remind(rec.id, { cooldownHours: 12 });
@@ -491,6 +500,63 @@ describe('remind — idempotence et échecs', () => {
     failSendFor.clear();
     const r4 = await svc.remind(rec.id, { cooldownHours: 12 });
     expect(r4.sent.map(s => s.to)).toEqual(['myia-po-2024']);
+  });
+
+  test('#3545 convergence : machine confirmée SANS snapshot publié reste relançable (no-snapshot) — le DM prescrit le publish', async () => {
+    const svc = makeService('myia-ai-01');
+    const input = defaultCanonInput();
+    input.fleet = ['myia-po-2023', 'myia-po-2024'];
+    const rec = await svc.createCampaign(input);
+    await svc.dispatch(rec.id);
+
+    // po-2023 applique et confirme mais NE PUBLIE PAS de snapshot : vue du
+    // coordinateur elle est no-snapshot — ancien défaut : skipped 'confirmé'
+    // pour toujours, la campagne ne peut plus converger par remind.
+    const svcPo23 = makeService('myia-po-2023');
+    writeLocalSettings({ env: {} });
+    await svcPo23.apply(rec.id);
+    await svcPo23.confirm(rec.id);
+
+    const r = await svc.remind(rec.id, { cooldownHours: 12 });
+    expect(r.sent.map(s => s.to)).toContain('myia-po-2023');
+    expect(r.skipped.some(s => s.to === 'myia-po-2023' && s.reason.startsWith('confirmé'))).toBe(false);
+    const dm = sentMessages.find(m => m.to === 'myia-po-2023');
+    expect(dm!.body).toContain('no-snapshot');
+    expect(dm!.body).toContain('roosync_config');
+    expect(dm!.body).toContain('publish');
+  });
+
+  test('#3545 convergence : snapshot antérieur à la confirmation (snapshot-stale) reste relançable', async () => {
+    const svc = makeService('myia-ai-01');
+    const input = defaultCanonInput();
+    input.fleet = ['myia-po-2023'];
+    const rec = await svc.createCampaign(input);
+
+    const svcPo23 = makeService('myia-po-2023');
+    writeLocalSettings({ env: {} });
+    await svcPo23.apply(rec.id);
+    await svcPo23.confirm(rec.id); // 12:00
+    await publishSnapshot('myia-po-2023', {
+      env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+    }, '2026-09-08T11:00:00Z'); // antérieur au confirm => snapshot-stale
+
+    const st = await svc.status(rec.id);
+    expect(st.machines[0].state).toBe('snapshot-stale');
+    const r = await svc.remind(rec.id, { cooldownHours: 12 });
+    expect(r.sent.map(s => s.to)).toEqual(['myia-po-2023']);
+    expect(sentMessages[0].body).toContain('snapshot-stale');
+  });
+
+  test('machine locale (coordinateur) dans le fleet : pas de DM vers soi-même — skip avec recette directe', async () => {
+    const svc = makeService('myia-ai-01');
+    const input = defaultCanonInput();
+    input.fleet = ['myia-ai-01', 'myia-po-2024'];
+    const rec = await svc.createCampaign(input);
+    // coordinateur ni aligné ni confirmé (settings local absent au beforeEach)
+    const r = await svc.remind(rec.id, { cooldownHours: 12 });
+    expect(r.sent.map(s => s.to)).toEqual(['myia-po-2024']);
+    const localSkip = r.skipped.find(s => s.to === 'myia-ai-01');
+    expect(localSkip!.reason).toMatch(/machine locale/);
   });
 });
 

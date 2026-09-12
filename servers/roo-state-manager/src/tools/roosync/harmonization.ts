@@ -3,7 +3,8 @@
  * Issue #3545.
  *
  * « Quelle machine n'est pas harmonisée ? » en un appel : create → dispatch →
- * (machines: apply + confirm) → remind (cadence coordinateur, idempotent) →
+ * (machines: apply + confirm + publish snapshot) → remind (cadence
+ * coordinateur, cible les états non confirmés, idempotent) →
  * status (re-détection de drift) → close.
  *
  * Limitations assumées (docs/CLAUDE-SETTINGS-HARMONIZATION.md) :
@@ -150,7 +151,7 @@ export async function roosyncHarmonization(args: HarmonizationArgs): Promise<Rec
         });
         return {
           status: result.failures.length > 0 ? 'partial' : 'success',
-          message: `Relances: ${result.sent.length} envoyée(s), ${result.skipped.length} ignorée(s) (confirmées/cooldown), ${result.failures.length} échec(s). Échecs jamais marqués envoyés.`,
+          message: `Relances: ${result.sent.length} envoyée(s), ${result.skipped.length} ignorée(s) (état confirmé frais/cooldown/machine locale), ${result.failures.length} échec(s). Échecs jamais marqués envoyés.`,
           ...result,
         };
       }
@@ -179,7 +180,7 @@ export async function roosyncHarmonization(args: HarmonizationArgs): Promise<Rec
         const result = await service.status(args.campaign_id!);
         return {
           status: 'success',
-          message: `Campagne ${args.campaign_id}: ${result.summary.confirmed}/${result.summary.fleet} confirmées, ${result.summary.drifted} en drift, ${result.summary.unknown} état inconnu. ${result.summary.allConfirmed ? 'Flotte harmonisée — close possible.' : 'Machines en attente: relancer action "remind".'}`,
+          message: `Campagne ${args.campaign_id}: ${result.summary.confirmed}/${result.summary.fleet} confirmées, ${result.summary.drifted} en drift, ${result.summary.unknown} état inconnu. ${result.summary.allConfirmed ? 'Flotte harmonisée — close possible.' : `Machines en attente: relancer action "remind" (cible les machines NON confirmées — no-snapshot, drifted, snapshot-stale… ; le DM prescrit apply → confirm → publish).`}`,
           summary: result.summary,
           machines: result.machines,
           canon: { version: result.campaign.canon.version, hash: result.campaign.canon.hash, mode: result.campaign.canon.mode },
