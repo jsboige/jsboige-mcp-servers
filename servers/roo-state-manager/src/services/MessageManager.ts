@@ -1187,12 +1187,17 @@ export class MessageManager {
    * dashed Claude-projects keys like "c--dev-roo-extensions" never match the
    * receiver's auto-detected workspace basename, so the inbox lists the message
    * while getMessage/mark_read report it missing).
+   * #3591 second class: the caller itself can be wrong — seats going through the
+   * mcp-remote/myia-mcp-proxy chain get their caller resolved server-side from
+   * the fleet-shared token (always the proxy host), not from the seat's
+   * ROOSYNC_MACHINE_ID. The message below hints at both classes.
    */
   private accessDeniedError(messageId: string, message: Message, callerId: string): MessageManagerError {
     return new MessageManagerError(
       `Accès refusé : le message ${messageId} existe mais est adressé à « ${message.to} » (expéditeur « ${message.from} ») ; l'appelant est « ${callerId} ». ` +
       `Convention d'adressage : « machine » (toute la machine) ou « machine:basename-du-workspace » (ex. « myia-po-2024:roo-extensions »). ` +
-      `Une clé dashée de projet Claude (ex. « c--dev-roo-extensions ») ne correspond jamais au workspace auto-détecté du destinataire — le message apparaît alors dans son inbox mais reste illisible.`,
+      `Une clé dashée de projet Claude (ex. « c--dev-roo-extensions ») ne correspond jamais au workspace auto-détecté du destinataire — le message apparaît alors dans son inbox mais reste illisible. ` +
+      `Autre classe connue (#3230, #3591) : un siège passant par la chaîne mcp-remote/myia-mcp-proxy (jeton fleet-shared) a son appelant résolu côté serveur — « l'appelant » ci-dessus est alors l'identité du process RSM, sans rapport avec le ROOSYNC_MACHINE_ID du client.`,
       MessageManagerErrorCode.ACCESS_DENIED,
       { messageId, to: message.to, from: message.from, caller: callerId }
     );
