@@ -22,8 +22,9 @@ import { createLogger } from '../../utils/logger.js';
 import { StateManagerError } from '../../types/errors.js';
 import {
   canonicalMachineId,
-  canonicalizeFullId,
   parseMachineWorkspace,
+  resolveCallerIdentity,
+  TRUSTED_CALLER_IDS_ENV,
 } from '../../utils/message-helpers.js';
 
 const logger = createLogger('RooSyncMessagesTool');
@@ -135,40 +136,25 @@ const KNOWN_ALIAS_HINTS: Record<string, { realParam: string; note: string }> = {
  * this RSM process. Set by the operator of the host that runs the process
  * (for the mcp-remote/myia-mcp-proxy chain: the proxy host's spawn env).
  * Comma-separated, machine ids only — the workspace part is free within an
- * allowed machine.
+ * allowed machine. Single definition: message-helpers (single choke point).
  */
-const TRUSTED_CALLER_IDS_ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
 
 /**
- * Validate + canonicalize the `as` assertion against the trust list.
+ * Canonicalize the `as` assertion and delegate the trust check to
+ * resolveCallerIdentity (#3591, review #1154) — the SINGLE choke point that
+ * the legacy registry path (direct roosync_send/read/manage calls) also
+ * traverses. Delegating here keeps the loud rejection BEFORE the dispatcher
+ * routes to the sub-tools, so an untrusted assertion never invokes them.
  *
  * A provided parameter must be honored or rejected loudly, never silently
- * ignored (#3177) — so an untrusted or unknown assertion is a hard error
- * naming the env var, not a fallback to the server-side identity (the exact
- * silent misattribution #3591 documents).
+ * ignored (#3177) — the trust gate itself lives in message-helpers.
  *
  * @returns the canonical asserted id ("machine" or "machine:workspace"),
  *          or undefined when no assertion was made
  */
 function resolveAssertedCaller(as: string | undefined): string | undefined {
   if (!as) return undefined;
-  const canonical = canonicalizeFullId(as.trim());
-  const machine = parseMachineWorkspace(canonical).machineId.toLowerCase();
-  const trusted = (process.env[TRUSTED_CALLER_IDS_ENV] ?? '')
-    .split(',')
-    .map((entry) => canonicalMachineId(entry.trim()).toLowerCase())
-    .filter(Boolean);
-  if (!trusted.includes(machine)) {
-    throw new StateManagerError(
-      `Paramètre "as" refusé : la machine « ${machine} » n'est pas assertable sur ce process ` +
-      `(${TRUSTED_CALLER_IDS_ENV} ${trusted.length > 0 ? 'ne la liste pas' : 'non défini'}). ` +
-      `#3591 : un siège gateway (chaîne mcp-remote/myia-mcp-proxy) doit faire lister sa machine par ` +
-      `l'opérateur du process RSM pour assert son identité réelle ; sans cela l'appelant reste résolu côté serveur.`,
-      'VALIDATION_FAILED',
-      'RooSyncMessagesTool',
-      { rejectedParam: 'as', envVar: TRUSTED_CALLER_IDS_ENV, asserted: canonical }
-    );
-  }
+  const canonical = resolveCallerIdentity(as).fullId;
   logger.info(`[#3591] Caller identity asserted: "${canonical}" (trusted via ${TRUSTED_CALLER_IDS_ENV})`);
   return canonical;
 }

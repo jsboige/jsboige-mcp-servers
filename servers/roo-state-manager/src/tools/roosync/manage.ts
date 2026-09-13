@@ -48,7 +48,7 @@ interface RooSyncManageArgs {
   /** Output format for stats action: "json" returns structured data, "markdown" returns formatted table */
   format?: 'json' | 'markdown';
 
-  /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked upstream */
+  /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked in resolveCallerIdentity (single choke point) */
   as?: string;
 }
 
@@ -75,7 +75,7 @@ async function markMessageAsRead(
   }
 
   // #3591 : identité du lecteur = identité assertée pour un siège gateway
-  // (gate en amont), sinon résolution locale du process.
+  // (gate dans resolveCallerIdentity, single choke point), sinon résolution locale du process.
   const callerIdentity = resolveCallerIdentity(args.as);
 
   // Vérifier existence du message
