@@ -33,7 +33,7 @@ import { TOOL_CAPABILITIES } from '../../../tools/registry.js';
 let fakeShared: string;
 let fakeHome: string;
 let fakeSettings: string;
-const sentByMock: Array<{ to: string; subject: string }> = [];
+const sentByMock: Array<{ to: string; subject: string; body?: string }> = [];
 const savedEnv: Record<string, string | undefined> = {};
 const LOCAL = 'myia-ai-01';
 
@@ -55,8 +55,8 @@ beforeEach(() => {
   delete process.env.WORKSPACE_PATH;
 
   sentByMock.length = 0;
-  mockSendMessage.mockImplementation(async (_from: string, to: string, subject: string) => {
-    sentByMock.push({ to, subject });
+  mockSendMessage.mockImplementation(async (_from: string, to: string, subject: string, body?: string) => {
+    sentByMock.push({ to, subject, body });
     return { id: `mock-msg-${sentByMock.length}` };
   });
   mockGetMessageManager.mockReturnValue({ sendMessage: mockSendMessage });
@@ -151,6 +151,10 @@ describe('Chemin public — cycle de vie complet (create → apply → confirm �
     expect(dispatched.status).toBe('success');
     expect(sentByMock.some(m => m.to === 'myia-po-2024')).toBe(true);
     expect(sentByMock.find(m => m.to === 'myia-po-2024')?.subject).toContain('[HARMONIZATION]');
+    // #3545 : le DM de dispatch prescrit la publication du snapshot (étape sans
+    // laquelle la machine reste « no-snapshot » pour le coordinateur).
+    expect(sentByMock.find(m => m.to === 'myia-po-2024')?.body).toContain('roosync_config');
+    expect(sentByMock.find(m => m.to === 'myia-po-2024')?.body).toContain('publish');
 
     // 7. close : refusé tant que po-2024 n'a pas confirmé
     const refused = await roosyncHarmonization(args({ action: 'close', campaign_id: campaignId }));
