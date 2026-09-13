@@ -149,6 +149,46 @@ export function getLocalFullId(): string {
 }
 
 /**
+ * Resolve the caller identity for one tool call (#3591).
+ *
+ * Gateway seats (mcp-remote → myia-mcp-proxy chain) run their RSM process on
+ * the proxy host, so every local-identity resolution below returns the proxy
+ * host's identity — the caller gets read as "myia-ai-01:roo-extensions" no
+ * matter what its own ROOSYNC_MACHINE_ID says. `as` lets such a seat state
+ * its real identity per call; the tool layer gates it against
+ * ROOSYNC_TRUSTED_CALLER_IDS before it ever reaches this function.
+ *
+ * When `as` is absent the identity is exactly the local resolution — zero
+ * behavior change for seats that don't assert.
+ *
+ * @param as Asserted identity, "machine" or "machine:workspace" (already
+ *           canonicalized + gate-checked by the caller). Machine-only
+ *           assertions keep workspaceId undefined: workspace-scoped checks
+ *           then behave as "any workspace of that machine" (matchesRecipient
+ *           semantics), and workspace fallbacks stay on the local resolution.
+ * @returns machine / workspace parts + the full id to use as callerId/from
+ */
+export function resolveCallerIdentity(as?: string): {
+  machineId: string;
+  workspaceId: string | undefined;
+  fullId: string;
+} {
+  if (!as) {
+    return {
+      machineId: getLocalMachineId(),
+      workspaceId: getLocalWorkspaceId(),
+      fullId: getLocalFullId(),
+    };
+  }
+  const parsed = parseMachineWorkspace(canonicalizeFullId(as));
+  return {
+    machineId: parsed.machineId,
+    workspaceId: parsed.workspaceId,
+    fullId: parsed.workspaceId ? `${parsed.machineId}:${parsed.workspaceId}` : parsed.machineId,
+  };
+}
+
+/**
  * Alias map for machine ID canonicalization (#3292 sharding precondition).
  *
  * Historical messages in the shared inbox used short forms ("po-2024", "ai-01",

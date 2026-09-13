@@ -19,7 +19,7 @@ import {
   getStatusIcon,
   getLocalMachineId,
   getLocalWorkspaceId,
-  getLocalFullId
+  resolveCallerIdentity
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
@@ -83,6 +83,9 @@ interface RooSyncReadArgs {
   /** Override machine filter (défaut: machine locale). Usage avancé : lire inbox d'une autre machine. Normalement tu veux garder ta propre machine. */
   to_machine?: string;
 
+  /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked upstream. Default machine/workspace become the asserted ones; explicit to_machine/workspace still override (same machine only, guard upstream). */
+  as?: string;
+
   /** Output format for inbox mode: "json" returns structured data, "markdown" returns formatted table (défaut) */
   format?: 'json' | 'markdown';
 }
@@ -122,8 +125,12 @@ async function readInboxMode(
     if (!machineOverride) machineOverride = machinePart;
     workspaceOverride = workspaceParts.join(':');
   }
-  const effectiveMachineId = machineOverride || getLocalMachineId();
-  const effectiveWorkspaceId = workspaceOverride || getLocalWorkspaceId();
+  // #3591 : l'identité par défaut d'un siège gateway est son identité
+  // assertée (`as`, gate en amont) — pas celle du process RSM hébergé par
+  // le proxy. Les overrides explicites (#1498) priment toujours.
+  const callerIdentity = resolveCallerIdentity(args.as);
+  const effectiveMachineId = machineOverride || callerIdentity.machineId;
+  const effectiveWorkspaceId = workspaceOverride || callerIdentity.workspaceId || getLocalWorkspaceId();
   const status = args.status || 'all';
   const limit = args.limit;
   const page = args.page;
@@ -382,11 +389,14 @@ async function readMessage(
 ): Promise<string> {
   const messageId = args.message_id!;
   const markAsRead = args.mark_as_read || false;
+  // #3591 : callerId de la garde d'accès = identité assertée pour un siège
+  // gateway (gate en amont), sinon résolution locale du process.
+  const callerFullId = resolveCallerIdentity(args.as).fullId;
 
   logger.info('🔍 Reading message', { messageId, markAsRead });
 
   // Récupérer le message
-  const message = await messageManager.getMessage(messageId, getLocalFullId());
+  const message = await messageManager.getMessage(messageId, callerFullId);
 
   // Cas : message introuvable
   if (!message) {
@@ -415,11 +425,11 @@ Le message n'a pas été trouvé dans :
   // `undefined` (legacy).
   let markReadWarning = '';
   if (markAsRead && message.status === 'unread') {
-    const marked = await messageManager.markAsRead(messageId, getLocalFullId());
+    const marked = await messageManager.markAsRead(messageId, callerFullId);
     if (marked === false) {
       logger.warn('❌ markAsRead returned false — write non persistant', {
         messageId,
-        reader: getLocalFullId(),
+        reader: callerFullId,
       });
       markReadWarning = '\n> ⚠️ **Marquage "lu" non persisté** : le write a échoué (workspace guard #2287, message phantom, ou PG update raté sans fallback GDrive). Le message reste dans votre inbox.\n';
     } else {

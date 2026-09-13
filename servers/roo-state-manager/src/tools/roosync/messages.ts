@@ -20,6 +20,11 @@ import { roosyncManage } from './manage.js';
 import { roosyncAttachments } from './roosync-attachments.tool.js';
 import { createLogger } from '../../utils/logger.js';
 import { StateManagerError } from '../../types/errors.js';
+import {
+  canonicalMachineId,
+  canonicalizeFullId,
+  parseMachineWorkspace,
+} from '../../utils/message-helpers.js';
 
 const logger = createLogger('RooSyncMessagesTool');
 
@@ -98,6 +103,9 @@ export const MessagesArgsSchema = z.object({
   filename: z.string().optional().describe('#3256 — alternative a uuid pour attachments_get : nom du fichier, resolu via les refs du message_id fourni'),
   targetPath: z.string().optional().describe('Chemin destination pour attachments_get — #1105 : omettez-le pour recevoir le contenu en base64 dans le résultat MCP (client distant), fournissez-le pour une copie SIDE-SERVEUR (chemin de l hôte RooSync, pas du client)'),
 
+  // --- Caller identity (#3591) ---
+  as: z.string().optional().describe('#3591 Caller identity assertion for gateway seats (chaîne mcp-remote/myia-mcp-proxy résout l appelant côté serveur comme l hôte proxy). Format "machine" ou "machine:workspace". Honoré uniquement si la machine est listée dans l env serveur ROOSYNC_TRUSTED_CALLER_IDS — sinon rejet bruyant. S applique à send/reply/amend (expéditeur), message/mark_read/archive (garde d accès), inbox/bulk/cleanup/stats (machine par défaut). Aucun effet (rejeté) sur attachments_*.'),
+
   // --- Output format ---
   format: z.enum(['json', 'markdown']).optional().describe('Format de sortie pour inbox/stats')
 });
@@ -117,6 +125,53 @@ const KNOWN_ALIAS_HINTS: Record<string, { realParam: string; note: string }> = {
   machineId: { realParam: 'to_machine', note: 'override machine filter (avancé)' },
   machine_id: { realParam: 'to_machine', note: 'override machine filter (avancé)' },
 };
+
+// ====================================================================
+// CALLER IDENTITY ASSERTION (#3591)
+// ====================================================================
+
+/**
+ * Env var listing the machines whose identity MAY be asserted via `as` on
+ * this RSM process. Set by the operator of the host that runs the process
+ * (for the mcp-remote/myia-mcp-proxy chain: the proxy host's spawn env).
+ * Comma-separated, machine ids only — the workspace part is free within an
+ * allowed machine.
+ */
+const TRUSTED_CALLER_IDS_ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
+
+/**
+ * Validate + canonicalize the `as` assertion against the trust list.
+ *
+ * A provided parameter must be honored or rejected loudly, never silently
+ * ignored (#3177) — so an untrusted or unknown assertion is a hard error
+ * naming the env var, not a fallback to the server-side identity (the exact
+ * silent misattribution #3591 documents).
+ *
+ * @returns the canonical asserted id ("machine" or "machine:workspace"),
+ *          or undefined when no assertion was made
+ */
+function resolveAssertedCaller(as: string | undefined): string | undefined {
+  if (!as) return undefined;
+  const canonical = canonicalizeFullId(as.trim());
+  const machine = parseMachineWorkspace(canonical).machineId.toLowerCase();
+  const trusted = (process.env[TRUSTED_CALLER_IDS_ENV] ?? '')
+    .split(',')
+    .map((entry) => canonicalMachineId(entry.trim()).toLowerCase())
+    .filter(Boolean);
+  if (!trusted.includes(machine)) {
+    throw new StateManagerError(
+      `Paramètre "as" refusé : la machine « ${machine} » n'est pas assertable sur ce process ` +
+      `(${TRUSTED_CALLER_IDS_ENV} ${trusted.length > 0 ? 'ne la liste pas' : 'non défini'}). ` +
+      `#3591 : un siège gateway (chaîne mcp-remote/myia-mcp-proxy) doit faire lister sa machine par ` +
+      `l'opérateur du process RSM pour assert son identité réelle ; sans cela l'appelant reste résolu côté serveur.`,
+      'VALIDATION_FAILED',
+      'RooSyncMessagesTool',
+      { rejectedParam: 'as', envVar: TRUSTED_CALLER_IDS_ENV, asserted: canonical }
+    );
+  }
+  logger.info(`[#3591] Caller identity asserted: "${canonical}" (trusted via ${TRUSTED_CALLER_IDS_ENV})`);
+  return canonical;
+}
 
 export async function roosyncMessages(args: MessagesArgs) {
   // #3029 AC-4: MessagesArgsSchema consumed at runtime as the active validation layer,
@@ -156,6 +211,48 @@ export async function roosyncMessages(args: MessagesArgs) {
   args = parsed;
   const { action } = args;
 
+  // --- #3591 caller identity assertion --------------------------------
+  // `from` on the send family was the trap the po-2026 seat fell into:
+  // "From mensonger malgré from: explicite" — the param is an inbox/bulk
+  // filter and was silently unused by send/reply/amend. #3177: honor or
+  // reject loudly, never ignore.
+  if ((action === 'send' || action === 'reply' || action === 'amend') && args.from) {
+    throw new StateManagerError(
+      `Paramètre "from" n'est pas l'expéditeur : c'est un filtre inbox/bulk (substring). ` +
+      `Pour fixer l'expéditeur d'un siège gateway (chaîne mcp-remote), utilisez "as" (#3591) — ` +
+      `machine:workspace assertable si listée dans ${TRUSTED_CALLER_IDS_ENV}.`,
+      'VALIDATION_FAILED',
+      'RooSyncMessagesTool',
+      { rejectedParams: ['from'], expectedParam: 'as' }
+    );
+  }
+  if (args.as && (action === 'attachments_list' || action === 'attachments_get' || action === 'attachments_delete')) {
+    throw new StateManagerError(
+      `Paramètre "as" sans effet sur attachments_* : ces actions ne résolvent pas d'identité appelant. ` +
+      `Un paramètre fourni doit être honoré, jamais ignoré silencieusement (#3177/#3591).`,
+      'VALIDATION_FAILED',
+      'RooSyncMessagesTool',
+      { rejectedParams: ['as'] }
+    );
+  }
+  const callerAs = resolveAssertedCaller(args.as);
+  // Une assertion ET un override de machine explicites et divergents =
+  // conflit d'identité, jamais to_machine-wins silencieux (miroir de la
+  // garde #3177 de readInboxMode).
+  if (callerAs && args.to_machine) {
+    const asMachine = parseMachineWorkspace(callerAs).machineId.toLowerCase();
+    const toMachine = canonicalMachineId(args.to_machine.trim()).toLowerCase();
+    if (asMachine !== toMachine) {
+      throw new StateManagerError(
+        `Conflit d'identité : as="${callerAs}" mais to_machine="${args.to_machine}" désigne la machine "${toMachine}". ` +
+        `Fournissez UNE identité de machine — un identifiant fourni doit être honoré, jamais ignoré (#3177/#3591).`,
+        'VALIDATION_FAILED',
+        'RooSyncMessagesTool',
+        { to_machine: args.to_machine, as: callerAs }
+      );
+    }
+  }
+
   switch (action) {
     // --- Send family ---
     case 'send':
@@ -171,7 +268,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         auto_destruct: args.auto_destruct,
         destruct_after_read_by: args.destruct_after_read_by,
         destruct_after: args.destruct_after,
-        attachments: args.attachments
+        attachments: args.attachments,
+        as: callerAs
       });
 
     case 'reply':
@@ -182,7 +280,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         message_id: args.message_id ?? args.reply_to,
         body: args.body,
         priority: args.priority,
-        tags: args.tags
+        tags: args.tags,
+        as: callerAs
       });
 
     case 'amend':
@@ -191,7 +290,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         action: 'amend',
         message_id: args.message_id ?? args.reply_to,
         new_content: args.new_content,
-        reason: args.reason
+        reason: args.reason,
+        as: callerAs
       });
 
     // --- Read family ---
@@ -231,7 +331,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         deep: args.deep,
         from: args.from,
         subject_contains: args.subject_contains,
-        priority: args.priority
+        priority: args.priority,
+        as: callerAs
       });
     }
 
@@ -239,15 +340,16 @@ export async function roosyncMessages(args: MessagesArgs) {
       return roosyncRead({
         mode: 'message',
         message_id: args.message_id,
-        mark_as_read: args.mark_as_read
+        mark_as_read: args.mark_as_read,
+        as: callerAs
       });
 
     // --- Manage family ---
     case 'mark_read':
-      return roosyncManage({ action: 'mark_read', message_id: args.message_id });
+      return roosyncManage({ action: 'mark_read', message_id: args.message_id, as: callerAs });
 
     case 'archive':
-      return roosyncManage({ action: 'archive', message_id: args.message_id });
+      return roosyncManage({ action: 'archive', message_id: args.message_id, as: callerAs });
 
     case 'bulk_mark_read':
       return roosyncManage({
@@ -256,7 +358,8 @@ export async function roosyncMessages(args: MessagesArgs) {
         priority: args.priority,
         before_date: args.before_date,
         subject_contains: args.subject_contains,
-        tag: args.tag
+        tag: args.tag,
+        as: callerAs
       });
 
     case 'bulk_archive':
@@ -266,14 +369,15 @@ export async function roosyncMessages(args: MessagesArgs) {
         priority: args.priority,
         before_date: args.before_date,
         subject_contains: args.subject_contains,
-        tag: args.tag
+        tag: args.tag,
+        as: callerAs
       });
 
     case 'cleanup':
-      return roosyncManage({ action: 'cleanup' });
+      return roosyncManage({ action: 'cleanup', as: callerAs });
 
     case 'stats':
-      return roosyncManage({ action: 'stats', format: args.format });
+      return roosyncManage({ action: 'stats', format: args.format, as: callerAs });
 
     // --- Attachments family ---
     case 'attachments_list':

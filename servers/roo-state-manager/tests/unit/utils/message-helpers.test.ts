@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   getLocalMachineId,
+  resolveCallerIdentity,
   formatDate,
   formatDateFull,
   getPriorityIcon,
@@ -42,6 +43,36 @@ describe('message-helpers', () => {
       expect(result).toBeTruthy();
       expect(typeof result).toBe('string');
       expect(result.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('resolveCallerIdentity (#3591)', () => {
+    it('sans assertion, retourne exactement la résolution locale (zéro changement)', () => {
+      const id = resolveCallerIdentity(undefined);
+      expect(id.fullId).toBe(`${id.machineId}:${id.workspaceId}`);
+      expect(id.machineId).toBe(getLocalMachineId());
+    });
+
+    it('assertion machine:workspace passée telle quelle (déjà canonique)', () => {
+      const id = resolveCallerIdentity('myia-po-2026:hermes-agent');
+      expect(id).toEqual({
+        machineId: 'myia-po-2026',
+        workspaceId: 'hermes-agent',
+        fullId: 'myia-po-2026:hermes-agent',
+      });
+    });
+
+    it('canonicalise l\'alias court (po-2026 → myia-po-2026)', () => {
+      const id = resolveCallerIdentity('po-2026:hermes-agent');
+      expect(id.machineId).toBe('myia-po-2026');
+      expect(id.fullId).toBe('myia-po-2026:hermes-agent');
+    });
+
+    it('assertion machine-seule garde workspaceId undefined (sémantique "toute la machine")', () => {
+      const id = resolveCallerIdentity('myia-po-2026');
+      expect(id.machineId).toBe('myia-po-2026');
+      expect(id.workspaceId).toBeUndefined();
+      expect(id.fullId).toBe('myia-po-2026');
     });
   });
 

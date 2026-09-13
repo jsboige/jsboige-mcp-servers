@@ -19,7 +19,7 @@ import {
   getPriorityIcon,
   getStatusIcon,
   getLocalMachineId,
-  getLocalFullId
+  resolveCallerIdentity
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { updateDashboardActivityAsync } from '../../utils/dashboard-helpers.js';
@@ -75,6 +75,9 @@ interface RooSyncSendArgs {
     path: string;
     filename?: string;
   }>;
+
+  /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked upstream */
+  as?: string;
 }
 
 /**
@@ -115,8 +118,11 @@ async function sendNewMessage(
     );
   }
 
-  // Obtenir l'ID complet local (machine + workspace si configuré)
-  const from = getLocalFullId();
+  // Obtenir l'ID complet local (machine + workspace si configuré).
+  // #3591 : un siège gateway asserte son identité réelle via `as` (gate
+  // ROOSYNC_TRUSTED_CALLER_IDS en amont) — sinon le from hérite de l'hôte
+  // proxy et les réponses arrivent dans la mauvaise mailbox.
+  const from = resolveCallerIdentity(args.as).fullId;
   logger.debug('📍 Message routing', { from, to: args.to });
 
   // Build auto-destruct options (#629)
@@ -279,7 +285,8 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // Inversion from/to pour la réponse
   // replyFrom = la machine locale (celle qui répond), pas originalMessage.to
   // car si originalMessage.to = "all", on ne veut pas "all" comme expéditeur
-  const replyFrom = getLocalFullId();
+  // #3591 : `as` fait foi pour un siège gateway (gate en amont).
+  const replyFrom = resolveCallerIdentity(args.as).fullId;
   const replyTo = originalMessage.from;
 
   // Sujet avec préfixe "Re: "
@@ -403,7 +410,8 @@ async function amendMessage(
   }
 
   // Obtenir l'ID complet local (émetteur, inclut workspace si configuré)
-  const senderId = getLocalFullId();
+  // #3591 : `as` fait foi pour un siège gateway (gate en amont).
+  const senderId = resolveCallerIdentity(args.as).fullId;
   logger.debug('🔐 Sender ID identified', { senderId });
 
   // Amender le message via MessageManager
