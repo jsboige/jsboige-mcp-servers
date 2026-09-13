@@ -4757,8 +4757,8 @@ function mergeGuardRefusal(
       message:
         "⛔ REFUSÉ: cet hôte dual-écrit PG (UNIFIED_STORE_DUAL_WRITE=1) sans le lire " +
         '(UNIFIED_STORE_DASHBOARD_READ_PG≠1) — le merge ferait une union aveugle aux messages présents ' +
-        'uniquement en PG, puis écraserait leur journal. Exécuter le merge depuis un hôte à porte PG ' +
-        'ouverte (ex. myia-ai-01), ou désactiver le dual-write ici.'
+        'uniquement en PG, puis écraserait leur journal. Exécuter le merge depuis un hôte qui LIT le ' +
+        'store PG (UNIFIED_STORE_DASHBOARD_READ_PG=1), ou désactiver le dual-write ici.'
     };
   }
   return null;

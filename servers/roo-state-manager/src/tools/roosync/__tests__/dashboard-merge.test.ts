@@ -392,6 +392,11 @@ describe('action merge — gardes d’intégrité (revue #1134)', () => {
 
     expect(result.success).toBe(false);
     expect(String(result.message)).toContain('union aveugle');
+    // #3537 revue : le refus ne doit pas désigner un hôte nommément. La chaîne
+    // « ex. myia-ai-01 » était littérale — affichée à l'identique à tout appelant,
+    // y compris à ai-01 lui-même refusé sur sa propre machine — et lue comme une
+    // affirmation sur ai-01 par plusieurs sièges.
+    expect(String(result.message)).not.toMatch(/myia-ai-01|myia-po-|myia-web1/);
     // RIEN n’a bougé : ni fichier, ni dual-write.
     expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
     expect(fileExists('machine-myia-po-2025.md')).toBe(false);
