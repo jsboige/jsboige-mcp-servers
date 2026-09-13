@@ -926,7 +926,7 @@ ${exemptLine}
 1. Simuler : \`roosync_harmonization(action: "apply", campaign_id: "${record.id}", dry_run: true)\`
 2. Appliquer : \`roosync_harmonization(action: "apply", campaign_id: "${record.id}")\`
 3. Confirmer (relit ton settings.json en live, atteste le hash) : \`roosync_harmonization(action: "confirm", campaign_id: "${record.id}")\`
-4. Publier ton snapshot : \`roosync_config(action: "publish", targets: ["claude-settings"])\` — APRÈS le confirm, et obligatoire : sans snapshot publié, ton alignement reste INVISIBLE pour le coordinateur et tes pairs (état « no-snapshot ») ; un snapshot antérieur au confirm rend « snapshot-stale »
+4. Publier ton snapshot : \`roosync_config(action: "publish", targets: ["claude-settings"], version: "${record.canon.version}", description: "snapshot post-confirm campagne ${record.id}")\` — APRÈS le confirm, et obligatoire : sans snapshot publié, ton alignement reste INVISIBLE pour le coordinateur et tes pairs (état « no-snapshot ») ; un snapshot antérieur au confirm rend « snapshot-stale ». NE PAS omettre version/description : publish sans version crée un paquet « vundefined-* » qui déclasse tous les paquets versionnés au classement
 
 Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : intouchables.
 `;
@@ -1069,7 +1069,7 @@ Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : int
         if (machine === this.deps.machineId) {
           // MessageManager refuse le DM vers soi-même (anti-auto-message) : la
           // machine du coordinateur exécute la recette directement.
-          skipped.push({ to: recipient, reason: 'machine locale (coordinateur) — exécuter apply/confirm puis roosync_config publish directement' });
+          skipped.push({ to: recipient, reason: `machine locale (coordinateur) — exécuter apply/confirm puis roosync_config(action: "publish", targets: ["claude-settings"], version: "${record.canon.version}", description: "snapshot post-confirm campagne ${record.id}") directement` });
           continue;
         }
         const history = record.reminders[machine] || [];
@@ -1088,7 +1088,7 @@ Aucune clé hors de la liste n'est touchée. permissions/hooks/credentials : int
 Recette pour atteindre l'état « confirmé » vu du coordinateur :
 1. \`roosync_harmonization(action: "apply", campaign_id: "${record.id}")\` — idempotent si déjà aligné
 2. \`roosync_harmonization(action: "confirm", campaign_id: "${record.id}")\`
-3. \`roosync_config(action: "publish", targets: ["claude-settings"])\` — APRÈS le confirm : le snapshot doit être plus récent que la confirmation (sinon état « snapshot-stale »)
+3. \`roosync_config(action: "publish", targets: ["claude-settings"], version: "${record.canon.version}", description: "snapshot post-confirm campagne ${record.id}")\` — APRÈS le confirm : le snapshot doit être plus récent que la confirmation (sinon état « snapshot-stale »). Sans version, publish crée un paquet « vundefined-* » qui déclasse tous les paquets versionnés
 `;
         try {
           const msg = await this.deps.sendMessage(

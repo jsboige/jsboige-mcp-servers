@@ -204,6 +204,9 @@ describe('dispatch', () => {
     // la machine reste « no-snapshot » pour ses pairs — campagne non convergente).
     expect(sentMessages[0].body).toContain('roosync_config');
     expect(sentMessages[0].body).toContain('claude-settings');
+    // review #1153 I1 : recette publish complète (version + description requis).
+    expect(sentMessages[0].body).toContain('version: "');
+    expect(sentMessages[0].body).toContain('description: "snapshot post-confirm campagne');
     expect(sentMessages[0].body).toMatch(/APRÈS le confirm/);
 
     const r2 = await svc.dispatch(rec.id);
@@ -520,10 +523,16 @@ describe('remind — idempotence et échecs', () => {
     const r = await svc.remind(rec.id, { cooldownHours: 12 });
     expect(r.sent.map(s => s.to)).toContain('myia-po-2023');
     expect(r.skipped.some(s => s.to === 'myia-po-2023' && s.reason.startsWith('confirmé'))).toBe(false);
-    const dm = sentMessages.find(m => m.to === 'myia-po-2023');
+    // findLast, pas find : le dispatch (plus haut dans ce test) a déjà envoyé
+    // un DM à po-2023 — l'assertion doit viser le RAPPEL, pas le dispatch.
+    const dm = sentMessages.findLast(m => m.to === 'myia-po-2023');
     expect(dm!.body).toContain('no-snapshot');
     expect(dm!.body).toContain('roosync_config');
     expect(dm!.body).toContain('publish');
+    // review #1153 I1 : la recette doit être COMPLÈTE — sans version, publish
+    // crée un paquet « vundefined-* » qui déclasse les paquets versionnés.
+    expect(dm!.body).toContain(`version: "${input.canon.version}"`);
+    expect(dm!.body).toContain('description: "snapshot post-confirm campagne');
   });
 
   test('#3545 convergence : snapshot antérieur à la confirmation (snapshot-stale) reste relançable', async () => {
@@ -557,6 +566,10 @@ describe('remind — idempotence et échecs', () => {
     expect(r.sent.map(s => s.to)).toEqual(['myia-po-2024']);
     const localSkip = r.skipped.find(s => s.to === 'myia-ai-01');
     expect(localSkip!.reason).toMatch(/machine locale/);
+    // review #1153 I1 : la recette directe prescrite au coordinateur local
+    // doit elle aussi porter version + description.
+    expect(localSkip!.reason).toContain('version: "');
+    expect(localSkip!.reason).toContain('description: "snapshot post-confirm campagne');
   });
 });
 
