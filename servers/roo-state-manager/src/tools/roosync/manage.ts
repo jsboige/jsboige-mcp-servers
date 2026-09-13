@@ -15,8 +15,8 @@ import {
   formatDate,
   formatDateFull,
   getLocalMachineId,
-  getLocalFullId,
-  parseMachineWorkspace,
+  getLocalWorkspaceId,
+  resolveCallerIdentity,
   perReaderStatus
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
@@ -47,6 +47,9 @@ interface RooSyncManageArgs {
   tag?: string;
   /** Output format for stats action: "json" returns structured data, "markdown" returns formatted table */
   format?: 'json' | 'markdown';
+
+  /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked upstream */
+  as?: string;
 }
 
 /**
@@ -71,9 +74,13 @@ async function markMessageAsRead(
     );
   }
 
+  // #3591 : identité du lecteur = identité assertée pour un siège gateway
+  // (gate en amont), sinon résolution locale du process.
+  const callerIdentity = resolveCallerIdentity(args.as);
+
   // Vérifier existence du message
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id, getLocalFullId());
+  const message = await messageManager.getMessage(args.message_id, callerIdentity.fullId);
 
   // Cas : message introuvable
   if (!message) {
@@ -110,8 +117,8 @@ Ce message a été automatiquement archivé entre le moment où il a été list�
   // gardent donc `status: 'unread'` : calculer `status === 'read'` ici
   // annoncerait "non lu" un message que CE workspace a déjà lu, et le
   // réécrirait pour rien. perReaderStatus (message-helpers) est la source unique.
-  const localMachine = getLocalMachineId();
-  const localWorkspace = parseMachineWorkspace(getLocalFullId()).workspaceId;
+  const localMachine = callerIdentity.machineId;
+  const localWorkspace = callerIdentity.workspaceId ?? getLocalWorkspaceId();
   const isBroadcast = message.to === 'all' || message.to === 'All';
   const perReader = perReaderStatus(message, localMachine, localWorkspace);
   const alreadyReadByMe =
@@ -137,7 +144,7 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
 
   // Marquer comme lu (avec tracking per-machine #629, workspace-aware #2287)
   logger.info('✉️ Marking message as read');
-  const marked = await messageManager.markAsRead(args.message_id, getLocalFullId());
+  const marked = await messageManager.markAsRead(args.message_id, callerIdentity.fullId);
 
   // #1017: surface le retour de markAsRead. Un retour `false` (strict) =
   // le write n'a pas atterri (workspace guard #2287, message introuvable,
@@ -147,7 +154,7 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
   if (marked === false) {
     logger.warn('❌ markAsRead returned false — write non persistant', {
       messageId: args.message_id,
-      reader: getLocalFullId(),
+      reader: callerIdentity.fullId,
     });
     return `❌ **Échec du marquage comme lu**
 
@@ -157,7 +164,7 @@ Le message était déjà marqué comme lu. Aucune modification nécessaire.`;
 **À :** ${message.to}
 
 Le write n'a **pas** été persisté. Causes probables :
-- Workspace mismatch (#2287) : le reader (\`${getLocalFullId()}\`) ne couvre pas le destinataire du message
+- Workspace mismatch (#2287) : le reader (\`${callerIdentity.fullId}\`) ne couvre pas le destinataire du message
 - Message introuvable dans inbox/ ET archive/ (phantom ou auto-détruit)
 - PG update raté sans fallback GDrive (#1017)
 
@@ -217,7 +224,7 @@ async function archiveMessageFunc(
 
   // Vérifier existence du message
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id, getLocalFullId());
+  const message = await messageManager.getMessage(args.message_id, resolveCallerIdentity(args.as).fullId);
 
   // Cas : message introuvable
   if (!message) {
@@ -328,7 +335,7 @@ async function bulkOperationHandler(
   logger.info(`🔄 Starting bulk ${operation}`, { filters: { from: args.from, priority: args.priority, before_date: args.before_date, subject_contains: args.subject_contains, tag: args.tag } });
 
   const result = await messageManager.bulkOperation(
-    getLocalMachineId(),
+    resolveCallerIdentity(args.as).machineId,
     operation,
     {
       from: args.from,
@@ -376,7 +383,7 @@ async function cleanupMessages(
   messageManager: MessageManager
 ): Promise<string> {
   logger.info('🧹 Starting cleanup operation');
-  const machineId = getLocalMachineId();
+  const machineId = resolveCallerIdentity(args.as).machineId;
   const results: string[] = [];
   const allFailedIds: string[] = [];
   const allFailedReasons: Record<string, string> = {};
@@ -502,10 +509,11 @@ ${Object.entries(stats.by_sender).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([
  */
 async function showStats(
   messageManager: MessageManager,
-  format?: 'json' | 'markdown'
+  format?: 'json' | 'markdown',
+  as?: string
 ): Promise<string> {
   logger.info('📊 Getting inbox stats', { format });
-  const machineId = getLocalMachineId();
+  const machineId = resolveCallerIdentity(as).machineId;
   const stats = await messageManager.getInboxStats(machineId);
 
   // #3292: pool partagé + rotation. Rend visible ce qui ne l'était pas — le
@@ -660,7 +668,7 @@ export async function roosyncManage(
         break;
 
       case 'stats':
-        result = await showStats(messageManager, args.format);
+        result = await showStats(messageManager, args.format, args.as);
         break;
 
       default:

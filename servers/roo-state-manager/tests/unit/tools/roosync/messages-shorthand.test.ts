@@ -38,20 +38,39 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
     MessageManagerErrorCode: { INVALID_MESSAGE_FORMAT: 'INVALID_MESSAGE_FORMAT' },
 }));
 
-vi.mock('../../../../src/utils/message-helpers.js', () => ({
-    getLocalMachineId: vi.fn(() => 'myia-po-2026'),
-    getLocalFullId: mockGetLocalFullId,
-    getLocalWorkspaceId: vi.fn(() => 'roo-extensions'),
-    formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
-    formatDateFull: vi.fn((d: string) => d || ''),
-    getPriorityIcon: vi.fn(() => ''),
-    getStatusIcon: vi.fn(() => ''),
-    parseMachineWorkspace: vi.fn((id: string) => {
-        const idx = id.indexOf(':');
-        if (idx === -1) return { machineId: id };
-        return { machineId: id.substring(0, idx), workspaceId: id.substring(idx + 1) };
-    }),
-}));
+vi.mock('../../../../src/utils/message-helpers.js', () => {
+    const helpers: Record<string, unknown> = {
+        getLocalMachineId: vi.fn(() => 'myia-po-2026'),
+        getLocalFullId: mockGetLocalFullId,
+        getLocalWorkspaceId: vi.fn(() => 'roo-extensions'),
+        formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
+        formatDateFull: vi.fn((d: string) => d || ''),
+        getPriorityIcon: vi.fn(() => ''),
+        getStatusIcon: vi.fn(() => ''),
+        parseMachineWorkspace: vi.fn((id: string) => {
+            const idx = id.indexOf(':');
+            if (idx === -1) return { machineId: id };
+            return { machineId: id.substring(0, idx), workspaceId: id.substring(idx + 1) };
+        }),
+    };
+    return {
+        ...helpers,
+        // #3591: delegates to this factory's own mocks.
+        resolveCallerIdentity: vi.fn((as?: string) => {
+            if (!as) {
+                return {
+                    machineId: (helpers.getLocalMachineId as () => string)(),
+                    workspaceId: (helpers.getLocalWorkspaceId as () => string)(),
+                    fullId: (helpers.getLocalFullId as () => string)(),
+                };
+            }
+            const idx = as.indexOf(':');
+            return idx === -1
+                ? { machineId: as, workspaceId: undefined, fullId: as }
+                : { machineId: as.substring(0, idx), workspaceId: as.substring(idx + 1), fullId: as };
+        }),
+    };
+});
 
 vi.mock('../../../../src/services/lazy-roosync.js', () => ({
     getRooSyncService: mockGetRooSyncService,

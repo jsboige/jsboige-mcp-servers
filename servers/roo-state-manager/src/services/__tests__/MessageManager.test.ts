@@ -1525,6 +1525,26 @@ describe('MessageManager', () => {
       expect(err.message).toContain('#3591');
     });
 
+    test('getMessage: machine-scope message readable via the asserted seat identity (the `as` fix, #3591)', async () => {
+      // Same scenario as the denied test above, resolved: the gateway seat
+      // asserts its real identity (roosync_messages `as`, gate-checked
+      // upstream), which reaches getMessage as the callerId. Machine-scope
+      // target → every workspace of the machine reads it; machine-only
+      // assertion works too (no workspace constraint).
+      const msg = await messageManager.sendMessage(
+        'myia-po-2024:Maintenance', 'myia-po-2026', 'HIGH unreadable ≥5 days', 'Body', 'HIGH'
+      );
+      const asFull = await messageManager.getMessage(msg.id, 'myia-po-2026:hermes-agent');
+      expect(asFull).not.toBeNull();
+      expect(asFull!.body).toBe('Body');
+      const asMachineOnly = await messageManager.getMessage(msg.id, 'myia-po-2026');
+      expect(asMachineOnly).not.toBeNull();
+      // The misresolved proxy identity still cannot (guard intact).
+      const denied = await messageManager.getMessage(msg.id, 'myia-ai-01:roo-extensions')
+        .catch((e: any) => e);
+      expect(denied.code).toBe(MessageManagerErrorCode.ACCESS_DENIED);
+    });
+
     test('getMessage: allows reading messages targeted to same machine (no workspace)', async () => {
       const msg = await messageManager.sendMessage(
         'sender', 'machine-a', 'Test', 'Body', 'MEDIUM'
