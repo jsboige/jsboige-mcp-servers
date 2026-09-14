@@ -624,17 +624,27 @@ class RooStateManagerServer {
 
                 let result;
                 let hadError = false;
-                // #2267: Per-call timeout guard. Race the actual tool against a timer;
-                // on timeout return a structured error instead of hanging forever.
+                // #2267 (mécanisme du per-call guard) / #3654 (symptôme 14/09
+                // po-2025 : timeout client alors que le write avait déjà atterri).
+                // L'anti-hang garde la structure d'origine ; le message
+                // d'erreur client référence les deux issues pour que le caller
+                // puisse distinguer « le write a probablement atterri malgré le
+                // timeout, dédupliquez avec messageId » (#3654) de « l'anti-hang
+                // a tué un write qui n'aurait pas dû prendre aussi longtemps »
+                // (#2267).
                 let timeoutHandle: NodeJS.Timeout | undefined;
                 try {
                     const timeoutMs = getMcpToolTimeoutMs(toolName ?? '');
                     const timeoutPromise = new Promise<never>((_, reject) => {
                         timeoutHandle = setTimeout(() => {
                             reject(new Error(
-                                `[#2267] Tool "${toolName}" timed out after ${timeoutMs}ms. ` +
+                                `[#2267/#3654] Tool "${toolName}" timed out after ${timeoutMs}ms. ` +
                                 `Likely cause: GDrive I/O stall or dead TBXark proxy session. ` +
-                                `Override timeout via MCP_TOOL_TIMEOUT_MS env var.`
+                                `Override timeout via MCP_TOOL_TIMEOUT_MS env var. ` +
+                                `IMPORTANT (#3654): le timeout client n'est PAS un signal d'échec fiable — ` +
+                                `pour \`roosync_messages action=send\` et \`roosync_dashboard action=append\`, ` +
+                                `le write peut quand même atterrir après ce timeout. Utilisez un \`messageId\` / \`messageId\` ` +
+                                `explicite côté caller : un retry avec le même id sera absorbé par l'idempotence.`
                             ));
                         }, timeoutMs);
                         if (typeof timeoutHandle?.unref === 'function') timeoutHandle.unref();
@@ -650,7 +660,7 @@ class RooStateManagerServer {
                 } catch (toolError) {
                     hadError = true;
                     const msg = toolError instanceof Error ? toolError.message : String(toolError);
-                    if (msg.includes('[#2267]')) {
+                    if (msg.includes('[#2267/#3654]')) {
                         // Timeout: surface as structured error result, not an unhandled throw
                         result = { content: [{ type: 'text', text: msg }], isError: true };
                     } else {
