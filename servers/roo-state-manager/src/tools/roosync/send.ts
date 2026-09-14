@@ -216,7 +216,9 @@ async function sendNewMessage(
   // court » ; si le log serveur ne montre pas de send passé, c'est que le
   // write a été tué avant d'atterrir et le retry est légitime.
   const writeStart = Date.now();
-  // Envoyer le message
+  // Envoyer le message — la clé d'idempotence explicite voyage jusqu'à la
+  // persistance (review #1157 : consultée seule, elle ne pouvait jamais
+  // absorber un retry ; cf. MessageManager.sendMessage options.messageId).
   const message = await messageManager.sendMessage(
     from,
     args.to,
@@ -226,7 +228,9 @@ async function sendNewMessage(
     args.tags,
     args.thread_id,
     args.reply_to,
-    autoDestructOpts
+    args.messageId
+      ? { ...(autoDestructOpts ?? {}), messageId: args.messageId }
+      : autoDestructOpts
   );
   const writeMs = Date.now() - writeStart;
 

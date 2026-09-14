@@ -80,7 +80,7 @@ export const MessagesArgsSchema = z.object({
   // « landé en >timeout client » de « jamais landé » quand un send timeout
   // (cf. po-2025 14/09 16:05Z : HIGH vers ai-01, 120s timeout, livraison
   // incertaine ; sans clé, le retry sur timeout fabrique un jumeau).
-  messageId: z.string().optional().describe('#3654 Cle d idempotence pour action="send". Si un message du meme expediteur porte deja exactement cet id, la 2e operation est absorbee et le retour contient deduplicated: true (miroir du messageId dashboard append #3276). Le caller peut ainsi distinguer « lande en >timeout » de « jamais lande » apres un timeout client.'),
+  messageId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, '#3654 messageId invalide : caractères autorisés [A-Za-z0-9._:-], 1-128 caractères — l\'id devient un nom de fichier côté persistance').optional().describe('#3654 Cle d idempotence pour action="send". Si un message du meme expediteur porte deja exactement cet id, la 2e operation est absorbee et le retour contient deduplicated: true (miroir du messageId dashboard append #3276). Le caller peut ainsi distinguer « lande en >timeout » de « jamais lande » apres un timeout client. L id est PERSISTE tel quel (review #1157) : un retry avec la meme cle absorbe meme apres un nouveau process serveur.'),
   message_id: z.string().optional().describe('ID du message cible — requis pour actions reply/amend/mark_read/archive/message/attachments_list/get/delete. Alias rétro-compatible de reply_to accepté pour reply/amend. #3029'),
   new_content: z.string().optional().describe('Nouveau contenu (requis pour amend)'),
   reason: z.string().optional().describe('Raison de la modification (amend)'),

@@ -202,6 +202,12 @@ describe('roosync_messages send idempotence on explicit messageId (#3654)', () =
             } as any);
 
             expect(mockSendMessage).toHaveBeenCalledTimes(1);
+
+            // Review #1157 : la clé explicite doit VOYAGER jusqu'à la
+            // persistance (options de sendMessage) — consultée seule, elle
+            // ne pouvait jamais absorber un retry.
+            const sendOpts = mockSendMessage.mock.calls[0][8];
+            expect(sendOpts).toMatchObject({ messageId: 'msg-3654-fresh' });
         });
 
         it('proceeds normally without explicit messageId (historical behavior preserved)', async () => {
@@ -231,6 +237,8 @@ describe('roosync_messages send idempotence on explicit messageId (#3654)', () =
             // (l'id auto-généré est par construction unique, déduplication inutile).
             expect(mockGetMessage).not.toHaveBeenCalled();
             expect(mockSendMessage).toHaveBeenCalledTimes(1);
+            // Et aucune clé d'idempotence ne voyage (comportement historique).
+            expect(mockSendMessage.mock.calls[0][8]).toBeUndefined();
         });
     });
 
