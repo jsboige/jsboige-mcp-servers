@@ -19,9 +19,20 @@
  * auto-descriptives quel que soit le détenteur. Les deux couches s'appliquent.
  */
 
+import { redactSecrets } from '../services/task-indexer/EmbeddingValidator.js';
+
 /** Un nom de variable d'environnement qui désigne un secret (aligné sur les motifs
  *  de forme de `EmbeddingValidator.ts`, pour que les deux couches ne divergent pas). */
 const SECRET_ENV_NAME = /(API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)/i;
+
+/**
+ * Pré-filtre de la couche forme : cinq regexes sur un texte entier par passe de
+ * publication pesaient assez pour faire basculer des tests au chrono serré
+ * (#2463, #2719). Un texte sans marqueur n'a rien à y gagner — sauf la couche
+ * valeur connue, qui court TOUJOURS : une valeur nue n'a par définition aucun
+ * marqueur, c'est le cas fondateur #3584.
+ */
+export const FORM_LAYER_MARKER = /sk-|gh[opsur]_|xox|Bearer|API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY/i;
 
 /** En dessous, une valeur est trop courte pour être un secret — et assez banale pour
  *  qu'un masquage par sous-chaîne mutile le texte (un `PASSWORD=dev` masquerait
@@ -82,4 +93,21 @@ export function redactKnownSecretValues(
 ): string {
     if (!text) return text;
     return createKnownValueMasker(env)(text);
+}
+
+/**
+ * Masque un texte au franchissement d'une frontière de PUBLICATION (#3584).
+ *
+ * Définition UNIQUE de la composition des deux couches — dashboard ET messages
+ * RooSync publient vers le même genre de store partagé, et deux copies du
+ * `FORM_LAYER_MARKER` divergeraient en silence. Toute frontière de publication
+ * (writeDashboardFile, MessageManager.sendMessage, amendMessage) appelle CE
+ * point, jamais sa propre copie.
+ *
+ * @param text Texte destiné publication (message intercom, status de dashboard,
+ *             corps/sujet de DM).
+ */
+export function maskSecretTextForPublication(text: string): string {
+    const afterForm = FORM_LAYER_MARKER.test(text) ? redactSecrets(text) : text;
+    return redactKnownSecretValues(afterForm);
 }
