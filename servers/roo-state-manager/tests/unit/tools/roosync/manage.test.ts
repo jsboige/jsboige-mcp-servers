@@ -38,19 +38,38 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
     getMessageManager: mockGetMessageManager,
 }));
 
-vi.mock('../../../../src/utils/message-helpers.js', async () => ({
+vi.mock('../../../../src/utils/message-helpers.js', async () => {
     // perReaderStatus is the single source of truth for read state: stub it and
     // this test stops exercising the decision it is meant to cover.
-    perReaderStatus: (await vi.importActual<any>('../../../../src/utils/message-helpers.js')).perReaderStatus,
-    getLocalMachineId: mockGetLocalMachineId,
-    getLocalFullId: vi.fn(() => 'myia-po-2025:roo-extensions'),
-    parseMachineWorkspace: mockParseMachineWorkspace,
-    formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
-    formatDateFull: vi.fn((d: string) => d || ''),
-    getPriorityIcon: vi.fn((p: string) => ''),
-    getStatusIcon: vi.fn((s: string) => ''),
-    getLocalWorkspaceId: vi.fn(() => 'roo-extensions'),
-}));
+    const helpers: Record<string, unknown> = {
+        perReaderStatus: (await vi.importActual<any>('../../../../src/utils/message-helpers.js')).perReaderStatus,
+        getLocalMachineId: mockGetLocalMachineId,
+        getLocalFullId: vi.fn(() => 'myia-po-2025:roo-extensions'),
+        parseMachineWorkspace: mockParseMachineWorkspace,
+        formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
+        formatDateFull: vi.fn((d: string) => d || ''),
+        getPriorityIcon: vi.fn((p: string) => ''),
+        getStatusIcon: vi.fn((s: string) => ''),
+        getLocalWorkspaceId: vi.fn(() => 'roo-extensions'),
+    };
+    return {
+        ...helpers,
+        // #3591: delegates to this factory's own mocks.
+        resolveCallerIdentity: vi.fn((as?: string) => {
+            if (!as) {
+                return {
+                    machineId: (helpers.getLocalMachineId as () => string)(),
+                    workspaceId: (helpers.getLocalWorkspaceId as () => string)(),
+                    fullId: (helpers.getLocalFullId as () => string)(),
+                };
+            }
+            const idx = as.indexOf(':');
+            return idx === -1
+                ? { machineId: as, workspaceId: undefined, fullId: as }
+                : { machineId: as.substring(0, idx), workspaceId: as.substring(idx + 1), fullId: as };
+        }),
+    };
+});
 
 vi.mock('../../../../src/services/lazy-roosync.js', () => ({
     getRooSyncService: mockGetRooSyncService,

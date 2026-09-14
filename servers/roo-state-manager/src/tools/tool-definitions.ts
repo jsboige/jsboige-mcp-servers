@@ -785,6 +785,7 @@ export const roosyncMessagesDefinition = {
             uuid: { type: 'string', description: 'UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu' },
             filename: { type: 'string', description: '#3256 — alternative a uuid pour attachments_get : nom du fichier, resolu via les refs du message_id fourni' },
             targetPath: { type: 'string' },
+            as: { type: 'string', description: '#3591 Caller identity assertion for gateway seats (mcp-remote chain resolves the caller server-side as the proxy host). Format "machine" or "machine:workspace". Honored only if the machine is listed in the server env ROOSYNC_TRUSTED_CALLER_IDS — otherwise rejected. Applies to send/reply/amend (from), message/mark_read/archive (access check), inbox/bulk/cleanup/stats (default machine). Rejected on attachments_*.' },
             format: { type: 'string', enum: ['json', 'markdown'], description: 'Output format for inbox/message actions (default: markdown)' }
         },
         required: ['action'],

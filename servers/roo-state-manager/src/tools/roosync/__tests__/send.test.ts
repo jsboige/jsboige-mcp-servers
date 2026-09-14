@@ -20,11 +20,27 @@ import { join } from 'path';
 // Mock getLocalMachineId and getLocalFullId pour contrôler l'émetteur dans les tests
 vi.mock('../../../utils/message-helpers.js', async () => {
   const actual = await vi.importActual('../../../utils/message-helpers.js');
+  const getLocalMachineId = vi.fn(() => 'test-machine');
+  const getLocalFullId = vi.fn(() => 'test-machine');
+  const getLocalWorkspaceId = vi.fn(() => undefined);
   return {
     ...actual,
-    getLocalMachineId: vi.fn(() => 'test-machine'),
-    getLocalFullId: vi.fn(() => 'test-machine'),
-    getLocalWorkspaceId: vi.fn(() => undefined)
+    getLocalMachineId,
+    getLocalFullId,
+    getLocalWorkspaceId,
+    // #3591: the real resolveCallerIdentity binds to the real module
+    // internals and bypasses the mocks above — reimplement it against them.
+    resolveCallerIdentity: (as?: string) => {
+      if (!as) {
+        return { machineId: getLocalMachineId(), workspaceId: getLocalWorkspaceId(), fullId: getLocalFullId() };
+      }
+      const parsed = actual.parseMachineWorkspace(actual.canonicalizeFullId(as));
+      return {
+        machineId: parsed.machineId,
+        workspaceId: parsed.workspaceId,
+        fullId: parsed.workspaceId ? `${parsed.machineId}:${parsed.workspaceId}` : parsed.machineId,
+      };
+    },
   };
 });
 

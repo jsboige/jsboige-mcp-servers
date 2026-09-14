@@ -8,7 +8,7 @@
  * - Exhaustive switch (never guard)
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MessagesArgsSchema, roosyncMessages } from '../messages.js';
 
 // Mock sub-tools to verify routing without side effects
@@ -392,6 +392,104 @@ describe('roosync_messages dispatcher', () => {
       expect(mockRead).toHaveBeenCalledWith(expect.objectContaining({
         mode: 'inbox', to_machine: 'myia-po-2023', workspace: 'roo-extensions'
       }));
+    });
+  });
+
+  // ============================================================
+  // #3591 — caller identity assertion (`as`) for gateway seats
+  // ============================================================
+  describe('caller identity assertion (#3591)', () => {
+    const ENV_VAR = 'ROOSYNC_TRUSTED_CALLER_IDS';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV_VAR];
+      process.env[ENV_VAR] = 'myia-po-2026';
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV_VAR];
+      else process.env[ENV_VAR] = savedEnv;
+    });
+
+    test('schema accepts as param', () => {
+      const result = MessagesArgsSchema.safeParse({
+        action: 'message', message_id: 'msg-1', as: 'myia-po-2026:hermes-agent'
+      });
+      expect(result.success).toBe(true);
+    });
+
+    test('as without trust env is rejected loudly, never silently ignored', async () => {
+      delete process.env[ENV_VAR];
+      await expect(
+        roosyncMessages({ action: 'message', message_id: 'msg-1', as: 'myia-po-2026:hermes-agent' })
+      ).rejects.toThrow(new RegExp(ENV_VAR));
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('as for an unlisted machine is rejected naming the machine', async () => {
+      await expect(
+        roosyncMessages({ action: 'message', message_id: 'msg-1', as: 'myia-po-2024:CoursIA' })
+      ).rejects.toThrow(/myia-po-2024/);
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('trusted as is canonicalized and threaded to every identity-bearing action', async () => {
+      // Short alias "po-2026" → canonical "myia-po-2026" (machine id map).
+      await roosyncMessages({ action: 'send', to: 'myia-ai-01', subject: 'S', body: 'B', as: 'po-2026:hermes-agent' });
+      expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ as: 'myia-po-2026:hermes-agent' }));
+
+      await roosyncMessages({ action: 'reply', message_id: 'msg-1', body: 'B', as: 'myia-po-2026:hermes-agent' });
+      expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ as: 'myia-po-2026:hermes-agent' }));
+
+      await roosyncMessages({ action: 'message', message_id: 'msg-1', as: 'myia-po-2026:hermes-agent' });
+      expect(mockRead).toHaveBeenCalledWith(expect.objectContaining({ as: 'myia-po-2026:hermes-agent' }));
+
+      await roosyncMessages({ action: 'inbox', as: 'myia-po-2026:hermes-agent' });
+      expect(mockRead).toHaveBeenCalledWith(expect.objectContaining({ as: 'myia-po-2026:hermes-agent' }));
+
+      await roosyncMessages({ action: 'mark_read', message_id: 'msg-1', as: 'myia-po-2026' });
+      expect(mockManage).toHaveBeenCalledWith(expect.objectContaining({ as: 'myia-po-2026' }));
+
+      await roosyncMessages({ action: 'stats', as: 'myia-po-2026:hermes-agent' });
+      expect(mockManage).toHaveBeenCalledWith(expect.objectContaining({ as: 'myia-po-2026:hermes-agent' }));
+    });
+
+    test('no as → sub-tools receive as:undefined (zero behavior change)', async () => {
+      await roosyncMessages({ action: 'message', message_id: 'msg-1' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'message', message_id: 'msg-1', as: undefined })
+      );
+    });
+
+    test('as + to_machine naming a different machine = identity conflict (#3177 mirror)', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', as: 'myia-po-2026:hermes-agent', to_machine: 'myia-po-2024' })
+      ).rejects.toThrow(/Conflit d'identité/);
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('as + to_machine on the SAME machine routes (consistent override)', async () => {
+      await roosyncMessages({ action: 'inbox', as: 'myia-po-2026:hermes-agent', to_machine: 'po-2026' });
+      expect(mockRead).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'inbox', as: 'myia-po-2026:hermes-agent', to_machine: 'po-2026'
+      }));
+    });
+
+    test('from on send family is rejected pointing at as (the po-2026 trap)', async () => {
+      // "From mensonger malgré from: explicite" — from is an inbox/bulk
+      // filter; on send it was silently unused. Honor-or-reject (#3177).
+      await expect(
+        roosyncMessages({ action: 'send', to: 'myia-ai-01', subject: 'S', body: 'B', from: 'myia-po-2026:hermes-agent' })
+      ).rejects.toThrow(/as/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    test('as on attachments_* is rejected (no identity resolution there)', async () => {
+      await expect(
+        roosyncMessages({ action: 'attachments_list', message_id: 'msg-1', as: 'myia-po-2026' })
+      ).rejects.toThrow(/attachments/);
+      expect(mockAttachments).not.toHaveBeenCalled();
     });
   });
 });

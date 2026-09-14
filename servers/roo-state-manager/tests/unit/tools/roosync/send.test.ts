@@ -54,6 +54,17 @@ vi.mock('../../../../src/services/MessageManager.js', () => ({
 vi.mock('../../../../src/utils/message-helpers.js', () => ({
     getLocalMachineId: mockGetLocalMachineId,
     getLocalFullId: mockGetLocalFullId,
+    // #3591: delegates to THIS file's local mocks — the real implementation
+    // is module-internal and cannot see them.
+    resolveCallerIdentity: vi.fn((as?: string) => {
+        if (!as) {
+            return { machineId: mockGetLocalMachineId(), workspaceId: undefined, fullId: mockGetLocalFullId() };
+        }
+        const idx = as.indexOf(':');
+        return idx === -1
+            ? { machineId: as, workspaceId: undefined, fullId: as }
+            : { machineId: as.substring(0, idx), workspaceId: as.substring(idx + 1), fullId: as };
+    }),
     formatDate: vi.fn((d: string) => d?.substring(0, 10) || ''),
     formatDateFull: vi.fn((d: string) => d || ''),
     getPriorityIcon: vi.fn((p: string) => ''),

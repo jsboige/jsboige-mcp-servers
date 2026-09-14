@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   getLocalMachineId,
+  resolveCallerIdentity,
+  TRUSTED_CALLER_IDS_ENV,
   formatDate,
   formatDateFull,
   getPriorityIcon,
@@ -42,6 +44,64 @@ describe('message-helpers', () => {
       expect(result).toBeTruthy();
       expect(typeof result).toBe('string');
       expect(result.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('resolveCallerIdentity (#3591)', () => {
+    // Review #1154 : le contrôle de confiance vit désormais DANS
+    // resolveCallerIdentity (étranglement unique — le chemin hérité du
+    // registre, direct roosync_send/read/manage, traverse aussi cette
+    // fonction). Les assertions légitimes arment la liste ; le refus est
+    // vérifié explicitement.
+    const ENV = TRUSTED_CALLER_IDS_ENV;
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV];
+      process.env[ENV] = 'myia-po-2026';
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV];
+      else process.env[ENV] = savedEnv;
+    });
+
+    it('sans assertion, retourne exactement la résolution locale (zéro changement)', () => {
+      const id = resolveCallerIdentity(undefined);
+      expect(id.fullId).toBe(`${id.machineId}:${id.workspaceId}`);
+      expect(id.machineId).toBe(getLocalMachineId());
+    });
+
+    it('assertion machine:workspace passée telle quelle (déjà canonique)', () => {
+      const id = resolveCallerIdentity('myia-po-2026:hermes-agent');
+      expect(id).toEqual({
+        machineId: 'myia-po-2026',
+        workspaceId: 'hermes-agent',
+        fullId: 'myia-po-2026:hermes-agent',
+      });
+    });
+
+    it('canonicalise l\'alias court (po-2026 → myia-po-2026)', () => {
+      const id = resolveCallerIdentity('po-2026:hermes-agent');
+      expect(id.machineId).toBe('myia-po-2026');
+      expect(id.fullId).toBe('myia-po-2026:hermes-agent');
+    });
+
+    it('assertion machine-seule garde workspaceId undefined (sémantique "toute la machine")', () => {
+      const id = resolveCallerIdentity('myia-po-2026');
+      expect(id.machineId).toBe('myia-po-2026');
+      expect(id.workspaceId).toBeUndefined();
+      expect(id.fullId).toBe('myia-po-2026');
+    });
+
+    it('assertion non listée → refus bruyant nommant la variable et la machine', () => {
+      expect(() => resolveCallerIdentity('myia-po-2024:nope')).toThrow(new RegExp(ENV));
+      expect(() => resolveCallerIdentity('myia-po-2024:nope')).toThrow(/myia-po-2024/);
+    });
+
+    it('env trust absent → refus (jamais d\'acceptation silencieuse)', () => {
+      delete process.env[ENV];
+      expect(() => resolveCallerIdentity('myia-po-2026:hermes-agent')).toThrow(new RegExp(ENV));
     });
   });
 

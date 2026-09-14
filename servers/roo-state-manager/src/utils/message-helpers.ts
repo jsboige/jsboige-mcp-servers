@@ -7,6 +7,7 @@
 
 import os from 'os';
 import path from 'path';
+import { StateManagerError } from '../types/errors.js';
 
 /**
  * Récupère l'ID de la machine locale depuis le hostname OS
@@ -146,6 +147,72 @@ export function getLocalFullId(): string {
   const machineId = getLocalMachineId();
   const workspaceId = getLocalWorkspaceId();
   return `${machineId}:${workspaceId}`;
+}
+
+/**
+ * Resolve the caller identity for one tool call (#3591).
+ *
+ * Gateway seats (mcp-remote → myia-mcp-proxy chain) run their RSM process on
+ * the proxy host, so every local-identity resolution below returns the proxy
+ * host's identity — the caller gets read as "myia-ai-01:roo-extensions" no
+ * matter what its own ROOSYNC_MACHINE_ID says. `as` lets such a seat state
+ * its real identity per call; THIS function is the single choke point that
+ * gates it against ROOSYNC_TRUSTED_CALLER_IDS (#3591, review #1154) — every
+ * consumer of `as` goes through here, including the legacy registry path
+ * that bypasses the roosync_messages dispatcher.
+ *
+ * When `as` is absent the identity is exactly the local resolution — zero
+ * behavior change for seats that don't assert.
+ *
+ * @param as Asserted identity, "machine" or "machine:workspace" (raw —
+ *           canonicalized + trust-checked here). Machine-only
+ *           assertions keep workspaceId undefined: workspace-scoped checks
+ *           then behave as "any workspace of that machine" (matchesRecipient
+ *           semantics), and workspace fallbacks stay on the local resolution.
+ * @returns machine / workspace parts + the full id to use as callerId/from
+ */
+export const TRUSTED_CALLER_IDS_ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
+
+export function resolveCallerIdentity(as?: string): {
+  machineId: string;
+  workspaceId: string | undefined;
+  fullId: string;
+} {
+  if (!as) {
+    return {
+      machineId: getLocalMachineId(),
+      workspaceId: getLocalWorkspaceId(),
+      fullId: getLocalFullId(),
+    };
+  }
+  // #3591 (review #1154) : le contrôle de confiance vit ICI — étranglement
+  // unique. Les sous-outils (roosync_send/read/manage) sont aussi joignables
+  // directement par le registre hérité, sans passer par le dispatcher
+  // roosync_messages : tout consommateur de `as` traverse cette fonction,
+  // donc le gate n'a qu'un seul endroit à vivre.
+  const canonical = canonicalizeFullId(as.trim());
+  const machine = parseMachineWorkspace(canonical).machineId.toLowerCase();
+  const trusted = (process.env[TRUSTED_CALLER_IDS_ENV] ?? '')
+    .split(',')
+    .map((entry) => canonicalMachineId(entry.trim()).toLowerCase())
+    .filter(Boolean);
+  if (!trusted.includes(machine)) {
+    throw new StateManagerError(
+      `Paramètre "as" refusé : la machine « ${machine} » n'est pas assertable sur ce process ` +
+      `(${TRUSTED_CALLER_IDS_ENV} ${trusted.length > 0 ? 'ne la liste pas' : 'non défini'}). ` +
+      `#3591 : un siège gateway (chaîne mcp-remote/myia-mcp-proxy) doit faire lister sa machine par ` +
+      `l'opérateur du process RSM pour assert son identité réelle ; sans cela l'appelant reste résolu côté serveur.`,
+      'VALIDATION_FAILED',
+      'MessageHelpers',
+      { rejectedParam: 'as', envVar: TRUSTED_CALLER_IDS_ENV, asserted: canonical }
+    );
+  }
+  const parsed = parseMachineWorkspace(canonical);
+  return {
+    machineId: parsed.machineId,
+    workspaceId: parsed.workspaceId,
+    fullId: parsed.workspaceId ? `${parsed.machineId}:${parsed.workspaceId}` : parsed.machineId,
+  };
 }
 
 /**
