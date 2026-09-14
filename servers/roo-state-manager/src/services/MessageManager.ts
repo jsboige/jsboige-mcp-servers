@@ -15,6 +15,7 @@ import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
+import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
 // Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
 // cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
@@ -808,6 +809,25 @@ export class MessageManager {
     }
   ): Promise<Message> {
     logger.info(`Sending message from ${from} to ${to}`);
+
+    // #3584 — même frontière de publication que `writeDashboardFile` : un DM est
+    // persisté vers le store partagé PUIS le miroir PG, exactement comme un
+    // dashboard, et la demande 1 de l'issue couvre `roosync_messages send`
+    // explicitement. Masquer à l'ENTRÉE : tous les chemins de persistance
+    // ci-dessous (PG-primaire, fichiers inbox+sent, dual-write PG) partent de
+    // ces valeurs — un masquage posé plus bas en laisserait un en clair.
+    const maskedSubject = maskSecretTextForPublication(subject);
+    const maskedBody = maskSecretTextForPublication(body);
+    if (maskedSubject !== subject || maskedBody !== body) {
+      // Jamais la valeur, ni sa longueur, ni son empreinte (cf. dashboard).
+      logger.warn('[MESSAGES-REDACTION] secret masqué à l\'envoi (#3584)', {
+        to,
+        subjectMasked: maskedSubject !== subject,
+        bodyMasked: maskedBody !== body
+      });
+    }
+    subject = maskedSubject;
+    body = maskedBody;
 
     // #3292 canonicalization: rewrite legacy short forms ("po-2024", "ai-01")
     // and capitalization variants to their canonical machineId before any
@@ -2057,6 +2077,21 @@ export class MessageManager {
     newContent: string,
     reason?: string
   ): void {
+    // #3584 — même frontière que `sendMessage` : cet amendement réécrit le corps
+    // publié du message, et c'est l'unique point de mutation traversé par les
+    // DEUX branches (PG-primaire et fichier). Masquer ici couvre les deux d'un coup.
+    const maskedContent = maskSecretTextForPublication(newContent);
+    const maskedReason = reason === undefined ? undefined : maskSecretTextForPublication(reason);
+    if (maskedContent !== newContent || maskedReason !== reason) {
+      logger.warn('[MESSAGES-REDACTION] secret masqué à l\'amendement (#3584)', {
+        messageId: message.id,
+        contentMasked: maskedContent !== newContent,
+        reasonMasked: maskedReason !== reason
+      });
+    }
+    newContent = maskedContent;
+    reason = maskedReason;
+
     if (message.status !== 'unread') {
       throw new MessageManagerError(
         `Impossible d'amender un message déjà lu ou archivé (status: ${message.status}).`,

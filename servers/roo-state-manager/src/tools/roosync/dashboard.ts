@@ -39,7 +39,7 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
-import { redactKnownSecretValues, createKnownValueMasker } from '../../utils/secret-redaction.js';
+import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
 import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
@@ -1308,30 +1308,12 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
 }
 
 /**
- * #3584 — masque les secrets au franchissement de la frontière de PUBLICATION.
- *
- * Deux couches complémentaires, aucune ne suffisant seule :
- *  - `redactSecrets` attrape les formes auto-descriptives (`sk-…`, `ghp_…`, `NAME=VALUE`)
- *    quel que soit le détenteur du secret ;
- *  - `redactKnownSecretValues` attrape les valeurs connues de CE process — seule couche
- *    capable de masquer une valeur NUE. C'est la fuite fondatrice : une clé d'API de
- *    64 hexadécimaux publiée sans nom de variable, indistinguable par sa forme d'un
- *    SHA ou d'un hash quelconque (cf. en-tête de `utils/secret-redaction.ts`).
- *
- * Le pré-filtre `FORM_LAYER_MARKER` court-circuite la couche forme quand le texte ne
- * porte AUCUN de ses marqueurs : cinq regexes sur un intercom entier par condensation
- * (#3584 rétention) pesaient assez pour faire basculer des tests au chrono serré
- * (#2463, #2719) — le scan d'un texte sans marqueur est du travail pur perdu. La
- * couche valeur connue court TOUJOURS : une valeur nue n'a par définition aucun
- * marqueur, c'est le cas fondateur.
+ * #3584 — masquage à la frontière de publication, définition UNIQUE dans
+ * `utils/secret-redaction.ts` (deux couches : formes auto-descriptives +
+ * valeurs connues du process ; la seconde seule attrape une valeur nue).
+ * Les call-sites du dashboard gardent le nom court.
  */
-const FORM_LAYER_MARKER = /sk-|gh[opsur]_|xox|Bearer|API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY/i;
-
-const maskSecretText = (text: string): string => {
-    const formLayerNeeded = FORM_LAYER_MARKER.test(text);
-    const afterForm = formLayerNeeded ? redactSecrets(text) : text;
-    return redactKnownSecretValues(afterForm);
-};
+const maskSecretText = maskSecretTextForPublication;
 
 /**
  * Masque une LISTE de messages, et rend la liste d'origine — par identité de
