@@ -62,7 +62,7 @@ function publishRemoteSnapshot(
   const snapshot = {
     format: 1,
     state: opts.state ?? 'ok',
-    collectedAt: opts.collectedAt ?? '2026-09-08T10:00:00Z',
+    collectedAt: opts.collectedAt ?? daysAgoIso(0),
     machineId: REMOTE,
     harmonization,
     maskedEnvKeys: {},
