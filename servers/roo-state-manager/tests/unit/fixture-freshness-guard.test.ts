@@ -13,19 +13,20 @@
  * FAILS quand un fichier de test assigne un littéral ISO ABSOLU à un champ
  * dont la production calcule l'âge (`collectedAt` — seuils 7 j/30 j,
  * compare-config.ts:1005-1006 ; `snapshotAt` — seuil 7 j,
- * compare-config.ts:885) et que le fichier n'injecte PAS une horloge
- * contrôlée. Sans horloge mockée, ces fixtures sont des bombes à
- * retardement : vertes le jour de leur écriture, rouges à l'échéance du
- * seuil — sans aucun changement de diff.
+ * compare-config.ts:885) sans exemption déclarée.
  *
- * Exemptés : les fichiers portant un marqueur d'horloge contrôlée
- * (vi.useFakeTimers / setSystemTime / `now: () =>`). Là, une date figée est
- * déterministe par construction : les deux côtés de la comparaison
- * temporelle partagent la même horloge.
+ * Exemption — marqueur opt-in strict (review #1162) : seul un commentaire
+ * DÉDIÉ portant le marqueur `fixture-freshness-guard: controlled-clock`
+ * (CONTROLLED_CLOCK_MARKER_RE) exempte le fichier, à poser uniquement là où
+ * l'horloge est effectivement contrôlée (vi.useFakeTimers / setSystemTime /
+ * horloge injectée `now`). Une simple mention des API d'horloge dans un
+ * commentaire ou une chaîne N'EXEMPTE PAS — l'heuristique textuelle
+ * file-wide de la v1 était neutralisable par un simple commentaire.
  *
  * Correctif attendu : exprimer la date RELATIVEMENT à l'instant du test —
  * `new Date(Date.now() - n * 864e5).toISOString()` (cf. `daysAgoIso`,
- * compare-claude-settings.test.ts) — ou mocker l'horloge du fichier.
+ * compare-claude-settings.test.ts) — ou mocker l'horloge du fichier puis
+ * déclarer le marqueur.
  *
  * Périmètre assumé : seule la forme « littéral d'objet »
  * (`collectedAt: '20…'`) est gardée. Les passes positionnelles via helpers
@@ -41,6 +42,7 @@ import path from 'node:path';
 import { glob } from 'glob';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const OWN_PATH = fileURLToPath(import.meta.url);
 
 // Champs dont la production calcule l'âge contre Date.now().
 const AGE_CONSUMED_FIELDS = ['collectedAt', 'snapshotAt'];
@@ -50,12 +52,32 @@ const FROZEN_FIXTURE_RE = new RegExp(
   `(${AGE_CONSUMED_FIELDS.join('|')})\\s*:\\s*(['"])20\\d{2}-\\d{2}-\\d{2}`
 );
 
-// Marqueurs d'horloge contrôlée : une date figée y est déterministe.
-const CONTROLLED_CLOCK_RE =
-  /vi\.useFakeTimers|setSystemTime|now\s*:\s*\(\s*\)\s*=>/;
+// Exemption : ligne de commentaire DÉDIÉE (//, * docblock, #) commençant
+// par le marqueur opt-in. Ni une mention des API d'horloge, ni le marqueur
+// dans une chaîne de code n'exemptent (contre-épreuves 1 et 4).
+const CONTROLLED_CLOCK_MARKER_RE =
+  /^\s*(?:\/\/|\*|#)\s*fixture-freshness-guard:\s*controlled-clock\b/;
+
+interface FileVerdict {
+  exempted: boolean;
+  /** violations au format "lineNo: trimmed line" */
+  violations: string[];
+}
+
+/** Décision unitaire de la garde — pure, testable sur des lignes synthétiques. */
+function evaluateLines(lines: string[]): FileVerdict {
+  if (lines.some(l => CONTROLLED_CLOCK_MARKER_RE.test(l))) {
+    return { exempted: true, violations: [] };
+  }
+  const violations: string[] = [];
+  lines.forEach((line, i) => {
+    if (FROZEN_FIXTURE_RE.test(line)) violations.push(`${i + 1}: ${line.trim()}`);
+  });
+  return { exempted: false, violations };
+}
 
 describe('Garde fraîcheur des fixtures temporelles (#3673)', () => {
-  it('aucune fixture à date ISO absolue sur un champ consommé comme un âge', async () => {
+  it('aucune fixture à date ISO absolue sur un champ consommé comme un âge, sans marqueur controlled-clock', async () => {
     const files = await glob(['src/**/*.test.ts', 'tests/**/*.test.ts'], {
       cwd: ROOT,
       absolute: true,
@@ -64,20 +86,60 @@ describe('Garde fraîcheur des fixtures temporelles (#3673)', () => {
 
     const violations: string[] = [];
     for (const f of files) {
-      const text = readFileSync(f, 'utf-8');
-      if (!FROZEN_FIXTURE_RE.test(text)) continue;
-      if (CONTROLLED_CLOCK_RE.test(text)) continue;
+      // Self-exclusion documentée : CE fichier cite le littéral de l'incident
+      // dans sa doc et dans ses contre-épreuves. La contre-épreuve 3 prouve
+      // que cette exclusion n'est PAS une auto-exemption : évalué comme un
+      // fichier tiers, il rendrait exempted=false avec violations.
+      if (path.resolve(f) === path.resolve(OWN_PATH)) continue;
+      const lines = readFileSync(f, 'utf-8').split('\n');
+      const verdict = evaluateLines(lines);
+      if (verdict.exempted) continue;
       const rel = path.relative(ROOT, f).split(path.sep).join('/');
-      text.split('\n').forEach((line, i) => {
-        if (FROZEN_FIXTURE_RE.test(line)) {
-          violations.push(`${rel}:${i + 1}: ${line.trim()}`);
-        }
-      });
+      for (const v of verdict.violations) violations.push(`${rel}:${v}`);
     }
 
     expect(
       violations,
-      `littéral ISO ABSOLU sur ${AGE_CONSUMED_FIELDS.join('/')} sans horloge contrôlée — bombe à retardement de seuil (cf. #1160, #3673). Exprimer la date relative à now (daysAgoIso) ou mocker l'horloge du fichier.`
+      `littéral ISO ABSOLU sur ${AGE_CONSUMED_FIELDS.join('/')} sans marqueur d'exemption — bombe à retardement de seuil (cf. #1160, #3673). Exprimer la date relative à now (daysAgoIso), ou mocker l'horloge du fichier et déclarer le marqueur de commentaire dédié (cf. en-tête de cette garde).`
     ).toEqual([]);
+  });
+
+  describe("contre-épreuves du mécanisme d'exemption (review #1162)", () => {
+    it('1. mention des API d’horloge en COMMENTAIRE seul n’exempte PAS → ROUGE', () => {
+      const verdict = evaluateLines([
+        '// horloge contrôlée : vi.useFakeTimers + setSystemTime + now: () => new Date()',
+        "      collectedAt: '2026-09-08T10:00:00Z',",
+      ]);
+      expect(verdict.exempted).toBe(false);
+      expect(verdict.violations).toHaveLength(1);
+    });
+
+    it('2. marqueur opt-in en commentaire dédié exempte → VERT', () => {
+      const verdict = evaluateLines([
+        '// fixture-freshness-guard: controlled-clock',
+        "      collectedAt: '2026-09-08T10:00:00Z',",
+      ]);
+      expect(verdict.exempted).toBe(true);
+      expect(verdict.violations).toEqual([]);
+    });
+
+    it('3. la garde n’est pas exemptée par sa propre documentation', () => {
+      const own = readFileSync(OWN_PATH, 'utf-8').split('\n');
+      const verdict = evaluateLines(own);
+      // Le docblock cite le littéral de l'incident ET le nom du marqueur :
+      // aucun des deux ne doit déclencher l'exemption (sinon la garde
+      // s'auto-neutraliserait exactement comme sous l'heuristique v1).
+      expect(verdict.exempted).toBe(false);
+      expect(verdict.violations.length).toBeGreaterThan(0);
+    });
+
+    it('4. le marqueur écrit dans une CHAÎNE de code n’exempte pas', () => {
+      const verdict = evaluateLines([
+        "      const marker = '// fixture-freshness-guard: controlled-clock';",
+        "      collectedAt: '2026-09-08T10:00:00Z',",
+      ]);
+      expect(verdict.exempted).toBe(false);
+      expect(verdict.violations).toHaveLength(1);
+    });
   });
 });
