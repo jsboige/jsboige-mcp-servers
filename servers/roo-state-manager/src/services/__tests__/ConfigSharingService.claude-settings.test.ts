@@ -82,7 +82,9 @@ describe('applyConfig targets: ["claude-settings"]', () => {
   it('REJETTE un snapshot de comparaison comme payload d apply (#3545)', async () => {
     publishPackage({
       'claude-settings/claude-settings.json': {
-        format: 1, state: 'ok', collectedAt: '2026-09-08T00:00:00Z', machineId: 'test-machine',
+        // Relatif : collectedAt est consommé comme un âge (seuils 7 j/30 j) —
+        // jamais de littéral ISO absolu ici (garde tests/unit/fixture-freshness-guard.test.ts).
+        format: 1, state: 'ok', collectedAt: new Date().toISOString(), machineId: 'test-machine',
         harmonization: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example' },
         maskedEnvKeys: {}, otherTopLevelKeys: [], projectionHash: 'x',
       },
