@@ -72,6 +72,15 @@ export const MessagesArgsSchema = z.object({
   tags: z.array(z.string()).optional().describe('Tags optionnels'),
   thread_id: z.string().optional().describe('ID du thread pour regroupement'),
   reply_to: z.string().optional().describe('Reference message ID — uniquement pour action="send" (thread un nouveau message sur un message existant). NE PAS utiliser pour action="reply"/"amend"/"mark_read" : voir message_id. #3029'),
+  // #3654 — optionnel sur action="send" (clé d'idempotence, miroir du
+  // messageId du dashboard append #3276). Mécanique : si un message avec
+  // exactement cet id existe déjà côté expéditeur (inbox+sent, sous le from
+  // résolu), la 2e écriture est absorbée et un flag { deduplicated: true,
+  // existingTimestamp } est retourné. Permet au caller de distinguer
+  // « landé en >timeout client » de « jamais landé » quand un send timeout
+  // (cf. po-2025 14/09 16:05Z : HIGH vers ai-01, 120s timeout, livraison
+  // incertaine ; sans clé, le retry sur timeout fabrique un jumeau).
+  messageId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, '#3654 messageId invalide : caractères autorisés [A-Za-z0-9._:-], 1-128 caractères — l\'id devient un nom de fichier côté persistance').optional().describe('#3654 Cle d idempotence pour action="send". Si un message du meme expediteur porte deja exactement cet id, la 2e operation est absorbee et le retour contient deduplicated: true (miroir du messageId dashboard append #3276). Le caller peut ainsi distinguer « lande en >timeout » de « jamais lande » apres un timeout client. L id est PERSISTE tel quel (review #1157) : un retry avec la meme cle absorbe meme apres un nouveau process serveur.'),
   message_id: z.string().optional().describe('ID du message cible — requis pour actions reply/amend/mark_read/archive/message/attachments_list/get/delete. Alias rétro-compatible de reply_to accepté pour reply/amend. #3029'),
   new_content: z.string().optional().describe('Nouveau contenu (requis pour amend)'),
   reason: z.string().optional().describe('Raison de la modification (amend)'),
@@ -251,6 +260,10 @@ export async function roosyncMessages(args: MessagesArgs) {
         tags: args.tags,
         thread_id: args.thread_id,
         reply_to: args.reply_to,
+        // #3654: passe la clé d'idempotence à send.ts. La détection
+        // d'alias (`KNOWN_ALIAS_HINTS`) ignore `messageId` à dessein —
+        // c'est une clé MCP légitime, pas un alias d'un autre param.
+        messageId: args.messageId,
         auto_destruct: args.auto_destruct,
         destruct_after_read_by: args.destruct_after_read_by,
         destruct_after: args.destruct_after,

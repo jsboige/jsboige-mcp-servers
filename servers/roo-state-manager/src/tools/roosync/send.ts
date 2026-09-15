@@ -78,6 +78,14 @@ interface RooSyncSendArgs {
 
   /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked in resolveCallerIdentity (single choke point) */
   as?: string;
+
+  // #3654 — clé d'idempotence optionnelle pour action="send". Si un message
+  // du même expéditeur porte déjà exactement cet id, la 2e écriture est
+  // absorbée (skip) et le retour contient `deduplicated: true` + l'id existant
+  // + son timestamp. Permet au caller de distinguer « landé en >timeout client »
+  // de « jamais landé » quand un send timeout (sans clé, le retry sur timeout
+  // fabrique un jumeau, comme sur po-2025 14/09 16:05Z).
+  messageId?: string;
 }
 
 /**
@@ -126,6 +134,70 @@ async function sendNewMessage(
   const from = resolveCallerIdentity(args.as).fullId;
   logger.debug('📍 Message routing', { from, to: args.to });
 
+  // #3654 — idempotence sur action="send" : si le caller a passé un messageId
+  // explicite, on regarde d'abord si un message existe déjà avec cet id.
+  // Si oui, on absorbe la 2e écriture (pas de sendMessage, pas de pièce jointe,
+  // pas de heartbeat parasite) et on retourne un résultat qui annonce
+  // `deduplicated: true` + `existingTimestamp` — c'est exactement ce qui
+  // manque au caller pour distinguer « landé en >timeout client » de
+  // « jamais landé » quand un send timeout (po-2025 14/09 16:05Z, HIGH DM,
+  // 120 s timeout, livraison incertaine → retry = jumeau sans cette clé).
+  //
+  // Miroir de l'idempotence messageId du dashboard append (#3276) :
+  // déterministe, opts-in (id auto-généré = jamais de collision possible
+  // sur 2 appels successifs, et `deduplicated: true` n'apparaît que sur
+  // les résultats où le caller a explicitement opté pour la clé).
+  //
+  // NB : on ne vérifie que les chemins où l'expéditeur « détient » le
+  // message — sa `inbox/` (reçu en miroir d'un send où il est aussi `to`)
+  // et sa `sent/`. Si un autre expéditeur a utilisé le même id, ce n'est
+  // PAS notre problème (#3654 demande « mon propre message réémis »).
+  if (args.messageId) {
+    const dedupStart = Date.now();
+    const existing = await messageManager.getMessage(args.messageId, from);
+    const dedupMs = Date.now() - dedupStart;
+    if (existing) {
+      // Garde-fou cohérence : si l'existant n'est PAS du même expéditeur,
+      // c'est une collision d'id (un autre seat a utilisé le même messageId).
+      // On n'absorbe pas, on log un warning, et on laisse le sendMessage
+      // partir — il va de toute façon générer un id différent côté MessageManager
+      // (le path de génération est distinct, voir MessageManager.sendMessage).
+      // Le warning permet au caller de comprendre pourquoi sa clé a été
+      // ignorée sans pour autant bloquer l'envoi.
+      if (existing.from && existing.from !== from) {
+        logger.warn('[#3654] messageId collision — id already used by a different sender, send proceeds with auto-generated id', {
+          messageId: args.messageId,
+          existingFrom: existing.from,
+          callerFrom: from,
+          to: args.to
+        });
+      } else {
+        logger.info('[#3654] Send deduplicated — explicit messageId already present', {
+          messageId: args.messageId,
+          existingTimestamp: existing.timestamp,
+          dedupMs
+        });
+        const contentMismatch = (existing.body ?? '') !== (args.body ?? '');
+        return `♻️ **Message absorbé par idempotence (#3654)** — un message avec l'id \`${args.messageId}\` existe déjà (envoyé le ${formatDateFull(existing.timestamp)}, depuis \`${existing.from}\`). La réémission a été ignorée.
+
+**ID :** \`${existing.id}\`
+**De :** ${existing.from}
+**À :** ${existing.to}
+**Sujet :** ${existing.subject}
+**Priorité :** ${getPriorityIcon(existing.priority)} ${existing.priority}
+**Timestamp :** ${formatDate(existing.timestamp)}${contentMismatch ? `\n\n⚠️ **Avertissement :** le \`body\` du nouvel appel diffère de l'existant — l'entrée existante est conservée (${existing.timestamp}). Si l'intention est de remplacer le contenu, utilisez \`action: "amend"\` à la place.` : ''}
+
+---
+
+💡 **Pourquoi ce retour existe.** Un timeout client (cf. \`#2267\`) sur un send ne signifie PAS que l'envoi a échoué : la persistance GDrive peut continuer après que la course contre le timer ait été perdue. Sans clé d'idempotence, tout retry sur timeout fabrique un **jumeau**. Avec \`messageId\` explicite, le 2e appel détecte l'entrée existante et absorbe — le caller peut alors conclure « landé en >timeout » sans dupliquer.`;
+      }
+    }
+    logger.debug('[#3654] messageId not found locally, proceeding with send', {
+      messageId: args.messageId,
+      lookupMs: dedupMs
+    });
+  }
+
   // Build auto-destruct options (#629)
   const autoDestructOpts = args.auto_destruct ? {
     auto_destruct: true,
@@ -133,7 +205,20 @@ async function sendNewMessage(
     destruct_after: args.destruct_after
   } : undefined;
 
-  // Envoyer le message
+  // #3654 — instrumentation côté serveur : mesurer la durée RÉELLE du write
+  // (sendMessage = persistance GDrive + miroir PG, ce qui pend en cas de
+  // timeout client). Cette durée est loggée avec le résultat succès et
+  // ajoutée au résultat retourné au caller via une ligne dédiée, pour qu'un
+  // timeout client (cf. #2267) suivi d'un retour retry ne fasse plus jamais
+  // fabriquer un jumeau dans l'ignorance : si le log serveur dit
+  // `writeMs: 45000` ET un send ultérieur absorbe (idempotence messageId),
+  // le caller peut conclure « landé en 45 s, le timeout client était trop
+  // court » ; si le log serveur ne montre pas de send passé, c'est que le
+  // write a été tué avant d'atterrir et le retry est légitime.
+  const writeStart = Date.now();
+  // Envoyer le message — la clé d'idempotence explicite voyage jusqu'à la
+  // persistance (review #1157 : consultée seule, elle ne pouvait jamais
+  // absorber un retry ; cf. MessageManager.sendMessage options.messageId).
   const message = await messageManager.sendMessage(
     from,
     args.to,
@@ -143,8 +228,11 @@ async function sendNewMessage(
     args.tags,
     args.thread_id,
     args.reply_to,
-    autoDestructOpts
+    args.messageId
+      ? { ...(autoDestructOpts ?? {}), messageId: args.messageId }
+      : autoDestructOpts
   );
+  const writeMs = Date.now() - writeStart;
 
   // Traiter les pièces jointes (#674)
   let attachmentRefs: Array<{ uuid: string; filename: string; sizeBytes: number }> = [];
@@ -198,6 +286,7 @@ async function sendNewMessage(
 **Timestamp :** ${formatDate(message.timestamp)}
 ${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}${autoDestructInfo}${attachmentInfo}
 Le message a été livré dans l'inbox de **${args.to}**.
+${writeMs > 1000 ? `\n⏱️ **Durée réelle du write côté serveur (#3654) :** ${writeMs} ms — c'est ce que la persistance GDrive+PG a pris ; un timeout client >cette valeur mais <quelques minutes peut quand même laisser le write atterrir (cf. po-2025 14/09 : writeMs≈63s, timeout client 120s, messageId absorbé au retry).` : ''}
 
 ---
 
@@ -213,7 +302,7 @@ ${truncateBodyPreview(args.body!)}
 - 📬 **Lire l'inbox** : Utilisez \`roosync_messages\` avec \`action: "inbox"\` pour voir les messages reçus
 - 📤 **Répondre** : Utilisez \`roosync_messages\` avec \`action: "reply"\` et \`message_id: ${message.id}\``;
 
-  logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to });
+  logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to, writeMs, from });
   // Fire-and-forget heartbeat update: sending a message proves the machine is active
   (await getRooSyncService()).getHeartbeatService()
     .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })

@@ -62,6 +62,10 @@ import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 const logger = createLogger('MessageManager');
 
+// #3654 — un messageId explicite devient un nom de fichier (`${id}.json`) :
+// jamais de séparateur de chemin ni de traversée, longueur bornée.
+const EXPLICIT_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+
 /**
  * Interface d'un message RooSync
  */
@@ -806,6 +810,8 @@ export class MessageManager {
       auto_destruct?: boolean;
       destruct_after_read_by?: string[];
       destruct_after?: string;
+      /** #3654 — clé d'idempotence explicite : persistée telle quelle. */
+      messageId?: string;
     }
   ): Promise<Message> {
     logger.info(`Sending message from ${from} to ${to}`);
@@ -879,8 +885,44 @@ export class MessageManager {
       expiresAt = new Date(Date.now() + ms).toISOString();
     }
 
+    // #3654 — clé d'idempotence explicite : elle est PERSISTÉE, pas seulement
+    // consultée (review #1157 : une clé jamais stockée ne peut jamais absorber
+    // un retry). Garde de course : si l'id existe déjà au moment de persister,
+    // c'est un doublon concurrent de NOTRE propre envoi (le lookup tool-layer
+    // a déjà tourné) → absorption manager-level ; une entrée d'un AUTRE
+    // expéditeur = collision → repli sur id auto (jamais d'écrasement de
+    // données étrangères : `${id}.json` serait écrasé par writeFile).
+    let explicitId: string | undefined;
+    if (options?.messageId) {
+      const candidate = options.messageId.trim();
+      if (!EXPLICIT_MESSAGE_ID_RE.test(candidate)) {
+        throw new MessageManagerError(
+          `messageId invalide : « ${candidate} » — caractères autorisés [A-Za-z0-9._:-], 1-128 caractères (l'id devient un nom de fichier, jamais un séparateur de chemin)`,
+          MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+          { messageId: candidate }
+        );
+      }
+      const existing = await this.getMessage(candidate);
+      if (existing) {
+        if (existing.from === from) {
+          logger.info('[#3654] sendMessage absorbé — messageId explicite déjà persisté', {
+            messageId: candidate,
+            existingTimestamp: existing.timestamp
+          });
+          return existing;
+        }
+        logger.warn('[#3654] collision messageId — entrée existante d\'un autre expéditeur, repli sur id auto', {
+          messageId: candidate,
+          existingFrom: existing.from,
+          callerFrom: from
+        });
+      } else {
+        explicitId = candidate;
+      }
+    }
+
     const message: Message = {
-      id: this.generateMessageId(),
+      id: explicitId ?? this.generateMessageId(),
       from,
       to,
       subject,
