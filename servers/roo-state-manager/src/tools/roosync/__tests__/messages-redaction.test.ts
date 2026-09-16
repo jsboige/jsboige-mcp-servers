@@ -59,15 +59,15 @@ vi.mock('../../../services/MessageManager.js', async () => {
   };
 });
 
-vi.mock('./heartbeat-activity.js', () => ({
+vi.mock('../heartbeat-activity.js', () => ({
   recordRooSyncActivityAsync: vi.fn(),
 }));
 
-vi.mock('../../utils/dashboard-helpers.js', () => ({
+vi.mock('../../../utils/dashboard-helpers.js', () => ({
   updateDashboardActivityAsync: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../services/lazy-roosync.js', () => ({
+vi.mock('../../../services/lazy-roosync.js', () => ({
   getRooSyncService: vi.fn(async () => ({
     getHeartbeatService: () => ({
       registerHeartbeat: vi.fn().mockResolvedValue(undefined)
