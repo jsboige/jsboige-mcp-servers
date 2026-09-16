@@ -704,9 +704,45 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Default ON; rollback via SKELETON_CLAUDE_TIER=false / SKELETON_ARCHIVE_TIER=false in .env.
         const enableClaudeTier = process.env.SKELETON_CLAUDE_TIER !== 'false';
         const enableArchiveTier = process.env.SKELETON_ARCHIVE_TIER !== 'false';
-        const enablePrewarm = process.env.SKELETON_PREWARM !== 'false';
+        // #3661 — Effective prewarm decision: explicit kill-switch `SKELETON_PREWARM=false`
+        // OR `ROO_AUTO_DISABLE_PREWARM=1` opt-in for high-multiplicity machines. The latter is
+        // a per-machine flag set at deploy time, NOT a runtime auto-detect (lesson #3661 §5
+        // — operational decision, not algorithmic). Tiers stay enabled either way; prewarm
+        // only controls the eager hydration. Lazy access to Tier 2/3 remains via
+        // awaitFreshnessWithBudget (graceful degrade to local results + notice).
+        const explicitPrewarm = process.env.SKELETON_PREWARM;
+        const autoDisable = process.env.ROO_AUTO_DISABLE_PREWARM === '1' || process.env.ROO_AUTO_DISABLE_PREWARM === 'true';
+        const enablePrewarm = explicitPrewarm !== 'false' && !autoDisable;
         SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
-        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'} prewarm=${enablePrewarm ? 'ON' : 'OFF'}`);
+        const prewarmReason = explicitPrewarm === 'false'
+            ? 'SKELETON_PREWARM=false'
+            : autoDisable
+                ? 'ROO_AUTO_DISABLE_PREWARM=1'
+                : 'default-ON';
+        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'} prewarm=${enablePrewarm ? 'ON' : 'OFF'} (reason: ${prewarmReason})`);
+
+        // #3661 — Boot instrumentation: emits a single-line JSON snapshot of boot decisions
+        // when ROO_INSTRUMENT_BOOT=1 is set on the machine. Useful for A/B measurement across
+        // N client processes on the same host. See `docs/harness/reference/skeleton-cache-multiplicity.md`.
+        if (process.env.ROO_INSTRUMENT_BOOT === '1' || process.env.ROO_INSTRUMENT_BOOT === 'true') {
+            try {
+                const instrLine = JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: 'boot',
+                    pid: process.pid,
+                    machineId: state.machineId,
+                    prewarm: enablePrewarm,
+                    prewarmReason,
+                    workerALeader: false, // set later when election runs
+                    qdrantLeader: false,  // set later when election runs
+                    tiers: { tier1: true, tier2: enableClaudeTier, tier3: enableArchiveTier },
+                    autoDisablePrewarm: autoDisable,
+                });
+                console.log(`[BOOT-INSTR] ${instrLine}`);
+            } catch {
+                /* instrumentation is non-critical */
+            }
+        }
 
         // Tier 3 cold-start: pre-warm SkeletonCacheService (incl. Tier 3 GDrive archives)
         // in background. The archive tier was ONLY loaded lazily on the first
@@ -772,8 +808,10 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             // the skeleton cache populates, totalTasks stays at 0 and indexing stalls forever.
             // This conditional re-scan only fires when the initial scan missed the cache,
             // avoiding unnecessary double-scans on every startup.
+            // #3661: gate on isWorkerALeader — the leader already runs scanForOutdatedQdrantIndex
+            // in initializeQdrantIndexingService; followers skip the post-load re-scan to avoid N×.
             if (state.conversationCache.size > 0 && state.isQdrantIndexingEnabled
-                && state.indexingMetrics.totalTasks === 0) {
+                && state.isWorkerALeader && state.indexingMetrics.totalTasks === 0) {
                 try {
                     await scanForOutdatedQdrantIndex(state);
                     console.log(`[Post-Load] Re-scanned ${state.indexingMetrics.totalTasks} skeletons for Qdrant indexing (initial scan missed cache)`);
@@ -793,17 +831,59 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             }
         });
 
-        // Auto-réparation proactive: fire-and-forget with timeout
-        startProactiveMetadataRepair().catch((error: any) => {
-            console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
-        });
+        // #3661: Worker A leader-election (skeleton refresh + startup scans).
+        // Distinct lock from #2352's Qdrant indexing — separate cycles so an indexing
+        // leader crash does not paralyse the refresh, and vice-versa. Without this,
+        // every MCP process on a high-multiplicity machine runs the SAME 2-min refresh
+        // + the SAME startup scans N times — paying N× disk I/O and N× queue contention.
+        //
+        // Fail-closed: if the lock acquisition fails for an unexpected reason, we treat
+        // this process as a follower and skip Worker A (coherent with #2352 convention).
+        // Followers observe state writes from the leader via the unified store; they
+        // do not run independent refresh intervals or scans.
+        try {
+            state.isWorkerALeader = await tryAcquireWorkerALeaderLock(state.machineId);
+            if (state.isWorkerALeader) {
+                console.log(`🔑 [WorkerA-Lead] PID ${process.pid} is Worker A leader — refresh + startup scans`);
+            } else {
+                console.log(`🔄 [WorkerA-Lead] PID ${process.pid} is Worker A follower — refresh + scans skipped (machine-local dedup)`);
+            }
+        } catch (error: any) {
+            console.warn(`⚠️ [WorkerA-Lead] Election failed for PID ${process.pid}: ${error?.message || error}. Treating as follower (fail-closed).`);
+            state.isWorkerALeader = false;
+        }
+
+        // #3661: Boot instrumentation for the Worker A election outcome.
+        if (process.env.ROO_INSTRUMENT_BOOT === '1' || process.env.ROO_INSTRUMENT_BOOT === 'true') {
+            try {
+                console.log(`[BOOT-INSTR] ${JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: 'worker-a-election',
+                    pid: process.pid,
+                    machineId: state.machineId,
+                    isWorkerALeader: state.isWorkerALeader,
+                })}`);
+            } catch {
+                /* non-critical */
+            }
+        }
 
         // Fuite po-2025 : kill-switch dur. ROO_INDEXING_ENABLED=false coupe les DEUX
         // workers d'indexation (refresh squelettes = scan disque + re-analyse, Qdrant =
         // trafic embeddings) — pour les machines a connexion facturee. Defaut : ON.
         if (!state.isQdrantIndexingEnabled) {
             console.log('⛔ [Indexing] ROO_INDEXING_ENABLED=false — skeleton refresh + Qdrant indexing desactivés');
+        } else if (!state.isWorkerALeader) {
+            // #3661: Follower — skip the refresh worker AND the startup scans. The leader
+            // carries the work for the whole machine; followers serve lazy reads only.
+            console.log(`🔄 [WorkerA-Lead] Skipping Worker A + Qdrant startup (follower — leader carries work)`);
         } else {
+            // #3661: Leader — auto-réparation, then Worker A, then Qdrant.
+            // Auto-réparation proactive: fire-and-forget with timeout
+            startProactiveMetadataRepair().catch((error: any) => {
+                console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
+            });
+
             // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
             startSkeletonRefreshWorker(state);
 
@@ -1172,6 +1252,85 @@ async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
             return false;
         } catch {
             // Corrupt/unreadable lock — overwrite
+            await fs.writeFile(lockPath, JSON.stringify(lockData));
+            return true;
+        }
+    }
+}
+
+/**
+ * #3661: Leader-election for Worker A (skeleton refresh) and startup scans.
+ *
+ * Distinct from the #2352 Qdrant indexing lock (`roosync-indexer-leader-*.lock`)
+ * so that an indexing leader crash does NOT paralyse the skeleton refresh, and
+ * vice-versa. Without this separation, every MCP process on a high-multiplicity
+ * machine (29 on ai-01 per #3661 measurement) runs the SAME 2-min refresh + the
+ * SAME startup scan N times — paying N× disk I/O and N× lock contention on
+ * `state.qdrantIndexQueue`.
+ *
+ * Lock is a machine-local file under os.tmpdir() (NOT ROOSYNC_SHARED_PATH — see
+ * #2352 fleet-storm lesson on why this matters). Same contention algorithm as
+ * `tryAcquireLeaderLock` for #2352 parity.
+ *
+ * Stale threshold is shorter (10 min) than #2352 (15 min) because the refresh
+ * cadence is shorter (2 min vs 5 min) — a stale refresh lock is recovered
+ * faster than a stale indexing lock.
+ */
+const WORKER_A_LOCK_STALE_MS = 10 * 60 * 1000; // 10 min (5× the 2-min refresh interval)
+
+/**
+ * #3661: Returns the MACHINE-LOCAL leader-lock path for Worker A. Same naming
+ * convention as #2352 but with a distinct prefix to avoid coupling the two
+ * election cycles.
+ */
+export async function getWorkerALockPath(machineId: string): Promise<string> {
+    const safeId = (machineId || 'local').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+    return path.join(os.tmpdir(), `roosync-worker-a-leader-${safeId}.lock`);
+}
+
+/**
+ * #3661: Try to acquire or renew the Worker A leader lock. Same semantics as
+ * #2352's `tryAcquireLeaderLock` but on a distinct file. Fail-closed on
+ * unexpected errors (we DO NOT assume leader if the lock file system is broken —
+ * the consequences of an N-leader race are worse than the consequences of going
+ * read-only for one cycle).
+ *
+ * Exception: only when the lock doesn't exist at all (EEXIST is NOT thrown) do
+ * we succeed — this is the normal "I'm first" path.
+ */
+async function tryAcquireWorkerALeaderLock(machineId: string): Promise<boolean> {
+    const lockPath = await getWorkerALockPath(machineId);
+    const lockData = { pid: process.pid, timestamp: Date.now() };
+
+    try {
+        await fs.writeFile(lockPath, JSON.stringify(lockData), { flag: 'wx' });
+        return true; // Created → we are the leader
+    } catch (error: any) {
+        if (error.code !== 'EEXIST') {
+            console.warn(`⚠️ [WorkerA-Lead] Unexpected error acquiring lock: ${error.message}. Assuming follower (fail-closed).`);
+            return false;
+        }
+
+        // Lock exists — check if it's ours or stale
+        try {
+            const content = await fs.readFile(lockPath, 'utf-8');
+            const existing = JSON.parse(content);
+
+            if (existing.pid === process.pid) {
+                await fs.writeFile(lockPath, JSON.stringify(lockData));
+                return true;
+            }
+
+            const age = Date.now() - existing.timestamp;
+            if (age > WORKER_A_LOCK_STALE_MS) {
+                await fs.writeFile(lockPath, JSON.stringify(lockData));
+                console.log(`🔑 [WorkerA-Lead] Stolen stale lock (previous PID ${existing.pid}, age ${Math.round(age / 1000)}s). PID ${process.pid} is now leader.`);
+                return true;
+            }
+
+            return false;
+        } catch {
+            // Corrupt/unreadable — overwrite (assume leader)
             await fs.writeFile(lockPath, JSON.stringify(lockData));
             return true;
         }

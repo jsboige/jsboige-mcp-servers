@@ -273,3 +273,97 @@ describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le so
         expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
     });
 });
+
+/**
+ * #3661 — ROO_AUTO_DISABLE_PREWARM est un kill-switch operationnel pour machines a forte
+ * multiplicite (cf. issue body : 29 hotes MCP sur ai-01 → ~76 Go prives cumules). Il NE
+ * desactive que l'hydratation eager ; les tiers 2/3 restent visibles (#1747 preserve)
+ * et accessibles en lazy-load via awaitFreshnessWithBudget.
+ *
+ * Cible : axe 1 (empreinte memoire). Sans ce kill-switch effectif, le cout marginal
+ * d'un hote inactif reste ~3,2 Go (Tier 3 = 2125 Mo + Tier 2 = 950 Mo + serveur = 142 Mo).
+ */
+describe('SKELETON_PREWARM — ROO_AUTO_DISABLE_PREWARM (#3661)', () => {
+    const AUTO = 'ROO_AUTO_DISABLE_PREWARM';
+    const PREWARM = 'SKELETON_PREWARM';
+    const originalAuto = process.env[AUTO];
+    const originalPrewarm = process.env[PREWARM];
+    const originalIndexing = process.env[ENV_VAR];
+
+    beforeEach(() => {
+        // Hermetisme : empeche les vrais setInterval d'initializeBackgroundServices
+        process.env[ENV_VAR] = 'false';
+        // Clear prewarm so AUTO flag is the only decision-maker
+        delete process.env[PREWARM];
+    });
+
+    afterEach(() => {
+        if (originalAuto === undefined) delete process.env[AUTO];
+        else process.env[AUTO] = originalAuto;
+        if (originalPrewarm === undefined) delete process.env[PREWARM];
+        else process.env[PREWARM] = originalPrewarm;
+        if (originalIndexing === undefined) delete process.env[ENV_VAR];
+        else process.env[ENV_VAR] = originalIndexing;
+    });
+
+    it("ROO_AUTO_DISABLE_PREWARM absent + SKELETON_PREWARM absent : prechauffage ON (defaut inchange)", async () => {
+        delete process.env[AUTO];
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
+        // Tiers restent allumes (#1747 preserve)
+        expect(skeletonCache.configure).toHaveBeenCalledWith({
+            enableClaudeTier: true,
+            enableArchiveTier: true,
+        });
+    });
+
+    it("ROO_AUTO_DISABLE_PREWARM=1 : AUCUN prechauffage (kill-switch effectif)", async () => {
+        process.env[AUTO] = '1';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
+    });
+
+    it("ROO_AUTO_DISABLE_PREWARM=true : AUCUN prechauffage (memes conventions que les autres kill-switch)", async () => {
+        process.env[AUTO] = 'true';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
+    });
+
+    it("ROO_AUTO_DISABLE_PREWARM=0 : prechauffage ON (valeur inattendue ne coupe pas)", async () => {
+        // Convention coherente avec SKELETON_PREWARM : seule la chaine exacte
+        // 'false'/'1'/'true' coupe. Une valeur inattendue preserve le defaut ON.
+        process.env[AUTO] = '0';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
+    });
+
+    it("ROO_AUTO_DISABLE_PREWARM=1 : les tiers 2 et 3 restent ALLUMES (#1747 preserve)", async () => {
+        process.env[AUTO] = '1';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.configure).toHaveBeenCalledWith({
+            enableClaudeTier: true,
+            enableArchiveTier: true,
+        });
+    });
+
+    it("SKELETON_PREWARM=false + ROO_AUTO_DISABLE_PREWARM=1 : prechauffage coupe (les deux flags disent off)", async () => {
+        // Les deux flags disent off — l'effet observable est identique. L'assertion tient
+        // sur le résultat, pas sur la raison : on accepte que l'un OU l'autre ait coupe.
+        process.env[PREWARM] = 'false';
+        process.env[AUTO] = '1';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
+    });
+});
