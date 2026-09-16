@@ -21,8 +21,55 @@ import {
   getLocalMachineId,
   resolveCallerIdentity
 } from '../../utils/message-helpers.js';
+import { maskSecretTextForPublication } from '../../utils/secret-redaction.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { updateDashboardActivityAsync } from '../../utils/dashboard-helpers.js';
+
+/**
+ * #3584 — frontière unique de masquage pour les messages RooSync (send/reply/amend).
+ *
+ * Masque les champs texte d'un message à la frontière de publication, AVANT que la valeur
+ * ne touche le stockage partagé. Couvre :
+ *   - les formes auto-descriptives (FORM_LAYER_MARKER : sk-, ghp_, Bearer, ...) ;
+ *   - les valeurs secrètes connues du process (env du serveur MCP, .env.secrets, etc.).
+ *
+ * Volet rétention : la condensation/archivage des dashboards est déjà protégée par
+ * `redactMessagesForPublication` côté dashboard.ts ; ici on protège le canal DM, qui
+ * n'était PAS couvert par le premier vol de #3584 (incident fondateur : clé embeddings
+ * publiée sur le dashboard global le 11/09).
+ */
+function redactMessageForPublication<T extends { body?: string; subject?: string; new_content?: string }>(args: T): T {
+  const originalBody = args.body;
+  const originalSubject = args.subject;
+  const originalNewContent = args.new_content;
+
+  const maskedBody = args.body !== undefined ? maskSecretTextForPublication(args.body) : args.body;
+  const maskedSubject = args.subject !== undefined ? maskSecretTextForPublication(args.subject) : args.subject;
+  const maskedNewContent = args.new_content !== undefined ? maskSecretTextForPublication(args.new_content) : args.new_content;
+
+  const fieldsMasked =
+    (maskedBody !== originalBody ? 1 : 0) +
+    (maskedSubject !== originalSubject ? 1 : 0) +
+    (maskedNewContent !== originalNewContent ? 1 : 0);
+
+  if (fieldsMasked === 0) return args;
+
+  logger.warn('[MESSAGE-REDACTION] secret masqué à la publication (#3584)', {
+    fieldsMasked,
+    bodyMasked: maskedBody !== originalBody,
+    subjectMasked: maskedSubject !== originalSubject,
+    newContentMasked: maskedNewContent !== originalNewContent,
+    to: (args as any).to,
+    action: (args as any).action
+  });
+
+  return {
+    ...args,
+    body: maskedBody,
+    subject: maskedSubject,
+    new_content: maskedNewContent
+  } as T;
+}
 
 // Logger instance for send tool
 const logger: Logger = createLogger('RooSyncSendTool');
@@ -582,6 +629,15 @@ export async function roosyncSend(
         { missingParam: 'action', providedArgs: Object.keys(args) }
       );
     }
+
+    // #3584 — frontière unique de masquage pour send/reply/amend.
+    // On masque ICI, au niveau du routeur, AVANT toute persistance GDrive/PG :
+    //   - body / subject sont concernés par 'send' et 'reply' ;
+    //   - new_content est concerné par 'amend' (le sujet reste l'original,
+    //     mais le contenu corrigé doit aussi passer la frontière).
+    // Le masque retourne l'objet d'origine par identité si rien n'a bougé,
+    // donc le coût est nul sur le chemin commun.
+    args = redactMessageForPublication(args);
 
     // Initialiser le MessageManager (singleton)
     const messageManager = getMessageManager();
