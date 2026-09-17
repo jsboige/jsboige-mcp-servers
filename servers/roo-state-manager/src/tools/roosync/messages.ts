@@ -24,8 +24,40 @@ import {
   canonicalMachineId,
   parseMachineWorkspace,
   resolveCallerIdentity,
+  getLocalMachineId,
   TRUSTED_CALLER_IDS_ENV,
 } from '../../utils/message-helpers.js';
+
+/**
+ * #3702: the bulk actions honor the `workspace` override (#1498) the same way
+ * `inbox` does — folded into the effective reader identity (`as`) instead of
+ * silently dropped. Same machine only: a workspace override carrying a machine
+ * part different from the caller's is an explicit identity conflict, never a
+ * silent machine switch (#3177/#3591).
+ */
+function foldBulkWorkspace(callerAs: string | undefined, workspace: string | undefined): string | undefined {
+  if (!workspace) return callerAs;
+  let machinePart: string | undefined;
+  let workspacePart = workspace;
+  if (workspace.includes(':')) {
+    const [m, ...rest] = workspace.split(':');
+    machinePart = m;
+    workspacePart = rest.join(':');
+  }
+  const baseMachine = callerAs
+    ? parseMachineWorkspace(callerAs).machineId
+    : getLocalMachineId();
+  if (machinePart && machinePart.toLowerCase() !== baseMachine.toLowerCase()) {
+    throw new StateManagerError(
+      `Conflit d'identité : as="${callerAs ?? '(local)'}" mais workspace="${workspace}" désigne la machine "${machinePart}". ` +
+        `Le bulk opère sur la machine de l'appelant — fournissez le workspace SEUL (#3177).`,
+      'VALIDATION_FAILED',
+      'RooSyncMessagesTool',
+      { as: callerAs, workspace, machineFromWorkspace: machinePart }
+    );
+  }
+  return workspacePart ? `${baseMachine}:${workspacePart}` : baseMachine;
+}
 
 const logger = createLogger('RooSyncMessagesTool');
 
@@ -358,7 +390,7 @@ export async function roosyncMessages(args: MessagesArgs) {
         before_date: args.before_date,
         subject_contains: args.subject_contains,
         tag: args.tag,
-        as: callerAs
+        as: foldBulkWorkspace(callerAs, args.workspace)
       });
 
     case 'bulk_archive':
@@ -369,7 +401,7 @@ export async function roosyncMessages(args: MessagesArgs) {
         before_date: args.before_date,
         subject_contains: args.subject_contains,
         tag: args.tag,
-        as: callerAs
+        as: foldBulkWorkspace(callerAs, args.workspace)
       });
 
     case 'cleanup':

@@ -370,4 +370,80 @@ describe('roosyncManage - bulk operations (#613)', () => {
       expect(stats.oldest_unread).toBe(oldDate);
     });
   });
+
+  // ============================================================
+  // #3702: bulk status filter must use the per-reader lens
+  // (machine-wide targets never flip their global status;
+  // a workspace that read them must not re-match them)
+  // ============================================================
+  describe('MessageManager.bulkOperation #3702 per-reader status', () => {
+    test('machine-wide already read by this workspace is NOT re-matched (the 342)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender-machine', 'test-machine',
+        'Machine-wide read by ws-a', 'Body', 'MEDIUM'
+      );
+      await messageManager.markAsRead(msg.id, 'test-machine:ws-a');
+
+      const result = await messageManager.bulkOperation(
+        'test-machine', 'mark_read',
+        { status: 'unread' }, 'ws-a'
+      );
+
+      expect(result.message_ids).not.toContain(msg.id);
+      expect(result.matched).toBe(0);
+    });
+
+    test('machine-wide NOT read by this workspace IS matched', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender-machine', 'test-machine',
+        'Machine-wide unread for ws-a', 'Body', 'MEDIUM'
+      );
+
+      const result = await messageManager.bulkOperation(
+        'test-machine', 'mark_read',
+        { status: 'unread' }, 'ws-a'
+      );
+
+      expect(result.message_ids).toContain(msg.id);
+    });
+
+    test('broadcast read by this machine stays excluded (non-regression #629)', async () => {
+      const msg = await messageManager.sendMessage(
+        'sender-machine', 'all',
+        'Broadcast read by machine', 'Body', 'MEDIUM'
+      );
+      await messageManager.markAsRead(msg.id, 'test-machine');
+
+      const result = await messageManager.bulkOperation(
+        'test-machine', 'mark_read',
+        { status: 'unread' }, 'ws-a'
+      );
+
+      expect(result.message_ids).not.toContain(msg.id);
+    });
+
+    test('exact match count: machine-wide already-read do not inflate it', async () => {
+      for (let i = 0; i < 3; i++) {
+        const mw = await messageManager.sendMessage(
+          'sender-machine', 'test-machine',
+          `Machine-wide read ${i}`, 'Body', 'MEDIUM'
+        );
+        await messageManager.markAsRead(mw.id, 'test-machine:ws-a');
+      }
+      for (let i = 0; i < 2; i++) {
+        await messageManager.sendMessage(
+          'sender-machine', 'test-machine:ws-a',
+          `Direct unread ${i}`, 'Body', 'MEDIUM'
+        );
+      }
+
+      const result = await messageManager.bulkOperation(
+        'test-machine', 'mark_read',
+        { status: 'unread' }, 'ws-a'
+      );
+
+      expect(result.matched).toBe(2);
+    });
+  });
 });
+

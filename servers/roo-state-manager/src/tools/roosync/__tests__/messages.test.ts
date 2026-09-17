@@ -265,6 +265,54 @@ describe('roosync_messages dispatcher', () => {
       );
     });
 
+    // #3702: the `workspace` override is honored on bulk (folded into the
+    // reader identity) instead of silently dropped. Same trusted-caller env
+    // pattern as the #3591 describe below.
+    describe('bulk workspace override (#3702)', () => {
+      const ENV_VAR = 'ROOSYNC_TRUSTED_CALLER_IDS';
+      let savedEnv: string | undefined;
+
+      beforeEach(() => {
+        savedEnv = process.env[ENV_VAR];
+        process.env[ENV_VAR] = 'myia-po-2026';
+      });
+
+      afterEach(() => {
+        if (savedEnv === undefined) delete process.env[ENV_VAR];
+        else process.env[ENV_VAR] = savedEnv;
+      });
+
+      test('bulk_mark_read folds workspace override into reader identity', async () => {
+        await roosyncMessages({
+          action: 'bulk_mark_read',
+          as: 'myia-po-2026:roo-extensions',
+          workspace: 'CoursIA'
+        });
+        expect(mockManage).toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'bulk_mark_read', as: 'myia-po-2026:CoursIA' })
+        );
+      });
+
+      test('bulk_archive folds workspace override too', async () => {
+        await roosyncMessages({
+          action: 'bulk_archive',
+          as: 'myia-po-2026:roo-extensions',
+          workspace: 'CoursIA'
+        });
+        expect(mockManage).toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'bulk_archive', as: 'myia-po-2026:CoursIA' })
+        );
+      });
+
+      test('workspace override naming another machine is an explicit conflict (#3177)', async () => {
+        await expect(roosyncMessages({
+          action: 'bulk_mark_read',
+          as: 'myia-po-2026:roo-extensions',
+          workspace: 'other-machine:CoursIA'
+        })).rejects.toThrow(/Conflit d'identité/);
+      });
+    });
+
     test('bulk_archive routes to roosyncManage', async () => {
       await roosyncMessages({ action: 'bulk_archive', before_date: '2026-01-01' });
       expect(mockManage).toHaveBeenCalledWith(

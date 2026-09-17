@@ -2274,15 +2274,15 @@ export class MessageManager {
         continue;
       }
       if (filters.status) {
-        const isBroadcast = message.to === 'all' || message.to === 'All';
-        if (isBroadcast && message.read_by) {
-          const readerMachineId = parseMachineWorkspace(machineId).machineId;
-          const hasRead = message.read_by.includes(readerMachineId);
-          if (filters.status === 'unread' && hasRead) continue;
-          if (filters.status === 'read' && !hasRead) continue;
-        } else {
-          if (message.status !== filters.status) continue;
-        }
+        // #3702: same per-reader lens as the inbox view. Broadcasts are tracked
+        // per machine and machine-wide targets per workspace (applyReadTracking
+        // never flips their global status by design) — filtering on the global
+        // status re-matched machine-wide messages this workspace had already
+        // read. perReaderStatus is the single source; null = class not tracked
+        // per-reader (direct targets, legacy already-flipped) -> global status.
+        const perReader = perReaderStatus(message, machineId, effectiveWorkspaceId);
+        const effective = perReader ?? message.status;
+        if (effective !== filters.status) continue;
       }
 
       matchedIds.push(message.id);
