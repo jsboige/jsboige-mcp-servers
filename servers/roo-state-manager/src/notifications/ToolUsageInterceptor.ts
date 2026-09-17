@@ -22,11 +22,18 @@
  */
 
 import { NotificationService, NotificationEvent } from './NotificationService.js';
-import { MessageManager, Message } from '../services/MessageManager.js';
+import { MessageManager, type MessageListItem } from '../services/MessageManager.js';
 import { scanDiskForNewTasks } from '../tools/task/disk-scanner.js';
 import { SkeletonHeader } from '../types/conversation.js';
 import { getLocalWorkspaceId } from '../utils/message-helpers.js';
 import { isSharedPathAccessible } from '../utils/shared-state-path.js';
+
+/**
+ * Fields the notification path consumes from an inbox item. MessageListItem
+ * satisfies this structurally — the tick builds the footer and the
+ * notification payload straight from the readInbox result.
+ */
+type InboxNotificationItem = Pick<MessageListItem, 'id' | 'from' | 'subject' | 'priority' | 'timestamp'>;
 
 /** Background inbox check interval (ms) */
 const BACKGROUND_CHECK_INTERVAL_MS = 60_000;
@@ -226,20 +233,20 @@ export class ToolUsageInterceptor {
 
     try {
       if (this.config.checkInbox) {
-        const unreadItems = await this.messageManager.readInbox(
+        // jsboige/Maintenance#28: the tick used to resolve every unread item
+        // through getMessage right after readInbox had served the same items
+        // from inboxFullCache — existsSync x3 + readFile per unread message
+        // per 60s tick, the sustained DriveFS flood measured by ProcMon
+        // (~9.5 req/s/instance on `.shared-state/messages/inbox/msg-*.json`).
+        // The list items already carry every field the footer and the
+        // notification payload consume, so the per-item round-trip bought
+        // nothing but I/O.
+        const messages: InboxNotificationItem[] = await this.messageManager.readInbox(
           this.config.machineId,
           'unread',
           undefined,
           getLocalWorkspaceId()
         );
-
-        const messages: Message[] = [];
-        for (const item of unreadItems) {
-          const msg = await this.messageManager.getMessage(item.id);
-          if (msg) {
-            messages.push(msg);
-          }
-        }
 
         // Only notify about messages we haven't already notified about
         const newToNotify = messages.filter(m => !this.notifiedMessageIds.has(m.id));
@@ -304,7 +311,7 @@ export class ToolUsageInterceptor {
    * Called from background check — never on hot path.
    * @private
    */
-  private updatePendingFooter(messages: Message[]): void {
+  private updatePendingFooter(messages: InboxNotificationItem[]): void {
     const footerEnabled = process.env.NOTIFICATIONS_FOOTER_ENABLED !== 'false';
     if (!footerEnabled || messages.length === 0) {
       this.pendingFooter = null;
@@ -413,7 +420,7 @@ export class ToolUsageInterceptor {
    * @param toolName Nom de l'outil en cours d'exécution
    * @private
    */
-  private async notifyNewMessages(messages: Message[], toolName: string): Promise<void> {
+  private async notifyNewMessages(messages: InboxNotificationItem[], toolName: string): Promise<void> {
     // Calculer la priorité maximale des messages
     const highestPriority = this.calculateHighestPriority(messages);
     
@@ -452,13 +459,13 @@ export class ToolUsageInterceptor {
    * @returns Priorité la plus élevée
    * @private
    */
-  private calculateHighestPriority(messages: Message[]): 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT' {
+  private calculateHighestPriority(messages: InboxNotificationItem[]): 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT' {
     const priorities: Array<'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT'> = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
     const priorityValues = { LOW: 0, MEDIUM: 1, HIGH: 2, URGENT: 3 };
-    
+
     let maxValue = 0;
     for (const msg of messages) {
-      const value = priorityValues[msg.priority];
+      const value = priorityValues[msg.priority as keyof typeof priorityValues];
       if (value > maxValue) {
         maxValue = value;
       }
