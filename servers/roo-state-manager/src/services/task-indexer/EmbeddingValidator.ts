@@ -5,6 +5,7 @@
 
 import { StateManagerError } from '../../types/errors.js';
 import { getEmbeddingDimensions } from '../openai.js';
+import { createKnownValueMasker } from '../../utils/known-value-masker.js';
 
 /**
  * Valide qu'un vecteur a la bonne dimension et ne contient pas de NaN/Infinity
@@ -65,11 +66,21 @@ export const SECRET_PATTERNS: Array<[RegExp, string]> = [
     [/gh[opsur]_[A-Za-z0-9]{36,}/g, '<redacted-gh>'],        // GitHub PAT / OAuth / server tokens
     [/xox[baprs]-[A-Za-z0-9-]{10,}/g, '<redacted-slack>'],   // Slack tokens
     [/Bearer\s+[A-Za-z0-9_\-.=]+/gi, 'Bearer <redacted>'],   // Authorization: Bearer …
+    // URI à credentials : le userinfo `user:pass` de `scheme://user:pass@host`. La classe
+    // de valeur du motif NAME=VALUE ci-dessous exclut ':' et '@', donc ces URI passaient
+    // intégralement en clair (#3584 §5.1). DOIT courir AVANT NAME=VALUE : sinon le scheme
+    // (souvent ≥ 8 car. alphanumériques) est masqué seul et l'userinfo reste nu derrière.
+    // User optionnel (`*`) : redis accepte `redis://:password@host`.
+    [
+        /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]+@/gi,
+        '$1<redacted>@',
+    ],
     // Forme NAME=VALUE / NAME: VALUE (env-dump, header HTTP). Groupe 1 = nom+connecteur (préservé).
-    // Couvre QDRANT__SERVICE__API_KEY=…, OPENAI_API_KEY=…, api-key: …, ACCESS_KEY=…, SECRET: …
+    // Couvre QDRANT__SERVICE__API_KEY=…, OPENAI_API_KEY=…, api-key: …, ACCESS_KEY=…, SECRET: …,
+    // et les noms de connexion *_URL/*_URI/*_DSN/CONN[_-]STRING (#3584 §5.2).
     // La valeur exige ≥ 8 caractères → un `TOKEN: abc` court n'est pas masqué (bruit).
     [
-        /((?:[A-Za-z0-9_]*(?:API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)[A-Za-z0-9_]*)\s*[=:]\s*)['"]?[A-Za-z0-9_\-./+]{8,}['"]?/gi,
+        /((?:[A-Za-z0-9_]*(?:API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|URL|URI|DSN|CONN(?:ECTION)?[_-]?STR(?:ING)?)[A-Za-z0-9_]*)\s*[=:]\s*)['"]?[A-Za-z0-9_\-./+]{8,}['"]?/gi,
         '$1<redacted>',
     ],
 ];
@@ -92,6 +103,15 @@ export function redactSecrets(value: string): string {
  * @param payload Le payload à nettoyer
  * @returns Le payload nettoyé
  */
+// Masqueur par valeur connue, construit une fois par process (l'index — scan de l'env,
+// tri par longueur — ne dépend pas du payload ; cf. header de known-value-masker.ts).
+let cachedKnownValueMasker: ((text: string) => string) | null = null;
+
+/** Réinitialise le cache du masqueur par valeur — réservé aux tests (env injecté). */
+export function resetKnownValueMaskerCache(): void {
+    cachedKnownValueMasker = null;
+}
+
 export function sanitizePayload(payload: any): any {
     const cleaned = { ...payload };
 
@@ -104,8 +124,10 @@ export function sanitizePayload(payload: any): any {
             delete cleaned[key];
         }
         if (typeof cleaned[key] === 'string') {
-            // Masquer les secrets AVANT le check empty (sécurité #2783)
-            cleaned[key] = redactSecrets(cleaned[key]);
+            // Masquer les secrets AVANT le check empty (#2783, #3584 §5.3) :
+            // forme d'abord (motifs auto-descriptifs), valeur connue ensuite.
+            if (!cachedKnownValueMasker) cachedKnownValueMasker = createKnownValueMasker();
+            cleaned[key] = cachedKnownValueMasker(redactSecrets(cleaned[key]));
             // S'assurer que les strings ne sont pas vides
             if (cleaned[key].trim() === '') {
                 delete cleaned[key];
