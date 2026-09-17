@@ -15,7 +15,7 @@ import { createLogger } from '../../utils/logger.js';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { extractMachineActivity, isRecentlyActive } from '../../utils/dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } from '../../utils/dashboard-activity.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import * as os from 'os';
 
@@ -159,8 +159,33 @@ async function collectSystemHealth(): Promise<{
     // #2546: Use shared extractMachineActivity + isRecentlyActive (8h threshold)
     // same as get-status.ts — single source of truth for presence classification
     const activity = extractMachineActivity(contents);
-    const onlineMachines: string[] = [];
 
+    // #2546: Use dynamic registry (service.getKnownMachineIds()) instead of
+    // hardcoded KNOWN_MACHINES list — stays in sync with fleet changes.
+    // Machines in registry but absent from ALL dashboard activity = unknown.
+    let registryMachineIds: string[] = [];
+    try {
+      const service = await getRooSyncService();
+      registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
+    } catch {
+      // Fallback to hardcoded list if service unavailable
+      registryMachineIds = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
+    }
+
+    // #3695: a machine whose every message was archived out of the current
+    // files by auto-condensation vanishes from the activity map (lastSeen
+    // regressing to null → false SYNC_STALE "never seen"). Archives preserve
+    // the message headers — recover the lastSeen lazily, only for registry
+    // machines missing from current files (never scan 8k+ archives eagerly).
+    const missingFromCurrent = registryMachineIds.filter(mid => !activity.has(mid.toLowerCase()));
+    if (missingFromCurrent.length > 0) {
+      for (const [mid, ts] of lookupMachineActivityInArchives(dashboardsDir, missingFromCurrent)) {
+        const existing = activity.get(mid);
+        if (!existing || ts > existing) activity.set(mid, ts);
+      }
+    }
+
+    const onlineMachines: string[] = [];
     for (const [machineId, lastSeenStr] of activity) {
       const id = machineId.toLowerCase();
       if (!isKnownMachine(id)) continue;
@@ -174,18 +199,7 @@ async function collectSystemHealth(): Promise<{
       // registry check below if they haven't posted at all.
     }
 
-    // #2546: Use dynamic registry (service.getKnownMachineIds()) instead of
-    // hardcoded KNOWN_MACHINES list — stays in sync with fleet changes.
-    // Machines in registry but absent from ALL dashboard activity = unknown.
     const seenSet = new Set(onlineMachines.map(m => m.toLowerCase()));
-    let registryMachineIds: string[] = [];
-    try {
-      const service = await getRooSyncService();
-      registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
-    } catch {
-      // Fallback to hardcoded list if service unavailable
-      registryMachineIds = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
-    }
 
     for (const mid of registryMachineIds) {
       const lastSeen = activity.get(mid.toLowerCase());

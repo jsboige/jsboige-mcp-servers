@@ -11,10 +11,13 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
- * @version 3.0.0 (#1953 Phase 4: dashboard discovery of absent machines)
+ * @version 3.1.0 (#3695: machine-id normalization for old `machine:workspace|path`
+ *               headers + lazy archive lookup for fully-archived machines)
  */
 
 import { createLogger } from './logger.js';
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 const logger = createLogger('DashboardActivity');
 
@@ -50,7 +53,11 @@ export function extractMachineActivity(dashboardContent: string | string[]): Map
 			const timestamp = match[1];
 			const authorField = match[2];
 
-			const machineId = authorField.split('|')[0].toLowerCase().trim();
+			// #3695: old header format `machine:workspace|path` (pre-v3 authors,
+			// fossilized on dashboards like workspace-c--dev-CoursIA-2, 30/08)
+			// must not create phantom `machine:workspace` activity keys that the
+			// current format never updates — normalize to the bare machine id.
+			const machineId = authorField.split('|')[0].split(':')[0].toLowerCase().trim();
 			if (!machineId.startsWith('myia-')) continue;
 
 			const existing = activity.get(machineId);
@@ -158,4 +165,68 @@ export function crossCheckWithDashboard(
 	}
 
 	return { onlineMachines, unknownMachines, idleMachines, overrides };
+}
+
+/**
+ * #3695: recover last-seen timestamps for machines whose every message was
+ * archived out of the current dashboard files by auto-condensation.
+ *
+ * Archives preserve the exact `### [ts] machine|workspace` headers, but a
+ * mature shared state carries thousands of them (8k+ files / 164 MB on the
+ * prod mirror, 2026-09) — an eager full read per status call is not
+ * affordable. This lookup scans archive files NEWEST FIRST (archive filenames
+ * embed the condensation ISO date) and stops once every requested machine was
+ * found, so a machine archived recently resolves in a handful of reads, and a
+ * machine truly never seen still ends at the honest `null` of #3160 after a
+ * full scan (the pathological case only — it means "verify your mirror").
+ *
+ * @param dashboardsDir - The dashboards/ directory (archive/ lives inside it).
+ * @param machineIds - Machine IDs to look for (case-insensitive).
+ * @returns Map of machineId (lowercase) -> most recent ISO timestamp found in archives.
+ */
+export function lookupMachineActivityInArchives(
+	dashboardsDir: string,
+	machineIds: string[]
+): Map<string, string> {
+	const wanted = new Set(machineIds.map(m => m.toLowerCase()));
+	const found = new Map<string, string>();
+	if (wanted.size === 0) return found;
+
+	let archiveFiles: string[];
+	try {
+		archiveFiles = readdirSync(join(dashboardsDir, 'archive')).filter(f => f.endsWith('.md'));
+	} catch {
+		return found; // no archive dir yet — nothing was ever condensed
+	}
+
+	// Newest first: the machine being looked for was usually archived recently.
+	// Some legacy names embed several dates (e.g. `...-pre-delete-<iso>`) — take
+	// the max so the sort key is always the most recent date in the name.
+	const dateOf = (name: string): string => {
+		let latest = '';
+		for (const m of name.matchAll(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/g)) {
+			if (m[1] > latest) latest = m[1];
+		}
+		return latest;
+	};
+	archiveFiles.sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+
+	for (const file of archiveFiles) {
+		if (wanted.size === 0) break;
+		let content: string;
+		try {
+			content = readFileSync(join(dashboardsDir, 'archive', file), 'utf-8');
+		} catch {
+			continue;
+		}
+		for (const [machineId, ts] of extractMachineActivity(content)) {
+			if (!wanted.has(machineId)) continue;
+			const existing = found.get(machineId);
+			if (!existing || ts > existing) found.set(machineId, ts);
+		}
+		for (const machineId of found.keys()) {
+			wanted.delete(machineId);
+		}
+	}
+	return found;
 }

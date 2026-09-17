@@ -343,8 +343,25 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     const machineLastSeen: Record<string, string | null> = {};
 
     try {
-      const { extractMachineActivity, isRecentlyActive } = await import('../../utils/dashboard-activity.js');
+      const { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } = await import('../../utils/dashboard-activity.js');
       const activity = extractMachineActivity(dashboardContents);
+
+      // #3695: a machine whose every message was archived out of the current
+      // files by auto-condensation vanishes from the activity map (lastSeen
+      // regressing to null). Archives preserve the message headers — recover
+      // the lastSeen lazily, only for registry machines missing from current
+      // files (8k+ archive files on prod: never scanned eagerly).
+      const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
+      const missingFromCurrent = registryMachineIds.filter(mid => !activity.has(mid.toLowerCase()));
+      if (missingFromCurrent.length > 0) {
+        for (const [mid, ts] of lookupMachineActivityInArchives(
+          join(getSharedStatePath(), 'dashboards'),
+          missingFromCurrent
+        )) {
+          const existing = activity.get(mid);
+          if (!existing || ts > existing) activity.set(mid, ts);
+        }
+      }
 
       // Classify machines based purely on dashboard activity
       for (const [machineId, lastSeen] of activity.entries()) {
@@ -357,7 +374,6 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       }
 
       // Known machine IDs from registry that weren't seen on any dashboard
-      const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
       const seenSet = new Set(filteredOnlineMachines.map(m => m.toLowerCase()));
       for (const mid of registryMachineIds) {
         if (!seenSet.has(mid.toLowerCase())) {
