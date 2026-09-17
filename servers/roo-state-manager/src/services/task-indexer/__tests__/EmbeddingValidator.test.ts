@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateVectorGlobal, sanitizePayload, redactSecrets } from '../EmbeddingValidator.js';
+import { validateVectorGlobal, sanitizePayload, redactSecrets, resetKnownValueMaskerCache } from '../EmbeddingValidator.js';
 import { StateManagerError } from '../../../types/errors.js';
 
 // Mock the openai module
@@ -303,6 +303,78 @@ describe('EmbeddingValidator', () => {
       const payload = { content: 'a normal message with spaces', key: 'value' };
       const result = sanitizePayload(payload);
       expect(result).toEqual({ content: 'a normal message with spaces', key: 'value' });
+    });
+  });
+
+  // URI à credentials : `scheme://user:pass@host` passait en clair à travers les DEUX
+  // masqueurs — la classe de valeur du motif NAME=VALUE exclut ':' et '@' (#3584 §5.1,
+  // constat ai-01 13/09 : `UNIFIED_STORE_PG_URL` nu ET nommé, inchangés tous deux).
+  // Comme ci-dessus : placeholders fictifs uniquement.
+  describe('redactSecrets — URI credentials (#3584 §5.1)', () => {
+    it('should mask the userinfo of a postgresql URI, preserving scheme and host', () => {
+      const out = redactSecrets('postgres://svcuser:s3cr3tpw@localhost:5433/unified_store');
+      expect(out).toBe('postgres://<redacted>@localhost:5433/unified_store');
+    });
+
+    it('should mask an empty-username URI (redis://:password@host)', () => {
+      const out = redactSecrets('redis://:fallbackpw@192.168.0.50:6379/0');
+      expect(out).toBe('redis://<redacted>@192.168.0.50:6379/0');
+    });
+
+    it('should mask a bare URI with no variable name around it', () => {
+      const out = redactSecrets('connection string: mongodb://dbuser:dbpass@mongo.internal:27017/prod');
+      expect(out).toContain('mongodb://<redacted>@mongo.internal:27017/prod');
+      expect(out).not.toContain('dbpass');
+    });
+
+    it('should mask NAME=VALUE when the name is a connection URL (#3584 §5.2)', () => {
+      const out = redactSecrets('UNIFIED_STORE_PG_URL=postgresql://svc:s3cr3tpw@db:5433/store');
+      expect(out).toContain('UNIFIED_STORE_PG_URL=');
+      expect(out).not.toContain('s3cr3tpw');
+      expect(out).not.toContain('svc:');
+    });
+
+    it('should mask a non-URI DSN value under a *_URL name (#3584 §5.2)', () => {
+      const out = redactSecrets('DATABASE_URL=plaintextlongvalue99');
+      expect(out).toBe('DATABASE_URL=<redacted>');
+    });
+
+    it('should NOT touch credential-free URLs (no userinfo)', () => {
+      const plain = 'docs at https://github.com/jsboige/roo-extensions and http://localhost:8080/search';
+      expect(redactSecrets(plain)).toBe(plain);
+    });
+
+    it('should not treat a git SHA or a port as credentials', () => {
+      const plain = 'commit 8e5ff8d4 merged, hub at http://192.168.0.50:3000 reachable';
+      expect(redactSecrets(plain)).toBe(plain);
+    });
+  });
+
+  // Couche valeur connue à l'INDEXATION (#3584 §5.3) : une valeur nue détenue par
+  // process.env — le cas fondateur (clé 64 hex sans nom) — est masquée avant l'upsert.
+  describe('sanitizePayload — known-value layer (#3584 §5.3)', () => {
+    const BARE_KEY = 'cafe' + 'babe'.repeat(15); // 64 hex fictifs, nue, sans nom
+
+    beforeEach(() => {
+      resetKnownValueMaskerCache();
+      process.env.__TEST_EMBEDDINGS_API_KEY = BARE_KEY;
+    });
+
+    afterEach(() => {
+      delete process.env.__TEST_EMBEDDINGS_API_KEY;
+      resetKnownValueMaskerCache();
+    });
+
+    it('should mask a bare known value embedded in an indexed content', () => {
+      const result = sanitizePayload({ content: `consumer not migrated, active key: ${BARE_KEY}` });
+      expect(result.content).toContain('<redacted:__TEST_EMBEDDINGS_API_KEY>');
+      expect(result.content).not.toContain(BARE_KEY);
+    });
+
+    it('should keep an unknown hex string (a git SHA) untouched', () => {
+      const sha = 'f'.repeat(40);
+      const result = sanitizePayload({ content: `rebased onto ${sha}` });
+      expect(result.content).toContain(sha);
     });
   });
 });
