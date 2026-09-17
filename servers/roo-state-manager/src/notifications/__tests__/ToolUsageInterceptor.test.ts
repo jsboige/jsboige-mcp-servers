@@ -389,7 +389,7 @@ describe('ToolUsageInterceptor', () => {
 
     test('avec nouveaux messages : émet une notification', async () => {
       const msg = makeMessage({ id: 'msg-1', priority: 'HIGH' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
       const notifySpy = vi.spyOn(notificationService, 'notify').mockResolvedValue(undefined);
 
       notificationService.loadFilterRules([{
@@ -406,7 +406,7 @@ describe('ToolUsageInterceptor', () => {
 
       // Trigger initial delay + let async chain resolve
       await vi.advanceTimersByTimeAsync(6_000);
-      // Allow the promise chain (readInbox → getMessage → notifyNewMessages) to settle
+      // Allow the promise chain (readInbox → notifyNewMessages) to settle
       await flushMicrotasks();
       // Flush remaining microtasks
       await vi.advanceTimersByTimeAsync(0);
@@ -438,7 +438,7 @@ describe('ToolUsageInterceptor', () => {
 
     test('déduit les messages déjà notifiés', async () => {
       const msg = makeMessage({ id: 'msg-1', priority: 'HIGH' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
       const notifySpy = vi.spyOn(notificationService, 'notify').mockResolvedValue(undefined);
 
       notificationService.loadFilterRules([{
@@ -463,6 +463,41 @@ describe('ToolUsageInterceptor', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await flushMicrotasks();
       expect(notifySpy).not.toHaveBeenCalled();
+
+      interceptor.dispose();
+    });
+
+    test('jsboige/Maintenance#28: the tick does NOT re-resolve unread items through getMessage', async () => {
+      const msg = makeMessage({ id: 'msg-1', priority: 'HIGH' });
+      const msgManager = makeMockMessageManager([msg]);
+      const notifySpy = vi.spyOn(notificationService, 'notify').mockResolvedValue(undefined);
+
+      notificationService.loadFilterRules([{
+        id: 'allow-all', eventType: 'new_message', condition: {},
+        action: 'allow', notifyUser: false,
+      }]);
+
+      const interceptor = new ToolUsageInterceptor(
+        notificationService,
+        msgManager as any,
+        conversationCache,
+        makeConfig({ checkInbox: true, minPriority: 'LOW' })
+      );
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushMicrotasks();
+
+      // The list items from readInbox are used as-is: zero getMessage
+      // round-trips per tick. The old per-unread disk reads (existsSync x3 +
+      // readFile per message every 60s) were the sustained DriveFS flood.
+      expect(msgManager.readInbox).toHaveBeenCalled();
+      expect(msgManager.getMessage).not.toHaveBeenCalled();
+      // The notification still fires from the list item alone.
+      expect(notifySpy).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'new_message' })
+      );
 
       interceptor.dispose();
     });
@@ -605,10 +640,7 @@ describe('ToolUsageInterceptor', () => {
         makeMessage({ id: 'm2', priority: 'URGENT' }),
         makeMessage({ id: 'm3', priority: 'HIGH' }),
       ];
-      const msgManager = makeMockMessageManager(
-        [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }],
-        { m1: msgs[0], m2: msgs[1], m3: msgs[2] }
-      );
+      const msgManager = makeMockMessageManager(msgs);
       const notifySpy = vi.spyOn(notificationService, 'notify').mockResolvedValue(undefined);
       notificationService.loadFilterRules([{
         id: 'allow-all', eventType: 'new_message', condition: {},
@@ -633,7 +665,7 @@ describe('ToolUsageInterceptor', () => {
 
     test('message en dessous du seuil minPriority : pas de notification', async () => {
       const msg = makeMessage({ id: 'msg-low', priority: 'LOW' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-low' }], { 'msg-low': msg });
+      const msgManager = makeMockMessageManager([msg]);
       const notifySpy = vi.spyOn(notificationService, 'notify');
 
       const interceptor = new ToolUsageInterceptor(
@@ -659,7 +691,7 @@ describe('ToolUsageInterceptor', () => {
   describe('#2192 push notification footer', () => {
     test('appends footer to string result when unread messages exist', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -698,7 +730,7 @@ describe('ToolUsageInterceptor', () => {
 
     test('footer consumed — not repeated on second call without new messages', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -725,10 +757,7 @@ describe('ToolUsageInterceptor', () => {
         makeMessage({ id: 'm1', priority: 'URGENT' }),
         makeMessage({ id: 'm2', priority: 'MEDIUM' }),
       ];
-      const msgManager = makeMockMessageManager(
-        [{ id: 'm1' }, { id: 'm2' }],
-        { m1: msgs[0], m2: msgs[1] }
-      );
+      const msgManager = makeMockMessageManager(msgs);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -749,10 +778,7 @@ describe('ToolUsageInterceptor', () => {
         makeMessage({ id: 'm1', priority: 'HIGH' }),
         makeMessage({ id: 'm2', priority: 'MEDIUM' }),
       ];
-      const msgManager = makeMockMessageManager(
-        [{ id: 'm1' }, { id: 'm2' }],
-        { m1: msgs[0], m2: msgs[1] }
-      );
+      const msgManager = makeMockMessageManager(msgs);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -770,12 +796,8 @@ describe('ToolUsageInterceptor', () => {
     });
 
     test('count capped at max (NOTIFICATIONS_MAX_COUNT)', async () => {
-      const items = Array.from({ length: 8 }, (_, i) => ({ id: `m${i}` }));
-      const messageMap: Record<string, any> = {};
-      for (let i = 0; i < 8; i++) {
-        messageMap[`m${i}`] = makeMessage({ id: `m${i}`, priority: 'MEDIUM' });
-      }
-      const msgManager = makeMockMessageManager(items, messageMap);
+      const items = Array.from({ length: 8 }, (_, i) => makeMessage({ id: `m${i}`, priority: 'MEDIUM' }));
+      const msgManager = makeMockMessageManager(items);
 
       const original = process.env.NOTIFICATIONS_MAX_COUNT;
       process.env.NOTIFICATIONS_MAX_COUNT = '3';
@@ -803,7 +825,7 @@ describe('ToolUsageInterceptor', () => {
 
     test('NOTIFICATIONS_FOOTER_ENABLED=false disables footer', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
 
       const original = process.env.NOTIFICATIONS_FOOTER_ENABLED;
       process.env.NOTIFICATIONS_FOOTER_ENABLED = 'false';
@@ -825,7 +847,7 @@ describe('ToolUsageInterceptor', () => {
 
     test('appends footer to MCP text content array', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -862,7 +884,7 @@ describe('ToolUsageInterceptor', () => {
     // legitimately disagree with a deep read — but only if the footer SAYS so.
     test('footer names the recent-slice base on a partial cache (#3488)', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg }, true);
+      const msgManager = makeMockMessageManager([msg], {}, true);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -883,7 +905,7 @@ describe('ToolUsageInterceptor', () => {
     // #3488: complete cache — no scope caveat, the count IS pool-wide.
     test('footer carries no slice caveat on a complete cache (#3488)', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg }, false);
+      const msgManager = makeMockMessageManager([msg], {}, false);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -904,10 +926,8 @@ describe('ToolUsageInterceptor', () => {
     // different numbers (33 / 2 / 0 / 421) under one word — a capped counter
     // that doesn't say it's capped is one of them.
     test('footer flags the display cap when unread count exceeds max (#3488)', async () => {
-      const messages = Array.from({ length: 7 }, (_, i) => makeMessage({ id: `msg-${i}` }));
-      const unreadItems = messages.map(m => ({ id: m.id }));
-      const messageMap = Object.fromEntries(messages.map(m => [m.id, m]));
-      const msgManager = makeMockMessageManager(unreadItems, messageMap, false);
+      const unreadItems = Array.from({ length: 7 }, (_, i) => makeMessage({ id: `msg-${i}` }));
+      const msgManager = makeMockMessageManager(unreadItems, {}, false);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,
@@ -932,7 +952,7 @@ describe('ToolUsageInterceptor', () => {
     // for roosync_messages. Dispatch ai-01 c.203 (option 4: drop, don't recompute).
     test('roosync_messages response carries no stale footer (defect #2192)', async () => {
       const msg = makeMessage({ id: 'msg-1' });
-      const msgManager = makeMockMessageManager([{ id: 'msg-1' }], { 'msg-1': msg });
+      const msgManager = makeMockMessageManager([msg]);
 
       const interceptor = new ToolUsageInterceptor(
         notificationService, msgManager as any, conversationCache,

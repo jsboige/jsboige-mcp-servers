@@ -215,17 +215,15 @@ test('inbox and global footers combine on one response', async () => {
   const interceptor = new ToolUsageInterceptor(
     new NotificationService(),
     {
-      readInbox: vi.fn().mockResolvedValue([{ id: 'inbox-1' }]),
-      getMessage: vi.fn().mockResolvedValue({
+      readInbox: vi.fn().mockResolvedValue([{
         id: 'inbox-1',
         from: 'myia-ai-01',
         to: 'test-machine',
         subject: 's',
-        body: 'b',
         priority: 'HIGH',
         status: 'unread',
         timestamp: '2026-01-01T10:00:00.000Z',
-      }),
+      }]),
       isInboxCachePartial: vi.fn().mockReturnValue(false),
     } as any,
     new Map<string, ConversationSkeleton>(),
