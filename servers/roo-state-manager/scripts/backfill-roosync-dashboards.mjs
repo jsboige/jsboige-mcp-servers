@@ -92,7 +92,7 @@ if (DRY_RUN) {
 }
 
 const buildUrl = (rel) => pathToFileURL(path.join(RSM_ROOT, 'build', rel)).href;
-const [{ getSharedStatePath }, { parseDashboardMarkdown }, { backfillDashboardToStore }, { getUnifiedStoreWriter }] =
+const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessageIds }, { backfillDashboardToStore }, { getUnifiedStoreWriter }] =
   await Promise.all([
     import(buildUrl('utils/shared-state-path.js')),
     // Dependency-light parser — importing the full dashboard tool module would
@@ -139,6 +139,7 @@ let processed = 0;
 let skipped = 0;
 let errors = 0;
 let applied = 0;
+let idlessSkipped = 0;
 // Which files failed — same rationale as the message-channel backfill: the
 // operator needs the exact subset to re-run before enabling the read flag.
 const failures = [];
@@ -158,10 +159,18 @@ for (const file of mdFiles) {
     content = content.replace(/\r\n/g, '\n'); // same normalization as the tool read path
     if (content.charCodeAt(0) === 0xfeff) content = content.slice(1); // strip UTF-8 BOM
     const dashboard = parseDashboardMarkdown(content, key);
+    // Id-less (pre-v3) guard — same rule as the dashboard reconcile: a message
+    // without a persisted [msg:] id gets a FRESH synthesized id at each parse,
+    // so importing it duplicates the row on every run. Skip and count.
+    const persisted = extractPersistedMessageIds(content);
+    const total = dashboard.intercom.messages.length;
+    dashboard.intercom.messages = dashboard.intercom.messages.filter((m) => persisted.has(m.id));
+    const skippedIdless = total - dashboard.intercom.messages.length;
+    idlessSkipped += skippedIdless;
     await backfillDashboardToStore(dashboard);
     processed++;
     applied++;
-    console.log(`  ✓ ${key} (${dashboard.intercom.messages.length} messages)`);
+    console.log(`  ✓ ${key} (${dashboard.intercom.messages.length} messages${skippedIdless > 0 ? `, ${skippedIdless} id-less skipped` : ''})`);
   } catch (err) {
     errors++;
     failures.push(`${file}: ${err?.message ?? String(err)}`);
@@ -173,6 +182,7 @@ console.log('=== Result ===');
 console.log(`  total:     ${total}`);
 console.log(`  processed: ${processed}`);
 console.log(`  skipped:   ${skipped}  (key filter)`);
+console.log(`  id-less:   ${idlessSkipped}  (pre-v3, no [msg:] id — not importable, skipped)`);
 console.log(`  errors:    ${errors}`);
 if (failures.length > 0) {
   console.log('');

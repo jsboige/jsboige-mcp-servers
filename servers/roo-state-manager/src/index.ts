@@ -307,6 +307,12 @@ class RooStateManagerServer {
         // que l'auto-archive ci-dessus : indépendante des notifications.
         await this.initializeChannelReconcile();
 
+        // #3151 Phase C residual: reconcile GDrive→PG des dashboards — le
+        // symétrique exact du canal ci-dessus. La dette de parité s'accumule
+        // sans borne depuis la mesure du 13/09 et bloque l'armement de
+        // UNIFIED_STORE_DASHBOARD_READ_PG (#3230).
+        await this.initializeDashboardReconcile();
+
         // Initialize notification system (deferred — pulls in MessageManager 3.8s)
         await this.initializeNotificationSystem();
 
@@ -477,6 +483,39 @@ class RooStateManagerServer {
         const intervalHours = parseInt(process.env.UNIFIED_STORE_CHANNEL_RECONCILE_INTERVAL_HOURS || '6', 10);
         const lookbackDays = parseInt(process.env.UNIFIED_STORE_CHANNEL_RECONCILE_LOOKBACK_DAYS || '7', 10);
         getMessageManager().startChannelReconcileDaemon(intervalHours, lookbackDays);
+    }
+
+    /**
+     * Démarre le daemon de reconcile GDrive→PG des dashboards (#3151 Phase C
+     * residual — symétrique du canal #3292).
+     *
+     * Mêmes règles que le canal : ne démarre QUE sur un process dual-write
+     * armé (la passe re-vérifie la gate à chaque run), et
+     * UNIFIED_STORE_DASHBOARD_RECONCILE_ENABLED=false l'éteint sans toucher
+     * au dual-write (diagnostic, isolation d'incident).
+     */
+    private async initializeDashboardReconcile(): Promise<void> {
+        if (process.env.UNIFIED_STORE_DASHBOARD_RECONCILE_ENABLED === 'false') {
+            logger.info('📴 [DashboardReconcile] Désactivé via UNIFIED_STORE_DASHBOARD_RECONCILE_ENABLED=false');
+            return;
+        }
+        if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+            logger.info('📴 [DashboardReconcile] Dual-write non armé — daemon non démarré');
+            return;
+        }
+        const [{ getSharedStatePath }, { join }] = await Promise.all([
+            import('./utils/shared-state-path.js'),
+            import('path'),
+        ]);
+        const { startDashboardReconcileDaemon } = await import(
+            './services/unified-store/roosync-dashboard-reconcile.js'
+        );
+        const intervalHours = parseInt(
+            process.env.UNIFIED_STORE_DASHBOARD_RECONCILE_INTERVAL_HOURS || '6',
+            10
+        );
+        const dashboardsDir = join(getSharedStatePath(), 'dashboards');
+        startDashboardReconcileDaemon({ dashboardsDir, intervalHours });
     }
 
     /**
