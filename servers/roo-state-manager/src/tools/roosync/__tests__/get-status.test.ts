@@ -66,7 +66,10 @@ vi.mock('../../../utils/dashboard-activity.js', () => ({
     overrides: []
   })),
   extractMachineActivity: mockExtractMachineActivity,
-  isRecentlyActive: mockIsRecentlyActive
+  isRecentlyActive: mockIsRecentlyActive,
+  // #3695: real archive lookup never fires here (mock activity returns every
+  // registry machine) — stub keeps the mocked module shape complete.
+  lookupMachineActivityInArchives: vi.fn(() => new Map())
 }));
 
 describe('get-status (Option B)', () => {
