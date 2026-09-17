@@ -29,6 +29,25 @@ export function generateMessageId(machineId: string, workspace: string): string 
 }
 
 /**
+ * Ids PERSISTED in the markdown (`[msg: <id>]` metadata lines, v3 #1363) —
+ * the only stable message identity across parses. Pre-v3 messages carry no
+ * id line and parseDashboardMarkdown SYNTHESIZES a fresh one at each parse
+ * (`new Date()` + random), so they cannot be fingerprinted: any GDrive↔PG
+ * parity work (reconcile, backfill) must key on this set and SKIP the rest,
+ * or it re-imports id-less messages under a new id forever.
+ *
+ * @param content Normalized content (\n line endings, BOM stripped) — same
+ *   contract as parseDashboardMarkdown's callers.
+ */
+export function extractPersistedMessageIds(content: string): Set<string> {
+  const ids = new Set<string>();
+  for (const match of content.matchAll(/^\[msg: ([^\]]+)\]$/gm)) {
+    ids.add(match[1]);
+  }
+  return ids;
+}
+
+/**
  * Parse un fichier dashboard Markdown (contenu + clé) en Dashboard.
  *
  * Format : frontmatter YAML, section `## Status`, section `## Intercom` avec
