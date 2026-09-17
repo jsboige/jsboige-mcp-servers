@@ -18,6 +18,10 @@ import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, Indexin
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { shouldIndexTask } from './task-partition.js';
 import { dualWriteConversationToStore } from './unified-store/dual-write.js';
+// #3661: Worker A election lives in its own dependency-free module so the
+// N-process acceptance test can spawn contenders that run the PRODUCTION
+// primitive instead of a copy of it.
+import { tryAcquireWorkerALeaderLock, ensureWorkerALeadershipForTick } from './worker-a-lock.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
@@ -498,6 +502,27 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
     state.skeletonRefreshInterval = setInterval(async () => {
         try {
+            // #3661: renew the Worker A lock on EVERY tick, and step down if the
+            // renewal fails. The lock's stale threshold (10 min) is 5× this 2-min
+            // cadence, so a boot-only acquisition goes stale while its leader is
+            // still alive — a later starter then steals it and runs a second
+            // refresh/repair/startup-scan stack, i.e. the N× cost this PR exists
+            // to remove. Same shape as the #2352 Qdrant leader at the indexing
+            // tick; a follower returns before doing any work.
+            //
+            // Only TRANSITIONS are logged: 'follower' is the steady state on every
+            // one of the N processes (and was already announced at boot), so
+            // logging it each tick would flood the output it is meant to serve.
+            const leadership = await ensureWorkerALeadershipForTick(state);
+            if (leadership === 'became-leader') {
+                console.log(`🔑 [WorkerA-Lead] PID ${process.pid} became Worker A leader (mid-run election)`);
+            } else if (leadership === 'stepped-down') {
+                console.warn(`⚠️ [WorkerA-Lead] PID ${process.pid} lost leadership (lock stolen). Stepped down; retrying next tick.`);
+            }
+            if (leadership === 'follower' || leadership === 'stepped-down') {
+                return;
+            }
+
             const startTime = Date.now();
             // #596: ROO_INDEX_FORCE forces a full rescan (bypass mtime incremental filter)
             // so previously unseen files (e.g., old Claude Code sessions) get discovered.
@@ -1252,85 +1277,6 @@ async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
             return false;
         } catch {
             // Corrupt/unreadable lock — overwrite
-            await fs.writeFile(lockPath, JSON.stringify(lockData));
-            return true;
-        }
-    }
-}
-
-/**
- * #3661: Leader-election for Worker A (skeleton refresh) and startup scans.
- *
- * Distinct from the #2352 Qdrant indexing lock (`roosync-indexer-leader-*.lock`)
- * so that an indexing leader crash does NOT paralyse the skeleton refresh, and
- * vice-versa. Without this separation, every MCP process on a high-multiplicity
- * machine (29 on ai-01 per #3661 measurement) runs the SAME 2-min refresh + the
- * SAME startup scan N times — paying N× disk I/O and N× lock contention on
- * `state.qdrantIndexQueue`.
- *
- * Lock is a machine-local file under os.tmpdir() (NOT ROOSYNC_SHARED_PATH — see
- * #2352 fleet-storm lesson on why this matters). Same contention algorithm as
- * `tryAcquireLeaderLock` for #2352 parity.
- *
- * Stale threshold is shorter (10 min) than #2352 (15 min) because the refresh
- * cadence is shorter (2 min vs 5 min) — a stale refresh lock is recovered
- * faster than a stale indexing lock.
- */
-const WORKER_A_LOCK_STALE_MS = 10 * 60 * 1000; // 10 min (5× the 2-min refresh interval)
-
-/**
- * #3661: Returns the MACHINE-LOCAL leader-lock path for Worker A. Same naming
- * convention as #2352 but with a distinct prefix to avoid coupling the two
- * election cycles.
- */
-export async function getWorkerALockPath(machineId: string): Promise<string> {
-    const safeId = (machineId || 'local').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-    return path.join(os.tmpdir(), `roosync-worker-a-leader-${safeId}.lock`);
-}
-
-/**
- * #3661: Try to acquire or renew the Worker A leader lock. Same semantics as
- * #2352's `tryAcquireLeaderLock` but on a distinct file. Fail-closed on
- * unexpected errors (we DO NOT assume leader if the lock file system is broken —
- * the consequences of an N-leader race are worse than the consequences of going
- * read-only for one cycle).
- *
- * Exception: only when the lock doesn't exist at all (EEXIST is NOT thrown) do
- * we succeed — this is the normal "I'm first" path.
- */
-async function tryAcquireWorkerALeaderLock(machineId: string): Promise<boolean> {
-    const lockPath = await getWorkerALockPath(machineId);
-    const lockData = { pid: process.pid, timestamp: Date.now() };
-
-    try {
-        await fs.writeFile(lockPath, JSON.stringify(lockData), { flag: 'wx' });
-        return true; // Created → we are the leader
-    } catch (error: any) {
-        if (error.code !== 'EEXIST') {
-            console.warn(`⚠️ [WorkerA-Lead] Unexpected error acquiring lock: ${error.message}. Assuming follower (fail-closed).`);
-            return false;
-        }
-
-        // Lock exists — check if it's ours or stale
-        try {
-            const content = await fs.readFile(lockPath, 'utf-8');
-            const existing = JSON.parse(content);
-
-            if (existing.pid === process.pid) {
-                await fs.writeFile(lockPath, JSON.stringify(lockData));
-                return true;
-            }
-
-            const age = Date.now() - existing.timestamp;
-            if (age > WORKER_A_LOCK_STALE_MS) {
-                await fs.writeFile(lockPath, JSON.stringify(lockData));
-                console.log(`🔑 [WorkerA-Lead] Stolen stale lock (previous PID ${existing.pid}, age ${Math.round(age / 1000)}s). PID ${process.pid} is now leader.`);
-                return true;
-            }
-
-            return false;
-        } catch {
-            // Corrupt/unreadable — overwrite (assume leader)
             await fs.writeFile(lockPath, JSON.stringify(lockData));
             return true;
         }
