@@ -18,6 +18,10 @@ import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, Indexin
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { shouldIndexTask } from './task-partition.js';
 import { dualWriteConversationToStore } from './unified-store/dual-write.js';
+// #3661: Worker A election lives in its own dependency-free module so the
+// N-process acceptance test can spawn contenders that run the PRODUCTION
+// primitive instead of a copy of it.
+import { tryAcquireWorkerALeaderLock, ensureWorkerALeadershipForTick } from './worker-a-lock.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
@@ -498,6 +502,27 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
     state.skeletonRefreshInterval = setInterval(async () => {
         try {
+            // #3661: renew the Worker A lock on EVERY tick, and step down if the
+            // renewal fails. The lock's stale threshold (10 min) is 5× this 2-min
+            // cadence, so a boot-only acquisition goes stale while its leader is
+            // still alive — a later starter then steals it and runs a second
+            // refresh/repair/startup-scan stack, i.e. the N× cost this PR exists
+            // to remove. Same shape as the #2352 Qdrant leader at the indexing
+            // tick; a follower returns before doing any work.
+            //
+            // Only TRANSITIONS are logged: 'follower' is the steady state on every
+            // one of the N processes (and was already announced at boot), so
+            // logging it each tick would flood the output it is meant to serve.
+            const leadership = await ensureWorkerALeadershipForTick(state);
+            if (leadership === 'became-leader') {
+                console.log(`🔑 [WorkerA-Lead] PID ${process.pid} became Worker A leader (mid-run election)`);
+            } else if (leadership === 'stepped-down') {
+                console.warn(`⚠️ [WorkerA-Lead] PID ${process.pid} lost leadership (lock stolen). Stepped down; retrying next tick.`);
+            }
+            if (leadership === 'follower' || leadership === 'stepped-down') {
+                return;
+            }
+
             const startTime = Date.now();
             // #596: ROO_INDEX_FORCE forces a full rescan (bypass mtime incremental filter)
             // so previously unseen files (e.g., old Claude Code sessions) get discovered.
@@ -704,9 +729,45 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Default ON; rollback via SKELETON_CLAUDE_TIER=false / SKELETON_ARCHIVE_TIER=false in .env.
         const enableClaudeTier = process.env.SKELETON_CLAUDE_TIER !== 'false';
         const enableArchiveTier = process.env.SKELETON_ARCHIVE_TIER !== 'false';
-        const enablePrewarm = process.env.SKELETON_PREWARM !== 'false';
+        // #3661 — Effective prewarm decision: explicit kill-switch `SKELETON_PREWARM=false`
+        // OR `ROO_AUTO_DISABLE_PREWARM=1` opt-in for high-multiplicity machines. The latter is
+        // a per-machine flag set at deploy time, NOT a runtime auto-detect (lesson #3661 §5
+        // — operational decision, not algorithmic). Tiers stay enabled either way; prewarm
+        // only controls the eager hydration. Lazy access to Tier 2/3 remains via
+        // awaitFreshnessWithBudget (graceful degrade to local results + notice).
+        const explicitPrewarm = process.env.SKELETON_PREWARM;
+        const autoDisable = process.env.ROO_AUTO_DISABLE_PREWARM === '1' || process.env.ROO_AUTO_DISABLE_PREWARM === 'true';
+        const enablePrewarm = explicitPrewarm !== 'false' && !autoDisable;
         SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
-        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'} prewarm=${enablePrewarm ? 'ON' : 'OFF'}`);
+        const prewarmReason = explicitPrewarm === 'false'
+            ? 'SKELETON_PREWARM=false'
+            : autoDisable
+                ? 'ROO_AUTO_DISABLE_PREWARM=1'
+                : 'default-ON';
+        console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'} prewarm=${enablePrewarm ? 'ON' : 'OFF'} (reason: ${prewarmReason})`);
+
+        // #3661 — Boot instrumentation: emits a single-line JSON snapshot of boot decisions
+        // when ROO_INSTRUMENT_BOOT=1 is set on the machine. Useful for A/B measurement across
+        // N client processes on the same host. See `docs/harness/reference/skeleton-cache-multiplicity.md`.
+        if (process.env.ROO_INSTRUMENT_BOOT === '1' || process.env.ROO_INSTRUMENT_BOOT === 'true') {
+            try {
+                const instrLine = JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: 'boot',
+                    pid: process.pid,
+                    machineId: state.machineId,
+                    prewarm: enablePrewarm,
+                    prewarmReason,
+                    workerALeader: false, // set later when election runs
+                    qdrantLeader: false,  // set later when election runs
+                    tiers: { tier1: true, tier2: enableClaudeTier, tier3: enableArchiveTier },
+                    autoDisablePrewarm: autoDisable,
+                });
+                console.log(`[BOOT-INSTR] ${instrLine}`);
+            } catch {
+                /* instrumentation is non-critical */
+            }
+        }
 
         // Tier 3 cold-start: pre-warm SkeletonCacheService (incl. Tier 3 GDrive archives)
         // in background. The archive tier was ONLY loaded lazily on the first
@@ -772,8 +833,10 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             // the skeleton cache populates, totalTasks stays at 0 and indexing stalls forever.
             // This conditional re-scan only fires when the initial scan missed the cache,
             // avoiding unnecessary double-scans on every startup.
+            // #3661: gate on isWorkerALeader — the leader already runs scanForOutdatedQdrantIndex
+            // in initializeQdrantIndexingService; followers skip the post-load re-scan to avoid N×.
             if (state.conversationCache.size > 0 && state.isQdrantIndexingEnabled
-                && state.indexingMetrics.totalTasks === 0) {
+                && state.isWorkerALeader && state.indexingMetrics.totalTasks === 0) {
                 try {
                     await scanForOutdatedQdrantIndex(state);
                     console.log(`[Post-Load] Re-scanned ${state.indexingMetrics.totalTasks} skeletons for Qdrant indexing (initial scan missed cache)`);
@@ -793,17 +856,59 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             }
         });
 
-        // Auto-réparation proactive: fire-and-forget with timeout
-        startProactiveMetadataRepair().catch((error: any) => {
-            console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
-        });
+        // #3661: Worker A leader-election (skeleton refresh + startup scans).
+        // Distinct lock from #2352's Qdrant indexing — separate cycles so an indexing
+        // leader crash does not paralyse the refresh, and vice-versa. Without this,
+        // every MCP process on a high-multiplicity machine runs the SAME 2-min refresh
+        // + the SAME startup scans N times — paying N× disk I/O and N× queue contention.
+        //
+        // Fail-closed: if the lock acquisition fails for an unexpected reason, we treat
+        // this process as a follower and skip Worker A (coherent with #2352 convention).
+        // Followers observe state writes from the leader via the unified store; they
+        // do not run independent refresh intervals or scans.
+        try {
+            state.isWorkerALeader = await tryAcquireWorkerALeaderLock(state.machineId);
+            if (state.isWorkerALeader) {
+                console.log(`🔑 [WorkerA-Lead] PID ${process.pid} is Worker A leader — refresh + startup scans`);
+            } else {
+                console.log(`🔄 [WorkerA-Lead] PID ${process.pid} is Worker A follower — refresh + scans skipped (machine-local dedup)`);
+            }
+        } catch (error: any) {
+            console.warn(`⚠️ [WorkerA-Lead] Election failed for PID ${process.pid}: ${error?.message || error}. Treating as follower (fail-closed).`);
+            state.isWorkerALeader = false;
+        }
+
+        // #3661: Boot instrumentation for the Worker A election outcome.
+        if (process.env.ROO_INSTRUMENT_BOOT === '1' || process.env.ROO_INSTRUMENT_BOOT === 'true') {
+            try {
+                console.log(`[BOOT-INSTR] ${JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: 'worker-a-election',
+                    pid: process.pid,
+                    machineId: state.machineId,
+                    isWorkerALeader: state.isWorkerALeader,
+                })}`);
+            } catch {
+                /* non-critical */
+            }
+        }
 
         // Fuite po-2025 : kill-switch dur. ROO_INDEXING_ENABLED=false coupe les DEUX
         // workers d'indexation (refresh squelettes = scan disque + re-analyse, Qdrant =
         // trafic embeddings) — pour les machines a connexion facturee. Defaut : ON.
         if (!state.isQdrantIndexingEnabled) {
             console.log('⛔ [Indexing] ROO_INDEXING_ENABLED=false — skeleton refresh + Qdrant indexing desactivés');
+        } else if (!state.isWorkerALeader) {
+            // #3661: Follower — skip the refresh worker AND the startup scans. The leader
+            // carries the work for the whole machine; followers serve lazy reads only.
+            console.log(`🔄 [WorkerA-Lead] Skipping Worker A + Qdrant startup (follower — leader carries work)`);
         } else {
+            // #3661: Leader — auto-réparation, then Worker A, then Qdrant.
+            // Auto-réparation proactive: fire-and-forget with timeout
+            startProactiveMetadataRepair().catch((error: any) => {
+                console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
+            });
+
             // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
             startSkeletonRefreshWorker(state);
 

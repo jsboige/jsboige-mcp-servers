@@ -35,6 +35,11 @@ export interface ServerState {
     isQdrantIndexingEnabled: boolean;
     // #2352: Leader-election — only one MCP instance indexes at a time
     isIndexLeader: boolean;
+    // #3661: Worker A leader-election — only one MCP instance per machine runs
+    // the 2-min skeleton refresh worker + startup scans. Distinct from isIndexLeader
+    // (which gates the Qdrant embeddings) — see roosync-worker-a-leader-*.lock vs
+    // roosync-indexer-leader-*.lock.
+    isWorkerALeader: boolean;
     // #2352: Task-space partitioning — null = disabled (all machines index everything)
     fleetRoster: string[] | null;
     machineId: string;
@@ -138,6 +143,11 @@ export class StateManager {
             // Worker A (skeleton refresh) ET Worker B (Qdrant) — machines a connexion facturee.
             isQdrantIndexingEnabled: process.env.ROO_INDEXING_ENABLED !== 'false',
             isIndexLeader: false,
+            // #3661: Worker A leader-election (skeleton refresh + startup scans). Distinct
+            // from #2352 (`isIndexLeader` — Qdrant embeddings). Only the leader per
+            // machine runs the 2-min refresh worker; followers skip the loop and observe
+            // state writes from the leader via the unified store.
+            isWorkerALeader: false,
             fleetRoster: rooSyncCfg?.fleetRoster ?? null,
             machineId: rooSyncCfg?.machineId ?? (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),
             qdrantIndexCache: new Map(),
