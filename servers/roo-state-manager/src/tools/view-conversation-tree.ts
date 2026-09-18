@@ -398,7 +398,14 @@ async function handleViewConversationTreeExecutionAsync(
             // the agent on a corruption/repair hunt — or worse, since #2734 scoping
             // falls through when the session file is absent, analyzeConversation
             // aggregates the project's OTHER sessions under the ghost's taskId.
-            const sessionSepIndex = task_id.lastIndexOf('--');
+            // Legacy per-project ids have NO session suffix: the id IS 'claude-{projectDir}',
+            // and that basename itself contains '--' (path encoding). The parse below would
+            // split INSIDE the project name and misdiagnose a LIVE legacy session as deleted
+            // (#3721 review). Skip the ghost guard on the exact legacy form — eviction
+            // membership also keeps it (disk-scanner adds claude-{basename} per live project),
+            // so throwing here would repeat the wrong verdict on every view forever.
+            const legacyPerProjectId = task_id === `claude-${path.basename(claudeProjectPath)}`;
+            const sessionSepIndex = legacyPerProjectId ? -1 : task_id.lastIndexOf('--');
             if (sessionSepIndex !== -1) {
                 const sessionUuid = task_id.substring(sessionSepIndex + 2);
                 const sessionJsonlPath = path.join(claudeProjectPath, `${sessionUuid}.jsonl`);

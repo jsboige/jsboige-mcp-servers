@@ -446,5 +446,40 @@ describe('view_conversation_tree Tool', () => {
             detectSpy.mockRestore();
             analyzeSpy.mockRestore();
         });
+
+        it('[#3721 review] legacy per-project id (basename contains --) is NOT misdiagnosed as deleted', async () => {
+            // Legacy form: the id IS 'claude-{projectDirName}' — no session suffix. The
+            // project basename itself contains '--' (path encoding), so a '--' parse
+            // splits INSIDE the project name. Reproducer: stat fails on every path
+            // (the misparsed '{project}/dev-CoursIA.jsonl' does not exist), yet this
+            // LIVE session must reach analysis, not the ghost verdict.
+            const legacyId = 'claude-c--dev-CoursIA';
+            const detectSpy = vi.spyOn(ClaudeStorageDetector, 'detectStorageLocations').mockResolvedValue([
+                {
+                    path: '/home/user/.claude/projects/c--dev-CoursIA',
+                    projectPath: '/home/user/.claude/projects/c--dev-CoursIA',
+                } as any,
+            ]);
+            const analyzeSpy = vi.spyOn(ClaudeStorageDetector, 'analyzeConversation').mockResolvedValue({
+                taskId: legacyId,
+                metadata: { messageCount: 3, title: 'Legacy Project Session' } as any,
+                sequence: [{ role: 'user', content: 'legacy content', timestamp: '2026-01-01T00:00:00Z' }],
+            } as any);
+
+            const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+            mockStat.mockRejectedValue(enoent);
+
+            mockCache.set(legacyId, makeClaudeGhostShell(legacyId));
+
+            const result = await viewConversationTree.handler({ task_id: legacyId, view_mode: 'single' }, mockCache);
+
+            // No 'session deleted locally (ghost)' throw: the guard is skipped on the
+            // exact legacy form and analysis produces the view.
+            expect(result).toBeDefined();
+            expect(analyzeSpy).toHaveBeenCalledWith(legacyId, '/home/user/.claude/projects/c--dev-CoursIA');
+            detectSpy.mockRestore();
+            analyzeSpy.mockRestore();
+            mockStat.mockResolvedValue({ isFile: () => true });
+        });
     });
 });
