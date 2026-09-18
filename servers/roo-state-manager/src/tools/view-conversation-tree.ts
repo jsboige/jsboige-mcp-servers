@@ -392,6 +392,35 @@ async function handleViewConversationTreeExecutionAsync(
                 return formatSkeletonOnlyResponse(task_id, mainTask);
             }
 
+            // #3721: Distinguish "session file gone (deleted)" from "file present but
+            // unreadable (corruption)" before analyzing. Without this, a ghost cache
+            // entry (JSONL deleted) fails with "may be corrupted or empty" — sending
+            // the agent on a corruption/repair hunt — or worse, since #2734 scoping
+            // falls through when the session file is absent, analyzeConversation
+            // aggregates the project's OTHER sessions under the ghost's taskId.
+            const sessionSepIndex = task_id.lastIndexOf('--');
+            if (sessionSepIndex !== -1) {
+                const sessionUuid = task_id.substring(sessionSepIndex + 2);
+                const sessionJsonlPath = path.join(claudeProjectPath, `${sessionUuid}.jsonl`);
+                let sessionFileExists = false;
+                try {
+                    await fs.stat(sessionJsonlPath);
+                    sessionFileExists = true;
+                } catch {
+                    sessionFileExists = false;
+                }
+                if (!sessionFileExists) {
+                    throw new GenericError(
+                        `Claude task '${task_id}' resolved to project '${claudeProjectPath}' but its session file ` +
+                        `'${sessionUuid}.jsonl' does not exist — the session was deleted locally and this is a ` +
+                        `stale cache entry (ghost). It is evicted from the cache by the next list_conversations ` +
+                        `scan (#3721); do NOT investigate this as JSONL corruption.`,
+                        GenericErrorCode.INVALID_ARGUMENT,
+                        { taskId: task_id, projectPath: claudeProjectPath, sessionFile: sessionJsonlPath, reason: 'session-file-missing' }
+                    );
+                }
+            }
+
             const fullSkeleton = await ClaudeStorageDetector.analyzeConversation(task_id, claudeProjectPath);
             if (fullSkeleton && (fullSkeleton.sequence ?? []).length > 0) {
                 // Preserver les marqueurs source ajoutes par SkeletonCacheService Tier 2
@@ -403,10 +432,10 @@ async function handleViewConversationTreeExecutionAsync(
                 console.log(`[view] Successfully loaded Claude session ${task_id} (${(fullSkeleton.sequence ?? []).length} sequence items)`);
             } else {
                 throw new GenericError(
-                    `Claude task '${task_id}' found at '${claudeProjectPath}' but analysis returned empty. ` +
-                    `The JSONL files may be corrupted or empty.`,
+                    `Claude task '${task_id}' found at '${claudeProjectPath}' and its session file exists, ` +
+                    `but analysis returned empty. The JSONL file may be corrupted or empty.`,
                     GenericErrorCode.INVALID_ARGUMENT,
-                    { taskId: task_id, projectPath: claudeProjectPath }
+                    { taskId: task_id, projectPath: claudeProjectPath, reason: 'analysis-empty-file-present' }
                 );
             }
         } else {

@@ -4,15 +4,18 @@ import { ConversationSkeleton } from '../../../src/types/conversation.js';
 import { ClaudeStorageDetector } from '../../../src/utils/claude-storage-detector.js';
 
 // Mock fs (promises as fs) - use vi.hoisted to create mock references before mock definition
-const { mockWriteFile, mockMkdir } = vi.hoisted(() => ({
+const { mockWriteFile, mockMkdir, mockStat } = vi.hoisted(() => ({
     mockWriteFile: vi.fn().mockResolvedValue(undefined),
     mockMkdir: vi.fn().mockResolvedValue(undefined),
+    // #3721: default = session file exists (only the ghost test overrides to reject)
+    mockStat: vi.fn().mockResolvedValue({ isFile: () => true }),
 }));
 
 vi.mock('fs', () => ({
     promises: {
         writeFile: mockWriteFile,
         mkdir: mockMkdir,
+        stat: mockStat,
     },
 }));
 
@@ -360,6 +363,88 @@ describe('view_conversation_tree Tool', () => {
                 'claude-myproject-abc',
                 '/home/user/.claude/projects/myproject-abc',
             );
+        });
+
+        // --- #3721: ghost sessions (file deleted) must be diagnosed as deleted, not corrupted ---
+        const makeClaudeGhostShell = (taskId: string): ConversationSkeleton => ({
+            taskId,
+            parentTaskId: undefined,
+            metadata: {
+                title: `Ghost ${taskId}`,
+                lastActivity: '2026-06-21T00:00:00Z',
+                createdAt: '2026-06-01T00:00:00Z',
+                messageCount: 73816, // > 0 → triggers lazy load
+                actionCount: 0,
+                totalSize: 354700000,
+                source: 'claude-code',
+                dataSource: 'claude',
+            } as any,
+            sequence: [], // empty → triggers lazy load
+        });
+
+        it('[#3721] ghost Claude session (jsonl deleted) reports deletion, not corruption, and skips analysis', async () => {
+            const ghostId = 'claude-c--dev-CoursIA--d581cb01-aaaa';
+            const detectSpy = vi.spyOn(ClaudeStorageDetector, 'detectStorageLocations').mockResolvedValue([
+                {
+                    path: '/home/user/.claude/projects/c--dev-CoursIA',
+                    projectPath: '/home/user/.claude/projects/c--dev-CoursIA',
+                } as any,
+            ]);
+            const analyzeSpy = vi.spyOn(ClaudeStorageDetector, 'analyzeConversation').mockResolvedValue(null);
+
+            // Session file does NOT exist → ghost
+            mockStat.mockRejectedValueOnce(new Error('ENOENT'));
+
+            mockCache.set(ghostId, makeClaudeGhostShell(ghostId));
+
+            let thrown: any;
+            try {
+                await viewConversationTree.handler({ task_id: ghostId, view_mode: 'single' }, mockCache);
+            } catch (e) {
+                thrown = e;
+            }
+
+            expect(thrown).toBeDefined();
+            expect(thrown.message).toContain('does not exist');
+            expect(thrown.message).toContain('deleted locally');
+            expect(thrown.message).not.toContain('corrupted');
+            // Fail-fast: no analysis (which would aggregate OTHER sessions under the ghost id, #2734 fall-through)
+            expect(analyzeSpy).not.toHaveBeenCalled();
+            detectSpy.mockRestore();
+            analyzeSpy.mockRestore();
+        });
+
+        it('[#3721] session file present but analysis empty keeps the corruption wording', async () => {
+            const ghostId = 'claude-c--dev-CoursIA--d581cb01-bbbb';
+            const detectSpy = vi.spyOn(ClaudeStorageDetector, 'detectStorageLocations').mockResolvedValue([
+                {
+                    path: '/home/user/.claude/projects/c--dev-CoursIA',
+                    projectPath: '/home/user/.claude/projects/c--dev-CoursIA',
+                } as any,
+            ]);
+            // analyzeConversation returns a minimal skeleton with empty sequence
+            const analyzeSpy = vi.spyOn(ClaudeStorageDetector, 'analyzeConversation').mockResolvedValue({
+                taskId: ghostId,
+                metadata: { messageCount: 0 } as any,
+                sequence: [],
+            } as any);
+
+            // Session file EXISTS (default mockStat resolves)
+            mockCache.set(ghostId, makeClaudeGhostShell(ghostId));
+
+            let thrown: any;
+            try {
+                await viewConversationTree.handler({ task_id: ghostId, view_mode: 'single' }, mockCache);
+            } catch (e) {
+                thrown = e;
+            }
+
+            expect(thrown).toBeDefined();
+            expect(thrown.message).toContain('session file exists');
+            expect(thrown.message).toContain('corrupted');
+            expect(analyzeSpy).toHaveBeenCalled();
+            detectSpy.mockRestore();
+            analyzeSpy.mockRestore();
         });
     });
 });

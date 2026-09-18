@@ -201,3 +201,135 @@ export async function scanDiskForNewTasks(
         return [];
     }
 }
+
+/**
+ * Result of a ghost eviction pass (#3721).
+ */
+export interface GhostEvictionResult {
+    /** TaskIds removed from the cache (backing file gone). */
+    evicted: string[];
+    /** Entries spared because they are remote (GDrive archive tier). */
+    skippedRemote: number;
+    /** True when a source could not be enumerated reliably — eviction for that
+     *  source was skipped entirely (fail-open, never mass-evict on I/O errors). */
+    failOpenRoo: boolean;
+    failOpenClaude: boolean;
+}
+
+/**
+ * #3721 — Evict cache entries whose backing file no longer exists.
+ *
+ * The conversation cache is add-only: `scanDiskForNewTasks` / Worker A /
+ * `loadClaudeCodeSessions` insert skeletons but nothing removes them when the
+ * underlying JSONL or task directory is deleted. Deleted sessions keep being
+ * served by `list` with their stale metadata forever (ghosts), and `view` on
+ * them misdiagnoses "file gone" as "JSONL corrupted".
+ *
+ * This pass enumerates the LIVE local taskIds (one readdir per storage root —
+ * no per-entry stat) and deletes cache entries that positively classify as
+ * local yet are not live anymore.
+ *
+ * Safety rules:
+ * - Remote entries (`metadata.dataSource` 'archive' / 'gdrive-archive') are
+ *   spared — their files are not supposed to exist locally.
+ * - FAIL-OPEN per source: if storage detection returns nothing, or ANY single
+ *   readdir fails (permissions, drive flap), that source's eviction is skipped
+ *   entirely. A temporarily unavailable drive must never look like "everything
+ *   was deleted".
+ * - Membership is checked against BOTH Claude taskId formats: per-session
+ *   `claude-{project}--{uuid}` and legacy per-project `claude-{project}`
+ *   (project basenames contain '--' themselves, so the id is never parsed).
+ */
+export async function evictGoneLocalTasks(
+    conversationCache: Map<string, SkeletonHeader>
+): Promise<GhostEvictionResult> {
+    const result: GhostEvictionResult = {
+        evicted: [],
+        skippedRemote: 0,
+        failOpenRoo: false,
+        failOpenClaude: false,
+    };
+
+    // --- Live Roo task ids: names of directories under <storage>/tasks ---
+    const rooLive = new Set<string>();
+    try {
+        const storagePaths = await RooStorageDetector.detectStorageLocations();
+        if (storagePaths.length === 0) {
+            result.failOpenRoo = true;
+        } else {
+            for (const storagePath of storagePaths) {
+                try {
+                    const entries = await fs.readdir(path.join(storagePath, 'tasks'), { withFileTypes: true });
+                    for (const entry of entries) {
+                        if (entry.isDirectory() && entry.name !== '.skeletons') {
+                            rooLive.add(entry.name);
+                        }
+                    }
+                } catch {
+                    // One unreadable location = we can't trust the live set
+                    result.failOpenRoo = true;
+                    break;
+                }
+            }
+        }
+    } catch {
+        result.failOpenRoo = true;
+    }
+
+    // --- Live Claude task ids: per-session + per-project formats ---
+    const claudeLive = new Set<string>();
+    try {
+        const { ClaudeStorageDetector } = await import('../../utils/claude-storage-detector.js');
+        const locations = await ClaudeStorageDetector.detectStorageLocations();
+        if (locations.length === 0) {
+            result.failOpenClaude = true;
+        } else {
+            for (const location of locations) {
+                const projectBasename = path.basename(location.projectPath);
+                claudeLive.add(`claude-${projectBasename}`); // legacy per-project format
+                try {
+                    const files = await fs.readdir(location.projectPath);
+                    for (const file of files) {
+                        if (file.endsWith('.jsonl')) {
+                            claudeLive.add(`claude-${projectBasename}--${file.replace(/\.jsonl$/, '')}`);
+                        }
+                    }
+                } catch {
+                    result.failOpenClaude = true;
+                    break;
+                }
+            }
+        }
+    } catch {
+        result.failOpenClaude = true;
+    }
+
+    if (result.failOpenRoo && result.failOpenClaude) {
+        // Nothing can be verified — keep everything.
+        return result;
+    }
+
+    for (const [taskId, skeleton] of conversationCache.entries()) {
+        const dataSource = (skeleton as any)?.metadata?.dataSource;
+        if (dataSource === 'archive' || dataSource === 'gdrive-archive') {
+            result.skippedRemote++;
+            continue;
+        }
+
+        if (taskId.startsWith('claude-')) {
+            if (result.failOpenClaude) continue; // fail-open: cannot verify
+            if (!claudeLive.has(taskId)) {
+                conversationCache.delete(taskId);
+                result.evicted.push(taskId);
+            }
+        } else {
+            if (result.failOpenRoo) continue; // fail-open: cannot verify
+            if (!rooLive.has(taskId)) {
+                conversationCache.delete(taskId);
+                result.evicted.push(taskId);
+            }
+        }
+    }
+
+    return result;
+}

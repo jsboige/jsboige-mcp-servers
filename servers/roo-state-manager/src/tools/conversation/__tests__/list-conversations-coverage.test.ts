@@ -22,6 +22,7 @@ const { mockScanDisk, mockFsReadFile, mockDetectClaudeLocations } = vi.hoisted((
 
 vi.mock('../../task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDisk(...args),
+    evictGoneLocalTasks: vi.fn(async () => ({ evicted: [], skippedRemote: 0, failOpenRoo: true, failOpenClaude: true })),
 }));
 
 vi.mock('../../../utils/claude-storage-detector.js', () => ({
