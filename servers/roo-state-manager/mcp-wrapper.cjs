@@ -1,21 +1,35 @@
 #!/usr/bin/env node
 /**
- * MCP Wrapper v4.1.0 - Pass-through + Persisted tools/list cache
+ * MCP Wrapper v5.0.0 - Pass-through proxy + hot-swap across content-addressed builds
  *
- * v4.1 (#1894): Persisted tools/list cache to eliminate startup timeout.
- * The wrapper intercepts tools/list requests and responds from a disk cache
- * (<1ms) while the server starts in the background (~6s). The server's
- * response updates the cache for next session.
+ * v5.0 (#3713): Hot-swap. The wrapper now resolves the server through the
+ * `build-current` marker (content-addressed vintages published by
+ * scripts/publish-build.mjs), watches that marker, and swaps the server child
+ * when a new vintage is published — without breaking the client connection.
+ * A rebuild no longer rewrites bytes under a live process (the exit-10 armed
+ * window and its forced VS Code restarts disappear), and new code goes live
+ * in running sessions immediately.
  *
- * Previous features retained:
- * - Deduplication cache (VS Code calls tools/list multiple times)
- * - Suppression of verbose stderr logs
- * - stdin/stdout passthrough with JSON-RPC filtering
+ *   - resolves the vintage ONCE per child spawn, keeps that path for the
+ *     child's whole life (a vintage is immutable);
+ *   - falls back to legacy fixed `build/index.js` when no marker exists
+ *     (machine not yet migrated — and still safe: nothing rewrites build/
+ *     anymore);
+ *   - memorizes the client's `initialize` request + `notifications/initialized`
+ *     and replays them into a freshly spawned child, absorbing the child's
+ *     initialize response (the client already has one);
+ *   - tracks in-flight requests; those orphaned by a swap get an explicit
+ *     JSON-RPC error instead of hanging until timeout;
+ *   - writes a `.ref-<pid>` file into the vintage it serves so publish-time
+ *     retention never prunes a vintage a live wrapper still runs.
+ *
+ * v4.1 (#1894) retained: persisted tools/list cache (now per-vintage), stdin/
+ * stdout passthrough with JSON-RPC filtering, stderr suppression, orphan-leak
+ * kill cascade, parent-PID liveness watchdog.
  */
 
 const { spawn } = require('child_process');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const dotenv = require('dotenv');
 
@@ -32,13 +46,34 @@ if (envResult.error) {
     console.error(`[MCP-WRAPPER] ✅ Loaded .env from ${envPath}`);
 }
 
-// Path to the real MCP server
-const serverPath = path.join(__dirname, 'build', 'index.js');
+// --- Vintage resolution (v5) ---
+const MARKER_FILE = path.join(__dirname, 'build-current');
+const LEGACY_DIR = path.join(__dirname, 'build');
 
-// --- Persisted tools/list cache ---
-// Use build/ directory (NOT os.tmpdir()) — Windows Disk Cleanup clears %TEMP%,
-// which invalidates the cache multiple times per day, causing the "0 tools" bug.
-const CACHE_FILE = path.join(__dirname, 'build', '.tools-cache.json');
+function readMarkerVintage() {
+    try {
+        const name = fs.readFileSync(MARKER_FILE, 'utf-8').trim();
+        if (/^build-[0-9a-f]{16}$/.test(name) && fs.existsSync(path.join(__dirname, name, 'index.js'))) {
+            return name;
+        }
+    } catch {}
+    return null;
+}
+
+function resolveServerDir() {
+    const vintage = readMarkerVintage();
+    return vintage ? path.join(__dirname, vintage) : LEGACY_DIR;
+}
+
+let serverDir = resolveServerDir();
+let serverPath = path.join(serverDir, 'index.js');
+
+// --- Persisted tools/list cache (per-vintage since v5) ---
+// Lives inside the vintage dir (NOT os.tmpdir() — Windows Disk Cleanup clears
+// %TEMP%, which invalidates the cache multiple times per day, causing the
+// "0 tools" bug). A vintage is immutable, so a cache written there is valid
+// by construction; the mtime check is kept for the legacy fallback dir.
+const CACHE_FILE = path.join(serverDir, '.tools-cache.json');
 
 function logDebug(message) {
     if (process.env.ROO_DEBUG_LOGS) {
@@ -86,7 +121,37 @@ let cachedToolsListResponse = null;
 let stdinBuffer = '';
 let stdoutBuffer = '';
 
-logDebug('Starting roo-state-manager MCP server v4.1 (pass-through + persisted cache)...');
+// Hot-swap state (v5)
+let server = null;                       // current child
+let initRequest = null;                  // client's initialize request line
+let initId = undefined;                  // its id, to absorb the replayed response
+let initializedNotification = null;      // client's notifications/initialized line
+const inFlight = new Map();              // request id -> line sent to current child
+const stdinQueue = [];                   // client lines buffered during a swap
+let swapping = false;                    // swap sequence in progress (stdin buffered)
+let swapHandshakePending = false;        // respawned child hasn't answered initialize yet
+let previousServerDir = null;            // vintage to fall back to if the new one fails
+let swapRetries = 0;
+let handshakeWatchdog = null;
+
+logDebug('Starting roo-state-manager MCP server v5.0 (pass-through + persisted cache + hot-swap)...');
+console.error(`[MCP-WRAPPER] 🧬 Serving vintage: ${path.basename(serverDir)}${serverDir === LEGACY_DIR ? ' (legacy fixed path — marker absent)' : ''}`);
+
+// --- Vintage pin (.ref-<pid>) ---
+// Tells publish-build retention "a live wrapper still runs this vintage".
+function isVintageDir(dir) {
+    return path.basename(dir).startsWith('build-');
+}
+
+function writeRefFile(dir) {
+    if (!isVintageDir(dir)) return;
+    try { fs.writeFileSync(path.join(dir, `.ref-${process.pid}`), `${Date.now()}\n`, 'utf-8'); } catch {}
+}
+
+function removeRefFile(dir) {
+    if (!isVintageDir(dir)) return;
+    try { fs.unlinkSync(path.join(dir, `.ref-${process.pid}`)); } catch {}
+}
 
 // Capture original cwd BEFORE overriding with __dirname
 const originalCwd = process.cwd();
@@ -97,19 +162,101 @@ console.error(`[MCP-WRAPPER]   process.env.WORKSPACE_PATH:  ${process.env.WORKSP
 console.error(`[MCP-WRAPPER]   __dirname:                   ${__dirname}`);
 console.error(`[MCP-WRAPPER]   → WORKSPACE_PATH passed to server: ${process.env.WORKSPACE_PATH || originalCwd}`);
 
-// Spawn server with PIPED stdin so we can intercept tools/list requests
-const server = spawn('node', [serverPath], {
-    cwd: __dirname,
-    env: {
-        ...process.env,
-        WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true
-});
+// --- Child spawn & wiring (v5: re-entrant for hot-swap) ---
+function spawnServer() {
+    const child = spawn('node', [serverPath], {
+        cwd: __dirname,
+        env: {
+            ...process.env,
+            WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+    });
 
-// --- stderr: filter verbose server logs ---
-server.stderr.on('data', (data) => {
+    child.stderr.on('data', (data) => filterStderr(data));
+
+    child.stdout.on('data', (data) => {
+        const output = data.toString();
+        stdoutBuffer += output;
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop() || '';
+
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+
+            if (trimmed.startsWith('{')) {
+                let parsed;
+                try {
+                    parsed = JSON.parse(trimmed);
+                } catch {
+                    process.stderr.write('[MCP-WRAPPER] dropped non-JSON line: ' + trimmed.slice(0, 120) + '\n');
+                    return;
+                }
+                if (parsed && parsed.jsonrpc === '2.0') {
+                    // Absorb the initialize response of a hot-swapped child: the
+                    // client already has its own answer and must not get a second.
+                    if (swapHandshakePending && parsed.id === initId && (parsed.result !== undefined || parsed.error !== undefined)) {
+                        swapHandshakePending = false;
+                        swapRetries = 0;
+                        if (handshakeWatchdog) { clearTimeout(handshakeWatchdog); handshakeWatchdog = null; }
+                        console.error('[MCP-WRAPPER] ✅ Hot-swap complete — new vintage serving');
+                        return;
+                    }
+                    // A response closes its in-flight entry (never re-error it at swap).
+                    if (parsed.id !== undefined && (parsed.result !== undefined || parsed.error !== undefined)) {
+                        inFlight.delete(parsed.id);
+                    }
+                    const processed = processToolsList(trimmed);
+                    if (processed !== null) {
+                        process.stdout.write(processed + '\n');
+                    }
+                } else {
+                    process.stderr.write('[MCP-WRAPPER] dropped non-JSONRPC JSON: ' + trimmed.slice(0, 120) + '\n');
+                }
+            } else if (trimmed.includes('Roo State Manager Server started')) {
+                process.stderr.write('[MCP-WRAPPER] ' + line + '\n');
+            }
+        });
+    });
+
+    child.on('error', (error) => {
+        logDebug(`Failed to start server: ${error.message}`);
+        process.exit(1);
+    });
+
+    child.on('exit', (code) => {
+        if (child !== server) return; // a superseded child dying late — not ours to act on
+        if (swapHandshakePending) {
+            // The respawned child died before completing the replayed handshake.
+            logDebug(`Swapped child died pre-handshake (code ${code}) — retry/fallback`);
+            retrySwapOrFallback();
+            return;
+        }
+        logDebug(`Server exited with code ${code}`);
+        removeRefFile(serverDir);
+        process.exit(code || 0);
+    });
+
+    server = child;
+    writeRefFile(serverDir);
+}
+
+// Intentionally stop a child: detach its handlers FIRST so its exit can never
+// reach the crash path (process.exit) — the swap sequence owns what happens
+// next, and a superseded child has nothing left to tell us.
+function detachAndKillChild(child) {
+    try { child.stdout && child.stdout.removeAllListeners('data'); } catch {}
+    try { child.stderr && child.stderr.removeAllListeners('data'); } catch {}
+    try { child.removeAllListeners('exit'); } catch {}
+    try { child.removeAllListeners('error'); } catch {}
+    try { child.stdin.end(); } catch {}
+    try { child.kill('SIGTERM'); } catch {}
+    setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000).unref();
+}
+
+function filterStderr(data) {
     const output = data.toString();
 
     const suppressPatterns = [
@@ -141,7 +288,7 @@ server.stderr.on('data', (data) => {
     if (!shouldSuppress) {
         process.stderr.write(output);
     }
-});
+}
 
 // --- stdin: intercept client → server messages ---
 process.stdin.on('data', (data) => {
@@ -154,24 +301,47 @@ process.stdin.on('data', (data) => {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
-        // Forward ALL messages to server
-        server.stdin.write(trimmed + '\n');
-
-        // Intercept tools/list for instant cache response (first call only)
-        if (!answeredFromCache && persistedCache) {
-            try {
-                const msg = JSON.parse(trimmed);
-                if (msg.method === 'tools/list') {
-                    const response = JSON.parse(JSON.stringify(persistedCache));
-                    response.id = msg.id;
-                    process.stdout.write(JSON.stringify(response) + '\n');
-                    answeredFromCache = true;
-                    console.error('[MCP-WRAPPER] ⚡ Answered tools/list from persisted cache (<1ms)');
-                }
-            } catch {}
+        // During a swap, buffer client lines; they will be forwarded to the
+        // new child right after the replayed handshake, in order.
+        if (swapping) {
+            stdinQueue.push(trimmed);
+            continue;
         }
+
+        forwardClientLine(trimmed);
     }
 });
+
+function forwardClientLine(trimmed) {
+    // Track protocol messages the swap needs to replay.
+    try {
+        const msg = JSON.parse(trimmed);
+        if (msg.method === 'initialize' && msg.id !== undefined && msg.id !== null) {
+            initRequest = trimmed;
+            initId = msg.id;
+        } else if (msg.method === 'notifications/initialized') {
+            initializedNotification = trimmed;
+        } else if (msg.method && msg.id !== undefined && msg.id !== null) {
+            inFlight.set(msg.id, trimmed);
+        }
+    } catch {}
+
+    server.stdin.write(trimmed + '\n');
+
+    // Intercept tools/list for instant cache response (first call only)
+    if (!answeredFromCache && persistedCache) {
+        try {
+            const msg = JSON.parse(trimmed);
+            if (msg.method === 'tools/list') {
+                const response = JSON.parse(JSON.stringify(persistedCache));
+                response.id = msg.id;
+                process.stdout.write(JSON.stringify(response) + '\n');
+                answeredFromCache = true;
+                console.error('[MCP-WRAPPER] ⚡ Answered tools/list from persisted cache (<1ms)');
+            }
+        } catch {}
+    }
+}
 
 // --- Orphan-leak fix (incident 2026-05-26, 73 orphans on ai-01) ---
 // Windows has no parent-death signal (no SIGHUP-on-parent-death, no POSIX
@@ -233,6 +403,136 @@ if (initialParentPid && initialParentPid !== 0) {
     console.error(`[MCP-WRAPPER] 👁  Parent-PID liveness watchdog armed (ppid=${initialParentPid}, 30s poll)`);
 }
 
+// --- Hot-swap (v5, #3713) ---
+// Trigger: the `build-current` marker moved to a different vintage. The marker
+// is switched atomically by publish-build.mjs only after a complete tree copy,
+// so one marker event == one complete build (a naive watch on a tsc output dir
+// would fire hundreds of times on half-written trees).
+let swapCheckTimer = null;
+function scheduleSwapCheck() {
+    if (swapCheckTimer) return;
+    swapCheckTimer = setTimeout(() => {
+        swapCheckTimer = null;
+        maybeSwap();
+    }, 500);
+}
+
+function maybeSwap() {
+    if (swapping || killCascadeArmed) return;
+    const vintage = readMarkerVintage();
+    if (!vintage) return;
+    const targetDir = path.join(__dirname, vintage);
+    if (targetDir === serverDir) return;
+    doSwap(targetDir);
+}
+
+function doSwap(targetDir) {
+    swapping = true;
+    const oldDir = serverDir;
+    console.error(`[MCP-WRAPPER] 🔄 Hot-swap: ${path.basename(oldDir)} → ${path.basename(targetDir)}`);
+
+    // Kill the old child, detached — its exit handler must stay silent about
+    // this intentional swap.
+    const oldChild = server;
+    detachAndKillChild(oldChild);
+    removeRefFile(oldDir);
+
+    // Requests already in the old child will never be answered — fail them
+    // fast with an explicit error instead of letting the client hang.
+    const lostIds = [...inFlight.keys()];
+    inFlight.clear();
+
+    previousServerDir = oldDir;
+    serverDir = targetDir;
+    serverPath = path.join(serverDir, 'index.js');
+    spawnServer();
+
+    // Replay the protocol handshake into the new child, then drain buffered
+    // client lines. Stream order guarantees the child sees initialize first.
+    swapHandshakePending = initRequest !== null;
+    if (initRequest !== null) server.stdin.write(initRequest + '\n');
+    if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+    for (const line of stdinQueue) server.stdin.write(line + '\n');
+    stdinQueue.length = 0;
+    swapping = false;
+
+    if (!swapHandshakePending) {
+        // Client never handshook through us (wrapper restarted mid-session?
+        // impossible in practice) — nothing to wait for.
+        console.error('[MCP-WRAPPER] ✅ Hot-swap complete — new vintage serving');
+    } else {
+        handshakeWatchdog = setTimeout(() => {
+            if (!swapHandshakePending) return;
+            console.error('[MCP-WRAPPER] ⏱ Hot-swap handshake timeout — retry/fallback');
+            retrySwapOrFallback();
+        }, 20_000);
+        handshakeWatchdog.unref();
+    }
+
+    for (const id of lostIds) {
+        process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            error: {
+                code: -32603,
+                message: 'roo-state-manager hot-swap: request lost during server restart onto a new build; safe to retry if idempotent',
+            },
+        }) + '\n');
+    }
+}
+
+function retrySwapOrFallback() {
+    swapHandshakePending = false;
+    if (handshakeWatchdog) { clearTimeout(handshakeWatchdog); handshakeWatchdog = null; }
+    detachAndKillChild(server);
+
+    if (swapRetries < 2 && readMarkerVintage()) {
+        swapRetries++;
+        console.error(`[MCP-WRAPPER] 🔁 Hot-swap retry ${swapRetries}/2 on ${path.basename(serverDir)}`);
+        spawnServer();
+        swapHandshakePending = initRequest !== null;
+        if (initRequest !== null) server.stdin.write(initRequest + '\n');
+        if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+        if (!swapHandshakePending) return;
+        handshakeWatchdog = setTimeout(() => {
+            if (!swapHandshakePending) return;
+            retrySwapOrFallback();
+        }, 20_000);
+        handshakeWatchdog.unref();
+        return;
+    }
+
+    if (previousServerDir && previousServerDir !== serverDir && fs.existsSync(path.join(previousServerDir, 'index.js'))) {
+        console.error(`[MCP-WRAPPER] ⬅️ Hot-swap failed — falling back to ${path.basename(previousServerDir)}`);
+        removeRefFile(serverDir);
+        serverDir = previousServerDir;
+        serverPath = path.join(serverDir, 'index.js');
+        spawnServer();
+        swapHandshakePending = initRequest !== null;
+        if (initRequest !== null) server.stdin.write(initRequest + '\n');
+        if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+        return;
+    }
+
+    console.error('[MCP-WRAPPER] ❌ Hot-swap failed with no fallback — exiting');
+    removeRefFile(serverDir);
+    process.exit(1);
+}
+
+// Watch the server ROOT directory and react to marker writes. Watching the
+// directory (not the marker file) survives the tmp+rename atomic switch.
+try {
+    const watcher = fs.watch(__dirname, (event, filename) => {
+        if (filename === 'build-current' || filename === 'build-current.tmp') {
+            scheduleSwapCheck();
+        }
+    });
+    watcher.on('error', () => { /* polling below is the safety net */ });
+    watcher.unref();
+} catch { /* polling below is the safety net */ }
+// Low-frequency polling safety net: covers a missed/edge-case watch event.
+setInterval(() => maybeSwap(), 10_000).unref();
+
 // --- stdout: process server → client messages ---
 // Returns string to forward, or null to suppress
 function processToolsList(message) {
@@ -288,48 +588,8 @@ function processToolsList(message) {
     }
 }
 
-server.stdout.on('data', (data) => {
-    const output = data.toString();
-    stdoutBuffer += output;
-    const lines = stdoutBuffer.split('\n');
-    stdoutBuffer = lines.pop() || '';
-
-    lines.forEach(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-
-        if (trimmed.startsWith('{')) {
-            let parsed;
-            try {
-                parsed = JSON.parse(trimmed);
-            } catch {
-                process.stderr.write('[MCP-WRAPPER] dropped non-JSON line: ' + trimmed.slice(0, 120) + '\n');
-                return;
-            }
-            if (parsed && parsed.jsonrpc === '2.0') {
-                const processed = processToolsList(trimmed);
-                if (processed !== null) {
-                    process.stdout.write(processed + '\n');
-                }
-            } else {
-                process.stderr.write('[MCP-WRAPPER] dropped non-JSONRPC JSON: ' + trimmed.slice(0, 120) + '\n');
-            }
-        } else if (trimmed.includes('Roo State Manager Server started')) {
-            process.stderr.write('[MCP-WRAPPER] ' + line + '\n');
-        }
-    });
-});
-
-// --- Process lifecycle ---
-server.on('error', (error) => {
-    logDebug(`Failed to start server: ${error.message}`);
-    process.exit(1);
-});
-
-server.on('exit', (code) => {
-    logDebug(`Server exited with code ${code}`);
-    process.exit(code || 0);
-});
+// Initial child (module-level, after all handler definitions)
+spawnServer();
 
 function gracefulShutdown(signal) {
     logDebug(`Received ${signal}, killing server process...`);
@@ -348,4 +608,5 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('exit', () => {
     try { server.kill(); } catch {}
+    removeRefFile(serverDir);
 });

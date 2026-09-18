@@ -28,6 +28,7 @@
  * The .env at servers/roo-state-manager/.env is auto-loaded.
  */
 
+import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
 import { readFileSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
@@ -91,7 +92,7 @@ if (DRY_RUN) {
   delete process.env.UNIFIED_STORE_PG_URL;
 }
 
-const buildUrl = (rel) => pathToFileURL(path.join(RSM_ROOT, 'build', rel)).href;
+const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
 const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessageIds }, { backfillDashboardToStore }, { getUnifiedStoreWriter }] =
   await Promise.all([
     import(buildUrl('utils/shared-state-path.js')),
