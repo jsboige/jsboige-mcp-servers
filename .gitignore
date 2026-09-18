@@ -112,3 +112,13 @@ servers/roo-state-manager/src/__test-data__/shared-state/
 # Coverage output
 coverage-output.txt
 roo-config/
+
+# Materiel cryptographique — jamais versionne (#3188, 18/09 : deux .pfx trouves non suivis
+# et NON ignores dans servers/roo-state-manager ; le .gitignore du repo PARENT
+# (roo-extensions #3718) ne s'applique pas a travers la frontiere du submodule)
+*.pfx
+*.p12
+*.pem
+*.key
+*.jks
+*.keystore
