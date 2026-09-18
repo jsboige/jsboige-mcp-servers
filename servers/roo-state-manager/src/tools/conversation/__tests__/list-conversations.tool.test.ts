@@ -43,7 +43,8 @@ vi.mock('fs/promises', async (importOriginal) => {
 // '../../task/disk-scanner.js' and '../../../utils/*-storage-detector.js'. The previous same-literal
 // mocks resolved to src/tools/conversation/{task,utils}/ (non-existent) → no-op silently.
 vi.mock('../../task/disk-scanner.js', () => ({
-	scanDiskForNewTasks: vi.fn(() => Promise.resolve([]))
+	scanDiskForNewTasks: vi.fn(() => Promise.resolve([])),
+	evictGoneLocalTasks: vi.fn(async () => ({ evicted: [], skippedRemote: 0, failOpenRoo: true, failOpenClaude: true })),
 }));
 
 // Mock claude-storage-detector

@@ -27,6 +27,7 @@ const { mockScanDiskForNewTasks } = vi.hoisted(() => ({
 vi.mock('../../task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
   invalidateDiskScanCache: vi.fn(),
+    evictGoneLocalTasks: vi.fn(async () => ({ evicted: [], skippedRemote: 0, failOpenRoo: true, failOpenClaude: true })),
 }));
 
 // Mock fs to prevent real I/O (loadApiMessages, scanClaudeSessions)

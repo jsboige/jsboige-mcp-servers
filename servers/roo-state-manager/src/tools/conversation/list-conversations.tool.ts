@@ -11,7 +11,7 @@ import {
 } from '../../services/unified-store/conversation-list-store.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import { normalizeWorkspaceId } from '../../utils/message-helpers.js';
-import { scanDiskForNewTasks } from '../task/disk-scanner.js';
+import { scanDiskForNewTasks, evictGoneLocalTasks } from '../task/disk-scanner.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
@@ -616,6 +616,13 @@ export const listConversationsTool = {
             }).catch(err => {
                 console.warn('Background disk scan failed:', err instanceof Error ? err.message : err);
             });
+
+            // #3721: The cache is add-only — entries whose backing file was deleted
+            // (ghost sessions) keep being served with stale metadata forever. Evict
+            // them in background (cooldown-gated readdirs, never per-entry stat).
+            // GDrive-archive entries are spared; a source whose storage can't be
+            // enumerated reliably is skipped (fail-open).
+            evictGoneLocalTasksInBackground(conversationCache);
 
             allSkeletons = Array.from(conversationCache.values()).filter(skeleton =>
                 skeleton.metadata
@@ -1604,6 +1611,53 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
 const CLAUDE_SCAN_CACHE_TTL = 60_000; // 60 seconds
 let lastClaudeScanTime = 0;
 let lastClaudeScanResults: ConversationSkeleton[] | null = null;
+
+// --- #3721 ghost eviction cooldown ---
+// evictGoneLocalTasks does a few readdirs (cheap, but not free on 7k+ task dirs).
+// Cooldown-gate it so a tight loop of list calls doesn't hammer the disk.
+const GHOST_EVICTION_COOLDOWN_MS = 60_000;
+let lastGhostEvictionAt = 0;
+
+/**
+ * #3721 — Fire-and-forget ghost eviction, cooldown-gated.
+ *
+ * Removes conversationCache entries whose backing file no longer exists (deleted
+ * sessions were served forever with stale metadata — page 1 of a size-sorted
+ * list could be 10/10 non-viewable ghosts). When entries were evicted, the
+ * skeleton index is rewritten so ghosts don't come back at next boot (the
+ * index is otherwise only rewritten when Worker A sees updates — a ghost never
+ * updates, so it would persist in the index indefinitely).
+ */
+function evictGoneLocalTasksInBackground(conversationCache: Map<string, ConversationSkeleton>): void {
+    try {
+        const now = Date.now();
+        if (now - lastGhostEvictionAt < GHOST_EVICTION_COOLDOWN_MS) return;
+        lastGhostEvictionAt = now;
+
+        // Background hygiene must NEVER fail the list response — guard + catch-all.
+        if (typeof evictGoneLocalTasks !== 'function') return;
+
+        Promise.resolve(evictGoneLocalTasks(conversationCache as any)).then(eviction => {
+            if (eviction.evicted.length === 0) return;
+            const preview = eviction.evicted.slice(0, 5).join(', ');
+            const suffix = eviction.evicted.length > 5 ? ` (+${eviction.evicted.length - 5} more)` : '';
+            console.warn(`[#3721] Evicted ${eviction.evicted.length} ghost cache entries (backing file gone): ${preview}${suffix}` +
+                (eviction.failOpenRoo || eviction.failOpenClaude ? ' (partial pass: storage enumeration unavailable for a source)' : ''));
+
+            // Persist the pruned cache so the ghosts don't respawn from the index at
+            // next boot. saveSkeletonIndex is lock-guarded (#1984) for 12+ hosts.
+            import('../../services/background-services.js').then(({ saveSkeletonIndex }) => {
+                saveSkeletonIndex(conversationCache as any).catch(err => {
+                    console.warn('[#3721] Skeleton index rewrite after eviction failed (non-blocking):', err instanceof Error ? err.message : err);
+                });
+            }).catch(() => { /* index rewrite is best-effort */ });
+        }).catch(err => {
+            console.warn('[#3721] Ghost eviction failed (non-blocking):', err instanceof Error ? err.message : err);
+        });
+    } catch (err) {
+        console.warn('[#3721] Ghost eviction could not start (non-blocking):', err instanceof Error ? err.message : err);
+    }
+}
 
 /**
  * Scan Claude Code sessions from ~/.claude/projects/ and build ConversationSkeletons

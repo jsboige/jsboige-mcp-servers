@@ -30,6 +30,7 @@ const { mockScanDiskForNewTasks } = vi.hoisted(() => ({
 
 vi.mock('../../task/disk-scanner.js', () => ({
   scanDiskForNewTasks: (...args: any[]) => mockScanDiskForNewTasks(...args),
+    evictGoneLocalTasks: vi.fn(async () => ({ evicted: [], skippedRemote: 0, failOpenRoo: true, failOpenClaude: true })),
 }));
 
 // Mock fs for loadApiMessages (contentPattern/pendingSubtaskOnly)
