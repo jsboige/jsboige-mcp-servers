@@ -312,8 +312,12 @@ process.stdin.on('data', (data) => {
     }
 });
 
-function forwardClientLine(trimmed) {
-    // Track protocol messages the swap needs to replay.
+// Register a client line's protocol state: the swap replay needs the handshake
+// lines, and EVERY request id must sit in inFlight so a dying child fails it
+// explicitly (never a hang). Extracted so the doSwap drain (W1, #3713 follow-up)
+// registers the same state the live path does — raw writes left queued ids
+// unerrorable if the child they were drained into later died.
+function trackClientLine(trimmed) {
     try {
         const msg = JSON.parse(trimmed);
         if (msg.method === 'initialize' && msg.id !== undefined && msg.id !== null) {
@@ -325,6 +329,10 @@ function forwardClientLine(trimmed) {
             inFlight.set(msg.id, trimmed);
         }
     } catch {}
+}
+
+function forwardClientLine(trimmed) {
+    trackClientLine(trimmed);
 
     server.stdin.write(trimmed + '\n');
 
@@ -456,6 +464,23 @@ function armHandshakeWatchdog() {
     handshakeWatchdog.unref();
 }
 
+// Replay the captured handshake into the CURRENT child, then drain buffered
+// client lines — tracked (W1), so queued request ids enter inFlight and become
+// explicitly errorable if this child dies before answering, instead of hanging
+// the client. Stream order guarantees the child sees initialize first. Shared
+// by the nominal swap, the retry and the fallback: every path that respawns a
+// child must replay AND drain identically.
+function replayHandshakeAndDrain() {
+    swapHandshakePending = initRequest !== null;
+    if (initRequest !== null) server.stdin.write(initRequest + '\n');
+    if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+    for (const line of stdinQueue) {
+        trackClientLine(line);
+        server.stdin.write(line + '\n');
+    }
+    stdinQueue.length = 0;
+}
+
 function doSwap(targetDir) {
     swapping = true;
     const oldDir = serverDir;
@@ -475,13 +500,13 @@ function doSwap(targetDir) {
     serverPath = path.join(serverDir, 'index.js');
     spawnServer();
 
-    // Replay the protocol handshake into the new child, then drain buffered
-    // client lines. Stream order guarantees the child sees initialize first.
-    swapHandshakePending = initRequest !== null;
-    if (initRequest !== null) server.stdin.write(initRequest + '\n');
-    if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
-    for (const line of stdinQueue) server.stdin.write(line + '\n');
-    stdinQueue.length = 0;
+    // Old-child requests can never be answered — fail them BEFORE the drain
+    // registers queued ids: those belong to the LIVE new child and must survive
+    // this call (they become errorable only if that child dies, at the
+    // retry/fallback path, not here).
+    failLostInFlightRequests();
+
+    replayHandshakeAndDrain();
     swapping = false;
 
     if (!swapHandshakePending) {
@@ -491,8 +516,6 @@ function doSwap(targetDir) {
     } else {
         armHandshakeWatchdog();
     }
-
-    failLostInFlightRequests();
 }
 
 function retrySwapOrFallback() {
@@ -507,9 +530,7 @@ function retrySwapOrFallback() {
         swapRetries++;
         console.error(`[MCP-WRAPPER] 🔁 Hot-swap retry ${swapRetries}/2 on ${path.basename(serverDir)}`);
         spawnServer();
-        swapHandshakePending = initRequest !== null;
-        if (initRequest !== null) server.stdin.write(initRequest + '\n');
-        if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+        replayHandshakeAndDrain();
         armHandshakeWatchdog();
         return;
     }
@@ -520,9 +541,7 @@ function retrySwapOrFallback() {
         serverDir = previousServerDir;
         serverPath = path.join(serverDir, 'index.js');
         spawnServer();
-        swapHandshakePending = initRequest !== null;
-        if (initRequest !== null) server.stdin.write(initRequest + '\n');
-        if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+        replayHandshakeAndDrain();
         armHandshakeWatchdog();
         return;
     }
