@@ -76,7 +76,7 @@ if (!fs.existsSync(vintageDir)) {
 // an ESM module, so rewriting it cannot arm a live host.
 try {
   const { writeBuildInfo } = await import('./write-build-info.mjs');
-  writeBuildInfo(vintageDir);
+  writeBuildInfo(vintageDir, { producedByThisRun: true });
 } catch (err) {
   console.warn(`[publish-build] stamp not written (non-fatal): ${err.message}`);
 }

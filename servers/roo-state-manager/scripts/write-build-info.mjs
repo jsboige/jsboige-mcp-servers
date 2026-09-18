@@ -57,7 +57,7 @@ function packageVersion() {
   }
 }
 
-export function writeBuildInfo(targetDir = path.join(root, 'build')) {
+export function writeBuildInfo(targetDir = path.join(root, 'build'), { producedByThisRun = false } = {}) {
   const outFile = path.join(targetDir, 'build-info.json');
   const buildEntry = path.join(targetDir, 'index.js');
 
@@ -85,7 +85,10 @@ export function writeBuildInfo(targetDir = path.join(root, 'build')) {
   // believes itself current while serving code hours older than claimed — the
   // instrument turned actively misleading, which is worse than absent.
   const PRODUCED_BY_THIS_RUN_MS = 10 * 60 * 1000;
-  const buildIsOurs = Date.now() - entryMtimeMs <= PRODUCED_BY_THIS_RUN_MS;
+  // publish-build passes producedByThisRun: it only ever runs right after tsc,
+  // but its idempotent path (vintage already published) never touches the
+  // vintage's mtimes, so the 10-min window below cannot prove it there (#3713).
+  const buildIsOurs = producedByThisRun || (Date.now() - entryMtimeMs <= PRODUCED_BY_THIS_RUN_MS);
 
   const sha = buildIsOurs ? git('rev-parse', 'HEAD') : null;
   const info = {
@@ -103,6 +106,20 @@ export function writeBuildInfo(targetDir = path.join(root, 'build')) {
   };
 
   try {
+    // Idempotent republish protection (#3713): a content-identical rebuild run
+    // more than PRODUCED_BY_THIS_RUN_MS after tsc can no longer prove its sha,
+    // and overwriting a VALID existing stamp with a degraded one (sha=null)
+    // unmatches HEAD forever -> rebuild loop. The vintage's content hash already
+    // proves this is the same tree, so the existing stamp keeps its provenance.
+    if (info.sha === null && fs.existsSync(outFile)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+        if (existing && existing.sha) {
+          console.log(`[build-info] kept existing stamp (sha ${existing.shortSha ?? existing.sha.slice(0, 8)}) - this run cannot prove a new one`);
+          return existing;
+        }
+      } catch {}
+    }
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     fs.writeFileSync(outFile, JSON.stringify(info, null, 2) + '\n', 'utf8');
     const who = info.shortSha ?? (buildIsOurs ? 'no-git' : 'sha-unknown (build not produced by this run)');
