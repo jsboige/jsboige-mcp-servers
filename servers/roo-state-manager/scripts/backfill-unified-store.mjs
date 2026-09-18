@@ -25,6 +25,7 @@
  * The real row delta is confirmed post-run via `SELECT count(*) FROM conversations;`.
  */
 
+import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
 import { readFileSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
@@ -93,7 +94,7 @@ if (DRY_RUN) {
 // Dynamic imports against the compiled build (its internal bare-specifier imports
 // resolve from servers/roo-state-manager/node_modules).
 // On Windows, dynamic import() of an absolute path requires a file:// URL.
-const buildUrl = (rel) => pathToFileURL(path.join(RSM_ROOT, 'build', rel)).href;
+const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
 const [{ RooStorageDetector }, { dualWriteConversationToStore }, { getUnifiedStoreWriter }, { runBackfill }] =
   await Promise.all([
     import(buildUrl('utils/roo-storage-detector.js')),

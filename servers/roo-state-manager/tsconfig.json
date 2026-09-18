@@ -6,7 +6,7 @@
     "moduleResolution": "bundler",
     "downlevelIteration": true,
     "rootDir": "./src",
-    "outDir": "./build",
+    "outDir": "./build-out",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

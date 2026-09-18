@@ -46,6 +46,9 @@ yarn-error.log*
 dist/
 build/
 out/
+build-out/
+build-*/
+build-current*
 # Exception pour le serveur quickfiles minimal
 !servers/quickfiles-server/build/index.js
 

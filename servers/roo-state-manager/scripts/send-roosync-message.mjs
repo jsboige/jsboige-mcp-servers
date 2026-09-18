@@ -38,6 +38,7 @@
  * Exit codes: 0 = sent, 1 = error (bad args, GDrive write failure).
  */
 
+import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
 import { readFileSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
@@ -128,7 +129,7 @@ try {
   process.exit(1);
 }
 
-const buildUrl = (rel) => pathToFileURL(path.join(RSM_ROOT, 'build', rel)).href;
+const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
 const [
   { getSharedStatePath },
   { getMessageManager },
