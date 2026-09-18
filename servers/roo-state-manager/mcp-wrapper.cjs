@@ -426,6 +426,36 @@ function maybeSwap() {
     doSwap(targetDir);
 }
 
+// Requests whose child was killed mid-flight can never be answered — fail them
+// fast with an explicit error instead of letting the client hang (property (b):
+// never a hang — true on EVERY swap path, not just the nominal one). Call AFTER
+// the child is dead and its listeners detached: a racing late response would
+// double-answer the id.
+function failLostInFlightRequests(stage) {
+    const lostIds = [...inFlight.keys()];
+    inFlight.clear();
+    for (const id of lostIds) {
+        process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            error: {
+                code: -32603,
+                message: `roo-state-manager hot-swap: request lost during server restart onto a new build${stage ? ` (${stage})` : ''}; safe to retry if idempotent`,
+            },
+        }) + '\n');
+    }
+}
+
+function armHandshakeWatchdog() {
+    if (!swapHandshakePending) return;
+    handshakeWatchdog = setTimeout(() => {
+        if (!swapHandshakePending) return;
+        console.error('[MCP-WRAPPER] ⏱ Hot-swap handshake timeout — retry/fallback');
+        retrySwapOrFallback();
+    }, 20_000);
+    handshakeWatchdog.unref();
+}
+
 function doSwap(targetDir) {
     swapping = true;
     const oldDir = serverDir;
@@ -437,10 +467,8 @@ function doSwap(targetDir) {
     detachAndKillChild(oldChild);
     removeRefFile(oldDir);
 
-    // Requests already in the old child will never be answered — fail them
-    // fast with an explicit error instead of letting the client hang.
-    const lostIds = [...inFlight.keys()];
-    inFlight.clear();
+    // Requests already in the old child will never be answered — failed fast
+    // below (after spawn) via failLostInFlightRequests().
 
     previousServerDir = oldDir;
     serverDir = targetDir;
@@ -461,30 +489,19 @@ function doSwap(targetDir) {
         // impossible in practice) — nothing to wait for.
         console.error('[MCP-WRAPPER] ✅ Hot-swap complete — new vintage serving');
     } else {
-        handshakeWatchdog = setTimeout(() => {
-            if (!swapHandshakePending) return;
-            console.error('[MCP-WRAPPER] ⏱ Hot-swap handshake timeout — retry/fallback');
-            retrySwapOrFallback();
-        }, 20_000);
-        handshakeWatchdog.unref();
+        armHandshakeWatchdog();
     }
 
-    for (const id of lostIds) {
-        process.stdout.write(JSON.stringify({
-            jsonrpc: '2.0',
-            id,
-            error: {
-                code: -32603,
-                message: 'roo-state-manager hot-swap: request lost during server restart onto a new build; safe to retry if idempotent',
-            },
-        }) + '\n');
-    }
+    failLostInFlightRequests();
 }
 
 function retrySwapOrFallback() {
     swapHandshakePending = false;
     if (handshakeWatchdog) { clearTimeout(handshakeWatchdog); handshakeWatchdog = null; }
     detachAndKillChild(server);
+    // Same never-a-hang contract as doSwap: requests in the killed child get an
+    // explicit -32603, and their ids leave inFlight (no Map leak across retries).
+    failLostInFlightRequests('retry/fallback');
 
     if (swapRetries < 2 && readMarkerVintage()) {
         swapRetries++;
@@ -493,12 +510,7 @@ function retrySwapOrFallback() {
         swapHandshakePending = initRequest !== null;
         if (initRequest !== null) server.stdin.write(initRequest + '\n');
         if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
-        if (!swapHandshakePending) return;
-        handshakeWatchdog = setTimeout(() => {
-            if (!swapHandshakePending) return;
-            retrySwapOrFallback();
-        }, 20_000);
-        handshakeWatchdog.unref();
+        armHandshakeWatchdog();
         return;
     }
 
@@ -511,6 +523,7 @@ function retrySwapOrFallback() {
         swapHandshakePending = initRequest !== null;
         if (initRequest !== null) server.stdin.write(initRequest + '\n');
         if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
+        armHandshakeWatchdog();
         return;
     }
 
