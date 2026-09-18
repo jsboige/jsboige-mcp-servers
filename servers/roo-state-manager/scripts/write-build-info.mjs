@@ -92,7 +92,10 @@ export function writeBuildInfo(targetDir = path.join(root, 'build')) {
     sha,
     shortSha: sha ? sha.slice(0, 8) : null,
     // A dirty tree means the stamp names a commit the build does not actually match.
-    dirty: !buildIsOurs ? null : git('status', '--porcelain') ? true : sha === null ? null : false,
+    // Dirty must mean "the COMPILED inputs changed", not "any file in the tree":
+    // unrelated untracked debris (logs, scratch dirs) otherwise pins dirty=true forever
+    // and every freshness check built on the stamp rebuilds on each run (#3713).
+    dirty: !buildIsOurs ? null : git('status', '--porcelain', '--', 'src', 'package.json', 'tsconfig.json') ? true : sha === null ? null : false,
     // The BUILD's timestamp, never the stamp's: `Date.now()` here is what let the
     // stamp outrun the artifacts it describes.
     builtAt: new Date(entryMtimeMs).toISOString(),
