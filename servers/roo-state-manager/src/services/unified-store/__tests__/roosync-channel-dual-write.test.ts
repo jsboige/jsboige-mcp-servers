@@ -507,6 +507,8 @@ describe('env-gate (flag off → Null writer)', () => {
         payload: Buffer.alloc(0),
       })
     ).resolves.toBeUndefined();
-    await expect(nullWriter.deleteRooSyncAttachment('u')).resolves.toBeUndefined();
+    // #3151 §7.5.2: the delete returns the purged row count — 0 for the Null
+    // writer (nothing existed), matching the concrete writer's contract.
+    await expect(nullWriter.deleteRooSyncAttachment('u')).resolves.toBe(0);
   });
 });

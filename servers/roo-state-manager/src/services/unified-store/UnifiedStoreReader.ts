@@ -26,6 +26,7 @@ import type {
   UnifiedStoreSearchHit,
   ConversationRow,
   MessageRow,
+  RooSyncAttachmentMetadataRow,
   RooSyncMessageRow,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
@@ -122,6 +123,23 @@ export interface IUnifiedStoreReader {
     dashboard: RooSyncDashboardRow;
     messages: RooSyncDashboardMessageRow[];
   } | null>;
+
+  // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
+
+  /**
+   * Single attachment with payload by uuid, or null when absent. The caller
+   * applies the parity rule (rows with NULL uploader metadata cannot
+   * reconstruct AttachmentMetadata → GDrive fallback).
+   */
+  getRooSyncAttachmentById(id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null>;
+  /** Metadata of the given uuids, order unspecified; absent uuids omitted. */
+  listRooSyncAttachmentMetadata(uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]>;
+  /**
+   * Metadata of every attachment, or of one message's when `messageId` is set
+   * (bounds via idx_roosync_attachments_message instead of a GDrive tree
+   * scan), newest first.
+   */
+  scanRooSyncAttachments(messageId?: string): Promise<RooSyncAttachmentMetadataRow[]>;
 }
 
 /** Null object for opt-out read path. */
@@ -145,4 +163,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
     dashboard: RooSyncDashboardRow;
     messages: RooSyncDashboardMessageRow[];
   } | null> { return null; }
+  async getRooSyncAttachmentById(_id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> { return null; }
+  async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
+  async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
 }

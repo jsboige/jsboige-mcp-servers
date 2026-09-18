@@ -357,24 +357,38 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
   }
 
   /**
-   * Delete an attachment payload (#3151 Phase A.2).
+   * Delete an attachment payload (#3151 Phase A.2, reworked §7.5.2).
    *
    * The counterpart of `insertRooSyncAttachment`, called when `destroyMessage`
    * purges the blob on GDrive. Without it the bytea copy — which is the whole
    * point of D2 — would survive its own destruction, and `destroy_after` would
    * bound nothing again, one storage layer lower.
+   *
+   * Unlike the other best-effort methods this one THROWS on PG failure and
+   * returns the deleted row count: the PG-primary delete path must distinguish
+   * "purged" / "already absent" (0) from "PG unreachable" — a breaker-skip
+   * silently reported as success would claim a destroyed payload that still
+   * exists. Dual-write callers keep their best-effort contract through
+   * `runTrackedMirrorOp`, which swallows with a warn.
    */
-  async deleteRooSyncAttachment(uuid: string): Promise<void> {
-    await this.withRetry('deleteRooSyncAttachment', async () => {
+  async deleteRooSyncAttachment(uuid: string): Promise<number> {
+    let deleted = 0;
+    const outcome = await this.withRetryResult('deleteRooSyncAttachment', async () => {
       if (!this.pool) await this.init();
       if (!this.pool) throw new Error('Pool not initialized');
       const client = await this.pool.connect();
       try {
-        await client.query('DELETE FROM roosync_attachments WHERE id = $1', [uuid]);
+        const result = await client.query('DELETE FROM roosync_attachments WHERE id = $1', [uuid]);
+        deleted = result.rowCount ?? 0;
       } finally {
         client.release();
       }
     });
+    if (!outcome.ok) {
+      const detail = 'detail' in outcome ? outcome.detail : 'no detail';
+      throw new Error(`deleteRooSyncAttachment ${outcome.reason}: ${detail}`);
+    }
+    return deleted;
   }
 
   /**
@@ -436,9 +450,15 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       if (!this.pool) throw new Error('Pool not initialized');
       const client = await this.pool.connect();
       try {
+        // #3151 §7.5.2 (migration 007): metadata columns ride along when the
+        // caller has them; payload-only legacy rows leave them NULL. ON
+        // CONFLICT DO NOTHING preserves both shapes — the backfill upsert is
+        // the only writer that upgrades metadata of an existing row.
         const sql = `
-          INSERT INTO roosync_attachments (id, filename, mime, size, sha256, payload)
-          VALUES ($1, $2, $3, $4, $5, $6)
+          INSERT INTO roosync_attachments
+            (id, filename, mime, size, sha256, payload,
+             uploader_machine, uploader_workspace, message_id, uploaded_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           ON CONFLICT (id) DO NOTHING
         `;
         await client.query(sql, [
@@ -448,6 +468,12 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
           row.size,
           row.sha256,
           row.payload, // pg serializes Buffer to bytea
+          row.uploaderMachine ?? null,
+          row.uploaderWorkspace ?? null,
+          row.messageId ?? null,
+          // NOT NULL column: rows without an original timestamp (legacy
+          // dual-write callers) fall back to now().
+          row.uploadedAt ?? new Date().toISOString(),
         ]);
       } finally {
         client.release();
