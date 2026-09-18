@@ -78,10 +78,19 @@ export interface IUnifiedStoreWriter {
    * read / archived / destroyed state transitions (Phase A.2).
    */
   updateRooSyncMessage(id: string, fields: RooSyncMessageUpdate): Promise<void>;
-  /** RooSync channel — attachment payload as bytea, ON CONFLICT (id) DO NOTHING. */
+  /**
+   * RooSync channel — attachment payload as bytea (+ metadata, migration 007),
+   * ON CONFLICT (id) DO NOTHING. Metadata fields are optional: legacy
+   * dual-write callers still ship payload-only rows.
+   */
   insertRooSyncAttachment(row: RooSyncAttachmentRow): Promise<void>;
-  /** RooSync channel — purge an attachment payload when the message is destroyed. */
-  deleteRooSyncAttachment(uuid: string): Promise<void>;
+  /**
+   * RooSync channel — purge an attachment payload when the message is destroyed
+   * or the attachment is deleted. Returns the number of rows deleted (0 when
+   * the row was already absent) — the delete path distinguishes "purged" from
+   * "nothing existed anywhere" (#3151 §7.5.2).
+   */
+  deleteRooSyncAttachment(uuid: string): Promise<number>;
   /**
    * RooSync channel retention (#3151 Phase D) — delete archived rows older
    * than `retentionDays` together with their attachment payloads, in one
@@ -164,7 +173,7 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async listRooSyncMessageIds(_sinceId: string): Promise<string[]> { return []; }
   async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
   async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
-  async deleteRooSyncAttachment(_uuid: string): Promise<void> {}
+  async deleteRooSyncAttachment(_uuid: string): Promise<number> { return 0; }
   async purgeArchivedRooSyncMessages(_retentionDays: number): Promise<number> { return 0; }
   async syncRooSyncDashboard(
     _row: RooSyncDashboardRow,

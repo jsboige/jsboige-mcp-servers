@@ -68,13 +68,21 @@ const dirsIdx = args.indexOf('--dirs');
 const DIRS = dirsIdx !== -1
   ? (args[dirsIdx + 1] ?? '').split(',').map((d) => d.trim()).filter(Boolean)
   : ['inbox', 'sent', 'archive'];
+// #3151 §7.5.2 — attachments phase: import GDrive blobs + metadata, and
+// upgrade legacy Phase A rows (payload-only) with their metadata. Default runs
+// both phases; --only selects one.
+const onlyIdx = args.indexOf('--only');
+const PHASES = onlyIdx !== -1
+  ? (args[onlyIdx + 1] ?? '').split(',').map((p) => p.trim()).filter(Boolean)
+  : ['messages', 'attachments'];
 
 if (HELP) {
-  console.log(`Usage: node scripts/backfill-roosync-channel.mjs [--dry-run] [--limit N] [--dirs inbox,sent,archive] [--help]
+  console.log(`Usage: node scripts/backfill-roosync-channel.mjs [--dry-run] [--limit N] [--dirs inbox,sent,archive] [--only messages,attachments] [--help]
 
   --dry-run          Force NullUnifiedStoreWriter (no rows persisted).
-  --limit N          Stop after N messages (smoke test).
+  --limit N          Stop after N items per phase (smoke test).
   --dirs a,b,c       Which mailbox dirs to read (default: inbox,sent,archive).
+  --only a,b         Which phases to run (default: messages,attachments).
   --help             Show this help.
 
 Requires build/ (run "npm run build" first). Loads .env automatically.`);
@@ -104,28 +112,33 @@ const writer = getUnifiedStoreWriter();
 const writerKind = writer.constructor?.name ?? 'unknown';
 const liveMode = writerKind !== 'NullUnifiedStoreWriter';
 
-console.log('=== RooSync Channel Backfill (#3151 Phase B) ===');
+console.log('=== RooSync Channel Backfill (#3151 Phase B + §7.5.2 attachments) ===');
 console.log(`Mode: ${liveMode ? 'LIVE (PgUnifiedStoreWriter)' : 'DRY RUN (NullUnifiedStoreWriter)'}`);
 console.log(`.env: ${envLoaded ? 'loaded' : 'not found'} (${path.join(RSM_ROOT, '.env')})`);
+console.log(`Phases: ${PHASES.join(', ')}`);
 console.log(`Dirs: ${DIRS.join(', ')}`);
-if (LIMIT) console.log(`Limit: ${LIMIT} messages`);
+if (LIMIT) console.log(`Limit: ${LIMIT} items per phase`);
 console.log('');
 
 const sharedStatePath = getSharedStatePath();
 const messagesRoot = path.join(sharedStatePath, 'messages');
 const { readdir, readFile } = await import('fs/promises');
 
+// Shared across phases — the exit contract (INCOMPLETE on any error) is
+// channel-wide.
+const failures = [];
+let errors = 0;
+
 let total = 0;
 let processed = 0;
 let skipped = 0;
-let errors = 0;
 let applied = 0;
+if (PHASES.includes('messages')) {
 // Which files failed, not just how many. A count alone cannot tell the operator
 // whether the store is complete, and "complete" is the precondition for turning
 // the read flag on — DriveFS read failures are expected here (4.8 s/file cold,
 // inbox/ times out at 120 s on ai-01), so this list is the difference between
 // re-running a known subset and re-running 21.8 K files blind.
-const failures = [];
 
 outer: for (const dir of DIRS) {
   const dirPath = path.join(messagesRoot, dir);
@@ -167,10 +180,121 @@ outer: for (const dir of DIRS) {
 }
 
 console.log('');
-console.log('=== Result ===');
+console.log('=== Messages result ===');
 console.log(`  total:     ${total}`);
 console.log(`  processed: ${processed}`);
 console.log(`  skipped:   ${skipped}  (no id / name-id mismatch)`);
+} // end messages phase
+
+// ─── Attachments phase (#3151 §7.5.2) ───────────────────────────────────────
+//
+// Walks attachments/{uuid}/ on the share, ships payload + metadata to
+// roosync_attachments, and UPGRADES legacy Phase A rows in place: the upsert
+// fills ONLY NULL metadata columns and never touches an existing payload —
+// the live dual-write wrote that payload at upload time; re-reading an old
+// file to overwrite it could regress a fresher row. This is what lets the
+// PG-first read path serve the whole history (parity rule: rows without
+// uploader metadata are misses).
+let attTotal = 0;
+let attInserted = 0;
+let attUpgraded = 0;
+let attSkipped = 0;
+if (PHASES.includes('attachments')) {
+  console.log('');
+  console.log('=== Attachments phase (#3151 §7.5.2) ===');
+  const attachmentsRoot = path.join(sharedStatePath, 'attachments');
+  let uuidDirs;
+  try {
+    uuidDirs = (await readdir(attachmentsRoot, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    console.log('(attachments: no such directory — skipped)');
+    uuidDirs = [];
+  }
+  console.log(`attachments: ${uuidDirs.length} uuid dirs`);
+
+  // Raw client (not the writer): the metadata-upgrading upsert is
+  // backfill-specific and has no place in the runtime writer surface.
+  // Null-writer (dry run) → no client, nothing persisted, counts only.
+  let pgClient = null;
+  if (liveMode) {
+    const { Client } = await import('pg');
+    pgClient = new Client({
+      connectionString: process.env.UNIFIED_STORE_PG_URL,
+      ssl: { rejectUnauthorized: false },
+    });
+    await pgClient.connect();
+  }
+
+  const UPSERT_SQL = `
+    INSERT INTO roosync_attachments
+      (id, filename, mime, size, sha256, payload,
+       uploader_machine, uploader_workspace, message_id, uploaded_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (id) DO UPDATE SET
+      uploader_machine   = COALESCE(roosync_attachments.uploader_machine, EXCLUDED.uploader_machine),
+      uploader_workspace = COALESCE(roosync_attachments.uploader_workspace, EXCLUDED.uploader_workspace),
+      message_id         = COALESCE(roosync_attachments.message_id, EXCLUDED.message_id),
+      uploaded_at        = CASE WHEN roosync_attachments.uploader_machine IS NULL
+                                THEN EXCLUDED.uploaded_at
+                                ELSE roosync_attachments.uploaded_at END
+    RETURNING (xmax = 0) AS inserted
+  `;
+
+  const { createHash } = await import('crypto');
+  for (const uuid of uuidDirs) {
+    attTotal++;
+    if (LIMIT && attInserted + attUpgraded >= LIMIT) break;
+    try {
+      let metaRaw = await readFile(path.join(attachmentsRoot, uuid, 'metadata.json'), 'utf-8');
+      if (metaRaw.charCodeAt(0) === 0xfeff) metaRaw = metaRaw.slice(1);
+      const meta = JSON.parse(metaRaw);
+      if (!meta || meta.uuid !== uuid || !meta.originalName) {
+        attSkipped++;
+        continue;
+      }
+      const payload = await readFile(path.join(attachmentsRoot, uuid, meta.originalName));
+      const result = pgClient
+        ? await pgClient.query(UPSERT_SQL, [
+            uuid,
+            meta.originalName,
+            meta.mimeType ?? null,
+            meta.sizeBytes ?? payload.length,
+            createHash('sha256').update(payload).digest('hex'),
+            payload,
+            meta.uploaderMachineId ?? null,
+            meta.uploaderWorkspace ?? null,
+            meta.messageId ?? null,
+            meta.uploadedAt ?? new Date().toISOString(),
+          ])
+        : null;
+      if (result) {
+        if (result.rows[0]?.inserted) attInserted++;
+        else attUpgraded++;
+      } else {
+        attInserted++; // dry-run accounting: everything would be written
+      }
+    } catch (err) {
+      errors++;
+      failures.push(`attachments/${uuid}: ${err?.message ?? String(err)}`);
+    }
+  }
+
+  if (pgClient) await pgClient.end();
+
+  console.log('');
+  console.log('=== Attachments result ===');
+  console.log(`  total:     ${attTotal}`);
+  if (liveMode) {
+    console.log(`  inserted:  ${attInserted}`);
+    console.log(`  upgraded:  ${attUpgraded}  (metadata filled, payload untouched)`);
+  } else {
+    console.log(`  to write:  ${attInserted}  (dry run)`);
+  }
+  console.log(`  skipped:   ${attSkipped}  (no/mismatched metadata)`);
+}
+
 console.log(`  errors:    ${errors}`);
 if (failures.length > 0) {
   console.log('');
@@ -183,8 +307,9 @@ if (!liveMode) {
   console.log('DRY RUN complete — 0 rows persisted (NullUnifiedStoreWriter).');
   console.log('Re-run without --dry-run and UNIFIED_STORE_DUAL_WRITE=1 + UNIFIED_STORE_PG_URL set to persist.');
 } else {
-  console.log('LIVE backfill complete (ON CONFLICT DO NOTHING — existing PG rows untouched).');
+  console.log('LIVE backfill complete (messages: ON CONFLICT DO NOTHING — existing PG rows untouched).');
   console.log('Validate: psql -c "SELECT status, count(*) FROM roosync_messages GROUP BY status;"');
+  console.log('         psql -c "SELECT count(*) FILTER (WHERE uploader_machine IS NULL) AS legacy, count(*) AS total FROM roosync_attachments;"');
   console.log('Only after the store is complete, enable UNIFIED_STORE_CHANNEL_READ_PG=1.');
 }
 

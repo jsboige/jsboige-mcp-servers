@@ -21,6 +21,17 @@ import { createLogger } from '../../utils/logger.js';
 import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
 // #3151 Phase A — attachment payload dual-write to PG (bytea, env-gated, never throws)
 import { dualWriteRooSyncAttachmentToStore } from '../unified-store/roosync-channel-dual-write.js';
+// #3151 §7.5.2 — attachments PG-primary write + PG-first reads (GDrive fallback)
+import {
+  deleteRooSyncAttachmentIfPresent,
+  deleteRooSyncAttachmentPrimary,
+  insertRooSyncAttachmentPrimary,
+  isAttachmentPgPrimary,
+  listAttachmentMetadataFromPg,
+  readAttachmentFromPg,
+  readAttachmentMetadataFromPg,
+  scanAttachmentMetadataFromPg,
+} from '../unified-store/roosync-attachment-pg.js';
 
 const logger = createLogger('AttachmentManager');
 
@@ -271,10 +282,51 @@ export class AttachmentManager {
       throw new Error(`Fichier source introuvable: ${filePath}`);
     }
 
-    this.ensureAttachmentsDir();
-
     const resolvedFilename = filename || basename(filePath);
     const uuid = randomUUID();
+    const mimeType = getMimeType(resolvedFilename);
+    const uploadedAt = new Date().toISOString();
+
+    // #3151 §7.5.2 — PG-primary upload: persist payload + metadata to
+    // roosync_attachments FIRST; on success skip the GDrive writes entirely
+    // (the attachment never touches the shared tree). On PG failure fall
+    // through to the GDrive path below, whose dual-write hook re-attempts the
+    // PG mirror — same contract as messages (Phase D-1).
+    if (isAttachmentPgPrimary()) {
+      const content = await fs.readFile(filePath);
+      const uploaded = await insertRooSyncAttachmentPrimary({
+        uuid,
+        content,
+        filename: resolvedFilename,
+        mime: mimeType,
+        uploaderMachineId,
+        messageId,
+        uploadedAt,
+      });
+      if (uploaded) {
+        logger.info('📎 Attachment uploaded (PG primary)', {
+          uuid,
+          filename: resolvedFilename,
+          sizeBytes: content.length,
+        });
+
+        // Same index-warming as the GDrive path — completeness stays the
+        // full-scan's job (see #925 follow-up notes below).
+        if (messageId) {
+          let bucket = this.messageIndex.get(messageId);
+          if (!bucket) {
+            bucket = new Set();
+            this.messageIndex.set(messageId, bucket);
+          }
+          bucket.add(uuid);
+        }
+
+        return { uuid, filename: resolvedFilename, sizeBytes: content.length };
+      }
+    }
+
+    this.ensureAttachmentsDir();
+
     const attachmentDir = join(this.attachmentsPath, uuid);
 
     // #3459 (b): création sous la racine via le helper sanctionné
@@ -292,9 +344,9 @@ export class AttachmentManager {
     const metadata: AttachmentMetadata = {
       uuid,
       originalName: resolvedFilename,
-      mimeType: getMimeType(resolvedFilename),
+      mimeType,
       sizeBytes,
-      uploadedAt: new Date().toISOString(),
+      uploadedAt,
       uploaderMachineId,
       ...(messageId && { messageId }),
     };
@@ -303,8 +355,14 @@ export class AttachmentManager {
     await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
 
     // #3151 Phase A: ship the payload bytes to PG as bytea (fire-and-forget,
-    // env-gated — a PG failure never blocks the GDrive upload)
-    dualWriteRooSyncAttachmentToStore(uuid, targetFilePath, resolvedFilename, metadata.mimeType)
+    // env-gated — a PG failure never blocks the GDrive upload). Metadata rides
+    // along (#3151 §7.5.2, migration 007) so PG rows can serve reads.
+    dualWriteRooSyncAttachmentToStore(uuid, targetFilePath, resolvedFilename, metadata.mimeType, {
+      uploaderMachineId,
+      uploaderWorkspace: undefined,
+      messageId,
+      uploadedAt,
+    })
       .catch(() => {});
 
     logger.info('📎 Attachment uploaded', { uuid, filename: resolvedFilename, sizeBytes });
@@ -340,6 +398,19 @@ export class AttachmentManager {
     messageId?: string,
     stats?: AttachmentListStats,
   ): Promise<AttachmentMetadata[]> {
+    // #3151 §7.5.2 — under the PG-primary WRITE gate the machine's own
+    // uploads never land on GDrive, so the scan must read PG or it
+    // under-shows them. READ_PG-only machines keep the GDrive scan: they
+    // still write GDrive, and a PG scan there would under-show every legacy
+    // attachment the backfill hasn't upgraded. Precondition (documented,
+    // same as Phase B): the attachments backfill populated legacy rows.
+    if (isAttachmentPgPrimary()) {
+      const fromPg = await scanAttachmentMetadataFromPg(messageId);
+      if (fromPg) return fromPg;
+      // PG error → GDrive scan below (graceful degradation). Note the scan's
+      // completeness/index machinery is GDrive-specific and stays untouched.
+    }
+
     if (!existsSync(this.attachmentsPath)) {
       return [];
     }
@@ -503,7 +574,34 @@ export class AttachmentManager {
     uuids: string[],
     stats?: AttachmentListStats,
   ): Promise<AttachmentMetadata[]> {
-    const out: AttachmentMetadata[] = [];
+    // #3151 §7.5.2 — PG-first batch: one query for the uuids PG can serve
+    // completely; the rest (absent from PG, or legacy rows under the parity
+    // rule) resolve per-uuid from the GDrive metadata.json. Refs order is
+    // preserved (contract above).
+    const pgMap = await listAttachmentMetadataFromPg(uuids);
+    if (pgMap) {
+      const missing = uuids.filter((uuid) => !pgMap.has(uuid));
+      const gdrive = missing.length > 0
+        ? await this.readMetadataFromDiskByUuids(missing, stats)
+        : new Map<string, AttachmentMetadata>();
+      return uuids
+        .map((uuid) => pgMap.get(uuid) ?? gdrive.get(uuid))
+        .filter((meta): meta is AttachmentMetadata => meta !== undefined);
+    }
+
+    return Array.from((await this.readMetadataFromDiskByUuids(uuids, stats)).values());
+  }
+
+  /**
+   * GDrive per-uuid metadata reads (#3151 §7.5.2 extraction — the fallback
+   * shared by `listAttachmentsByRefs` when PG is off/unavailable). Returns a
+   * uuid→meta Map; skipped entries feed `stats` as before.
+   */
+  private async readMetadataFromDiskByUuids(
+    uuids: string[],
+    stats?: AttachmentListStats,
+  ): Promise<Map<string, AttachmentMetadata>> {
+    const out = new Map<string, AttachmentMetadata>();
     for (const uuid of uuids) {
       const metadataPath = join(this.attachmentsPath, uuid, 'metadata.json');
       if (!existsSync(metadataPath)) {
@@ -520,7 +618,7 @@ export class AttachmentManager {
           if (stats) stats.readTimeout++;
           continue;
         }
-        out.push(JSON.parse(raw) as AttachmentMetadata);
+        out.set(uuid, JSON.parse(raw) as AttachmentMetadata);
       } catch (err) {
         logger.warn('Failed to parse attachment metadata', { uuid, error: String(err) });
         if (stats) stats.parseError++;
@@ -536,6 +634,11 @@ export class AttachmentManager {
    * @returns Métadonnées ou null si introuvable
    */
   async getAttachmentMetadata(uuid: string): Promise<AttachmentMetadata | null> {
+    // #3151 §7.5.2 — PG-first (read gate). Null on miss / legacy row / PG
+    // error → GDrive metadata.json below.
+    const pgMeta = await readAttachmentMetadataFromPg(uuid);
+    if (pgMeta) return pgMeta;
+
     const metadataPath = join(this.attachmentsPath, uuid, 'metadata.json');
     if (!existsSync(metadataPath)) {
       return null;
@@ -566,6 +669,15 @@ export class AttachmentManager {
    * @param targetPath Chemin de destination
    */
   async getAttachment(uuid: string, targetPath: string): Promise<AttachmentMetadata> {
+    // #3151 §7.5.2 — PG-first: one indexed query yields metadata + payload,
+    // no cloud-only copyFile against the GDrive mount. Miss → GDrive path.
+    const fromPg = await readAttachmentFromPg(uuid);
+    if (fromPg) {
+      await fs.writeFile(targetPath, fromPg.content);
+      logger.info('📥 Attachment downloaded (PG)', { uuid, targetPath });
+      return fromPg.meta;
+    }
+
     const meta = await this.getAttachmentMetadata(uuid);
     if (!meta) {
       throw new Error(`Attachment introuvable: ${uuid}`);
@@ -603,6 +715,13 @@ export class AttachmentManager {
    * d'échouer sur la destination.
    */
   async readAttachment(uuid: string): Promise<{ content: Buffer; meta: AttachmentMetadata }> {
+    // #3151 §7.5.2 — PG-first (same one-query contract as getAttachment).
+    const fromPg = await readAttachmentFromPg(uuid);
+    if (fromPg) {
+      logger.info('📥 Attachment read inline (PG)', { uuid, sizeBytes: fromPg.content.length });
+      return fromPg;
+    }
+
     const meta = await this.getAttachmentMetadata(uuid);
     if (!meta) {
       throw new Error(`Attachment introuvable: ${uuid}`);
@@ -629,17 +748,62 @@ export class AttachmentManager {
   }
 
   /**
-   * Supprime un attachment et son répertoire UUID
+   * Supprime un attachment — les DEUX couches (#3151 §7.5.2).
    *
-   * @param uuid UUID de la pièce jointe à supprimer
+   * Ordering mirrors `destroyMessage`: payloads first, so a partial failure
+   * never leaves the secret surviving in a layer the caller believes deleted.
+   *
+   * - PG-primary : purge la ligne bytea d'abord (un échec PG SURFACE — ne
+   *   surtout pas supprimer GDrive avant, le payload y survivrait), puis le
+   * répertoire GDrive legacy s'il existe.
+   * - GDrive-primary (flotte dual-write) : rm GDrive puis purge best-effort
+   *   du miroir bytea — sans lui, un `attachments_delete` laissait le secret
+   *   vivre un étage plus bas (destroy le purgait, le delete direct non).
+   *   Un attachment écrit par une machine PG-primary (sans copie GDrive)
+   *   reste supprimable : le purge PG compte alors comme suppression.
    */
   async deleteAttachment(uuid: string): Promise<void> {
+    if (isAttachmentPgPrimary()) {
+      const purged = await deleteRooSyncAttachmentPrimary(uuid);
+      if (!purged) {
+        throw new Error(`Échec du purge PG de l'attachment ${uuid} — rien supprimé, à retenter`);
+      }
+      const attachmentDir = join(this.attachmentsPath, uuid);
+      if (existsSync(attachmentDir)) {
+        await fs.rm(attachmentDir, { recursive: true, force: true });
+      }
+      for (const bucket of this.messageIndex.values()) bucket.delete(uuid);
+      logger.info('🗑️ Attachment deleted (PG primary)', { uuid });
+      return;
+    }
+
     const attachmentDir = join(this.attachmentsPath, uuid);
     if (!existsSync(attachmentDir)) {
+      // Pas de copie GDrive : l'attachment peut vivre uniquement en PG
+      // (écrit par une machine PG-primary). Un échec PG (null) remonte
+      // comme erreur plutôt que comme un « introuvable » trompeur.
+      const pgDeleted = await deleteRooSyncAttachmentIfPresent(uuid);
+      if (pgDeleted === null) {
+        throw new Error(`PG injoignable lors de la suppression de ${uuid} — à retenter`);
+      }
+      if (pgDeleted > 0) {
+        for (const bucket of this.messageIndex.values()) bucket.delete(uuid);
+        logger.info('🗑️ Attachment deleted (PG-only row)', { uuid });
+        return;
+      }
       throw new Error(`Attachment introuvable: ${uuid}`);
     }
 
     await fs.rm(attachmentDir, { recursive: true, force: true });
+
+    // #3151 §7.5.2 — le miroir bytea ne doit pas survivre à l'original.
+    // Best-effort (même contrat que le dual-write) : un échec est loggé, la
+    // suppression GDrive reste acquise, la rétention PG finit de purger.
+    const pgDeleted = await deleteRooSyncAttachmentIfPresent(uuid);
+    if (pgDeleted === null) {
+      logger.warn('🗑️ Attachment GDrive deleted but PG purge failed (bytea survives until retention)', { uuid });
+    }
+
     logger.info('🗑️ Attachment deleted', { uuid });
 
     // #925 follow-up — prune the deleted uuid from any bucket. We do NOT touch

@@ -319,12 +319,21 @@ export function dualWriteRooSyncMessageDestroyed(
  * Dual-write an attachment payload as bytea (#3151 D2: no hybrid threshold).
  * Reads the file the AttachmentManager just wrote to GDrive and ships its
  * bytes to PG, with sha256 for integrity.
+ *
+ * The optional metadata (#3151 §7.5.2, migration 007) rides along so PG rows
+ * can serve the PG-first read path; payload-only calls stay valid (legacy).
  */
 export function dualWriteRooSyncAttachmentToStore(
   uuid: string,
   filePath: string,
   filename: string,
-  mime: string | null
+  mime: string | null,
+  metadata?: {
+    uploaderMachineId: string;
+    uploaderWorkspace?: string;
+    messageId?: string;
+    uploadedAt: string;
+  }
 ): Promise<void> {
   return runTrackedMirrorOp('attachment-payload', uuid, async () => {
     const payload = await readFile(filePath);
@@ -335,6 +344,10 @@ export function dualWriteRooSyncAttachmentToStore(
       size: payload.length,
       sha256: createHash('sha256').update(payload).digest('hex'),
       payload,
+      uploaderMachine: metadata?.uploaderMachineId,
+      uploaderWorkspace: metadata?.uploaderWorkspace,
+      messageId: metadata?.messageId,
+      uploadedAt: metadata?.uploadedAt,
     });
   });
 }

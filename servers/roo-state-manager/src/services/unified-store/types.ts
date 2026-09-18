@@ -135,7 +135,13 @@ export interface RooSyncMessageUpdate {
   options?: RooSyncMessageOptions;
 }
 
-/** A row of `roosync_attachments` (payload stored as bytea, #3151 D2). */
+/**
+ * A row of `roosync_attachments` (payload stored as bytea, #3151 D2).
+ *
+ * The metadata fields (#3151 §7.5.2, migration 007) mirror the GDrive
+ * `metadata.json` so PG rows can serve `AttachmentMetadata` reads verbatim.
+ * Optional: legacy dual-write rows were inserted without them.
+ */
 export interface RooSyncAttachmentRow {
   id: string;
   filename: string;
@@ -143,6 +149,28 @@ export interface RooSyncAttachmentRow {
   size: number;
   sha256: string | null;
   payload: Buffer;
+  uploaderMachine?: string;
+  uploaderWorkspace?: string;
+  messageId?: string;
+  uploadedAt?: string;
+}
+
+/**
+ * Read-side view of `roosync_attachments` (#3151 §7.5.2): metadata columns
+ * without the payload. Nullable columns surface as null — the caller's
+ * mapping decides what a legacy row can serve (parity rule: a row without
+ * uploader metadata cannot reconstruct `AttachmentMetadata`).
+ */
+export interface RooSyncAttachmentMetadataRow {
+  id: string;
+  filename: string;
+  mime: string | null;
+  size: number;
+  sha256: string | null;
+  uploaderMachine: string | null;
+  uploaderWorkspace: string | null;
+  messageId: string | null;
+  uploadedAt: string;
 }
 
 /**

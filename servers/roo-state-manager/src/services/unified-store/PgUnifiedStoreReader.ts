@@ -20,6 +20,7 @@ import type {
   UnifiedStoreSearchHit,
   ConversationRow,
   MessageRow,
+  RooSyncAttachmentMetadataRow,
   RooSyncMessageRow,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
@@ -124,6 +125,69 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
     if (result.rows.length === 0) return null;
     return this.mapRooSyncMessageRow(result.rows[0]);
+  }
+
+  // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
+
+  async getRooSyncAttachmentById(id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      'SELECT * FROM roosync_attachments WHERE id = $1',
+      [id],
+    );
+
+    if (result.rows.length === 0) return null;
+    return this.mapRooSyncAttachmentRow(result.rows[0], true) as RooSyncAttachmentMetadataRow & { payload: Buffer };
+  }
+
+  async listRooSyncAttachmentMetadata(uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> {
+    if (uuids.length === 0) return [];
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      'SELECT * FROM roosync_attachments WHERE id = ANY($1::text[])',
+      [uuids],
+    );
+
+    return result.rows.map((row: pg.QueryResult['rows'][0]) =>
+      this.mapRooSyncAttachmentRow(row, false));
+  }
+
+  async scanRooSyncAttachments(messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = messageId
+      ? await this.pool.query(
+        'SELECT * FROM roosync_attachments WHERE message_id = $1 ORDER BY uploaded_at DESC',
+        [messageId],
+      )
+      : await this.pool.query('SELECT * FROM roosync_attachments ORDER BY uploaded_at DESC');
+
+    return result.rows.map((row: pg.QueryResult['rows'][0]) =>
+      this.mapRooSyncAttachmentRow(row, false));
+  }
+
+  private mapRooSyncAttachmentRow(
+    row: pg.QueryResult['rows'][0],
+    withPayload: boolean,
+  ): RooSyncAttachmentMetadataRow | (RooSyncAttachmentMetadataRow & { payload: Buffer }) {
+    const mapped: RooSyncAttachmentMetadataRow = {
+      id: row.id,
+      filename: row.filename,
+      mime: row.mime,
+      size: Number(row.size),
+      sha256: row.sha256,
+      uploaderMachine: row.uploader_machine,
+      uploaderWorkspace: row.uploader_workspace,
+      messageId: row.message_id,
+      uploadedAt: new Date(row.uploaded_at).toISOString(),
+    };
+    if (withPayload) return { ...mapped, payload: Buffer.from(row.payload) };
+    return mapped;
   }
 
   // ─── RooSync dashboard reads (#3151 Phase C) ─────────────────────

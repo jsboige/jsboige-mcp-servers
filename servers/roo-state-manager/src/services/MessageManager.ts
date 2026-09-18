@@ -16,8 +16,9 @@ import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
 import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
-// Safe as a static import: AttachmentManager pulls only fs/path/crypto/logger, so it
-// cannot re-enter the cycle documented below.
+// Safe as a static import: AttachmentManager pulls fs/path/crypto/logger plus the
+// unified-store gate modules (#3151 §7.5.2), whose MessageManager references are
+// type-only — it cannot re-enter the cycle documented below.
 import { AttachmentManager } from './roosync/AttachmentManager.js';
 // #3151 Phase A/A.2 — RooSync channel dual-write (env-gated, never throws).
 // A: creation (send/reply/amend/attachments). A.2: state transitions and destruction.
