@@ -355,7 +355,7 @@ export function isRetryableFallbackError(error: unknown): boolean {
 type CloudCondenseOnceResult =
   | { ok: true; content: string; elapsedMs: number; model: string }
   | { ok: false; retryable: boolean; error: string; elapsedMs: number; model: string }
-  | null; // unconfigured (no API key) or empty content
+  | null; // unconfigured (no API key)
 
 async function cloudCondenseOnce(
   systemPrompt: string,
@@ -407,13 +407,14 @@ async function cloudCondenseOnce(
     const elapsedMs = Date.now() - fbStart;
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
-      // #3011: returns null (same shape as "unconfigured") so no retry is attempted.
-      // Deliberate: an empty body is a SUCCESSFUL HTTP round-trip — the endpoint
-      // answered 200, it just returned nothing. Retrying is unlikely to yield
-      // different content (the model chose to emit nothing), and conflating it
-      // with a transient failure would mask a genuine empty-answer. Contrast with
-      // a 429/5xx where the transport itself was rejected.
-      return null;
+      // #2719 discriminant fix (2026-09-19, po-204 spec from the po-2027 datapoint):
+      // return a stamped NON-RETRYABLE error instead of the null "unconfigured" shape,
+      // so the archive frontmatter distinguishes "cloud answered 200 with no content"
+      // from "cloud never configured in this process". Retry stays disabled (#3011):
+      // an empty body is a SUCCESSFUL HTTP round-trip — the model chose to emit
+      // nothing, and a backoff is unlikely to change that (contrast with 429/5xx
+      // where the transport itself was rejected and retrying may heal).
+      return { ok: false, retryable: false, error: 'empty-content (HTTP 200, 0-byte completion)', elapsedMs, model: fbModel };
     }
     logger.info('#2719 cloud fallback condensation succeeded', {
       fbModel,
@@ -445,7 +446,7 @@ async function cloudCondenseWithRetry(
   let attempts = 0;
   for (let attempt = 1; attempt <= FB_MAX_ATTEMPTS; attempt++) {
     const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts);
-    if (result === null) return null; // unconfigured or empty content
+    if (result === null) return null; // unconfigured (empty content is a stamped non-retryable error since the #2719 discriminant fix)
     if (result.ok) return result; // success
     attempts = attempt;
     lastError = result.error;
@@ -2632,11 +2633,22 @@ async function executeTruncationFallback(
   // tied to a machine, and "cloud attempted but rejected" was indistinguishable
   // from "cloud never configured in that process". condensedBy + fallbackError
   // close both gaps; the archive alone now answers who truncated and why.
+  //
+  // #2719 discriminant fix (2026-09-19, po-204 spec — po-2027 datapoint 2026-09-07):
+  // the discriminator below was built exclusively on `fallbackAttempted`, which is
+  // stamped ONLY on a failed cloud attempt. Three distinct states therefore collapsed
+  // into 'not-attempted-or-unconfigured': (1) cloud genuinely unconfigured,
+  // (2) cloud answered 200 with EMPTY content (was a silent null, now stamped as
+  // an 'empty-content' error upstream), (3) cloud SUCCEEDED on the other call of
+  // the same pass (`fallbackUsed` never entered the disambiguation — the po-2027
+  // archive said "not attempted" while gpt-5-mini had just salvaged the summary).
+  // The `fallbackUsed` branch closes (3); the upstream empty-content stamping closes (2).
   const fbStats = [failedCalls?.summaryCall?.stats, failedCalls?.statusCall?.stats];
   const fbErrorCaptured = fbStats.find(s => s?.fallbackAttempted && s.fallbackError);
   const fallbackError = fbErrorCaptured?.fallbackError
     ? truncateError(fbErrorCaptured.fallbackError)
     : fbStats.some(s => s?.fallbackAttempted) ? 'attempted-no-error-captured'
+    : fbStats.some(s => s?.fallbackUsed) ? 'no-fallback-failure-captured'
     : 'not-attempted-or-unconfigured';
 
   const archiveFrontmatter = yaml.dump({
