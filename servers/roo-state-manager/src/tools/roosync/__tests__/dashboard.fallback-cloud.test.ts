@@ -15,6 +15,11 @@
  * The existing `dashboard.test.ts` suite mocks `getFallbackChatOpenAIClient: () => null`
  * (inert), so it never exercises the fallback-success path — hence a dedicated file.
  *
+ * 2026-09-19 (po-204 discriminant spec, po-2027 datapoint): (h)/(i) extend the
+ * frontmatter discriminant — an empty 200 body is stamped 'empty-content' (no longer
+ * the null "unconfigured" shape), and a pass salvaged on ONE call by the cloud reads
+ * 'no-fallback-failure-captured' instead of 'not-attempted-or-unconfigured'.
+ *
  * @module tools/roosync/__tests__/dashboard.fallback-cloud
  */
 
@@ -52,7 +57,13 @@ vi.mock('@/services/openai', () => ({
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-cloud-');
 
-describe('#2719 cloud-fallback condensation telemetry', { testTimeout: 30000 }, () => {
+// NOTE on the suite option below: it must be `timeout`, NOT `testTimeout` —
+// vitest 3 suite options silently ignore an unknown `testTimeout` key, so the
+// 30s ceiling declared here was never in effect and the unit config's 15s
+// applied instead. Test (b) alone runs ~15s of deliberate backoff (primary +
+// cloud retry storms, 2s+4s twice) — knife-edge at 15s. Key fixed 2026-09-19
+// alongside tests (h)/(i) so the suite runs under its intended envelope.
+describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () => {
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -335,6 +346,114 @@ describe('#2719 cloud-fallback condensation telemetry', { testTimeout: 30000 }, 
     // two regimes unambiguously (2 post-fix < 4 < 6 pre-fix).
     expect(mockFallbackCreate.mock.calls.length).toBeLessThan(4);
     expect(mockFallbackCreate.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // #2719 discriminant fix (2026-09-19, po-204 spec — po-2027 datapoint 2026-09-07):
+  // a 200 with EMPTY completion content used to return the null "unconfigured" shape,
+  // so the archive frontmatter read 'not-attempted-or-unconfigured' while the cloud
+  // WAS configured and HAD answered. It must now be stamped as a non-retryable
+  // 'empty-content' error so fleet datapoints stop conflating the two states.
+  it('(h) #2719 primary down → fallback 200 with empty content → archive stamps empty-content', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // HTTP 200 but no completion content (e.g. a reasoning model burning the whole
+    // max_tokens budget in reasoning_content — the glm-4.7-flash behaviour
+    // documented in #2719 c.12).
+    mockFallbackCreate.mockResolvedValue({
+      choices: [{ message: { content: '' }, finish_reason: 'length' }],
+    });
+
+    const condensedResult = await fillUntilCondensed();
+
+    expect(condensedResult.condenseDiagnostic).toBeDefined();
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter(
+      (d: any) => d.outcome === 'fallback-truncated',
+    );
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+
+    // Per-call stats must carry the stamped fallback error (mirrors test f's shape).
+    const passesWithEmptyContent = truncatedPasses.filter((d: any) => {
+      const s = d.llm?.summary;
+      const st = d.llm?.status;
+      return s?.fallbackAttempted === true && typeof s.fallbackError === 'string' && s.fallbackError.startsWith('empty-content')
+        || st?.fallbackAttempted === true && typeof st.fallbackError === 'string' && st.fallbackError.startsWith('empty-content');
+    });
+    expect(passesWithEmptyContent.length).toBeGreaterThanOrEqual(1);
+
+    // The archive frontmatter must NOT read 'not-attempted-or-unconfigured' — the
+    // cloud was configured and answered (200, empty body).
+    const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
+    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
+    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(
+      path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]),
+      'utf8',
+    );
+    expect(archiveContent).not.toContain('not-attempted-or-unconfigured');
+    expect(archiveContent).toContain('empty-content (HTTP 200');
+  });
+
+  // #2719 discriminant fix, second half: when one call of the pass is SALVAGED by
+  // the cloud (`fallbackUsed` — never stamped `fallbackAttempted`) while the other
+  // call has no fallback marker at all, the frontmatter must not claim
+  // 'not-attempted-or-unconfigured' — the cloud just worked for the other call.
+  // This is the exact po-2027 signature (summary salvaged by gpt-5-mini, status
+  // failed → archive said "not attempted"). Reproduced here by arming the fallback
+  // client for exactly one of the two concurrent LLM calls.
+  it('(i) #2719 one call salvaged by cloud, other call without fallback → archive says no-fallback-failure-captured', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    const okClient = {
+      chat: {
+        completions: {
+          create: vi.fn().mockResolvedValue({
+            choices: [{ message: { content: '## Cloud summary\n\nSalvaged by the cloud on one call.' } }],
+          }),
+        },
+      },
+    };
+    // Whichever LLM call (summary/status) reaches cloudCondenseOnce FIRST gets a
+    // working cloud client; the other sees it unconfigured (null → no marker).
+    // Either race order yields the same archive discriminant: exactly one call
+    // with fallbackUsed, none with fallbackAttempted.
+    mockGetFallbackClient
+      .mockImplementationOnce(() => okClient)
+      .mockImplementation(() => null);
+
+    const condensedResult = await fillUntilCondensed();
+
+    expect(condensedResult.condenseDiagnostic).toBeDefined();
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter(
+      (d: any) => d.outcome === 'fallback-truncated',
+    );
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+
+    // The po-2027 signature on the truncated pass: one call salvaged (fallbackUsed),
+    // none marked fallbackAttempted.
+    const mixedPasses = truncatedPasses.filter((d: any) => {
+      const used = d.llm?.summary?.fallbackUsed === true || d.llm?.status?.fallbackUsed === true;
+      const attempted = d.llm?.summary?.fallbackAttempted === true || d.llm?.status?.fallbackAttempted === true;
+      return used && !attempted;
+    });
+    expect(mixedPasses.length).toBeGreaterThanOrEqual(1);
+
+    // And the archive must carry the new discriminant, not the mislabel.
+    const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
+    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
+    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(
+      path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]),
+      'utf8',
+    );
+    expect(archiveContent).not.toContain('not-attempted-or-unconfigured');
+    expect(archiveContent).toContain('no-fallback-failure-captured');
   });
 });
 
