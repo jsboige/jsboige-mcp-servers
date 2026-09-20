@@ -185,8 +185,17 @@ const GENERIC_DIRS = new Set([
 	'examples', 'lib', 'libs', 'build', 'dist', 'out', 'public', 'static', 'resources',
 	'assets', 'data', 'utils', 'tools', 'vendor', '.vscode', '.idea'
 ]);
-/** Max ws-* collections scanned by the content fallback (cost cap). */
-const CONTENT_MATCH_MAX_CANDIDATES = 10;
+/**
+ * Max ws-* collections scanned by the content fallback (cost cap).
+ * CoursIA-2 fleet finding (2026-09-20, po-203 cross-workspace [TASK]): with the cap at 10,
+ * the only accepting candidates sat at ranks 12-13 of 62 (the in-cap CoursIA-family
+ * collection rejected at overlap 0.545 while ranks 12/13 accepted at 0.75) — the cap hid
+ * the only reachable match and codebase_search reported collection_not_found for a workspace
+ * whose content IS indexed (under a sibling clone's hash). Each candidate costs one
+ * payload-only scroll, so scanning the whole fleet's collection set is cheap; the cap now
+ * defaults to 64 (>= the observed 62) and stays env-overridable.
+ */
+const CONTENT_MATCH_MAX_CANDIDATES = parseInt(process.env.CONTENT_MATCH_MAX_CANDIDATES || '64', 10);
 
 /**
  * Build the "signature" of a workspace = the set of top-level directory names on disk.
@@ -821,6 +830,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 					});
 				}
 
+				// Report how many candidates the fallback ACTUALLY probed, not how many
+				// exist — with a cap, "over N collections" where N > scanned overstates
+				// coverage and hides the cap as a failure mode (CoursIA-2 fleet finding).
+				const scannedCandidates = Math.min(candidates.length, CONTENT_MATCH_MAX_CANDIDATES);
+
 				// Build signature samples for the top candidates (helps the caller self-identify).
 				// Only when we could read the workspace dirs — otherwise signatures are moot
 				// (we can't compare them to anything) and we avoid the extra scroll calls.
@@ -838,7 +852,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 						type: 'text',
 						text: JSON.stringify({
 							status: 'collection_not_found',
-							message: `No Qdrant collection matching workspace "${workspace}" (primary hash: ${primaryCollectionName}). ${collectionVariants.length} hash variants tried + content-based fallback over ${candidates.length} ws-* collections, no strict match. Acceptance is: ≥1 shared discriminant dir AND (Jaccard ≥ ${CONTENT_MATCH_MIN_JACCARD} OR (overlap ≥ ${CONTENT_MATCH_MIN_OVERLAP} AND ≥2 shared discriminant dirs)).`,
+							message: `No Qdrant collection matching workspace "${workspace}" (primary hash: ${primaryCollectionName}). ${collectionVariants.length} hash variants tried + content-based fallback over ${scannedCandidates} of ${candidates.length} ws-* collections, no strict match. Acceptance is: ≥1 shared discriminant dir AND (Jaccard ≥ ${CONTENT_MATCH_MIN_JACCARD} OR (overlap ≥ ${CONTENT_MATCH_MIN_OVERLAP} AND ≥2 shared discriminant dirs)).`,
 							hint: 'The workspace hash differs from what the indexer used AND no collection\'s indexed top-level dirs match yours strictly. Inspect the collection signatures below to identify yours, then re-index the workspace from Roo Code / Zoo Code on this machine, or report the path-format mismatch.',
 							tried_variants: collectionVariants,
 							primary_hash: primaryCollectionName,
@@ -850,6 +864,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 							content_match_jaccard_threshold: CONTENT_MATCH_MIN_JACCARD,
 							content_match_overlap_threshold: CONTENT_MATCH_MIN_OVERLAP,
 							content_match_discriminant_dirs_required: { jaccard_path: 1, overlap_path: 2 },
+							content_match_candidates_total: candidates.length,
+							content_match_candidates_scanned: scannedCandidates,
 							collection_signatures: signatureSamples,
 							existing_collections: collectionDiagnostics,
 							fallback_list_tried: true,

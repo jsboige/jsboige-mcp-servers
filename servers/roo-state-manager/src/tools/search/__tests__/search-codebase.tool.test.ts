@@ -956,6 +956,81 @@ describe('search-codebase.tool', () => {
 				expect(parsed.collection).not.toBe('ws-low');
 			});
 
+			test('hash miss + accepting candidate ranked beyond the old cap (rank 12) → still found and served', async () => {
+				// CoursIA-2 fleet finding (2026-09-20, po-203 cross-workspace [TASK]): the only
+				// accepting collections sat at ranks 12-13 of 62 by points_count — under
+				// CONTENT_MATCH_MAX_CANDIDATES=10 the fallback never probed them and the tool
+				// reported collection_not_found for a workspace whose content IS indexed (under
+				// sibling-clone hashes). The cap must cover the whole realistic candidate set.
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true }
+				]);
+				// 12 collections with strictly descending points_count: the ONLY accepting one
+				// is the smallest = probed LAST (rank 12).
+				const names = Array.from({ length: 12 }, (_, i) => `ws-c${String(i + 1).padStart(2, '0')}`);
+				mockQdrant.getCollections.mockResolvedValue({ collections: names.map(name => ({ name })) });
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					const idx = names.indexOf(name);
+					if (idx === -1) throw new Error('not found'); // hash variants miss
+					return { points_count: (12 - idx) * 1000, status: 'green' };
+				});
+				mockQdrant.scroll.mockImplementation(async (name: string) => {
+					if (name === 'ws-c12') {
+						return { points: [
+							{ payload: { pathSegments: { '0': 'roo-code' } } },
+							{ payload: { pathSegments: { '0': 'mcps' } } },
+							{ payload: { pathSegments: { '0': 'docs' } } }
+						] };
+					}
+					return { points: [{ payload: { pathSegments: { '0': 'elsewhere' } } }] };
+				});
+				mockQdrant.query.mockResolvedValue({
+					points: [{ score: 0.8, payload: { filePath: 'roo-code/z.ts', codeChunk: 'z', startLine: 1, endLine: 1 } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'z', workspace: '/fleet-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.collection).toBe('ws-c12');
+				expect(parsed.collection_resolved_by).toBe('content-match');
+				// All 12 candidates were actually probed — the rank-12 one included.
+				expect(mockQdrant.scroll).toHaveBeenCalledTimes(12);
+			});
+
+			test('no match + candidates exceed the cap → diagnostic discloses scanned of total, not just total', async () => {
+				// The old message said "content-based fallback over N ws-* collections" where N
+				// was the TOTAL count while only min(N, cap) were probed — the cap was invisible
+				// as a failure mode. The message and payload must state the real probe count.
+				mockReaddirSync.mockReturnValue([
+					{ name: 'roo-code', isDirectory: () => true },
+					{ name: 'mcps', isDirectory: () => true },
+					{ name: 'docs', isDirectory: () => true }
+				]);
+				const names = Array.from({ length: 65 }, (_, i) => `ws-x${String(i).padStart(3, '0')}`);
+				mockQdrant.getCollections.mockResolvedValue({ collections: names.map(name => ({ name })) });
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (!names.includes(name)) throw new Error('not found');
+					return { points_count: 1000 - names.indexOf(name), status: 'green' };
+				});
+				mockQdrant.scroll.mockResolvedValue({ points: [{ payload: { pathSegments: { '0': 'elsewhere' } } }] });
+
+				const result = await handleCodebaseSearch({ query: 'q', workspace: '/capped-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('collection_not_found');
+				expect(parsed.content_match_candidates_total).toBe(65);
+				expect(parsed.content_match_candidates_scanned).toBe(64);
+				expect(parsed.message).toMatch(/over 64 of 65 ws-\* collections/);
+				// The disclosed number is the real probe frontier: the first 64 ranked
+				// candidates were each probed, the 65th never. (The diagnostic also draws
+				// 5 extra signature-sample scrolls after the failed match — count via the
+				// set of probed names, not a raw call count.)
+				const probedNames = new Set(mockQdrant.scroll.mock.calls.map((c: any[]) => c[0]));
+				for (let i = 0; i < 64; i++) expect(probedNames.has(names[i])).toBe(true);
+				expect(probedNames.has(names[64])).toBe(false);
+			});
+
 			test('hash miss + discriminant dir is a minority in the sample → still matches (large-sample hardening)', async () => {
 				// web1 observation: scroll is insertion-ordered; a small biased sample could
 				// hide a discriminant dir. The 200-pt sample + Set union must capture the
