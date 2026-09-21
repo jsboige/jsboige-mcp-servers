@@ -97,7 +97,7 @@ describe('get-status (Option B)', () => {
       })),
       getAllSchedulerMetrics: vi.fn().mockReturnValue(new Map())
     });
-    mockGetInboxStats.mockResolvedValue({ unread: 0, urgent: 0, by_priority: {} });
+    mockGetInboxStats.mockResolvedValue({ unread: 0, by_priority: {}, by_priority_unread: {} });
     mockLoadPendingDecisions.mockResolvedValue([]);
     mockGetKnownMachineIds.mockReturnValue(['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1']);
   });
@@ -129,7 +129,7 @@ describe('get-status (Option B)', () => {
       const result = GetStatusResultSchema.parse({
         status: 'HEALTHY',
         machines: { online: 6, unknown: 0, total: 6 },
-        inbox: { unread: 0, urgent: 0 },
+        inbox: { unread: 0, urgent_unread: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
         flags: [],
@@ -142,7 +142,7 @@ describe('get-status (Option B)', () => {
       const result = GetStatusResultSchema.parse({
         status: 'CRITICAL',
         machines: { online: 4, unknown: 2, total: 6 },
-        inbox: { unread: 15, urgent: 2 },
+        inbox: { unread: 15, urgent_unread: 2 },
         decisions: { pending: 3 },
         dashboards: { active: 1 },
         flags: ['UNKNOWN:myia-po-2025', 'INBOX_URGENT:2', 'DECISIONS_PENDING:3'],
@@ -156,7 +156,7 @@ describe('get-status (Option B)', () => {
       expect(() => GetStatusResultSchema.parse({
         status: 'synced',
         machines: { online: 6, unknown: 0, total: 6 },
-        inbox: { unread: 0, urgent: 0 },
+        inbox: { unread: 0, urgent_unread: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
         flags: [],
@@ -196,7 +196,7 @@ describe('get-status (Option B)', () => {
     });
 
     test('returns CRITICAL when urgent messages', async () => {
-      mockGetInboxStats.mockResolvedValue({ unread: 3, urgent: 1, by_priority: { URGENT: 1 } });
+      mockGetInboxStats.mockResolvedValue({ unread: 3, by_priority: { URGENT: 1 }, by_priority_unread: { URGENT: 1 } });
 
       const result = await roosyncGetStatus({});
 
@@ -204,8 +204,25 @@ describe('get-status (Option B)', () => {
       expect(result.flags).toContain('INBOX_URGENT:1');
     });
 
+    test('#1159: read URGENT messages do NOT trigger CRITICAL or INBOX_URGENT', async () => {
+      // Regression: the measured production state — 3 URGENT messages, all read,
+      // plus 1 unread non-urgent. `by_priority` still counts all 3 URGENT (manage.ts
+      // semantics), but the verdict must only see the unread ones.
+      mockGetInboxStats.mockResolvedValue({
+        unread: 1,
+        by_priority: { URGENT: 3, MEDIUM: 1 },
+        by_priority_unread: { MEDIUM: 1 }
+      });
+
+      const result = await roosyncGetStatus({});
+
+      expect(result.inbox).toEqual({ unread: 1, urgent_unread: 0 });
+      expect(result.status).not.toBe('CRITICAL');
+      expect(result.flags).not.toContain(expect.stringMatching(/^INBOX_URGENT:/));
+    });
+
     test('returns WARNING when >5 unread messages', async () => {
-      mockGetInboxStats.mockResolvedValue({ unread: 8, urgent: 0, by_priority: {} });
+      mockGetInboxStats.mockResolvedValue({ unread: 8, by_priority: {}, by_priority_unread: {} });
 
       const result = await roosyncGetStatus({});
 
@@ -222,7 +239,7 @@ describe('get-status (Option B)', () => {
     });
 
     test('includes INBOX_OVERFLOW flag when >10 unread', async () => {
-      mockGetInboxStats.mockResolvedValue({ unread: 15, urgent: 0, by_priority: {} });
+      mockGetInboxStats.mockResolvedValue({ unread: 15, by_priority: {}, by_priority_unread: {} });
 
       const result = await roosyncGetStatus({});
 
@@ -422,7 +439,7 @@ describe('get-status (Option B)', () => {
       const parsed = GetStatusResultSchema.parse({
         status: 'CRITICAL',
         machines: { online: 1, unknown: 5, total: 6 },
-        inbox: { unread: 0, urgent: 0 },
+        inbox: { unread: 0, urgent_unread: 0 },
         decisions: { pending: 0 },
         dashboards: { active: 1 },
         flags: ['UNKNOWN:myia-po-2025'],

@@ -68,8 +68,8 @@ export const GetStatusResultSchema = z.object({
 
   inbox: z.object({
     unread: z.number(),
-    urgent: z.number()
-  }).describe('Messages non-lus et urgents'),
+    urgent_unread: z.number()
+  }).describe('Messages non-lus et urgents non-lus (#1159: URGENT lus exclus)'),
 
   decisions: z.object({
     pending: z.number()
@@ -157,7 +157,7 @@ export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
  */
 function buildFlags(
   heartbeatState: { onlineMachines: string[]; unknownMachines: string[]; idleMachines: string[] },
-  inboxStats: { unread: number; urgent: number },
+  inboxStats: { unread: number; urgent_unread: number },
   pendingDecisions: number
 ): string[] {
   const flags: string[] = [];
@@ -177,9 +177,10 @@ function buildFlags(
     flags.push(`INBOX_OVERFLOW:${inboxStats.unread}_unread`);
   }
 
-  // Urgent messages
-  if (inboxStats.urgent > 0) {
-    flags.push(`INBOX_URGENT:${inboxStats.urgent}`);
+  // Urgent messages — UNREAD only (#1159). Counting read ones made the flag
+  // permanent for every machine that ever received an URGENT message.
+  if (inboxStats.urgent_unread > 0) {
+    flags.push(`INBOX_URGENT:${inboxStats.urgent_unread}`);
   }
 
   // Pending decisions
@@ -285,11 +286,12 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           const stats = await messageManager.getInboxStats(config.machineId);
           return {
             unread: stats.unread,
-            urgent: stats.by_priority?.URGENT ?? 0
+            // #1159: unread-only — `by_priority` counts read messages too
+            urgent_unread: stats.by_priority_unread?.URGENT ?? 0
           };
         } catch (err) {
           logger.warn('Inbox stats failed', { error: String(err) });
-          return { unread: 0, urgent: 0 };
+          return { unread: 0, urgent_unread: 0 };
         }
       })(),
       service.loadPendingDecisions()
@@ -423,7 +425,9 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
 
     // Derive overall status (based on KNOWN machines only)
     let status: 'HEALTHY' | 'WARNING' | 'CRITICAL' = 'HEALTHY';
-    if (filteredUnknownMachines.length > 0 || inboxStats.urgent > 0) {
+    // #1159: CRITICAL on UNREAD urgent only — read URGENT messages no longer
+    // hold the coordination channel in permanent CRITICAL (status/health agreement, #2546).
+    if (filteredUnknownMachines.length > 0 || inboxStats.urgent_unread > 0) {
       status = 'CRITICAL';
     } else if (inboxStats.unread > 5 || filteredIdleMachines.length > 0) {
       // WARNING if: high unread count OR heartbeat idle machines (but no unknown)

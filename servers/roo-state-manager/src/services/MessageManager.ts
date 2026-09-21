@@ -2649,6 +2649,7 @@ export class MessageManager {
     unread: number;
     read: number;
     by_priority: Record<string, number>;
+    by_priority_unread: Record<string, number>;
     by_sender: Record<string, number>;
     oldest_unread: string | null;
   }> {
@@ -2660,6 +2661,7 @@ export class MessageManager {
       unread: 0,
       read: 0,
       by_priority: {} as Record<string, number>,
+      by_priority_unread: {} as Record<string, number>,
       by_sender: {} as Record<string, number>,
       oldest_unread: null as string | null
     };
@@ -2690,8 +2692,14 @@ export class MessageManager {
       const isUnreadForThisMachine =
         perReader !== null ? perReader === 'unread' : message.status === 'unread';
 
+      const prio = message.priority || 'MEDIUM';
+
       if (isUnreadForThisMachine) {
         stats.unread++;
+        // #1159: unread-only priority counter. The status verdict reads THIS one —
+        // `by_priority` below counts read messages too, and deriving INBOX_URGENT
+        // from it made every machine that ever received an URGENT message CRITICAL forever.
+        stats.by_priority_unread[prio] = (stats.by_priority_unread[prio] || 0) + 1;
         const msgDate = new Date(message.timestamp);
         if (!oldestUnreadDate || msgDate < oldestUnreadDate) {
           oldestUnreadDate = msgDate;
@@ -2701,8 +2709,8 @@ export class MessageManager {
         stats.read++;
       }
 
-      // Count by priority
-      const prio = message.priority || 'MEDIUM';
+      // Count by priority — ALL read statuses, on purpose: manage.ts renders a
+      // whole-inbox breakdown from it. Never use for unread-sensitive verdicts (#1159).
       stats.by_priority[prio] = (stats.by_priority[prio] || 0) + 1;
 
       // Count by sender (machine ID only)
