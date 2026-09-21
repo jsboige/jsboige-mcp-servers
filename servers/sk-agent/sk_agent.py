@@ -452,7 +452,14 @@ class SKAgentManager:
 
             try:
                 api_key = model_cfg.resolve_api_key()
-                client = AsyncOpenAI(api_key=api_key, base_url=model_cfg.base_url)
+                # #1587: explicit client budget — openai-python defaults to 600s
+                # + 2 retries, which outlives every call_agent wait_for ceiling.
+                client = AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=model_cfg.base_url,
+                    timeout=300.0,
+                    max_retries=1,
+                )
                 self._openai_clients[model_cfg.id] = client
 
                 service = OpenAIChatCompletion(
@@ -925,6 +932,8 @@ class SKAgentManager:
             emb_client = AsyncOpenAI(
                 api_key=emb.resolve_api_key(),
                 base_url=emb.base_url,
+                timeout=60.0,
+                max_retries=1,
             )
             embeddings_gen = OpenAITextEmbedding(
                 ai_model_id=emb.model_id,
@@ -1478,8 +1487,17 @@ class SKAgentManager:
             thread = response.thread
 
         self._threads[conv_id] = thread
+        if final_response is None or not str(final_response).strip():
+            # #1587: an invoke loop that produced no output is an error, not a
+            # silent success with response="".
+            return {
+                "error": "empty model response — agent.invoke produced no output",
+                "conversation_id": conv_id,
+                "agent_used": agent_id,
+                "model_used": self._get_agent_model_id(agent_id),
+            }
         result = {
-            "response": str(final_response) if final_response else "",
+            "response": str(final_response),
             "conversation_id": conv_id,
             "agent_used": agent_id,
             "model_used": self._get_agent_model_id(agent_id),
@@ -1533,8 +1551,16 @@ class SKAgentManager:
                 thread = response.thread
 
             self._threads[conv_id] = thread
+            if final_response is None or not str(final_response).strip():
+                # #1587: same empty-output guard as _handle_text.
+                return {
+                    "error": "empty model response — agent.invoke produced no output",
+                    "conversation_id": conv_id,
+                    "agent_used": agent_id,
+                    "model_used": self._get_agent_model_id(agent_id),
+                }
             result = {
-                "response": str(final_response) if final_response else "",
+                "response": str(final_response),
                 "conversation_id": conv_id,
                 "agent_used": agent_id,
                 "model_used": self._get_agent_model_id(agent_id),
@@ -1686,8 +1712,16 @@ class SKAgentManager:
             thread = response.thread
 
         self._threads[conv_id] = thread
+        if final_response is None or not str(final_response).strip():
+            # #1587: same empty-output guard as _handle_text.
+            return {
+                "error": "empty model response — agent.invoke produced no output",
+                "conversation_id": conv_id,
+                "agent_used": agent_id,
+                "model_used": self._get_agent_model_id(agent_id),
+            }
         result = {
-            "response": str(final_response) if final_response else "",
+            "response": str(final_response),
             "conversation_id": conv_id,
             "agent_used": agent_id,
             "model_used": self._get_agent_model_id(agent_id),
@@ -2267,8 +2301,14 @@ async def review_pr(
     if options:
         try:
             opts = json.loads(options)
-        except json.JSONDecodeError:
-            opts = {}
+        except json.JSONDecodeError as e:
+            # #1587: invalid caller input is an error, not silently dropped options.
+            return json.dumps({
+                "error": f"invalid options JSON: {e}",
+                "agent_used": agent_id,
+                "tier": tier,
+                "duration_seconds": round(time.time() - start, 1),
+            }, indent=2, ensure_ascii=False)
 
     prompt_parts = [
         f"Review PR #{pr_number} in repository {repo}.",
@@ -2280,10 +2320,12 @@ async def review_pr(
         '  "confidence": "HIGH | MEDIUM | LOW",',
         '  "summary": "1-3 sentence summary",',
         '  "blocking_issues": [{"severity":"critical|major|minor", "category":"security|performance|maintainability|integration|regression", "file":"path", "line":0, "message":"description", "suggestion":"fix"}],',
-        '  "suggestions": [{"severity":"minor", "category":"style", "file":"path", "line":0, "message":"description", "suggestion":"fix"}]',
+        '  "suggestions": [{"severity":"minor", "category":"style", "file":"path", "line":0, "message":"description", "suggestion":"fix"}],',
+        '  "tool_errors": [{"tool":"tool name", "error":"error message"}]',
         "}",
         "```",
         "",
+        "In tool_errors, list EVERY GitHub tool call that returned an error payload — surface tool failures instead of reviewing without data (set [] if none).",
         "Be thorough. Check for bugs, security issues, performance problems, and maintainability.",
         "If the PR is a pointer bump or trivial change, keep the review short.",
     ]
@@ -2326,8 +2368,19 @@ async def review_pr(
             "timeout_used": effective_timeout,
         }, indent=2, ensure_ascii=False)
 
+    response_text = result.get("response", "") if isinstance(result, dict) else str(result)
+    if not str(response_text).strip():
+        # #1587: never return a successful-looking review with an empty body.
+        return json.dumps({
+            "error": "empty model response — agent produced no output",
+            "agent_used": agent_id,
+            "tier": tier,
+            "duration_seconds": elapsed,
+            "timeout_used": effective_timeout,
+        }, indent=2, ensure_ascii=False)
+
     return json.dumps({
-        "response": result.get("response", "") if isinstance(result, dict) else str(result),
+        "response": response_text,
         "agent_used": agent_id,
         "model_used": result.get("model_used", "") if isinstance(result, dict) else "",
         "tier": tier,
