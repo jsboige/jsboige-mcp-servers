@@ -771,6 +771,102 @@ describe('search-codebase.tool', () => {
 		});
 
 		// ============================================================
+		// #2609 V2 — data/config-file re-ranking
+		// V2 names three confusable classes: "data / config / fixtures". Tests and
+		// fixtures were demoted (#3172); data/config files were not, and a config VALUE
+		// quotes the query vocabulary verbatim, so they won. Measured po-204 2026-09-21
+		// on the Epic's own golden query: two `roo-config/baselines/*.json` at 0.8849 took
+		// ranks 1-2 ABOVE every source chunk, with zero hit on the implementing file.
+		// ============================================================
+
+		describe('handleCodebaseSearch - data/config-file re-ranking (#2609 V2)', () => {
+			test('repro — two config baselines that took ranks 1-2 now sink below every code hit', async () => {
+				// Exact shape of the live measurement, query
+				// `unified store Postgres join filters Qdrant semantic search results`.
+				// Raw cosine order: baseline, baseline, manual .js, .ts source, test file.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.8848748, payload: { filePath: 'roo-config\\baselines\\myia-ai-01-settings-baseline.json', codeChunk: '"codebaseIndexQdrantUrl": "https://qdrant.myia.io"', startLine: 700, endLine: 700 } },
+						{ score: 0.8848748, payload: { filePath: 'roo-config\\baselines\\myia-web1-settings-baseline.json', codeChunk: '"codebaseIndexQdrantUrl": "https://qdrant.myia.io"', startLine: 891, endLine: 891 } },
+						{ score: 0.8454334, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\tests\\manual\\validate-batch-handlers.js', codeChunk: "['search_tasks_semantic', 'index_task_semantic']", startLine: 41, endLine: 41 } },
+						{ score: 0.82117, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\tool-definitions.ts', codeChunk: 'JOIN unified store filters', startLine: 148, endLine: 156 } },
+						{ score: 0.786130985, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\search\\__tests__\\search-semantic.tool.test.ts', codeChunk: 'exclude_tool_results=true adds chunk_type filter', startLine: 1003, endLine: 1003 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({
+					query: 'unified store Postgres join filters Qdrant semantic search results',
+					workspace: '/ws',
+					limit: 5
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.results_count).toBe(5);
+				const paths = parsed.results.map((r: any) => r.file_path);
+
+				// The code hit the query was actually about now leads.
+				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\tests\\manual\\validate-batch-handlers.js');
+
+				// Both config baselines are pushed to the tail — they held ranks 0 and 1 before.
+				const ai01Idx = paths.indexOf('roo-config\\baselines\\myia-ai-01-settings-baseline.json');
+				expect(ai01Idx).toBeGreaterThanOrEqual(3);
+				expect(paths.indexOf('roo-config\\baselines\\myia-web1-settings-baseline.json')).toBeGreaterThanOrEqual(3);
+
+				// Adjusted score: 0.8848748 × 0.75 = 0.6636561.
+				const ai01 = parsed.results[ai01Idx];
+				expect(ai01.score).toBeCloseTo(0.6636561, 5);
+				expect(parsed.data_file_malus_applied).toBe(2);
+
+				// V2 point (c): the label must stop calling a config baseline "good".
+				expect(ai01.relevance).toBe('moderate');
+
+				// A .ts source is not a data extension — no malus, rank order unchanged.
+				const ts = parsed.results.find((r: any) => String(r.file_path).endsWith('tool-definitions.ts'));
+				expect(ts.score).toBeCloseTo(0.82117, 5);
+				expect(ts.relevance).toBe('good');
+			});
+
+			test('precedence — a fixture keeps its single ×0.8 malus, never compounded with ×0.75', async () => {
+				// Compounding would give 0.70 × 0.8 × 0.75 = 0.42, under min_score 0.5 — i.e.
+				// silently removing fixtures from recall and breaking the #3172 contract that
+				// fixtures stay VISIBLE (degraded, not removed). Precedence, not product.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.70, payload: { filePath: 'tests\\fixtures\\real-tasks\\abc\\api_conversation_history.json', codeChunk: 'embedded code', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'embedded code', workspace: '/ws', min_score: 0.5 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results_count).toBe(1);
+				expect(parsed.results[0].score).toBeCloseTo(0.56, 5);
+				expect(parsed.fixture_malus_applied).toBe(1);
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+
+			test('scope — source and markdown hits are untouched; the malus targets data/config extensions only', async () => {
+				// A documentation file is a legitimate answer (Epic golden scenario 4 is
+				// doc-driven), so `.md` must NOT be swept into the data class.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: '.claude\\rules\\sddd-grounding.md', codeChunk: '## Retrieval', startLine: 1, endLine: 12 } },
+						{ score: 0.78, payload: { filePath: 'src\\tools\\search\\search-codebase.tool.ts', codeChunk: 'export async function handleCodebaseSearch', startLine: 689, endLine: 700 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'retrieval sddd', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				const md = parsed.results.find((r: any) => String(r.file_path).endsWith('.md'));
+				const ts = parsed.results.find((r: any) => String(r.file_path).endsWith('search-codebase.tool.ts'));
+				expect(md.score).toBeCloseTo(0.80, 5);
+				expect(ts.score).toBeCloseTo(0.78, 5);
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+				expect(parsed.test_file_malus_applied).toBeUndefined();
+				expect(parsed.fixture_malus_applied).toBeUndefined();
+			});
+		});
+
+		// ============================================================
 		// #2609/#2554 L1 — content-based collection matching (hash-mismatch fallback)
 		// Root cause: the workspace path hash is fragile cross-agent; when no hash variant
 		// matches, the right ws-* collection is identified by its indexed top-level dirs vs
