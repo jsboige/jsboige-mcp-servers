@@ -131,8 +131,34 @@ export function archiveMinAgeHours(): number {
   return Number.isFinite(v) && v > 0 ? v : 24;
 }
 
-/** GDrive conflict copies — "name (N).md" forks, merge remedy, never archived. */
-const FORK_FILE_RE = /\s\(\d+\)\.md$/;
+/**
+ * GDrive conflict copies — "name (N).md" forks, merge remedy, never archived.
+ *
+ * Exported since #3482-follow: this constant is the ONE definition of "fork by
+ * construction" and is also read by the enumeration-side detector
+ * (`detectDashboardForks`, tools/roosync/dashboard.ts). Two mirrored copies
+ * would be free to drift apart, and a detector that disagrees with the pass
+ * that refuses to touch forks is worse than no detector.
+ */
+export const FORK_FILE_RE = /\s\(\d+\)\.md$/;
+
+/**
+ * True when a dashboard FILE NAME (with extension) is a DriveFS conflict copy.
+ * Accepts either a bare name or a key (same thing minus the extension), hence
+ * the optional extension in the tested form.
+ */
+export function isGdriveConflictCopyFile(nameOrKey: string): boolean {
+  return FORK_FILE_RE.test(nameOrKey.endsWith('.md') ? nameOrKey : `${nameOrKey}.md`);
+}
+
+/**
+ * Strip every trailing ` (N)` conflict-copy marker to recover the canonical
+ * key a fork belongs to. Nested collisions (` (1) (1)`, seen live on po-204
+ * 2026-09-21) resolve to the same root as the single-marker ones.
+ */
+export function canonicalKeyOfFork(key: string): string {
+  return key.replace(/(\s\(\d+\))+$/, '');
+}
 
 /** Max parseable timestamp in ms, or null when nothing parses. */
 function maxTimestampMs(values: (string | undefined | null)[]): number | null {
@@ -278,7 +304,7 @@ export async function reconcileDashboardsFromGDrive(
       // per-key freshness/fork gates. Stale and fork keys are reported,
       // never touched — their remedy is roosync_dashboard merge.
       if (isArchivePassEnabled() && existing) {
-        if (FORK_FILE_RE.test(file)) {
+        if (isGdriveConflictCopyFile(file)) {
           result.forkFiles.push(file);
         } else {
           const fileMaxMs = maxTimestampMs(dashboard.intercom.messages.map((m) => m.timestamp));
@@ -332,6 +358,16 @@ export async function reconcileDashboardsFromGDrive(
       `[dashboard-reconcile] Archived ${result.archivedRows} condensed row(s) in PG ` +
         `(${result.archiveTooYoung} too young deferred, ` +
         `${result.staleFileKeys.length} stale-file key(s) + ${result.forkFiles.length} fork file(s) untouched)`
+    );
+  }
+  // #3482-follow — the fork count above is only emitted when this pass happened
+  // to archive a row, so a quiet pass stayed silent about the forks it saw.
+  // Fork reporting is a standing fact about the store, not a side note of the
+  // archival pass: report it on every pass that found one.
+  if (result.forkFiles.length > 0) {
+    logger.warn(
+      `[dashboard-reconcile] ${result.forkFiles.length} fork file(s) seen, left untouched (#3482) — ` +
+        `merge remedy; the enumeration-side signal is on action:"list"`
     );
   }
   return result;

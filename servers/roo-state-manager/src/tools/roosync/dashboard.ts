@@ -63,6 +63,15 @@ import {
   dualWriteDashboardSyncChecked,
   dualWriteDashboardDeleteChecked,
 } from '../../services/unified-store/roosync-dashboard-store.js';
+// #3482-follow: the fork predicate + root recovery live in the reconcile
+// module, which owns the "fork by construction" policy. Sharing them keeps the
+// enumeration-side detector and the pass that refuses to touch forks in sync
+// (import is acyclic: that module imports dashboard-markdown + the store, never
+// this file).
+import {
+  isGdriveConflictCopyFile,
+  canonicalKeyOfFork,
+} from '../../services/unified-store/roosync-dashboard-reconcile.js';
 // #3151 Phase C: markdown parsing + message-id generation extracted to a
 // dependency-light module (backfill script imports it without pulling the LLM
 // client wiring of this tool module).
@@ -3151,6 +3160,13 @@ export interface DashboardResult {
   archivedCount?: number;
   message?: string;
   dashboards?: DashboardSummary[];
+  /**
+   * #3482-follow — DriveFS conflict-copy families found while listing. Present
+   * ONLY when at least one fork exists, so a clean store keeps the historical
+   * payload shape. A non-empty array means the same logical dashboard is
+   * readable under several keys and writers may be diverging between them.
+   */
+  forks?: DashboardForkGroup[];
   archives?: string[];
   archiveData?: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] };
   overview?: Record<string, {
@@ -4536,6 +4552,54 @@ async function handleReadOverview(
   return jsonResult;
 }
 
+/**
+ * #3482-follow — a canonical dashboard key whose folder also holds DriveFS
+ * conflict copies (`<key> (N).md`).
+ *
+ * WHY this exists: the fork guard of #3482 only fires AFTER a write has been
+ * deviated (post-write verification), i.e. once the damage is done and a
+ * message may be invisible to the canonical. `action:"list"` is the first call
+ * an agent makes, and until now it reported the forks as ordinary dashboards —
+ * a reader could not tell `workspace-CoursIA` from `workspace-CoursIA (2)`.
+ *
+ * Measured on po-204 (2026-09-21): 5 forked keys on 72 dashboards, two of them
+ * STILL receiving writes hours after the collision, and one family nested two
+ * levels deep (` (1) (1)`).
+ *
+ * Detection is filesystem-only and cannot fail the listing: it is a signal for
+ * the operator, and the remedy stays `roosync_dashboard merge` (the fork's own
+ * content may or may not be entirely contained in the canonical — the merge
+ * report is what tells them apart).
+ */
+export interface DashboardForkGroup {
+  /** Canonical key the conflict copies belong to (all ` (N)` markers stripped). */
+  canonical: string;
+  /** False when only the copies exist — the canonical file itself is missing. */
+  canonicalPresent: boolean;
+  /** The conflict-copy keys, sorted. */
+  forks: string[];
+}
+
+/** Group forked keys by the canonical key they shadow. Pure — no I/O. */
+export function detectDashboardForks(keys: string[]): DashboardForkGroup[] {
+  const present = new Set(keys);
+  const byCanonical = new Map<string, string[]>();
+  for (const key of keys) {
+    if (!isGdriveConflictCopyFile(key)) continue;
+    const canonical = canonicalKeyOfFork(key);
+    const forks = byCanonical.get(canonical);
+    if (forks) forks.push(key);
+    else byCanonical.set(canonical, [key]);
+  }
+  return [...byCanonical.entries()]
+    .map(([canonical, forks]) => ({
+      canonical,
+      canonicalPresent: present.has(canonical),
+      forks: forks.sort(),
+    }))
+    .sort((a, b) => a.canonical.localeCompare(b.canonical));
+}
+
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   // #3459: fail-closed. A missing store must never be reported as "0 dashboards".
   try {
@@ -4587,6 +4651,31 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
 
     summaries.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
     const cleanupNote = cleanedUp > 0 ? ` (${cleanedUp} worktree(s) expiré(s) archivé(s))` : '';
+
+    // #3482-follow — enumerate conflict copies so a reader can tell a fork from
+    // its canonical. Purely informational: never touches the store, never fails
+    // the listing (a detector that can break `list` would be a regression).
+    let forks: DashboardForkGroup[] = [];
+    try {
+      forks = detectDashboardForks(mdFiles.map(f => f.replace(/\.md$/, '')));
+      for (const group of forks) {
+        logger.warn('[DASHBOARD-FORK] clé(s) forkée(s) détectée(s) (#3482) — writers potentiellement divergents', {
+          canonical: group.canonical,
+          forks: group.forks,
+          canonicalPresent: group.canonicalPresent
+        });
+      }
+    } catch (err) {
+      logger.debug('Détection de forks impossible (non bloquant)', {
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+    const forkNote = forks.length > 0
+      ? ` — 🚨 ${forks.length} famille(s) forkée(s) [FORK #3482]: ${forks
+          .map(g => `${g.canonical}${g.canonicalPresent ? '' : ' (canonique ABSENT)'} ← ${g.forks.join(', ')}`)
+          .join(' | ')}. Le même dashboard est lisible sous plusieurs clés : RELIRE le canonique avant d'agir sur un fork, et remède = roosync_dashboard merge (le rapport de merge dit si le contenu du fork est déjà contenu dans le canonique).`
+      : '';
+
     return {
       success: true,
       action: 'list',
@@ -4594,7 +4683,8 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
       type: '',
       request: requestEcho,
       dashboards: summaries,
-      message: `${summaries.length} dashboard(s) trouvé(s)${cleanupNote}`
+      ...(forks.length > 0 ? { forks } : {}),
+      message: `${summaries.length} dashboard(s) trouvé(s)${cleanupNote}${forkNote}`
     };
   } catch (error) {
     return {
