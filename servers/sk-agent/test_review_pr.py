@@ -395,3 +395,47 @@ class TestReviewPrRealFunction:
         assert parsed["response"] == "LGTM"
         assert "error" not in parsed
         assert parsed["tier"] == 1
+
+    def test_empty_response_becomes_error(self):
+        """#1587 fault bench: a call_agent result with an empty body (what
+        _handle_text used to return when agent.invoke produced nothing) must
+        surface as an error, never as a successful-looking empty review."""
+        mgr = self._manager_returning({"response": "", "model_used": "glm-5"})
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=2))
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "empty model response" in parsed["error"]
+        assert "response" not in parsed
+        assert parsed["timeout_used"] == 180  # tier 2 adaptive timeout
+
+    def test_whitespace_response_becomes_error(self):
+        mgr = self._manager_returning({"response": "   \n  ", "model_used": "glm-5"})
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=1))
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "response" not in parsed
+
+    def test_invalid_options_json_becomes_error(self):
+        """#1587 fault bench: malformed options JSON from the caller is an
+        error, not silently dropped options (previously opts = {})."""
+        mgr = self._manager_returning({"response": "LGTM", "model_used": "glm-5"})
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(
+                review_pr(repo="x", pr_number=7, tier=1, options="not-json{")
+            )
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "invalid options JSON" in parsed["error"]
+        assert "response" not in parsed
+
+    def test_valid_options_still_accepted(self):
+        mgr = self._manager_returning({"response": "LGTM", "model_used": "glm-5"})
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(
+                review_pr(repo="x", pr_number=7, tier=1, options='{"model": "fast"}')
+            )
+        parsed = json.loads(out)
+        assert parsed["response"] == "LGTM"
+        assert "error" not in parsed
