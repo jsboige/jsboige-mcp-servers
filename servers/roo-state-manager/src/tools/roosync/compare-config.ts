@@ -1445,20 +1445,35 @@ function truncateValue(value: unknown): string {
 
 /**
  * Obtenir la machine cible par défaut
+ *
+ * #1161: candidates come from the machine REGISTRY (heartbeat-declared fleet),
+ * not `dashboard.machines` — that map carries stale workspace-qualified keys
+ * (e.g. `myia-po-2027:coursia-2`) that were eligible as sort()[0], and its
+ * churn silently changed the comparison target between runs. The registry is
+ * the declared fleet (#1409 source of truth); the dashboard is only a fallback
+ * for environments where no heartbeats exist (tests). The target remains
+ * seat-relative (first registry machine ≠ source, alphabetically): callers
+ * needing a fleet-stable verdict must pass an explicit `target`.
  */
 async function getDefaultTargetMachine(service: any, sourceMachineId: string): Promise<string> {
-  const dashboard = await service.loadDashboard();
-  const machines = Object.keys(dashboard.machines).filter(
-    m => m !== sourceMachineId
-  );
-  
+  const registry: string[] = service.getKnownMachineIds ? service.getKnownMachineIds() : [];
+  let machines = registry.filter(m => m !== sourceMachineId);
+
+  if (machines.length === 0) {
+    // Fallback: registry empty (no heartbeats, e.g. test fixtures) — old behavior.
+    const dashboard = await service.loadDashboard();
+    machines = Object.keys(dashboard.machines).filter(
+      m => m !== sourceMachineId
+    );
+  }
+
   if (machines.length === 0) {
     throw new RooSyncServiceError(
       'Aucune autre machine trouvée pour la comparaison',
       'NO_TARGET_MACHINE'
     );
   }
-  
+
   // Trier par nom pour garantir une sélection prévisible
   machines.sort();
   return machines[0];
