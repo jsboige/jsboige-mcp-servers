@@ -625,6 +625,52 @@ describe('loadFullSkeleton', () => {
     // Cached entry must not have sequence
     expect((cached as any)?.sequence).toBeUndefined();
   });
+
+  // #2427 defect A: skeletons persisted by the pre-fix refresh worker carry no
+  // metadata.source — without the guard, this generic path dual-writes them back
+  // to harness='roo' (last writer wins). The claude- task-id prefix is the
+  // discriminator. The guard mutates the skeleton before dual-write, so the
+  // returned skeleton is the observable contract.
+  it('#2427: stamps metadata.source=claude-code on claude- taskIds lacking source', async () => {
+    const cache = new Map<string, SkeletonHeader>();
+    const skeleton = makeSkeleton('claude-C--dev-roo-extensions--abc123');
+
+    mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+    mockFs.readFile.mockResolvedValue(JSON.stringify(skeleton));
+
+    const result = await loadFullSkeleton('claude-C--dev-roo-extensions--abc123', cache);
+
+    expect(result).not.toBeNull();
+    expect(result?.metadata?.source).toBe('claude-code');
+  });
+
+  it('#2427: does NOT stamp source on non-claude taskIds (Roo/Zoo default preserved)', async () => {
+    const cache = new Map<string, SkeletonHeader>();
+    const skeleton = makeSkeleton('task-roo-xyz');
+
+    mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+    mockFs.readFile.mockResolvedValue(JSON.stringify(skeleton));
+
+    const result = await loadFullSkeleton('task-roo-xyz', cache);
+
+    expect(result).not.toBeNull();
+    expect(result?.metadata?.source).toBeUndefined();
+  });
+
+  it('#2427: preserves an explicitly set source on claude- taskIds', async () => {
+    const cache = new Map<string, SkeletonHeader>();
+    const skeleton = makeSkeleton('claude-C--dev-roo-extensions--def456', {
+      metadata: makeMetadata({ source: 'zoo-code' }),
+    });
+
+    mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+    mockFs.readFile.mockResolvedValue(JSON.stringify(skeleton));
+
+    const result = await loadFullSkeleton('claude-C--dev-roo-extensions--def456', cache);
+
+    expect(result).not.toBeNull();
+    expect(result?.metadata?.source).toBe('zoo-code');
+  });
 });
 
 // ===================================================================
