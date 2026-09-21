@@ -58,7 +58,7 @@ const logger = createLogger('roosync-channel-dual-write');
  * #1069 made a *failing* mirror observable; the measured residual loss
  * (po-2024 24.5 % / po-2027 72.5 %, fenêtre 26/08→01/09) is the mirror that
  * never got to fail: the process exits while the fire-and-forget INSERT is
- * still in flight. Repro 2026-09-01 (po-204, build post-#1069): send a
+ * still in flight. Repro 2026-09-01 (po-2024, build post-#1069): send a
  * message, kill the server right after the tool response → GDrive PRESENT /
  * PG ABSENT — and the same signature on the *graceful* stdin-end path,
  * because `gracefulShutdown` never drained the writer (`writer.close()` had

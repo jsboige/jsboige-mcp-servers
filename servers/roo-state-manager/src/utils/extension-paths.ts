@@ -102,7 +102,7 @@ function resolveGlobalStorageRoot(): string {
  *
  * The fleet is mid-migration Roo→Zoo. `getExtensionId()` is env-driven and
  * defaults to `roo-cline`, which ENOENTs on Zoo-only hosts (po-2026 native,
- * post-decommission ai-01/web1, and po-204 itself where Roo is uninstalled)
+ * post-decommission ai-01/web1, and po-2024 itself where Roo is uninstalled)
  * when no `ROO_EXTENSION_ID` override is set. This probe handles that case by
  * discovering the installed extension on disk.
  *

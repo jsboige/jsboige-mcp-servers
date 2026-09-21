@@ -496,7 +496,7 @@ export class CacheManager {
     // #2957: unref so the timer does not hold the event loop open. Any CLI
     // importing the detector chain instantiates globalCacheManager at module
     // load; without unref, scripts/backfill-unified-store.mjs completes its
-    // work and then never exits (verified po-204: full run done, 0 CPU,
+    // work and then never exits (verified po-2024: full run done, 0 CPU,
     // process alive >28 min). The MCP server is unaffected — its stdio
     // transport, not this timer, keeps it alive.
     this.cleanupTimer.unref();

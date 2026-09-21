@@ -861,7 +861,7 @@ export class MessageManager {
     // Dashed Claude-projects keys (e.g. "c--dev-roo-extensions") never match the
     // receiver's auto-detected workspace (a basename like "roo-extensions"), so
     // the recipient's inbox would list the message while getMessage/mark_read
-    // deny it — the phantom "listed but introuvable" (friction po-204). Reject
+    // deny it — the phantom "listed but introuvable" (friction po-2024). Reject
     // at the source: the convention is machine[:workspace-basename].
     if (toParsed.workspaceId && /^[a-zA-Z]--/.test(toParsed.workspaceId)) {
       throw new MessageManagerError(
@@ -1246,7 +1246,7 @@ export class MessageManager {
   /**
    * #2287 denied path — throw instead of returning null. A null from getMessage
    * renders as "Message introuvable / peut-être supprimé" in every tool, which
-   * lied about messages that exist and are simply addressed elsewhere (po-204:
+   * lied about messages that exist and are simply addressed elsewhere (po-2024:
    * dashed Claude-projects keys like "c--dev-roo-extensions" never match the
    * receiver's auto-detected workspace basename, so the inbox lists the message
    * while getMessage/mark_read report it missing).
@@ -1276,7 +1276,7 @@ export class MessageManager {
    * @param callerId ID complet du caller (machine:workspace) pour vérification d'accès
    * @returns Le message complet ou null si introuvable
    * @throws MessageManagerError ACCESS_DENIED si le message existe mais est adressé
-   *   à un autre machine:workspace que celui du caller (po-204)
+   *   à un autre machine:workspace que celui du caller (po-2024)
    */
   async getMessage(messageId: string, callerId?: string): Promise<Message | null> {
     logger.info(`Getting message: ${messageId}`);
@@ -1328,7 +1328,7 @@ export class MessageManager {
 
           return message;
         } catch (error) {
-          // po-204: the access-denied throw above is a protocol error, not a
+          // po-2024: the access-denied throw above is a protocol error, not a
           // filesystem error — never swallow it into "try the next path".
           if (error instanceof MessageManagerError) throw error;
           logger.error(`Error reading message from ${filePath}`, error);
@@ -1351,7 +1351,7 @@ export class MessageManager {
       this.cacheBuiltAt = 0;
       this.contentBuiltAt = 0;
       this.lastInboxFileCount = -1;
-      // po-204: the inbox cache can hold messages the caller cannot access
+      // po-2024: the inbox cache can hold messages the caller cannot access
       // (e.g. addressed to a dashed workspace key) — same denial as the disk path.
       if (!this.callerCanAccessMessage(cached, callerId)) {
         throw this.accessDeniedError(messageId, cached, callerId!);

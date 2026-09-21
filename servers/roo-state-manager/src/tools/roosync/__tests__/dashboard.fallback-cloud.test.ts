@@ -15,7 +15,7 @@
  * The existing `dashboard.test.ts` suite mocks `getFallbackChatOpenAIClient: () => null`
  * (inert), so it never exercises the fallback-success path — hence a dedicated file.
  *
- * 2026-09-19 (po-204 discriminant spec, po-2027 datapoint): (h)/(i) extend the
+ * 2026-09-19 (po-2024 discriminant spec, po-2027 datapoint): (h)/(i) extend the
  * frontmatter discriminant — an empty 200 body is stamped 'empty-content' (no longer
  * the null "unconfigured" shape), and a pass salvaged on ONE call by the cloud reads
  * 'no-fallback-failure-captured' instead of 'not-attempted-or-unconfigured'.
@@ -348,7 +348,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(mockFallbackCreate.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
-  // #2719 discriminant fix (2026-09-19, po-204 spec — po-2027 datapoint 2026-09-07):
+  // #2719 discriminant fix (2026-09-19, po-2024 spec — po-2027 datapoint 2026-09-07):
   // a 200 with EMPTY completion content used to return the null "unconfigured" shape,
   // so the archive frontmatter read 'not-attempted-or-unconfigured' while the cloud
   // WAS configured and HAD answered. It must now be stamped as a non-retryable

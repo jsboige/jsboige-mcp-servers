@@ -719,7 +719,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 	// Limiter le nombre de résultats
 	const effectiveLimit = Math.min(Math.max(1, limit), MAX_LIMIT);
 	const effectiveMinScore = Math.max(0, Math.min(1, min_score));
-	// tests-rank-reranking (po-204 c.194, GO ai-01 c.197): over-fetch a candidate pool so post-retrieval re-ranking (test-file malus +
+	// tests-rank-reranking (po-2024 c.194, GO ai-01 c.197): over-fetch a candidate pool so post-retrieval re-ranking (test-file malus +
 	// per-file diversification, see block near result formatting) has headroom to work with.
 	// Without this, capping a noisy file at 2 chunks would just shrink recall — there would be
 	// no lower-ranked hits from other files to backfill the freed slots. 3× the requested limit
@@ -1007,12 +1007,12 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			deadPathsFiltered = 0; // rawHits returned as-is, nothing actually filtered out
 		}
 
-		// tests-rank-reranking (po-204 c.194 investigation, GO ai-01 c.197): post-retrieval re-ranking to
+		// tests-rank-reranking (po-2024 c.194 investigation, GO ai-01 c.197): post-retrieval re-ranking to
 		// counter the test-files-rank-above-source asymmetry. text-embedding-3-small scores
 		// descriptive test titles (natural-language intent like 'should allow sending between
 		// workspaces') higher than the code source they test — the source carries syntactic
 		// noise (generics, types, modifiers) that dilutes the signal. Measured firsthand
-		// po-204: test-title chunk 0.72 vs source chunk 0.68 on identical intent. The code
+		// po-2024: test-title chunk 0.72 vs source chunk 0.68 on identical intent. The code
 		// chunking lives in Roo Code (reference-only submodule); both correctives below are
 		// post-retrieval only, no submodule change.
 		//
@@ -1031,7 +1031,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const FIXTURE_FILE_MALUS = 0.8;
 		// #2609 V2 — data/config-file malus (×0.75). V2 names three confusable classes —
 		//     "data / config / fixtures". Tests (×0.95) and fixtures (×0.8) were demoted;
-		//     data/config files were not, and they won. Measured po-204 2026-09-21, query
+		//     data/config files were not, and they won. Measured po-2024 2026-09-21, query
 		//     `unified store Postgres join filters Qdrant semantic search results`: two
 		//     `roo-config/baselines/*.json` entries took ranks 1-2 at 0.8849 — ABOVE every
 		//     source chunk (best .ts 0.821) and with ZERO hit on the file that implements the
