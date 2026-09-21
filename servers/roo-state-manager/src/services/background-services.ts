@@ -159,6 +159,14 @@ export async function loadFullSkeleton(
 
         // Update cache with header only — sequence stays on disk
         conversationCache.set(taskId, toHeader(skeleton));
+        // #2427 defect A (L164 pass, verification requested by dispatch): skeletons
+        // persisted by the pre-fix refresh worker carry no metadata.source, so this
+        // generic path would dual-write them back to harness='roo'. The claude- task-id
+        // prefix is the discriminator (same convention as the discovery/scan workers).
+        if (taskId.startsWith('claude-') && !skeleton.metadata?.source) {
+            if (!skeleton.metadata) skeleton.metadata = {} as any;
+            skeleton.metadata.source = 'claude-code';
+        }
         // #692: dual-write the FULL skeleton (not the cached header) to the unified store.
         // loadFullSkeleton has the complete skeleton in scope; the header is cache-only.
         dualWriteConversationToStore(taskId, skeleton).catch(() => {});
@@ -638,6 +646,10 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     const skeleton = await ClaudeStorageDetector.analyzeConversation(taskId, location.projectPath);
                                     if (skeleton && (skeleton.sequence ?? []).length > 0) {
                                         if (!skeleton.metadata) skeleton.metadata = {} as any;
+                                        // #2427 defect A: without metadata.source, dual-write defaults
+                                        // harness back to 'roo' (DO UPDATE harness = EXCLUDED.harness —
+                                        // last writer wins). Exact mirror of loadClaudeCodeSessions.
+                                        skeleton.metadata.source = 'claude-code'; // Qdrant filtering
                                         skeleton.metadata.dataSource = 'claude';
                                         const newHeader = toHeader(skeleton);
                                         // #1984: Preserve existing indexingState when refreshing
