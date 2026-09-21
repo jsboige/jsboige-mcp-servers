@@ -160,7 +160,9 @@ export function validateClaudishArgs(args: {
     if (args.container !== undefined && (typeof args.container !== 'string' || !NAME_RE.test(args.container))) {
         return `Invalid 'container' (shell metacharacters rejected): ${JSON.stringify(args.container)}`;
     }
-    if (args.docker_context !== undefined && (typeof args.docker_context !== 'string' || !NAME_RE.test(args.docker_context as string))) {
+    // #1169: empty/null docker_context means "local default context" (same
+    // convention as machine:"" = no filter) — only NON-EMPTY strings are validated.
+    if (typeof args.docker_context === 'string' && args.docker_context !== '' && !NAME_RE.test(args.docker_context)) {
         return `Invalid 'docker_context' (shell metacharacters rejected): ${JSON.stringify(args.docker_context)}`;
     }
     return null;
@@ -417,7 +419,7 @@ export const claudishTraffic = {
             since: { type: 'string', description: 'docker logs --since window: "30m", "2h", "1h30m", or absolute ISO timestamp. Default "2h". Hub emits 5-6k lines/h.' },
             container: { type: 'string', description: 'Container name. Default "claudish-proxy"; if the default is absent and exactly one other claudish* container runs here, it is auto-selected (with a visible note). An explicitly-passed name is never substituted — candidates are listed instead.' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine header value).' },
-            docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine.' },
+            docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine. Empty string or null selects the local default context (no --context flag), like machine:""' },
             max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are clamped up to 500).' },
         },
         required: ['bucket_minutes'],
