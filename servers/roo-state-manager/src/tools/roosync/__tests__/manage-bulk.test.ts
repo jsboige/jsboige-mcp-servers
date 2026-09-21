@@ -355,9 +355,30 @@ describe('roosyncManage - bulk operations (#613)', () => {
       expect(stats.read).toBe(0);
       expect(stats.by_priority['HIGH']).toBe(2);
       expect(stats.by_priority['LOW']).toBe(1);
+      expect(stats.by_priority_unread['HIGH']).toBe(2);
+      expect(stats.by_priority_unread['LOW']).toBe(1);
       expect(stats.by_sender['machine-a']).toBe(2);
       expect(stats.by_sender['machine-b']).toBe(1);
       expect(stats.oldest_unread).toBeTruthy();
+    });
+
+    test('#1159: by_priority_unread decays on mark_read while by_priority keeps all statuses', async () => {
+      const m1 = await createMessages(1, { from: 'machine-a', priority: 'URGENT' });
+      const m2 = await createMessages(1, { from: 'machine-a', priority: 'URGENT' });
+
+      const before = await messageManager.getInboxStats('test-machine');
+      expect(before.by_priority['URGENT']).toBe(2);
+      expect(before.by_priority_unread['URGENT']).toBe(2);
+
+      await messageManager.markAsRead(m1[0], 'test-machine');
+      await messageManager.markAsRead(m2[0], 'test-machine');
+
+      const after = await messageManager.getInboxStats('test-machine');
+      // Whole-inbox breakdown (manage.ts semantics) unchanged…
+      expect(after.by_priority['URGENT']).toBe(2);
+      // …but the verdict-facing counter sees zero: INBOX_URGENT extinguishes.
+      expect(after.by_priority_unread['URGENT']).toBeUndefined();
+      expect(after.unread).toBe(0);
     });
 
     test('should track oldest unread correctly', async () => {

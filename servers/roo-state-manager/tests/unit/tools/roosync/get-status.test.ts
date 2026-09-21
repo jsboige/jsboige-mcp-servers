@@ -73,7 +73,7 @@ function setupMocks(overrides: Record<string, any> = {}) {
     // Tests provide dashboard file contents with embedded timestamps.
     // Default: all 6 fleet machines online on dashboard.
     const dashboardOnlineMachines = overrides.dashboardOnlineMachines || ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
-    const inboxStats = overrides.inboxStats || { unread: 0, urgent: 0, by_priority: {} };
+    const inboxStats = overrides.inboxStats || { unread: 0, by_priority: {}, by_priority_unread: {} };
     const config = overrides.config || { machineId: 'myia-ai-01' };
 
     // Build dashboard content with recent timestamps for online machines
@@ -207,18 +207,30 @@ describe('roosync_get_status', () => {
             expect(result.flags).toContain('UNKNOWN:myia-web1');
         });
 
-        it('returns CRITICAL when urgent messages', async () => {
+        it('returns CRITICAL when UNREAD urgent messages', async () => {
             setupMocks({
-                inboxStats: { unread: 1, urgent: 1, by_priority: { URGENT: 1 } },
+                inboxStats: { unread: 1, by_priority: { URGENT: 1 }, by_priority_unread: { URGENT: 1 } },
             });
             const result = await roosyncGetStatus({});
             expect(result.status).toBe('CRITICAL');
             expect(result.flags).toContain('INBOX_URGENT:1');
         });
 
+        it('#1159: READ urgent messages do NOT make status CRITICAL', async () => {
+            // Production regression measured 15/09: 3 URGENT all read → permanent
+            // CRITICAL + INBOX_URGENT flag that never extinguishes.
+            setupMocks({
+                inboxStats: { unread: 1, by_priority: { URGENT: 3, MEDIUM: 1 }, by_priority_unread: { MEDIUM: 1 } },
+            });
+            const result = await roosyncGetStatus({});
+            expect(result.status).toBe('HEALTHY');
+            expect(result.flags.join('\n')).not.toMatch(/INBOX_URGENT/);
+            expect(result.inbox).toEqual({ unread: 1, urgent_unread: 0 });
+        });
+
         it('returns WARNING when high unread count', async () => {
             setupMocks({
-                inboxStats: { unread: 12, urgent: 0, by_priority: {} },
+                inboxStats: { unread: 12, by_priority: {}, by_priority_unread: {} },
             });
             const result = await roosyncGetStatus({});
             expect(result.status).toBe('WARNING');
