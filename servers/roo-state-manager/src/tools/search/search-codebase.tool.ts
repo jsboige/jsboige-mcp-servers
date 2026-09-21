@@ -1029,15 +1029,41 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const TEST_FILE_MALUS = 0.95;
 		const FIXTURE_FILE_RE = /(^|[\\/])tests[\\/]fixtures[\\/]/;
 		const FIXTURE_FILE_MALUS = 0.8;
+		// #2609 V2 — data/config-file malus (×0.75). V2 names three confusable classes —
+		//     "data / config / fixtures". Tests (×0.95) and fixtures (×0.8) were demoted;
+		//     data/config files were not, and they won. Measured po-204 2026-09-21, query
+		//     `unified store Postgres join filters Qdrant semantic search results`: two
+		//     `roo-config/baselines/*.json` entries took ranks 1-2 at 0.8849 — ABOVE every
+		//     source chunk (best .ts 0.821) and with ZERO hit on the file that implements the
+		//     JOIN. A config VALUE quotes the query vocabulary verbatim; the code that
+		//     implements it carries syntactic noise. ×0.75 puts the measured 0.8849 at
+		//     0.6637, below the real source hits, while staying visible (degraded, not
+		//     removed) — a "where is X configured" query still finds its file.
+		//     PRECEDENCE, not multiplication: a path already classified test/fixture is a
+		//     captured blob the #3172 contract keeps VISIBLE at ×0.8. Compounding a second
+		//     malus (0.8 × 0.75 = 0.6) would push a 0.70 fixture to 0.42, under min_score
+		//     0.5 — i.e. silently remove it from recall. Those two classes are untouched.
+		const DATA_FILE_RE = /\.(json|jsonc|json5|ya?ml|csv|tsv|ini|toml|lock)$/i;
+		const DATA_FILE_MALUS = 0.75;
 		const MAX_CHUNKS_PER_FILE = 2;
+
+		// Single source of truth for the malus: ranking and the rendered `score` MUST agree.
+		// Computing the factor twice is exactly how a "rank 2 / score 0.9" contradiction is
+		// born (see the adjacent note on exposing the ADJUSTED score).
+		const classifyFilePath = (fp: string) => {
+			const isTestFile = TEST_FILE_RE.test(fp);
+			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
+			const isDataFile = !isTestFile && !isFixtureFile && DATA_FILE_RE.test(fp);
+			const factor = (isTestFile ? TEST_FILE_MALUS : 1)
+				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1)
+				* (isDataFile ? DATA_FILE_MALUS : 1);
+			return { isTestFile, isFixtureFile, isDataFile, factor };
+		};
 
 		const adjusted: { point: any; score: number }[] = finalHits
 			.map((point: any) => {
 				const fp = String(point.payload.filePath || '');
-				let score = point.score;
-				if (TEST_FILE_RE.test(fp)) score *= TEST_FILE_MALUS;
-				if (FIXTURE_FILE_RE.test(fp)) score *= FIXTURE_FILE_MALUS;
-				return { point, score };
+				return { point, score: point.score * classifyFilePath(fp).factor };
 			})
 			// Re-apply min_score on the ADJUSTED (post-malus) score. Qdrant already filters on
 			// the RAW score (score_threshold above), but a test file at raw 0.71 passes a 0.70
@@ -1068,19 +1094,18 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const rankedHits = picked.slice(0, effectiveLimit);
 		let testFileMalusApplied = 0;
 		let fixtureMalusApplied = 0;
+		let dataFileMalusApplied = 0;
 
 		const results = rankedHits.map((point: any) => {
 			const fp = String(point.payload.filePath || '');
-			const isTestFile = TEST_FILE_RE.test(fp);
-			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
+			const { isTestFile, isFixtureFile, isDataFile, factor } = classifyFilePath(fp);
 			if (isTestFile) testFileMalusApplied++;
 			if (isFixtureFile) fixtureMalusApplied++;
+			if (isDataFile) dataFileMalusApplied++;
 			// Expose the adjusted (post-malus) score so the value matches the rank order;
 			// an unadjusted test at 0.72 ranked below a source at 0.68 would otherwise read
 			// as a contradiction. The raw cosine is not surfaced (the order is the signal).
-			const adjustedScore = point.score
-				* (isTestFile ? TEST_FILE_MALUS : 1)
-				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1);
+			const adjustedScore = point.score * factor;
 			// #3172: a fixture chunk embeds source code inside a JSON capture — the stored
 			// startLine/endLine point at the single-line JSON container, not at the embedded
 			// code shown in the snippet ("1-1" navigates to nothing). Omit the line fields
@@ -1131,6 +1156,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			...(testFileMalusApplied > 0 ? { test_file_malus_applied: testFileMalusApplied } : {}),
 			// #3172: fixture-file malus observability — hits from tests/fixtures/** demoted ×0.8.
 			...(fixtureMalusApplied > 0 ? { fixture_malus_applied: fixtureMalusApplied } : {}),
+			// #2609 V2: data/config-file malus observability — hits from data/config files demoted ×0.75.
+			...(dataFileMalusApplied > 0 ? { data_file_malus_applied: dataFileMalusApplied } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results
