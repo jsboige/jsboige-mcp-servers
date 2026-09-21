@@ -290,6 +290,16 @@ describe('validateClaudishArgs', () => {
         // Anti-metacharacter validation stays active for any NON-EMPTY value.
         expect(validateClaudishArgs({ docker_context: 'ctx; rm' })).toContain('Invalid');
     });
+    it('rejects non-string docker_context values (#1183)', () => {
+        // Causal: with `typeof === 'string'` heading the conjunction, any
+        // non-string fell on the ACCEPTING side — an array like ["x; cmd"] is
+        // truthy, interpolated into the docker CLI template, and reaches
+        // child_process.exec (a shell). These must be REFUSED at the gate.
+        expect(validateClaudishArgs({ docker_context: ['x; cmd'] })).toContain('Invalid');
+        expect(validateClaudishArgs({ docker_context: 42 })).toContain('Invalid');
+        expect(validateClaudishArgs({ docker_context: { cmd: 'evil' } })).toContain('Invalid');
+        expect(validateClaudishArgs({ docker_context: true })).toContain('Invalid');
+    });
 });
 
 // ── Handler (exec mocked — never throws, distinguishes failures) ───────────

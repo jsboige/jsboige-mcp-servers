@@ -160,9 +160,17 @@ export function validateClaudishArgs(args: {
     if (args.container !== undefined && (typeof args.container !== 'string' || !NAME_RE.test(args.container))) {
         return `Invalid 'container' (shell metacharacters rejected): ${JSON.stringify(args.container)}`;
     }
-    // #1169: empty/null docker_context means "local default context" (same
-    // convention as machine:"" = no filter) — only NON-EMPTY strings are validated.
-    if (typeof args.docker_context === 'string' && args.docker_context !== '' && !NAME_RE.test(args.docker_context)) {
+    // #1169/#1183: null/undefined/'' means "local default context" (same
+    // convention as machine:"" = no filter). Every OTHER non-string value
+    // falls on the REJECTING side: `typeof === 'string'` as the head of the
+    // conjunction let arrays/numbers through — the value is interpolated into
+    // a docker CLI template that reaches child_process.exec (a shell).
+    if (
+        args.docker_context !== undefined &&
+        args.docker_context !== null &&
+        args.docker_context !== '' &&
+        (typeof args.docker_context !== 'string' || !NAME_RE.test(args.docker_context))
+    ) {
         return `Invalid 'docker_context' (shell metacharacters rejected): ${JSON.stringify(args.docker_context)}`;
     }
     return null;
