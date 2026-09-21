@@ -660,6 +660,32 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     }
   }
 
+  /**
+   * Targeted archival of explicit journal rows (#3151-D gate — the reconcile
+   * archival pass). Single atomic UPDATE, no transaction needed. The
+   * `archived_at IS NULL` predicate both makes it idempotent and makes
+   * rowCount the honest "newly archived" count — COALESCE inside SET keeps
+   * the first stamp if a live condensation raced us on the same row.
+   */
+  async archiveRooSyncDashboardMessages(key: string, messageIds: string[]): Promise<number> {
+    if (messageIds.length === 0) return 0;
+    let archived = 0;
+    await this.withRetry('archiveRooSyncDashboardMessages', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      const result = await this.pool.query(
+        `UPDATE roosync_dashboard_messages
+         SET archived_at = COALESCE(archived_at, NOW())
+         WHERE dashboard_key = $1
+           AND message_id = ANY($2)
+           AND archived_at IS NULL`,
+        [key, messageIds]
+      );
+      archived = result.rowCount ?? 0;
+    });
+    return archived;
+  }
+
   // ─── Query Helpers ────────────────────────────────────────────
 
   // ─── NUL sanitization (#3342) ─────────────────────────────────

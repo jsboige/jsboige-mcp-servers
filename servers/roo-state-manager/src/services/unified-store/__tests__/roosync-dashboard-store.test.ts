@@ -432,6 +432,27 @@ describe('PgUnifiedStoreWriter.syncRooSyncDashboard SQL shape', () => {
       ['workspace-roo-extensions']
     );
   });
+
+  test('archiveRooSyncDashboardMessages: targeted idempotent stamp, honest rowCount', async () => {
+    mockQuery.mockReset().mockResolvedValue({ rows: [], rowCount: 2 });
+    const n = await writer.archiveRooSyncDashboardMessages('workspace-roo-extensions', ['id-a', 'id-b']);
+    expect(n).toBe(2);
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('SET archived_at'));
+    expect(call).toBeDefined();
+    const sql = String(call![0]);
+    // Idempotent + honestly counted: only NULL stamps count, COALESCE keeps
+    // the first stamp if a live condensation raced the same row.
+    expect(sql).toContain('AND archived_at IS NULL');
+    expect(sql).toContain('SET archived_at = COALESCE(archived_at, NOW())');
+    expect(sql).toContain('message_id = ANY($2)');
+    expect(call![1]).toEqual(['workspace-roo-extensions', ['id-a', 'id-b']]);
+  });
+
+  test('archiveRooSyncDashboardMessages: empty ids → 0, no query at all', async () => {
+    const n = await writer.archiveRooSyncDashboardMessages('workspace-roo-extensions', []);
+    expect(n).toBe(0);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 });
 
 // ─── SQL shape — concrete reader (#3151 Phase C) ────────────────────

@@ -18,7 +18,7 @@
  * condenses rewrites the file from its PG view and erases disk-only rows
  * (dashboard.ts merge guard, ai-01 13/09).
  *
- * HOW — persisted-id diff per dashboard file, insert-only:
+ * HOW — persisted-id diff per dashboard file, insert + guarded archival:
  *   - only messages carrying a `[msg: <id>]` line are reconcilable — the id
  *     IS the fingerprint. Pre-v3 id-less messages are skipped and counted
  *     (importing them would insert a fresh synthesized id on every pass —
@@ -29,9 +29,25 @@
  *     writer's backfill transaction (INSERT ... DO NOTHING on both the
  *     dashboard row and the journal) — a pass racing a live dual-write or a
  *     reconcile on another machine converges instead of duplicating;
- *   - insert-only: GDrive stays the source of truth until #3151-D arming;
- *     the reconcile heals PRESENCE, never archives, never overwrites fresher
- *     PG content (backfill:true semantics at the writer).
+ *   - insert pass: never overwrites fresher PG content (backfill:true
+ *     semantics at the writer).
+ *   - ARCHIVAL pass (#3151-D gate, 21/09): alive PG rows whose message the
+ *     fresh file no longer shows (condensed on a machine whose dual-write
+ *     never landed — the 404-line/8-key "family A" debt measured by ai-01
+ *     21/09) get archived_at stamped. Guards, ALL must pass per key:
+ *       1. not a GDrive conflict copy ("name (N).md" = fork by construction
+ *          — family B, remedy is roosync_dashboard merge, never archive);
+ *       2. the file is not BEHIND PG: no alive row newer than the file's
+ *          newest message — a dead mirror (2-4 days stale, also family B)
+ *          must never drive archival;
+ *     and per row: persisted id absent from the file's fingerprintable ids,
+ *     non-null message_id, created_at older than a min age (default 24 h —
+ *     an append racing THIS pass is young, ai-01 measured a 39 s-old
+ *     arbitrage message nearly archived by the manual catch-up).
+ *     Stale/fork keys are REPORTED (staleFileKeys/forkFiles), never touched.
+ *     Kill-switch: ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE=0 restores the
+ *     insert-only behavior; ROOSYNC_DASHBOARD_ARCHIVE_MIN_AGE_H overrides
+ *     the min age.
  *
  * Cost — the whole fleet is ~66 keyed files (not the 50 K-file channel
  * pool), so a pass is one readdir + one parse per file + one PG read per
@@ -75,6 +91,14 @@ export interface DashboardReconcileResult {
   alreadyPresent: number;
   /** Gap ids verified present in PG after the insert pass (honest count). */
   reconciled: number;
+  /** Rows whose archived_at propagated to PG this pass (idempotent, honest count). */
+  archivedRows: number;
+  /** Alive-but-absent rows NOT archived — younger than the min age (next pass heals). */
+  archiveTooYoung: number;
+  /** Files whose alive PG journal is AHEAD of the file — fork/dead mirror, merge remedy, untouched. */
+  staleFileKeys: string[];
+  /** GDrive conflict-copy files ("name (N).md") — fork by construction, merge remedy, untouched. */
+  forkFiles: string[];
   /** Files that failed (read/parse/PG). Counted, never thrown per file. */
   errors: number;
   /** file: reason — the operator's re-run list. */
@@ -88,12 +112,37 @@ export interface DashboardReconcileOptions {
   /** Reader seam for tests. Default getUnifiedStoreReader(). */
   reader?: Pick<IUnifiedStoreReader, 'getRooSyncDashboard'>;
   /** Writer seam for tests. Default getUnifiedStoreWriter(). */
-  writer?: Pick<IUnifiedStoreWriter, 'syncRooSyncDashboard'>;
+  writer?: Pick<IUnifiedStoreWriter, 'syncRooSyncDashboard' | 'archiveRooSyncDashboardMessages'>;
 }
 
 /** Same gate as the channel reconcile — mirrors writer-factory's arming. */
 export function isDashboardReconcileArmed(): boolean {
   return process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+}
+
+/** Archival pass kill-switch — '0' restores the insert-only reconcile. */
+export function isArchivePassEnabled(): boolean {
+  return process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE !== '0';
+}
+
+/** Min age (hours) a PG alive row must have before this pass may archive it. */
+export function archiveMinAgeHours(): number {
+  const v = Number(process.env.ROOSYNC_DASHBOARD_ARCHIVE_MIN_AGE_H);
+  return Number.isFinite(v) && v > 0 ? v : 24;
+}
+
+/** GDrive conflict copies — "name (N).md" forks, merge remedy, never archived. */
+const FORK_FILE_RE = /\s\(\d+\)\.md$/;
+
+/** Max parseable timestamp in ms, or null when nothing parses. */
+function maxTimestampMs(values: (string | undefined | null)[]): number | null {
+  let max: number | null = null;
+  for (const v of values) {
+    if (!v) continue;
+    const ts = Date.parse(v);
+    if (Number.isFinite(ts) && (max === null || ts > max)) max = ts;
+  }
+  return max;
 }
 
 function isKeyedDashboardFile(name: string): boolean {
@@ -124,6 +173,10 @@ export async function reconcileDashboardsFromGDrive(
     gapMessages: 0,
     alreadyPresent: 0,
     reconciled: 0,
+    archivedRows: 0,
+    archiveTooYoung: 0,
+    staleFileKeys: [],
+    forkFiles: [],
     errors: 0,
     failures: [],
     durationMs: 0,
@@ -165,54 +218,99 @@ export async function reconcileDashboardsFromGDrive(
       if (messages.length === 0) continue;
 
       // Active PG journal for the key. Key miss (null) = never backfilled —
-      // every persisted id is a gap, which imports the file as-is.
-      let pgIds = new Set<string>();
+      // every persisted id is a gap, which imports the file as-is. The
+      // snapshot is kept for the archival pass below (pre-insert view: rows
+      // PG already held, absent from the fresh file).
+      let existing: Awaited<ReturnType<IUnifiedStoreReader['getRooSyncDashboard']>> = null;
       try {
-        const existing = await reader.getRooSyncDashboard(key);
-        if (existing) {
-          pgIds = new Set(existing.messages.map((m) => m.message_id).filter((id): id is string => !!id));
-        }
+        existing = await reader.getRooSyncDashboard(key);
       } catch (error) {
         // Cannot list this key → do not blind-import it. Next pass retries.
         result.errors++;
         result.failures.push(`${file}: PG read failed — ${String(error)}`);
         continue;
       }
+      const pgIds = new Set(
+        (existing?.messages ?? []).map((m) => m.message_id).filter((id): id is string => !!id)
+      );
 
       const gap = messages.filter((m) => !pgIds.has(m.id));
-      if (gap.length === 0) continue;
+      if (gap.length > 0) {
+        result.keysWithGap++;
+        result.gapMessages += gap.length;
+        result.alreadyPresent += messages.length - gap.length;
 
-      result.keysWithGap++;
-      result.gapMessages += gap.length;
-      result.alreadyPresent += messages.length - gap.length;
+        // Full dashboard row (correct content/status_json) + journal rows for
+        // the gap only. backfill:true = INSERT DO NOTHING everywhere — never
+        // overwrites fresher PG content, never archives, converges on races.
+        const full = mapDashboardToRows(dashboard);
+        const filtered = mapDashboardToRows({
+          ...dashboard,
+          intercom: { ...dashboard.intercom, messages: gap },
+        });
+        try {
+          await writer.syncRooSyncDashboard(full.row, filtered.messages, { backfill: true });
+        } catch (error) {
+          result.errors++;
+          result.failures.push(`${file}: PG insert failed — ${String(error)}`);
+          // PG write path just failed — its state is uncertain, archival
+          // would compound the error. Next pass retries both.
+          continue;
+        }
 
-      // Full dashboard row (correct content/status_json) + journal rows for
-      // the gap only. backfill:true = INSERT DO NOTHING everywhere — never
-      // overwrites fresher PG content, never archives, converges on races.
-      const full = mapDashboardToRows(dashboard);
-      const filtered = mapDashboardToRows({
-        ...dashboard,
-        intercom: { ...dashboard.intercom, messages: gap },
-      });
-      try {
-        await writer.syncRooSyncDashboard(full.row, filtered.messages, { backfill: true });
-      } catch (error) {
-        result.errors++;
-        result.failures.push(`${file}: PG insert failed — ${String(error)}`);
-        continue;
+        // Honest count: withRetry swallows insert failures, so attempts are
+        // not persists. One re-read per healed key makes `reconciled` verifiable
+        // (same contract as the channel reconcile's post-insert listing).
+        try {
+          const after = await reader.getRooSyncDashboard(key);
+          const afterIds = new Set(
+            (after?.messages ?? []).map((m) => m.message_id).filter((id): id is string => !!id)
+          );
+          result.reconciled += gap.filter((m) => afterIds.has(m.id)).length;
+        } catch {
+          result.reconciled += gap.length; // post-read failed — report attempted count
+        }
       }
 
-      // Honest count: withRetry swallows insert failures, so attempts are
-      // not persists. One re-read per healed key makes `reconciled` verifiable
-      // (same contract as the channel reconcile's post-insert listing).
-      try {
-        const after = await reader.getRooSyncDashboard(key);
-        const afterIds = new Set(
-          (after?.messages ?? []).map((m) => m.message_id).filter((id): id is string => !!id)
-        );
-        result.reconciled += gap.filter((m) => afterIds.has(m.id)).length;
-      } catch {
-        result.reconciled += gap.length; // post-read failed — report attempted count
+      // ─── Archival pass (#3151-D gate — guards documented in the module
+      // header). Runs on the PRE-insert snapshot: only rows PG already
+      // held, whose message a fresh file read no longer shows, under the
+      // per-key freshness/fork gates. Stale and fork keys are reported,
+      // never touched — their remedy is roosync_dashboard merge.
+      if (isArchivePassEnabled() && existing) {
+        if (FORK_FILE_RE.test(file)) {
+          result.forkFiles.push(file);
+        } else {
+          const fileMaxMs = maxTimestampMs(dashboard.intercom.messages.map((m) => m.timestamp));
+          const pgMaxMs = maxTimestampMs(existing.messages.map((m) => m.created_at));
+          const candidates = existing.messages.filter(
+            (m) => m.message_id !== null && !persisted.has(m.message_id)
+          );
+          if (candidates.length === 0) {
+            // nothing alive-but-absent — healthy key, no classification
+          } else if (fileMaxMs === null || pgMaxMs === null || pgMaxMs > fileMaxMs) {
+            result.staleFileKeys.push(file);
+          } else {
+            const cutoff = Date.now() - archiveMinAgeHours() * 3600_000;
+            const toArchive = candidates.filter((m) => {
+              const ts = Date.parse(m.created_at);
+              return Number.isFinite(ts) && ts < cutoff;
+            });
+            result.archiveTooYoung += candidates.length - toArchive.length;
+            if (toArchive.length > 0) {
+              try {
+                const n = await writer.archiveRooSyncDashboardMessages(
+                  key,
+                  toArchive.map((m) => m.message_id as string)
+                );
+                result.archivedRows += n;
+              } catch (error) {
+                result.errors++;
+                result.failures.push(`${file}: PG archive failed — ${String(error)}`);
+              }
+            }
+          }
+        }
       }
     } catch (error) {
       // Corrupt frontmatter, transient DriveFS miss — the next pass retries.
@@ -227,6 +325,13 @@ export async function reconcileDashboardsFromGDrive(
       `[dashboard-reconcile] Reconciled ${result.reconciled}/${result.gapMessages} message(s) ` +
         `across ${result.keysWithGap} key(s) (${result.idlessSkipped} id-less skipped, ` +
         `${result.errors} error(s))`
+    );
+  }
+  if (result.archivedRows > 0 || result.archiveTooYoung > 0) {
+    logger.info(
+      `[dashboard-reconcile] Archived ${result.archivedRows} condensed row(s) in PG ` +
+        `(${result.archiveTooYoung} too young deferred, ` +
+        `${result.staleFileKeys.length} stale-file key(s) + ${result.forkFiles.length} fork file(s) untouched)`
     );
   }
   return result;

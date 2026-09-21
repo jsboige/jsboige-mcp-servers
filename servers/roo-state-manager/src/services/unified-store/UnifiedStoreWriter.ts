@@ -133,6 +133,15 @@ export interface IUnifiedStoreWriter {
     messages: RooSyncDashboardMessageRow[],
     opts?: { backfill?: boolean; condensed?: boolean }
   ): Promise<UnifiedStoreWriteOutcome>;
+  /**
+   * RooSync dashboards — targeted archival of explicit journal rows
+   * (#3151-D gate, reconcile archival pass). Unlike the condensed stamp
+   * (which archives everything absent from ONE snapshot), this archives
+   * exactly the ids the caller derived under per-key freshness guards.
+   * Idempotent: rows already archived keep their first stamp (COALESCE)
+   * and do not count. Returns the number of rows newly archived.
+   */
+  archiveRooSyncDashboardMessages(key: string, messageIds: string[]): Promise<number>;
   /** RooSync dashboards — drop dashboard + journal (cascade) when the GDrive file is deleted. */
   deleteRooSyncDashboard(key: string): Promise<void>;
   /** RooSync dashboards — same delete, outcome returned instead of swallowed (rework #1134). */
@@ -187,6 +196,7 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   ): Promise<UnifiedStoreWriteOutcome> {
     return { ok: false, reason: 'disabled' };
   }
+  async archiveRooSyncDashboardMessages(_key: string, _messageIds: string[]): Promise<number> { return 0; }
   async deleteRooSyncDashboard(_key: string): Promise<void> {}
   async deleteRooSyncDashboardChecked(_key: string): Promise<UnifiedStoreWriteOutcome> {
     return { ok: false, reason: 'disabled' };
