@@ -416,7 +416,7 @@ async function cloudCondenseOnce(
     const elapsedMs = Date.now() - fbStart;
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
-      // #2719 discriminant fix (2026-09-19, po-204 spec from the po-2027 datapoint):
+      // #2719 discriminant fix (2026-09-19, po-2024 spec from the po-2027 datapoint):
       // return a stamped NON-RETRYABLE error instead of the null "unconfigured" shape,
       // so the archive frontmatter distinguishes "cloud answered 200 with no content"
       // from "cloud never configured in this process". Retry stays disabled (#3011):
@@ -2636,14 +2636,14 @@ async function executeTruncationFallback(
   const dateStr = now.replace(/[:.]/g, '-').substring(0, 19);
   const archivePath = path.join(archiveDir, `${key}-${dateStr}-fallback.md`);
 
-  // #2719 (2026-09-03, web1 meta-analysis + po-204 investigation): the fallback
+  // #2719 (2026-09-03, web1 meta-analysis + po-2024 investigation): the fallback
   // archive frontmatter carried no machine identity and no cloud-fallback outcome,
   // making fleet datapoints unattributable — 5 truncation archives could not be
   // tied to a machine, and "cloud attempted but rejected" was indistinguishable
   // from "cloud never configured in that process". condensedBy + fallbackError
   // close both gaps; the archive alone now answers who truncated and why.
   //
-  // #2719 discriminant fix (2026-09-19, po-204 spec — po-2027 datapoint 2026-09-07):
+  // #2719 discriminant fix (2026-09-19, po-2024 spec — po-2027 datapoint 2026-09-07):
   // the discriminator below was built exclusively on `fallbackAttempted`, which is
   // stamped ONLY on a failed cloud attempt. Three distinct states therefore collapsed
   // into 'not-attempted-or-unconfigured': (1) cloud genuinely unconfigured,
@@ -4562,7 +4562,7 @@ async function handleReadOverview(
  * an agent makes, and until now it reported the forks as ordinary dashboards —
  * a reader could not tell `workspace-CoursIA` from `workspace-CoursIA (2)`.
  *
- * Measured on po-204 (2026-09-21): 5 forked keys on 72 dashboards, two of them
+ * Measured on po-2024 (2026-09-21): 5 forked keys on 72 dashboards, two of them
  * STILL receiving writes hours after the collision, and one family nested two
  * levels deep (` (1) (1)`).
  *

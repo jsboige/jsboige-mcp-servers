@@ -4,7 +4,7 @@
  * The write-side guard of #3482 only fires once a write has been deviated.
  * These tests pin the enumeration-side predicate, whose main risk is not a
  * missed fork but a FALSE POSITIVE: `workspace-CoursIA-1` / `-2` / `-3` are
- * distinct dashboards that really exist in the fleet store (measured po-204,
+ * distinct dashboards that really exist in the fleet store (measured po-2024,
  * 2026-09-21) and a detector that flagged them would teach operators to ignore
  * the warning.
  */
@@ -101,7 +101,7 @@ describe('detectDashboardForks', () => {
   });
 
   /**
-   * Real key set measured on po-204 the day the detector was written: 5 forked
+   * Real key set measured on po-2024 the day the detector was written: 5 forked
    * keys among 72 dashboards, including a nested one and a family whose
    * canonical is present. Anchors the detector against the shape actually met
    * in the fleet, not a shape invented for the test.

@@ -44,7 +44,7 @@ describe('extractTags (#3226)', () => {
   });
 
   it('extracts tags inside bold markers', () => {
-    expect(extractTags('**[DONE]** myia-po-204 c.288')).toEqual(['DONE']);
+    expect(extractTags('**[DONE]** myia-po-2024 c.288')).toEqual(['DONE']);
   });
 
   it('does not match brackets containing spaces or slashes (not tags)', () => {

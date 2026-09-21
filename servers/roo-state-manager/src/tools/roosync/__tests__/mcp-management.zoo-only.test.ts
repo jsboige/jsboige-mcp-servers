@@ -4,7 +4,7 @@
  * Before the fix, getMcpSettingsPath() delegated to the env-only
  * getExtensionId() (default 'rooveterinaryinc.roo-cline'). On a machine where
  * only `zoocodeorganization.zoo-code` is installed and no ROO_EXTENSION_ID
- * override is set (po-2026 native, post-decommission ai-01/web1, po-204 where
+ * override is set (po-2026 native, post-decommission ai-01/web1, po-2024 where
  * Roo is uninstalled), the path resolved to the absent roo-cline globalStorage
  * → fs.readFile threw ENOENT → the tool was unusable fleet-wide on migrated hosts.
  *

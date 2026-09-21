@@ -546,14 +546,14 @@ describe('MessageManager', () => {
       ).rejects.toThrow(/Auto-message interdit/);
     });
 
-    // po-204 : une clé dashée de projet Claude (ex. "c--dev-roo-extensions" pour
+    // po-2024 : une clé dashée de projet Claude (ex. "c--dev-roo-extensions" pour
     // C:\dev\roo-extensions) ne matche jamais le basename auto-détecté côté
     // destinataire — le message serait listé dans son inbox mais illisible en
     // getMessage/mark_read. Le send doit le rejeter à la source.
-    test('should reject dashed Claude-projects workspace key in recipient (po-204)', async () => {
+    test('should reject dashed Claude-projects workspace key in recipient (po-2024)', async () => {
       await expect(
         messageManager.sendMessage(
-          'myia-po-204',
+          'myia-po-2024',
           'myia-po-2024:c--dev-roo-extensions',
           'Dashed',
           'Phantom recipient'
@@ -564,12 +564,12 @@ describe('MessageManager', () => {
       });
     });
 
-    test('should allow machine-only and basename recipients (po-204 convention)', async () => {
+    test('should allow machine-only and basename recipients (po-2024 convention)', async () => {
       await expect(
-        messageManager.sendMessage('myia-po-204', 'myia-po-2024', 'Conv', 'Machine only')
+        messageManager.sendMessage('myia-po-2023', 'myia-po-2024', 'Conv', 'Machine only')
       ).resolves.toMatchObject({ to: 'myia-po-2024' });
       await expect(
-        messageManager.sendMessage('myia-po-204', 'myia-po-2024:roo-extensions', 'Conv', 'Basename')
+        messageManager.sendMessage('myia-po-2023', 'myia-po-2024:roo-extensions', 'Conv', 'Basename')
       ).resolves.toMatchObject({ to: 'myia-po-2024:roo-extensions' });
     });
 
@@ -1474,18 +1474,18 @@ describe('MessageManager', () => {
       const msg = await messageManager.sendMessage(
         'sender', 'machine-a:ws-1', 'Secret', 'Private body', 'HIGH'
       );
-      // Same machine, different workspace — denied now THROWS (po-204): a null
+      // Same machine, different workspace — denied now THROWS (po-2024): a null
       // used to render as "Message introuvable" in every tool, lying about a
       // message that exists and is simply addressed elsewhere.
       await expect(messageManager.getMessage(msg.id, 'machine-a:ws-2'))
         .rejects.toMatchObject({ code: MessageManagerErrorCode.ACCESS_DENIED });
     });
 
-    test('getMessage: denied error names the actual recipient, not "introuvable" (po-204)', async () => {
+    test('getMessage: denied error names the actual recipient, not "introuvable" (po-2024)', async () => {
       const msg = await messageManager.sendMessage(
-        'myia-po-204', 'myia-po-2024', 'Pépites', 'Body'
+        'myia-po-2023', 'myia-po-2024', 'Pépites', 'Body'
       );
-      // The dashed key is rejected at send since po-204 — drop the message file
+      // The dashed key is rejected at send since po-2024 — drop the message file
       // directly to simulate the pre-fix phantom still living in GDrive.
       const phantom = {
         ...msg,

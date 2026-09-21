@@ -148,7 +148,7 @@ export function workspaceBasename(ws: string): string {
 }
 
 /**
- * #2247 follow-up (po-204 c.161, ai-01 c.160 SDDD): classify code citations.
+ * #2247 follow-up (po-2024 c.161, ai-01 c.160 SDDD): classify code citations.
  *
  * Returns true if the content is predominantly a cited code block (a fenced
  * block OR an indented code sample) rather than a message exchange. The aim is
@@ -408,7 +408,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         ? `${taskId}#unit-${childUnitIdx}`
                         : taskId;
                     // #2825 (G5): chunk_type 'task_summary' for condensation outputs
-                    // po-204 c.161 (SDDD echo half): route code citations to a distinct
+                    // po-2024 c.161 (SDDD echo half): route code citations to a distinct
                     // chunk_type so search filters can demote them vs genuine prose turns.
                     // Task summary wins — condensation outputs must not be re-tagged.
                     let chunkType: Chunk['chunk_type'];
@@ -539,7 +539,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 ? `${taskId}#unit-${uiChildUnitIdx}`
                 : taskId;
             // #2825 (G5): chunk_type 'task_summary' for condensation outputs
-            // po-204 c.161: same code_citation routing as the api loop above.
+            // po-2024 c.161: same code_citation routing as the api loop above.
             let uiChunkType: Chunk['chunk_type'];
             if (sourceKind === 'condensation-fallback') {
                 uiChunkType = 'task_summary';
@@ -760,7 +760,7 @@ export async function extractChunksFromClaudeSession(
                             : taskId;
 
                         const seq = sequenceOrder++;
-                        // po-204 c.161: route code citations to chunk_type='code_citation'
+                        // po-2024 c.161: route code citations to chunk_type='code_citation'
                         // in the Claude Code path too — the JSONL session can carry
                         // tool_result payloads (often JSON / code) re-ingested as fresh turns.
                         const claudeChunkType: Chunk['chunk_type'] = isCodeCitation(contentText)

@@ -153,7 +153,7 @@ export function isGdriveConflictCopyFile(nameOrKey: string): boolean {
 
 /**
  * Strip every trailing ` (N)` conflict-copy marker to recover the canonical
- * key a fork belongs to. Nested collisions (` (1) (1)`, seen live on po-204
+ * key a fork belongs to. Nested collisions (` (1) (1)`, seen live on po-2024
  * 2026-09-21) resolve to the same root as the single-marker ones.
  */
 export function canonicalKeyOfFork(key: string): string {

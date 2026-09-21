@@ -565,7 +565,7 @@ describe('search-codebase.tool', () => {
 		});
 
 		// ============================================================
-		// tests-rank-reranking (po-204 c.194, GO ai-01 c.197) — test-files-rank-above-source re-ranking (malus B + diversification A)
+		// tests-rank-reranking (po-2024 c.194, GO ai-01 c.197) — test-files-rank-above-source re-ranking (malus B + diversification A)
 		// text-embedding-3-small scores descriptive test titles higher than the source they
 		// test (natural-language intent vs syntactic noise). Two post-retrieval correctives:
 		// B = test-file malus (×0.95), A = per-file diversification cap (2 chunks/file) +
@@ -774,7 +774,7 @@ describe('search-codebase.tool', () => {
 		// #2609 V2 — data/config-file re-ranking
 		// V2 names three confusable classes: "data / config / fixtures". Tests and
 		// fixtures were demoted (#3172); data/config files were not, and a config VALUE
-		// quotes the query vocabulary verbatim, so they won. Measured po-204 2026-09-21
+		// quotes the query vocabulary verbatim, so they won. Measured po-2024 2026-09-21
 		// on the Epic's own golden query: two `roo-config/baselines/*.json` at 0.8849 took
 		// ranks 1-2 ABOVE every source chunk, with zero hit on the implementing file.
 		// ============================================================

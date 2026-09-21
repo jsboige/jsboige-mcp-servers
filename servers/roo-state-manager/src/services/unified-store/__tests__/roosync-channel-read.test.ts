@@ -386,7 +386,7 @@ describe('MessageManager PG-first reads (#3151 Phase B)', () => {
       const asRecipient = await messageManager.getMessage('msg-20260818T100000-aaaaaa', 'myia-ai-01:roo-extensions');
       expect(asRecipient?.body).toBe('secret');
 
-      // po-204: denied now throws ACCESS_DENIED instead of resolving null —
+      // po-2024: denied now throws ACCESS_DENIED instead of resolving null —
       // null rendered as "Message introuvable" in every tool.
       await expect(
         messageManager.getMessage('msg-20260818T100000-aaaaaa', 'myia-web1:roo-extensions')

@@ -354,7 +354,7 @@ describe('ChunkExtractor', () => {
     });
   });
 
-  describe('isCodeCitation (po-204 c.161, ai-01 c.160 SDDD echo half)', () => {
+  describe('isCodeCitation (po-2024 c.161, ai-01 c.160 SDDD echo half)', () => {
     it('returns false for empty / short / non-code content', () => {
       expect(isCodeCitation('')).toBe(false);
       expect(isCodeCitation('   ')).toBe(false);
