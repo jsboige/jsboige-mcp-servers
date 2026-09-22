@@ -23,6 +23,14 @@
  *   - writes a `.ref-<pid>` file into the vintage it serves so publish-time
  *     retention never prunes a vintage a live wrapper still runs.
  *
+ * v5.1 (#3713): schema delivery. A swap used to deliver new BEHAVIOUR but not new
+ * SCHEMAS: the client fetches tools/list once and never asks again, and this
+ * wrapper answered every later tools/list with its first cached copy anyway.
+ * Now the in-memory tools/list cache is dropped at each swap, the wrapper
+ * advertises `tools.listChanged` in the initialize result it forwards, and it
+ * emits `notifications/tools/list_changed` once the new child has answered the
+ * replayed handshake, so a connected client re-fetches the new vintage's list.
+ *
  * v4.1 (#1894) retained: persisted tools/list cache (now per-vintage), stdin/
  * stdout passthrough with JSON-RPC filtering, stderr suppression, orphan-leak
  * kill cascade, parent-PID liveness watchdog.
@@ -78,7 +86,11 @@ let serverPath = path.join(serverDir, 'index.js');
 // %TEMP%, which invalidates the cache multiple times per day, causing the
 // "0 tools" bug). A vintage is immutable, so a cache written there is valid
 // by construction; the mtime check is kept for the legacy fallback dir.
-const CACHE_FILE = path.join(serverDir, '.tools-cache.json');
+// Resolved at call time, not once: after a swap the cache belongs to the NEW
+// vintage (#3713 v5.1), never to the one the wrapper started on.
+function cacheFile() {
+    return path.join(serverDir, '.tools-cache.json');
+}
 
 function logDebug(message) {
     if (process.env.ROO_DEBUG_LOGS) {
@@ -88,7 +100,7 @@ function logDebug(message) {
 
 function loadPersistedCache() {
     try {
-        const data = fs.readFileSync(CACHE_FILE, 'utf-8');
+        const data = fs.readFileSync(cacheFile(), 'utf-8');
         const cache = JSON.parse(data);
         const buildStat = fs.statSync(serverPath);
         if (cache.buildMtime === buildStat.mtime.toISOString() && cache.toolsList) {
@@ -111,7 +123,7 @@ function savePersistedCache(toolsListResponse) {
             buildMtime: buildStat.mtime.toISOString(),
             toolsList: toolsListResponse,
         };
-        fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), 'utf-8');
+        fs.writeFileSync(cacheFile(), JSON.stringify(cache), 'utf-8');
         logDebug(`Persisted cache saved (${toolsListResponse.result?.tools?.length || 0} tools)`);
     } catch (e) {
         logDebug(`Failed to persist cache: ${e.message}`);
@@ -138,6 +150,7 @@ let swapHandshakePending = false;        // respawned child hasn't answered init
 let previousServerDir = null;            // vintage to fall back to if the new one fails
 let swapRetries = 0;
 let handshakeWatchdog = null;
+let listChangedAdvertised = false;       // initialize result forwarded with tools.listChanged
 
 logDebug('Starting roo-state-manager MCP server v5.0 (pass-through + persisted cache + hot-swap)...');
 console.error(`[MCP-WRAPPER] 🧬 Serving vintage: ${path.basename(serverDir)}${serverDir === LEGACY_DIR ? ' (legacy fixed path — marker absent)' : ''}`);
@@ -210,6 +223,17 @@ function spawnServer() {
                         swapRetries = 0;
                         if (handshakeWatchdog) { clearTimeout(handshakeWatchdog); handshakeWatchdog = null; }
                         console.error('[MCP-WRAPPER] ✅ Hot-swap complete — new vintage serving');
+                        notifyToolListChanged();
+                        return;
+                    }
+                    // #3713 v5.1: the wrapper, not the server, is what swaps the tool
+                    // list under a live client, so the wrapper advertises the capability
+                    // in the ONE initialize result the client receives.
+                    if (!listChangedAdvertised && parsed.id === initId && parsed.result && typeof parsed.result === 'object') {
+                        listChangedAdvertised = true;
+                        const caps = parsed.result.capabilities || (parsed.result.capabilities = {});
+                        caps.tools = { ...(caps.tools || {}), listChanged: true };
+                        process.stdout.write(JSON.stringify(parsed) + '\n');
                         return;
                     }
                     // A response closes its in-flight entry (never re-error it at swap).
@@ -472,6 +496,23 @@ function armHandshakeWatchdog() {
     handshakeWatchdog.unref();
 }
 
+// #3713 v5.1: a new child may serve a different tool list. Forget the old one
+// BEFORE anything is drained into the new child, or its tools/list answer would
+// be replaced by the stale copy (processToolsList dedup) or suppressed outright
+// (answeredFromCache left true by a child killed before answering).
+function resetToolsListCache() {
+    cachedToolsListResponse = null;
+    answeredFromCache = false;
+}
+
+// Only a client that completed initialize through us was told listChanged, and
+// a notification before initialize would break the protocol.
+function notifyToolListChanged() {
+    if (!listChangedAdvertised) return;
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }) + '\n');
+    console.error('[MCP-WRAPPER] 📣 notifications/tools/list_changed sent — client re-fetches tools/list');
+}
+
 // Replay the captured handshake into the CURRENT child, then drain buffered
 // client lines — tracked (W1), so queued request ids enter inFlight and become
 // explicitly errorable if this child dies before answering, instead of hanging
@@ -479,6 +520,7 @@ function armHandshakeWatchdog() {
 // by the nominal swap, the retry and the fallback: every path that respawns a
 // child must replay AND drain identically.
 function replayHandshakeAndDrain() {
+    resetToolsListCache();
     swapHandshakePending = initRequest !== null;
     if (initRequest !== null) server.stdin.write(initRequest + '\n');
     if (initializedNotification !== null) server.stdin.write(initializedNotification + '\n');
