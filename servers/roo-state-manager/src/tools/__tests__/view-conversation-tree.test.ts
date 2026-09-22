@@ -341,4 +341,69 @@ describe('viewConversationTree.handler', () => {
       expect(result.content[0].text).toContain('child-with-seq');
     });
   });
+
+  // ============================================================
+  // #2609 V4 — output_file : chemin + résumé, jamais l'arbre entier
+  // ============================================================
+  describe('output_file renvoie chemin + résumé (#2609 V4)', () => {
+    test('smart (défaut) : la réponse porte le chemin et les tailles, pas le corps de l\'arbre — le fichier porte tout', async () => {
+      const cache = makeCache([makeSkeleton({ taskId: 'task-of' })]);
+
+      const result = await viewConversationTree.handler(
+        { task_id: 'task-of', view_mode: 'single', output_file: 'out/tree-smart.md' },
+        cache
+      );
+
+      const text = result.content[0].type === 'text' ? result.content[0].text : '';
+      expect(text).toContain('✅ Arbre sauvegardé dans');
+      expect(text).toContain('tree-smart.md');
+      expect(text).toMatch(/Taille: \d+ chars, \d+ lignes/);
+      // Le corps de l'arbre (contenu des messages) ne doit PAS revenir dans la réponse
+      expect(text).not.toContain('Hello world');
+      expect(text).not.toContain('▶️ Task:');
+      // Le fichier, lui, a reçu l'arbre complet
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        expect.stringContaining('tree-smart.md'),
+        expect.stringContaining('Hello world'),
+        'utf-8'
+      );
+    });
+
+    test('legacy (smart_truncation: false) : même contrat — résumé dans la réponse, arbre dans le fichier', async () => {
+      const cache = makeCache([makeSkeleton({ taskId: 'task-of-legacy' })]);
+
+      const result = await viewConversationTree.handler(
+        { task_id: 'task-of-legacy', view_mode: 'single', smart_truncation: false, output_file: 'out/tree-legacy.md' },
+        cache
+      );
+
+      const text = result.content[0].type === 'text' ? result.content[0].text : '';
+      expect(text).toContain('✅ Arbre sauvegardé dans');
+      expect(text).toContain('tree-legacy.md');
+      expect(text).toMatch(/Taille: \d+ chars, \d+ lignes/);
+      expect(text).not.toContain('Hello world');
+      expect(text).not.toContain('▶️ Task:');
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        expect.stringContaining('tree-legacy.md'),
+        expect.stringContaining('Hello world'),
+        'utf-8'
+      );
+    });
+
+    test('échec d\'écriture : erreur + taille, sans déverser l\'arbre inline', async () => {
+      mockWriteFile.mockRejectedValueOnce(new Error('disk full'));
+      const cache = makeCache([makeSkeleton({ taskId: 'task-of-err' })]);
+
+      const result = await viewConversationTree.handler(
+        { task_id: 'task-of-err', view_mode: 'single', output_file: 'out/unwritable.md' },
+        cache
+      );
+
+      const text = result.content[0].type === 'text' ? result.content[0].text : '';
+      expect(text).toContain('❌ Erreur lors de la sauvegarde: disk full');
+      expect(text).toMatch(/\(\d+ chars\)/);
+      expect(text).not.toContain('Hello world');
+      expect(text).not.toContain('✅');
+    });
+  });
 });

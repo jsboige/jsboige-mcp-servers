@@ -763,6 +763,31 @@ async function saveToFileIfRequested(
 }
 
 /**
+ * #2609 V4 — output_file : la réponse rend le chemin + un résumé, jamais
+ * l'arbre entier. Le fichier existe précisément pour absorber le volume ;
+ * le ré-inliner dans la réponse duplique la charge de contexte que
+ * l'appelant vient d'explicitement déporter sur disque.
+ */
+function savedTreeSummaryText(filePath: string, treeOutput: string): string {
+    const lines = treeOutput.split('\n');
+    const header = lines[0] ?? '';
+    return [
+        `✅ Arbre sauvegardé dans: ${filePath}`,
+        '',
+        header,
+        `Taille: ${treeOutput.length} chars, ${lines.length} lignes — le contenu complet est dans le fichier, pas dans cette réponse.`
+    ].join('\n');
+}
+
+function saveErrorText(error: string, treeOutput: string): string {
+    return [
+        `❌ Erreur lors de la sauvegarde: ${error}`,
+        '',
+        `Le contenu (${treeOutput.length} chars) n'a pas été renvoyé inline — relancer sans output_file pour l'obtenir dans la réponse.`
+    ].join('\n');
+}
+
+/**
  * Wrapper pour rendre handleLegacyTruncation asynchrone
  */
 async function handleLegacyTruncationAsync(
@@ -789,19 +814,19 @@ async function handleLegacyTruncationAsync(
  
     // Sauvegarder dans un fichier si demandé
     const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
-    
+
     if (saveResult.saved && saveResult.filePath) {
         return {
             content: [{
                 type: 'text',
-                text: `✅ Arbre sauvegardé dans: ${saveResult.filePath}\n\n${treeOutput}`
+                text: savedTreeSummaryText(saveResult.filePath, treeOutput)
             }]
         };
     } else if (saveResult.error) {
         return {
             content: [{
                 type: 'text',
-                text: `❌ Erreur lors de la sauvegarde: ${saveResult.error}\n\n${treeOutput}`
+                text: saveErrorText(saveResult.error, treeOutput)
             }]
         };
     }
@@ -884,19 +909,19 @@ async function handleSmartTruncationAsync(
  
     // Sauvegarder dans un fichier si demandé
     const saveResult = await saveToFileIfRequested(args.output_file, treeOutput);
-    
+
     if (saveResult.saved && saveResult.filePath) {
         return {
             content: [{
                 type: 'text',
-                text: `✅ Arbre sauvegardé dans: ${saveResult.filePath}\n\n${treeOutput}`
+                text: savedTreeSummaryText(saveResult.filePath, treeOutput)
             }]
         };
     } else if (saveResult.error) {
         return {
             content: [{
                 type: 'text',
-                text: `❌ Erreur lors de la sauvegarde: ${saveResult.error}\n\n${treeOutput}`
+                text: saveErrorText(saveResult.error, treeOutput)
             }]
         };
     }
