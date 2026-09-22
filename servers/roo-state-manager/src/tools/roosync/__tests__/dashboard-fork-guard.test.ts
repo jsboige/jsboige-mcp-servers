@@ -150,7 +150,7 @@ describe('verifyDashboardWriteLanded — atterrissage par ids (#3774 critère 1 
     expect(r.forkDetail).toBeUndefined();
   });
 
-  it('déviation — l id est dans un sibling de collision : le sibling est NOMMÉ', async () => {
+  it('déviation — l id est dans un sibling de collision : le sibling est NOMMÉ, sans forkPath', async () => {
     // Le canonique porte l'ancien état, le fork porte nos octets.
     await writeFile(canonical, msgLine('m0'), 'utf8');
     const forkPath = path.join(dir, 'workspace-v2.test (1).md');
@@ -159,8 +159,10 @@ describe('verifyDashboardWriteLanded — atterrissage par ids (#3774 critère 1 
     expect(r.forkSuspected).toBe(true);
     expect(r.signal).toBe('file');
     expect(r.landedPath).toBe(forkPath);
-    expect(r.forkPath).toBe(forkPath);
-    expect(r.forkDetail).toMatch(/atterri sur 'workspace-v2\.test \(1\)\.md'/);
+    // Contrat (review ai-01, MAJEUR) : le scan d'id ne remplit JAMAIS forkPath —
+    // ce champ décide de la suppression de source côté merge.
+    expect(r.forkPath).toBeUndefined();
+    expect(r.forkDetail).toMatch(/présents dans 'workspace-v2\.test \(1\)\.md'/);
   });
 
   it('déviation — sibling au nom NON canonique : le verdict ne dépend d aucun motif de suffixe', async () => {
@@ -172,6 +174,7 @@ describe('verifyDashboardWriteLanded — atterrissage par ids (#3774 critère 1 
     const r = await verifyDashboardWriteLanded(canonical, expected(1), Date.now() - 5000, ['m1']);
     expect(r.forkSuspected).toBe(true);
     expect(r.landedPath).toBe(oddName);
+    expect(r.forkPath).toBeUndefined();
   });
 
   it('déviation — id introuvable partout : suspicion SANS chemin d atterrissage', async () => {
@@ -199,10 +202,41 @@ describe('verifyDashboardWriteLanded — atterrissage par ids (#3774 critère 1 
     expect(r.signal).toBeUndefined();
   });
 
-  it('jamais throw — répertoire illisible reste invérifiable, pas suspecté', async () => {
+  it('m2 (review ai-01) — répertoire illisible juste après une écriture réussie : ALERTE, pas silence', async () => {
+    // L'asymétrie d'origine : chemin demandé illisible ⇒ alarme, mais readdir
+    // en échec ⇒ catch ultime ⇒ « invérifiable » silencieux. Pour une garde
+    // dont le défaut a vécu 3 semaines en silence, la direction conservatrice
+    // s'applique des deux côtés.
     await rm(dir, { recursive: true, force: true });
     const r = await verifyDashboardWriteLanded(canonical, expected(1), Date.now() - 5000, ['m1']);
-    expect(r.forkSuspected).toBe(false);
+    expect(r.forkSuspected).toBe(true);
+    expect(r.forkDetail).toMatch(/illisible au moment de la vérification/);
+  });
+
+  it('MAJEUR (review ai-01) — merge dévié dont la SOURCE porte l id : la suppression de source doit rester ABANDONNÉE', async () => {
+    // FS exact du scénario #3774 au moment de la vérification d'un merge
+    // `workspace-CoursIA (1)` → `workspace-CoursIA` dont l'écriture a dévié
+    // vers `(2).md` : la cible demandée ne porte PAS l'id neuf ; la SOURCE
+    // `(1)` le porte PAR CONSTRUCTION (union triée par timestamp : le dernier
+    // message vient de la clé la plus récente = la source) ; la déviation
+    // `(2)` le porte aussi. readdir rend `(1)` avant `(2)` (ordre alphabétique)
+    // — l'ancien code nommait donc la SOURCE comme `forkPath`.
+    await writeFile(canonical, msgLine('m0'), 'utf8');
+    const sourcePath = path.join(dir, 'workspace-v2.test (1).md');
+    await writeFile(sourcePath, msgLine('m1'), 'utf8');
+    await writeFile(path.join(dir, 'workspace-v2.test (2).md'), msgLine('m1'), 'utf8');
+    const r = await verifyDashboardWriteLanded(canonical, expected(1), Date.now() - 5000, ['m1']);
+    expect(r.forkSuspected).toBe(true);
+    // Le contrat que le consommateur merge (dashboard.ts, `suspectedForeignFork`)
+    // exige : le scan d'id ne remplit PAS forkPath — sinon la source, porteur
+    // légitime, serait prise pour un fork ÉTRANGER à elle-même et la
+    // suppression se poursuivrait (inversion du fail-closed de la base).
+    expect(r.forkPath).toBeUndefined();
+    expect(r.landedPath).toBeDefined();
+    // Prédicat consommateur — miroir exact de `dashboard.ts` (action merge) :
+    const suspectedForeignFork =
+      r.forkSuspected === true && r.forkPath !== sourcePath;
+    expect(suspectedForeignFork).toBe(true); // ⇒ suppression ABANDONNÉE, source intacte
   });
 
   it('id DÉJÀ sur disque (writer non-append) ne court-circuite PAS les contrôles legacy', async () => {

@@ -1298,7 +1298,20 @@ export async function verifyDashboardWriteLanded(
       if (requestedBody !== null && carries(requestedBody)) {
         idNominalAt = filePath;
       } else {
-        const entries = await fs.readdir(dir);
+        let entries: string[];
+        try {
+          entries = await fs.readdir(dir);
+        } catch {
+          // #3774 review ai-01 (m2) — l'écriture vient de RÉUSSIR dans ce
+          // répertoire : un readdir qui échoue juste après est anormal, et le
+          // défaut de cette garde est silencieux par nature (3 semaines sans
+          // alarme). Direction conservatrice des deux côtés : alarme.
+          return {
+            forkSuspected: true,
+            signal: 'file',
+            forkDetail: `répertoire '${dir}' illisible au moment de la vérification alors que l'écriture vient d'y réussir — vérification impossible, direction conservatrice`
+          };
+        }
         for (const entry of entries) {
           if (!entry.endsWith('.md') || entry.endsWith('.tmp')) continue;
           const candidate = path.join(dir, entry);
@@ -1306,12 +1319,24 @@ export async function verifyDashboardWriteLanded(
           try {
             const body = await fs.readFile(candidate, 'utf8');
             if (landedIds.some(id => body.includes(`[msg: ${id}]`))) {
+              // #3774 review ai-01 (MAJEUR) — PAS de `forkPath` ici. Ce champ
+              // alimente la décision de suppression de source du merge
+              // (`suspectedForeignFork = forkSuspected && forkPath !== sourcePath`).
+              // Dans un merge, l'union est triée par timestamp : le DERNIER
+              // message vient de la clé la plus récente — la SOURCE — qui porte
+              // donc l'id cherché PAR CONSTRUCTION, avant même l'écriture. La
+              // nommer `forkPath` ferait basculer `suspectedForeignFork` à
+              // false et POURSUIVRAIT la suppression : inversion du
+              // fail-closed de la base, sur le scénario #3774 lui-même (et
+              // dépendant de l'ordre d'énumération de readdir, donc non
+              // reproductible à la demande). `forkPath` garde son sens
+              // historique — un fork `(N)` ÉTRANGER vu par le contrôle hérité
+              // — et `landedPath` porte la localisation.
               return {
                 forkSuspected: true,
                 signal: 'file',
                 landedPath: candidate,
-                forkPath: candidate,
-                forkDetail: `les messages neufs ont atterri sur '${entry}' et non sur le chemin demandé '${path.basename(filePath)}' — égalité chemin écrit == chemin demandé rompue`
+                forkDetail: `ids attendus absents du chemin demandé '${path.basename(filePath)}' mais présents dans '${entry}' — égalité chemin écrit == chemin demandé rompue ('${entry}' peut être un porteur préexistant, ex. source d'un merge, pas nécessairement le lieu d'atterrissage)`
               };
             }
           } catch {
@@ -1376,6 +1401,14 @@ export async function verifyDashboardWriteLanded(
     }
     return { forkSuspected: false, landedPath: idNominalAt };
   } catch (err) {
+    // #3774 review ai-01 (m2) — asymétrie assumée et documentée : le chemin
+    // d'id alerte quand le répertoire devient illisible (ci-dessus, l'écriture
+    // vient d'y réussir), mais ce catch ultime — erreurs inattendues du chemin
+    // HÉRITÉ (open/stat du canonique) — rend « invérifiable », pas « suspecté » :
+    // ce chemin est celui de la base #3482, son contrat (ne jamais casser
+    // l'écriture, jamais de faux positif sur instrument défaillant) est épinglé
+    // par ses tests historiques. Un verdict suspecté ici régresserait le
+    // comportement de la base pour tous les appelants sans ids.
     logger.debug('Vérification post-écriture impossible (non bloquant)', {
       filePath,
       error: err instanceof Error ? err.message : String(err)
@@ -5260,6 +5293,13 @@ async function handleMerge(
   // pas l'union). Exception voulue : si le fork soupçonné EST la source
   // elle-même, c'est la configuration attendue d'une réparation de fork
   // vivant — le fichier ` (1)` est frais dans le répertoire par construction.
+  // #3774 review ai-01 (MAJEUR) — ce prédicat ne voit que le `forkPath` du
+  // contrôle HÉRITÉ (regex `(N)` + fenêtre d'écriture). Le scan d'id ne remplit
+  // JAMAIS `forkPath` : la source d'un merge porte l'id d'atterrissage PAR
+  // CONSTRUCTION (union triée : le dernier message vient de la clé la plus
+  // récente), la nommer ferait poursuivre la suppression — inversion du
+  // fail-closed. Tout verdict d'id laisse donc `forkPath` undefined ⇒
+  // `suspectedForeignFork` vrai ⇒ abandon.
   const sourcePath = getDashboardPath(sourceKey);
   const suspectedForeignFork =
     writeVerification.forkSuspected === true && writeVerification.forkPath !== sourcePath;
