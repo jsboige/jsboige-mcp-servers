@@ -821,12 +821,22 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
 				// signatures we probed so the caller can identify theirs visually.
+				// #3174 (defect 4): top_dirs rides on every existing_collections entry
+				// UNCONDITIONALLY. The caller can list their own workspace's root dirs even
+				// when we could not (worktree/hash-mismatch path leaves workspaceSignature
+				// null and collection_signatures empty) — the diagnostic must still let
+				// them self-identify. One payload-only scroll per diagnostic entry.
 				const collectionDiagnostics = [];
+				const sigByCollection = new Map<string, string[] | null>();
 				for (const r of ranked.slice(0, 10)) {
+					const sig = await getCollectionSignature(qdrant, r.name);
+					const topDirs = sig ? [...sig].slice(0, 8) : null;
+					sigByCollection.set(r.name, topDirs);
 					collectionDiagnostics.push({
 						collection: r.name,
 						points_count: r.points,
-						status: r.points >= 0 ? 'green' : 'error'
+						status: r.points >= 0 ? 'green' : 'error',
+						top_dirs: topDirs
 					});
 				}
 
@@ -835,14 +845,14 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				// coverage and hides the cap as a failure mode (CoursIA-2 fleet finding).
 				const scannedCandidates = Math.min(candidates.length, CONTENT_MATCH_MAX_CANDIDATES);
 
-				// Build signature samples for the top candidates (helps the caller self-identify).
-				// Only when we could read the workspace dirs — otherwise signatures are moot
-				// (we can't compare them to anything) and we avoid the extra scroll calls.
+				// Legacy shape (kept for existing consumers): top-5 signature samples, only
+				// when we could read the workspace dirs and compare them to something.
+				// Reads the map populated above — no extra scroll calls.
 				const signatureSamples: Record<string, string[]> = {};
 				if (workspaceSignature) {
 					for (const r of ranked.slice(0, 5)) {
-						const sig = await getCollectionSignature(qdrant, r.name);
-						if (sig && sig.size > 0) signatureSamples[r.name] = [...sig].slice(0, 8);
+						const dirs = sigByCollection.get(r.name);
+						if (dirs && dirs.length > 0) signatureSamples[r.name] = dirs;
 					}
 				}
 
@@ -1045,6 +1055,19 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		//     0.5 — i.e. silently remove it from recall. Those two classes are untouched.
 		const DATA_FILE_RE = /\.(json|jsonc|json5|ya?ml|csv|tsv|ini|toml|lock)$/i;
 		const DATA_FILE_MALUS = 0.75;
+		// #3174 (defect 3) — archive-file malus (×0.7): docs/archive/** carries
+		// stale-by-design reports that quote current vocabulary verbatim, so they match
+		// fresh queries as well as the living code and outrank it (measured po-2025
+		// 2026-09-22: 2 docs/archive/reports/** hits in the top-8 of the
+		// MAX_DASHBOARD_SIZE_BYTES probe, 0 hit on the real source; corroborated web1
+		// c.287/c.488). ×0.7 (not the 0.5 floated in the issue) keeps the contract
+		// "degraded, not removed": the measured archive hits sit at 0.72-0.75, and ×0.5
+		// would push them under min_score 0.5 — silently removing them from recall,
+		// exactly what the #2609 V2 precedence note forbids. PRECEDENCE over data, same
+		// rationale: docs/archive/foo.json is first an archived document; compounding
+		// 0.7 × 0.75 = 0.525 would drop a 0.75 archived config to 0.39.
+		const ARCHIVE_FILE_RE = /(^|[\\/])docs[\\/]archive[\\/]/;
+		const ARCHIVE_FILE_MALUS = 0.7;
 		const MAX_CHUNKS_PER_FILE = 2;
 
 		// Single source of truth for the malus: ranking and the rendered `score` MUST agree.
@@ -1053,11 +1076,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const classifyFilePath = (fp: string) => {
 			const isTestFile = TEST_FILE_RE.test(fp);
 			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
-			const isDataFile = !isTestFile && !isFixtureFile && DATA_FILE_RE.test(fp);
+			const isArchiveFile = ARCHIVE_FILE_RE.test(fp);
+			const isDataFile = !isTestFile && !isFixtureFile && !isArchiveFile && DATA_FILE_RE.test(fp);
 			const factor = (isTestFile ? TEST_FILE_MALUS : 1)
 				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1)
+				* (isArchiveFile ? ARCHIVE_FILE_MALUS : 1)
 				* (isDataFile ? DATA_FILE_MALUS : 1);
-			return { isTestFile, isFixtureFile, isDataFile, factor };
+			return { isTestFile, isFixtureFile, isArchiveFile, isDataFile, factor };
 		};
 
 		const adjusted: { point: any; score: number }[] = finalHits
@@ -1095,13 +1120,15 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let testFileMalusApplied = 0;
 		let fixtureMalusApplied = 0;
 		let dataFileMalusApplied = 0;
+		let archiveMalusApplied = 0;
 
 		const results = rankedHits.map((point: any) => {
 			const fp = String(point.payload.filePath || '');
-			const { isTestFile, isFixtureFile, isDataFile, factor } = classifyFilePath(fp);
+			const { isTestFile, isFixtureFile, isDataFile, isArchiveFile, factor } = classifyFilePath(fp);
 			if (isTestFile) testFileMalusApplied++;
 			if (isFixtureFile) fixtureMalusApplied++;
 			if (isDataFile) dataFileMalusApplied++;
+			if (isArchiveFile) archiveMalusApplied++;
 			// Expose the adjusted (post-malus) score so the value matches the rank order;
 			// an unadjusted test at 0.72 ranked below a source at 0.68 would otherwise read
 			// as a contradiction. The raw cosine is not surfaced (the order is the signal).
@@ -1158,6 +1185,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			...(fixtureMalusApplied > 0 ? { fixture_malus_applied: fixtureMalusApplied } : {}),
 			// #2609 V2: data/config-file malus observability — hits from data/config files demoted ×0.75.
 			...(dataFileMalusApplied > 0 ? { data_file_malus_applied: dataFileMalusApplied } : {}),
+			// #3174 (defect 3): archive-file malus observability — hits from docs/archive/** demoted ×0.7.
+			...(archiveMalusApplied > 0 ? { archive_malus_applied: archiveMalusApplied } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results

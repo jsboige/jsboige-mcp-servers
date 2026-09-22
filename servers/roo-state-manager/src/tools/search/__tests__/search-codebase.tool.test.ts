@@ -867,6 +867,82 @@ describe('search-codebase.tool', () => {
 		});
 
 		// ============================================================
+		// #3174 (defect 3) — archive-file re-ranking
+		// docs/archive/** carries stale-by-design reports that quote current
+		// vocabulary verbatim, so they outrank the living code on fresh queries
+		// (measured po-2025 2026-09-22: 2 docs/archive/reports/** hits in the
+		// top-8 of the MAX_DASHBOARD_SIZE_BYTES probe, 0 hit on the source;
+		// corroborated web1 c.287/c.488). Malus ×0.7 — degraded, not removed:
+		// the measured archive hits (0.72-0.75) stay above min_score 0.5 where
+		// the ×0.5 floated in the issue would silently drop them from recall.
+		// ============================================================
+
+		describe('handleCodebaseSearch - archive-file re-ranking (#3174 defect 3)', () => {
+			test('repro — archived reports outranking the source sink below it after the malus, staying visible', async () => {
+				// Shape of the po-2025 22/09 probe: two docs/archive/reports/** hits above
+				// the source. Raw: 0.748 / 0.736 > source 0.70. Adjusted: source 0.70 >
+				// 0.748×0.7=0.5236 > 0.736×0.7=0.5152 — both above min_score 0.5 (visible).
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.748, payload: { filePath: 'docs\\archive\\reports\\2026-03-03-issue-543-validation-framework.md', codeChunk: 'autoCondenseContextPercent CRITICAL drift', startLine: 74, endLine: 75 } },
+						{ score: 0.736, payload: { filePath: 'docs\\archive\\reports\\2026-03-03-issue-543-validation-framework.md', codeChunk: 'condensation threshold drift report', startLine: 66, endLine: 67 } },
+						{ score: 0.70, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts', codeChunk: 'const MAX_DASHBOARD_SIZE_BYTES = 50 * 1024;', startLine: 129, endLine: 129 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'dashboard auto-condensation threshold MAX_DASHBOARD_SIZE_BYTES', workspace: '/ws', limit: 3 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				const paths = parsed.results.map((r: any) => r.file_path);
+				// The source the query was actually about now leads.
+				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts');
+				// Both archived reports stay in the result set — degraded, not removed.
+				expect(paths.filter((p: string) => p.startsWith('docs\\archive\\')).length).toBe(2);
+				expect(parsed.results[1].score).toBeCloseTo(0.5236, 5);
+				expect(parsed.results[2].score).toBeCloseTo(0.5152, 5);
+				expect(parsed.archive_malus_applied).toBe(2);
+			});
+
+			test('precedence — an archived config keeps its single ×0.7 malus, never compounded with ×0.75', async () => {
+				// docs/archive/foo.json is both an archive and a data extension. Compounding
+				// 0.7 × 0.75 = 0.525 would drop a 0.80 hit to 0.42 — under min_score,
+				// silently removed from recall. The archive class wins alone.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: 'docs\\archive\\reports\\2026-01-01-baseline-snapshot.json', codeChunk: '"condensationThreshold": 51200', startLine: 12, endLine: 12 } },
+						{ score: 0.55, payload: { filePath: 'src\\tools\\roosync\\dashboard.ts', codeChunk: 'export function condense()', startLine: 10, endLine: 20 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'condensation threshold snapshot', workspace: '/ws', limit: 2 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				const archived = parsed.results.find((r: any) => String(r.file_path).includes('docs\\archive\\'));
+				expect(archived.score).toBeCloseTo(0.56, 5);
+				expect(parsed.archive_malus_applied).toBe(1);
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+
+			test('scope — living documentation is untouched; the malus targets docs/archive/ only', async () => {
+				// docs/harness/reference/** is curated current documentation — a legitimate
+				// answer that must keep its raw score. Only the archive subtree demotes.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: 'docs\\harness\\reference\\roosync-tools-guide.md', codeChunk: '## Dashboard', startLine: 198, endLine: 207 } },
+						{ score: 0.78, payload: { filePath: 'src\\tools\\roosync\\dashboard.ts', codeChunk: 'export function readDashboard()', startLine: 100, endLine: 110 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'dashboard read guide', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				const md = parsed.results.find((r: any) => String(r.file_path).endsWith('.md'));
+				expect(md.score).toBeCloseTo(0.80, 5);
+				expect(parsed.archive_malus_applied).toBeUndefined();
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+		});
+
+		// ============================================================
 		// #2609/#2554 L1 — content-based collection matching (hash-mismatch fallback)
 		// Root cause: the workspace path hash is fragile cross-agent; when no hash variant
 		// matches, the right ws-* collection is identified by its indexed top-level dirs vs
@@ -962,6 +1038,44 @@ describe('search-codebase.tool', () => {
 				expect(mockQdrant.query).not.toHaveBeenCalled();
 			});
 
+			// #3174 (defect 4): the worktree/hash-mismatch path leaves workspaceSignature
+			// null, and the old payload rendered collection_signatures ONLY when the
+			// workspace dirs could be read — so exactly the caller who most needs to
+			// self-identify (their hash mismatched, their dirs are unreadable to us) got
+			// a bare collection list with no directory hints. top_dirs now rides on every
+			// existing_collections entry unconditionally.
+			test('existing_collections entries carry top_dirs even when the workspace dirs could not be read (#3174 defect 4)', async () => {
+				// Workspace root unreadable (unmounted drive / worktree hash mismatch) →
+				// workspaceSignature null → content-match skipped entirely.
+				mockReaddirSync.mockImplementation(() => {
+					throw new Error('ENOENT: no such file or directory');
+				});
+				mockQdrant.getCollections.mockResolvedValue({
+					collections: [{ name: 'ws-someone' }]
+				});
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === 'ws-someone') return { points_count: 500, status: 'green' };
+					throw new Error('not found');
+				});
+				mockQdrant.scroll.mockResolvedValue({
+					points: [{ payload: { pathSegments: { '0': 'mcps', '1': 'internal' } } }]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'x', workspace: '/unmounted-ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('collection_not_found');
+				// The legacy shape stays empty when the workspace dirs were unreadable…
+				expect(parsed.collection_signatures).toEqual({});
+				// …but every diagnostic entry carries its indexed top-level dirs, so the
+				// caller can match them against directories they can list themselves.
+				expect(parsed.existing_collections).toHaveLength(1);
+				expect(parsed.existing_collections[0].collection).toBe('ws-someone');
+				expect(parsed.existing_collections[0].top_dirs).toEqual(['mcps']);
+				expect(mockQdrant.scroll).toHaveBeenCalledWith('ws-someone', expect.objectContaining({
+					with_payload: { include: ['pathSegments'] }
+				}));
+			});
+
 			// The diagnostic used to state ONLY the Jaccard arm ("Jaccard >= 0.6 with a
 			// discriminant dir required") while the code accepts a SECOND path since
 			// #2554/#2766: overlap >= 0.6 with >=2 shared discriminant dirs. A caller whose
@@ -1014,7 +1128,13 @@ describe('search-codebase.tool', () => {
 				const parsed = JSON.parse(result.content[0].text);
 				expect(parsed.status).toBe('collection_not_found');
 				expect(parsed.workspace_signature).toBeNull();
-				expect(mockQdrant.scroll).not.toHaveBeenCalled();
+				// #3174 (defect 4) updated this contract: the signature scrolls now run
+				// unconditionally to populate top_dirs on every existing_collections entry —
+				// content-matching stays skipped (null signature), but the diagnostic still
+				// lets an unmounted-worktree caller self-identify. Payload-only calls.
+				expect(mockQdrant.scroll).toHaveBeenCalledWith('ws-anything', expect.objectContaining({
+					with_payload: { include: ['pathSegments'] }
+				}));
 			});
 
 			test('hash miss + multiple candidates → strict match picks highest Jaccard, rejects low-overlap', async () => {
