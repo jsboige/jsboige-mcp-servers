@@ -1964,8 +1964,14 @@ export async function handleRooSyncIndexing(
                     lines.push(``);
 
                     // --- Fleet aggregate over the comparable set ---
-                    const comparable = machineSnapshots.filter(ms => !!ms.previous);
-                    const baselineOnlyMachines = machineSnapshots.filter(ms => !ms.previous);
+                    // Review #1190 (minor 1): same predicate as the per-machine
+                    // delta row — a `previous` without a numeric total renders
+                    // "baseline only" in the table and must stay out of the sums
+                    // (prevTotal += 0 would swing the fleet delta by that volume).
+                    const isComparable = (ms: MachineSnapshot) =>
+                        typeof ms.previous?.total_tool_calls === 'number' && typeof ms.latest?.total_tool_calls === 'number';
+                    const comparable = machineSnapshots.filter(isComparable);
+                    const baselineOnlyMachines = machineSnapshots.filter(ms => !isComparable(ms));
                     lines.push(`## Fleet Aggregate (${comparable.length} comparable machine${comparable.length === 1 ? '' : 's'})`);
                     lines.push(``);
                     if (comparable.length === 0) {

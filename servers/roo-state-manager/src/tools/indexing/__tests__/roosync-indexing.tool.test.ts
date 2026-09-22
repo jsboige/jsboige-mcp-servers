@@ -1046,6 +1046,38 @@ describe('roosync_indexing trend_report action', () => {
 		expect(readRow).toBe('| Read | 50 | 🆕 | 2% | - | 10% | - | 60% |');
 	});
 
+	test('#2336 fleet:true — previous without numeric total_tool_calls renders baseline-only AND stays out of the sums (review #1190 minor 1)', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Machine A: 2 usable snapshots. Prev 500 → latest 700.
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-01.json', 500, [toolEntry('Bash', 500, 50, 100, 300)]);
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-08.json', 700, [toolEntry('Bash', 700, 35, 210, 455)]);
+		// Machine D: 2 snapshots, but the previous one carries NO numeric
+		// total_tool_calls (#2623 drift family). Old predicate (!!ms.previous)
+		// counted it comparable with prev=0 → fleet delta swung by +400.
+		writeRichSnapshot(snapshotsDir, 'machine-d-2026-07-08.json', 400, [toolEntry('Bash', 400, 20, 80, 240)]);
+		fs.writeFileSync(path.join(snapshotsDir, 'machine-d-2026-07-01.json'), JSON.stringify({
+			action: 'tool_usage_stats',
+			date_range: { start: '2026-01-01', end: '2026-01-28' },
+		}));
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report', fleet: true },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+
+		// Table row says baseline only (its previous is unusable)…
+		expect(text).toContain('| machine-d | machine-d-2026-07-08.json (baseline only) | — | 400 | baseline |');
+		// …and the aggregate agrees: D is excluded, not summed at prev=0.
+		expect(text).toContain('Delta computed over machines with ≥2 snapshots only (like-for-like): machine-a.');
+		expect(text).toContain('Baseline-only (excluded from delta): machine-d.');
+		expect(text).toContain('| Total calls | 500 | 700 | ↑+200 |');
+	});
+
 	test('#2336 fleet:true with no comparable machine → fleet baseline message, no crash', async () => {
 		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
 		fs.mkdirSync(snapshotsDir, { recursive: true });
