@@ -33,6 +33,11 @@ const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
 
+// #2719: the names the HOST set (MCP client env block, shell), recorded BEFORE this
+// process loads `.env`. spawnServer() hands the child this whole env, `.env` values
+// included, so the child cannot tell the two apart on its own: it gets the list.
+const HOST_ENV_KEYS = Object.keys(process.env).filter((k) => process.env[k] !== undefined);
+
 // Load .env BEFORE spawning server
 const envPath = path.join(__dirname, '.env');
 const _origLog = console.log;
@@ -169,6 +174,9 @@ function spawnServer() {
         env: {
             ...process.env,
             WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
+            // #2719: read by services/host-env-snapshot.ts. WORKSPACE_PATH is set just
+            // above, by the wrapper itself: host-owned from the child's side.
+            RSM_HOST_ENV_KEYS: [...HOST_ENV_KEYS, 'WORKSPACE_PATH'].join(','),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true

@@ -45,6 +45,8 @@ const mockGetPrimaryClient = vi.fn();
 // Fallback (cloud) chat client + create.
 const mockFallbackCreate = vi.fn();
 const mockGetFallbackClient = vi.fn();
+// #2719 (22/09): the model chain reads FALLBACK_LLM_MODEL_ID through this getter.
+const mockFallbackModelId = vi.fn(() => 'glm-4.7-flash');
 
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetPrimaryClient(),
@@ -52,7 +54,7 @@ vi.mock('@/services/openai', () => ({
   getLLMModelId: () => 'test-primary-model',
   // #2719: per-test configurable via mockGetFallbackClient (null = inert, like prod-unprovisioned).
   getFallbackChatOpenAIClient: () => mockGetFallbackClient(),
-  getFallbackLLMModelId: () => 'glm-4.7-flash',
+  getFallbackLLMModelId: () => mockFallbackModelId(),
 }));
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-cloud-');
@@ -81,6 +83,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     mockPrimaryCreate.mockReset();
     mockGetFallbackClient.mockImplementation(() => null);
     mockFallbackCreate.mockReset();
+    mockFallbackModelId.mockImplementation(() => 'glm-4.7-flash');
     resetCondenseCircuitBreaker();
   });
 
@@ -454,6 +457,136 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     );
     expect(archiveContent).not.toContain('not-attempted-or-unconfigured');
     expect(archiveContent).toContain('no-fallback-failure-captured');
+  });
+
+  // #2719 (22/09, fleet escalation): the primary's circuit breaker used to skip EVERY
+  // LLM call, cloud tier included — a sustained primary outage (exactly when the
+  // fallback is needed) ended in truncation stamped 'not-attempted-or-unconfigured'.
+  it('(j) #2719 primary circuit breaker OPEN → primary skipped, cloud tier still tried', { timeout: 90000 }, async () => {
+    // Phase 1: primary down, cloud unconfigured → failing passes open the breaker.
+    for (let i = 0; i < 4; i++) {
+      await fillUntilCondensed();
+    }
+    // Phase 2: breaker open. Arm the cloud; the primary would now SUCCEED if called,
+    // so any 'condensed' outcome would prove it was not skipped.
+    mockGetPrimaryClient.mockReset();
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Primary summary' } }],
+    });
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Cloud summary\n\nSalvaged while the primary breaker was open.' } }],
+    });
+
+    const condensedResult = await fillUntilCondensed();
+
+    const outcomes = condensedResult.condenseDiagnostic!.map((d: any) => d.outcome);
+    expect(outcomes).toContain('fallback-cloud');
+    expect(outcomes).not.toContain('fallback-truncated');
+    expect(mockFallbackCreate).toHaveBeenCalled();
+    // The breaker still guards the primary: not a single primary call while open.
+    expect(mockGetPrimaryClient).not.toHaveBeenCalled();
+    const cloudPass = condensedResult.condenseDiagnostic!.find((d: any) => d.outcome === 'fallback-cloud');
+    expect(cloudPass.llm.summary.finalOutcome).toBe('ok-with-fallback');
+  });
+
+  // #2719 (22/09): FALLBACK_LLM_MODEL_ID as a CHAIN — the next model takes over on
+  // any failure of the previous one, an empty 200 body included (mode C of the
+  // escalation: it used to go straight to truncation).
+  it('(k) #2719 model chain: first model answers empty → second model salvages', async () => {
+    mockFallbackModelId.mockImplementation(() => 'glm-4.7, deepseek-v4-flash');
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockImplementation(async (req: any) => req.model === 'glm-4.7'
+      ? { choices: [{ message: { content: '' }, finish_reason: 'length' }] }
+      : { choices: [{ message: { content: '## Sonnet summary\n\nSalvaged by the second tier.' } }] });
+
+    const condensedResult = await fillUntilCondensed();
+
+    const cloudPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-cloud');
+    expect(cloudPasses.length).toBeGreaterThanOrEqual(1);
+    expect(cloudPasses[0].llm.summary.fallbackModel).toBe('deepseek-v4-flash');
+    const models = mockFallbackCreate.mock.calls.map((c: any[]) => c[0].model);
+    // Order matters: the nominal model first, the failover second.
+    expect(models.indexOf('glm-4.7')).toBeGreaterThanOrEqual(0);
+    expect(models.indexOf('glm-4.7')).toBeLessThan(models.indexOf('deepseek-v4-flash'));
+  });
+
+  it('(l) #2719 model chain: every model fails → archive names each model and its error', async () => {
+    mockFallbackModelId.mockImplementation(() => 'glm-4.7,deepseek-v4-flash');
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    const error401 = Object.assign(new Error('401 invalid proxy authentication'), { status: 401 });
+    mockFallbackCreate.mockImplementation(async (req: any) => {
+      if (req.model === 'glm-4.7') return { choices: [{ message: { content: '' }, finish_reason: 'length' }] };
+      throw error401;
+    });
+
+    const condensedResult = await fillUntilCondensed();
+
+    const outcomes = condensedResult.condenseDiagnostic!.map((d: any) => d.outcome);
+    expect(outcomes).toContain('fallback-truncated');
+    const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
+    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
+    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(
+      path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]),
+      'utf8',
+    );
+    // yaml.dump folds a long scalar (`>-`) across lines — compare the unfolded text.
+    const unfolded = archiveContent.replace(/\n\s+/g, ' ');
+    expect(unfolded).toContain('glm-4.7: empty-content (HTTP 200, 0-byte completion) | deepseek-v4-flash: 401 invalid proxy authentication');
+  });
+
+  // #2719 review of PR #1194 (W2): three attempts PER MODEL multiplied the worst-case
+  // wait by the chain length. The first model keeps its retries (transient 429/5xx);
+  // every next model gets ONE attempt — the chain already is the retry.
+  it('(m) #2719 model chain: retries stay on the first model, the next one gets a single attempt', { timeout: 60000 }, async () => {
+    mockFallbackModelId.mockImplementation(() => 'glm-4.7,deepseek-v4-flash');
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }));
+
+    await fillUntilCondensed();
+
+    const models = mockFallbackCreate.mock.calls.map((c: any[]) => c[0].model);
+    const first = models.filter((m: string) => m === 'glm-4.7').length;
+    const next = models.filter((m: string) => m === 'deepseek-v4-flash').length;
+    expect(next).toBeGreaterThanOrEqual(1);
+    expect(first).toBe(3 * next);
+  });
+
+  // #2719 review of PR #1194 (W3): with the primary skipped and the cloud tier failing,
+  // the stats kept lastError empty and elapsedMs 0 — the notice read "circuit-open
+  // (0 attempts, 0s)" and named no cause.
+  it('(n) #2719 breaker OPEN and cloud tier fails → lastError names the skipped primary and the cloud error', { timeout: 90000 }, async () => {
+    // Primary down, cloud unconfigured → failing passes open the breaker (as in (j)).
+    for (let i = 0; i < 4; i++) {
+      await fillUntilCondensed();
+    }
+    const unconfigured = await fillUntilCondensed();
+    const openPass = unconfigured.condenseDiagnostic!.find((d: any) => d.outcome === 'fallback-truncated');
+    expect(openPass.llm.summary.finalOutcome).toBe('circuit-open');
+    expect(openPass.llm.summary.lastError).toBe('primary skipped (circuit breaker open); cloud tier unconfigured');
+
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockRejectedValue(Object.assign(new Error('401 invalid proxy authentication'), { status: 401 }));
+
+    const rejected = await fillUntilCondensed();
+
+    const rejectedPass = rejected.condenseDiagnostic!.find((d: any) => d.outcome === 'fallback-truncated');
+    expect(rejectedPass.llm.summary.finalOutcome).toBe('circuit-open');
+    expect(rejectedPass.llm.summary.lastError).toBe('primary skipped (circuit breaker open); cloud: 401 invalid proxy authentication');
   });
 });
 
