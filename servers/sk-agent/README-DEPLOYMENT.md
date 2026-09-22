@@ -2,11 +2,11 @@
 
 ## Overview
 
-**sk-agent** is a Python-based MCP server that routes LLM work through a pool of named agents backed by 17 models (z.ai cloud, local vLLM, OWUI proxies — `sk_agent_config.template.json` is the canonical list):
+**sk-agent** is a Python-based MCP server that routes LLM work through a pool of named agents backed by 8 models (GLM via fleet hub, local vLLM, OWUI proxies — `sk_agent_config.template.json` is the canonical list):
 
-- **Vision routing** — default vision agent `vision-analyst` runs **glm-5.3-flash** (native multimodal, 131K ctx); **glm-4.6v** is kept as vision fallback only (#3389)
-- **Text routing** — default agent `analyst` runs glm-5.1 (200K ctx)
-- **Local/cheap lanes** — qwen3.6-35b, glm-4.7-flash and OWUI wrappers for coding and fast tasks
+- **Default routing is LOCAL** (user mandate 22/09) — default agent `analyst` and default vision agent `vision-analyst` both run **qwen3.6-35b-a3b** on the fleet vLLM; `analyst-glm5` (GLM-5.3 via hub) is the cloud twin for heavy tasks and the fallback when the local endpoint is down
+- **GLM cloud** — `glm-5.3` (quality roles) and `glm-5.3-flash` (fast/cheap roles) via the fleet hub `http://192.168.0.50:3000/v1` (#3574); glm-5.1/glm-5/glm-4.7-flash are superseded
+- **Vision never goes through the hub** — it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794); vision routes local until the claudish passthrough fix (cloud GLM-5.3-Flash vision pricing: #3389)
 
 ### Document routing (PDF)
 

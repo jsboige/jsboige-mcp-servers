@@ -97,10 +97,10 @@ Dans Claude Code, taper une commande qui liste les MCPs ou vérifier que les out
 
 ### Tests recommandés
 
-1. **list_agents** - Vérifier 25 agents (analyst, fast, researcher, coder-local, etc.)
-2. **call_agent(fast, "Bonjour")** - Test cloud rapide (glm-4.7-flash via z.ai)
-3. **call_agent(analyst, "Capitale de France?")** - Test cloud (glm-5.1 via z.ai)
-4. **list_conversations** - Vérifier 8 conversations (deep-search, deep-think, etc.)
+1. **list_agents** - Vérifier 32 agents (analyst, fast, researcher, coder-local, etc.)
+2. **call_agent(fast, "Bonjour")** - Test local rapide (qwen3.6-35b-no-thinking via vLLM)
+3. **call_agent(analyst, "Capitale de France?")** - Test défaut LOCAL (qwen3.6-35b-a3b via vLLM — user mandate 22/09 ; `model_used` doit rendre qwen3.6-35b-a3b)
+4. **list_conversations** - Vérifier 11 conversations (deep-search, deep-think, pr-review-tier1-3, etc.)
 
 ### Tests unitaires (optionnel)
 
@@ -119,14 +119,14 @@ Attendu: 160+ tests passed, 3 skipped
 
 **Structure v2:**
 - `config_version`: 2
-- `models`: 13 modèles (4 z.ai cloud + 2 vLLM direct + 4 OWUI proxy + 3 OWUI custom)
+- `models`: 8 modèles (2 GLM via hub flotte + 2 vLLM direct + 1 OWUI proxy + 3 OWUI custom)
 - `embeddings`: Qwen3-4B-AWQ @ embeddings.myia.io (dim 2560)
 - `qdrant`: qdrant.myia.io:443 (API key)
-- `agents`: 25 agents (12 core + 3 deep-search + 4 deep-think + 3 operational + 3 OWUI custom)
-- `conversations`: 8 types (deep-search, deep-think, code-review, research-debate, config-harmonization, commit-review, task-allocation, intelligent-task-dispatch)
+- `agents`: 32 agents (13 core + 3 deep-search + 4 deep-think + 4 operational + 3 OWUI custom + 5 PR-review)
+- `conversations`: 11 types (deep-search, deep-think, code-review, research-debate, config-harmonization, commit-review, task-allocation, intelligent-task-dispatch, pr-review-tier1/2/3)
 
 **Clés API nécessaires:**
-- `ZAI_API_KEY` pour glm-5 et glm-4.6v (z.ai cloud)
+- `ZAI_API_KEY` = clé **client du hub flotte** (claudish, `http://192.168.0.50:3000/v1`) pour glm-5.3 / glm-5.3-flash (#3574)
 - Qdrant API key pour mémoire vectorielle
 - Embeddings API key pour Qwen3-4B-AWQ
 
