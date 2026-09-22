@@ -544,6 +544,50 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     const unfolded = archiveContent.replace(/\n\s+/g, ' ');
     expect(unfolded).toContain('glm-4.7: empty-content (HTTP 200, 0-byte completion) | deepseek-v4-flash: 401 invalid proxy authentication');
   });
+
+  // #2719 review of PR #1194 (W2): three attempts PER MODEL multiplied the worst-case
+  // wait by the chain length. The first model keeps its retries (transient 429/5xx);
+  // every next model gets ONE attempt — the chain already is the retry.
+  it('(m) #2719 model chain: retries stay on the first model, the next one gets a single attempt', { timeout: 60000 }, async () => {
+    mockFallbackModelId.mockImplementation(() => 'glm-4.7,deepseek-v4-flash');
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }));
+
+    await fillUntilCondensed();
+
+    const models = mockFallbackCreate.mock.calls.map((c: any[]) => c[0].model);
+    const first = models.filter((m: string) => m === 'glm-4.7').length;
+    const next = models.filter((m: string) => m === 'deepseek-v4-flash').length;
+    expect(next).toBeGreaterThanOrEqual(1);
+    expect(first).toBe(3 * next);
+  });
+
+  // #2719 review of PR #1194 (W3): with the primary skipped and the cloud tier failing,
+  // the stats kept lastError empty and elapsedMs 0 — the notice read "circuit-open
+  // (0 attempts, 0s)" and named no cause.
+  it('(n) #2719 breaker OPEN and cloud tier fails → lastError names the skipped primary and the cloud error', { timeout: 90000 }, async () => {
+    // Primary down, cloud unconfigured → failing passes open the breaker (as in (j)).
+    for (let i = 0; i < 4; i++) {
+      await fillUntilCondensed();
+    }
+    const unconfigured = await fillUntilCondensed();
+    const openPass = unconfigured.condenseDiagnostic!.find((d: any) => d.outcome === 'fallback-truncated');
+    expect(openPass.llm.summary.finalOutcome).toBe('circuit-open');
+    expect(openPass.llm.summary.lastError).toBe('primary skipped (circuit breaker open); cloud tier unconfigured');
+
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockRejectedValue(Object.assign(new Error('401 invalid proxy authentication'), { status: 401 }));
+
+    const rejected = await fillUntilCondensed();
+
+    const rejectedPass = rejected.condenseDiagnostic!.find((d: any) => d.outcome === 'fallback-truncated');
+    expect(rejectedPass.llm.summary.finalOutcome).toBe('circuit-open');
+    expect(rejectedPass.llm.summary.lastError).toBe('primary skipped (circuit breaker open); cloud: 401 invalid proxy authentication');
+  });
 });
 
 // #3011: Direct classification tests. The integration test (g) proves end-to-end

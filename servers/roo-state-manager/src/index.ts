@@ -32,7 +32,7 @@ import { dirname } from 'path';
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createRequire } from 'module';
-import { captureHostEnvKeys } from './services/host-env-snapshot.js';
+import { captureHostEnvKeys, applyEnvFileForNonHostKeys } from './services/host-env-snapshot.js';
 
 // Obtenir le répertoire du fichier actuel
 const __filename = fileURLToPath(import.meta.url);
@@ -48,6 +48,12 @@ captureHostEnvKeys();
 const envResult = dotenv.config({ path: envPath, quiet: true });
 if (envResult.error) {
   console.error('🔧 [DEBUG] dotenv.config error:', envResult.error);
+}
+// #2719: under mcp-wrapper.cjs the env already holds the `.env` the WRAPPER read at
+// its own start; a hot-swapped child must see today's file, as a restart would.
+const envRefreshed = applyEnvFileForNonHostKeys(envResult.parsed);
+if (envRefreshed.length > 0) {
+  console.error(`🔧 .env re-applied over the wrapper's older copy: ${envRefreshed.join(', ')}`);
 }
 
 // #1635: Resilient env validation — degrade instead of crash.

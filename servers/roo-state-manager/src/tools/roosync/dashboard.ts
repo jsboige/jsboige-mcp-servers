@@ -442,11 +442,12 @@ async function cloudCondenseOnce(
 
 /**
  * #2719 (22/09): the cloud tier's model CHAIN. `FALLBACK_LLM_MODEL_ID` accepts a
- * comma-separated list (e.g. `glm-4.7,claude-sonnet-4-6` against a claudish
- * ingress): each model is tried in order and the next one takes over on ANY
- * failure of the previous — including an empty 200 body, a timeout or a quota
- * error, which a single-model tier could only turn into truncation. A single
- * value behaves exactly as before.
+ * comma-separated list (e.g. `glm-4.7,deepseek-v4-flash` against the hub): each
+ * model is tried in order and the next one takes over on ANY failure of the
+ * previous — including an empty 200 body, a timeout or a quota error, which a
+ * single-model tier could only turn into truncation. The next model only survives
+ * a quota if it sits with ANOTHER provider: on the hub, `claude-sonnet-*` names are
+ * served by glm-5.3 (measured 22/09). A single value behaves exactly as before.
  */
 function getFallbackModelChain(): string[] {
   const models = getFallbackLLMModelId().split(',').map(m => m.trim()).filter(Boolean);
@@ -456,9 +457,11 @@ function getFallbackModelChain(): string[] {
 /**
  * #2998: Cloud condensation with retry on transient errors (429/5xx).
  * Wraps cloudCondenseOnce with up to FB_MAX_ATTEMPTS attempts and exponential
- * backoff, per model of the chain (#2719). Returns the first successful result,
- * the errors of every model tried (if all failed), or null when the fallback is
- * unconfigured.
+ * backoff on the first model of the chain; every next model gets ONE attempt
+ * (#2719): the chain already is the retry, and three attempts per model would
+ * multiply the worst-case wait by the chain length. Returns the first successful
+ * result, the errors of every model tried (if all failed), or null when the
+ * fallback is unconfigured.
  */
 async function cloudCondenseWithRetry(
   systemPrompt: string,
@@ -467,17 +470,18 @@ async function cloudCondenseWithRetry(
 ): Promise<{ content: string; elapsedMs: number; model: string } | { error: string; attempts: number } | null> {
   const modelErrors: string[] = [];
   let attempts = 0;
-  for (const fbModel of getFallbackModelChain()) {
+  for (const [position, fbModel] of getFallbackModelChain().entries()) {
+    const maxAttempts = position === 0 ? FB_MAX_ATTEMPTS : 1;
     let lastError: string | undefined;
-    for (let attempt = 1; attempt <= FB_MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts, fbModel);
       if (result === null) return null; // unconfigured (empty content is a stamped non-retryable error since the #2719 discriminant fix)
       if (result.ok) return result; // success
       attempts++;
       lastError = result.error;
-      if (!result.retryable || attempt >= FB_MAX_ATTEMPTS) break;
+      if (!result.retryable || attempt >= maxAttempts) break;
       const backoff = FB_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
-      logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${FB_MAX_ATTEMPTS})`, {
+      logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})`, {
         model: result.model, error: result.error,
       });
       await new Promise(resolve => setTimeout(resolve, backoff));
@@ -523,6 +527,18 @@ async function tryCloudCondenseFallback(
     stats.fallbackError = fb.error;
   }
   return null;
+}
+
+/**
+ * #2719: result of a call whose primary was skipped (circuit breaker open) and whose
+ * cloud tier did not deliver. Says WHY in `lastError` — without it the notice read
+ * "circuit-open (0 attempts, 0s)" and named no cause.
+ */
+function circuitOpenFailure(stats: LLMCallStats, callStart: number): LLMCallResult {
+  stats.elapsedMs = Date.now() - callStart;
+  stats.lastError = 'primary skipped (circuit breaker open)'
+    + (stats.fallbackError ? `; cloud: ${stats.fallbackError}` : '; cloud tier unconfigured');
+  return { content: null, stats };
 }
 
 // Dedup window for [ERROR] CONDENSATION CANCELLED system messages (prevent loop
@@ -2298,7 +2314,7 @@ FORMAT :
   if (opts?.skipPrimary) {
     stats.finalOutcome = 'circuit-open';
     const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
-    return fb ?? { content: null, stats };
+    return fb ?? circuitOpenFailure(stats, callStart);
   }
 
   let openai: OpenAI;
@@ -2547,7 +2563,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
   if (opts?.skipPrimary) {
     stats.finalOutcome = 'circuit-open';
     const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
-    return fb ?? { content: null, stats };
+    return fb ?? circuitOpenFailure(stats, callStart);
   }
 
   let openai: OpenAI;
