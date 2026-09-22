@@ -291,10 +291,13 @@ describe('validateClaudishArgs', () => {
         expect(validateClaudishArgs({ docker_context: 'ctx; rm' })).toContain('Invalid');
     });
     it('rejects non-string docker_context values (#1183)', () => {
-        // Causal: with `typeof === 'string'` heading the conjunction, any
-        // non-string fell on the ACCEPTING side — an array like ["x; cmd"] is
-        // truthy, interpolated into the docker CLI template, and reaches
-        // child_process.exec (a shell). These must be REFUSED at the gate.
+        // Causal (scope, per review): the `typeof === 'string'`-headed gate
+        // only ever lived in this PR's intermediate head e1c7fae4 — main's
+        // pre-PR guard (`typeof !== 'string' || !NAME_RE.test(...)`) already
+        // rejected non-strings. No production window was exposed; this test
+        // locks the shape so the intermediate-head regression cannot recur:
+        // an array like ["x; cmd"] is truthy, interpolated into the docker
+        // CLI template, and reaches child_process.exec (a shell).
         expect(validateClaudishArgs({ docker_context: ['x; cmd'] })).toContain('Invalid');
         expect(validateClaudishArgs({ docker_context: 42 })).toContain('Invalid');
         expect(validateClaudishArgs({ docker_context: { cmd: 'evil' } })).toContain('Invalid');
