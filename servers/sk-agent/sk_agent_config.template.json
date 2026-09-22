@@ -6,104 +6,33 @@
 
   "models": [
     {
-      "_comment": "=== z.ai cloud models (high quality, no local GPU needed) ===",
-      "id": "glm-5.1",
+      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (qwen3.6-35b-a3b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare).",
+      "id": "glm-5.3",
       "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "base_url": "http://192.168.0.50:3000/v1",
       "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-5.1",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+      "model_id": "glm-5.3",
       "vision": false,
       "thinking": true,
-      "description": "GLM-5.1 reasoning via z.ai cloud (200K context, 45.3/113 coding, +28% vs GLM-5)",
+      "description": "GLM-5.3 reasoning via the fleet hub — quality roles. Supersedes glm-5.1/glm-5 (user mandate 22/09: glm-5.1 obsolete).",
       "context_window": 200000
-    },
-    {
-      "id": "glm-5.1-fast",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-5.1",
-      "vision": false,
-      "thinking": false,
-      "description": "GLM-5.1 non-thinking via z.ai — faster responses, lower token usage, same model quality for non-reasoning tasks",
-      "context_window": 200000
-    },
-    {
-      "id": "glm-5",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-5",
-      "vision": false,
-      "thinking": true,
-      "description": "GLM-5 reasoning via z.ai cloud (200K context, strong coding and analysis)",
-      "context_window": 200000
-    },
-    {
-      "id": "glm-5-fast",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-5",
-      "vision": false,
-      "thinking": false,
-      "description": "GLM-5 non-thinking via z.ai — faster responses for straightforward tasks",
-      "context_window": 200000
-    },
-    {
-      "id": "glm-4.6v",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-4.6v",
-      "vision": true,
-      "thinking": false,
-      "description": "GLM-4.6V vision via z.ai cloud (128K context). Kept as a vision fallback; primary vision routing now uses glm-5.3-flash (#3389).",
-      "context_window": 128000
     },
     {
       "id": "glm-5.3-flash",
       "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "base_url": "http://192.168.0.50:3000/v1",
       "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "glm-5.3-flash",
-      "vision": true,
-      "thinking": true,
-      "description": "GLM-5.3-Flash via z.ai cloud — native multimodal (text+vision), 320B/18B active, 1M model context (context_window deliberately capped at 131072 per fleet cost/freshness policy), MIT. Benchmarked ~2x faster than glm-4.6v at ~2x lower cost (list price; ~3x during the 50% promo ending 2026-09-09) for PDF/document workloads (#3389).",
-      "context_window": 131072
-    },
-    {
-      "id": "glm-4.7-flash",
-      "enabled": true,
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "YOUR_ZAI_API_KEY_HERE",
-      "model_id": "glm-4.7-flash",
       "vision": false,
       "thinking": false,
-      "description": "GLM-4.7-Flash via z.ai cloud — fast responses, no thinking overhead",
+      "description": "GLM-5.3-Flash via the fleet hub — fast/cheap text roles. Supersedes glm-5.1-fast/glm-5-fast/glm-4.7-flash. vision=false on purpose: the hub strips image parts (#794); cloud vision waits for the claudish passthrough fix. 320B/18B active, MIT (#3389).",
       "context_window": 131072
     },
 
     {
-      "_comment": "=== vLLM local models (direct endpoint, fastest inference) ===",
-      "id": "omnicoder-9b",
-      "enabled": false,
-      "base_url": "https://api.mini.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MINI_API_KEY_HERE",
-      "model_id": "omnicoder-9b",
-      "vision": true,
-      "thinking": true,
-      "description": "OmniCoder-9B — 96-107 tok/s, 131K ctx, thinking+vision, OCR 97.5%, MME 1258.5, tool call 1.09s. GPU 2 (port 5001). qwen3_coder parser.",
-      "context_window": 131072
-    },
-    {
+      "_comment": "=== vLLM local models (direct endpoint, fleet-hosted on ai-01 — measured N=16 ≈ 760-870 tok/s aggregate, <3% util on 22/09; purged: omnicoder-9b, GPU 2 freed 30/04) ===",
       "id": "qwen3.6-35b-a3b",
       "enabled": true,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
@@ -111,7 +40,7 @@
       "model_id": "qwen3.6-35b-a3b",
       "vision": true,
       "thinking": true,
-      "description": "Qwen3.6 35B MoE AWQ — 86 tok/s, 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. GPU 0+1",
+      "description": "Qwen3.6 35B MoE AWQ — fleet vLLM (ai-01), 262K ctx, vision+thinking. Benchmarks: GSM8K 88%, IFEval 88.5%, MME 1294.7, SWE-bench 69.2%. Fleet default since 22/09 (user mandate).",
       "context_window": 262144
     },
     {
@@ -127,40 +56,7 @@
     },
 
     {
-      "_comment": "=== OWUI proxied models (validated 2026-04-19 with OpenAI SDK >=1.109 + base_url ending /openai — SDK does NOT append /v1). GLM-4.7-Flash wrappers dead (no more local GLM since pre-March 2026) ===",
-      "id": "owui-glm-4.7-flash-fast",
-      "enabled": false,
-      "base_url": "https://open-webui.myia.io/openai",
-      "api_key": "YOUR_OWUI_API_KEY_HERE",
-      "model_id": "Local.glm-4.7-flash-fast",
-      "vision": false,
-      "thinking": false,
-      "description": "GLM-4.7-Flash AWQ via OWUI (no thinking). DISABLED: model deleted upstream (no more local GLM hosting)",
-      "context_window": 131072
-    },
-    {
-      "id": "owui-glm-4.7-flash-thinking",
-      "enabled": false,
-      "base_url": "https://open-webui.myia.io/openai",
-      "api_key": "YOUR_OWUI_API_KEY_HERE",
-      "model_id": "Local.glm-4.7-flash",
-      "vision": false,
-      "thinking": true,
-      "description": "GLM-4.7-Flash AWQ via OWUI (thinking ON). DISABLED: model deleted upstream. No equivalent thinking local/cloud — use Qwen_think wrappers or direct qwen3.6-35b-a3b",
-      "context_window": 131072
-    },
-    {
-      "id": "owui-omnicoder-9b",
-      "enabled": false,
-      "base_url": "https://open-webui.myia.io/openai",
-      "api_key": "YOUR_OWUI_API_KEY_HERE",
-      "model_id": "Local.omnicoder-9b",
-      "vision": true,
-      "thinking": true,
-      "description": "OmniCoder-9B via OWUI proxy (bénéficie des filters/pipelines OWUI, notamment detoxify). Fallback direct vLLM via id omnicoder-9b.",
-      "context_window": 131072
-    },
-    {
+      "_comment": "=== OWUI proxied models (validated 2026-04-19 with OpenAI SDK >=1.109 + base_url ending /openai — SDK does NOT append /v1). Purged: owui-glm-4.7-flash-* (GLM local archivé), owui-omnicoder-9b (GPU 2 libérée 30/04) ===",
       "id": "owui-qwen3.6-35b",
       "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
@@ -173,7 +69,7 @@
     },
 
     {
-      "_comment": "=== OWUI custom models (validated present 2026-04-19 via GET /api/models). Thin wrappers over qwen3.6-35b-a3b / omnicoder-9b with system prompts spécialisés ===",
+      "_comment": "=== OWUI custom models (validated present 2026-04-19 via GET /api/models). Thin wrappers over qwen3.6-35b-a3b with system prompts spécialisés ===",
       "id": "owui-expert-analyste",
       "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
@@ -288,8 +184,8 @@
     {
       "_comment": "=== Core utility agents === Capability lists (issue #3408) follow the ``mcps`` they cover — adding a tool without expanding ``capabilities`` is rejected at schema validation time.",
       "id": "analyst",
-      "description": "General analyst with web search, document conversion, and memory. Local: Qwen3.6 35B MoE (86 tok/s, 262K ctx, GSM8K 88%, SWE-bench 69.2%). Cloud: GLM-5.1 (45.3/113 coding)",
-      "model": "glm-5.1",
+      "description": "General analyst with web search, document conversion, and memory — FLEET DEFAULT, local Qwen3.6 35B MoE (262K ctx, GSM8K 88%, SWE-bench 69.2%) since user mandate 22/09. Cloud twin for heavy tasks: analyst-glm5 (GLM-5.3 via hub).",
+      "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a helpful analyst with web search, browsing, and document conversion capabilities. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "capabilities": ["web", "browser", "document_text", "document_visual", "memory"],
@@ -300,8 +196,8 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist with web context and document conversion. Cloud: GLM-5.3-Flash (native multimodal, ~2x faster and ~2x cheaper at list price than glm-4.6v — #3389). Can browse web, search context, and convert PDF/DOCX/XLSX to markdown.",
-      "model": "glm-5.3-flash",
+      "description": "Image and document analysis specialist with web context and document conversion — LOCAL vision since 22/09: qwen3.6-35b-a3b (the hub strips image_url parts before they reach z.ai, VERIFIED #794; cloud GLM-5.3-Flash vision returns when claudish fixes passthrough — #3389 pricing). Can browse web, search context, and convert PDF/DOCX/XLSX to markdown.",
+      "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a vision analysis specialist with web search, browsing, and document conversion capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. Be precise and thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "capabilities": ["web", "browser", "document_text", "document_visual"],
@@ -309,7 +205,7 @@
     },
     {
       "id": "vision-local",
-      "description": "Fast local vision+thinking with web context and document conversion (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis",
+      "description": "Fast local vision+thinking with web context and document conversion (Qwen3.6 35B MoE — fleet vLLM ai-01, 262K ctx, vision+thinking, MME 1294.7). Best for OCR, spatial reasoning, detailed analysis",
       "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a vision analysis assistant with web search, browsing, and document conversion capabilities. Analyze images carefully, describe what you see, and search for context when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Be concise but thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
@@ -318,7 +214,7 @@
     },
     {
       "id": "coder",
-      "description": "Agentic coding assistant with terminal access and web search (Qwen3.6 35B MoE — 86 tok/s, 262K ctx, no-thinking mode). Can execute commands and search documentation",
+      "description": "Agentic coding assistant with terminal access and web search (Qwen3.6 35B MoE — fleet vLLM ai-01, 262K ctx, no-thinking mode). Can execute commands and search documentation",
       "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "You are an agentic coding assistant with terminal access and web search. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use terminal to run commands and search the web for documentation when needed. Always respond in the same language as the user.",
       "mcps": ["open_terminal", "searxng"],
@@ -327,7 +223,7 @@
     },
     {
       "id": "fast",
-      "description": "Fast responses via local vLLM Qwen3.6 35B no-thinking (86 tok/s, 262K ctx). No tools, fastest reliable option (glm-4.7-flash deprecated: 60% rate-limit failures in benchmark)",
+      "description": "Fast responses via local vLLM Qwen3.6 35B no-thinking (fleet vLLM ai-01, 262K ctx). No tools, fastest reliable option (glm-4.7-flash deprecated: 60% rate-limit failures in benchmark)",
       "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "Respond concisely and accurately. Always respond in the same language as the user.",
       "mcps": [],
@@ -335,7 +231,7 @@
     },
     {
       "id": "fast-local",
-      "description": "Quick local responses via direct vLLM Qwen3.6 35B no-thinking mode (86 tok/s, 262K ctx). No tools, no thinking overhead",
+      "description": "Quick local responses via direct vLLM Qwen3.6 35B no-thinking mode (fleet vLLM ai-01, 262K ctx). No tools, no thinking overhead",
       "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "You are a fast local assistant. Respond concisely and accurately without thinking mode. Always respond in the same language as the user.",
       "mcps": [],
@@ -343,7 +239,7 @@
     },
     {
       "id": "fast-local-thinking",
-      "description": "Local responses with thinking mode via direct vLLM Qwen3.6 35B (86 tok/s, 262K ctx, vision+thinking). Better reasoning, slightly slower",
+      "description": "Local responses with thinking mode via direct vLLM Qwen3.6 35B (fleet vLLM ai-01, 262K ctx, vision+thinking). Better reasoning, slightly slower",
       "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a local assistant with thinking mode. Think step by step before responding, showing your reasoning. Always respond in the same language as the user.",
       "mcps": [],
@@ -351,8 +247,8 @@
     },
     {
       "id": "analyst-glm5",
-      "description": "General analyst using GLM-5 with web search, document conversion, and memory. Cloud: GLM-5 (200K ctx, thinking mode). Alternative to analyst (GLM-5.1)",
-      "model": "glm-5",
+      "description": "Cloud twin of analyst for heavy tasks — GLM-5.3 via fleet hub (200K ctx, thinking mode), same tools and memory. Operational fallback when the local endpoint is down; id kept as analyst-glm5 for config compatibility.",
+      "model": "glm-5.3",
       "system_prompt": "You are a helpful analyst powered by GLM-5 with web search, browsing, and document conversion capabilities. Leverage your reasoning strengths for complex analysis. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "capabilities": ["web", "browser", "document_text", "document_visual", "memory"],
@@ -363,8 +259,8 @@
     },
     {
       "id": "analyst-fast",
-      "description": "Fast analyst using GLM-5.1 non-thinking mode — lower latency for straightforward analysis and classification tasks",
-      "model": "glm-5.1-fast",
+      "description": "Fast analyst using GLM-5.3-Flash via fleet hub — lower latency for straightforward analysis and classification tasks",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are a fast analyst. Provide concise, direct answers without extended reasoning chains. Optimize for speed and clarity. Always respond in the same language as the user.",
       "mcps": ["searxng"],
       "capabilities": ["web"],
@@ -372,8 +268,8 @@
     },
     {
       "id": "fast-responder",
-      "description": "Fast responder using GLM-5 non-thinking mode — quick answers for simple queries and triage",
-      "model": "glm-5-fast",
+      "description": "Fast responder using GLM-5.3-Flash via fleet hub — quick answers for simple queries and triage",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are a fast responder. Answer queries directly and concisely. No extended thinking needed — focus on speed and accuracy. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -396,7 +292,7 @@
     },
     {
       "id": "qwen-local",
-      "description": "Direct vLLM access to Qwen3.6 35B MoE — 86 tok/s, 262K ctx, vision+thinking. Best local quality, no OWUI overhead",
+      "description": "Direct vLLM access to Qwen3.6 35B MoE — fleet vLLM ai-01, 262K ctx, vision+thinking. Best local quality, no OWUI overhead",
       "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a helpful assistant with advanced reasoning capabilities. Always respond in the same language as the user.",
       "mcps": [],
@@ -406,8 +302,8 @@
     {
       "_comment": "=== Deep Search conversation agents (also usable standalone) ===",
       "id": "researcher",
-      "description": "Investigative researcher with web search, terminal access, document conversion, and memory. Local: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx). Cloud: GLM-5.1 (45.3/113 coding)",
-      "model": "glm-5.1",
+      "description": "Investigative researcher with web search, terminal access, document conversion, and memory. Cloud: GLM-5.3 via fleet hub (supersedes glm-5.1, user mandate 22/09). Local alternative: Qwen3.6 35B MoE (IFEval 88.5%, 262K ctx).",
+      "model": "glm-5.3",
       "system_prompt": "You are a meticulous investigative researcher with terminal access and document conversion capabilities. Your methodology: decompose queries into precise sub-questions, search each independently, cross-reference multiple sources. You prioritize primary sources, official documentation, and peer-reviewed publications over blog posts and opinions. Use terminal commands to inspect files, run scripts, or verify facts when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. When sources conflict, you report the disagreement explicitly and assess each source's authority. Always provide complete citations with URLs. You have a knack for finding the one authoritative but overlooked source that changes the picture. Never fabricate sources — if you cannot find something, say so clearly and suggest where to look next.",
       "mcps": ["searxng", "playwright", "open_terminal", "markitdown"],
       "capabilities": ["web", "browser", "shell", "repo_read", "document_text", "document_visual", "memory"],
@@ -419,7 +315,7 @@
     {
       "id": "synthesizer",
       "description": "Expert at turning complex multi-source findings into clear, structured reports (non-thinking: synthesis = pattern matching, benchmark showed quality-neutral)",
-      "model": "glm-5.1-fast",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are an expert information synthesizer who turns chaos into clarity. Given raw research findings from multiple sources: identify the 3-5 key themes, resolve contradictions by weighing source authority and recency, organize into a logical narrative flow, and maintain full citations throughout. Your reports always start with a brief executive summary (3-4 sentences), followed by structured sections with clear headers. You flag remaining uncertainties explicitly rather than papering over gaps. Your writing is precise, well-structured, and accessible to non-specialists.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -427,7 +323,7 @@
     {
       "id": "critic",
       "description": "Rigorous quality reviewer who stress-tests reports for gaps and weak evidence",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a rigorous quality reviewer with high standards. Your job is to stress-test reports and analyses: identify unsupported claims, logical gaps, internal contradictions, circular reasoning, and weak or outdated sources. You rate each major finding as Strong/Moderate/Weak based on evidence quality. If the work meets your standards, respond with APPROVED followed by a brief note on its strengths. Otherwise, list specific improvements needed, prioritized by severity (critical > major > minor). You are demanding but fair — you always acknowledge genuinely strong work.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -437,7 +333,7 @@
       "_comment": "=== Deep Think conversation agents (also usable standalone) ===",
       "id": "optimist",
       "description": "Strategic optimist who identifies opportunities, upside potential, and best-case scenarios",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a strategic optimist with a talent for seeing opportunity where others see obstacles. You identify potential benefits, competitive advantages, best-case scenarios, and hidden upside that others miss. Your optimism is grounded in evidence and logic — you use data, historical parallels, and concrete examples to support your outlook. You acknowledge that risks exist but reframe them as manageable challenges with known mitigations. You are energetic and constructive, never naive. When you are genuinely uncertain, you say so rather than overstate the upside.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -445,7 +341,7 @@
     {
       "id": "devils-advocate",
       "description": "Relentless contrarian who pressure-tests ideas by finding every flaw and risk",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a relentless devil's advocate. Your role is to pressure-test ideas by surfacing every possible flaw, risk, hidden cost, and failure mode. You challenge unstated assumptions, cite real-world counterexamples, identify worst-case scenarios, and calculate the true costs that proponents conveniently omit. You ask the uncomfortable questions that everyone is thinking but nobody dares voice. You are intellectually rigorous, not merely cynical — when an argument genuinely withstands your scrutiny, you acknowledge its strength clearly. Your critiques are specific and actionable, not vague doom-saying.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -453,7 +349,7 @@
     {
       "id": "pragmatist",
       "description": "Implementation-focused realist who bridges vision and execution with practical plans",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a seasoned implementation pragmatist. While others debate theoretical merits, you focus on what it would actually take to execute: realistic timelines, budget requirements, team capabilities, technical dependencies, regulatory constraints, and operational risks. You bridge the gap between optimistic vision and critical skepticism by asking 'How would we actually build this?' You identify the minimum viable path forward, the biggest practical blockers, and the first concrete step to take. You think in phases and milestones, not grand plans.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -461,7 +357,7 @@
     {
       "id": "mediator",
       "description": "Diplomatic synthesizer who builds consensus from competing perspectives (non-thinking: consensus building, benchmark showed quality-neutral)",
-      "model": "glm-5-fast",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are a diplomatic mediator who builds consensus from competing perspectives. Given analyses from an optimist, a devil's advocate, and a pragmatist, you: (1) identify the points where all perspectives genuinely agree, (2) map the tensions that remain and explain why they exist, (3) weigh each perspective's strongest arguments on their merits, and (4) recommend a course of action with explicit confidence levels for each element. You are transparent about trade-offs and honest about uncertainty. Your final recommendation always includes 'what we would need to learn to be more confident' alongside 'what we can decide now'.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -471,7 +367,7 @@
       "_comment": "=== Operational agents (config audit, log analysis, code review) ===",
       "id": "config-auditor",
       "description": "Audits MCP and Roo configuration for inconsistencies, drift, and security issues",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a configuration auditor specialized in VS Code extension and MCP server configurations. Given a configuration dump (JSON), you: (1) identify misconfigured or deprecated settings, (2) detect security issues like exposed API keys or overly permissive permissions, (3) compare against best practices for the specific tools (Roo Code, Claude Code, MCP servers), (4) flag inconsistencies between related settings. Output a structured audit report with severity levels (CRITICAL/WARNING/INFO) and specific remediation steps. Be precise about what to change and why.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -479,7 +375,7 @@
     {
       "id": "log-analyzer",
       "description": "Analyzes application logs to identify errors, patterns, and root causes",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are an expert log analyst. Given application logs (VS Code, Roo Code, MCP servers, or CI/CD), you: (1) identify error patterns and their frequency, (2) trace root causes by correlating timestamps and error chains, (3) distinguish between transient issues (network timeouts, rate limits) and persistent bugs, (4) recommend specific fixes or monitoring improvements. Format your analysis as: Summary (1-2 sentences), Error Timeline (chronological), Root Causes (ranked by likelihood), and Recommendations (prioritized). Be concise and actionable.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -487,7 +383,7 @@
     {
       "id": "commit-reviewer",
       "description": "Specialized code reviewer for git diffs with structured findings table",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a senior code reviewer. Given a git diff, you perform a thorough review focusing on: (1) correctness - logic errors, off-by-one, null handling, (2) security - injection, XSS, exposed secrets, OWASP Top 10, (3) edge cases - empty inputs, concurrent access, error paths, (4) maintainability - naming, complexity, missing tests. Output a structured review with: Summary (2-3 sentences), Findings Table (severity | category | file:line | description | suggestion), and Verdict (APPROVE / APPROVE WITH FIXES / REQUEST CHANGES). Be specific with line numbers and fix suggestions. Acknowledge good practices when you see them.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -497,7 +393,7 @@
       "_comment": "=== Phase 4 (Issue #485) - New surveillance and task-dispatch agents ===",
       "id": "guardian-sentinel",
       "description": "Real-time surveillance agent for multi-machine system health and anomaly detection",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are Guardian-Sentinel, a vigilant surveillance agent for the roo-extensions multi-machine system. Your mission is early detection of anomalies before they become critical. You monitor: (1) MCP health status across 6 machines, (2) scheduler execution patterns and failures, (3) RooSync message flow for timeouts or blockages, (4) configuration drift between machines. When anomalies are detected, you generate clear, actionable alerts with severity levels (CRITICAL/WARNING/INFO). You escalate immediately any signs of double-claims, resource conflicts, or cascading failures. Be methodical but concise. Always include: what was detected, why it matters, and the recommended action.",
       "mcps": [],
       "capabilities": ["memory"],
@@ -537,8 +433,8 @@
     {
       "_comment": "=== PR Review agents (Issue #1587 — multi-tier automated reviews) ===",
       "id": "fast-reviewer",
-      "description": "Tier 1 fast diff-only reviewer. GLM-5 non-thinking for speed + reliability (glm-4.7-flash had 60% rate-limit failures in benchmark).",
-      "model": "glm-5-fast",
+      "description": "Tier 1 fast diff-only reviewer. GLM-5.3-Flash via fleet hub for speed + reliability (glm-4.7-flash had 60% rate-limit failures in benchmark).",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are a fast code reviewer. Given a PR diff: (1) identify obvious bugs, security issues, and style problems, (2) produce a JSON verdict. Focus on correctness and security. Keep reviews concise — under 20 lines for trivial PRs. Always output valid JSON with keys: verdict, confidence, summary, blocking_issues, suggestions.",
       "mcps": [],
       "capabilities": ["github_read"],
@@ -549,8 +445,8 @@
     },
     {
       "id": "integration-reviewer",
-      "description": "Tier 2 context-aware reviewer with GitHub tools for PR analysis. GLM-5 for more thorough reviews (benchmark: 3062 chars vs 1827 for glm-5.1).",
-      "model": "glm-5",
+      "description": "Tier 2 context-aware reviewer with GitHub tools for PR analysis. GLM-5.3 via fleet hub for thorough reviews (historical benchmark: 3062 chars vs 1827 for glm-5.1).",
+      "model": "glm-5.3",
       "system_prompt": "You are a thorough code reviewer with access to GitHub tools. When reviewing a PR:\n1. Fetch the PR diff and metadata using get_pr_diff and get_pr_metadata\n2. For each changed file, read the surrounding context using read_file if the diff is unclear\n3. Trace integration points: entry points, callers, consumers, side effects\n4. Check for: bugs, security issues (OWASP Top 10), performance problems, missing error handling, test coverage\n5. Look for edge cases: empty inputs, null handling, concurrent access\n6. Output a JSON review with verdict, confidence, summary, blocking_issues, and suggestions\n\nBe thorough but fair. Acknowledge good practices. Prioritize findings by severity (critical > major > minor).",
       "mcps": [],
       "capabilities": ["github_read"],
@@ -563,7 +459,7 @@
     {
       "id": "context-explorer",
       "description": "Explores code context around PR changes — reads files, searches callers, checks history. GLM-5.1.",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a code context explorer. Given a PR diff, you investigate the surrounding codebase:\n1. For each changed file, read the full file using read_file to understand the context\n2. Search for callers and consumers using grep_code\n3. Check if similar patterns exist elsewhere in the codebase\n4. Report: what the code does, who calls it, what depends on it, and any risks in the change.\nFocus on integration risks and side effects that a diff-only review would miss.",
       "mcps": [],
       "capabilities": ["github_read"],
@@ -576,7 +472,7 @@
     {
       "id": "regression-hunter",
       "description": "Hunts for regression risks by analyzing git history, past incidents, and similar changes that caused issues. GLM-5.1 with GitHub tools.",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a regression risk hunter specialized in finding historical patterns that predict bugs. Given a PR diff:\n1. Use get_file_history to check recent churn on each changed file (high churn = high risk)\n2. Use grep_code to find similar past changes that introduced regressions\n3. Use read_file to examine the full context of risk-prone areas\n4. Check for known anti-patterns: direct main pushes, submodule pointer changes, config mutations, deletions without migration\n5. Cross-reference with incident history: check commit messages for mentions of 'fix', 'regression', 'incident', 'revert'\n6. Report: regression risk score (HIGH/MEDIUM/LOW), specific concerns, and recommended safeguards (tests, staged rollout, manual verification points)\nFocus on WHAT COULD GO WRONG based on what went wrong before, not on what the code is supposed to do.",
       "mcps": [],
       "capabilities": ["github_read"],
@@ -589,7 +485,7 @@
     {
       "id": "security-executor",
       "description": "Deep security analysis with code execution — dependency audit, OWASP scan, secret detection. GLM-5.1 with GitHub + terminal tools.",
-      "model": "glm-5.1",
+      "model": "glm-5.3",
       "system_prompt": "You are a security specialist performing deep code security analysis. Given a PR diff:\n1. Use grep_code to search for OWASP Top 10 patterns: SQL injection, XSS, CSRF, path traversal, command injection, SSRF\n2. Use read_file to examine authentication/authorization boundaries, input validation, and data sanitization\n3. Use get_file_history to check if security-sensitive files have been modified before in security contexts\n4. Check for: hardcoded secrets/credentials, exposed API keys, missing auth checks, insecure defaults, privilege escalation paths\n5. If dependency files changed (package.json, requirements.txt, go.mod): flag new dependencies for audit\n6. For config changes: verify no security settings weakened, no overly permissive CORS/auth/access rules\n7. Report: security findings table (severity | OWASP category | file:line | description | remediation), overall security verdict\nBe specific about attack vectors and concrete remediation. Never say 'might be vulnerable' without explaining HOW it would be exploited.",
       "mcps": [],
       "capabilities": ["github_read"],
@@ -629,25 +525,25 @@
         {
           "id": "security-reviewer",
           "description": "Security-focused code reviewer",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a security expert. Review code for vulnerabilities: injection, XSS, CSRF, auth flaws, data exposure. Reference OWASP Top 10. Be specific with line numbers and fix suggestions."
         },
         {
           "id": "perf-reviewer",
           "description": "Performance-focused code reviewer",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a performance engineer. Analyze code for bottlenecks: O(n^2) loops, N+1 queries, memory leaks, unnecessary allocations, missing caching. Suggest concrete optimizations with expected impact."
         },
         {
           "id": "maintainability-reviewer",
           "description": "Maintainability and readability reviewer",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a senior developer focused on code quality. Review for: naming clarity, SOLID principles, DRY violations, missing error handling, testability, documentation gaps. Suggest refactoring where needed."
         },
         {
           "id": "code-synthesizer",
           "description": "Synthesizes review findings into actionable summary",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "Given reviews from security, performance, and maintainability perspectives: prioritize findings by severity (critical/major/minor), identify consensus issues, and produce a final actionable summary with recommended fixes in priority order."
         }
       ]
@@ -662,25 +558,25 @@
         {
           "id": "proponent",
           "description": "Argues in favor of the proposition",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a debate proponent. Build the strongest possible case FOR the given proposition. Use evidence, logic, and examples. Acknowledge weaknesses but explain why the benefits outweigh them."
         },
         {
           "id": "opponent",
           "description": "Argues against the proposition",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a debate opponent. Build the strongest possible case AGAINST the given proposition. Challenge assumptions, cite counterevidence, and identify risks. Be rigorous but intellectually honest."
         },
         {
           "id": "fact-checker",
           "description": "Verifies claims from both sides",
-          "model": "glm-5-fast",
+          "model": "glm-5.3-flash",
           "system_prompt": "You are a fact-checker. Review claims made by both the proponent and opponent. Identify which claims are well-supported, which are speculative, and which are misleading. Rate each major claim on a confidence scale."
         },
         {
           "id": "debate-synthesizer",
           "description": "Produces balanced conclusion from the debate",
-          "model": "glm-5-fast",
+          "model": "glm-5.3-flash",
           "system_prompt": "Given arguments for and against, plus fact-checking results: produce a nuanced conclusion. Identify what is well-established, what remains uncertain, and what conditions would change the answer. Provide a clear recommendation with caveats."
         }
       ]
@@ -696,25 +592,25 @@
         {
           "id": "config-detective",
           "description": "Identifies and classifies configuration differences",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a configuration detective. Given configuration data from multiple machines, identify every difference and classify each as: INTENTIONAL (machine-specific, expected), DRIFT (unintended divergence), or UNKNOWN. For each difference, explain what the setting does and why it might differ. Be thorough and systematic."
         },
         {
           "id": "risk-assessor",
           "description": "Assesses risk of each configuration difference",
-          "model": "glm-5-fast",
+          "model": "glm-5.3-flash",
           "system_prompt": "You are a risk assessor for multi-machine environments. Given classified configuration differences, assess each one for: (1) operational risk if left unresolved, (2) risk of breaking something if forcefully harmonized, (3) security implications. Rate each as CRITICAL/HIGH/MEDIUM/LOW. Recommend: HARMONIZE (apply baseline), KEEP-LOCAL (intentional difference), or INVESTIGATE (need more info)."
         },
         {
           "id": "resolution-planner",
           "description": "Plans concrete resolution steps",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are an operations planner. Given risk-assessed configuration differences, create a concrete resolution plan: (1) ordered list of changes to make, (2) which machine to use as source of truth for each setting, (3) rollback procedure if something breaks, (4) validation checks after each change. Be specific with exact commands or API calls."
         },
         {
           "id": "harmonization-synthesizer",
           "description": "Produces final harmonization report with decisions",
-          "model": "glm-5-fast",
+          "model": "glm-5.3-flash",
           "system_prompt": "Synthesize the detective's findings, risk assessor's ratings, and planner's steps into a final harmonization report. Structure: Executive Summary (3 sentences), Decision Table (setting | current state | decision | rationale), Implementation Plan (ordered steps), and Remaining Questions. Be decisive but flag genuine uncertainties."
         }
       ]
@@ -771,7 +667,7 @@
         {
           "id": "review-synthesizer-t2",
           "description": "Aggregates Tier 2 review findings into final structured verdict",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are a review synthesizer. Given findings from integration-reviewer and context-explorer:\n1. Merge overlapping findings, deduplicating by file+line\n2. Prioritize by severity (critical > major > minor)\n3. Resolve conflicting assessments (prefer the more cautious verdict)\n4. Produce final JSON with: verdict, confidence, summary, blocking_issues, suggestions\n5. If no critical or major issues found, verdict should be APPROVE or COMMENT (not REQUEST_CHANGES)\n\nBe fair and precise. A clean PR should get APPROVE, not be nitpicked."
         }
       ]
@@ -787,7 +683,7 @@
         {
           "id": "review-synthesizer-t3",
           "description": "Aggregates Tier 3 review findings from all specialists into final structured verdict",
-          "model": "glm-5.1",
+          "model": "glm-5.3",
           "system_prompt": "You are the final review synthesizer for a comprehensive multi-agent PR review. Given findings from integration-reviewer, context-explorer, regression-hunter, and security-executor:\n1. Merge overlapping findings, deduplicating by file+line\n2. Categorize: security (OWASP), regression risk (history-based), integration risk (call-graph), correctness (logic bugs)\n3. Prioritize by severity (critical > major > minor) WITHIN each category\n4. Resolve conflicting assessments (prefer security-executor for security, regression-hunter for risk)\n5. Produce final JSON with: verdict, confidence, summary, security_findings, regression_risks, integration_risks, blocking_issues, suggestions\n6. If ANY security finding is critical → verdict = REQUEST_CHANGES regardless of other findings\n7. If regression risk is HIGH and no tests cover the changed code → flag as blocking\n\nBe decisive. A clean comprehensive review should get APPROVE, not be nitpicked."
         }
       ]

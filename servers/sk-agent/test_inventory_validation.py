@@ -71,9 +71,12 @@ def test_template_counts_match_expected_baseline():
     and the generated parent docs in the same change. 16->17 models: #3389
     added glm-5.3-flash after the initial freeze; the stale assert sat red
     unseen because this file was not in the CI pytest list.
+    17->8 models (8/8 enabled): glm-5.3 era, user mandate 22/09 — GLM entries
+    consolidated to glm-5.3/glm-5.3-flash via the fleet hub, dead models
+    purged (omnicoder-9b, owui-glm-4.7-flash-*, owui-omnicoder-9b).
     """
     cfg = load_config(str(TEMPLATE_PATH))
-    assert len(cfg.models) == 17, f"models: {len(cfg.models)}"
+    assert len(cfg.models) == 8, f"models: {len(cfg.models)}"
     assert len(cfg.agents) == 32, f"agents: {len(cfg.agents)}"
     assert len(cfg.mcps) == 5, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
@@ -82,7 +85,7 @@ def test_template_counts_match_expected_baseline():
     assert inline_total == 15, f"inline agents: {inline_total}"
 
     enabled = sum(1 for m in cfg.models if m.enabled)
-    assert enabled == 13, f"enabled models: {enabled}"
+    assert enabled == 8, f"enabled models: {enabled}"
 
     mem_agents = sum(1 for a in cfg.agents if a.memory.enabled)
     assert mem_agents == 5, f"memory-enabled agents: {mem_agents}"
@@ -232,7 +235,7 @@ def test_deployment_doc_check_detects_drift():
     good = (
         "# Deployment\n\n"
         "| Metric | Count | Notes |\n|---|---|---|\n"
-        "| **Models** | 17 | notes |\n"
+        "| **Models** | 8 | notes |\n"
         "| **Top-level agents** | 32 | notes |\n"
         "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
         "| **Memory-enabled agents** | 5 | notes |\n"
