@@ -229,7 +229,7 @@ describe('formatMarkdown', () => {
     localMachine: 'myia-test',
     systemHealth: { machinesOnline: 6, machinesUnknown: 0, machinesTotal: 6, flags: [], lastSeenByMachine: {} },
     capabilities: { sharedPath: true, qdrant: true, embeddings: true },
-    drift: { checked: true, baselineSource: 'remote (via GDrive inventory)', critical: 0, important: 0, warning: 0, info: 0, items: [] },
+    drift: { checked: true, driftSource: 'myia-test', driftTarget: 'remote', driftTargetSelection: 'registry-default', critical: 0, important: 0, warning: 0, info: 0, items: [] },
     envCheck: { checked: true, missing: [], present: ['QDRANT_URL'] },
     recommendations: ['All systems nominal'],
   };
@@ -291,8 +291,21 @@ describe('formatMarkdown', () => {
   });
 
   it('renders "Not checked" when drift was not checked', () => {
-    const md = formatMarkdown({ ...base, drift: { ...base.drift, checked: false, baselineSource: 'error: boom' } });
+    const md = formatMarkdown({ ...base, drift: { ...base.drift, checked: false, driftTarget: 'error: boom' } });
     expect(md).toContain('Not checked (error: boom)');
+  });
+
+  // #1161: the drift pair must be named, and a guessed target must say so.
+  it('renders the drift pair with the "not a baseline" warning on a registry-default target (#1161)', () => {
+    const md = formatMarkdown(base);
+    expect(md).toContain('**Drift:** myia-test vs remote');
+    expect(md).toContain('PAS une baseline flotte');
+  });
+
+  it('renders the drift pair without the warning on an explicit target (#1161)', () => {
+    const md = formatMarkdown({ ...base, drift: { ...base.drift, driftTargetSelection: 'explicit' } });
+    expect(md).toContain('**Drift:** myia-test vs remote');
+    expect(md).not.toContain('PAS une baseline flotte');
   });
 
   it('lists MISSING env vars with severity', () => {
@@ -318,6 +331,35 @@ describe('roosyncHealthView orchestration + scoring', () => {
     expect(result.capabilities.qdrantReachable).toBe(true);
     expect(result.capabilities.embeddingsReachable).toBe(true);
     expect(result.recommendations).toContain('All systems nominal');
+  });
+
+  // #1161: drift target transparency — explicit vs registry-default. The score
+  // must no longer depend on the observer's seat without the reader knowing.
+  it('#1161: explicit driftTarget is forwarded to roosyncCompareConfig and marked explicit', async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+    mockCompareConfig.mockResolvedValue({
+      target: 'myia-ai-01',
+      summary: { critical: 0, important: 0, warning: 0, info: 0 },
+      differences: [],
+    });
+    const result = await roosyncHealthView({ driftTarget: 'myia-ai-01' });
+    expect(mockCompareConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'myia-test-machine', target: 'myia-ai-01', granularity: 'full' })
+    );
+    expect(result.drift.driftTargetSelection).toBe('explicit');
+    expect(result.drift.driftSource).toBe('myia-test-machine');
+    expect(result.drift.driftTarget).toBe('myia-ai-01');
+  });
+
+  it('#1161: without driftTarget the call omits target and the result is marked registry-default', async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+    const result = await roosyncHealthView({});
+    const called = mockCompareConfig.mock.calls[0][0] as Record<string, unknown>;
+    expect(called.source).toBe('myia-test-machine');
+    expect(called).not.toHaveProperty('target');
+    expect(result.drift.driftTargetSelection).toBe('registry-default');
   });
 
   it('#2628: configured-but-unreachable Qdrant deducts score and surfaces a FAIL verdict + recommendation', async () => {

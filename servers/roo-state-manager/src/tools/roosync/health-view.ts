@@ -33,6 +33,8 @@ const CRITICAL_ENV_VARS = [
 export const HealthViewArgsSchema = z.object({
   machineId: z.string().optional()
     .describe('Machine locale (défaut) ou distante pour le drift check'),
+  driftTarget: z.string().optional()
+    .describe('Cible explicite du drift (machine comparée). Défaut (#1161): première machine du registre ≠ source — un diff pair-à-pair, PAS une baseline flotte'),
   includeEnvCheck: z.boolean().optional()
     .describe('Inclure la vérification des env vars critiques (défaut: true)'),
   format: z.enum(['json', 'markdown']).optional()
@@ -91,7 +93,18 @@ export interface HealthViewResult {
   };
   drift: {
     checked: boolean;
-    baselineSource: string;
+    /**
+     * #1161: the machine whose config the diff measures (the diff SUBJECT).
+     * Exposed so the reader can tell WHICH machine the verdict describes.
+     */
+    driftSource: string;
+    /**
+     * #1161: renamed from `baselineSource` — the comparison was never against
+     * a fleet baseline, it is a peer-to-peer diff with one other machine.
+     * `driftTargetSelection` tells whether the target was given or guessed.
+     */
+    driftTarget: string;
+    driftTargetSelection: 'explicit' | 'registry-default';
     critical: number;
     important: number;
     warning: number;
@@ -358,33 +371,47 @@ export async function probeQdrantBackend(): Promise<QdrantProbeResult> {
 }
 
 async function collectDrift(
-  localMachineId: string
+  localMachineId: string,
+  explicitTarget?: string
 ): Promise<{
   checked: boolean;
-  baselineSource: string;
+  driftSource: string;
+  driftTarget: string;
+  driftTargetSelection: 'explicit' | 'registry-default';
   critical: number;
   important: number;
   warning: number;
   info: number;
   items: DriftItem[];
 }> {
+  const selection = explicitTarget ? ('explicit' as const) : ('registry-default' as const);
   const empty = {
     checked: false as const,
-    baselineSource: '',
+    driftSource: localMachineId,
+    driftTarget: '',
+    driftTargetSelection: selection,
     critical: 0, important: 0, warning: 0, info: 0,
     items: [] as DriftItem[],
   };
 
   try {
     const { roosyncCompareConfig } = await import('./compare-config.js');
-    const result = await roosyncCompareConfig({
+    // #1161: pass the target through when given. The implicit default (first
+    // registry machine ≠ source) is seat-relative: two observers on the same
+    // fleet published 97 and 90 within one hour because each diffed against
+    // a different machine. Fleet-stable verdicts require an explicit target.
+    const compareArgs: { source: string; granularity: 'full'; target?: string } = {
       source: localMachineId,
       granularity: 'full',
-    });
+    };
+    if (explicitTarget) compareArgs.target = explicitTarget;
+    const result = await roosyncCompareConfig(compareArgs);
 
     return {
       checked: true,
-      baselineSource: `${result.target} (via GDrive inventory)`,
+      driftSource: localMachineId,
+      driftTarget: result.target,
+      driftTargetSelection: selection,
       critical: result.summary.critical,
       important: result.summary.important,
       warning: result.summary.warning,
@@ -400,7 +427,7 @@ async function collectDrift(
   } catch (error) {
     const msg = (error as Error).message;
     logger.warn('Drift collection failed', { error: msg });
-    return { ...empty, baselineSource: `error: ${msg}` };
+    return { ...empty, driftTarget: `error: ${msg}` };
   }
 }
 
@@ -601,7 +628,12 @@ export function formatMarkdown(result: HealthViewResult): string {
 
   lines.push('## Config Drift');
   if (result.drift.checked) {
-    lines.push(`- **Baseline:** ${result.drift.baselineSource}`);
+    // #1161: name the pair — this is a peer-to-peer diff, never a fleet baseline.
+    // `registry-default` warns the reader that the target was guessed (seat-relative).
+    const sel = result.drift.driftTargetSelection === 'explicit'
+      ? ''
+      : ' — cible par défaut (diff pair-à-pair, PAS une baseline flotte)';
+    lines.push(`- **Drift:** ${result.drift.driftSource} vs ${result.drift.driftTarget} (inventaires GDrive)${sel}`);
     lines.push(`- Critical: ${result.drift.critical} | Important: ${result.drift.important} | Warning: ${result.drift.warning} | Info: ${result.drift.info}`);
     if (result.drift.items.length > 0) {
       lines.push('');
@@ -613,7 +645,7 @@ export function formatMarkdown(result: HealthViewResult): string {
       }
     }
   } else {
-    lines.push(`- Not checked (${result.drift.baselineSource})`);
+    lines.push(`- Not checked (${result.drift.driftTarget})`);
   }
   lines.push('');
 
@@ -647,7 +679,7 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   // Collect all data sources in parallel (including optional backend probes)
   const [systemHealth, drift, envCheck, embeddingsReachable, qdrantProbe] = await Promise.all([
     collectSystemHealth(),
-    collectDrift(targetMachine),
+    collectDrift(targetMachine, args.driftTarget),
     args.includeEnvCheck !== false ? Promise.resolve(collectEnvCheck()) : Promise.resolve({
       checked: false, missing: [], present: [],
     }),

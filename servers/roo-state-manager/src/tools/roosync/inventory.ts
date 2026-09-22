@@ -45,7 +45,11 @@ export const InventoryArgsSchema = z.object({
   format: z.enum(['json', 'markdown']).optional()
     .describe('Output format for type="health". Default: json'),
   includeEnvCheck: z.boolean().optional()
-    .describe('Include env var checks in type="health". Default: true')
+    .describe('Include env var checks in type="health". Default: true'),
+  // #1161: explicit drift target — the implicit default is a seat-relative
+  // peer-to-peer diff (first registry machine ≠ source).
+  driftTarget: z.string().optional()
+    .describe('Explicit drift comparison target for type="health". Default (#1161): first registry machine ≠ machineId — a peer-to-peer diff, NOT a fleet baseline')
 });
 
 export type InventoryArgs = z.infer<typeof InventoryArgsSchema>;
@@ -171,6 +175,7 @@ export const inventoryTool: UnifiedToolContract = {
         const { roosyncHealthView, formatMarkdown } = await import('./health-view.js');
         const healthResult = await roosyncHealthView({
           machineId,
+          driftTarget: input.driftTarget,
           includeEnvCheck: input.includeEnvCheck,
           format: input.format,
         });

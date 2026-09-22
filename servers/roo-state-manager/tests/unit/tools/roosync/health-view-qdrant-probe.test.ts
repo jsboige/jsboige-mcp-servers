@@ -150,7 +150,7 @@ describe('#2977 formatMarkdown — FAIL label names the cause', () => {
         qdrantProbe,
         qdrantReachable,
       },
-      drift: { checked: false, baselineSource: '', critical: 0, important: 0, warning: 0, info: 0, items: [] },
+      drift: { checked: false, driftSource: 'myia-test-machine', driftTarget: '', driftTargetSelection: 'registry-default' as const, critical: 0, important: 0, warning: 0, info: 0, items: [] },
       envCheck: { checked: false, missing: [], present: [] },
       recommendations: [],
     };
@@ -206,7 +206,7 @@ describe('#2977 recommendation — routes an AUTH failure to QDRANT_API_KEY, not
         qdrantProbe,
         qdrantReachable: qdrantProbe ? qdrantProbe.reachable : undefined,
       },
-      drift: { checked: false, baselineSource: '', critical: 0, important: 0, warning: 0, info: 0, items: [] },
+      drift: { checked: false, driftSource: 'myia-test-machine', driftTarget: '', driftTargetSelection: 'registry-default' as const, critical: 0, important: 0, warning: 0, info: 0, items: [] },
       envCheck: { checked: false, missing: [], present: [] },
       // NOTE: recommendations are intentionally empty here; formatMarkdown only echoes them.
       // The cause-routing itself lives in generateRecommendations, exercised end-to-end via

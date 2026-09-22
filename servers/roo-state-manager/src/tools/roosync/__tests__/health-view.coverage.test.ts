@@ -28,7 +28,7 @@ const base: HealthViewResult = {
   localMachine: 'myia-po-2024',
   systemHealth: { machinesOnline: 6, machinesUnknown: 0, machinesTotal: 6, flags: [] },
   capabilities: { sharedPath: true, qdrant: true, embeddings: true },
-  drift: { checked: true, baselineSource: 'remote (via GDrive inventory)', critical: 0, important: 0, warning: 0, info: 0, items: [] },
+  drift: { checked: true, driftSource: 'myia-po-2024', driftTarget: 'remote', driftTargetSelection: 'registry-default' as const, critical: 0, important: 0, warning: 0, info: 0, items: [] },
   envCheck: { checked: true, missing: [], present: ['QDRANT_URL'] },
   recommendations: ['All systems nominal'],
 };
