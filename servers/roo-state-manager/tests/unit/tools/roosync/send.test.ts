@@ -215,7 +215,8 @@ describe('roosync_send', () => {
             expect(result.content[0].text).toContain('Réponse envoyée');
             expect(mockSendMessage).toHaveBeenCalledWith(
                 'myia-po-2025|roo-extensions', 'myia-ai-01',
-                'Re: Hello', 'Thanks!', 'HIGH', ['reply'], 'msg-orig', 'msg-orig'
+                'Re: Hello', 'Thanks!', 'HIGH', ['reply'], 'msg-orig', 'msg-orig',
+                undefined  // options — #1170 : absent sans clé d'idempotence
             );
         });
 
@@ -231,7 +232,8 @@ describe('roosync_send', () => {
             await roosyncSend({ action: 'reply', message_id: 'msg-re', body: 'OK' });
             expect(mockSendMessage).toHaveBeenCalledWith(
                 expect.any(String), expect.any(String),
-                'Re: Original', 'OK', 'MEDIUM', ['reply'], 'msg-re', 'msg-re'
+                'Re: Original', 'OK', 'MEDIUM', ['reply'], 'msg-re', 'msg-re',
+                undefined  // options — #1170 : absent sans clé d'idempotence
             );
         });
 

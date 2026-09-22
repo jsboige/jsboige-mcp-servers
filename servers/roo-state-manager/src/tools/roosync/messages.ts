@@ -112,7 +112,7 @@ export const MessagesArgsSchema = z.object({
   // « landé en >timeout client » de « jamais landé » quand un send timeout
   // (cf. po-2025 14/09 16:05Z : HIGH vers ai-01, 120s timeout, livraison
   // incertaine ; sans clé, le retry sur timeout fabrique un jumeau).
-  messageId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, '#3654 messageId invalide : caractères autorisés [A-Za-z0-9._:-], 1-128 caractères — l\'id devient un nom de fichier côté persistance').optional().describe('#3654 Cle d idempotence pour action="send". Si un message du meme expediteur porte deja exactement cet id, la 2e operation est absorbee et le retour contient deduplicated: true (miroir du messageId dashboard append #3276). Le caller peut ainsi distinguer « lande en >timeout » de « jamais lande » apres un timeout client. L id est PERSISTE tel quel (review #1157) : un retry avec la meme cle absorbe meme apres un nouveau process serveur.'),
+  messageId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, '#3654 messageId invalide : caractères autorisés [A-Za-z0-9._:-], 1-128 caractères — l\'id devient un nom de fichier côté persistance').optional().describe('#1170 Cle d idempotence pour action="send" ET action="reply" (exclue de amend — rejet bruyant : amend mute un message existant, un retry au contenu identique est naturellement convergent, la clé n a pas de cible). Si un message du meme expediteur porte deja exactement cet id, la 2e operation est absorbee (miroir du messageId dashboard append #3276). Le caller peut ainsi distinguer « lande en >timeout » de « jamais lande » apres un timeout client. L id est PERSISTE tel quel (review #1157) : un retry avec la meme cle absorbe meme apres un nouveau process serveur.'),
   message_id: z.string().optional().describe('ID du message cible — requis pour actions reply/amend/mark_read/archive/message/attachments_list/get/delete. Alias rétro-compatible de reply_to accepté pour reply/amend. #3029'),
   new_content: z.string().optional().describe('Nouveau contenu (requis pour amend)'),
   reason: z.string().optional().describe('Raison de la modification (amend)'),
@@ -306,22 +306,27 @@ export async function roosyncMessages(args: MessagesArgs) {
     case 'reply':
       // #3029: Alias reply_to → message_id pour rétro-compatibilité (agent passes reply_to expecting "the message to reply to").
       // L'alias est ignoré si message_id est déjà fourni.
+      // #1170: messageId (clé d'idempotence) passe au même titre que sur send.
       return roosyncSend({
         action: 'reply',
         message_id: args.message_id ?? args.reply_to,
         body: args.body,
         priority: args.priority,
         tags: args.tags,
+        messageId: args.messageId,
         as: callerAs
       });
 
     case 'amend':
       // #3029: Idem — alias reply_to accepté pour amend (consistance avec reply).
+      // #1170: messageId est forwardé pour être REJETÉ bruyamment par le
+      // routeur send.ts (exclusion documentée) — jamais droppé en silence (#3177).
       return roosyncSend({
         action: 'amend',
         message_id: args.message_id ?? args.reply_to,
         new_content: args.new_content,
         reason: args.reason,
+        messageId: args.messageId,
         as: callerAs
       });
 

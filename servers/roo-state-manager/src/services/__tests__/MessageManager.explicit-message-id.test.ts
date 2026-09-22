@@ -145,4 +145,73 @@ describe('MessageManager.sendMessage — messageId explicite (#3654)', () => {
         const inboxFiles = await fs.readdir(inboxPath);
         expect(inboxFiles.filter(f => f.endsWith('.json'))).toHaveLength(0);
     });
+
+    // #1170 — la forme REPLY du même contrat : reply_to + thread_id posés,
+    // même clé d'idempotence. Prouve l'absorption manager-level pour le cas
+    // « réponse serveur perdue après persistance » (le tool-layer lookup peut
+    // manquer l'entrée si le client a retry depuis un autre process/serveur).
+    describe('forme reply (#1170)', () => {
+        test('reply réémis avec la même clé : absorbé, aucun jumeau dans le thread', async () => {
+            const KEY = 'reply-1170-manager-absorb';
+            // Le message original reçu (adressé à FROM pour que le lookup
+            // callerId=FROM passe la garde d'accès sender-OR-recipient).
+            const original = await messageManager.sendMessage(
+                TO, FROM, 'Dispatch', 'Exécute ceci', 'HIGH'
+            );
+
+            // Premier reply : forme reply complète (reply_to + thread_id).
+            const first = await messageManager.sendMessage(
+                FROM, TO, 'Re: Dispatch', 'Réponse livrée', 'HIGH',
+                ['reply'], original.id, original.id,
+                { messageId: KEY }
+            );
+            expect(first.id).toBe(KEY);
+            expect(first.reply_to).toBe(original.id);
+            expect(first.thread_id).toBe(original.id);
+
+            // Retry après réponse serveur perdue : même clé, même expéditeur.
+            const second = await messageManager.sendMessage(
+                FROM, TO, 'Re: Dispatch', 'Réponse livrée', 'HIGH',
+                ['reply'], original.id, original.id,
+                { messageId: KEY }
+            );
+
+            // Absorption : même entrée, même timestamp.
+            expect(second.id).toBe(KEY);
+            expect(second.timestamp).toBe(first.timestamp);
+
+            // L'inbox du destinataire contient l'original + UNE réponse.
+            const inboxFiles = (await fs.readdir(inboxPath)).filter(f => f.endsWith('.json'));
+            expect(inboxFiles).toHaveLength(2);
+            expect(inboxFiles).toContain(`${KEY}.json`);
+            expect(inboxFiles).toContain(`${original.id}.json`);
+        });
+
+        test('collision sur un reply : repli id auto, l\'entrée étrangère intacte', async () => {
+            const KEY = 'reply-1170-manager-collision';
+            const foreign = {
+                id: KEY,
+                from: 'myia-po-2023:roo-extensions',
+                to: TO,
+                subject: 'Re: Dispatch',
+                body: 'Réponse d\'un autre siège',
+                priority: 'LOW',
+                timestamp: '2026-09-22T03:00:00.000Z',
+                status: 'unread'
+            };
+            await fs.writeFile(join(inboxPath, `${KEY}.json`), JSON.stringify(foreign, null, 2), 'utf-8');
+
+            const msg = await messageManager.sendMessage(
+                FROM, TO, 'Re: Dispatch', 'Ma réponse', 'HIGH',
+                ['reply'], 'msg-original-x', undefined,
+                { messageId: KEY }
+            );
+
+            // Repli : id auto, l'entrée étrangère jamais écrasée.
+            expect(msg.id).not.toBe(KEY);
+            const after = JSON.parse(await fs.readFile(join(inboxPath, `${KEY}.json`), 'utf-8'));
+            expect(after).toEqual(foreign);
+            expect(existsSync(join(inboxPath, `${msg.id}.json`))).toBe(true);
+        });
+    });
 });
