@@ -639,6 +639,11 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         workspace_name: workspace ? workspaceBasename(workspace) : undefined,
                         task_title: taskTitle,
                         host_os: getHostIdentifier(),
+                        // #3763 (review fix): tool chunks carry their PARENT
+                        // message's emitted index — the post-loop unit patch
+                        // reads `message_index` directly instead of inventing
+                        // one from a cursor (which drifted at boundaries).
+                        message_index: messageIndex,
                         // #2825 (G2/G3): pagination metadata
                         child_unit_index: toolChildUnitIdx,
                         child_unit_total: childUnitCount,
@@ -722,6 +727,10 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 // #636: Enriched metadata
                 model: taskModel,
                 has_error: uiHasError || undefined,
+                // #3763 (review fix): ui chunks carry their own emitted index
+                // so the post-loop unit patch reads `message_index` directly
+                // (the old cursor fallback invented indices here).
+                message_index: uiMessageIndex,
                 // #2825 (G2/G3): pagination metadata — provisional, patched post-loop
                 child_unit_index: uiChildUnitIdx,
                 child_unit_total: childUnitCount,
@@ -740,25 +749,13 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         MESSAGES_PER_CHILD_UNIT
     );
     const finalChildUnitTotal = Math.max(1, finalCutPoints.length - 1);
-    if (emittedBoundaryPositions.length > 0) {
-        console.log(`📍 [#3763] Task ${taskId}: ${emittedBoundaryPositions.length} boundary(ies) at emitted-index ${emittedBoundaryPositions.join(',')} → ${finalChildUnitTotal} chapter-aligned child unit(s).`);
-    }
-    // The emitted index of each chunk is recoverable from `message_index`
-    // (the api loop and ui loop both stamped it on their text chunks). Tool
-    // chunks share the parent message's emitted index — for the api path the
-    // text chunk and tool chunk in the same iteration share `messageIndex`;
-    // for the ui path there are no tool chunks. We tag each chunk with its
-    // emitted index by walking the messageIndex sequence_order, and assign
-    // the child unit via `childUnitIndexFor`.
-    let emittedCursor = 0;
+    // #3763 (review fix): every emission site now stamps `message_index`
+    // (api text = its own index, api tool = parent message index, ui = its
+    // own `uiMessageIndex`), so the emitted index is read directly. The
+    // cursor heuristic that invented indices for unstamped tool/ui chunks
+    // corrupted unit assignment exactly at boundaries — it is gone.
     for (const chunk of chunks) {
-        // Tool chunks share their parent text chunk's `message_index` (we
-        // stamped it on the text chunk above; for tool-only emissions it's
-        // not stamped, fall back to the running cursor — never produces a
-        // wrong index because tool chunks emit immediately after the text
-        // chunk in the api loop, so the cursor stays in lockstep).
-        const emittedIdx = chunk.message_index ?? (emittedCursor + 1);
-        emittedCursor = Math.max(emittedCursor, emittedIdx);
+        const emittedIdx = chunk.message_index!;
         const newUnitIdx = childUnitIndexFor(emittedIdx, finalCutPoints);
         const newIsOverflow = newUnitIdx > 1;
         chunk.child_unit_index = newUnitIdx;
@@ -1051,6 +1048,12 @@ export async function extractChunksFromClaudeSession(
                                 task_title: metadata?.title,
                                 host_os: getHostIdentifier(),
                                 source: 'claude-code',
+                                // #3763 (review fix): tool chunks carry their
+                                // PARENT message's emitted index — the per-file
+                                // unit patch below reads `message_index`
+                                // directly (the old `?? fileStartLocal`
+                                // fallback pinned every tool chunk to unit 1).
+                                message_index: messageIndex,
                                 // #2825 (G2/G3): pagination metadata
                                 child_unit_index: claudeChildUnitIdx,
                                 child_unit_total: claudeChildUnitTotal,
@@ -1098,12 +1101,14 @@ export async function extractChunksFromClaudeSession(
                         MAX_MESSAGES_PER_TASK
                     );
                     const localChildUnitTotal = Math.max(1, localCutPoints.length - 1);
-                    console.log(`📍 [#3763] Claude session ${taskId}: ${localBoundaries.length} boundary(ies) in file ${path.basename(jsonlFile)} → ${localChildUnitTotal} chapter-aligned child unit(s).`);
                     for (const chunk of chunks) {
                         if (chunk.source !== 'claude-code') continue;
-                        // Translate the chunk's global message_index to a
-                        // local (1-based) emitted index within this file.
-                        const localIdx = (chunk.message_index ?? fileStartLocal) - fileStartGlobal + 1;
+                        // #3763 (review fix): translate the chunk's global
+                        // message_index to a local (1-based) emitted index
+                        // within this file — read directly, every emission
+                        // site stamps it (the old `?? fileStartLocal` fallback
+                        // collapsed all tool chunks onto unit 1).
+                        const localIdx = chunk.message_index! - fileStartGlobal + 1;
                         if (localIdx < fileStartLocal || localIdx > fileEndLocal) continue;
                         const newUnitIdx = childUnitIndexFor(localIdx, localCutPoints);
                         const newIsOverflow = newUnitIdx > 1;

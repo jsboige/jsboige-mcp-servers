@@ -365,6 +365,124 @@ describe('ChunkExtractor — #3763 integration: extractChunksFromTask chapter-al
       expect(c.child_unit_total).toBe(2);
     }
   });
+
+  // --- #3763 review fixes: the discriminating tests the original 22 could
+  // not be (0 occurrences of tool_calls/tool_use in them). They pin the
+  // invariant written at the tool-chunk emission site: tools belong to the
+  // same child unit as their parent message, at boundaries included.
+
+  it('#3763 review: tool_calls adjacent to a boundary stay in their parent text unit (was: cursor drift)', async () => {
+    // Emitted layout: [1..MAX-1] plain, MAX = text + 2 tool_calls,
+    // MAX+1 = boundary marker, then tail. The cut lands at MAX+1 — the
+    // tool chunks MUST stay in unit 1 with their parent text chunk.
+    // Pre-fix: the cursor heuristic invented MAX+1/MAX+2 for the tools →
+    // they landed in unit 2, separated from their parent in unit 1.
+    const head = Array.from({ length: MAX_MESSAGES_PER_TASK - 1 }, (_, i) => ({
+      role: 'user', content: `head-${i}`, timestamp: 't',
+    }));
+    const parentMsg = {
+      role: 'assistant',
+      content: 'parent text with tools',
+      tool_calls: [
+        { function: { name: 'Read', arguments: '{"file_path":"a.ts"}' } },
+        { function: { name: 'Grep', arguments: '{"pattern":"x"}' } },
+      ],
+      timestamp: 't',
+    };
+    const boundary = {
+      role: 'user',
+      content: '[CONDENSATION ARCHIVE] chapter break',
+      timestamp: 't',
+    };
+    const tail = Array.from({ length: 3 }, (_, i) => ({
+      role: 'user', content: `tail-${i}`, timestamp: 't',
+    }));
+    setupTaskFiles({
+      metadata: JSON.stringify({}),
+      api: JSON.stringify([...head, parentMsg, boundary, ...tail]),
+    });
+    const chunks = await extractChunksFromTask('tool-boundary', '/task');
+
+    const toolChunks = chunks.filter(c => c.chunk_type === 'tool_interaction');
+    expect(toolChunks.length).toBe(2);
+    // Stamped with the PARENT message's emitted index (MAX), not invented.
+    for (const c of toolChunks) {
+      expect(c.message_index).toBe(MAX_MESSAGES_PER_TASK);
+      expect(c.child_unit_index).toBe(1);
+      expect(c.task_id).toBe('tool-boundary');
+    }
+    // The parent text chunk is in unit 1 too — same unit as its tools.
+    const parentText = chunks.find(c => c.content === 'parent text with tools');
+    expect(parentText).toBeDefined();
+    expect(parentText!.child_unit_index).toBe(1);
+    // Boundary + tail form unit 2; no ghost unit.
+    const units = new Set(chunks.map(c => c.child_unit_index));
+    expect([...units].sort((a, b) => a - b)).toEqual([1, 2]);
+    for (const c of chunks) {
+      expect(c.child_unit_total).toBe(2);
+    }
+    const unit2 = chunks.filter(c => c.child_unit_index === 2);
+    expect(unit2.length).toBe(1 + tail.length);
+    for (const c of unit2) {
+      expect(c.task_id).toBe('tool-boundary#unit-2');
+    }
+  });
+
+  it('#3763 review: ui boundary after api tool calls yields units {1,2} — no ghost unit 3 (was: cursor accumulation)', async () => {
+    // Emitted layout: [1..MAX-1] plain api, MAX = text + 2 tool_calls,
+    // then ui messages whose FIRST carries the boundary (emitted MAX+1).
+    // Pre-fix: the accumulated cursor (MAX+2 after two invented tool
+    // indices) pushed the ui chunks to MAX+3.. → a phantom unit 3.
+    const head = Array.from({ length: MAX_MESSAGES_PER_TASK - 1 }, (_, i) => ({
+      role: 'user', content: `api-${i}`, timestamp: 't',
+    }));
+    const parentMsg = {
+      role: 'assistant',
+      content: 'tools here',
+      tool_calls: [
+        { function: { name: 'Bash', arguments: '{"command":"ls"}' } },
+        { function: { name: 'Bash', arguments: '{"command":"pwd"}' } },
+      ],
+      timestamp: 't',
+    };
+    const uiMsgs = [
+      { author: 'user', text: '[CONDENSATION ARCHIVE] ui chapter break', timestamp: 't' },
+      ...Array.from({ length: 3 }, (_, i) => ({ author: 'user', text: `ui-${i}`, timestamp: 't' })),
+    ];
+    setupTaskFiles({
+      metadata: JSON.stringify({}),
+      api: JSON.stringify([...head, parentMsg]),
+      ui: JSON.stringify(uiMsgs),
+    });
+    const chunks = await extractChunksFromTask('ui-after-tools', '/task');
+
+    const units = new Set(chunks.map(c => c.child_unit_index));
+    expect([...units].sort((a, b) => a - b)).toEqual([1, 2]);
+    for (const c of chunks) {
+      expect(c.child_unit_total).toBe(2);
+    }
+    // Tool chunks share the parent's unit (1) — stamped, not cursor-invented.
+    const toolChunks = chunks.filter(c => c.chunk_type === 'tool_interaction');
+    expect(toolChunks.length).toBe(2);
+    for (const c of toolChunks) {
+      expect(c.message_index).toBe(MAX_MESSAGES_PER_TASK);
+      expect(c.child_unit_index).toBe(1);
+    }
+    // Ui chunks stamped with their own emitted indices (MAX+1..MAX+4),
+    // all in unit 2.
+    const uiChunks = chunks.filter(
+      c => c.content.startsWith('ui-') || c.content.startsWith('[CONDENSATION')
+    );
+    expect(uiChunks.map(c => c.message_index).sort((a, b) => a! - b!)).toEqual([
+      MAX_MESSAGES_PER_TASK + 1,
+      MAX_MESSAGES_PER_TASK + 2,
+      MAX_MESSAGES_PER_TASK + 3,
+      MAX_MESSAGES_PER_TASK + 4,
+    ]);
+    for (const c of uiChunks) {
+      expect(c.child_unit_index).toBe(2);
+    }
+  });
 });
 
 describe('ChunkExtractor — #3763 integration: extractChunksFromClaudeSession chapter-aligned paging', () => {
@@ -412,5 +530,50 @@ describe('ChunkExtractor — #3763 integration: extractChunksFromClaudeSession c
     expect(overflow).toBeDefined();
     expect(overflow!.child_unit_index).toBe(2);
     expect(overflow!.child_unit_total).toBe(2);
+  });
+
+  it('#3763 review: JSONL tool_use after a boundary lands in its parent unit (was: pinned to unit 1)', async () => {
+    // Emitted layout: [1..MAX] plain, MAX+1 = boundary, MAX+2 = assistant
+    // text + tool_use, MAX+3..MAX+4 = tail. The tool chunk belongs to
+    // unit 2 with its parent. Pre-fix: the `?? fileStartLocal` fallback
+    // collapsed EVERY tool chunk onto local index 1 → unit 1, whatever
+    // its real chapter.
+    mockStat.mockResolvedValue({ isDirectory: () => false } as any);
+    const lines: string[] = [];
+    for (let i = 0; i < MAX_MESSAGES_PER_TASK; i++) {
+      lines.push(JSON.stringify({ type: 'user', message: { content: `head-${i}` } }));
+    }
+    lines.push(JSON.stringify({
+      type: 'user',
+      message: { content: '[CONDENSATION ARCHIVE] break' },
+    }));
+    lines.push(JSON.stringify({
+      type: 'assistant',
+      message: { content: [
+        { type: 'text', text: 'parent with tool_use' },
+        { type: 'tool_use', name: 'Read', input: { file_path: 'x.ts' } },
+      ] },
+    }));
+    for (let i = 0; i < 2; i++) {
+      lines.push(JSON.stringify({ type: 'user', message: { content: `tail-${i}` } }));
+    }
+    pushStream(lines.join('\n'));
+
+    const chunks = await extractChunksFromClaudeSession('claude-tool-boundary', '/proj/session.jsonl');
+    const toolChunks = chunks.filter(c => c.chunk_type === 'tool_interaction');
+    expect(toolChunks.length).toBe(1);
+    // Stamped with the parent message's emitted index (MAX+2) → unit 2.
+    expect(toolChunks[0].message_index).toBe(MAX_MESSAGES_PER_TASK + 2);
+    expect(toolChunks[0].child_unit_index).toBe(2);
+    expect(toolChunks[0].task_id).toBe('claude-tool-boundary#unit-2');
+    // Parent text chunk in unit 2 as well — same unit as its tool.
+    const parentText = chunks.find(c => c.content === 'parent with tool_use');
+    expect(parentText).toBeDefined();
+    expect(parentText!.child_unit_index).toBe(2);
+    const units = new Set(chunks.map(c => c.child_unit_index));
+    expect([...units].sort((a, b) => a - b)).toEqual([1, 2]);
+    for (const c of chunks) {
+      expect(c.child_unit_total).toBe(2);
+    }
   });
 });
