@@ -9,7 +9,8 @@
  *   (1) the initialize result the client receives advertises tools.listChanged,
  *       without dropping what the server itself declared;
  *   (2) after the marker moves, the client receives notifications/tools/list_changed;
- *   (3) a tools/list sent after that notification returns the NEW vintage's list.
+ *   (3) a tools/list sent after that notification returns the NEW vintage's list,
+ *       although the startup vintage's persisted cache answered the first one.
  *
  * Hermetic: the wrapper is copied into a temp dir with its own marker, so the
  * machine's real build-current is never touched (unlike scripts/hot-swap-probe.mjs,
@@ -90,6 +91,13 @@ beforeEach(() => {
         fs.mkdirSync(path.join(tmpRoot, vintage));
         fs.writeFileSync(path.join(tmpRoot, vintage, 'index.js'), fakeServer(tool), 'utf-8');
     }
+    // The startup vintage has served a session before, as in production: its
+    // persisted tools/list cache exists, so the wrapper answers tools/list from it.
+    const indexA = path.join(tmpRoot, VINTAGE_A, 'index.js');
+    fs.writeFileSync(path.join(tmpRoot, VINTAGE_A, '.tools-cache.json'), JSON.stringify({
+        buildMtime: fs.statSync(indexA).mtime.toISOString(),
+        toolsList: { jsonrpc: '2.0', id: 0, result: { tools: [{ name: 'tool_from_a', inputSchema: { type: 'object' } }] } },
+    }), 'utf-8');
     publishMarker(VINTAGE_A);
     received = [];
     stderrTail = '';
@@ -150,6 +158,9 @@ describe('mcp-wrapper hot-swap schema delivery (#3713 v5.1)', () => {
 
         // One initialize result only: the swapped child's replayed answer was absorbed.
         expect(received.filter((m) => m.id === 0)).toHaveLength(1);
+        // Positive control: the pre-swap list came from the persisted cache, so the
+        // post-swap assertion above covers the path production takes.
+        expect(stderrTail).toContain('Answered tools/list from persisted cache');
     }, 45_000);
 
     it('sends no list_changed while no swap happens', async () => {

@@ -130,7 +130,7 @@ function savePersistedCache(toolsListResponse) {
     }
 }
 
-const persistedCache = loadPersistedCache();
+let persistedCache = loadPersistedCache();
 
 // --- State ---
 let answeredFromCache = false;
@@ -499,10 +499,14 @@ function armHandshakeWatchdog() {
 // #3713 v5.1: a new child may serve a different tool list. Forget the old one
 // BEFORE anything is drained into the new child, or its tools/list answer would
 // be replaced by the stale copy (processToolsList dedup) or suppressed outright
-// (answeredFromCache left true by a child killed before answering).
+// (answeredFromCache left true by a child killed before answering). The copy
+// loaded from disk at startup goes too: forwardClientLine answers EVERY
+// tools/list from it (answeredFromCache flips back once the child answers), so
+// keeping it would serve the startup vintage's list for the wrapper's lifetime.
 function resetToolsListCache() {
     cachedToolsListResponse = null;
     answeredFromCache = false;
+    persistedCache = null;
 }
 
 // Only a client that completed initialize through us was told listChanged, and
