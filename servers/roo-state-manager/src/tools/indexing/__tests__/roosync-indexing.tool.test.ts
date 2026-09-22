@@ -971,6 +971,146 @@ describe('roosync_indexing trend_report action', () => {
 		// Pre-fix regression guard: must not fabricate a cross-machine comparison.
 		expect(text).not.toMatch(/→.*\.json/);
 	});
+
+	// ============================================================
+	// #2336 D3/D5 — fleet:true aggregate mode. Per-machine table PLUS
+	// a merged fleet trend over the like-for-like set (machines with
+	// ≥2 snapshots); single-snapshot machines are baseline-only and
+	// must NOT inflate the fleet delta.
+	// ============================================================
+
+	function writeRichSnapshot(dir: string, filename: string, total: number, tools: Array<Record<string, unknown>>) {
+		const snapshot = {
+			action: 'tool_usage_stats',
+			total_tool_calls: total,
+			unique_tools: tools.length,
+			files_scanned: 10,
+			date_range: { start: '2026-01-01', end: '2026-01-28' },
+			tools,
+		};
+		fs.writeFileSync(path.join(dir, filename), JSON.stringify(snapshot));
+	}
+
+	const toolEntry = (name: string, calls: number, errors: number, retries: number, downstream: number) => ({
+		tool_name: name, calls, errors, error_rate: calls > 0 ? +((errors / calls) * 100).toFixed(1) : 0,
+		retries, retry_rate: calls > 0 ? +((retries / calls) * 100).toFixed(1) : 0,
+		downstream_actions: downstream, downstream_action_rate: calls > 0 ? +((downstream / calls) * 100).toFixed(1) : 0,
+	});
+
+	test('#2336 fleet:true merges per-machine deltas + per-tool fleet trend, excludes baseline-only machines from delta', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Machine A: 2 snapshots. Prev Bash 500 → latest Bash 700.
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-01.json', 500, [toolEntry('Bash', 500, 50, 100, 300)]);
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-08.json', 700, [toolEntry('Bash', 700, 35, 210, 455)]);
+		// Machine B: 2 snapshots. Prev Bash 200 → latest Bash 300; Read appears latest only.
+		writeRichSnapshot(snapshotsDir, 'machine-b-2026-07-01.json', 200, [toolEntry('Bash', 200, 10, 40, 120)]);
+		writeRichSnapshot(snapshotsDir, 'machine-b-2026-07-08.json', 350, [toolEntry('Bash', 300, 6, 90, 195), toolEntry('Read', 50, 1, 5, 30)]);
+		// Machine C: 1 snapshot (baseline only) — its 999 calls must NOT enter the fleet delta.
+		writeRichSnapshot(snapshotsDir, 'machine-c-2026-07-08.json', 999, [toolEntry('Bash', 999, 0, 0, 0)]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report', fleet: true },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+
+		// Fleet header + mode.
+		expect(text).toContain('Tool Usage Trend Report — FLEET');
+		expect(text).toContain('**Snapshots:** 5 total, 3 machines');
+
+		// Per-machine table: A and B have deltas, C is baseline-only.
+		expect(text).toContain('| machine-a | machine-a-2026-07-01.json → machine-a-2026-07-08.json | 500 | 700 | ↑+200 |');
+		expect(text).toContain('| machine-b | machine-b-2026-07-01.json → machine-b-2026-07-08.json | 200 | 350 | ↑+150 |');
+		expect(text).toContain('| machine-c | machine-c-2026-07-08.json (baseline only) | — | 999 | baseline |');
+
+		// Fleet delta over the comparable set only (A + B), C explicitly excluded.
+		expect(text).toContain('Delta computed over machines with ≥2 snapshots only (like-for-like): machine-a, machine-b.');
+		expect(text).toContain('Baseline-only (excluded from delta): machine-c.');
+
+		// Fleet totals: prev 700 (500+200) → latest 1050 (700+350), change ↑+350.
+		// 999 from machine-c must not appear in the fleet aggregate rows.
+		expect(text).toContain('| Total calls | 700 | 1050 | ↑+350 |');
+
+		// Per-tool fleet trend: Bash merged 1000 latest (700+300) vs 700 prev → ↑.
+		// Call-weighted error rate: (35+6)/1000 = 4.1% vs (50+10)/700 = 8.6% → ↓.
+		// Retry rate: (210+90)/1000 = 30% vs (100+40)/700 = 20% → ↑.
+		const bashRow = text.split('\n').find(l => l.startsWith('| Bash |'));
+		expect(bashRow).toBeDefined();
+		expect(bashRow).toBe('| Bash | 1000 | ↑ | 4.1% | ↓ | 30% | ↑ | 65% |');
+		// Read exists in latest fleet only → new-tool marker, no error-rate noise guard hit (50 < 30? no, 50 ≥ 30 so rate published).
+		const readRow = text.split('\n').find(l => l.startsWith('| Read |'));
+		expect(readRow).toBe('| Read | 50 | 🆕 | 2% | - | 10% | - | 60% |');
+	});
+
+	test('#2336 fleet:true with no comparable machine → fleet baseline message, no crash', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-08.json', 100, [toolEntry('Bash', 100, 5, 10, 60)]);
+		writeRichSnapshot(snapshotsDir, 'machine-b-2026-07-08.json', 200, [toolEntry('Read', 200, 2, 20, 130)]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report', fleet: true },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+		expect(text).toContain('No machine has ≥2 snapshots yet — fleet baseline only.');
+		// Both machines still listed as baseline rows.
+		expect(text).toContain('| machine-a | machine-a-2026-07-08.json (baseline only) | — | 100 | baseline |');
+		expect(text).toContain('| machine-b | machine-b-2026-07-08.json (baseline only) | — | 200 | baseline |');
+		// No per-tool fleet trend section (nothing comparable).
+		expect(text).not.toContain('Per-Tool Fleet Trend');
+	});
+
+	test('#2336 fleet:true tolerates schema-drift snapshot without .tools (#2623)', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		// Machine A prev = old shape (no .tools), latest = rich.
+		fs.writeFileSync(path.join(snapshotsDir, 'machine-a-2026-07-01.json'), JSON.stringify({
+			action: 'tool_usage_stats', total_tool_calls: 400, unique_tools: 5, files_scanned: 10,
+			date_range: { start: '2026-01-01', end: '2026-01-28' },
+		}));
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-08.json', 600, [toolEntry('Bash', 600, 30, 180, 390)]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report', fleet: true },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+		// Totals still merge (summary fields present on both snapshots).
+		expect(text).toContain('| Total calls | 400 | 600 | ↑+200 |');
+		// Per-tool table renders latest-only entries (prev has no tools → all 🆕).
+		expect(text).toContain('| Bash | 600 | 🆕 |');
+	});
+
+	test('#2336 fleet absent (default) keeps single-machine behaviour', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-01.json', 500, [toolEntry('Bash', 500, 50, 100, 300)]);
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-08.json', 700, [toolEntry('Bash', 700, 35, 210, 455)]);
+		writeRichSnapshot(snapshotsDir, 'machine-b-2026-07-08.json', 350, [toolEntry('Read', 350, 7, 70, 200)]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+		// Single-machine report: no FLEET header.
+		expect(text).not.toContain('— FLEET');
+		expect(text).toContain('Machine selected:** machine machine-a');
+	});
 });
 
 // ============================================================
