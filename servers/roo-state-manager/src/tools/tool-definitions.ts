@@ -189,7 +189,7 @@ export const roosyncIndexingDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'repair_workspace', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, repair_workspace=backfill workspace_name on existing points, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, cleanup_failed=operator dead-letter by error class, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'repair_workspace', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, repair_workspace=backfill workspace_name on existing points, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, cleanup_failed=operator dead-letter by error class, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows (fleet=true: fleet-wide aggregate across machines)' },
             task_id: { type: 'string', description: 'Required for action=index' },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             force: { type: 'boolean', description: 'For action=reset. Wipe even a populated collection above the safety floor, or when the point count cannot be determined (transient Qdrant error). Default: false.', default: false },
@@ -215,7 +215,8 @@ export const roosyncIndexingDefinition = {
             error_class: { type: 'string', enum: ['all', 'claude_session_not_found', 'file_not_found', 'access_denied', 'permission_denied', 'invalid_format', 'corrupted_data', 'quota_exceeded', 'auth_failed', 'network_timeout', 'service_503', 'rate_limit', 'connection_reset', 'dns_failure', 'embedding_timeout', 'unknown'], description: 'For cleanup_failed. Filter by error class (default: all).' },
             max_cleanup_tasks: { type: 'number', description: 'For cleanup_failed. Cap on skeletons to reset per call (default: 100).', default: 100 },
             start_date: { type: 'string', description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.' },
-            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now. Inclusive: the whole end day is counted (day-key comparison, #753).' }
+            end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now. Inclusive: the whole end day is counted (day-key comparison, #753).' },
+            fleet: { type: 'boolean', description: 'For action=trend_report. Fleet-wide aggregate: per-machine cycle-over-cycle table PLUS a merged fleet view (only machines with ≥2 snapshots contribute to deltas). Default: false (single-machine comparison).', default: false }
         },
         required: ['action']
     }

@@ -516,5 +516,15 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(props).toHaveProperty('error_class');
             expect(props).toHaveProperty('max_cleanup_tasks');
         });
+
+        // 6th occurrence of the class: trend_report fleet:true shipped on the
+        // tool-module schema only (roosync-indexing.tool.ts), dead on the wire —
+        // the served definition is the only contract (#1190 review, #2336 D3/D5).
+        it('roosync_indexing must expose the trend_report fleet param (case implemented, must be on the wire)', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('fleet');
+            const fleet = props.fleet as { type?: string };
+            expect(fleet?.type).toBe('boolean');
+        });
     });
 });

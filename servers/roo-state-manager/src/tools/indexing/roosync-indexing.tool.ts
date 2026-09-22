@@ -544,6 +544,11 @@ export interface RooSyncIndexingArgs {
 
     /** #2336 D1: End date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: now */
     end_date?: string;
+
+    /** #2336 D3/D5: For trend_report — aggregate all machines' snapshots into a
+     * fleet-wide view (per-machine cycle-over-cycle + merged fleet trend) instead
+     * of comparing the two most recent snapshots of a single machine. */
+    fleet?: boolean;
 }
 
 /**
@@ -683,6 +688,11 @@ export const roosyncIndexingTool: Tool = {
             end_date: {
                 type: 'string',
                 description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now.'
+            },
+            fleet: {
+                type: 'boolean',
+                description: 'For trend_report. Fleet-wide aggregate: per-machine cycle-over-cycle table PLUS a merged fleet view (only machines with ≥2 snapshots contribute to deltas). Default: false (single-machine comparison).',
+                default: false
             }
         },
         required: ['action']
@@ -1906,6 +1916,150 @@ export async function handleRooSyncIndexing(
                 }
                 for (const list of byMachine.values()) {
                     list.sort((a, b) => a.date.localeCompare(b.date));
+                }
+
+                // #2336 D3/D5: fleet-wide aggregate view — per-machine cycle-over-
+                // cycle table PLUS a merged fleet trend, so ONE artifact answers
+                // "did tool usage and utility go up fleet-wide since last cycle".
+                // Only machines with ≥2 snapshots contribute to the fleet delta
+                // (like-for-like machine set); single-snapshot machines are listed
+                // as baseline-only instead of silently inflating the fleet trend.
+                if (args.fleet) {
+                    type MachineSnapshot = { machineId: string; latestFile: string; previousFile?: string; latest: any; previous?: any };
+                    const machineSnapshots: MachineSnapshot[] = [];
+                    for (const [machineId, list] of Array.from(byMachine.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+                        const latestFile = list[list.length - 1].filename;
+                        const previousFile = list.length >= 2 ? list[list.length - 2].filename : undefined;
+                        const latest = JSON.parse(await fs.readFile(path.join(snapshotsDir, latestFile), 'utf-8'));
+                        const previous = previousFile
+                            ? JSON.parse(await fs.readFile(path.join(snapshotsDir, previousFile), 'utf-8'))
+                            : undefined;
+                        machineSnapshots.push({ machineId, latestFile, previousFile, latest, previous });
+                    }
+
+                    const lines: string[] = [];
+                    lines.push(`# Tool Usage Trend Report — FLEET`);
+                    lines.push(``);
+                    lines.push(`**Generated:** ${new Date().toISOString().slice(0, 10)}`);
+                    lines.push(`**Snapshots:** ${files.length} total, ${byMachine.size} machines`);
+                    lines.push(`**Mode:** fleet aggregate — each machine compares its two most recent snapshots (trailing 4-week window each)`);
+                    lines.push(``);
+
+                    // --- Per-machine cycle-over-cycle ---
+                    lines.push(`## Per-Machine Cycle-over-Cycle`);
+                    lines.push(``);
+                    lines.push(`| Machine | Compared snapshots | Prev calls | Latest calls | Change |`);
+                    lines.push(`|---------|--------------------|-----------:|-------------:|--------|`);
+                    for (const ms of machineSnapshots) {
+                        const latestCalls: number | 'n/a' =
+                            typeof ms.latest?.total_tool_calls === 'number' ? ms.latest.total_tool_calls : 'n/a';
+                        if (ms.previous && typeof ms.previous.total_tool_calls === 'number' && typeof latestCalls === 'number') {
+                            const diff = latestCalls - ms.previous.total_tool_calls;
+                            const arrow = diff > 0 ? `↑+${diff}` : diff < 0 ? `↓${diff}` : `→`;
+                            lines.push(`| ${ms.machineId} | ${ms.previousFile} → ${ms.latestFile} | ${ms.previous.total_tool_calls} | ${latestCalls} | ${arrow} |`);
+                        } else {
+                            lines.push(`| ${ms.machineId} | ${ms.latestFile} (baseline only) | — | ${latestCalls} | baseline |`);
+                        }
+                    }
+                    lines.push(``);
+
+                    // --- Fleet aggregate over the comparable set ---
+                    // Review #1190 (minor 1): same predicate as the per-machine
+                    // delta row — a `previous` without a numeric total renders
+                    // "baseline only" in the table and must stay out of the sums
+                    // (prevTotal += 0 would swing the fleet delta by that volume).
+                    const isComparable = (ms: MachineSnapshot) =>
+                        typeof ms.previous?.total_tool_calls === 'number' && typeof ms.latest?.total_tool_calls === 'number';
+                    const comparable = machineSnapshots.filter(isComparable);
+                    const baselineOnlyMachines = machineSnapshots.filter(ms => !isComparable(ms));
+                    lines.push(`## Fleet Aggregate (${comparable.length} comparable machine${comparable.length === 1 ? '' : 's'})`);
+                    lines.push(``);
+                    if (comparable.length === 0) {
+                        lines.push(`No machine has ≥2 snapshots yet — fleet baseline only.`);
+                        lines.push(`Run save_snapshot weekly on each machine to build the trend.`);
+                    } else {
+                        lines.push(`Delta computed over machines with ≥2 snapshots only (like-for-like): ${comparable.map(ms => ms.machineId).join(', ')}.`);
+                        if (baselineOnlyMachines.length > 0) {
+                            lines.push(`Baseline-only (excluded from delta): ${baselineOnlyMachines.map(ms => ms.machineId).join(', ')}.`);
+                        }
+                        lines.push(``);
+                        const arrow = (n: number) => n > 0 ? `↑+${n}` : n < 0 ? `↓${n}` : `→`;
+                        const prevTotal = comparable.reduce((s, ms) => s + (ms.previous?.total_tool_calls ?? 0), 0);
+                        const latestTotal = comparable.reduce((s, ms) => s + (ms.latest?.total_tool_calls ?? 0), 0);
+                        const unionTools = (side: 'previous' | 'latest') => new Set(comparable.flatMap(ms =>
+                            Array.isArray(ms[side]?.tools) ? ms[side].tools.map((t: any) => t.tool_name) : []
+                        )).size;
+                        lines.push(`| Metric | Previous (fleet) | Latest (fleet) | Change |`);
+                        lines.push(`|--------|----------------:|---------------:|--------|`);
+                        lines.push(`| Total calls | ${prevTotal} | ${latestTotal} | ${arrow(latestTotal - prevTotal)} |`);
+                        lines.push(`| Unique tools (union) | ${unionTools('previous')} | ${unionTools('latest')} | ${arrow(unionTools('latest') - unionTools('previous'))} |`);
+                        lines.push(``);
+
+                        // --- Per-tool fleet trend (top 20 by latest fleet calls) ---
+                        // Merge per-machine tool entries: counts summed, rates call-weighted
+                        // from the sums. #3381: fleet error rate respects
+                        // MIN_CALLS_FOR_ERROR_RATE on the summed calls. #2623: snapshots
+                        // without a `.tools` array (older schema) are skipped, not fatal.
+                        const mergeTools = (side: 'previous' | 'latest') => {
+                            const acc = new Map<string, { calls: number; errors: number; retries: number; downstream: number }>();
+                            for (const ms of comparable) {
+                                const tools = ms[side]?.tools;
+                                if (!Array.isArray(tools)) continue;
+                                for (const t of tools) {
+                                    if (!t || typeof t.tool_name !== 'string') continue;
+                                    const e = acc.get(t.tool_name) ?? { calls: 0, errors: 0, retries: 0, downstream: 0 };
+                                    e.calls += typeof t.calls === 'number' ? t.calls : 0;
+                                    e.errors += typeof t.errors === 'number' ? t.errors : 0;
+                                    e.retries += typeof t.retries === 'number' ? t.retries : 0;
+                                    e.downstream += typeof t.downstream_actions === 'number' ? t.downstream_actions : 0;
+                                    acc.set(t.tool_name, e);
+                                }
+                            }
+                            return acc;
+                        };
+                        const fleetPrev = mergeTools('previous');
+                        const fleetLatest = mergeTools('latest');
+                        const rate = (num: number, den: number) => den > 0 ? +((num / den) * 100).toFixed(1) : 0;
+                        const rows = Array.from(fleetLatest.entries())
+                            .sort((a, b) => b[1].calls - a[1].calls)
+                            .slice(0, 20)
+                            .map(([name, l]) => {
+                                const p = fleetPrev.get(name);
+                                const callsArrow = p ? (l.calls > p.calls ? '↑' : l.calls < p.calls ? '↓' : '→') : '🆕';
+                                const errRate = l.calls >= MIN_CALLS_FOR_ERROR_RATE ? rate(l.errors, l.calls) : null;
+                                const prevErrRate = p && p.calls >= MIN_CALLS_FOR_ERROR_RATE ? rate(p.errors, p.calls) : null;
+                                const errArrow = p && errRate != null && prevErrRate != null
+                                    ? (errRate > prevErrRate ? '↑' : errRate < prevErrRate ? '↓' : '→')
+                                    : '-';
+                                const retryRate = rate(l.retries, l.calls);
+                                const prevRetryRate = p ? rate(p.retries, p.calls) : null;
+                                const retryArrow = p && prevRetryRate != null
+                                    ? (retryRate > prevRetryRate ? '↑' : retryRate < prevRetryRate ? '↓' : '→')
+                                    : '-';
+                                return `| ${name} | ${l.calls} | ${callsArrow} | ${errRate ?? 'n/a'}${errRate != null ? '%' : ''} | ${errArrow} | ${retryRate}% | ${retryArrow} | ${rate(l.downstream, l.calls)}% |`;
+                            });
+                        lines.push(`## Per-Tool Fleet Trend (Top 20 by latest fleet calls)`);
+                        lines.push(``);
+                        lines.push(`| Tool | Calls | Trend | Err% | Trend | Retry% | Trend | DwnAct% |`);
+                        lines.push(`|------|------:|-------|-----:|-------|-------:|-------|--------:|`);
+                        lines.push(...rows);
+                    }
+                    lines.push(``);
+
+                    // All snapshots
+                    lines.push(`## Available Snapshots (${files.length})`);
+                    lines.push(``);
+                    for (const f of files) {
+                        lines.push(`- ${f}`);
+                    }
+
+                    return {
+                        isError: false,
+                        content: [{
+                            type: 'text',
+                            text: lines.join('\n'),
+                        }],
+                    };
                 }
 
                 // Pick the machine: newest `latest-snapshot date` wins; ties broken
