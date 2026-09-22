@@ -64,6 +64,40 @@ describe('scrubFabricatedGitHubStates (#3771)', () => {
     expect(scrubbed).toContain('Issue #17074 : ouverte, en cours'); // not terminal, kept
   });
 
+  // ===== Bold (`**`) coverage — fault bench from the po-2026 review (22/09) =====
+  // Both regexes ran detection on the raw line and could not cross a `**`; bold is the
+  // dominant idiom of real status sections. Detection now runs on a bold-free copy,
+  // emission keeps the original line (visible inside the audit marker).
+
+  it('strips bold bullet "**Correctif Fuite Docker** : PR #193/#194 mergées" (verbatim from the 21/09 global status)', () => {
+    const llmOutput = `- **Correctif Fuite Docker** : PR #193/#194 mergées. Exposition nulle confirmée.`;
+
+    const sources = [
+      `Le correctif fuite Docker est en cours de review, rien n'est acté pour l'instant.`,
+    ];
+
+    const { scrubbed, stripped, strippedRefs } = scrubFabricatedGitHubStates(llmOutput, sources);
+
+    expect(stripped).toBe(1);
+    expect(strippedRefs).toContain('193');
+    expect(scrubbed).toContain('[unsourced state stripped #3771]');
+    // The ORIGINAL bold line is preserved inside the marker (audit trail).
+    expect(scrubbed).toContain('**Correctif Fuite Docker**');
+  });
+
+  it('strips bold form "- **PR #17167** : MERGÉ / CLEAN" (test #4 shape, WITH bold)', () => {
+    const llmOutput = `- **PR #17167** : MERGÉ / CLEAN`;
+
+    const sources: string[] = [];
+
+    const { scrubbed, stripped, strippedRefs } = scrubFabricatedGitHubStates(llmOutput, sources);
+
+    expect(stripped).toBe(1);
+    expect(strippedRefs).toContain('17167');
+    expect(scrubbed).toContain('[unsourced state stripped #3771]');
+    expect(scrubbed).toContain('**PR #17167**');
+  });
+
   it('KEEPS "PR #1234 : MERGÉ" when the source mentions the merge', () => {
     const llmOutput = `### Livrables récents
 - PR #1234 : MERGÉ (success)`;

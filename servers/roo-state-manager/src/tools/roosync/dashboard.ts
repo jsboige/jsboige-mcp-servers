@@ -2663,7 +2663,7 @@ export function scrubFabricatedGitHubStates(
   // assertion, NOT the comment context. Otherwise a line like "- **#17167** : OPEN /
   // HEAD d2e2035c (n'est pas MERGÉ, état erroné)" would be wrongly stripped because the
   // word "MERGÉ" appears in the parenthetical self-correction note.
-  const INLINE_STATE_RE = /(?:^|\s)(?:#\d{3,6}|\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d{3,6})\s*[:\-—]\s*[A-ZÉÈÀÔÜÎ][^(\n]{0,80}/g;
+  const INLINE_STATE_RE = /(?:^|\s)(?:#\d{3,6}|\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d{3,6})\s*[:\-—]\s*[A-Za-zÀ-ÿ][^(\n]{0,80}/g;
 
   const strippedRefs: string[] = [];
   let strippedCount = 0;
@@ -2674,8 +2674,22 @@ export function scrubFabricatedGitHubStates(
     const line = rawLine;
     const lower = line.toLowerCase();
 
+    // #3771 review (po-2026, 22/09): markdown bold is the dominant idiom of our real
+    // status sections ("Livrables récents", "Décisions actées") and neither regex above
+    // can cross a `**` — the raw-line detection missed the majority of the live class.
+    // Detection runs on a bold-free copy (detLine); emission keeps the ORIGINAL line.
+    // detToOrig maps each detLine index back to its original index so the inline stage
+    // can replace the exact original span.
+    let detLine = '';
+    const detToOrig: number[] = [];
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '*' && line[i + 1] === '*') { i++; continue; }
+      detToOrig.push(i);
+      detLine += line[i];
+    }
+
     // Step 1: bullet-line assertions (PR #N / Issue #N …)
-    const bulletMatch = line.match(STATE_REF_RE);
+    const bulletMatch = detLine.match(STATE_REF_RE);
     if (bulletMatch) {
       // Group 1 = the PR/issue number digits (3-6), already validated by the regex.
       const refNum = bulletMatch[1];
@@ -2701,11 +2715,11 @@ export function scrubFabricatedGitHubStates(
     }
 
     // Step 2: inline "#NNNN : STATE" pattern (no bullet prefix) — strip if unsourced.
-    // We only act if a terminal keyword is present.
-    const inlineMatches = [...line.matchAll(INLINE_STATE_RE)];
+    // We only act if a terminal keyword is present. Detection runs on detLine; the
+    // strip is applied to the ORIGINAL line at the mapped span.
+    const inlineMatches = [...detLine.matchAll(INLINE_STATE_RE)];
     if (inlineMatches.length > 0) {
-      let modifiedLine = line;
-      let modified = false;
+      const spans: Array<[number, number]> = []; // [origStart, origEndExclusive)
       for (const m of inlineMatches) {
         const fullMatch = m[0];
         const lowerMatch = fullMatch.toLowerCase();
@@ -2721,12 +2735,19 @@ export function scrubFabricatedGitHubStates(
         if (!sourced) {
           strippedCount++;
           strippedRefs.push(refNum);
-          // Replace just the offending sub-phrase.
-          modifiedLine = modifiedLine.replace(fullMatch, '[unsourced #3771]');
-          modified = true;
+          // Map the detLine match back to its original span (right-to-left below).
+          const start = detToOrig[m.index];
+          const end = detToOrig[m.index + fullMatch.length - 1] + 1;
+          spans.push([start, end]);
         }
       }
-      if (modified) {
+      if (spans.length > 0) {
+        // Replace right-to-left so earlier spans' indices stay valid.
+        spans.sort((a, b) => b[0] - a[0]);
+        let modifiedLine = line;
+        for (const [start, end] of spans) {
+          modifiedLine = modifiedLine.slice(0, start) + '[unsourced #3771]' + modifiedLine.slice(end);
+        }
         outLines.push(modifiedLine);
         continue;
       }
