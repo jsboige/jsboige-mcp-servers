@@ -370,6 +370,7 @@ async function cloudCondenseOnce(
   systemPrompt: string,
   userPrompt: string,
   opts: { maxTokens: number; temperature: number },
+  fbModel: string,
 ): Promise<CloudCondenseOnceResult> {
   const fallbackClient = getFallbackChatOpenAIClient();
   if (!fallbackClient) {
@@ -385,7 +386,6 @@ async function cloudCondenseOnce(
     }
     return null;
   }
-  const fbModel = getFallbackLLMModelId();
   const fbStart = Date.now();
   try {
     // gpt-5 / o-series reasoning models reject `max_tokens` (require
@@ -441,32 +441,54 @@ async function cloudCondenseOnce(
 }
 
 /**
+ * #2719 (22/09): the cloud tier's model CHAIN. `FALLBACK_LLM_MODEL_ID` accepts a
+ * comma-separated list (e.g. `glm-4.7,claude-sonnet-4-6` against a claudish
+ * ingress): each model is tried in order and the next one takes over on ANY
+ * failure of the previous — including an empty 200 body, a timeout or a quota
+ * error, which a single-model tier could only turn into truncation. A single
+ * value behaves exactly as before.
+ */
+function getFallbackModelChain(): string[] {
+  const models = getFallbackLLMModelId().split(',').map(m => m.trim()).filter(Boolean);
+  return models.length > 0 ? models : [getFallbackLLMModelId()];
+}
+
+/**
  * #2998: Cloud condensation with retry on transient errors (429/5xx).
  * Wraps cloudCondenseOnce with up to FB_MAX_ATTEMPTS attempts and exponential
- * backoff. Returns the successful result, the last error (if all retries
- * exhausted), or null when the fallback is unconfigured.
+ * backoff, per model of the chain (#2719). Returns the first successful result,
+ * the errors of every model tried (if all failed), or null when the fallback is
+ * unconfigured.
  */
 async function cloudCondenseWithRetry(
   systemPrompt: string,
   userPrompt: string,
   opts: { maxTokens: number; temperature: number },
 ): Promise<{ content: string; elapsedMs: number; model: string } | { error: string; attempts: number } | null> {
-  let lastError: string | undefined;
+  const modelErrors: string[] = [];
   let attempts = 0;
-  for (let attempt = 1; attempt <= FB_MAX_ATTEMPTS; attempt++) {
-    const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts);
-    if (result === null) return null; // unconfigured (empty content is a stamped non-retryable error since the #2719 discriminant fix)
-    if (result.ok) return result; // success
-    attempts = attempt;
-    lastError = result.error;
-    if (!result.retryable || attempt >= FB_MAX_ATTEMPTS) break;
-    const backoff = FB_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
-    logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${FB_MAX_ATTEMPTS})`, {
-      model: result.model, error: result.error,
-    });
-    await new Promise(resolve => setTimeout(resolve, backoff));
+  for (const fbModel of getFallbackModelChain()) {
+    let lastError: string | undefined;
+    for (let attempt = 1; attempt <= FB_MAX_ATTEMPTS; attempt++) {
+      const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts, fbModel);
+      if (result === null) return null; // unconfigured (empty content is a stamped non-retryable error since the #2719 discriminant fix)
+      if (result.ok) return result; // success
+      attempts++;
+      lastError = result.error;
+      if (!result.retryable || attempt >= FB_MAX_ATTEMPTS) break;
+      const backoff = FB_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+      logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${FB_MAX_ATTEMPTS})`, {
+        model: result.model, error: result.error,
+      });
+      await new Promise(resolve => setTimeout(resolve, backoff));
+    }
+    modelErrors.push(`${fbModel}: ${lastError ?? 'unknown error'}`);
   }
-  return { error: lastError ?? 'unknown error', attempts };
+  // A single-model chain keeps its historical error shape (no model prefix).
+  const error = modelErrors.length === 1
+    ? modelErrors[0].slice(modelErrors[0].indexOf(': ') + 2)
+    : modelErrors.join(' | ');
+  return { error, attempts };
 }
 
 /**
@@ -2080,7 +2102,7 @@ export interface LLMCallStats {
   /** Truncated last error message (first 240 chars). Only set when final outcome is error/timeout. */
   lastError?: string;
   /** Final outcome. */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'ok-with-fallback';
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback';
   // #2719: Cloud fallback fields
   /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
   fallbackUsed?: boolean;
@@ -2215,7 +2237,7 @@ export function describeLLMError(
  * @param messages - Messages à résumer
  * @returns Résumé markdown + stats. content = null si échec (3 retries failed).
  */
-async function generateLLMSummary(messages: IntercomMessage[]): Promise<LLMCallResult> {
+async function generateLLMSummary(messages: IntercomMessage[], opts?: { skipPrimary?: boolean }): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497). The 1800s ceiling only ever caught a TRUE
   // hang — CONDENSE_LLM_MAX_TOKENS already bounds a runaway under the ~600s gateway.
   // See CONDENSE_LLM_TIMEOUT_MS definition for the full rationale.
@@ -2270,6 +2292,14 @@ FORMAT :
 
   const callStart = Date.now();
   const stats: LLMCallStats = emptyLLMStats('null');
+
+  // #2719 (22/09): the primary's circuit breaker is OPEN — skip the primary, but the
+  // cloud tier is an independent provider: try it before resigning to truncation.
+  if (opts?.skipPrimary) {
+    stats.finalOutcome = 'circuit-open';
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    return fb ?? { content: null, stats };
+  }
 
   let openai: OpenAI;
   try {
@@ -2394,7 +2424,8 @@ async function generateStatusUpdate(
   previousStatus: string,
   allMessages: IntercomMessage[],
   archivedCount: number,
-  dashboardKey: string
+  dashboardKey: string,
+  opts?: { skipPrimary?: boolean }
 ): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497) — see generateLLMSummary / CONDENSE_LLM_TIMEOUT_MS.
   const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
@@ -2510,6 +2541,14 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
 
   const callStart = Date.now();
   const stats: LLMCallStats = emptyLLMStats('null');
+
+  // #2719 (22/09): the primary's circuit breaker is OPEN — skip the primary, but the
+  // cloud tier is an independent provider: try it before resigning to truncation.
+  if (opts?.skipPrimary) {
+    stats.finalOutcome = 'circuit-open';
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    return fb ?? { content: null, stats };
+  }
 
   let openai: OpenAI;
   try {
@@ -3342,16 +3381,17 @@ async function condenseIntercom(
   const toArchive = safeMessages.slice(0, safeMessages.length - keepCount);
   const toKeep = safeMessages.slice(safeMessages.length - keepCount);
 
-  // #1792: If circuit breaker is open, skip LLM calls entirely and do truncation fallback
-  if (condenseCBShouldBypass()) {
-    logger.info('Condensation circuit breaker OPEN — using truncation fallback', {
+  // #1792: If circuit breaker is open, skip the PRIMARY LLM calls.
+  // #2719 (22/09): ...but not the cloud tier. The breaker measures the primary; skipping
+  // the fallback with it made every sustained primary outage — exactly when the fallback
+  // is needed — end in truncation (archives stamped 'not-attempted-or-unconfigured').
+  const primaryCircuitOpen = condenseCBShouldBypass();
+  if (primaryCircuitOpen) {
+    logger.info('Condensation circuit breaker OPEN — primary skipped, trying cloud tier before truncation', {
       key,
       toArchive: toArchive.length,
       toKeep: toKeep.length,
     });
-    return executeTruncationFallback(
-      key, dashboard, toArchive, toKeep, diagnostic, condensationStart
-    );
   }
 
   // #1497: Run the 2 LLM calls in parallel (status update + summary) — they are
@@ -3361,8 +3401,8 @@ async function condenseIntercom(
   // via the existing null-check below.
   const tParallel = Date.now();
   const [statusCall, summaryCall] = await Promise.all([
-    generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key),
-    generateLLMSummary(toArchive)
+    generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key, { skipPrimary: primaryCircuitOpen }),
+    generateLLMSummary(toArchive, { skipPrimary: primaryCircuitOpen })
   ]);
   if (diagnostic) {
     diagnostic.llm = { summary: summaryCall.stats, status: statusCall.stats };
@@ -3388,15 +3428,17 @@ async function condenseIntercom(
       summaryOutcome: summaryCall.stats.finalOutcome,
       statusOutcome: statusCall.stats.finalOutcome
     });
-    condenseCBRecordFailure();
+    // The breaker tracks the primary: a pass that never called it records nothing.
+    if (!primaryCircuitOpen) condenseCBRecordFailure();
     return executeTruncationFallback(
       key, dashboard, toArchive, toKeep, diagnostic, condensationStart,
       { statusCall, summaryCall }
     );
   }
 
-  // LLM succeeded — reset circuit breaker
-  condenseCBRecordSuccess();
+  // LLM succeeded — reset circuit breaker (only a pass that exercised the primary
+  // can vouch for it; a cloud-only pass leaves the breaker to its half-open timer).
+  if (!primaryCircuitOpen) condenseCBRecordSuccess();
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');

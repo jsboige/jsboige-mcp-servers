@@ -32,6 +32,7 @@ import { dirname } from 'path';
 import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createRequire } from 'module';
+import { captureHostEnvKeys } from './services/host-env-snapshot.js';
 
 // Obtenir le répertoire du fichier actuel
 const __filename = fileURLToPath(import.meta.url);
@@ -39,6 +40,9 @@ const __dirname = dirname(__filename);
 
 // Charger les variables d'environnement AVANT tout autre import
 const envPath = path.join(__dirname, '..', '.env');
+// #2719: remember what the HOST set before `.env` fills the gaps, so a later
+// `roosync_diagnose reload` keeps this precedence instead of inverting it.
+captureHostEnvKeys();
 // #1140: quiet: true prevents dotenv v17 from writing to stdout,
 // which would corrupt the MCP JSON-RPC stdio transport.
 const envResult = dotenv.config({ path: envPath, quiet: true });

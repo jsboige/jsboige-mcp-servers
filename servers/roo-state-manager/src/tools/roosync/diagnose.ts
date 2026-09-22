@@ -178,11 +178,14 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
           : r.changed.length === 0
             ? `.env relu (${r.unchangedCount} clé(s) rechargeable(s) identiques) — aucun changement, aucun client réinitialisé.`
             : `${r.changed.length} clé(s) changée(s) → ${r.clientsReset.length} client(s) réinitialisé(s).`;
+        const hostNote = r.hostOwnedKeys?.length
+          ? ` ${r.hostOwnedKeys.length} clé(s) laissée(s) à l'env hôte (priorité de démarrage) : ${r.hostOwnedKeys.join(', ')}.`
+          : '';
         return {
           success: true,
           action: 'reload',
           timestamp,
-          message,
+          message: message + hostNote,
           data: r,
         };
       }

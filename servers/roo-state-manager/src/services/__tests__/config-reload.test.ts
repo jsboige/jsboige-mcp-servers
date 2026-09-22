@@ -24,6 +24,7 @@ vi.mock('../qdrant.js', () => ({ resetQdrantClient }));
 vi.mock('../../tools/search/search-codebase.tool.js', () => ({ resetCodebaseEmbeddingClient }));
 
 const { reloadConfig, fingerprint, RELOADABLE_ENV_KEYS } = await import('../config-reload.js');
+const { captureHostEnvKeys, resetHostEnvKeysForTest } = await import('../host-env-snapshot.js');
 
 let tmpDir: string;
 let envPath: string;
@@ -32,7 +33,7 @@ const savedEnv: Record<string, string | undefined> = {};
 /** Keys these tests touch — saved and restored so no test leaks into the next. */
 const TOUCHED = [
   'OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'VLLM_API_KEY_MEDIUM', 'QDRANT_URL', 'QDRANT_API_KEY',
-  'ZAI_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME',
+  'ZAI_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME', 'EMBEDDING_API_BASE_URL',
   'ROOSYNC_SHARED_PATH', 'NODE_ENV', 'EMBEDDING_BATCH_SIZE',
 ];
 
@@ -48,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetHostEnvKeysForTest();
   for (const k of TOUCHED) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
@@ -202,5 +204,35 @@ describe('fingerprint — masks the VALUE, never the NAME', () => {
     expect(serialised).not.toContain('new-secret-value');
     // The NAME, however, must be there — that is what makes the report actionable.
     expect(serialised).toContain('EMBEDDING_API_KEY');
+  });
+});
+
+describe('reloadConfig — startup precedence (host env > .env) survives a reload (#2719)', () => {
+  it('leaves a key the HOST set before `.env` was read, and reports it', () => {
+    // Measured on ai-01 (22/09): the MCP client env block sets the LAN embedding
+    // endpoint; `.env` names the public proxy. At startup the host wins (dotenv never
+    // overrides) — a reload that copied `.env` silently re-pointed the process.
+    process.env.EMBEDDING_API_BASE_URL = 'http://192.168.0.51:8004/v1';
+    delete process.env.ZAI_API_KEY;
+    captureHostEnvKeys();
+    writeEnv('EMBEDDING_API_BASE_URL=https://embeddings.example/v1\nZAI_API_KEY=from-dotenv\n');
+
+    const report = reloadConfig(envPath);
+
+    expect(process.env.EMBEDDING_API_BASE_URL).toBe('http://192.168.0.51:8004/v1');
+    expect(report.hostOwnedKeys).toEqual(['EMBEDDING_API_BASE_URL']);
+    expect(report.changed.map((c) => c.key)).toEqual(['ZAI_API_KEY']);
+    // The embedding clients were not touched: their configuration did not move.
+    expect(report.clientsReset).toEqual(['fallbackChatClient']);
+  });
+
+  it('without a startup snapshot, keeps the historical behaviour (every allowlisted key reloads)', () => {
+    process.env.EMBEDDING_API_BASE_URL = 'http://192.168.0.51:8004/v1';
+    writeEnv('EMBEDDING_API_BASE_URL=https://embeddings.example/v1\n');
+
+    const report = reloadConfig(envPath);
+
+    expect(process.env.EMBEDDING_API_BASE_URL).toBe('https://embeddings.example/v1');
+    expect(report.hostOwnedKeys).toEqual([]);
   });
 });

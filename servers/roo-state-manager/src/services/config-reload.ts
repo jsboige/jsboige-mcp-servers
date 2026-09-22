@@ -17,6 +17,7 @@
  */
 
 import dotenv from 'dotenv';
+import { getHostEnvKeys } from './host-env-snapshot.js';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -104,6 +105,11 @@ export interface ConfigReloadReport {
   unchangedCount: number;
   /** Keys present in `.env` but outside the allowlist — reported by NAME, ignored. */
   skippedKeys: string[];
+  /**
+   * #2719: allowlisted keys that `.env` sets but the HOST env set at startup —
+   * left untouched, because a restart would keep the host value too.
+   */
+  hostOwnedKeys: string[];
   clientsReset: string[];
 }
 
@@ -136,7 +142,9 @@ export function resolveEnvPath(): string {
  * the allowlist structural instead of documentary — a reload cannot reach
  * `ROOSYNC_SHARED_PATH`, `NODE_ENV`, or anything else, even if `.env` sets them.
  * It also avoids dotenv's `override` flag, whose precedence is the inverse of the
- * one used at startup.
+ * one used at startup — and, since #2719 (22/09), it skips keys the host env set
+ * before `.env` was read (`hostOwnedKeys`): copying `.env` over them re-created that
+ * same inversion by hand.
  */
 export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadReport {
   const report: ConfigReloadReport = {
@@ -145,6 +153,7 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
     changed: [],
     unchangedCount: 0,
     skippedKeys: [],
+    hostOwnedKeys: [],
     clientsReset: [],
   };
 
@@ -164,9 +173,16 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
 
   report.skippedKeys = Object.keys(parsed).filter((k) => !allowed.has(k)).sort();
 
+  const hostKeys = getHostEnvKeys();
   const changedKeys = new Set<string>();
   for (const key of RELOADABLE_ENV_KEYS) {
     if (!(key in parsed)) continue; // absent from .env → leave process.env alone
+    // #2719: startup precedence is host > `.env` (dotenv never overrides). A key the
+    // host set outranked `.env` at startup, so it must outrank it on reload too.
+    if (hostKeys?.has(key)) {
+      report.hostOwnedKeys.push(key);
+      continue;
+    }
     const before = process.env[key];
     const after = parsed[key];
     if (before === after) {
