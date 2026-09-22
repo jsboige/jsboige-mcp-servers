@@ -126,12 +126,15 @@ interface RooSyncSendArgs {
   /** #3591: asserted caller identity (gateway seats) — canonicalized + gate-checked in resolveCallerIdentity (single choke point) */
   as?: string;
 
-  // #3654 — clé d'idempotence optionnelle pour action="send". Si un message
-  // du même expéditeur porte déjà exactement cet id, la 2e écriture est
-  // absorbée (skip) et le retour contient `deduplicated: true` + l'id existant
-  // + son timestamp. Permet au caller de distinguer « landé en >timeout client »
-  // de « jamais landé » quand un send timeout (sans clé, le retry sur timeout
-  // fabrique un jumeau, comme sur po-2025 14/09 16:05Z).
+  // #3654/#1170 — clé d'idempotence optionnelle pour action="send" ET
+  // action="reply". Si un message du même expéditeur porte déjà exactement cet
+  // id, la 2e écriture est absorbée (skip) et le retour contient
+  // `deduplicated: true` + l'id existant + son timestamp. Permet au caller de
+  // distinguer « landé en >timeout client » de « jamais landé » quand un
+  // send/reply timeout (sans clé, le retry sur timeout fabrique un jumeau,
+  // comme sur po-2025 14/09 16:05Z). EXCLU de action="amend" (rejet bruyant au
+  // routeur : amend mute un message existant, ne crée rien — le retry y est
+  // naturellement convergent, une clé d'idempotence n'a pas de cible).
   messageId?: string;
 }
 
@@ -440,8 +443,52 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // Tags : ajouter "reply" aux tags fournis
   const replyTags = args.tags ? [...args.tags, 'reply'] : ['reply'];
 
+  // #1170 — idempotence sur action="reply", miroir exact du path send
+  // (#3654, lignes ci-dessus de sendNewMessage) : un timeout client suivi d'un
+  // retry fabriquait une réponse jumelle (le reply ne transmettait AUCUNE clé
+  // à sendMessage). Avec un messageId explicite : lookup d'abord, absorption
+  // si l'entrée existe déjà sous NOTRE expéditeur (le replyFrom), warning +
+  // envoi avec id auto si collision d'un autre expéditeur (le manager-layer
+  // refait sa propre garde, idempotente même après restart serveur).
+  if (args.messageId) {
+    const existing = await messageManager.getMessage(args.messageId, replyFrom);
+    if (existing) {
+      if (existing.from && existing.from !== replyFrom) {
+        logger.warn('[#1170] messageId collision sur reply — id déjà utilisé par un autre expéditeur, envoi avec id auto', {
+          messageId: args.messageId,
+          existingFrom: existing.from,
+          callerFrom: replyFrom,
+          replyTo
+        });
+      } else {
+        logger.info('[#1170] Reply absorbé — messageId explicite déjà persisté', {
+          messageId: args.messageId,
+          existingTimestamp: existing.timestamp,
+          inReplyTo: args.message_id
+        });
+        const contentMismatch = (existing.body ?? '') !== (args.body ?? '');
+        return `♻️ **Réponse absorbée par idempotence (#1170)** — une réponse avec l'id \`${args.messageId}\` existe déjà (envoyée le ${formatDateFull(existing.timestamp)}, depuis \`${existing.from}\`). La réémission a été ignorée.
+
+**ID :** \`${existing.id}\`
+**De :** ${existing.from}
+**À :** ${existing.to}
+**Sujet :** ${existing.subject}
+**Priorité :** ${getPriorityIcon(existing.priority)} ${existing.priority}
+**Timestamp :** ${formatDateFull(existing.timestamp)}${existing.thread_id ? `\n**Thread :** \`${existing.thread_id}\`` : ''}
+**En réponse à :** \`${args.message_id}\`${contentMismatch ? `\n\n⚠️ **Avertissement :** le \`body\` du nouvel appel diffère de l'existant — l'entrée existante est conservée (${existing.timestamp}). Si l'intention est de remplacer le contenu, utilisez \`action: "amend"\` avec \`message_id: ${existing.id}\` à la place.` : ''}
+
+---
+
+💡 **Pourquoi ce retour existe.** Un timeout client (cf. \`#2267\`) sur un reply ne signifie PAS que l'envoi a échoué : la persistance GDrive/PG peut continuer après que la course contre le timer ait été perdue. Sans clé d'idempotence, tout retry sur timeout fabrique une **réponse jumelle** dans le thread. Avec \`messageId\` explicite, le 2e appel détecte l'entrée existante et absorbe — le caller peut conclure « landé en >timeout » sans dupliquer.`;
+      }
+    }
+    logger.debug('[#1170] messageId non trouvé, envoi du reply', { messageId: args.messageId });
+  }
+
   // Envoyer la réponse
   logger.info('📤 Sending reply message');
+  // #1170 — la clé d'idempotence VOYAGE jusqu'à la persistance (leçon review
+  // #1157 : consultée seule, elle ne pouvait jamais absorber un retry).
   const replyMessageObj = await messageManager.sendMessage(
     replyFrom,
     replyTo,
@@ -450,7 +497,8 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     priority,
     replyTags,
     threadId,
-    args.message_id  // reply_to pointe vers l'original
+    args.message_id,  // reply_to pointe vers l'original
+    args.messageId ? { messageId: args.messageId } : undefined
   );
 
   // Icônes pour le formatage
@@ -627,6 +675,25 @@ export async function roosyncSend(
         'Paramètre "action" requis : send, reply, ou amend',
         MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
         { missingParam: 'action', providedArgs: Object.keys(args) }
+      );
+    }
+
+    // #1170 — décision EXPLICITE pour amend : messageId y est exclu, et le
+    // rejet est bruyant (#3177 : un paramètre fourni doit être honoré ou
+    // rejeté, jamais ignoré silencieusement). Raison de l'exclusion : amend
+    // NE CRÉE PAS de message — il mute le message identifié par son propre
+    // message_id (body écrasé, metadata.amendment_* écrasés, original_content
+    // capturé au PREMIER amendement seulement). Un retry d'amend au contenu
+    // identique converge donc naturellement vers le même état final : pas de
+    // jumeau possible, une clé d'idempotence n'a pas de cible. Testé dans
+    // MessageManager.amend-retry-convergence (#1170).
+    if (args.action === 'amend' && args.messageId) {
+      throw new MessageManagerError(
+        `Paramètre "messageId" sans effet sur action="amend" : une clé d'idempotence ne s'applique qu'aux opérations qui CRÉENT un message (send, reply). ` +
+        `Amend mute le message identifié par "message_id" — un retry au contenu identique est naturellement convergent (aucun jumeau possible, cf. #1170). ` +
+        `Retirez "messageId" de l'appel.`,
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { rejectedParams: ['messageId'], action: 'amend', issue: '#1170' }
       );
     }
 

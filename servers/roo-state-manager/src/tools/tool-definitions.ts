@@ -757,7 +757,7 @@ export const roosyncMessagesDefinition = {
             thread_id: { type: 'string' },
             reply_to: { type: 'string', description: 'Reference message ID — uniquement pour action="send" (thread un nouveau message sur un message existant). NE PAS utiliser pour action="reply"/"amend"/"mark_read" : voir message_id. #3029' },
             message_id: { type: 'string', description: 'ID du message cible — requis pour actions reply/amend/mark_read/archive/message/attachments_list/get/delete. Alias rétro-compatible de reply_to accepté pour reply/amend. #3029' },
-            messageId: { type: 'string', description: '#3654 — clé d\'idempotence pour action="send" (miroir du messageId dashboard append #3276). Caractères [A-Za-z0-9._:-], 1-128 (l\'id devient un nom de fichier). Si un message du même expéditeur porte déjà cet id, la 2e opération est absorbée (deduplicated) — un retry après timeout client ne fabrique plus de jumeau. L\'id est persisté tel quel.' },
+            messageId: { type: 'string', description: '#1170 — clé d\'idempotence pour action="send" ET action="reply" (miroir du messageId dashboard append #3276). Caractères [A-Za-z0-9._:-], 1-128 (l\'id devient un nom de fichier). Si un message du même expéditeur porte déjà cet id, la 2e opération est absorbée (deduplicated) — un retry après timeout client ne fabrique plus de jumeau. L\'id est persisté tel quel. EXCLU de action="amend" (rejet bruyant : amend mute un message existant, son retry au contenu identique est naturellement convergent).' },
             new_content: { type: 'string' },
             reason: { type: 'string' },
             auto_destruct: { type: 'boolean' },
