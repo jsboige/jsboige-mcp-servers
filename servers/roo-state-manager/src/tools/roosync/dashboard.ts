@@ -2241,6 +2241,17 @@ EXIGENCES :
 - Le résumé DOIT faire moins de 5 Ko. Être CONCIS mais COMPLET.
 - Ne JAMAIS inventer d'informations absentes des messages
 
+INTERDICTION STRICTE — ÉTATS GITHUB NON-SOURCÉS (#3771) :
+Tu n'as PAS accès à l'API GitHub. Tu ne peux donc PAS affirmer qu'une PR ou une issue est
+dans un état terminal (MERGÉ, FERMÉ/CLOSED, « Merge validé », « CLEAN », etc.) à moins
+qu'un message source ne le dise EXPLICITEMENT (verbatim ou paraphrase traçable).
+- Si un message dit « [DONE] PR #1234 mergée », tu peux écrire « PR #1234 mergée ».
+- Si AUCUN message ne mentionne l'état de la PR #1234, tu dois écrire « PR #1234 (état non
+  vérifié dans ce résumé) » ou omettre l'état.
+- N'infère JAMAIS un merge à partir d'indices lexicaux (discussion d'un AUTRE merge,
+  mention « doublon », « pas de nouvelle PR »).
+- Cette consigne prime sur la concision : un état non vérifié est PRÉFÉRABLE à un état faux.
+
 FORMAT :
 ## Résumé des ${messages.length} messages archivés
 
@@ -2463,7 +2474,25 @@ INTERDIT :
 - Garder des tâches achevées sans valeur de référence (l'achevé non-instructif disparaît, l'architecture décidée reste)
 - Lister chaque commit/PR individuellement
 - Inventer des informations absentes des sources
-- Inférer un état à partir d'informations partielles (extrapolation)`;
+- Inférer un état à partir d'informations partielles (extrapolation)
+
+INTERDICTION STRICTE — ÉTATS GITHUB NON-SOURCÉS (#3771) :
+Tu n'as PAS accès à l'API GitHub. Tu ne peux donc PAS affirmer qu'une PR ou une issue est
+dans un état terminal (MERGÉ, FERMÉ/CLOSED, « Merge validé », « CLEAN », etc.) dans la
+section « Livrables récents » ou ailleurs, à moins que :
+1. Un message [SERA ARCHIVÉ] / [CONSERVÉ] ne le dise EXPLICITEMENT (verbatim ou paraphrase traçable), OU
+2. L'ancien statut ne l'ait déjà acté.
+- Datapoints mesurés : la condensation a halluciné « #17167 : MERGÉ » alors que la PR était
+  OPEN (merged=false), et a même auto-contredit le statut dans la même régénération.
+- N'infère JAMAIS un merge à partir d'indices lexicaux (discussion d'un AUTRE merge,
+  mention « doublon », « pas de nouvelle PR », silence sur une PR).
+- Si l'état est incertain, écris « #17167 (état non vérifié dans cette condensation) » ou
+  omet le qualificatif d'état. Un état non vérifié est PRÉFÉRABLE à un état faux.
+- Cette consigne prime sur la concision : ne JAMAIS écrire MERGÉ/CLOSED pour un PR/issue
+  sans source verbatim. La section « Livrables récents » est particulièrement sensible :
+  une PR listée là sera lue comme « la condensation me confirme qu'elle est mergée » —
+  d'où le garde post-synthèse qui strippe toute ligne non sourcée. Tu n'as qu'à NE PAS
+  en générer pour éviter le strip.`;
 
   const userPrompt = `**Statut précédent :**
 ${previousStatus}
@@ -2766,6 +2795,207 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
   }
 
   return contradictions;
+}
+
+/**
+ * #3771: Strip terminal-state assertions on PR/issue numbers that the LLM condensation
+ * has NO source for. The LLM has no API access to GitHub, but infers merge/close states
+ * from lexical cues (discussion of OTHER merges, mentions of "doublon", "pas de nouvelle
+ * PR"), and re-classifies open PRs as merged. 4 datapoints measured 2026-09-21 on
+ * workspace-cluster-coordination, including an auto-contradiction in the same regenerated
+ * status.
+ *
+ * The guard is a STRIPPER, not a fact-checker: it can only detect that a line asserts
+ * a terminal state on a `#NNNN` token (PR or issue number), and verify whether SOME
+ * source string (verbatim or its lowercased form) is present in `sources`. If not, the
+ * line is removed and replaced with a `[unsourced state stripped #3771]` marker. The
+ * downstream reader still sees the PR was discussed, just not falsely tagged MERGÉ.
+ *
+ * Pattern coverage:
+ *  - `#NNNN : MERGÉ / FERMÉ / CLOSED / « Merge validé » / CLEAN / DONE+merged`
+ *  - `Issue #NNNN : close / closed` (the #3 datapoint from Hermes)
+ *  - `PR #NNNN : ...` followed by any terminal state keyword
+ *
+ * Whitelisted (kept): lines whose PR/issue number already appears in a source with a
+ * matching terminal-state keyword, OR whose line is verbatim present in a source.
+ *
+ * @param llmOutput - The text produced by the LLM (status or summary).
+ * @param sources   - The texts that WERE fed to the LLM (previousStatus, all messages
+ *                    joined, etc.). Terminal-state assertions without a source hit are
+ *                    stripped.
+ * @returns Object with the scrubbed text + a count of stripped lines for telemetry.
+ */
+export function scrubFabricatedGitHubStates(
+  llmOutput: string,
+  sources: readonly string[]
+): { scrubbed: string; stripped: number; strippedRefs: string[] } {
+  // Build the lowercase source corpus ONCE.
+  const sourceBag = sources.map(s => (s || '').toLowerCase()).join('\n');
+
+  // Terminal-state keyword set. Keep case-preserving on the OUTPUT (we don't lowercase
+  // the assertion, we only verify the SOURCE has some lowercase keyword near the same PR).
+  // The source side is lowercased to do a fuzzy check.
+  const TERMINAL_KEYWORDS = [
+    'mergé', 'merged', 'merge validé', 'merge valide',
+    'fermé', 'closed', 'close',
+    'clean',
+    'complété',
+    'resolved',
+  ];
+
+  // Build a regex that matches a line asserting a terminal state on a PR/issue number.
+  // Anchor on line start (`-` bullet OR beginning of line) to avoid catching prose like
+  // "le merge de #17167" (which is not a state assertion). The PR/issue reference can
+  // be PR/Issue #NNNN, or pull/issue #NNNN, optionally prefixed by an owner/repo
+  // (e.g. "CoursIA #17167" or "owner/repo#17167" inside the bullet). The owner/repo
+  // token is `[A-Za-z0-9_.-]+\s+` so we accept "CoursIA " (no slash) as well as
+  // "owner/repo" (with slash).
+  // Group 1: the PR/issue number digits (3-6).
+  const STATE_REF_RE = /^[ \t]*(?:[-*]|\d+\.)\s+(?:[^*\n]*?)(?:PR|pull request|issue|issues|fix|prs|PRs)\s+(?:(?:[A-Za-z0-9_.-]+\s+)|(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\s*))?#(\d{3,6})([^*\n]*?)$/i;
+
+  // Also catch the "#NNNN : state" inline pattern (no bullet) used in some condensed
+  // summaries. This catches the case where the LLM wrote a sub-line "**#17167** : MERGÉ".
+  // Note: the trailing capture is `[^(\n]{0,80}` to LIMIT the strip window to the immediate
+  // assertion, NOT the comment context. Otherwise a line like "- **#17167** : OPEN /
+  // HEAD d2e2035c (n'est pas MERGÉ, état erroné)" would be wrongly stripped because the
+  // word "MERGÉ" appears in the parenthetical self-correction note.
+  const INLINE_STATE_RE = /(?:^|\s)(?:#\d{3,6}|\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d{3,6})\s*[:\-—]\s*[A-Za-zÀ-ÿ][^(\n]{0,80}/g;
+
+  const strippedRefs: string[] = [];
+  let strippedCount = 0;
+
+  const lines = llmOutput.split('\n');
+  const outLines: string[] = [];
+  for (const rawLine of lines) {
+    const line = rawLine;
+    const lower = line.toLowerCase();
+
+    // #3771 review (po-2026, 22/09): markdown bold is the dominant idiom of our real
+    // status sections ("Livrables récents", "Décisions actées") and neither regex above
+    // can cross a `**` — the raw-line detection missed the majority of the live class.
+    // Detection runs on a bold-free copy (detLine); emission keeps the ORIGINAL line.
+    // detToOrig maps each detLine index back to its original index so the inline stage
+    // can replace the exact original span.
+    let detLine = '';
+    const detToOrig: number[] = [];
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '*' && line[i + 1] === '*') { i++; continue; }
+      detToOrig.push(i);
+      detLine += line[i];
+    }
+
+    // Step 1: bullet-line assertions (PR #N / Issue #N …)
+    const bulletMatch = detLine.match(STATE_REF_RE);
+    if (bulletMatch) {
+      // Group 1 = the PR/issue number digits (3-6), already validated by the regex.
+      const refNum = bulletMatch[1];
+
+      // Does the line mention any terminal keyword?
+      const hasTerminal = TERMINAL_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
+
+      if (hasTerminal && refNum) {
+        // Sourcing: does ANY source contain (a) the same PR ref number and (b) a
+        // terminal-state keyword in the same vicinity (≤200 chars)?
+        const sourced = isRefSourced(refNum, sourceBag);
+        if (!sourced) {
+          strippedCount++;
+          strippedRefs.push(refNum);
+          // Replace the stripped line with a marker so the cycle is auditable, but
+          // don't carry the false state forward. The original line is preserved as a
+          // comment-like marker, prefixed by `- ` so it stays a valid bullet but
+          // visually flagged as audit-only (no longer load-bearing as a state claim).
+          outLines.push(`- [unsourced state stripped #3771] ${line.trim().replace(/^[-*]\s+/, '')}`);
+          continue;
+        }
+      }
+    }
+
+    // Step 2: inline "#NNNN : STATE" pattern (no bullet prefix) — strip if unsourced.
+    // We only act if a terminal keyword is present. Detection runs on detLine; the
+    // strip is applied to the ORIGINAL line at the mapped span.
+    const inlineMatches = [...detLine.matchAll(INLINE_STATE_RE)];
+    if (inlineMatches.length > 0) {
+      const spans: Array<[number, number]> = []; // [origStart, origEndExclusive)
+      for (const m of inlineMatches) {
+        const fullMatch = m[0];
+        const lowerMatch = fullMatch.toLowerCase();
+        const hasTerminal = TERMINAL_KEYWORDS.some(kw => lowerMatch.includes(kw.toLowerCase()));
+        if (!hasTerminal) continue;
+
+        // Pull the #NNN out of the match.
+        const numMatch = fullMatch.match(/#(\d{3,6})/);
+        if (!numMatch) continue;
+        const refNum = numMatch[1];
+
+        const sourced = isRefSourced(refNum, sourceBag);
+        if (!sourced) {
+          strippedCount++;
+          strippedRefs.push(refNum);
+          // Map the detLine match back to its original span (right-to-left below).
+          const start = detToOrig[m.index];
+          const end = detToOrig[m.index + fullMatch.length - 1] + 1;
+          spans.push([start, end]);
+        }
+      }
+      if (spans.length > 0) {
+        // Replace right-to-left so earlier spans' indices stay valid.
+        spans.sort((a, b) => b[0] - a[0]);
+        let modifiedLine = line;
+        for (const [start, end] of spans) {
+          modifiedLine = modifiedLine.slice(0, start) + '[unsourced #3771]' + modifiedLine.slice(end);
+        }
+        outLines.push(modifiedLine);
+        continue;
+      }
+    }
+
+    outLines.push(line);
+  }
+
+  return {
+    scrubbed: outLines.join('\n'),
+    stripped: strippedCount,
+    strippedRefs,
+  };
+}
+
+/**
+ * Helper for #3771 guardrail: given a PR/issue number (digits only) and a pre-lowercased
+ * source corpus, does the corpus contain the number AND a terminal-state keyword
+ * WITHIN THE SAME PARAGRAPH (line) as the number?
+ *
+ * "Same paragraph" matters: a ±200 char window around the first occurrence is too
+ * generous when sources are short — a terminal keyword from a DIFFERENT PR's line
+ * will pollute the context. We split sources into lines/paragraphs and check ONLY
+ * within the line(s) that contain the refNum.
+ *
+ * Substring false positive: looking for "200" must not match "12000" — guarded by
+ * negative lookbehind/lookahead for digits.
+ */
+function isRefSourced(refNum: string, lowerSourceBag: string): boolean {
+  if (!lowerSourceBag) return false;
+
+  // Build the search regex with digit boundary anchors.
+  const refRegex = new RegExp(`(?<![\\d])${refNum}(?![\\d])`);
+  const TERMINAL_KEYWORDS_LOWER = [
+    'mergé', 'merged', 'merge validé', 'merge valide',
+    'fermé', 'closed', 'close',
+    'clean',
+    'complété',
+    'resolved',
+  ];
+
+  // Split sources into lines (paragraphs are joined by \n in sourceBag). We check
+  // ONLY the line(s) that contain a non-substring occurrence of refNum — adjacent
+  // lines are NOT pulled into the context.
+  const lines = lowerSourceBag.split('\n');
+  for (const line of lines) {
+    if (!refRegex.test(line)) continue;
+    if (TERMINAL_KEYWORDS_LOWER.some(kw => line.includes(kw))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -3171,6 +3401,26 @@ async function condenseIntercom(
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');
   llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary');
+
+  // #3771: Post-LLM guardrail — the LLM has no GitHub API access and has been measured
+  // fabricating terminal states (MERGÉ/CLOSED/« Merge validé ») for PR/issue numbers
+  // that were OPEN. Strip any line that asserts a terminal state on a #NNNN token without
+  // verbatim sourcing in the messages or previous status.
+  {
+      const statusScrub = scrubFabricatedGitHubStates(newStatus, [previousStatus, ...safeMessages.map(m => m.content)]);
+      const summaryScrub = scrubFabricatedGitHubStates(llmSummary, [previousStatus, ...safeMessages.map(m => m.content)]);
+      const totalStripped = statusScrub.stripped + summaryScrub.stripped;
+      if (totalStripped > 0) {
+        logger.warn('Stripped fabricated GitHub terminal-state assertions (#3771)', {
+          key,
+          strippedStatus: statusScrub.stripped,
+          strippedSummary: summaryScrub.stripped,
+          strippedRefs: [...statusScrub.strippedRefs, ...summaryScrub.strippedRefs],
+        });
+      }
+      newStatus = statusScrub.scrubbed;
+      llmSummary = summaryScrub.scrubbed;
+    }
 
   // #1502: Detect contradictions in generated status before committing.
   // #3329 (RECIDIVE): the previous guard appended HTML comment markers but
