@@ -1215,11 +1215,29 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
 
 /**
  * #3482 — Résultat de la vérification post-écriture (garde anti-fork DriveFS).
+ *
+ * #3774 — étendu : le verdict porte désormais sur **deux surfaces** (le fichier
+ * `.md` et le store PG qui fait autorité pour la flotte), et il nomme le
+ * **lieu d'atterrissage** réel des messages neufs — c'est lui le discriminant
+ * (`chemin écrit == chemin demandé`), pas un compteur écrit par le writer.
  */
 export interface WriteVerifyResult {
   forkSuspected: boolean;
   forkDetail?: string;
   forkPath?: string;
+  /**
+   * #3774 — chemin où les messages neufs ont réellement été retrouvés.
+   * Égal au chemin demandé ⇒ atterrissage nominal (aucune alerte).
+   */
+  landedPath?: string;
+  /** #3774 — surface ayant armé le verdict (diagnostic, jamais bloquant). */
+  signal?: 'file' | 'store' | 'file+store';
+  /**
+   * #3774 critère 2 — `false` quand la relecture du store autoritaire n'a PAS
+   * pu être faite (porte PG off, store indisponible). Limite **assumée et
+   * visible** : un `pgChecked:false` n'est jamais un succès implicite.
+   */
+  pgChecked?: boolean;
 }
 
 /**
@@ -1247,9 +1265,93 @@ export interface WriteVerifyResult {
 export async function verifyDashboardWriteLanded(
   filePath: string,
   expected: { lastModified: string; totalMessages: number },
-  writeStartedAtMs: number
+  writeStartedAtMs: number,
+  landedIds?: readonly string[]
 ): Promise<WriteVerifyResult> {
   try {
+    // #3774 critère 1 — DISCRIMINANT PRINCIPAL : le lieu d'atterrissage des
+    // octets, pas un compteur. `lastModified`/`totalMessages` sont écrits PAR
+    // LE WRITER : dans un fork ils valent exactement ce qu'il attendait, donc
+    // ils ne peuvent pas détecter sa propre déviation (arbitrage 06/09). On
+    // cherche donc les ids des messages neufs — que le writer seul a produits —
+    // AU CHEMIN DEMANDÉ. Présents ⇒ l'égalité `chemin écrit == chemin demandé`
+    // est établie par les octets. Absents ⇒ on NOMME le chemin réel.
+    // Aucune dépendance à un motif de suffixe (` (N)`) : le scan ci-dessous
+    // cherche le CONTENU, quel que soit le nom que DriveFS a choisi.
+    // Le verdict NOMINAL, lui, ne court-circuite PAS les contrôles historiques :
+    // un writer qui réécrit un dashboard déjà sur disque (status, scrub,
+    // condensation) y retrouve par construction des messages qui étaient DÉJÀ
+    // là — le contrôle d'id y serait vacant, et l'utiliser comme sortie
+    // anticipée affaiblirait la garde au lieu de la renforcer.
+    let idNominalAt: string | undefined;
+    if (landedIds && landedIds.length > 0) {
+      const dir = path.dirname(filePath);
+      let requestedBody: string | null = null;
+      try {
+        requestedBody = await fs.readFile(filePath, 'utf8');
+      } catch {
+        requestedBody = null;
+      }
+      const carries = (body: string): boolean =>
+        landedIds.every(id => body.includes(`[msg: ${id}]`));
+
+      if (requestedBody !== null && carries(requestedBody)) {
+        idNominalAt = filePath;
+      } else {
+        let entries: string[];
+        try {
+          entries = await fs.readdir(dir);
+        } catch {
+          // #3774 review ai-01 (m2) — l'écriture vient de RÉUSSIR dans ce
+          // répertoire : un readdir qui échoue juste après est anormal, et le
+          // défaut de cette garde est silencieux par nature (3 semaines sans
+          // alarme). Direction conservatrice des deux côtés : alarme.
+          return {
+            forkSuspected: true,
+            signal: 'file',
+            forkDetail: `répertoire '${dir}' illisible au moment de la vérification alors que l'écriture vient d'y réussir — vérification impossible, direction conservatrice`
+          };
+        }
+        for (const entry of entries) {
+          if (!entry.endsWith('.md') || entry.endsWith('.tmp')) continue;
+          const candidate = path.join(dir, entry);
+          if (candidate === filePath) continue;
+          try {
+            const body = await fs.readFile(candidate, 'utf8');
+            if (landedIds.some(id => body.includes(`[msg: ${id}]`))) {
+              // #3774 review ai-01 (MAJEUR) — PAS de `forkPath` ici. Ce champ
+              // alimente la décision de suppression de source du merge
+              // (`suspectedForeignFork = forkSuspected && forkPath !== sourcePath`).
+              // Dans un merge, l'union est triée par timestamp : le DERNIER
+              // message vient de la clé la plus récente — la SOURCE — qui porte
+              // donc l'id cherché PAR CONSTRUCTION, avant même l'écriture. La
+              // nommer `forkPath` ferait basculer `suspectedForeignFork` à
+              // false et POURSUIVRAIT la suppression : inversion du
+              // fail-closed de la base, sur le scénario #3774 lui-même (et
+              // dépendant de l'ordre d'énumération de readdir, donc non
+              // reproductible à la demande). `forkPath` garde son sens
+              // historique — un fork `(N)` ÉTRANGER vu par le contrôle hérité
+              // — et `landedPath` porte la localisation.
+              return {
+                forkSuspected: true,
+                signal: 'file',
+                landedPath: candidate,
+                forkDetail: `ids attendus absents du chemin demandé '${path.basename(filePath)}' mais présents dans '${entry}' — égalité chemin écrit == chemin demandé rompue ('${entry}' peut être un porteur préexistant, ex. source d'un merge, pas nécessairement le lieu d'atterrissage)`
+              };
+            }
+          } catch {
+            // sibling illisible : on poursuit le scan, il peut être le porteur
+          }
+        }
+
+        return {
+          forkSuspected: true,
+          signal: 'file',
+          forkDetail: `messages neufs introuvables — ni au chemin demandé, ni dans un sibling .md (ids: ${landedIds.join(', ')})`
+        };
+      }
+    }
+
     const fh = await fs.open(filePath, 'r');
     let foundTotal: number | null = null;
     let foundLastModified: string | null = null;
@@ -1297,8 +1399,16 @@ export async function verifyDashboardWriteLanded(
         };
       }
     }
-    return { forkSuspected: false };
+    return { forkSuspected: false, landedPath: idNominalAt };
   } catch (err) {
+    // #3774 review ai-01 (m2) — asymétrie assumée et documentée : le chemin
+    // d'id alerte quand le répertoire devient illisible (ci-dessus, l'écriture
+    // vient d'y réussir), mais ce catch ultime — erreurs inattendues du chemin
+    // HÉRITÉ (open/stat du canonique) — rend « invérifiable », pas « suspecté » :
+    // ce chemin est celui de la base #3482, son contrat (ne jamais casser
+    // l'écriture, jamais de faux positif sur instrument défaillant) est épinglé
+    // par ses tests historiques. Un verdict suspecté ici régresserait le
+    // comportement de la base pour tous les appelants sans ids.
     logger.debug('Vérification post-écriture impossible (non bloquant)', {
       filePath,
       error: err instanceof Error ? err.message : String(err)
@@ -1315,6 +1425,68 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
     forkPath: wv.forkPath,
     remediation: 'DriveFS local probablement wedgé — relire le canonique, redémarrer DriveFS/VS Code de la machine, puis re-poster si absent (intercom-protocol §append expiré)'
   });
+}
+
+/**
+ * #3774 critère 2 — vérifie l'écriture sur le substrat qui fait **autorité** :
+ * le store PG, que la flotte lit en primaire (`UNIFIED_STORE_DASHBOARD_READ_PG`),
+ * et non la seule projection `.md` (arbitrage : « toute réparation par
+ * manipulation de fichiers est inopérante sur ce que la flotte lit réellement »).
+ *
+ * Contrat de retour, explicite par construction :
+ * - `pgChecked:false` — la relecture n'a PAS eu lieu (porte PG off, store
+ *   injoignable, aucun id à vérifier). **Limite assumée**, jamais un succès
+ *   implicite : l'appelant peut la rendre visible.
+ * - `pgChecked:true` + `storeKey === key` — les messages neufs sont lisibles
+ *   sous la clé demandée dans le store.
+ * - `pgChecked:true` + `storeKey === ''` — le store répond mais **sans** nos
+ *   messages : la flotte ne les lira pas, quoi que dise le fichier.
+ */
+export async function verifyWriteVisibleInStore(
+  key: string,
+  landedIds?: readonly string[]
+): Promise<{ pgChecked: boolean; storeKey?: string; detail?: string }> {
+  if (!landedIds || landedIds.length === 0) return { pgChecked: false };
+  let stored: Dashboard | null = null;
+  try {
+    stored = await readDashboardFromPg(key);
+  } catch {
+    stored = null;
+  }
+  if (!stored) {
+    return {
+      pgChecked: false,
+      detail: 'store PG illisible ou porte off — substrat autoritaire NON vérifié (limite assumée, #3774 critère 2)'
+    };
+  }
+  const present = new Set(stored.intercom.messages.map(m => m.id));
+  if (landedIds.every(id => present.has(id))) return { pgChecked: true, storeKey: key };
+  return {
+    pgChecked: true,
+    storeKey: '',
+    detail: `messages neufs absents du journal PG de '${key}' — la flotte (lecture PG-primaire) ne les verra pas`
+  };
+}
+
+/**
+ * #3774 — fusionne le verdict fichier (#3482) et le verdict store (#3774) en un
+ * résultat unique. Aucun des deux ne peut effacer l'autre : un atterrissage
+ * fichier nominal ne masque pas une absence dans le store (c'est le cas qui a
+ * coûté 3 semaines), et une absence fichier n'est pas pardonnée par le store.
+ */
+export function mergeStoreVerification(
+  wv: WriteVerifyResult,
+  store: { pgChecked: boolean; storeKey?: string; detail?: string }
+): WriteVerifyResult {
+  const out: WriteVerifyResult = { ...wv, pgChecked: store.pgChecked };
+  if (!store.pgChecked) return out;
+  if (store.storeKey !== undefined && store.storeKey !== '') return out;
+  return {
+    ...out,
+    forkSuspected: true,
+    signal: wv.forkSuspected ? 'file+store' : 'store',
+    forkDetail: `${wv.forkDetail ? `${wv.forkDetail} | ` : ''}${store.detail ?? 'absent du store PG'}`
+  };
 }
 
 /**
@@ -1464,11 +1636,21 @@ ${intercomSection}
   // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
   // on a ` (N).md` fork. Loud error + result flag; never throws (the write
   // itself must not be undone by its verification).
-  const wv = await verifyDashboardWriteLanded(filePath, {
+  // #3774 — jeton d'atterrissage : l'id du DERNIER message de l'instantané écrit.
+  // Pour un APPEND il est neuf par construction (produit par ce process, absent
+  // de toute version antérieure) et la comparaison de chemin est concluante. Ce
+  // n'est PAS vrai des writers qui réécrivent un dashboard déjà sur disque
+  // (status, scrub, condensation) : leurs messages sont déjà là, l'id est
+  // retrouvé au chemin demandé quoi qu'il arrive — c'est précisément pourquoi la
+  // garde ne sort PAS sur ce verdict nominal et laisse parler les contrôles
+  // historiques (cf. verifyDashboardWriteLanded).
+  const landedIds = dashboard.intercom.messages.length > 0
+    ? [dashboard.intercom.messages[dashboard.intercom.messages.length - 1].id]
+    : undefined;
+  let wv = await verifyDashboardWriteLanded(filePath, {
     lastModified: dashboard.lastModified,
     totalMessages: dashboard.intercom.totalMessages
-  }, writeStartedAtMs);
-  if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
+  }, writeStartedAtMs, landedIds);
 
   // #3151 Phase C — dual-write to PG (roosync_dashboards + journal). AWAITED,
   // never-throwing: PG becomes the read-primary store, so the mirror must be
@@ -1480,6 +1662,11 @@ ${intercomSection}
   // appends from the other machines (GDrive parity: condensation is the sole
   // operation that removes intercom messages).
   await dualWriteDashboardSync(dashboard, opts);
+
+  // #3774 critère 2 — relecture du substrat autoritaire, fusionnée AVANT la
+  // journalisation (cf. appendDashboardIncremental : même contrat).
+  wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+  if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
   return wv;
 }
 
@@ -1495,7 +1682,7 @@ async function applyCondensedWithMerge(
   key: string,
   snapshotBefore: Dashboard,
   condensedDashboard: Dashboard
-): Promise<void> {
+): Promise<WriteVerifyResult | undefined> {
   // #3151 Phase C: anchor the delta on the artifact this function is about to
   // OVERWRITE -- the GDrive file. readDashboardFile() became PG-primary once
   // UNIFIED_STORE_DASHBOARD_READ_PG shipped, so on a key where PG and the file
@@ -1507,8 +1694,7 @@ async function applyCondensedWithMerge(
   // silently changed the source, not the intent.
   const current = await readDashboardFromGdrive(key);
   if (!current) {
-    await writeDashboardFile(key, condensedDashboard, { condensed: true });
-    return;
+    return await writeDashboardFile(key, condensedDashboard, { condensed: true });
   }
 
   // Guard: if another condensation completed while our LLM was running,
@@ -1518,7 +1704,7 @@ async function applyCondensedWithMerge(
     current.intercom.lastCondensedAt > (snapshotBefore.intercom.lastCondensedAt ?? '')
   ) {
     logger.warn('[COLLISION] concurrent condensation won — skipping stale overwrite', { key });
-    return;
+    return undefined;
   }
 
   // Delta = messages on disk that weren't in our pre-condensation snapshot.
@@ -1527,8 +1713,7 @@ async function applyCondensedWithMerge(
   const delta = current.intercom.messages.filter(m => !seen.has(m.id));
 
   if (delta.length === 0) {
-    await writeDashboardFile(key, condensedDashboard, { condensed: true });
-    return;
+    return await writeDashboardFile(key, condensedDashboard, { condensed: true });
   }
 
   logger.warn('[COLLISION] stitching concurrent appends into condensed result', {
@@ -1546,7 +1731,7 @@ async function applyCondensedWithMerge(
       lastCondensedAt: condensedDashboard.intercom.lastCondensedAt,
     },
   };
-  await writeDashboardFile(key, merged, { condensed: true });
+  return await writeDashboardFile(key, merged, { condensed: true });
 }
 
 /**
@@ -1578,6 +1763,9 @@ async function appendDashboardIncremental(
   };
   const lockOwned = await acquireAppendLock(key, holder);
   let wv: WriteVerifyResult = { forkSuspected: false };
+  // #3774 — ids des messages NEUFS de cet append : le seul jeton que le writer
+  // produit lui-même, donc le seul qui puisse établir où ses octets ont atterri.
+  let landedIds: string[] = [];
   try {
     let existing: string;
     try {
@@ -1625,22 +1813,30 @@ async function appendDashboardIncremental(
 
     // #3482 — post-write guard (même contrat que writeDashboardFile) : un
     // append « réussi » peut avoir été dévié vers un fork ` (N).md`.
+    landedIds = newMessages.map(m => m.id);
     wv = await verifyDashboardWriteLanded(filePath, {
       lastModified: dashboard.lastModified,
       totalMessages: dashboard.intercom.totalMessages
-    }, writeStartedAtMs);
+    }, writeStartedAtMs, landedIds);
   } finally {
     if (lockOwned) {
       await releaseAppendLock(key, holder);
     }
   }
-  if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
 
   // #3151 Phase C — dual-write the appended journal rows to PG. Same awaited,
   // never-throwing contract as writeDashboardFile: the incremental file append
   // stays the primary write; PG mirrors it (append-first is what makes the
   // condense-after phase below safe to fail).
   await dualWriteDashboardSync(dashboard);
+
+  // #3774 critère 2 — le verdict n'est complet qu'APRÈS la relecture du store
+  // autoritaire (le dual-write vient d'avoir lieu : la clé est interrogeable).
+  // Fusionné AVANT la journalisation, pour que le log et la réponse de l'outil
+  // portent le verdict des DEUX surfaces ; sans ce contrôle, un atterrissage
+  // fichier nominal masquait une absence côté store — le cas qui a vécu 3 semaines.
+  wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+  if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
   return wv;
 }
 
@@ -3177,7 +3373,7 @@ export interface DashboardResult {
     lastModifiedBy: Author;
   } | null>;
   /** Per-target cross-post outcomes (v3 #1363). Present only when args.crossPost was used. */
-  crossPost?: Array<{ key: string; ok: boolean; error?: string }>;
+  crossPost?: Array<{ key: string; ok: boolean; error?: string; writeVerification?: WriteVerifyResult }>;
   /**
    * Raw markdown content (#1832). Present only when format='markdown' (default)
    * for read/read_overview. When present, registry returns this directly as text
@@ -4134,7 +4330,7 @@ async function handleAppend(
   let finalDashboard = updatedDashboard;
 
   const tWrite = Date.now();
-  const writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
+  let writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
   writeMs = Date.now() - tWrite;
 
   // === CONDENSE-AFTER: best-effort condensation ===
@@ -4223,7 +4419,20 @@ async function handleAppend(
 
           // If condensation succeeded, merge-write (re-read disk to avoid overwriting concurrent appends #2328)
           if (condensed) {
-            await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
+            const condenseWv = await applyCondensedWithMerge(key, updatedDashboard, finalDashboard);
+            // #3774 critère 3 — la condensation RÉÉCRIT tout le fichier APRÈS la
+            // vérification de l'append : son verdict était jeté, donc un fork
+            // apparu pendant la fenêtre de condensation (~9 min) restait
+            // invisible alors que l'append rapportait un succès. Aucun des deux
+            // verdicts n'efface l'autre : on accumule les détails.
+            if (condenseWv?.forkSuspected) {
+              writeVerify = writeVerify.forkSuspected
+                ? {
+                    ...writeVerify,
+                    forkDetail: `${writeVerify.forkDetail} | (post-condensation) ${condenseWv.forkDetail ?? 'détection sans détail'}`
+                  }
+                : condenseWv;
+            }
           }
         } catch (condenseErr) {
           // Condensation failed — message is already persisted, log and continue
@@ -4279,7 +4488,7 @@ async function handleAppend(
 
   // v3 (#1363) — Structured mentions: resolve each to UserId and notify via RooSync.
   // Fire-and-forget, same robustness pattern as v1.
-  const crossPostResults: Array<{ key: string; ok: boolean; error?: string }> = [];
+  const crossPostResults: Array<{ key: string; ok: boolean; error?: string; writeVerification?: WriteVerifyResult }> = [];
   if (args.mentions && args.mentions.length > 0) {
     try {
       const targets = args.mentions.map(m => resolveMentionTarget(m));
@@ -4331,6 +4540,11 @@ async function handleAppend(
           acquiredAt: new Date().toISOString()
         };
         let targetMissing = false;
+        // #3774 critère 3 — le verdict de CETTE écriture (message neuf dans une
+        // autre dashboard) était jeté : une escalade cross-post pouvait dévier
+        // vers un fork sans que l'appelant en sache rien, alors même que la
+        // réponse porte déjà un résultat par cible.
+        let targetWv: WriteVerifyResult | undefined;
         await withAppendLock(targetKey, targetHolder, async () => {
           let targetDashboard = await readDashboardFile(targetKey);
           if (!targetDashboard) {
@@ -4352,7 +4566,7 @@ async function handleAppend(
             }
           };
 
-          await writeDashboardFile(targetKey, crossPosted);
+          targetWv = await writeDashboardFile(targetKey, crossPosted);
         });
         if (targetMissing) {
           crossPostResults.push({
@@ -4362,7 +4576,11 @@ async function handleAppend(
           });
           continue;
         }
-        crossPostResults.push({ key: targetKey, ok: true });
+        crossPostResults.push({
+          key: targetKey,
+          ok: true,
+          writeVerification: targetWv?.forkSuspected ? targetWv : undefined
+        });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         logger.debug('Cross-post target failed (non-fatal)', {
@@ -4378,8 +4596,14 @@ async function handleAppend(
 
   const crossPostOk = crossPostResults.filter(r => r.ok).length;
   const crossPostFail = crossPostResults.length - crossPostOk;
+  // #3774 critère 3 — le drapeau redevient visible côté appelant : une escalade
+  // cross-post qui dévie vers un fork est une escalade qui n'a pas eu lieu.
+  const crossPostForked = crossPostResults.filter(r => r.writeVerification);
+  const crossPostForkSuffix = crossPostForked.length > 0
+    ? ` — 🚨 [FORK SUSPECTÉ #3482] cross-post: ${crossPostForked.map(r => r.key).join(', ')} (${crossPostForked[0].writeVerification?.forkDetail ?? 'détection sans détail'}). RELIRE ces canoniques avant tout retry.`
+    : '';
   const crossPostSuffix = crossPostResults.length > 0
-    ? ` (cross-post: ${crossPostOk}/${crossPostResults.length} OK${crossPostFail > 0 ? `, ${crossPostFail} échecs` : ''})`
+    ? ` (cross-post: ${crossPostOk}/${crossPostResults.length} OK${crossPostFail > 0 ? `, ${crossPostFail} échecs` : ''})${crossPostForkSuffix}`
     : '';
 
   // 2026-04-20: Clamp archivedCount to non-negative. When LLM failure injects
@@ -5069,6 +5293,13 @@ async function handleMerge(
   // pas l'union). Exception voulue : si le fork soupçonné EST la source
   // elle-même, c'est la configuration attendue d'une réparation de fork
   // vivant — le fichier ` (1)` est frais dans le répertoire par construction.
+  // #3774 review ai-01 (MAJEUR) — ce prédicat ne voit que le `forkPath` du
+  // contrôle HÉRITÉ (regex `(N)` + fenêtre d'écriture). Le scan d'id ne remplit
+  // JAMAIS `forkPath` : la source d'un merge porte l'id d'atterrissage PAR
+  // CONSTRUCTION (union triée : le dernier message vient de la clé la plus
+  // récente), la nommer ferait poursuivre la suppression — inversion du
+  // fail-closed. Tout verdict d'id laisse donc `forkPath` undefined ⇒
+  // `suspectedForeignFork` vrai ⇒ abandon.
   const sourcePath = getDashboardPath(sourceKey);
   const suspectedForeignFork =
     writeVerification.forkSuspected === true && writeVerification.forkPath !== sourcePath;
