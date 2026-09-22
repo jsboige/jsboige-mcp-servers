@@ -269,7 +269,7 @@ export const claudishTrafficDefinition = {
             since: { type: 'string', description: 'docker logs --since window. Default "2h".', default: '2h' },
             container: { type: 'string', description: 'Container name. Default "claudish-proxy".', default: 'claudish-proxy' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine).' },
-            docker_context: { type: 'string', description: 'EXPERIMENTAL: docker --context to query a remote hub.' },
+            docker_context: { type: 'string', description: 'EXPERIMENTAL: docker --context to query a remote hub. Empty/null = local default context (#1169).' },
             max_output_length: { type: 'number', description: 'Hard bound on rendered output chars (default 20000).', default: 20000 }
         },
         required: ['bucket_minutes']

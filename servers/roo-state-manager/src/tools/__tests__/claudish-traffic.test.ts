@@ -282,6 +282,27 @@ describe('validateClaudishArgs', () => {
     it('accepts legitimate values', () => {
         expect(validateClaudishArgs({ since: '1h30m', container: 'claudish-proxy', docker_context: 'hub-po-2023' })).toBeNull();
     });
+    it('treats empty/null docker_context as the local default context (#1169)', () => {
+        // Causal: before #1169, '' failed NAME_RE and returned "Invalid 'docker_context'".
+        expect(validateClaudishArgs({ docker_context: '' })).toBeNull();
+        expect(validateClaudishArgs({ docker_context: null })).toBeNull();
+        expect(validateClaudishArgs({})).toBeNull();
+        // Anti-metacharacter validation stays active for any NON-EMPTY value.
+        expect(validateClaudishArgs({ docker_context: 'ctx; rm' })).toContain('Invalid');
+    });
+    it('rejects non-string docker_context values (#1183)', () => {
+        // Causal (scope, per review): the `typeof === 'string'`-headed gate
+        // only ever lived in this PR's intermediate head e1c7fae4 — main's
+        // pre-PR guard (`typeof !== 'string' || !NAME_RE.test(...)`) already
+        // rejected non-strings. No production window was exposed; this test
+        // locks the shape so the intermediate-head regression cannot recur:
+        // an array like ["x; cmd"] is truthy, interpolated into the docker
+        // CLI template, and reaches child_process.exec (a shell).
+        expect(validateClaudishArgs({ docker_context: ['x; cmd'] })).toContain('Invalid');
+        expect(validateClaudishArgs({ docker_context: 42 })).toContain('Invalid');
+        expect(validateClaudishArgs({ docker_context: { cmd: 'evil' } })).toContain('Invalid');
+        expect(validateClaudishArgs({ docker_context: true })).toContain('Invalid');
+    });
 });
 
 // ── Handler (exec mocked — never throws, distinguishes failures) ───────────
@@ -318,6 +339,20 @@ describe('claudishTraffic.handler', () => {
         const text = (res.content as any)[0].text as string;
         expect(text).toContain('Invalid');
         expect(exec).not.toHaveBeenCalled();
+    });
+
+    it('renders the LOCAL collection line for empty docker_context (#1169)', async () => {
+        // Causal end-to-end: before #1169 this returned "Invalid 'docker_context'"
+        // (empty string failed NAME_RE); after, "" selects the local default
+        // context — the rendered Collection line carries no --context flag.
+        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+            cb(null, INCIDENT_LINES.join('\n'), '');
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, since: '12h', docker_context: '' });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('Collection: docker logs --timestamps --since 12h claudish-proxy');
+        expect(text).not.toContain('--context');
     });
 
     it('flags collection INCOMPLETE when exec fails with partial stdout (review F1, #1080)', async () => {
