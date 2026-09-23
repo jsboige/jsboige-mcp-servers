@@ -17,6 +17,7 @@ DeepSearch and DeepThink are built-in conversation presets.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from typing import Any, Callable, Awaitable
@@ -28,6 +29,9 @@ from semantic_kernel.agents.strategies import (
     SequentialSelectionStrategy,
 )
 from semantic_kernel.contents import ChatMessageContent, AuthorRole
+from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
+from semantic_kernel.functions import KernelArguments
 
 from pydantic import ValidationError
 
@@ -428,7 +432,32 @@ class ConversationRunner:
                 "Agent '%s' not found for conversation '%s'", agent_id, conv_config.id
             )
 
-        return agents
+        return [self._with_model_budget(a) for a in agents]
+
+    def _with_model_budget(self, agent: ChatCompletionAgent) -> ChatCompletionAgent:
+        """Conversation-scoped copy carrying the model's declared budget (#3797).
+
+        Conversation agents are invoked without execution settings, so a
+        model's max_tokens / extra_body never reached them. The copy is
+        scoped to this conversation on purpose: SK's Agent._merge_arguments
+        updates the agent-level execution_settings dict in place, so arguments
+        set on the shared agents that call_agent reuses would absorb call-time
+        overrides and leak them into later conversations. A model declaring
+        neither field gets the same agent object back (non-regression).
+        """
+        try:
+            service = agent.kernel.get_service(type=ChatCompletionClientBase)
+        except Exception:
+            return agent
+        model_cfg = self.config.get_model(getattr(service, "service_id", "") or "")
+        if not model_cfg or (model_cfg.max_tokens is None and not model_cfg.extra_body):
+            return agent
+        settings = OpenAIChatPromptExecutionSettings(service_id=model_cfg.id)
+        if model_cfg.max_tokens is not None:
+            settings.max_tokens = model_cfg.max_tokens
+        if model_cfg.extra_body:
+            settings.extra_body = copy.deepcopy(model_cfg.extra_body)
+        return agent.model_copy(update={"arguments": KernelArguments(settings=settings)})
 
     def _create_inline_agent(
         self, agent_cfg: AgentConfig

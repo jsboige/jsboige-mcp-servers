@@ -2580,7 +2580,9 @@ async def review_pr(
             "agent_used": agent_id,
             "tier": tier,
             "duration_seconds": elapsed,
-            "timeout_used": effective_timeout,
+            # #3797: call_agent reports the ceiling it actually applied,
+            # which the model coupling may have raised above the tier value.
+            "timeout_used": result.get("timeout", effective_timeout),
         }, indent=2, ensure_ascii=False)
 
     response_text = result.get("response", "") if isinstance(result, dict) else str(result)

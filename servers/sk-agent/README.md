@@ -280,8 +280,11 @@ MCP caller (client-side tool timeout)          ← governs the WHOLE tool call
 `run_conversation` has no internal `wait_for`: each LLM turn is bounded only
 by the per-model client budget, and the whole conversation is bounded by the
 MCP caller's tool timeout (level 3). Model `max_tokens` / `extra_body`
-overrides apply to the `call_agent` handler paths (the conversation runner
-invokes agents without server-side execution settings, as before).
+overrides reach conversation agents too: each agent whose model declares
+one of them runs as a conversation-scoped copy carrying only those two
+fields (no global sampling, no `enable_thinking` injection — conversation
+agents never had either). The shared agents that `call_agent` reuses are
+never modified, and a model declaring neither field runs exactly as before.
 
 ## Vector Memory
 
