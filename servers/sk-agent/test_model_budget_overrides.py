@@ -181,6 +181,26 @@ class TestModelMaxTokens:
         )
         assert s.max_tokens == 8000
 
+    def test_thinking_model_max_tokens_without_extra_body(self):
+        # The #3797 target shape: a thinking model (glm-5.3 is thinking=True)
+        # that declares ONLY max_tokens — no extra_body, no per-call override.
+        # No other branch rebuilds the settings in that case, so the model
+        # budget must be applied on its own, and the sampling-derived
+        # extra_body must survive the rebuild.
+        manager = SKAgentManager(
+            SKAgentConfig(
+                models=[
+                    _model("m-tok", model_id="tok", thinking=True, max_tokens=12000)
+                ],
+                agents=[AgentConfig(id="a-tok", model="m-tok")],
+                sampling=SamplingConfig(top_k=20),
+                default_agent="a-tok",
+            )
+        )
+        s = _settings(manager._get_invoke_kwargs("a-tok"))
+        assert s.max_tokens == 12000
+        assert s.extra_body == {"top_k": 20}
+
 
 # ---------------------------------------------------------------------------
 # (d) extra_body passthrough + merge precedence

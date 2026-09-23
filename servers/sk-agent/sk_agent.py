@@ -1613,11 +1613,14 @@ class SKAgentManager:
         # enable_thinking injection below keeps winning on its key without
         # clobbering other keys a model may declare.
         effective_max_tokens = settings.max_tokens
-        if model_cfg:
+        # Rebuild whenever the model declares either field: a thinking model
+        # declaring only max_tokens reaches no later rebuild branch, so the
+        # budget must be applied here or it is dead config.
+        if model_cfg and (model_cfg.max_tokens is not None or model_cfg.extra_body):
             if model_cfg.max_tokens is not None:
                 effective_max_tokens = model_cfg.max_tokens
+            merged_extra = dict(settings.extra_body or {})
             if model_cfg.extra_body:
-                merged_extra = dict(settings.extra_body or {})
                 model_ctk = model_cfg.extra_body.get("chat_template_kwargs")
                 merged_extra.update(model_cfg.extra_body)
                 if isinstance(model_ctk, dict):
@@ -1629,14 +1632,14 @@ class SKAgentManager:
                             **base_ctk,
                             **model_ctk,
                         }
-                settings = OpenAIChatPromptExecutionSettings(
-                    temperature=settings.temperature,
-                    top_p=settings.top_p,
-                    presence_penalty=settings.presence_penalty,
-                    max_tokens=effective_max_tokens,
-                )
-                if merged_extra:
-                    settings.extra_body = merged_extra
+            settings = OpenAIChatPromptExecutionSettings(
+                temperature=settings.temperature,
+                top_p=settings.top_p,
+                presence_penalty=settings.presence_penalty,
+                max_tokens=effective_max_tokens,
+            )
+            if merged_extra:
+                settings.extra_body = merged_extra
 
         if model_cfg and not model_cfg.thinking:
             extra = dict(settings.extra_body or {})
