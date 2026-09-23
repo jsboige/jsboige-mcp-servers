@@ -1632,6 +1632,8 @@ async function withRosterCheck(
 /**
  * Machines du registre partagé `.machine-registry.json`, triées — `null` si absent ou illisible.
  * Le registre est écrit par chaque machine à son enregistrement ; c'est la référence vivante.
+ * Clés en minuscules, comme le roster (parseFleetRoster) et BaselineManager pour ce même fichier.
+ * Il n'oublie aucune machine (ajout seul) : une machine retirée de la flotte y reste.
  */
 async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ machines: string[]; updated?: string } | null> {
   if (!sharedPath) return null;
@@ -1639,7 +1641,7 @@ async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ m
   try {
     if (!existsSync(registryPath)) return null;
     const data = JSON.parse(await fsPromises.readFile(registryPath, 'utf-8'));
-    const machines = Object.keys(data?.machines || {}).sort();
+    const machines = [...new Set(Object.keys(data?.machines || {}).map(k => k.toLowerCase()))].sort();
     return machines.length > 0 ? { machines, updated: data?.lastUpdated } : null;
   } catch {
     return null;
@@ -1726,7 +1728,7 @@ async function checkRosterConsistency(
   const rosterAction = (missingFromRoster: string[], extraInRoster: string[]): string => {
     const parts: string[] = [];
     if (missingFromRoster.length) {
-      parts.push(`Ajouter ${missingFromRoster.join(', ')} au ROO_FLEET_ROSTER de TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts)`);
+      parts.push(`Ajouter ${missingFromRoster.join(', ')} au ROO_FLEET_ROSTER de TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts) — après avoir confirmé que la machine est toujours en service (le registre n'oublie aucune machine)`);
     }
     if (extraInRoster.length) {
       parts.push(`NE PAS retirer ${extraInRoster.join(', ')} sur la seule foi du ${refLabel} : confirmer d'abord que la machine a quitté la flotte (ou qu'elle manque seulement à la référence)`);

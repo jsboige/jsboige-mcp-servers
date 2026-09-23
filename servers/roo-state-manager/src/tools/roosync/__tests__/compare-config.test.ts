@@ -926,6 +926,22 @@ describe('compare-config', () => {
 			}
 		});
 
+		test('registry keys are compared case-insensitively, like the roster', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_7 });
+			mockDashboard6();
+			mockRegistry(FLEET_7.map(m => m === 'myia-po-2027' ? 'MYIA-PO-2027' : m));
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-ai-01', targetMachine: 'myia-po-2023', hostId: 'myia-ai-01', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff!.severity).toBe('INFO');
+			} finally {
+				restoreFs();
+			}
+		});
+
 		test('roster missing a registry member → CRITICAL, the action ADDS it', async () => {
 			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_6 });
 			mockDashboard6();
