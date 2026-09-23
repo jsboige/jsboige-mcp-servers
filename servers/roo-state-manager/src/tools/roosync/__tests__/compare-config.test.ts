@@ -888,6 +888,94 @@ describe('compare-config', () => {
 			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
 			expect(rosterDiff).toBeUndefined(); // check silently skipped, compare_config still returns
 		});
+
+		// 16/09 : le dashboard (instantané figé au 06/03, 6 machines) servait de canon et faisait
+		// prescrire le RETRAIT de myia-po-2027, 7e machine légitime. Le registre vivant est la référence.
+		const FLEET_7 = [...FLEET_6, 'myia-po-2027'].sort();
+
+		function mockRegistry(machines: string[]) {
+			const registry = { lastUpdated: '2026-09-22T19:58:04.635Z', machines: Object.fromEntries(machines.map(m => [m, { machineId: m, status: 'online' }])) };
+			mockExistsSync.mockImplementation((p: any) => String(p).endsWith('.machine-registry.json'));
+			mockReadFile.mockImplementation(async (p: any) => {
+				if (String(p).endsWith('.machine-registry.json')) return JSON.stringify(registry);
+				throw new Error(`unexpected read ${p}`);
+			});
+		}
+
+		function restoreFs() {
+			mockExistsSync.mockImplementation(() => false);
+			mockReadFile.mockReset();
+		}
+
+		test('registry is the reference: 7-machine roster vs 7-machine registry → INFO despite a stale 6-machine dashboard', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_7 });
+			mockDashboard6();
+			mockRegistry(FLEET_7);
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-ai-01', targetMachine: 'myia-po-2023', hostId: 'myia-ai-01', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff).toBeDefined();
+				expect(rosterDiff!.severity).toBe('INFO');
+				expect(rosterDiff!.description).toContain('registre');
+				expect(result.differences.filter(d => d.severity === 'CRITICAL' && d.path === 'env.ROO_FLEET_ROSTER')).toHaveLength(0);
+			} finally {
+				restoreFs();
+			}
+		});
+
+		test('registry keys are compared case-insensitively, like the roster', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_7 });
+			mockDashboard6();
+			mockRegistry(FLEET_7.map(m => m === 'myia-po-2027' ? 'MYIA-PO-2027' : m));
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-ai-01', targetMachine: 'myia-po-2023', hostId: 'myia-ai-01', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff!.severity).toBe('INFO');
+			} finally {
+				restoreFs();
+			}
+		});
+
+		test('roster missing a registry member → CRITICAL, the action ADDS it', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_6 });
+			mockDashboard6();
+			mockRegistry(FLEET_7);
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-ai-01', targetMachine: 'myia-po-2023', hostId: 'myia-ai-01', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff!.severity).toBe('CRITICAL');
+				expect(rosterDiff!.description).toContain('manquantes du roster: myia-po-2027');
+				expect(rosterDiff!.action).toContain('Ajouter myia-po-2027');
+				expect(rosterDiff!.action).not.toContain('NE PAS retirer');
+			} finally {
+				restoreFs();
+			}
+		});
+
+		test('no registry, stale 6-machine dashboard vs 7-machine roster → never prescribes removing po-2027', async () => {
+			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_7 });
+			mockDashboard6();
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-ai-01', targetMachine: 'myia-po-2023', hostId: 'myia-ai-01', differences: []
+			});
+
+			const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
+
+			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+			expect(rosterDiff!.severity).toBe('CRITICAL');
+			expect(rosterDiff!.action).toContain('NE PAS retirer myia-po-2027');
+			expect(rosterDiff!.action).not.toContain('Aligner sur le roster canonique');
+			expect(rosterDiff!.action).not.toContain('Ajouter');
+		});
 	});
 
 	// ============================================================
