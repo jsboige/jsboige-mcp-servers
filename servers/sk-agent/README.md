@@ -216,6 +216,73 @@ v1 configs (without `config_version`) are auto-migrated: each model becomes an a
 | `embeddings` | Embeddings endpoint for vector memory |
 | `qdrant` | Qdrant vector store connection |
 
+### Per-model budget overrides (#3797)
+
+A model entry may declare three OPTIONAL fields — absent fields keep the
+current behaviour exactly (no ceiling change, global budget, sampling-only
+`extra_body`):
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `request_timeout_s` | `null` (= 300 s) | OpenAI client timeout for this model. Declaring it **also couples** the `call_agent` wait_for ceiling (see Timeout chain). |
+| `max_tokens` | `null` (= global `sampling.max_tokens`, 4096) | Default output budget for the model. Precedence: per-call / `agent_spec` sampling override > model default > global. |
+| `extra_body` | `{}` | Generic vLLM passthrough merged into the request `extra_body`. Model keys override sampling-derived keys (`top_k`/`min_p`/`repetition_penalty` — per-model is more specific than server-wide); `chat_template_kwargs` is deep-merged, so the code-injected `enable_thinking` keeps winning on its key without clobbering other keys. |
+
+Example — the notebook-auditor case: a local model under parallel load that
+bumps into the 300 s client budget, with a raised thinking budget:
+
+```json
+{
+  "id": "qwen3.6-35b-a3b-slow",
+  "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+  "model_id": "qwen3.6-35b-a3b",
+  "thinking": true,
+  "request_timeout_s": 600,
+  "max_tokens": 8000,
+  "extra_body": { "chat_template_kwargs": { "thinking_budget": 2048 } }
+}
+```
+
+Deploying real values is a per-model operations decision, made one model at
+a time (nothing is activated in the shipped template).
+
+## Timeout chain (#3797)
+
+Every `call_agent` invocation is bounded by a chain of delays — **the
+effective timeout is the minimum of the chain**, so a budget raised at one
+level is dead config if a lower ceiling cuts the call first:
+
+```
+MCP caller (client-side tool timeout)          ← governs the WHOLE tool call
+  └─ call_agent wait_for ceiling               ← asyncio.wait_for, sk_agent.py
+       ├─ pre-LLM work (attachment conversion, memory recall, MCP plugin calls)
+       └─ LLM client budget                    ← AsyncOpenAI timeout, per model
+```
+
+1. **LLM client (per model)** — `request_timeout_s` on the model entry
+   (default 300 s, `#1587`: openai-python's own default of 600 s + 2 retries
+   would outlive every tool ceiling). `max_retries=1`: a single attempt must
+   fit under the wait_for ceiling; a pathological retry may be cut by it —
+   unchanged from #1587.
+2. **`call_agent` wait_for (tiers)** — the `timeout` parameter (default
+   120 s, `0` = no limit); `review_pr` raises it per tier (60/180/300 s).
+   **Coupling (#3797):** when the resolved model DECLARES
+   `request_timeout_s`, the ceiling becomes
+   `max(caller timeout, request_timeout_s + 30 s)` — the 30 s margin covers
+   the pre-LLM work sharing the same window. Undeclared models keep the
+   legacy ceilings untouched (non-regression).
+3. **MCP transport** — no server-side ceiling in this repo: stdio is bounded
+   only by the caller's client-side MCP timeout; streamable-http (uvicorn)
+   sets no request timeout either. **The caller must allow the full chain**:
+   its tool timeout must exceed the call_agent ceiling it expects, plus
+   margin for post-processing.
+
+`run_conversation` has no internal `wait_for`: each LLM turn is bounded only
+by the per-model client budget, and the whole conversation is bounded by the
+MCP caller's tool timeout (level 3). Model `max_tokens` / `extra_body`
+overrides apply to the `call_agent` handler paths (the conversation runner
+invokes agents without server-side execution settings, as before).
+
 ## Vector Memory
 
 When `memory.enabled: true` on an agent, it gets a `TextMemoryPlugin` with:

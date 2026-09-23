@@ -107,6 +107,7 @@ from sk_agent_config import (
     CONFIG_PATH,
     SK_AGENT_DEPTH,
     DEFAULT_MAX_RECURSION_DEPTH,
+    DEFAULT_REQUEST_TIMEOUT_S,
     can_spawn_recursive_agent,
     is_self_referential_mcp,
 )
@@ -174,6 +175,14 @@ def _sanitize_agent_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 # Attachment Classification
 # ---------------------------------------------------------------------------
+
+# #3797: headroom added on top of a model's request_timeout_s when coupling
+# the call_agent wait_for ceiling to the per-model client budget. Covers the
+# pre-LLM work that shares the same wait_for window (attachment conversion,
+# memory recall, MCP plugin calls before the first LLM turn). The retry
+# budget (max_retries=1 can double the wall time) is deliberately NOT
+# guaranteed — the ceiling may cut a pathological retry, as in #1587.
+CALL_CEILING_MARGIN_S = 30.0
 
 # File extension -> content type mapping
 _IMAGE_EXTENSIONS = {
@@ -454,10 +463,20 @@ class SKAgentManager:
                 api_key = model_cfg.resolve_api_key()
                 # #1587: explicit client budget — openai-python defaults to 600s
                 # + 2 retries, which outlives every call_agent wait_for ceiling.
+                # #3797: the budget is per-model (None → 300, see
+                # DEFAULT_REQUEST_TIMEOUT_S); the call_agent wait_for ceiling
+                # is coupled to a DECLARED budget in _effective_call_timeout,
+                # so a raised budget is not silently cancelled at a lower tool
+                # ceiling — while undeclared models keep the exact legacy
+                # behaviour (non-regression).
                 client = AsyncOpenAI(
                     api_key=api_key,
                     base_url=model_cfg.base_url,
-                    timeout=300.0,
+                    timeout=(
+                        model_cfg.request_timeout_s
+                        if model_cfg.request_timeout_s is not None
+                        else DEFAULT_REQUEST_TIMEOUT_S
+                    ),
                     max_retries=1,
                 )
                 self._openai_clients[model_cfg.id] = client
@@ -1025,6 +1044,147 @@ class SKAgentManager:
         self._threads[new_id] = thread
         return new_id, thread
 
+    def _resolve_call_model_cfg(
+        self,
+        agent_id: str | None,
+        attachment: str | list[str] | None,
+        options: dict | None,
+        model_id: str | None,
+        model_override: str | None,
+        agent_spec: dict | None,
+    ) -> ModelConfig | None:
+        """Best-effort, side-effect-free resolution of the model this call
+        will use — feeds the #3797 wait_for ceiling coupling.
+
+        Mirrors the selection priority of ``call_agent`` (call-level
+        model_override > agent_spec model / extends preset > explicit
+        agent_id > model_id compat > vision default > default agent > first
+        agent) without creating agents, loading MCPs or strictly parsing the
+        spec. A wrong guess can only pick the wrong ceiling floor — the real
+        resolution inside ``_execute`` is untouched. Best-effort by design:
+        any resolution failure returns None (caller timeout kept as-is).
+        """
+        try:
+            def _model_of(model_ref: Any) -> ModelConfig | None:
+                if isinstance(model_ref, str):
+                    cfg = self.config.get_model(model_ref)
+                    if cfg is not None and cfg.enabled:
+                        return cfg
+                return None
+
+            # 1. Explicit per-call model override (legacy path AND the
+            #    call-level layer an agent_spec consumes).
+            if model_override:
+                m = _model_of(model_override)
+                if m is not None:
+                    return m
+
+            # 2. agent_spec: declared model, else the extends preset's model.
+            if isinstance(agent_spec, dict):
+                m = _model_of(agent_spec.get("model"))
+                if m is not None:
+                    return m
+                extends = agent_spec.get("extends")
+                if isinstance(extends, str):
+                    base = self.config.get_agent(extends)
+                    if base is not None:
+                        m = _model_of(base.model)
+                        if m is not None:
+                            return m
+
+            # 3. Explicit agent_id -> that agent's model.
+            if agent_id:
+                cfg = self.config.get_agent(agent_id)
+                if cfg is not None:
+                    m = _model_of(cfg.model)
+                    if m is not None:
+                        return m
+
+            # 4. Backward-compat model_id -> agent using that model.
+            if model_id:
+                cfg = self.config.find_agent_for_model(model_id)
+                if cfg is not None:
+                    m = _model_of(cfg.model)
+                    if m is not None:
+                        return m
+
+            # 5.-7. Mirror _resolve_agent's fallback chain: vision default,
+            # default agent, first agent. needs_vision follows the same
+            # classification as _execute (mode=text lifts the vision
+            # requirement on documents).
+            first_attachment = attachment[0] if attachment else None
+            attachment_type = (
+                classify_attachment(first_attachment) if first_attachment else None
+            )
+            needs_vision = attachment_type in ("image", "video", "document")
+            opts = options or {}
+            if attachment_type == "document" and opts.get("mode") == "text":
+                needs_vision = False
+
+            if needs_vision:
+                vision_cfg = self.config.get_default_vision_agent()
+                if vision_cfg is not None:
+                    m = _model_of(vision_cfg.model)
+                    if m is not None:
+                        return m
+            default_cfg = self.config.get_default_agent()
+            if default_cfg is not None:
+                m = _model_of(default_cfg.model)
+                if m is not None:
+                    return m
+            if self.config.agents:
+                m = _model_of(self.config.agents[0].model)
+                if m is not None:
+                    return m
+        except Exception:
+            # Advisory computation only — never break the real call.
+            log.debug(
+                "call ceiling coupling: model resolution failed, keeping "
+                "caller timeout",
+                exc_info=True,
+            )
+        return None
+
+    def _effective_call_timeout(
+        self,
+        timeout: int | float | None,
+        *,
+        agent_id: str | None = None,
+        attachment: str | list[str] | None = None,
+        options: dict | None = None,
+        model_id: str | None = None,
+        model_override: str | None = None,
+        agent_spec: dict | None = None,
+    ) -> int | float | None:
+        """#3797: couple the call_agent wait_for ceiling to the model's client
+        budget — the effective timeout is ``min`` of the chain, so a model
+        granted ``request_timeout_s=600`` must not be cancelled by a lower
+        tool ceiling (default 120, review_pr tiers 60/180/300).
+
+        Rule: ``ceiling = max(caller timeout, request_timeout_s + margin)``
+        when the resolved model DECLARES ``request_timeout_s`` (None = not
+        declared → legacy uncoupled ceilings, non-regression) and a caller
+        timeout is set (> 0); ``0``/``None`` (no limit) passes through
+        unchanged. The margin (``CALL_CEILING_MARGIN_S``) covers the pre-LLM
+        work sharing the window; the client retry budget is not guaranteed
+        (unchanged from #1587: a single attempt fits, a pathological retry
+        may be cut).
+        """
+        if timeout is None or timeout <= 0:
+            return timeout
+        model_cfg = self._resolve_call_model_cfg(
+            agent_id=agent_id,
+            attachment=attachment,
+            options=options,
+            model_id=model_id,
+            model_override=model_override,
+            agent_spec=agent_spec,
+        )
+        if model_cfg is None or model_cfg.request_timeout_s is None:
+            return timeout
+        floor = model_cfg.request_timeout_s + CALL_CEILING_MARGIN_S
+        return max(timeout, floor)
+
     # -----------------------------------------------------------------------
     # Unified call_agent
     # -----------------------------------------------------------------------
@@ -1377,9 +1537,21 @@ class SKAgentManager:
                     spec_sampling_overrides,
                 )
 
+        # #3797: the wait_for ceiling must not sit below the resolved model's
+        # client budget, else the per-model request_timeout_s is dead config.
+        effective_timeout = self._effective_call_timeout(
+            timeout,
+            agent_id=agent_id,
+            attachment=attachment,
+            options=options,
+            model_id=model_id,
+            model_override=model_override,
+            agent_spec=agent_spec,
+        )
+
         try:
-            if timeout is not None and timeout > 0:
-                result = await asyncio.wait_for(_execute(), timeout=timeout)
+            if effective_timeout is not None and effective_timeout > 0:
+                result = await asyncio.wait_for(_execute(), timeout=effective_timeout)
             else:
                 result = await _execute()
 
@@ -1395,8 +1567,8 @@ class SKAgentManager:
             return result
         except asyncio.TimeoutError:
             return {
-                "error": f"call_agent timed out after {timeout}s",
-                "timeout": timeout,
+                "error": f"call_agent timed out after {effective_timeout}s",
+                "timeout": effective_timeout,
             }
 
     # -----------------------------------------------------------------------
@@ -1432,14 +1604,55 @@ class SKAgentManager:
         else:
             model_cfg = None
 
-        if model_cfg and not model_cfg.thinking:
-            extra = dict(settings.extra_body or {})
-            extra["chat_template_kwargs"] = {"enable_thinking": False}
+        # #3797: per-model output budget + extra_body passthrough.
+        # max_tokens precedence: per-call / agent_spec sampling override >
+        # model default > global sampling (applied below, in that order).
+        # extra_body precedence: model keys override sampling-derived keys
+        # (top_k/min_p/repetition_penalty — per-model is more specific than
+        # server-wide); chat_template_kwargs is deep-merged so the
+        # enable_thinking injection below keeps winning on its key without
+        # clobbering other keys a model may declare.
+        effective_max_tokens = settings.max_tokens
+        # Rebuild whenever the model declares either field: a thinking model
+        # declaring only max_tokens reaches no later rebuild branch, so the
+        # budget must be applied here or it is dead config.
+        if model_cfg and (model_cfg.max_tokens is not None or model_cfg.extra_body):
+            if model_cfg.max_tokens is not None:
+                effective_max_tokens = model_cfg.max_tokens
+            merged_extra = dict(settings.extra_body or {})
+            if model_cfg.extra_body:
+                model_ctk = model_cfg.extra_body.get("chat_template_kwargs")
+                merged_extra.update(model_cfg.extra_body)
+                if isinstance(model_ctk, dict):
+                    base_ctk = (settings.extra_body or {}).get(
+                        "chat_template_kwargs"
+                    )
+                    if isinstance(base_ctk, dict):
+                        merged_extra["chat_template_kwargs"] = {
+                            **base_ctk,
+                            **model_ctk,
+                        }
             settings = OpenAIChatPromptExecutionSettings(
                 temperature=settings.temperature,
                 top_p=settings.top_p,
                 presence_penalty=settings.presence_penalty,
-                max_tokens=settings.max_tokens,
+                max_tokens=effective_max_tokens,
+            )
+            if merged_extra:
+                settings.extra_body = merged_extra
+
+        if model_cfg and not model_cfg.thinking:
+            extra = dict(settings.extra_body or {})
+            existing_ctk = extra.get("chat_template_kwargs")
+            extra["chat_template_kwargs"] = {
+                **(existing_ctk if isinstance(existing_ctk, dict) else {}),
+                "enable_thinking": False,
+            }
+            settings = OpenAIChatPromptExecutionSettings(
+                temperature=settings.temperature,
+                top_p=settings.top_p,
+                presence_penalty=settings.presence_penalty,
+                max_tokens=effective_max_tokens,
                 extra_body=extra,
             )
 
@@ -1451,7 +1664,9 @@ class SKAgentManager:
                 ),
                 top_p=sampling_override.get("top_p", settings.top_p),
                 presence_penalty=settings.presence_penalty,
-                max_tokens=sampling_override.get("max_tokens", settings.max_tokens),
+                max_tokens=sampling_override.get(
+                    "max_tokens", effective_max_tokens
+                ),
             )
             if extra_body:
                 settings.extra_body = extra_body
