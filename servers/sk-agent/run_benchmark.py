@@ -23,9 +23,9 @@ from benchmark_models import TASKS, generate_benchmark_report
 
 # Models to benchmark (enabled, non-Anthropic, non-OWUI-disabled)
 BENCHMARK_MODEL_IDS = [
-    "glm-5.1",
+    "glm-5.3",
     "glm-5",
-    "glm-5.1-not",
+    "glm-5.3-not",
     "glm-5-not",
     "glm-4.7-flash",
     "qwen3.6-35b-a3b",

@@ -2320,7 +2320,7 @@ async def call_agent(
             or {"replace": ["mcp_id1", "mcp_id2"]} for full replacement.
         agent_spec: JSON string to compose an agent à la carte (#3407): model +
             prompt + capabilities + tools + execution, optionally specializing
-            a preset via extends. {"extends":"analyst","model":"glm-5.1",
+            a preset via extends. {"extends":"analyst","model":"glm-5.3",
             "mcps":{"replace":[]},"sampling":{"temperature":0.3}} — precedence:
             call override > spec > preset > default; only server-configured
             models/MCPs may be referenced; the response carries
@@ -2479,8 +2479,8 @@ async def review_pr(
 ) -> str:
     """Review a GitHub pull request using multi-tier automated code review.
 
-    Tier 1: Diff-only fast review (glm-4.7-flash, <30s). For PRs <=50 LOC.
-    Tier 2: Diff + context exploration (glm-5.1, 2-5min). Default.
+    Tier 1: Diff-only fast review (glm-5.3-flash, <30s). For PRs <=50 LOC.
+    Tier 2: Diff + context exploration (glm-5.3, 2-5min). Default.
     Tier 3: Diff + context + execution (deep review, 5-15min). Future.
 
     Args:
