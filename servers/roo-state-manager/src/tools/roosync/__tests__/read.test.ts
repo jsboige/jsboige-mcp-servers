@@ -164,8 +164,12 @@ describe.sequential('roosyncRead', () => {
       for (let i = 0; i < 100; i++) {
         await messageManager.sendMessage('sender-x', 'other-machine', `Pool ${i}`, 'B', 'LOW');
       }
-      // Written last = newest file → inside the 100-file recent slice.
-      await messageManager.sendMessage('sender-1', 'test-machine', 'Mine', 'B', 'MEDIUM');
+      // The recent slice keeps the 100 highest FILE NAMES, and an auto id has only
+      // second resolution (`msg-YYYYMMDDTHHmmss-<random>`): when all 101 sends land in
+      // the same second, the random suffix decides whether "Mine" makes the slice
+      // (red on node 20, green on node 22, same head). An explicit id pins it newest.
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Mine', 'B', 'MEDIUM',
+        undefined, undefined, undefined, { messageId: 'msg-99991231T235959-mine' });
 
       const result = await roosyncRead({ mode: 'inbox' });
       const text = (result.content[0] as any).text as string;
