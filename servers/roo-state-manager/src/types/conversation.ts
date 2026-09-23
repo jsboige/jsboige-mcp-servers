@@ -50,6 +50,10 @@ export interface SkeletonMetadata {
     machineId?: string;
     qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
     dataSource?: string;
+    /** #3661 — Tier 3 stub: sequence vide, corps chargé à la demande. */
+    hydrated?: boolean;
+    /** #3661 — Tier 3 stub: fichier archive GDrive backing cette entrée. */
+    archiveFilePath?: string;
     source?: 'roo' | 'claude-code' | 'zoo-code';
     parentTaskId?: string;
     indexingState?: IndexingState;

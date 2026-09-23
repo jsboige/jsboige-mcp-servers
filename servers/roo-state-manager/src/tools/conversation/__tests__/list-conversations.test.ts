@@ -55,6 +55,7 @@ vi.mock('fs', async () => {
 import { listConversationsTool } from '../list-conversations.tool.js';
 import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
+import { archiveToSkeleton, archiveToStub } from '../../../services/archive-skeleton-builder.js';
 
 // ─────────────────── helpers ───────────────────
 
@@ -951,6 +952,75 @@ describe('listConversationsTool.handler', () => {
       const conversations = parsed.conversations ?? parsed;
 
       expect(conversations[0].metadata.messageCount).toBe(42);
+    });
+  });
+
+  // ============================================================
+  // #3661: Tier 3 archive stubs — listing preview parity
+  // (review 23/09 17:05Z: a stub must render the same preview fields
+  //  as a full skeleton built on the same archive, not title-only)
+  // ============================================================
+
+  describe('Tier 3 archive stub preview parity (#3661)', () => {
+    const makeArchive = () => ({
+      version: 1 as any,
+      taskId: 't-arch-3661',
+      machineId: 'myia-web1',
+      hostIdentifier: 'h',
+      archivedAt: '2026-04-01T00:00:00Z',
+      metadata: { title: 'Stub archive', source: 'roo' as const, messageCount: 4, isCompleted: false },
+      messages: [
+        { role: 'user' as const, content: 'first user question about the fleet', timestamp: '2026-03-01T00:00:00Z' },
+        { role: 'assistant' as const, content: 'assistant mid answer', timestamp: '2026-03-02T00:00:00Z' },
+        { role: 'user' as const, content: 'second user question', timestamp: '2026-03-03T00:00:00Z' },
+        { role: 'assistant' as const, content: 'final assistant answer with the outcome', timestamp: '2026-03-04T00:00:00Z' },
+      ],
+    });
+
+    test('stub renders the same preview fields as a full skeleton built on the same archive', async () => {
+      const archive = makeArchive();
+      const full = archiveToSkeleton(archive);
+      full.taskId = 't-full';
+      const stub = archiveToStub(archive, 'Z:\\archives\\t-arch-3661.json');
+      stub.taskId = 't-stub';
+
+      const cache = makeCache(full, stub);
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+      const conversations = parsed.conversations ?? parsed;
+
+      expect(conversations).toHaveLength(2);
+      const byId: Record<string, any> = Object.fromEntries(conversations.map((c: any) => [c.taskId, c]));
+      const fullRow = byId['t-full'];
+      const stubRow = byId['t-stub'];
+
+      // Stub must NOT regress to title-only previews
+      expect(stubRow.firstUserMessage).toBe('first user question about the fleet');
+      expect(stubRow.lastUserMessage).toBe('second user question');
+      expect(stubRow.lastMessage).toBe('final assistant answer with the outcome');
+      expect(stubRow.lastMessageRole).toBe('assistant');
+
+      // Regression guard: preview parity with the full skeleton (same archive)
+      expect(stubRow.firstUserMessage).toBe(fullRow.firstUserMessage);
+      expect(stubRow.lastUserMessage).toBe(fullRow.lastUserMessage);
+      expect(stubRow.lastMessage).toBe(fullRow.lastMessage);
+      expect(stubRow.lastMessageRole).toBe(fullRow.lastMessageRole);
+      expect(stubRow.userMessageCount).toBe(fullRow.userMessageCount);
+      expect(stubRow.assistantMessageCount).toBe(fullRow.assistantMessageCount);
+    });
+
+    test('stub without messages still falls back to metadata.title', async () => {
+      const archive = { ...makeArchive(), messages: [] };
+      const stub = archiveToStub(archive, 'Z:\\archives\\empty.json');
+      stub.taskId = 't-stub-empty';
+
+      const cache = makeCache(stub);
+      const result = await listConversationsTool.handler({}, cache);
+      const parsed = JSON.parse((result.content[0] as any).text);
+      const conversations = parsed.conversations ?? parsed;
+
+      expect(conversations[0].firstUserMessage).toBe('Stub archive');
+      expect(conversations[0].lastMessage).toBeUndefined();
     });
   });
 });

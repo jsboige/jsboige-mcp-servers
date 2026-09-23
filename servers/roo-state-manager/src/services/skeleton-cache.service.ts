@@ -48,6 +48,26 @@ export class SkeletonCacheService {
      *  at once. */
     private loadPromise: Promise<void> | null = null;
     private readonly CACHE_VALIDITY_MS = 30 * 60 * 1000; // 30 minutes (was 5min, increased for stability)
+    /**
+     * #3661 (design stubs, décision 5791190594) — Tier 3 = stubs metadata +
+     * hydratation on-demand des corps.
+     * `tier3Index` maps every archived taskId to its file (cheap full listing).
+     * Le cold load crée un STUB par entrée d'index (metadata + filePath,
+     * sequence vide, `metadata.hydrated=false`) : visibilité cross-machine
+     * intégrale pour un coût mémoire mesuré de ~585 o/stub (corpus po-204,
+     * 1 009/8 069 échantillonnés) — ~4,5 Mo projetés pour tout le corpus
+     * contre ~524 Mo de corps complets (facteur ~117×). L'hydratation d'une
+     * `sequence` est PAR ENTRÉE : `tier3HydratedTicks` (taskId → LRU tick) et
+     * `tier3HydratedBytes` (taskId → bytes du corps hydraté, le stub n'est pas
+     * compté) bornent les CORPS via SKELETON_ARCHIVE_TIER_MAX_MB avec eviction
+     * LRU par entrée — l'éviction DÉSHYDRATE (retour au stub), l'entrée reste
+     * visible dans le cache.
+     */
+    private tier3Index: Map<string, { filePath: string; machineId: string }> = new Map();
+    private tier3HydratedTicks: Map<string, number> = new Map();
+    private tier3HydratedBytes: Map<string, number> = new Map();
+    private tier3HydrationPromises: Map<string, Promise<boolean>> = new Map();
+    private tier3LruCounter = 0;
 
     private constructor() {
         // Constructor privé pour pattern singleton
@@ -536,50 +556,69 @@ export class SkeletonCacheService {
      * #1244 Couche 1.1 — Tier 3: Charger les archives cross-machine depuis GDrive.
      *
      * Lit `task-archive/<machineId>/<taskId>.json.gz` (sibling de `.shared-state`,
-     * jsboige-mcp-servers#608 / roo-extensions#3562) via
-     * `TaskArchiver`, convertit chaque archive en `ConversationSkeleton` via
-     * `archiveToSkeleton()`, et merge dans le cache. Les collisions sont
-     * resolues en faveur des tiers chauds (local Roo/Claude > archive remote).
+     * jsboige-mcp-servers#608 / roo-extensions#3562) via `TaskArchiver`.
      *
+     * #3661 (design stubs, décision 5791190594 — remplace le machine-scope) :
+     *  - Phase 1 (pas chère) : index complet taskId → fichier (un readdir par
+     *    machine-dir, quelques Mo pour ~11k entrées).
+     *  - Phase 1.5 : re-comptage de l'accounting d'hydratation depuis le cache
+     *    résident (le refresh n'évince pas — sans re-comptage, total=0 ≤ cap et
+     *    le plafond se désarme au premier refresh, review #1205 pt 7).
+     *  - Phase 2 : STUB metadata pour CHAQUE entrée d'index (`archiveToStub` :
+     *    lecture de l'archive pour la metadata seule, AUCUN corps retenu).
+     *    Visibilité cross-machine intégrale dès le cold load. Les CORPS
+     *    s'hydratent à la demande via `ensureConversationHydrated()`, sous
+     *    plafond `SKELETON_ARCHIVE_TIER_MAX_MB` avec déshydratation LRU.
+     *
+     * Collisions inchangées : les tiers chauds gagnent (local Roo/Claude > archive).
      * Necessite `ROOSYNC_SHARED_PATH` (sinon `getSharedStatePath()` throw —
      * capture par le try/catch global, no-op silencieux).
-     *
-     * **Attention scale:** Peut charger des milliers d'archives (flotte typique:
-     * 11k+). Activable uniquement en production via `configure({ enableArchiveTier: true })`.
-     *
-     * #1244 (perf fix): Parallelise les reads avec concurrence bornee (20) et
-     * appelle `readArchivedTaskFromPath` directement (plus de probe O(M) par
-     * taskId). Reduit le cold-start de 30s+ → ~3-5s pour 11k archives.
      */
     private async loadArchivedSkeletonsFromGDrive(): Promise<void> {
         try {
             const { TaskArchiver } = await import('./task-archiver/index.js');
-            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
+            const { archiveToStub } = await import('./archive-skeleton-builder.js');
 
-            // Phase 1: Liste tous les fichiers d'archive avec leur chemin direct.
-            // Un seul readdir par machine-dir (interne a listArchivedTaskFiles).
+            // Phase 1: Index complet du corpus (listing seul — aucun payload lu).
             const allFiles = await TaskArchiver.listArchivedTaskFiles();
+            this.tier3Index.clear();
+            for (const item of allFiles) {
+                this.tier3Index.set(item.taskId, { filePath: item.filePath, machineId: item.machineId });
+            }
 
-            if (allFiles.length === 0) {
-                console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive trouvee');
+            if (this.tier3Index.size === 0) {
+                console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive indexee');
                 return;
             }
 
-            // Phase 2: Construire la work queue en evitant les collisions connues
+            // Phase 1.5: le refresh ne vide PAS le cache. Re-compter les corps
+            // hydratés résidents (dataSource gdrive-archive + hydrated=true) :
+            // sinon tier3HydratedBytes=0 → enforceTier3Cap rend total=0 ≤ cap →
+            // le plafond se désarme au premier refresh (review #1205 pt 7).
+            this.tier3HydratedTicks.clear();
+            this.tier3HydratedBytes.clear();
+            for (const [taskId, skeleton] of this.cache) {
+                if (skeleton.metadata?.dataSource !== 'gdrive-archive') continue;
+                if (skeleton.metadata?.hydrated !== true) continue;
+                this.tier3HydratedBytes.set(taskId, JSON.stringify(skeleton.sequence ?? []).length);
+                this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
+            }
+
+            // Phase 2: STUBS pour toute entrée d'index non déjà résidente (les
+            // collisions tiers chauds et les entrées déjà stubées/hydratées
+            // sont ignorées — idempotent pour le refresh).
             type WorkItem = { taskId: string; filePath: string };
             const workQueue: WorkItem[] = [];
-            for (const item of allFiles) {
-                if (!this.cache.has(item.taskId)) {
-                    workQueue.push({ taskId: item.taskId, filePath: item.filePath });
+            for (const [taskId, entry] of this.tier3Index) {
+                if (!this.cache.has(taskId)) {
+                    workQueue.push({ taskId, filePath: entry.filePath });
                 }
             }
-            const skippedCollision = allFiles.length - workQueue.length;
 
-            // Phase 3: Lire avec concurrence bornee (20 parallel)
-            // Batching evite de saturer I/O et le thread pool libuv.
             const CONCURRENCY = 20;
-            let loaded = 0;
+            let stubbed = 0;
             let failed = 0;
+            let stubBytes = 0;
 
             const processItem = async (item: WorkItem): Promise<void> => {
                 try {
@@ -588,18 +627,17 @@ export class SkeletonCacheService {
                         failed++;
                         return;
                     }
-                    const skeleton = archiveToSkeleton(archive);
-                    if (!skeleton.metadata) skeleton.metadata = {} as any;
-                    skeleton.metadata.dataSource = 'gdrive-archive';
+                    const stub = archiveToStub(archive, item.filePath);
                     // Re-verifier la collision (race safety avec Tier 1/2 charges en parallele)
-                    if (!this.cache.has(skeleton.taskId)) {
-                        this.cache.set(skeleton.taskId, skeleton);
-                        loaded++;
+                    if (!this.cache.has(stub.taskId)) {
+                        this.cache.set(stub.taskId, stub);
+                        stubBytes += JSON.stringify(stub).length;
+                        stubbed++;
                     }
                 } catch (error) {
                     failed++;
                     if (failed <= 3) {
-                        console.warn(`[SkeletonCacheService] Tier 3 (archives): echec lecture ${item.taskId}:`, error);
+                        console.warn(`[SkeletonCacheService] Tier 3: echec lecture stub ${item.taskId}:`, error);
                     }
                 }
             };
@@ -610,12 +648,148 @@ export class SkeletonCacheService {
             }
 
             console.log(
-                `[SkeletonCacheService] Tier 3 (archives): ${loaded} chargees, ` +
-                `${skippedCollision} collisions ignorees (local prioritaire), ${failed} echecs sur ${allFiles.length} total`
+                `[SkeletonCacheService] Tier 3 (archives): ${this.tier3Index.size} indexees, ` +
+                `${stubbed} stubs (${(stubBytes / 1024).toFixed(0)} Ko au total, ` +
+                `${stubbed > 0 ? (stubBytes / stubbed / 1024).toFixed(1) : '0'} Ko/stub), ` +
+                `${this.tier3HydratedBytes.size} corps hydrates, ${failed} echecs — ` +
+                `corps a la demande via ensureConversationHydrated (#3661)`
             );
         } catch (error) {
             console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
         }
+    }
+
+    /**
+     * #3661 (stubs) — Hydrate a la demande la `sequence` d'UNE entree Tier 3.
+     * Le stub reste resident (visibilite listing intacte) ; seul le corps est
+     * charge via `TaskArchiver.readArchivedTaskFromPath`. Retour :
+     *  - `true`  : sequence lisible dans le cache (deja hydratee, fraichement
+     *              hydratee, ou entree tier chaud — sequence native residente) ;
+     *  - `false` : taskId inconnu du cache, tier 3 desactive, ou echec de
+     *              lecture (l'appelant decide — jamais avale en `true` silencieux).
+     * Concurrence sur le meme taskId : un seul read (single-flight).
+     */
+    public async ensureConversationHydrated(taskId: string): Promise<boolean> {
+        if (!SkeletonCacheService.config.enableArchiveTier) return false;
+        const entry = this.cache.get(taskId);
+        if (!entry) return false;
+        if (entry.metadata?.dataSource !== 'gdrive-archive') return true; // tiers chauds
+        if (entry.metadata?.hydrated === true) {
+            // LRU touch — re-arme la recence de ce corps sans relecture.
+            this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
+            return true;
+        }
+
+        const inFlight = this.tier3HydrationPromises.get(taskId);
+        if (inFlight) return inFlight;
+        const load = this.hydrateTier3Entry(taskId).finally(() => {
+            this.tier3HydrationPromises.delete(taskId);
+        });
+        this.tier3HydrationPromises.set(taskId, load);
+        return load;
+    }
+
+    private async hydrateTier3Entry(taskId: string): Promise<boolean> {
+        const entry = this.cache.get(taskId);
+        if (!entry) return false;
+        const filePath = entry.metadata?.archiveFilePath ?? this.tier3Index.get(taskId)?.filePath;
+        if (!filePath) return false;
+        try {
+            const { TaskArchiver } = await import('./task-archiver/index.js');
+            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
+            const archive = await TaskArchiver.readArchivedTaskFromPath(filePath);
+            if (!archive) return false;
+            const skeleton = archiveToSkeleton(archive);
+            entry.sequence = skeleton.sequence;
+            entry.metadata.hydrated = true;
+            // La metadata du stub peut avoir un messageCount de repli ; celle
+            // de l'archive complete fait foi.
+            entry.metadata.messageCount = skeleton.metadata?.messageCount ?? entry.metadata.messageCount;
+            const bodyBytes = JSON.stringify(entry.sequence).length;
+            this.tier3HydratedBytes.set(taskId, bodyBytes);
+            this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
+            this.enforceTier3Cap(taskId);
+            return true;
+        } catch (error) {
+            console.warn(`[SkeletonCacheService] Tier 3: echec hydratation ${taskId}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * #3661 — L'index Tier 3 connait-il cette machine ? (insensible a la casse).
+     * Sert au signal "machineId inconnu" du list : une machine absente de
+     * l'index rendra une liste vide LEGITIME, mais l'appelant doit pouvoir la
+     * distinguer d'un corpus vide (review #1205 pt 5).
+     */
+    public tier3KnowsMachine(machineId: string): boolean {
+        const machineIdLower = machineId.trim().toLowerCase();
+        if (machineIdLower.length === 0) return true;
+        for (const entry of this.tier3Index.values()) {
+            if (entry.machineId.toLowerCase() === machineIdLower) return true;
+        }
+        return false;
+    }
+
+    /**
+     * #3661 — Plafond dur par processus sur les CORPS Tier 3 hydrates
+     * (`SKELETON_ARCHIVE_TIER_MAX_MB`, defaut 512). Les stubs (~Ko) ne sont
+     * pas comptes : le plafond borne les corps, pas la visibilite.
+     * L'eviction est GRANULAIRE PAR ENTREE : le corps hydrate le moins
+     * recemment est DESHYDRATE (retour au stub — l'entree reste dans le cache)
+     * jusqu'a tenir le plafond. L'entree fraichement hydratee n'est jamais
+     * candidate ; un corps unique plus gros que le plafond reste resident avec
+     * un WARN (le plafond borne le cache, pas le service rendu).
+     */
+    private getTier3CapBytes(): number {
+        const raw = parseInt(process.env.SKELETON_ARCHIVE_TIER_MAX_MB || '512', 10);
+        const mb = Number.isFinite(raw) && raw > 0 ? raw : 512;
+        return mb * 1024 * 1024;
+    }
+
+    private enforceTier3Cap(protectedTaskId: string): void {
+        const capBytes = this.getTier3CapBytes();
+        let total = 0;
+        for (const bytes of this.tier3HydratedBytes.values()) total += bytes;
+        if (total <= capBytes) return;
+
+        const evictable = Array.from(this.tier3HydratedTicks.entries())
+            .filter(([taskId]) => taskId !== protectedTaskId)
+            .sort((a, b) => a[1] - b[1]); // tick LRU croissant = moins recent d'abord
+
+        for (const [taskId] of evictable) {
+            if (total <= capBytes) break;
+            total -= this.dehydrateTier3Entry(taskId);
+        }
+
+        if (total > capBytes) {
+            console.warn(
+                `[SkeletonCacheService] Tier 3: plafond depasse par le seul corps protege ` +
+                `(${(total / 1024 / 1024).toFixed(0)} Mo > ${(capBytes / 1024 / 1024).toFixed(0)} Mo) — ` +
+                `SKELETON_ARCHIVE_TIER_MAX_MB ne peut pas borner une conversation unique`
+            );
+        }
+    }
+
+    /**
+     * #3661 — Deshydrate UNE entree Tier 3 : le corps est jete (sequence vide,
+     * hydrated=false) mais le STUB reste dans le cache — l'eviction ne retire
+     * jamais la visibilite, seulement la memoire du corps. Rend les octets liberes.
+     */
+    private dehydrateTier3Entry(taskId: string): number {
+        const freedBytes = this.tier3HydratedBytes.get(taskId) ?? 0;
+        const skeleton = this.cache.get(taskId);
+        if (skeleton && skeleton.metadata?.dataSource === 'gdrive-archive') {
+            skeleton.sequence = [];
+            skeleton.metadata.hydrated = false;
+        }
+        this.tier3HydratedBytes.delete(taskId);
+        this.tier3HydratedTicks.delete(taskId);
+        console.log(
+            `[SkeletonCacheService] Tier 3: deshydratation LRU ${taskId} ` +
+            `(${(freedBytes / 1024).toFixed(0)} Ko liberes — stub conserve)`
+        );
+        return freedBytes;
     }
 
     /**
@@ -648,6 +822,12 @@ export class SkeletonCacheService {
         config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
         cacheAgeMs: number | null;
         stale: boolean;
+        /** #3661 (stubs) — Tier 3 observability: index size, stub vs hydrated
+         *  split, hydrated body bytes, and the cap. */
+        tier3_index_count: number;
+        tier3_hydrated_count: number;
+        tier3_estimated_mb: number;
+        tier3_cap_mb: number;
     }> {
         const cacheAgeMs = this.lastRefreshTime === 0 ? null : Date.now() - this.lastRefreshTime;
         const stale = cacheAgeMs === null ? true : cacheAgeMs > this.CACHE_VALIDITY_MS;
@@ -667,6 +847,9 @@ export class SkeletonCacheService {
             }
         }
 
+        let tier3Bytes = 0;
+        for (const bytes of this.tier3HydratedBytes.values()) tier3Bytes += bytes;
+
         return {
             tier1_roo: tier1,
             tier2_claude: tier2,
@@ -678,6 +861,10 @@ export class SkeletonCacheService {
             },
             cacheAgeMs,
             stale,
+            tier3_index_count: this.tier3Index.size,
+            tier3_hydrated_count: this.tier3HydratedBytes.size,
+            tier3_estimated_mb: Math.round(tier3Bytes / 1024 / 1024),
+            tier3_cap_mb: Math.round(this.getTier3CapBytes() / 1024 / 1024),
         };
     }
 

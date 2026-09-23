@@ -62,21 +62,36 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 	}
 }));
 
+// #3661 (stubs) — matchesContentPattern lit les archives Tier 3 non hydratées
+// via TaskArchiver (lecture disque bornée). Mock pour le test consumer.
+const { mockReadArchivedTaskFromPath } = vi.hoisted(() => ({
+	mockReadArchivedTaskFromPath: vi.fn(() => Promise.resolve(null)),
+}));
+vi.mock('../../../services/task-archiver/index.js', () => ({
+	TaskArchiver: {
+		listArchivedTaskFiles: vi.fn(() => Promise.resolve([])),
+		readArchivedTaskFromPath: mockReadArchivedTaskFromPath,
+	},
+}));
+
 // Mock SkeletonCacheService (needed for includeArchives / Bug #3 / #1752)
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
 // #1747 D: isLoadInProgress defaults to true — an elapsed budget with a load
 // running stays 'loading'; tests opt into false to pin the 'failed' arm.
-const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress } = vi.hoisted(() => {
+const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress, mockTier3KnowsMachine } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
 	const awaitFn = vi.fn(() => Promise.resolve(true));
 	const ageFn = vi.fn(() => 1234);
 	const loadInProgressFn = vi.fn(() => true);
+	// #3661 (stubs) — default: l'index connaît la machine (pas de notice).
+	const knowsMachineFn = vi.fn(() => true);
 	return {
 		mockGetCache: cacheFn,
 		mockAwaitFreshness: awaitFn,
 		mockGetCacheAge: ageFn,
 		mockIsLoadInProgress: loadInProgressFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn }))
+		mockTier3KnowsMachine: knowsMachineFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn }))
 	};
 });
 
@@ -545,7 +560,7 @@ describe('list-conversations', () => {
       mockGetCache.mockResolvedValue(new Map());
       mockAwaitFreshness.mockResolvedValue(true);
       mockIsLoadInProgress.mockReturnValue(true);
-      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress });
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress, tier3KnowsMachine: mockTier3KnowsMachine });
     });
 
     it('should not load archives when includeArchives is false (default)', async () => {
@@ -555,6 +570,100 @@ describe('list-conversations', () => {
 
       expect(parsed).toEqual([]);
       expect(mockGetInstance).not.toHaveBeenCalled();
+    });
+
+    // #3661 (stubs) — un machineId inconnu de l'index Tier 3 rend une liste
+    // vide légitime, mais la réponse doit PORTER la distinction (pas de
+    // "corpus vide" silencieux — review #1205 pt 5).
+    it('surfaces machine_filter_notice when machineId is unknown to the Tier 3 index and results are empty', async () => {
+      mockTier3KnowsMachine.mockReturnValue(false);
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, machineId: 'myia-po-9999' },
+        new Map()
+      );
+      expect(result.isError).toBeFalsy();
+      const _response = JSON.parse(result.content[0].text as string);
+      expect(_response.machine_filter_notice).toContain('myia-po-9999');
+      expect(_response.machine_filter_notice).toContain('inconnu');
+      expect(mockTier3KnowsMachine).toHaveBeenCalledWith('myia-po-9999');
+    });
+
+    it('does not surface machine_filter_notice for a machine the index knows', async () => {
+      mockTier3KnowsMachine.mockReturnValue(true);
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, machineId: 'myia-po-2025' },
+        new Map()
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+      expect(_response.machine_filter_notice).toBeUndefined();
+    });
+
+    // #3661 (stubs) — LE contrat anti-échec-silencieux : un stub (corps non
+    // hydraté) atteint le filtre contentPattern SANS jamais rendre un faux
+    // négatif. La lecture est bornée (match puis jette), le stub ne mute pas.
+    it('contentPattern finds content inside an UNHYDRATED archive stub via bounded disk read — no silent empty', async () => {
+      const hitStub = {
+        taskId: 'arch-stub-hit',
+        sequence: [], // stub : corps NON résident
+        metadata: {
+          title: 'Archive stub hit',
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 3,
+          actionCount: 0,
+          totalSize: 0,
+          machineId: 'myia-web1',
+          dataSource: 'gdrive-archive',
+          hydrated: false,
+          archiveFilePath: '/mock/archive/myia-web1/arch-stub-hit.json.gz',
+        },
+      };
+      const missStub = {
+        ...hitStub,
+        taskId: 'arch-stub-miss',
+        metadata: { ...hitStub.metadata, title: 'Archive stub miss', archiveFilePath: '/mock/archive/myia-web1/arch-stub-miss.json.gz' },
+      };
+      mockGetCache.mockResolvedValue(new Map([
+        ['arch-stub-hit', hitStub],
+        ['arch-stub-miss', missStub],
+      ]));
+      mockReadArchivedTaskFromPath.mockImplementation(async (filePath: string) => {
+        if (filePath.includes('arch-stub-hit')) {
+          return {
+            version: 1,
+            taskId: 'arch-stub-hit',
+            machineId: 'myia-web1',
+            archivedAt: '2026-04-01T00:00:00Z',
+            metadata: { title: 'Archive stub hit' },
+            messages: [{ role: 'user', content: 'the needle lives in the archive body', timestamp: '2026-04-01T00:00:00Z' }],
+          };
+        }
+        return {
+          version: 1,
+          taskId: 'arch-stub-miss',
+          machineId: 'myia-web1',
+          archivedAt: '2026-04-01T00:00:00Z',
+          metadata: { title: 'Archive stub miss' },
+          messages: [{ role: 'user', content: 'nothing relevant here', timestamp: '2026-04-01T00:00:00Z' }],
+        };
+      });
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, contentPattern: 'needle' },
+        new Map()
+      );
+      expect(result.isError).toBeFalsy();
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+      const taskIds = parsed.map((c: any) => c.taskId);
+      expect(taskIds).toContain('arch-stub-hit');
+      expect(taskIds).not.toContain('arch-stub-miss');
+
+      // Lecture bornée : le stub n'a PAS été hydraté au passage (pas de
+      // mutation du cache — la recherche ne consomme ni cap ni mémoire).
+      expect(hitStub.metadata.hydrated).toBe(false);
+      expect(hitStub.sequence).toEqual([]);
+      expect(mockReadArchivedTaskFromPath).toHaveBeenCalledWith('/mock/archive/myia-web1/arch-stub-hit.json.gz');
     });
 
     it('should include gdrive-archive skeletons when includeArchives is true', async () => {

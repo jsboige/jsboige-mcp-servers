@@ -217,7 +217,9 @@ describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le so
     // Claude et les archives cross-machine ; les eteindre serait le coup de pendule
     // inverse. D'ou l'assertion sur `configure` dans CHAQUE cas.
     const PREWARM = 'SKELETON_PREWARM';
+    const AUTO_DISABLE = 'ROO_AUTO_DISABLE_PREWARM';
     const originalPrewarm = process.env[PREWARM];
+    const originalAutoDisable = process.env[AUTO_DISABLE];
     const originalIndexing = process.env[ENV_VAR];
 
     beforeEach(() => {
@@ -225,11 +227,18 @@ describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le so
         // qui survivent au test. Le bloc prechauffage s'execute AVANT ce kill-switch,
         // il n'est donc pas masque par lui.
         process.env[ENV_VAR] = 'false';
+        // Hermetisme #3661 : les machines a Geste A arme (po-2024, ai-01, po-2026)
+        // portent ROO_AUTO_DISABLE_PREWARM=1 en User scope — herite par vitest, il
+        // coupait le prechauffage et faisait echouer les cas "prechauffage ON" sans
+        // que le code soit en cause. Ces tests pinnent SKELETON_PREWARM seul.
+        delete process.env[AUTO_DISABLE];
     });
 
     afterEach(() => {
         if (originalPrewarm === undefined) delete process.env[PREWARM];
         else process.env[PREWARM] = originalPrewarm;
+        if (originalAutoDisable === undefined) delete process.env[AUTO_DISABLE];
+        else process.env[AUTO_DISABLE] = originalAutoDisable;
         if (originalIndexing === undefined) delete process.env[ENV_VAR];
         else process.env[ENV_VAR] = originalIndexing;
     });
