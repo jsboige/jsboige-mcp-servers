@@ -866,6 +866,39 @@ describe('SkeletonCacheService', () => {
 			expect(stats.tier3_estimated_mb).toBeGreaterThanOrEqual(1);
 		});
 
+		test('cap stays armed after a cache refresh — accounting is re-counted from the resident cache (#3661 review pt 7)', async () => {
+			process.env.SKELETON_ARCHIVE_TIER_MAX_MB = '1';
+			const med = 'm'.repeat(400 * 1024); // ~0,4 Mo par machine : 2 machines = 0,8 Mo < cap
+			setupArchiveHost([
+				{ taskId: 'local-med', machineId: LOCAL_MACHINE, content: med },
+				{ taskId: 'web1-med', machineId: 'myia-web1', content: med },
+				{ taskId: 'web2-med', machineId: 'myia-web2', content: med },
+			]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			const cache = await service.getCache();
+			expect(cache.has('local-med')).toBe(true); // cold load : machine locale seule
+
+			// 2e machine hydratée à la demande — les deux restent sous le cap (0,8 Mo ≤ 1 Mo)
+			expect(await service.ensureMachineTier3Loaded('myia-web1')).toBe(true);
+			expect(cache.has('local-med')).toBe(true);
+			expect(cache.has('web1-med')).toBe(true);
+
+			// Refresh : AVANT le fix, il clear()ait tier3MachineBytes/tier3LoadedMachines
+			// → work queue vide → machineBytes=0 → plafond inerte. Il doit survivre.
+			await service.forceRefresh();
+			expect(cache.has('local-med')).toBe(true);
+			expect(cache.has('web1-med')).toBe(true);
+
+			// 3e machine → ~1,2 Mo > 1 Mo : l'éviction LRU doit TOUJOURS se déclencher.
+			expect(await service.ensureMachineTier3Loaded('myia-web2')).toBe(true);
+			expect(cache.has('web2-med')).toBe(true);
+			// myia-web1 (LRU le moins récent : tick 2, la machine locale re-touchée
+			// par la Phase 2 du refresh porte un tick plus récent) est évincée.
+			expect(cache.has('web1-med')).toBe(false);
+			expect(cache.has('local-med')).toBe(true);
+		});
+
 		test('archive tier disabled → ensureMachineTier3Loaded returns false without reading', async () => {
 			setupArchiveHost([{ taskId: 't1', machineId: LOCAL_MACHINE }]);
 			const service = SkeletonCacheService.getInstance();

@@ -575,8 +575,6 @@ export class SkeletonCacheService {
             // Phase 1: Index complet du corpus (listing seul — aucun payload lu).
             const allFiles = await TaskArchiver.listArchivedTaskFiles();
             this.tier3Index.clear();
-            this.tier3LoadedMachines.clear();
-            this.tier3MachineBytes.clear();
             for (const item of allFiles) {
                 this.tier3Index.set(item.taskId, { filePath: item.filePath, machineId: item.machineId });
             }
@@ -584,6 +582,27 @@ export class SkeletonCacheService {
             if (this.tier3Index.size === 0) {
                 console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive indexee');
                 return;
+            }
+
+            // Phase 1.5: le refresh ne vide PAS le cache (les squelettes restent
+            // residents). Recompter l'accounting depuis le cache au lieu de
+            // clear() les maps tier3LoadedMachines/tier3MachineBytes : sinon la
+            // work queue du re-load est vide → machineBytes=0 → enforceTier3Cap
+            // rend total=0 ≤ cap → le plafond se desarme au premier refresh
+            // (review #1205 pt 7 — c'est lui qui borne les 33 Go mesures).
+            this.tier3LoadedMachines.clear();
+            this.tier3MachineBytes.clear();
+            const bytesByMachine = new Map<string, number>();
+            for (const [taskId, skeleton] of this.cache) {
+                if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') continue;
+                const entry = this.tier3Index.get(taskId);
+                if (!entry) continue;
+                const machineKey = entry.machineId; // casse canonique de l'index (cf. resolveTier3MachineKey)
+                bytesByMachine.set(machineKey, (bytesByMachine.get(machineKey) ?? 0) + JSON.stringify(skeleton).length);
+            }
+            for (const [machineKey, bytes] of bytesByMachine) {
+                this.tier3MachineBytes.set(machineKey, bytes);
+                this.tier3LoadedMachines.set(machineKey, ++this.tier3LruCounter);
             }
 
             // Phase 2: Hydrate uniquement la machine locale. La derivation de
@@ -695,7 +714,15 @@ export class SkeletonCacheService {
         }
         const machineIdLower = machineId.trim().toLowerCase();
         const machineKey = this.resolveTier3MachineKey(machineIdLower);
-        if (!machineKey) return false;
+        if (!machineKey) {
+            // Review #1205 pt 1 (Hermes) : machine inconnue = liste vide silencieuse
+            // côté appelant — un WARN distinct évite de la lire comme un corpus vide.
+            console.warn(
+                `[SkeletonCacheService] Tier 3: machine inconnue de l'index: ${machineId} — ` +
+                `le filtre rendra une liste vide (frappe ? machine absente des archives ?)`
+            );
+            return false;
+        }
 
         const inFlight = this.tier3MachineLoadPromises.get(machineKey);
         if (inFlight) {
