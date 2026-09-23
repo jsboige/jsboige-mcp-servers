@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Wrapper v5.0.0 - Pass-through proxy + hot-swap across content-addressed builds
+ * MCP Wrapper v5.1.0 - Pass-through proxy + hot-swap across content-addressed builds
  *
  * v5.0 (#3713): Hot-swap. The wrapper now resolves the server through the
  * `build-current` marker (content-addressed vintages published by
@@ -152,7 +152,7 @@ let swapRetries = 0;
 let handshakeWatchdog = null;
 let listChangedAdvertised = false;       // initialize result forwarded with tools.listChanged
 
-logDebug('Starting roo-state-manager MCP server v5.0 (pass-through + persisted cache + hot-swap)...');
+logDebug('Starting roo-state-manager MCP server v5.1 (pass-through + persisted cache + hot-swap + list_changed)...');
 console.error(`[MCP-WRAPPER] 🧬 Serving vintage: ${path.basename(serverDir)}${serverDir === LEGACY_DIR ? ' (legacy fixed path — marker absent)' : ''}`);
 
 // --- Vintage pin (.ref-<pid>) ---
