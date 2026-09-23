@@ -802,7 +802,7 @@ describe('SkeletonCacheService', () => {
 			});
 		};
 
-		test('cold load stubs every index entry — stub stays small (< 2 KiB fixture bound)', async () => {
+		test('cold load stubs every index entry — stub stays small (< 4 KiB fixture bound)', async () => {
 			setupArchiveHost([
 				{ taskId: 't1', machineId: LOCAL_MACHINE },
 				{ taskId: 't2', machineId: 'myia-web1' },
@@ -818,7 +818,10 @@ describe('SkeletonCacheService', () => {
 				expect(stub.sequence).toEqual([]);
 				// La mesure réelle du corpus (~11k archives) vit dans le body de la
 				// PR #1205 ; le bound fixture garantit l'ordre de grandeur stub ≪ corps.
-				expect(JSON.stringify(stub).length).toBeLessThan(2048);
+				// 4 KiB depuis la review #3661 : le stub embarque l'aperçu du listing
+				// (~2 Ko max, troncatures 900/500/500) — reste ~3 ordres de grandeur
+				// sous un corps d'archive réel.
+				expect(JSON.stringify(stub).length).toBeLessThan(4096);
 			}
 
 			const stats = await service.getCacheTierStats();

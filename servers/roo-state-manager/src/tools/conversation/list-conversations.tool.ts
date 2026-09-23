@@ -15,6 +15,7 @@ import { scanDiskForNewTasks, evictGoneLocalTasks } from '../task/disk-scanner.j
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
+import { stripXmlTags, truncateAtBoundary } from '../../utils/text-preview.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -119,21 +120,7 @@ interface ConversationSummary {
  *  firstUserMessage/lastMessage snippets while staying under 50KB total output. */
 const MAX_CHILDREN_SHOWN = 5;
 
-/**
- * Strip XML wrapper tags (<user_message>, </user_message>, <task>, etc.) from message text.
- * Also strips leading BOM (U+FEFF) which appears in some Claude task titles and breaks
- * downstream string comparisons (e.g. title vs firstUserMessage dedup).
- * These are Roo/JSONL internal artifacts that add noise to list output.
- */
-function stripXmlTags(text?: string): string | undefined {
-    if (!text) return undefined;
-    return text
-        .replace(/^\uFEFF/, '') // Strip BOM (Claude session metadata)
-        .replace(/<\/?user_message>/g, '')
-        .replace(/<\/?task>/g, '')
-        .replace(/^\s*\n/, '') // leading blank line after tag removal
-        .trim() || undefined;
-}
+// stripXmlTags vit dans utils/text-preview.ts (#3661 \u2014 partag\u00E9 avec les stubs Tier 3)
 
 /**
  * Normalize a string for content-equality comparison: strip BOM, lowercase,
@@ -198,26 +185,7 @@ function getWorkspaceShort(workspace: string | undefined): string | undefined {
     return last && last.length > 0 ? last : undefined;
 }
 
-/**
- * Truncate text at the last word/sentence boundary within maxLength.
- * Avoids cutting mid-word, producing cleaner snippets for conversation_browser list.
- * #1177: Replaces raw substring truncation for firstUserMessage.
- */
-function truncateAtBoundary(text: string, maxLength: number): string {
-    if (!text || text.length <= maxLength) return text;
-    // Try sentence boundary first (. ! ? followed by space)
-    const sentenceCut = text.lastIndexOf('. ', maxLength - 2);
-    if (sentenceCut > maxLength * 0.4) {
-        return text.substring(0, sentenceCut + 1);
-    }
-    // Try word boundary
-    const wordCut = text.lastIndexOf(' ', maxLength - 2);
-    if (wordCut > maxLength * 0.4) {
-        return text.substring(0, wordCut) + '...';
-    }
-    // Fallback: hard cut
-    return text.substring(0, maxLength - 3) + '...';
-}
+// truncateAtBoundary vit dans utils/text-preview.ts (#3661 — partagé avec les stubs Tier 3)
 
 /**
  * Convertit un SkeletonNode vers un objet JSON compact mais informatif pour list output.
@@ -977,13 +945,6 @@ export const listConversationsTool = {
                 }
             }
 
-            // Fallback: promote metadata.title to firstUserMessage when sequence is empty/absent
-            // This covers Roo tasks loaded via quickAnalyze (sequence: []) where title IS
-            // the first user message truncated to ~100 chars from the cache
-            if (!firstUserMessage && s.metadata.title) {
-                firstUserMessage = s.metadata.title;
-            }
-
             // #666 + #1245 round 2: Fallback for Claude sessions — use pre-extracted JSONL metadata.
             // These dynamic fields are set by scanClaudeSessions on the skeleton.
             const claudeAny = s as any;
@@ -1004,6 +965,37 @@ export const listConversationsTool = {
             }
             if (assistantMessageCount === undefined && typeof claudeAny._claudeAssistantCount === 'number') {
                 assistantMessageCount = claudeAny._claudeAssistantCount;
+            }
+
+            // #3661: Fallback for Tier 3 archive stubs — preview pre-extracted by
+            // archiveToStub() while the full archive was in memory (sequence: []).
+            // Same contract as the _claude* fields above.
+            if (!firstUserMessage && claudeAny._stubFirstUserMessage) {
+                firstUserMessage = claudeAny._stubFirstUserMessage;
+            }
+            if (!lastUserMessage && claudeAny._stubLastUserMessage) {
+                lastUserMessage = claudeAny._stubLastUserMessage;
+            }
+            if (!lastMessage && claudeAny._stubLastMessage) {
+                lastMessage = claudeAny._stubLastMessage;
+                if (claudeAny._stubLastMessageRole) {
+                    lastMessageRole = claudeAny._stubLastMessageRole;
+                }
+            }
+            if (userMessageCount === undefined && typeof claudeAny._stubUserCount === 'number') {
+                userMessageCount = claudeAny._stubUserCount;
+            }
+            if (assistantMessageCount === undefined && typeof claudeAny._stubAssistantCount === 'number') {
+                assistantMessageCount = claudeAny._stubAssistantCount;
+            }
+
+            // Last-resort fallback: promote metadata.title to firstUserMessage when no
+            // pre-extracted preview exists. Comes AFTER the _claude*/_stub* fields:
+            // a pre-extracted first user message (900 chars) is strictly richer than
+            // a title (~100 chars). Still covers Roo tasks loaded via quickAnalyze
+            // (sequence: []) where title IS the first user message from the cache.
+            if (!firstUserMessage && s.metadata.title) {
+                firstUserMessage = s.metadata.title;
             }
 
             // Deduplicate: skip lastUserMessage if identical to firstUserMessage
