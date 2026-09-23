@@ -32,7 +32,7 @@
     },
 
     {
-      "_comment": "=== vLLM local models (direct endpoint, fleet-hosted on ai-01 — measured N=16 ≈ 760-870 tok/s aggregate, <3% util on 22/09; purged: omnicoder-9b, GPU 2 freed 30/04) ===",
+      "_comment": "=== vLLM local models (direct endpoint, fleet-hosted on ai-01 — measured N=16 ≈ 760-870 tok/s aggregate, <3% util on 22/09; purged: omnicoder-9b, GPU 2 freed 30/04) === Per-model budget overrides (#3797, ALL optional, absent = current behaviour): \"request_timeout_s\": 600 (OpenAI client budget, default 300; declaring it ALSO raises the coupled call_agent wait_for ceiling to max(caller timeout, request_timeout_s + 30) — use case: notebook-auditor under parallel load bumps into 300 s), \"max_tokens\": 8000 (default output budget; precedence per-call/agent_spec > model > global sampling; use case: a thinking model burning the global 4096 on reasoning before answering), \"extra_body\": {\"chat_template_kwargs\": {\"thinking_budget\": 2048}} (generic vLLM passthrough; model keys override sampling-derived top_k/min_p/repetition_penalty; chat_template_kwargs deep-merged with the enable_thinking injection). Deployment of real values is a separate, per-model decision — none activated here. Timeout chain doc: README 'Timeout chain'.",
       "id": "qwen3.6-35b-a3b",
       "enabled": true,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",

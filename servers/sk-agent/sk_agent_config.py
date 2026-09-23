@@ -52,6 +52,14 @@ CONFIG_PATH = os.environ.get(
 SK_AGENT_DEPTH = int(os.environ.get("SK_AGENT_DEPTH", "0"))
 DEFAULT_MAX_RECURSION_DEPTH = 2
 
+# #3797: default per-model OpenAI client budget (seconds). Value chosen in
+# #1587 so a single client attempt does not outlive the call_agent wait_for
+# ceilings. A model that does not declare ``request_timeout_s`` (None) uses
+# this budget AND keeps the legacy uncoupled tool ceilings (non-regression:
+# absent fields = identical behaviour); declaring a value additionally
+# couples the call_agent wait_for ceiling to it (see _effective_call_timeout).
+DEFAULT_REQUEST_TIMEOUT_S = 300.0
+
 
 def can_spawn_recursive_agent(
     current_depth: int | None = None,
@@ -150,6 +158,12 @@ class ModelConfig:
     description: str = ""
     context_window: int = 32_000
     system_prompt: str = ""  # Legacy: per-model prompt (v1 compat)
+    # #3797: per-model overrides (all optional, absent = current behaviour)
+    # request_timeout_s: None → DEFAULT_REQUEST_TIMEOUT_S (300, #1587) and the
+    # call_agent ceilings stay uncoupled; a declared value couples them.
+    request_timeout_s: float | None = None  # OpenAI client budget (seconds)
+    max_tokens: int | None = None  # None → global sampling.max_tokens
+    extra_body: dict[str, Any] = field(default_factory=dict)  # vLLM passthrough
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
@@ -165,6 +179,9 @@ class ModelConfig:
             description=data.get("description", ""),
             context_window=data.get("context_window", _infer_context_window(data)),
             system_prompt=data.get("system_prompt", ""),
+            request_timeout_s=data.get("request_timeout_s"),
+            max_tokens=data.get("max_tokens"),
+            extra_body=dict(data.get("extra_body") or {}),
         )
 
     def to_dict(self) -> dict:
@@ -183,6 +200,12 @@ class ModelConfig:
             d["api_key_env"] = self.api_key_env
         if self.system_prompt:
             d["system_prompt"] = self.system_prompt
+        if self.request_timeout_s is not None:
+            d["request_timeout_s"] = self.request_timeout_s
+        if self.max_tokens is not None:
+            d["max_tokens"] = self.max_tokens
+        if self.extra_body:
+            d["extra_body"] = dict(self.extra_body)
         return d
 
     def resolve_api_key(self) -> str:

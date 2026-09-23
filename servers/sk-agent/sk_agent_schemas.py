@@ -290,6 +290,37 @@ class ModelSpec(_StrictModel):
     context_window: int = Field(default=32_000, ge=128, le=10_000_000)
     enabled: bool = True
     system_prompt: str = Field(default="", max_length=32_768)
+    # #3797: per-model budget overrides (optional; defaults keep #1587 behaviour)
+    request_timeout_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=3600.0,
+        description=(
+            "OpenAI client timeout for this model, in seconds. None (default) "
+            "keeps the #1587 budget (300 s) and the legacy uncoupled "
+            "call_agent ceilings. Declaring a value raises this model's "
+            "client budget AND couples the call_agent wait_for ceiling to it "
+            "(ceiling = max(caller timeout, request_timeout_s + margin))."
+        ),
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=1_000_000,
+        description=(
+            "Default output budget for this model. None (default) keeps the "
+            "global sampling.max_tokens. Precedence: per-call/agent_spec "
+            "override > model default > global."
+        ),
+    )
+    extra_body: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Generic vLLM passthrough merged into the request extra_body "
+            "(e.g. a reasoning budget key). Model keys override "
+            "sampling-derived keys; chat_template_kwargs is deep-merged."
+        ),
+    )
 
     @field_validator("base_url")
     @classmethod
