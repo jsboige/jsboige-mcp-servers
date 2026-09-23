@@ -53,7 +53,7 @@ Unified agent invocation. Routes to the right agent based on content type.
 ```json
 {
   "extends": "analyst",
-  "model": "glm-5.1",
+  "model": "glm-5.3",
   "system_prompt": "You are a terse summarizer.",
   "mcps": { "replace": [] },
   "memory": { "enabled": false },
@@ -151,20 +151,19 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
 
   "models": [
     {
-      "id": "glm-5",
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "id": "glm-5.3",
+      "base_url": "http://192.168.0.50:3000/v1",
       "api_key_env": "ZAI_API_KEY",
-      "model_id": "glm-5",
+      "model_id": "glm-5.3",
       "vision": false,
       "context_window": 200000
     },
     {
-      "id": "glm-4.6v",
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "model_id": "glm-4.6v",
+      "id": "qwen3.6-35b-a3b",
+      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+      "model_id": "qwen3.6-35b-a3b",
       "vision": true,
-      "context_window": 128000
+      "context_window": 262144
     }
   ],
 
@@ -183,7 +182,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
   "agents": [
     {
       "id": "analyst",
-      "model": "glm-5",
+      "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a helpful analyst.",
       "capabilities": ["memory"],
       "mcps": ["searxng"],
@@ -191,7 +190,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
     },
     {
       "id": "vision-analyst",
-      "model": "glm-4.6v",
+      "model": "qwen3.6-35b-a3b",
       "system_prompt": "You are a vision specialist.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -279,84 +278,95 @@ cd mcps/internal/servers/sk-agent
 python -m pytest test_sk_agent.py test_config.py -v
 ```
 
-## Available Models (13)
+## Available Models (8)
 
-### z.ai Cloud (4)
+### GLM via fleet hub (2) — claudish `http://192.168.0.50:3000/v1`, key = hub client key (#3574)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `glm-5.1` | GLM-5.1 | ❌ | ✅ | 200K |
-| `glm-5` | GLM-5 | ❌ | ✅ | 200K |
-| `glm-4.6v` | GLM-4.6V | ✅ | ❌ | 128K |
-| `glm-4.7-flash` | GLM-4.7-Flash | ❌ | ❌ | 131K |
+| `glm-5.3` | GLM-5.3 | ❌ | ✅ | 200K |
+| `glm-5.3-flash` | GLM-5.3-Flash | ❌ | ❌ | 131K |
+
+Vision is **not** served through the hub: it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794) — vision routes local (qwen3.6-35b-a3b) until the claudish passthrough fix.
 
 ### vLLM Local Direct (2)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `omnicoder-9b` | OmniCoder-9B | ✅ | ✅ | 131K |
-| `qwen3.5-35b-a3b` | Qwen3.5 35B MoE | ✅ | ✅ | 262K |
+| `qwen3.6-35b-a3b` | Qwen3.6 35B MoE | ✅ | ✅ | 262K |
+| `qwen3.6-35b-no-thinking` | Qwen3.6 35B MoE | ❌ | ❌ | 262K |
 
-### OWUI Proxy (4)
+### OWUI Proxy (1)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `owui-glm-4.7-flash-fast` | GLM-4.7-Flash (no thinking) | ❌ | ❌ | 131K |
-| `owui-glm-4.7-flash-thinking` | GLM-4.7-Flash (thinking) | ❌ | ✅ | 131K |
-| `owui-omnicoder-9b` | OmniCoder-9B via OWUI | ✅ | ✅ | 131K |
-| `owui-qwen3.5-35b` | Qwen3.5 35B via OWUI | ✅ | ✅ | 262K |
+| `owui-qwen3.6-35b` | Qwen3.6 35B via OWUI | ✅ | ✅ | 262K |
 
 ### OWUI Custom Models (3)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `owui-expert-analyste` | Expert Analyste | ❌ | ❌ | 131K |
-| `owui-redacteur-technique` | Rédacteur Technique | ❌ | ❌ | 131K |
-| `owui-vision-expert` | Vision Expert | ✅ | ❌ | 131K |
+| `owui-expert-analyste` | Expert Analyste | ❌ | ✅ | 131K |
+| `owui-redacteur-technique` | Rédacteur Technique | ❌ | ✅ | 131K |
+| `owui-vision-expert` | Vision Expert | ✅ | ✅ | 131K |
 
-## Available Agents (25)
+Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-glm-4.7-flash-*` (local GLM archived), `glm-5.1`/`glm-5`/`glm-4.6v`/`glm-4.7-flash` direct z.ai entries (superseded by glm-5.3/glm-5.3-flash via hub, user mandate 22/09).
 
-### Core Agents (12)
+## Available Agents (32)
+
+### Core Agents (13)
 
 | ID | Model | Vision | Thinking | Tools | Memory | Description |
 |----|-------|--------|----------|-------|--------|-------------|
-| `analyst` | glm-5.1 | ❌ | ✅ | searxng, playwright | ✅ | General analyst (default) |
-| `analyst-glm5` | glm-5 | ❌ | ✅ | searxng, playwright | ✅ | GLM-5 analyst variant |
-| `vision-analyst` | glm-4.6v | ✅ | ❌ | searxng | ❌ | Cloud vision specialist |
-| `vision-local` | omnicoder-9b | ✅ | ✅ | — | ❌ | Local vision+thinking |
-| `vision-local-owui` | owui-qwen3.5-35b | ✅ | ✅ | — | ❌ | OWUI Qwen3.5 vision |
-| `coder` | omnicoder-9b | ✅ | ✅ | — | ❌ | Local coding (vLLM direct) |
-| `coder-local` | owui-omnicoder-9b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
-| `fast` | glm-4.7-flash | ❌ | ❌ | — | ❌ | Fast cloud (z.ai) |
-| `fast-local` | owui-glm-4.7-flash-fast | ❌ | ❌ | — | ❌ | Fast local (OWUI, no thinking) |
-| `fast-local-thinking` | owui-glm-4.7-flash-thinking | ❌ | ✅ | — | ❌ | Local with thinking (OWUI) |
-| `qwen-local` | qwen3.5-35b-a3b | ✅ | ✅ | — | ❌ | Direct vLLM Qwen3.5 |
-| `guardian-sentinel` | glm-5.1 | ❌ | ✅ | — | ✅ | System health surveillance |
+| `analyst` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ✅ | General analyst — **fleet default, local** (user mandate 22/09) |
+| `analyst-glm5` | glm-5.3 | ❌ | ✅ | searxng, playwright, markitdown | ✅ | Cloud twin of analyst (heavy tasks, local-down fallback) |
+| `analyst-fast` | glm-5.3-flash | ❌ | ❌ | searxng | ❌ | Fast analyst (hub) |
+| `fast-responder` | glm-5.3-flash | ❌ | ❌ | — | ❌ | Quick answers / triage (hub) |
+| `vision-analyst` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Vision specialist — **local** (hub strips images, #794) |
+| `vision-local` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Local vision+thinking |
+| `vision-local-owui` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | OWUI Qwen3.6 vision |
+| `coder` | qwen3.6-35b-no-thinking | ❌ | ❌ | open_terminal, searxng | ❌ | Local coding (vLLM direct) |
+| `coder-local` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
+| `fast` | qwen3.6-35b-no-thinking | ❌ | ❌ | — | ❌ | Fastest reliable (local no-thinking) |
+| `fast-local` | qwen3.6-35b-no-thinking | ❌ | ❌ | — | ❌ | Fast local (direct vLLM) |
+| `fast-local-thinking` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Local with thinking |
+| `qwen-local` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Direct vLLM Qwen3.6 |
+
+### Operational Agents (4)
+
+| ID | Model | Role |
+|----|-------|------|
+| `config-auditor` | glm-5.3 | Configuration audit |
+| `log-analyzer` | glm-5.3 | Log analysis |
+| `commit-reviewer` | glm-5.3 | Code review |
+| `guardian-sentinel` | glm-5.3 | System health surveillance |
 
 ### Deep Search Agents (3)
 
 | ID | Model | Tools | Memory |
 |----|-------|-------|--------|
-| `researcher` | glm-5.1 | searxng, playwright | ✅ |
-| `synthesizer` | glm-5.1 | — | ❌ |
-| `critic` | glm-5.1 | — | ❌ |
+| `researcher` | glm-5.3 | searxng, playwright, open_terminal, markitdown | ✅ |
+| `synthesizer` | glm-5.3-flash | — | ❌ |
+| `critic` | glm-5.3 | — | ❌ |
 
 ### Deep Think Agents (4)
 
 | ID | Model | Role |
 |----|-------|------|
-| `optimist` | glm-5.1 | Opportunity finder |
-| `devils-advocate` | glm-5.1 | Risk identifier |
-| `pragmatist` | glm-5.1 | Implementation planner |
-| `mediator` | glm-5.1 | Consensus builder |
+| `optimist` | glm-5.3 | Opportunity finder |
+| `devils-advocate` | glm-5.3 | Risk identifier |
+| `pragmatist` | glm-5.3 | Implementation planner |
+| `mediator` | glm-5.3-flash | Consensus builder |
 
-### Operational Agents (3)
+### PR Review Agents (5, #1587)
 
 | ID | Model | Role |
 |----|-------|------|
-| `config-auditor` | glm-5.1 | Configuration audit |
-| `log-analyzer` | glm-5.1 | Log analysis |
-| `commit-reviewer` | glm-5.1 | Code review |
+| `fast-reviewer` | glm-5.3-flash | Tier 1 diff-only reviewer |
+| `integration-reviewer` | glm-5.3 | Tier 2 context-aware reviewer |
+| `context-explorer` | glm-5.3 | Code context around PR changes |
+| `regression-hunter` | glm-5.3 | Git-history regression risks |
+| `security-executor` | glm-5.3 | Deep security analysis |
 
 ### OWUI Custom Agents (3)
 
@@ -367,6 +377,14 @@ python -m pytest test_sk_agent.py test_config.py -v
 | `owui-vision` | owui-vision-expert | Vision analysis |
 
 ## Changelog
+
+### v2.2 (2026-09-23) — user mandate 22/09 (glm-5.3 era)
+
+- **Local by default**: `analyst` (default_agent) and `vision-analyst` (default_vision_agent) now run `qwen3.6-35b-a3b` locally; `analyst-glm5` is the explicit cloud twin (fallback when :5002 is down)
+- **GLM lineup**: glm-5.1/glm-5/glm-5-fast/glm-4.7-flash (direct z.ai) superseded by `glm-5.3` + `glm-5.3-flash` via the fleet hub (#3574)
+- **Vision stays local**: the hub strips `image_url` parts (roo-extensions#794) — cloud GLM vision deferred until the claudish passthrough fix
+- **Purged dead models**: `omnicoder-9b`, `owui-omnicoder-9b`, `owui-glm-4.7-flash-*`
+- 8 models / 32 agents
 
 ### v2.1 (2026-04-09) — Issue #894
 

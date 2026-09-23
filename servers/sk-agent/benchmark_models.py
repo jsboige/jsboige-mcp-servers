@@ -83,11 +83,8 @@ TASKS = {
 }
 
 MODELS = [
-    "glm-5.1",
-    "glm-5",
-    "glm-5.1-not",
-    "glm-5-not",
-    "glm-4.7-flash",
+    "glm-5.3",
+    "glm-5.3-flash",
     "qwen3.6-35b-a3b",
 ]
 
