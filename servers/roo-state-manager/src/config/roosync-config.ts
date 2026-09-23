@@ -312,8 +312,26 @@ export async function validateMachineIdUniqueness(
   }
 }
 
+// #2121(b): lastSeen stamps en mémoire — un cold start MCP n'écrit plus le registre
+// quand l'entrée n'a pas matériellement changé. Rien ne consomme le lastSeen du
+// registre pour la présence (health-view se cale sur l'activité dashboard,
+// #2546/#3160) : le stamp mémoire suffit à dater le passage sans payer l'écriture GDrive.
+const lastSeenStamps = new Map<string, string>();
+
+/**
+ * Dernier passage connu de la machine dans CE process (stamp mémoire #2121(b)).
+ * Indépendant du lastSeen persisté, qui ne bouge plus qu'au changement d'état.
+ */
+export function getLastSeenStamp(machineId: string): string | undefined {
+  return lastSeenStamps.get(machineId);
+}
+
 /**
  * Enregistre un machineId dans le registre central des machines
+ *
+ * #2121(b) debounce : le lastSeen est stampé en mémoire ; le registre n'est
+ * écrit que sur changement d'état (machine nouvelle, source ou status différent),
+ * pas à chaque cold start.
  *
  * @param machineId L'identifiant de machine à enregistrer
  * @param sharedPath Le chemin partagé RooSync
@@ -354,9 +372,29 @@ export async function registerMachineId(
 
     // Ajouter ou mettre à jour la machine
     const now = new Date().toISOString();
+    const existing = registryData.machines[machineId];
+
+    // #2121(b) debounce : stamp mémoire inconditionnel, écriture seulement si
+    // l'entrée change matériellement. Status 'offline'/'conflict' posé ailleurs
+    // → ré-écriture au cold start suivant (auto-guérison vers 'online').
+    lastSeenStamps.set(machineId, now);
+
+    const stateChanged =
+      !existing ||
+      existing.source !== source ||
+      existing.status !== 'online';
+
+    if (!stateChanged) {
+      logger.info(
+        `[roosync-config] MachineId ${machineId} déjà enregistré (source ${source}) — ` +
+        `lastSeen stampé en mémoire, registre non réécrit (#2121b)`
+      );
+      return true;
+    }
+
     registryData.machines[machineId] = {
       machineId,
-      firstSeen: registryData.machines[machineId]?.firstSeen || now,
+      firstSeen: existing?.firstSeen || now,
       lastSeen: now,
       source,
       status: 'online'
