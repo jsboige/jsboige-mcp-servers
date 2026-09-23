@@ -66,17 +66,19 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
 // #1747 D: isLoadInProgress defaults to true — an elapsed budget with a load
 // running stays 'loading'; tests opt into false to pin the 'failed' arm.
-const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress } = vi.hoisted(() => {
+const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress, mockEnsureMachine } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
 	const awaitFn = vi.fn(() => Promise.resolve(true));
 	const ageFn = vi.fn(() => 1234);
 	const loadInProgressFn = vi.fn(() => true);
+	const ensureMachineFn = vi.fn(() => Promise.resolve(true));
 	return {
 		mockGetCache: cacheFn,
 		mockAwaitFreshness: awaitFn,
 		mockGetCacheAge: ageFn,
 		mockIsLoadInProgress: loadInProgressFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn }))
+		mockEnsureMachine: ensureMachineFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, ensureMachineTier3Loaded: ensureMachineFn }))
 	};
 });
 
@@ -545,7 +547,7 @@ describe('list-conversations', () => {
       mockGetCache.mockResolvedValue(new Map());
       mockAwaitFreshness.mockResolvedValue(true);
       mockIsLoadInProgress.mockReturnValue(true);
-      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress });
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress, ensureMachineTier3Loaded: mockEnsureMachine });
     });
 
     it('should not load archives when includeArchives is false (default)', async () => {
@@ -555,6 +557,23 @@ describe('list-conversations', () => {
 
       expect(parsed).toEqual([]);
       expect(mockGetInstance).not.toHaveBeenCalled();
+    });
+
+    // #3661 — machine-scoped Tier 3: un list filtré sur une machine déclenche
+    // l'hydratation bornée de CETTE machine avant la lecture du cache.
+    it('calls ensureMachineTier3Loaded with the trimmed machineId when includeArchives + machineId are set', async () => {
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, machineId: '  myia-po-2025  ' },
+        new Map()
+      );
+      expect(result.isError).toBeFalsy();
+      expect(mockEnsureMachine).toHaveBeenCalledTimes(1);
+      expect(mockEnsureMachine).toHaveBeenCalledWith('myia-po-2025');
+    });
+
+    it('does not call ensureMachineTier3Loaded without a machineId filter', async () => {
+      await listConversationsTool.handler({ includeArchives: true }, new Map());
+      expect(mockEnsureMachine).not.toHaveBeenCalled();
     });
 
     it('should include gdrive-archive skeletons when includeArchives is true', async () => {

@@ -671,6 +671,14 @@ export const listConversationsTool = {
                 cacheAgeMs = scsInstance.getCacheAgeMs();
                 if (archiveReady) {
                     tier3Status = 'ready';
+                    // #3661 — machine-scoped Tier 3: le chargement a froid n'hydrate
+                    // que la machine LOCALE ; un list filtre sur une autre machine
+                    // paie ici le chargement borne de cette machine, pour que le
+                    // filtre ne se lise jamais comme un corpus vide.
+                    const machineFilter = args.machineId?.trim();
+                    if (machineFilter && machineFilter.length > 0) {
+                        await scsInstance.ensureMachineTier3Loaded(machineFilter);
+                    }
                     const scsCache = await scsInstance.getCache();
                     const archiveSkeletons: ConversationSkeleton[] = [];
 

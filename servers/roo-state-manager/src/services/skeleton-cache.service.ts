@@ -20,6 +20,7 @@
 import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import path from 'path';
+import os from 'os';
 import { promises as fs } from 'fs';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -48,6 +49,19 @@ export class SkeletonCacheService {
      *  at once. */
     private loadPromise: Promise<void> | null = null;
     private readonly CACHE_VALIDITY_MS = 30 * 60 * 1000; // 30 minutes (was 5min, increased for stability)
+    /**
+     * #3661 — Tier 3 machine-scoped hydration state.
+     * `tier3Index` maps every archived taskId to its file (built from a cheap full
+     * listing — one readdir per machine dir, a few MB for ~11k entries). Payload
+     * hydration is per-machine: `tier3LoadedMachines` (machineId → LRU tick) and
+     * `tier3MachineBytes` (machineId → estimated resident bytes) drive the
+     * SKELETON_ARCHIVE_TIER_MAX_MB cap with machine-granular LRU eviction.
+     */
+    private tier3Index: Map<string, { filePath: string; machineId: string }> = new Map();
+    private tier3LoadedMachines: Map<string, number> = new Map();
+    private tier3MachineBytes: Map<string, number> = new Map();
+    private tier3MachineLoadPromises: Map<string, Promise<void>> = new Map();
+    private tier3LruCounter = 0;
 
     private constructor() {
         // Constructor privé pour pattern singleton
@@ -544,42 +558,83 @@ export class SkeletonCacheService {
      * Necessite `ROOSYNC_SHARED_PATH` (sinon `getSharedStatePath()` throw —
      * capture par le try/catch global, no-op silencieux).
      *
-     * **Attention scale:** Peut charger des milliers d'archives (flotte typique:
-     * 11k+). Activable uniquement en production via `configure({ enableArchiveTier: true })`.
-     *
-     * #1244 (perf fix): Parallelise les reads avec concurrence bornee (20) et
-     * appelle `readArchivedTaskFromPath` directement (plus de probe O(M) par
-     * taskId). Reduit le cold-start de 30s+ → ~3-5s pour 11k archives.
+     * #3661 — Le chargement est desormais MACHINE-SCOPE :
+     *  - Phase 1 (pas chere) : index complet taskId → fichier (un readdir par
+     *    machine-dir, quelques Mo pour ~11k entrees).
+     *  - Phase 2 : hydratation des payloads de la SEULE machine locale
+     *    (~320 Mo mesures par machine contre ~2,1 Go pour la flotte entiere —
+     *    16 hotes RSM x 2,1 Go = 32,4 Go sur po-204, RAM 3,8 Go libres).
+     *  Les machines distantes s'hydratent a la demande via
+     *  `ensureMachineTier3Loaded()` (filtre machineId de conversation_browser list),
+     *  sous plafond `SKELETON_ARCHIVE_TIER_MAX_MB` avec eviction LRU par machine.
      */
     private async loadArchivedSkeletonsFromGDrive(): Promise<void> {
         try {
             const { TaskArchiver } = await import('./task-archiver/index.js');
-            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
 
-            // Phase 1: Liste tous les fichiers d'archive avec leur chemin direct.
-            // Un seul readdir par machine-dir (interne a listArchivedTaskFiles).
+            // Phase 1: Index complet du corpus (listing seul — aucun payload lu).
             const allFiles = await TaskArchiver.listArchivedTaskFiles();
+            this.tier3Index.clear();
+            this.tier3LoadedMachines.clear();
+            this.tier3MachineBytes.clear();
+            for (const item of allFiles) {
+                this.tier3Index.set(item.taskId, { filePath: item.filePath, machineId: item.machineId });
+            }
 
-            if (allFiles.length === 0) {
-                console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive trouvee');
+            if (this.tier3Index.size === 0) {
+                console.log('[SkeletonCacheService] Tier 3 (archives): aucune archive indexee');
                 return;
             }
 
-            // Phase 2: Construire la work queue en evitant les collisions connues
+            // Phase 2: Hydrate uniquement la machine locale. La derivation de
+            // l'identifiant est celle du writer (TaskArchiver.getMachineId).
+            const localMachine = os.hostname().toLowerCase();
+            await this.loadTier3MachinePayloads(localMachine);
+
+            console.log(
+                `[SkeletonCacheService] Tier 3 (archives): ${this.tier3Index.size} indexees, ` +
+                `${this.tier3LoadedMachines.size} machine(s) hydratee(s) [locale: ${localMachine}] — ` +
+                `les machines distantes se chargent via ensureMachineTier3Loaded (#3661)`
+            );
+        } catch (error) {
+            console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
+        }
+    }
+
+    /**
+     * #3661 — Hydrate les skeletons d'UNE machine depuis l'index Tier 3.
+     * Partage par le chargement a froid (machine locale) et par
+     * `ensureMachineTier3Loaded` (machines distantes, a la demande). Regle de
+     * collision inchangee : les tiers chauds gagnent (entrees existantes gardees).
+     * Ne jette jamais — les echecs de lecture sont comptes et avales (meme
+     * contrat que l'ancien chargement complet).
+     */
+    private async loadTier3MachinePayloads(machineIdLower: string): Promise<void> {
+        try {
+            const machineKey = this.resolveTier3MachineKey(machineIdLower);
+            if (!machineKey) return;
+            if (this.tier3LoadedMachines.has(machineKey)) {
+                // LRU touch — re-arme la recence de cette machine sans relecture.
+                this.tier3LoadedMachines.set(machineKey, ++this.tier3LruCounter);
+                return;
+            }
+
+            const { TaskArchiver } = await import('./task-archiver/index.js');
+            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
+
+            // Work queue de la machine demandee, hors collisions connues.
             type WorkItem = { taskId: string; filePath: string };
             const workQueue: WorkItem[] = [];
-            for (const item of allFiles) {
-                if (!this.cache.has(item.taskId)) {
-                    workQueue.push({ taskId: item.taskId, filePath: item.filePath });
+            for (const [taskId, entry] of this.tier3Index) {
+                if (entry.machineId.toLowerCase() === machineIdLower && !this.cache.has(taskId)) {
+                    workQueue.push({ taskId, filePath: entry.filePath });
                 }
             }
-            const skippedCollision = allFiles.length - workQueue.length;
 
-            // Phase 3: Lire avec concurrence bornee (20 parallel)
-            // Batching evite de saturer I/O et le thread pool libuv.
             const CONCURRENCY = 20;
             let loaded = 0;
             let failed = 0;
+            let machineBytes = 0;
 
             const processItem = async (item: WorkItem): Promise<void> => {
                 try {
@@ -594,12 +649,13 @@ export class SkeletonCacheService {
                     // Re-verifier la collision (race safety avec Tier 1/2 charges en parallele)
                     if (!this.cache.has(skeleton.taskId)) {
                         this.cache.set(skeleton.taskId, skeleton);
+                        machineBytes += JSON.stringify(skeleton).length;
                         loaded++;
                     }
                 } catch (error) {
                     failed++;
                     if (failed <= 3) {
-                        console.warn(`[SkeletonCacheService] Tier 3 (archives): echec lecture ${item.taskId}:`, error);
+                        console.warn(`[SkeletonCacheService] Tier 3 (machine ${machineKey}): echec lecture ${item.taskId}:`, error);
                     }
                 }
             };
@@ -609,13 +665,125 @@ export class SkeletonCacheService {
                 await Promise.all(batch.map(processItem));
             }
 
+            this.tier3LoadedMachines.set(machineKey, ++this.tier3LruCounter);
+            this.tier3MachineBytes.set(machineKey, machineBytes);
+
             console.log(
-                `[SkeletonCacheService] Tier 3 (archives): ${loaded} chargees, ` +
-                `${skippedCollision} collisions ignorees (local prioritaire), ${failed} echecs sur ${allFiles.length} total`
+                `[SkeletonCacheService] Tier 3 (machine ${machineKey}): ${loaded} chargees, ` +
+                `${failed} echecs sur ${workQueue.length} indexes`
             );
+            this.enforceTier3Cap(machineKey);
         } catch (error) {
-            console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
+            console.warn(`[SkeletonCacheService] Tier 3 (machine ${machineIdLower}): chargement non-bloquant a echoue:`, error);
         }
+    }
+
+    /**
+     * #3661 — Hydrate a la demande les archives Tier 3 d'UNE machine distante.
+     * `conversation_browser(list, machineId: X)` l'appelle avant de lire le cache
+     * pour que la machine demandee soit dans la reponse (le chargement a froid
+     * n'hydrate que la machine locale). Machine inconnue → false (remonte a
+     * l'appelant, pas avale) ; concurrence sur la meme machine → un seul load.
+     */
+    public async ensureMachineTier3Loaded(machineId: string): Promise<boolean> {
+        if (!SkeletonCacheService.config.enableArchiveTier) return false;
+        // Reutilise un chargement complet en cours (il construit l'index) plutot
+        // que de courir contre lui.
+        if (this.loadPromise) await this.loadPromise;
+        if (this.tier3Index.size === 0 && this.cache.size === 0) {
+            await this.ensureFreshCache();
+        }
+        const machineIdLower = machineId.trim().toLowerCase();
+        const machineKey = this.resolveTier3MachineKey(machineIdLower);
+        if (!machineKey) return false;
+
+        const inFlight = this.tier3MachineLoadPromises.get(machineKey);
+        if (inFlight) {
+            await inFlight;
+            return true;
+        }
+        const load = this.loadTier3MachinePayloads(machineIdLower).finally(() => {
+            this.tier3MachineLoadPromises.delete(machineKey);
+        });
+        this.tier3MachineLoadPromises.set(machineKey, load);
+        await load;
+        return true;
+    }
+
+    /**
+     * #3661 — Resout une machine demandee (insensible a la casse) contre l'index
+     * Tier 3 et rend la cle reelle (nom de repertoire). Null si l'index ne
+     * connait pas la machine.
+     */
+    private resolveTier3MachineKey(machineIdLower: string): string | null {
+        for (const entry of this.tier3Index.values()) {
+            if (entry.machineId.toLowerCase() === machineIdLower) return entry.machineId;
+        }
+        return null;
+    }
+
+    /**
+     * #3661 — Plafond dur par processus sur les octets Tier 3 residents
+     * (`SKELETON_ARCHIVE_TIER_MAX_MB`, defaut 512 — calibre par la mesure :
+     * ~320 Mo par machine, le plafond laisse ~1,5 machine en cache confortable).
+     * L'eviction est GRANULAIRE PAR MACHINE (l'unite de chargement) : la machine
+     * chargee la moins recemment est evacuee jusqu'a tenir le plafond. La
+     * machine fraichement chargee n'est jamais candidate ; une machine unique
+     * plus grosse que le plafond reste residente avec un WARN (le plafond borne
+     * le cache, pas le service rendu).
+     */
+    private getTier3CapBytes(): number {
+        const raw = parseInt(process.env.SKELETON_ARCHIVE_TIER_MAX_MB || '512', 10);
+        const mb = Number.isFinite(raw) && raw > 0 ? raw : 512;
+        return mb * 1024 * 1024;
+    }
+
+    private enforceTier3Cap(protectedMachineKey: string): void {
+        const capBytes = this.getTier3CapBytes();
+        let total = 0;
+        for (const bytes of this.tier3MachineBytes.values()) total += bytes;
+        if (total <= capBytes) return;
+
+        const evictable = Array.from(this.tier3LoadedMachines.entries())
+            .filter(([key]) => key !== protectedMachineKey)
+            .sort((a, b) => a[1] - b[1]); // tick LRU croissant = moins recent d'abord
+
+        for (const [key] of evictable) {
+            if (total <= capBytes) break;
+            total -= this.evictTier3Machine(key);
+        }
+
+        if (total > capBytes) {
+            console.warn(
+                `[SkeletonCacheService] Tier 3: plafond depasse par la seule machine protegee ` +
+                `(${(total / 1024 / 1024).toFixed(0)} Mo > ${(capBytes / 1024 / 1024).toFixed(0)} Mo) — ` +
+                `SKELETON_ARCHIVE_TIER_MAX_MB ne peut pas borner une machine unique`
+            );
+        }
+    }
+
+    /**
+     * #3661 — Evacue une machine du cache Tier 3 (seulement ses entrees
+     * `gdrive-archive` — les tiers chauds ne sont jamais touches) et rend les
+     * octets liberes.
+     */
+    private evictTier3Machine(machineKey: string): number {
+        const evictedBytes = this.tier3MachineBytes.get(machineKey) ?? 0;
+        for (const [taskId, entry] of this.tier3Index) {
+            if (entry.machineId === machineKey) {
+                const skeleton = this.cache.get(taskId);
+                if (skeleton && (skeleton as any).metadata?.dataSource === 'gdrive-archive') {
+                    this.cache.delete(taskId);
+                }
+            }
+        }
+        this.tier3LoadedMachines.delete(machineKey);
+        this.tier3MachineBytes.delete(machineKey);
+        console.log(
+            `[SkeletonCacheService] Tier 3: eviction LRU machine ${machineKey} ` +
+            `(${(evictedBytes / 1024 / 1024).toFixed(1)} Mo liberes)`
+        );
+        return evictedBytes;
     }
 
     /**
@@ -648,6 +816,11 @@ export class SkeletonCacheService {
         config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
         cacheAgeMs: number | null;
         stale: boolean;
+        /** #3661 — machine-scoped Tier 3 observability: which machines are
+         *  hydrated, how many resident bytes they hold, and the cap. */
+        tier3_loaded_machines: string[];
+        tier3_estimated_mb: number;
+        tier3_cap_mb: number;
     }> {
         const cacheAgeMs = this.lastRefreshTime === 0 ? null : Date.now() - this.lastRefreshTime;
         const stale = cacheAgeMs === null ? true : cacheAgeMs > this.CACHE_VALIDITY_MS;
@@ -667,6 +840,9 @@ export class SkeletonCacheService {
             }
         }
 
+        let tier3Bytes = 0;
+        for (const bytes of this.tier3MachineBytes.values()) tier3Bytes += bytes;
+
         return {
             tier1_roo: tier1,
             tier2_claude: tier2,
@@ -678,6 +854,9 @@ export class SkeletonCacheService {
             },
             cacheAgeMs,
             stale,
+            tier3_loaded_machines: Array.from(this.tier3LoadedMachines.keys()),
+            tier3_estimated_mb: Math.round(tier3Bytes / 1024 / 1024),
+            tier3_cap_mb: Math.round(this.getTier3CapBytes() / 1024 / 1024),
         };
     }
 

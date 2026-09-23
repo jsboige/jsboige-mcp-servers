@@ -6,6 +6,10 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import os from 'os';
+
+// #3661 — La derivation de la machine locale est celle du writer (TaskArchiver).
+const LOCAL_MACHINE = os.hostname().toLowerCase();
 
 // Hoisted mocks
 const { mockDetectStorageLocations } = vi.hoisted(() => ({
@@ -339,14 +343,15 @@ describe('SkeletonCacheService', () => {
 			// Measured on po-204 (Roo uninstalled): detectStorageLocations → [],
 			// the old early return skipped Tiers 2/3 → cache empty forever,
 			// tier3.status=loading permanent, cross-machine list unreachable.
+			// #3661: le chargement a froid hydrate la machine LOCALE (fixture ci-dessous).
 			mockDetectStorageLocations.mockResolvedValue([]);
 			mockListArchivedTaskFiles.mockResolvedValue([
-				{ taskId: 'task-po2025', filePath: '/mock/archive/myia-po-2025/task-po2025.json.gz', machineId: 'myia-po-2025' },
+				{ taskId: 'task-local', filePath: `/mock/archive/${LOCAL_MACHINE}/task-local.json.gz`, machineId: LOCAL_MACHINE },
 			]);
 			mockReadArchivedTaskFromPath.mockResolvedValueOnce({
 				version: 1,
-				taskId: 'task-po2025',
-				machineId: 'myia-po-2025',
+				taskId: 'task-local',
+				machineId: LOCAL_MACHINE,
 				hostIdentifier: 'h',
 				archivedAt: '2026-04-01T00:00:00Z',
 				metadata: { title: 'Remote task', source: 'roo' },
@@ -359,8 +364,8 @@ describe('SkeletonCacheService', () => {
 
 			expect(mockListArchivedTaskFiles).toHaveBeenCalled();
 			expect(cache.size).toBe(1);
-			expect(cache.get('task-po2025')!.metadata.dataSource).toBe('gdrive-archive');
-			expect(cache.get('task-po2025')!.metadata.machineId).toBe('myia-po-2025');
+			expect(cache.get('task-local')!.metadata.dataSource).toBe('gdrive-archive');
+			expect(cache.get('task-local')!.metadata.machineId).toBe(LOCAL_MACHINE);
 		});
 
 		test('configure({ enableClaudeTier: true }) loads Tier 2', async () => {
@@ -425,17 +430,17 @@ describe('SkeletonCacheService', () => {
 			expect(cache.size).toBe(1);
 		});
 
-		test('configure({ enableArchiveTier: true }) loads Tier 3', async () => {
+		test('configure({ enableArchiveTier: true }) loads Tier 3 for the LOCAL machine only (#3661)', async () => {
 			setupTier1(['roo-1']);
 			mockListArchivedTaskFiles.mockResolvedValue([
-				{ taskId: 'archived-task-A', filePath: '/mock/archive/myia-po-2025/archived-task-A.json.gz', machineId: 'myia-po-2025' },
+				{ taskId: 'archived-task-A', filePath: `/mock/archive/${LOCAL_MACHINE}/archived-task-A.json.gz`, machineId: LOCAL_MACHINE },
 				{ taskId: 'archived-task-B', filePath: '/mock/archive/myia-web1/archived-task-B.json.gz', machineId: 'myia-web1' },
 			]);
 			mockReadArchivedTaskFromPath
 				.mockResolvedValueOnce({
 					version: 1,
 					taskId: 'archived-task-A',
-					machineId: 'myia-po-2025',
+					machineId: LOCAL_MACHINE,
 					hostIdentifier: 'host-1',
 					archivedAt: '2026-04-01T12:00:00Z',
 					metadata: { title: 'Archived A', source: 'roo' },
@@ -456,24 +461,25 @@ describe('SkeletonCacheService', () => {
 			const cache = await service.getCache();
 
 			expect(mockListArchivedTaskFiles).toHaveBeenCalled();
-			expect(mockReadArchivedTaskFromPath).toHaveBeenCalledTimes(2);
+			// #3661 — seul le payload de la machine locale est hydraté au cold load
+			expect(mockReadArchivedTaskFromPath).toHaveBeenCalledTimes(1);
 			expect(cache.has('roo-1')).toBe(true);
 			expect(cache.has('archived-task-A')).toBe(true);
-			expect(cache.has('archived-task-B')).toBe(true);
+			expect(cache.has('archived-task-B')).toBe(false);
 			expect(cache.get('archived-task-A')!.metadata.dataSource).toBe('gdrive-archive');
-			expect(cache.get('archived-task-A')!.metadata.machineId).toBe('myia-po-2025');
+			expect(cache.get('archived-task-A')!.metadata.machineId).toBe(LOCAL_MACHINE);
 		});
 
 		test('Tier 3 collision with Tier 1: local Roo wins, archive skipped', async () => {
 			setupTier1(['shared-id']);
 			mockListArchivedTaskFiles.mockResolvedValue([
-				{ taskId: 'shared-id', filePath: '/mock/archive/remote-machine/shared-id.json.gz', machineId: 'remote-machine' },
+				{ taskId: 'shared-id', filePath: `/mock/archive/${LOCAL_MACHINE}/shared-id.json.gz`, machineId: LOCAL_MACHINE },
 			]);
 			// Should NOT be called because Tier 1 already has 'shared-id' (filtered out before read)
 			mockReadArchivedTaskFromPath.mockResolvedValue({
 				version: 1,
 				taskId: 'shared-id',
-				machineId: 'remote-machine',
+				machineId: LOCAL_MACHINE,
 				hostIdentifier: 'h',
 				archivedAt: '2026-04-01T00:00:00Z',
 				metadata: { title: 'SHOULD NOT OVERWRITE' },
@@ -549,12 +555,12 @@ describe('SkeletonCacheService', () => {
 				});
 
 				mockListArchivedTaskFiles.mockResolvedValue([
-					{ taskId: sharedId, filePath: `/mock/archive/myia-po-2023/${sharedId}.json.gz`, machineId: 'myia-po-2023' },
+					{ taskId: sharedId, filePath: `/mock/archive/${LOCAL_MACHINE}/${sharedId}.json.gz`, machineId: LOCAL_MACHINE },
 				]);
 				mockReadArchivedTaskFromPath.mockResolvedValue({
 					version: 1,
 					taskId: sharedId,
-					machineId: 'myia-po-2023',
+					machineId: LOCAL_MACHINE,
 					hostIdentifier: 'host-remote',
 					archivedAt: '2026-04-01T12:00:00Z',
 					metadata: { title: 'Archive version', source: 'roo' },
@@ -585,12 +591,12 @@ describe('SkeletonCacheService', () => {
 				});
 
 				mockListArchivedTaskFiles.mockResolvedValue([
-					{ taskId: 'claude-proj-x', filePath: '/mock/archive/myia-web1/claude-proj-x.json.gz', machineId: 'myia-web1' },
+					{ taskId: 'claude-proj-x', filePath: `/mock/archive/${LOCAL_MACHINE}/claude-proj-x.json.gz`, machineId: LOCAL_MACHINE },
 				]);
 				mockReadArchivedTaskFromPath.mockResolvedValue({
 					version: 1,
 					taskId: 'claude-proj-x',
-					machineId: 'myia-web1',
+					machineId: LOCAL_MACHINE,
 					hostIdentifier: 'h',
 					archivedAt: '2026-04-01T00:00:00Z',
 					metadata: { title: 'Archive version', source: 'claude-code' },
@@ -627,23 +633,25 @@ describe('SkeletonCacheService', () => {
 				expect(mockListArchivedTaskFiles).toHaveBeenCalled();
 			});
 
-			test('Tier 3 loads archives from multiple machines with correct machineId', async () => {
+			test('#3661 — cold load hydrates the LOCAL machine; a remote machine hydrates on demand via ensureMachineTier3Loaded', async () => {
 				setupTier1(['roo-local']);
 				mockListArchivedTaskFiles.mockResolvedValue([
-					{ taskId: 'task-po2023', filePath: '/mock/archive/myia-po-2023/task-po2023.json.gz', machineId: 'myia-po-2023' },
+					{ taskId: 'task-local', filePath: `/mock/archive/${LOCAL_MACHINE}/task-local.json.gz`, machineId: LOCAL_MACHINE },
 					{ taskId: 'task-web1', filePath: '/mock/archive/myia-web1/task-web1.json.gz', machineId: 'myia-web1' },
 				]);
-				mockReadArchivedTaskFromPath
-					.mockResolvedValueOnce({
-						version: 1,
-						taskId: 'task-po2023',
-						machineId: 'myia-po-2023',
-						hostIdentifier: 'host-1',
-						archivedAt: '2026-04-01T12:00:00Z',
-						metadata: { title: 'PO2023 task', source: 'roo' },
-						messages: [{ role: 'user', content: 'msg1', timestamp: '2026-04-01T11:59:00Z' }]
-					})
-					.mockResolvedValueOnce({
+				mockReadArchivedTaskFromPath.mockImplementation(async (filePath: string) => {
+					if (filePath.includes('task-local')) {
+						return {
+							version: 1,
+							taskId: 'task-local',
+							machineId: LOCAL_MACHINE,
+							hostIdentifier: 'host-1',
+							archivedAt: '2026-04-01T12:00:00Z',
+							metadata: { title: 'Local task', source: 'roo' },
+							messages: [{ role: 'user', content: 'msg1', timestamp: '2026-04-01T11:59:00Z' }]
+						};
+					}
+					return {
 						version: 1,
 						taskId: 'task-web1',
 						machineId: 'myia-web1',
@@ -651,31 +659,39 @@ describe('SkeletonCacheService', () => {
 						archivedAt: '2026-04-02T12:00:00Z',
 						metadata: { title: 'Web1 task', source: 'claude-code' },
 						messages: []
-					});
+					};
+				});
 
 				SkeletonCacheService.configure({ enableArchiveTier: true });
 				const service = SkeletonCacheService.getInstance();
 				const cache = await service.getCache();
 
+				// Cold load: machine locale hydratée, machine distante absente
+				expect(cache.size).toBe(2);
+				expect(cache.get('task-local')!.metadata.machineId).toBe(LOCAL_MACHINE);
+				expect(cache.get('task-local')!.metadata.dataSource).toBe('gdrive-archive');
+				expect(cache.has('task-web1')).toBe(false);
+
+				// On-demand: la machine distante s'hydrate, la locale reste prioritaire
+				const loaded = await service.ensureMachineTier3Loaded('myia-web1');
+				expect(loaded).toBe(true);
 				expect(cache.size).toBe(3);
-				expect(cache.get('task-po2023')!.metadata.machineId).toBe('myia-po-2023');
 				expect(cache.get('task-web1')!.metadata.machineId).toBe('myia-web1');
-				expect(cache.get('task-po2023')!.metadata.dataSource).toBe('gdrive-archive');
 				expect(cache.get('task-web1')!.metadata.dataSource).toBe('gdrive-archive');
 			});
 
 			test('Tier 3 handles null archive gracefully', async () => {
 				setupTier1(['roo-1']);
 				mockListArchivedTaskFiles.mockResolvedValue([
-					{ taskId: 'ghost-task', filePath: '/mock/archive/myia-po-2025/ghost-task.json.gz', machineId: 'myia-po-2025' },
-					{ taskId: 'valid-task', filePath: '/mock/archive/myia-po-2025/valid-task.json.gz', machineId: 'myia-po-2025' },
+					{ taskId: 'ghost-task', filePath: `/mock/archive/${LOCAL_MACHINE}/ghost-task.json.gz`, machineId: LOCAL_MACHINE },
+					{ taskId: 'valid-task', filePath: `/mock/archive/${LOCAL_MACHINE}/valid-task.json.gz`, machineId: LOCAL_MACHINE },
 				]);
 				mockReadArchivedTaskFromPath
 					.mockResolvedValueOnce(null)
 					.mockResolvedValueOnce({
 						version: 1,
 						taskId: 'valid-task',
-						machineId: 'myia-po-2025',
+						machineId: LOCAL_MACHINE,
 						hostIdentifier: 'h',
 						archivedAt: '2026-04-01T00:00:00Z',
 						metadata: { title: 'Valid', source: 'roo' },
@@ -731,5 +747,132 @@ describe('SkeletonCacheService', () => {
 				expect(cache.has('roo-a')).toBe(true);
 				expect(cache.has('roo-b')).toBe(true);
 			});
+	});
+
+	// ============================================================
+	// #3661 — Tier 3 machine-scoped : plafond LRU + resolution on-demand
+	// ============================================================
+
+	describe('#3661 machine-scoped Tier 3 + cap LRU', () => {
+		beforeEach(() => {
+			delete process.env.SKELETON_ARCHIVE_TIER_MAX_MB;
+		});
+
+		afterEach(() => {
+			delete process.env.SKELETON_ARCHIVE_TIER_MAX_MB;
+		});
+
+		const setupArchiveHost = (archives: Array<{ taskId: string; machineId: string; content?: string }>) => {
+			mockDetectStorageLocations.mockResolvedValue([]);
+			mockListArchivedTaskFiles.mockResolvedValue(
+				archives.map(a => ({
+					taskId: a.taskId,
+					filePath: `/mock/archive/${a.machineId}/${a.taskId}.json.gz`,
+					machineId: a.machineId,
+				}))
+			);
+			mockReadArchivedTaskFromPath.mockImplementation(async (filePath: string) => {
+				const hit = archives.find(a => filePath.includes(`/${a.machineId}/${a.taskId}.json.gz`));
+				if (!hit) return null;
+				return {
+					version: 1,
+					taskId: hit.taskId,
+					machineId: hit.machineId,
+					hostIdentifier: 'h',
+					archivedAt: '2026-04-01T00:00:00Z',
+					metadata: { title: hit.taskId, source: 'roo' },
+					messages: hit.content
+						? [{ role: 'user', content: hit.content, timestamp: '2026-04-01T00:00:00Z' }]
+						: [],
+				};
+			});
+		};
+
+		test('ensureMachineTier3Loaded returns false for an unknown machine', async () => {
+			setupArchiveHost([{ taskId: 't1', machineId: LOCAL_MACHINE }]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			await service.getCache();
+
+			expect(await service.ensureMachineTier3Loaded('no-such-machine')).toBe(false);
+			expect(mockReadArchivedTaskFromPath).toHaveBeenCalledTimes(1); // cold load local only
+		});
+
+		test('ensureMachineTier3Loaded matches the machine case-insensitively', async () => {
+			setupArchiveHost([
+				{ taskId: 't1', machineId: LOCAL_MACHINE },
+				{ taskId: 't2', machineId: 'myia-web1' },
+			]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			const cache = await service.getCache();
+
+			expect(await service.ensureMachineTier3Loaded('MYIA-WEB1')).toBe(true);
+			expect(cache.has('t2')).toBe(true);
+		});
+
+		test('ensureMachineTier3Loaded is idempotent — second call does not re-read', async () => {
+			setupArchiveHost([
+				{ taskId: 't1', machineId: LOCAL_MACHINE },
+				{ taskId: 't2', machineId: 'myia-web1' },
+			]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			await service.getCache();
+			const readsAfterCold = mockReadArchivedTaskFromPath.mock.calls.length;
+
+			await service.ensureMachineTier3Loaded('myia-web1');
+			const readsAfterFirstEnsure = mockReadArchivedTaskFromPath.mock.calls.length;
+			expect(readsAfterFirstEnsure).toBeGreaterThan(readsAfterCold);
+
+			await service.ensureMachineTier3Loaded('myia-web1');
+			expect(mockReadArchivedTaskFromPath.mock.calls.length).toBe(readsAfterFirstEnsure);
+		});
+
+		test('cap: loading a machine past SKELETON_ARCHIVE_TIER_MAX_MB evicts the least-recently-used machine', async () => {
+			process.env.SKELETON_ARCHIVE_TIER_MAX_MB = '1';
+			const big = 'x'.repeat(700 * 1024);
+			setupArchiveHost([
+				{ taskId: 'local-big', machineId: LOCAL_MACHINE, content: big },
+				{ taskId: 'web1-big', machineId: 'myia-web1', content: big },
+			]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			const cache = await service.getCache();
+			expect(cache.has('local-big')).toBe(true); // seul resident au cold load (~0.7 Mo < 1 Mo)
+
+			expect(await service.ensureMachineTier3Loaded('myia-web1')).toBe(true);
+			// ~1.4 Mo > 1 Mo → la machine locale (moins recente) est evincee
+			expect(cache.has('web1-big')).toBe(true);
+			expect(cache.has('local-big')).toBe(false);
+
+			const stats = await service.getCacheTierStats();
+			expect(stats.tier3_loaded_machines).toEqual(['myia-web1']);
+			expect(stats.tier3_cap_mb).toBe(1);
+			expect(stats.tier3_estimated_mb).toBeGreaterThanOrEqual(0);
+		});
+
+		test('cap: a single machine larger than the cap stays resident (soft floor, WARN logged)', async () => {
+			process.env.SKELETON_ARCHIVE_TIER_MAX_MB = '1';
+			const huge = 'y'.repeat(1500 * 1024);
+			setupArchiveHost([{ taskId: 'local-huge', machineId: LOCAL_MACHINE, content: huge }]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			const cache = await service.getCache();
+
+			expect(cache.has('local-huge')).toBe(true);
+			const stats = await service.getCacheTierStats();
+			expect(stats.tier3_loaded_machines).toEqual([LOCAL_MACHINE]);
+			expect(stats.tier3_estimated_mb).toBeGreaterThanOrEqual(1);
+		});
+
+		test('archive tier disabled → ensureMachineTier3Loaded returns false without reading', async () => {
+			setupArchiveHost([{ taskId: 't1', machineId: LOCAL_MACHINE }]);
+			const service = SkeletonCacheService.getInstance();
+
+			expect(await service.ensureMachineTier3Loaded(LOCAL_MACHINE)).toBe(false);
+			expect(mockReadArchivedTaskFromPath).not.toHaveBeenCalled();
+			expect(mockListArchivedTaskFiles).not.toHaveBeenCalled();
+		});
 	});
 });
