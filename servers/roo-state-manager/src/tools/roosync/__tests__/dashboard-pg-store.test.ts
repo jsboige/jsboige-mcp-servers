@@ -25,17 +25,19 @@ import * as os from 'os';
 // "make sure there are no top level variables inside").
 
 const {
-  mockReadDashboardFromPg,
+  mockReadDashboardFromPg, mockProbeHydration,
   mockDualWriteDashboardSync,
   mockDualWriteDashboardDelete,
 } = vi.hoisted(() => ({
   mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
+  mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
   mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
   mockDualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   readDashboardFromPg: mockReadDashboardFromPg,
+  probeDashboardJournalForHydration: mockProbeHydration,
   dualWriteDashboardSync: mockDualWriteDashboardSync,
   dualWriteDashboardDelete: mockDualWriteDashboardDelete,
 }));
@@ -64,6 +66,7 @@ describe('roosync_dashboard × PG store (#3151 Phase C)', () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
     mockDualWriteDashboardDelete.mockReset().mockResolvedValue(undefined);
   });

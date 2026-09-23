@@ -31,9 +31,10 @@ import { mkdtemp, rm, readFile, writeFile, readdir } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
-const { mockDualWriteDashboardSync, mockReadDashboardFromPg, llm } = vi.hoisted(() => ({
+const { mockDualWriteDashboardSync, mockReadDashboardFromPg, mockProbeHydration, llm } = vi.hoisted(() => ({
     mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
     mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
+    mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
     llm: {
         enabled: false,
         create: vi.fn(),
@@ -42,6 +43,7 @@ const { mockDualWriteDashboardSync, mockReadDashboardFromPg, llm } = vi.hoisted(
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
     readDashboardFromPg: mockReadDashboardFromPg,
+  probeDashboardJournalForHydration: mockProbeHydration,
     dualWriteDashboardSync: mockDualWriteDashboardSync,
     dualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
 }));
@@ -129,6 +131,7 @@ describe('roosync_dashboard — secret retention: condensation egress (#3584 lim
         process.env.EMBEDDINGS_API_KEY = LEAKED_KEY;
         mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
         mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
         llm.enabled = false;
         llm.create.mockReset().mockImplementation(async (params: { messages: Array<{ role: string; content: string }> }) => {
             const sys = params.messages[0]?.content ?? '';
@@ -250,6 +253,7 @@ describe('roosync_dashboard — scrub: retroactive withdrawal of the live dashbo
         process.env.EMBEDDINGS_API_KEY = LEAKED_KEY;
         mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
         mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
         llm.enabled = false;
         llm.create.mockReset();
     });
@@ -333,6 +337,7 @@ describe('roosync_dashboard — wt-cleanup archive copy is masked (#3584 limite 
         process.env.EMBEDDINGS_API_KEY = LEAKED_KEY;
         mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
         mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
         llm.enabled = false;
         llm.create.mockReset();
     });

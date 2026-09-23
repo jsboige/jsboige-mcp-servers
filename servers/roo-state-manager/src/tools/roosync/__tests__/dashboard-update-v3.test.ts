@@ -22,17 +22,19 @@ import * as path from 'path';
 import * as os from 'os';
 
 const {
-  mockReadDashboardFromPg,
+  mockReadDashboardFromPg, mockProbeHydration,
   mockDualWriteDashboardSync,
   mockRecordRooSyncActivityAsync,
 } = vi.hoisted(() => ({
   mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
+  mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
   mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
   mockRecordRooSyncActivityAsync: vi.fn(),
 }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   readDashboardFromPg: mockReadDashboardFromPg,
+  probeDashboardJournalForHydration: mockProbeHydration,
   dualWriteDashboardSync: mockDualWriteDashboardSync,
   dualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
 }));
@@ -64,6 +66,7 @@ describe('roosync_dashboard update — v3 create-or-replace (#3549 Option A)', (
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
     mockRecordRooSyncActivityAsync.mockClear();
   });

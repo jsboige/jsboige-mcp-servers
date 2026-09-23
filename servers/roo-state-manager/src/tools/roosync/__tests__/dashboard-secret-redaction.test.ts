@@ -16,13 +16,15 @@ import { mkdtemp, rm, readFile } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
-const { mockDualWriteDashboardSync, mockReadDashboardFromPg } = vi.hoisted(() => ({
+const { mockDualWriteDashboardSync, mockReadDashboardFromPg, mockProbeHydration } = vi.hoisted(() => ({
     mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
     mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
+    mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
 }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
     readDashboardFromPg: mockReadDashboardFromPg,
+  probeDashboardJournalForHydration: mockProbeHydration,
     dualWriteDashboardSync: mockDualWriteDashboardSync,
     dualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
 }));
@@ -56,6 +58,7 @@ describe('roosync_dashboard — secret redaction at the publication boundary (#3
         process.env.EMBEDDINGS_API_KEY = LEAKED_KEY;
         mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
         mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     });
 
     afterEach(async () => {
