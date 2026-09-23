@@ -204,8 +204,23 @@ export class BaselineManager {
     const existingMachine = this.machineRegistry.machines.get(machineId);
 
     if (existingMachine) {
-      // Mise à jour d'une machine existante
+      // #2121(b) debounce (review #1202) : état comparé AVANT mutation.
+      // Le prédicat ne porte que sur le status — la source est write-once
+      // par design (validateMachineUniqueness refuse toute source différente
+      // avant qu'on arrive ici : conflit d'identité). Quand l'entrée existe
+      // avec le même status, le lastSeen est stampé en mémoire et le registre
+      // n'est pas réécrit — les cold starts / dashboards régénérés n'écrivent
+      // plus le registre sur GDrive à chaque fois.
       existingMachine.lastSeen = now;
+
+      if (existingMachine.status === status) {
+        this.logger.info(
+          `Machine ${machineId} état inchangé — lastSeen mis à jour en mémoire, registre non réécrit (#2121b)`
+        );
+        return validation;
+      }
+
+      // Mise à jour d'une machine existante (changement de status)
       existingMachine.status = status;
       this.logger.info(`Machine ${machineId} mise à jour dans le registre`);
     } else {
