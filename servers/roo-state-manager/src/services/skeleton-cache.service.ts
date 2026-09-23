@@ -20,7 +20,6 @@
 import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import path from 'path';
-import os from 'os';
 import { promises as fs } from 'fs';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -50,17 +49,24 @@ export class SkeletonCacheService {
     private loadPromise: Promise<void> | null = null;
     private readonly CACHE_VALIDITY_MS = 30 * 60 * 1000; // 30 minutes (was 5min, increased for stability)
     /**
-     * #3661 — Tier 3 machine-scoped hydration state.
-     * `tier3Index` maps every archived taskId to its file (built from a cheap full
-     * listing — one readdir per machine dir, a few MB for ~11k entries). Payload
-     * hydration is per-machine: `tier3LoadedMachines` (machineId → LRU tick) and
-     * `tier3MachineBytes` (machineId → estimated resident bytes) drive the
-     * SKELETON_ARCHIVE_TIER_MAX_MB cap with machine-granular LRU eviction.
+     * #3661 (design stubs, décision 5791190594) — Tier 3 = stubs metadata +
+     * hydratation on-demand des corps.
+     * `tier3Index` maps every archived taskId to its file (cheap full listing).
+     * Le cold load crée un STUB par entrée d'index (metadata + filePath,
+     * sequence vide, `metadata.hydrated=false`) : visibilité cross-machine
+     * intégrale pour un coût mémoire mesuré de ~585 o/stub (corpus po-204,
+     * 1 009/8 069 échantillonnés) — ~4,5 Mo projetés pour tout le corpus
+     * contre ~524 Mo de corps complets (facteur ~117×). L'hydratation d'une
+     * `sequence` est PAR ENTRÉE : `tier3HydratedTicks` (taskId → LRU tick) et
+     * `tier3HydratedBytes` (taskId → bytes du corps hydraté, le stub n'est pas
+     * compté) bornent les CORPS via SKELETON_ARCHIVE_TIER_MAX_MB avec eviction
+     * LRU par entrée — l'éviction DÉSHYDRATE (retour au stub), l'entrée reste
+     * visible dans le cache.
      */
     private tier3Index: Map<string, { filePath: string; machineId: string }> = new Map();
-    private tier3LoadedMachines: Map<string, number> = new Map();
-    private tier3MachineBytes: Map<string, number> = new Map();
-    private tier3MachineLoadPromises: Map<string, Promise<void>> = new Map();
+    private tier3HydratedTicks: Map<string, number> = new Map();
+    private tier3HydratedBytes: Map<string, number> = new Map();
+    private tier3HydrationPromises: Map<string, Promise<boolean>> = new Map();
     private tier3LruCounter = 0;
 
     private constructor() {
@@ -550,27 +556,28 @@ export class SkeletonCacheService {
      * #1244 Couche 1.1 — Tier 3: Charger les archives cross-machine depuis GDrive.
      *
      * Lit `task-archive/<machineId>/<taskId>.json.gz` (sibling de `.shared-state`,
-     * jsboige-mcp-servers#608 / roo-extensions#3562) via
-     * `TaskArchiver`, convertit chaque archive en `ConversationSkeleton` via
-     * `archiveToSkeleton()`, et merge dans le cache. Les collisions sont
-     * resolues en faveur des tiers chauds (local Roo/Claude > archive remote).
+     * jsboige-mcp-servers#608 / roo-extensions#3562) via `TaskArchiver`.
      *
+     * #3661 (design stubs, décision 5791190594 — remplace le machine-scope) :
+     *  - Phase 1 (pas chère) : index complet taskId → fichier (un readdir par
+     *    machine-dir, quelques Mo pour ~11k entrées).
+     *  - Phase 1.5 : re-comptage de l'accounting d'hydratation depuis le cache
+     *    résident (le refresh n'évince pas — sans re-comptage, total=0 ≤ cap et
+     *    le plafond se désarme au premier refresh, review #1205 pt 7).
+     *  - Phase 2 : STUB metadata pour CHAQUE entrée d'index (`archiveToStub` :
+     *    lecture de l'archive pour la metadata seule, AUCUN corps retenu).
+     *    Visibilité cross-machine intégrale dès le cold load. Les CORPS
+     *    s'hydratent à la demande via `ensureConversationHydrated()`, sous
+     *    plafond `SKELETON_ARCHIVE_TIER_MAX_MB` avec déshydratation LRU.
+     *
+     * Collisions inchangées : les tiers chauds gagnent (local Roo/Claude > archive).
      * Necessite `ROOSYNC_SHARED_PATH` (sinon `getSharedStatePath()` throw —
      * capture par le try/catch global, no-op silencieux).
-     *
-     * #3661 — Le chargement est desormais MACHINE-SCOPE :
-     *  - Phase 1 (pas chere) : index complet taskId → fichier (un readdir par
-     *    machine-dir, quelques Mo pour ~11k entrees).
-     *  - Phase 2 : hydratation des payloads de la SEULE machine locale
-     *    (~320 Mo mesures par machine contre ~2,1 Go pour la flotte entiere —
-     *    16 hotes RSM x 2,1 Go = 32,4 Go sur po-204, RAM 3,8 Go libres).
-     *  Les machines distantes s'hydratent a la demande via
-     *  `ensureMachineTier3Loaded()` (filtre machineId de conversation_browser list),
-     *  sous plafond `SKELETON_ARCHIVE_TIER_MAX_MB` avec eviction LRU par machine.
      */
     private async loadArchivedSkeletonsFromGDrive(): Promise<void> {
         try {
             const { TaskArchiver } = await import('./task-archiver/index.js');
+            const { archiveToStub } = await import('./archive-skeleton-builder.js');
 
             // Phase 1: Index complet du corpus (listing seul — aucun payload lu).
             const allFiles = await TaskArchiver.listArchivedTaskFiles();
@@ -584,76 +591,34 @@ export class SkeletonCacheService {
                 return;
             }
 
-            // Phase 1.5: le refresh ne vide PAS le cache (les squelettes restent
-            // residents). Recompter l'accounting depuis le cache au lieu de
-            // clear() les maps tier3LoadedMachines/tier3MachineBytes : sinon la
-            // work queue du re-load est vide → machineBytes=0 → enforceTier3Cap
-            // rend total=0 ≤ cap → le plafond se desarme au premier refresh
-            // (review #1205 pt 7 — c'est lui qui borne les 33 Go mesures).
-            this.tier3LoadedMachines.clear();
-            this.tier3MachineBytes.clear();
-            const bytesByMachine = new Map<string, number>();
+            // Phase 1.5: le refresh ne vide PAS le cache. Re-compter les corps
+            // hydratés résidents (dataSource gdrive-archive + hydrated=true) :
+            // sinon tier3HydratedBytes=0 → enforceTier3Cap rend total=0 ≤ cap →
+            // le plafond se désarme au premier refresh (review #1205 pt 7).
+            this.tier3HydratedTicks.clear();
+            this.tier3HydratedBytes.clear();
             for (const [taskId, skeleton] of this.cache) {
-                if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') continue;
-                const entry = this.tier3Index.get(taskId);
-                if (!entry) continue;
-                const machineKey = entry.machineId; // casse canonique de l'index (cf. resolveTier3MachineKey)
-                bytesByMachine.set(machineKey, (bytesByMachine.get(machineKey) ?? 0) + JSON.stringify(skeleton).length);
-            }
-            for (const [machineKey, bytes] of bytesByMachine) {
-                this.tier3MachineBytes.set(machineKey, bytes);
-                this.tier3LoadedMachines.set(machineKey, ++this.tier3LruCounter);
+                if (skeleton.metadata?.dataSource !== 'gdrive-archive') continue;
+                if (skeleton.metadata?.hydrated !== true) continue;
+                this.tier3HydratedBytes.set(taskId, JSON.stringify(skeleton.sequence ?? []).length);
+                this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
             }
 
-            // Phase 2: Hydrate uniquement la machine locale. La derivation de
-            // l'identifiant est celle du writer (TaskArchiver.getMachineId).
-            const localMachine = os.hostname().toLowerCase();
-            await this.loadTier3MachinePayloads(localMachine);
-
-            console.log(
-                `[SkeletonCacheService] Tier 3 (archives): ${this.tier3Index.size} indexees, ` +
-                `${this.tier3LoadedMachines.size} machine(s) hydratee(s) [locale: ${localMachine}] — ` +
-                `les machines distantes se chargent via ensureMachineTier3Loaded (#3661)`
-            );
-        } catch (error) {
-            console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
-        }
-    }
-
-    /**
-     * #3661 — Hydrate les skeletons d'UNE machine depuis l'index Tier 3.
-     * Partage par le chargement a froid (machine locale) et par
-     * `ensureMachineTier3Loaded` (machines distantes, a la demande). Regle de
-     * collision inchangee : les tiers chauds gagnent (entrees existantes gardees).
-     * Ne jette jamais — les echecs de lecture sont comptes et avales (meme
-     * contrat que l'ancien chargement complet).
-     */
-    private async loadTier3MachinePayloads(machineIdLower: string): Promise<void> {
-        try {
-            const machineKey = this.resolveTier3MachineKey(machineIdLower);
-            if (!machineKey) return;
-            if (this.tier3LoadedMachines.has(machineKey)) {
-                // LRU touch — re-arme la recence de cette machine sans relecture.
-                this.tier3LoadedMachines.set(machineKey, ++this.tier3LruCounter);
-                return;
-            }
-
-            const { TaskArchiver } = await import('./task-archiver/index.js');
-            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
-
-            // Work queue de la machine demandee, hors collisions connues.
+            // Phase 2: STUBS pour toute entrée d'index non déjà résidente (les
+            // collisions tiers chauds et les entrées déjà stubées/hydratées
+            // sont ignorées — idempotent pour le refresh).
             type WorkItem = { taskId: string; filePath: string };
             const workQueue: WorkItem[] = [];
             for (const [taskId, entry] of this.tier3Index) {
-                if (entry.machineId.toLowerCase() === machineIdLower && !this.cache.has(taskId)) {
+                if (!this.cache.has(taskId)) {
                     workQueue.push({ taskId, filePath: entry.filePath });
                 }
             }
 
             const CONCURRENCY = 20;
-            let loaded = 0;
+            let stubbed = 0;
             let failed = 0;
-            let machineBytes = 0;
+            let stubBytes = 0;
 
             const processItem = async (item: WorkItem): Promise<void> => {
                 try {
@@ -662,19 +627,17 @@ export class SkeletonCacheService {
                         failed++;
                         return;
                     }
-                    const skeleton = archiveToSkeleton(archive);
-                    if (!skeleton.metadata) skeleton.metadata = {} as any;
-                    skeleton.metadata.dataSource = 'gdrive-archive';
+                    const stub = archiveToStub(archive, item.filePath);
                     // Re-verifier la collision (race safety avec Tier 1/2 charges en parallele)
-                    if (!this.cache.has(skeleton.taskId)) {
-                        this.cache.set(skeleton.taskId, skeleton);
-                        machineBytes += JSON.stringify(skeleton).length;
-                        loaded++;
+                    if (!this.cache.has(stub.taskId)) {
+                        this.cache.set(stub.taskId, stub);
+                        stubBytes += JSON.stringify(stub).length;
+                        stubbed++;
                     }
                 } catch (error) {
                     failed++;
                     if (failed <= 3) {
-                        console.warn(`[SkeletonCacheService] Tier 3 (machine ${machineKey}): echec lecture ${item.taskId}:`, error);
+                        console.warn(`[SkeletonCacheService] Tier 3: echec lecture stub ${item.taskId}:`, error);
                     }
                 }
             };
@@ -684,80 +647,99 @@ export class SkeletonCacheService {
                 await Promise.all(batch.map(processItem));
             }
 
-            this.tier3LoadedMachines.set(machineKey, ++this.tier3LruCounter);
-            this.tier3MachineBytes.set(machineKey, machineBytes);
-
             console.log(
-                `[SkeletonCacheService] Tier 3 (machine ${machineKey}): ${loaded} chargees, ` +
-                `${failed} echecs sur ${workQueue.length} indexes`
+                `[SkeletonCacheService] Tier 3 (archives): ${this.tier3Index.size} indexees, ` +
+                `${stubbed} stubs (${(stubBytes / 1024).toFixed(0)} Ko au total, ` +
+                `${stubbed > 0 ? (stubBytes / stubbed / 1024).toFixed(1) : '0'} Ko/stub), ` +
+                `${this.tier3HydratedBytes.size} corps hydrates, ${failed} echecs — ` +
+                `corps a la demande via ensureConversationHydrated (#3661)`
             );
-            this.enforceTier3Cap(machineKey);
         } catch (error) {
-            console.warn(`[SkeletonCacheService] Tier 3 (machine ${machineIdLower}): chargement non-bloquant a echoue:`, error);
+            console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
         }
     }
 
     /**
-     * #3661 — Hydrate a la demande les archives Tier 3 d'UNE machine distante.
-     * `conversation_browser(list, machineId: X)` l'appelle avant de lire le cache
-     * pour que la machine demandee soit dans la reponse (le chargement a froid
-     * n'hydrate que la machine locale). Machine inconnue → false (remonte a
-     * l'appelant, pas avale) ; concurrence sur la meme machine → un seul load.
+     * #3661 (stubs) — Hydrate a la demande la `sequence` d'UNE entree Tier 3.
+     * Le stub reste resident (visibilite listing intacte) ; seul le corps est
+     * charge via `TaskArchiver.readArchivedTaskFromPath`. Retour :
+     *  - `true`  : sequence lisible dans le cache (deja hydratee, fraichement
+     *              hydratee, ou entree tier chaud — sequence native residente) ;
+     *  - `false` : taskId inconnu du cache, tier 3 desactive, ou echec de
+     *              lecture (l'appelant decide — jamais avale en `true` silencieux).
+     * Concurrence sur le meme taskId : un seul read (single-flight).
      */
-    public async ensureMachineTier3Loaded(machineId: string): Promise<boolean> {
+    public async ensureConversationHydrated(taskId: string): Promise<boolean> {
         if (!SkeletonCacheService.config.enableArchiveTier) return false;
-        // Reutilise un chargement complet en cours (il construit l'index) plutot
-        // que de courir contre lui.
-        if (this.loadPromise) await this.loadPromise;
-        if (this.tier3Index.size === 0 && this.cache.size === 0) {
-            await this.ensureFreshCache();
-        }
-        const machineIdLower = machineId.trim().toLowerCase();
-        const machineKey = this.resolveTier3MachineKey(machineIdLower);
-        if (!machineKey) {
-            // Review #1205 pt 1 (Hermes) : machine inconnue = liste vide silencieuse
-            // côté appelant — un WARN distinct évite de la lire comme un corpus vide.
-            console.warn(
-                `[SkeletonCacheService] Tier 3: machine inconnue de l'index: ${machineId} — ` +
-                `le filtre rendra une liste vide (frappe ? machine absente des archives ?)`
-            );
-            return false;
-        }
-
-        const inFlight = this.tier3MachineLoadPromises.get(machineKey);
-        if (inFlight) {
-            await inFlight;
+        const entry = this.cache.get(taskId);
+        if (!entry) return false;
+        if (entry.metadata?.dataSource !== 'gdrive-archive') return true; // tiers chauds
+        if (entry.metadata?.hydrated === true) {
+            // LRU touch — re-arme la recence de ce corps sans relecture.
+            this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
             return true;
         }
-        const load = this.loadTier3MachinePayloads(machineIdLower).finally(() => {
-            this.tier3MachineLoadPromises.delete(machineKey);
+
+        const inFlight = this.tier3HydrationPromises.get(taskId);
+        if (inFlight) return inFlight;
+        const load = this.hydrateTier3Entry(taskId).finally(() => {
+            this.tier3HydrationPromises.delete(taskId);
         });
-        this.tier3MachineLoadPromises.set(machineKey, load);
-        await load;
-        return true;
+        this.tier3HydrationPromises.set(taskId, load);
+        return load;
     }
 
-    /**
-     * #3661 — Resout une machine demandee (insensible a la casse) contre l'index
-     * Tier 3 et rend la cle reelle (nom de repertoire). Null si l'index ne
-     * connait pas la machine.
-     */
-    private resolveTier3MachineKey(machineIdLower: string): string | null {
-        for (const entry of this.tier3Index.values()) {
-            if (entry.machineId.toLowerCase() === machineIdLower) return entry.machineId;
+    private async hydrateTier3Entry(taskId: string): Promise<boolean> {
+        const entry = this.cache.get(taskId);
+        if (!entry) return false;
+        const filePath = entry.metadata?.archiveFilePath ?? this.tier3Index.get(taskId)?.filePath;
+        if (!filePath) return false;
+        try {
+            const { TaskArchiver } = await import('./task-archiver/index.js');
+            const { archiveToSkeleton } = await import('./archive-skeleton-builder.js');
+            const archive = await TaskArchiver.readArchivedTaskFromPath(filePath);
+            if (!archive) return false;
+            const skeleton = archiveToSkeleton(archive);
+            entry.sequence = skeleton.sequence;
+            entry.metadata.hydrated = true;
+            // La metadata du stub peut avoir un messageCount de repli ; celle
+            // de l'archive complete fait foi.
+            entry.metadata.messageCount = skeleton.metadata?.messageCount ?? entry.metadata.messageCount;
+            const bodyBytes = JSON.stringify(entry.sequence).length;
+            this.tier3HydratedBytes.set(taskId, bodyBytes);
+            this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
+            this.enforceTier3Cap(taskId);
+            return true;
+        } catch (error) {
+            console.warn(`[SkeletonCacheService] Tier 3: echec hydratation ${taskId}:`, error);
+            return false;
         }
-        return null;
     }
 
     /**
-     * #3661 — Plafond dur par processus sur les octets Tier 3 residents
-     * (`SKELETON_ARCHIVE_TIER_MAX_MB`, defaut 512 — calibre par la mesure :
-     * ~320 Mo par machine, le plafond laisse ~1,5 machine en cache confortable).
-     * L'eviction est GRANULAIRE PAR MACHINE (l'unite de chargement) : la machine
-     * chargee la moins recemment est evacuee jusqu'a tenir le plafond. La
-     * machine fraichement chargee n'est jamais candidate ; une machine unique
-     * plus grosse que le plafond reste residente avec un WARN (le plafond borne
-     * le cache, pas le service rendu).
+     * #3661 — L'index Tier 3 connait-il cette machine ? (insensible a la casse).
+     * Sert au signal "machineId inconnu" du list : une machine absente de
+     * l'index rendra une liste vide LEGITIME, mais l'appelant doit pouvoir la
+     * distinguer d'un corpus vide (review #1205 pt 5).
+     */
+    public tier3KnowsMachine(machineId: string): boolean {
+        const machineIdLower = machineId.trim().toLowerCase();
+        if (machineIdLower.length === 0) return true;
+        for (const entry of this.tier3Index.values()) {
+            if (entry.machineId.toLowerCase() === machineIdLower) return true;
+        }
+        return false;
+    }
+
+    /**
+     * #3661 — Plafond dur par processus sur les CORPS Tier 3 hydrates
+     * (`SKELETON_ARCHIVE_TIER_MAX_MB`, defaut 512). Les stubs (~Ko) ne sont
+     * pas comptes : le plafond borne les corps, pas la visibilite.
+     * L'eviction est GRANULAIRE PAR ENTREE : le corps hydrate le moins
+     * recemment est DESHYDRATE (retour au stub — l'entree reste dans le cache)
+     * jusqu'a tenir le plafond. L'entree fraichement hydratee n'est jamais
+     * candidate ; un corps unique plus gros que le plafond reste resident avec
+     * un WARN (le plafond borne le cache, pas le service rendu).
      */
     private getTier3CapBytes(): number {
         const raw = parseInt(process.env.SKELETON_ARCHIVE_TIER_MAX_MB || '512', 10);
@@ -765,52 +747,49 @@ export class SkeletonCacheService {
         return mb * 1024 * 1024;
     }
 
-    private enforceTier3Cap(protectedMachineKey: string): void {
+    private enforceTier3Cap(protectedTaskId: string): void {
         const capBytes = this.getTier3CapBytes();
         let total = 0;
-        for (const bytes of this.tier3MachineBytes.values()) total += bytes;
+        for (const bytes of this.tier3HydratedBytes.values()) total += bytes;
         if (total <= capBytes) return;
 
-        const evictable = Array.from(this.tier3LoadedMachines.entries())
-            .filter(([key]) => key !== protectedMachineKey)
+        const evictable = Array.from(this.tier3HydratedTicks.entries())
+            .filter(([taskId]) => taskId !== protectedTaskId)
             .sort((a, b) => a[1] - b[1]); // tick LRU croissant = moins recent d'abord
 
-        for (const [key] of evictable) {
+        for (const [taskId] of evictable) {
             if (total <= capBytes) break;
-            total -= this.evictTier3Machine(key);
+            total -= this.dehydrateTier3Entry(taskId);
         }
 
         if (total > capBytes) {
             console.warn(
-                `[SkeletonCacheService] Tier 3: plafond depasse par la seule machine protegee ` +
+                `[SkeletonCacheService] Tier 3: plafond depasse par le seul corps protege ` +
                 `(${(total / 1024 / 1024).toFixed(0)} Mo > ${(capBytes / 1024 / 1024).toFixed(0)} Mo) — ` +
-                `SKELETON_ARCHIVE_TIER_MAX_MB ne peut pas borner une machine unique`
+                `SKELETON_ARCHIVE_TIER_MAX_MB ne peut pas borner une conversation unique`
             );
         }
     }
 
     /**
-     * #3661 — Evacue une machine du cache Tier 3 (seulement ses entrees
-     * `gdrive-archive` — les tiers chauds ne sont jamais touches) et rend les
-     * octets liberes.
+     * #3661 — Deshydrate UNE entree Tier 3 : le corps est jete (sequence vide,
+     * hydrated=false) mais le STUB reste dans le cache — l'eviction ne retire
+     * jamais la visibilite, seulement la memoire du corps. Rend les octets liberes.
      */
-    private evictTier3Machine(machineKey: string): number {
-        const evictedBytes = this.tier3MachineBytes.get(machineKey) ?? 0;
-        for (const [taskId, entry] of this.tier3Index) {
-            if (entry.machineId === machineKey) {
-                const skeleton = this.cache.get(taskId);
-                if (skeleton && (skeleton as any).metadata?.dataSource === 'gdrive-archive') {
-                    this.cache.delete(taskId);
-                }
-            }
+    private dehydrateTier3Entry(taskId: string): number {
+        const freedBytes = this.tier3HydratedBytes.get(taskId) ?? 0;
+        const skeleton = this.cache.get(taskId);
+        if (skeleton && skeleton.metadata?.dataSource === 'gdrive-archive') {
+            skeleton.sequence = [];
+            skeleton.metadata.hydrated = false;
         }
-        this.tier3LoadedMachines.delete(machineKey);
-        this.tier3MachineBytes.delete(machineKey);
+        this.tier3HydratedBytes.delete(taskId);
+        this.tier3HydratedTicks.delete(taskId);
         console.log(
-            `[SkeletonCacheService] Tier 3: eviction LRU machine ${machineKey} ` +
-            `(${(evictedBytes / 1024 / 1024).toFixed(1)} Mo liberes)`
+            `[SkeletonCacheService] Tier 3: deshydratation LRU ${taskId} ` +
+            `(${(freedBytes / 1024).toFixed(0)} Ko liberes — stub conserve)`
         );
-        return evictedBytes;
+        return freedBytes;
     }
 
     /**
@@ -843,9 +822,10 @@ export class SkeletonCacheService {
         config: { enableClaudeTier: boolean; enableArchiveTier: boolean };
         cacheAgeMs: number | null;
         stale: boolean;
-        /** #3661 — machine-scoped Tier 3 observability: which machines are
-         *  hydrated, how many resident bytes they hold, and the cap. */
-        tier3_loaded_machines: string[];
+        /** #3661 (stubs) — Tier 3 observability: index size, stub vs hydrated
+         *  split, hydrated body bytes, and the cap. */
+        tier3_index_count: number;
+        tier3_hydrated_count: number;
         tier3_estimated_mb: number;
         tier3_cap_mb: number;
     }> {
@@ -868,7 +848,7 @@ export class SkeletonCacheService {
         }
 
         let tier3Bytes = 0;
-        for (const bytes of this.tier3MachineBytes.values()) tier3Bytes += bytes;
+        for (const bytes of this.tier3HydratedBytes.values()) tier3Bytes += bytes;
 
         return {
             tier1_roo: tier1,
@@ -881,7 +861,8 @@ export class SkeletonCacheService {
             },
             cacheAgeMs,
             stale,
-            tier3_loaded_machines: Array.from(this.tier3LoadedMachines.keys()),
+            tier3_index_count: this.tier3Index.size,
+            tier3_hydrated_count: this.tier3HydratedBytes.size,
             tier3_estimated_mb: Math.round(tier3Bytes / 1024 / 1024),
             tier3_cap_mb: Math.round(this.getTier3CapBytes() / 1024 / 1024),
         };

@@ -671,14 +671,10 @@ export const listConversationsTool = {
                 cacheAgeMs = scsInstance.getCacheAgeMs();
                 if (archiveReady) {
                     tier3Status = 'ready';
-                    // #3661 — machine-scoped Tier 3: le chargement a froid n'hydrate
-                    // que la machine LOCALE ; un list filtre sur une autre machine
-                    // paie ici le chargement borne de cette machine, pour que le
-                    // filtre ne se lise jamais comme un corpus vide.
-                    const machineFilter = args.machineId?.trim();
-                    if (machineFilter && machineFilter.length > 0) {
-                        await scsInstance.ensureMachineTier3Loaded(machineFilter);
-                    }
+                    // #3661 (stubs) : le cold load pose un stub metadata pour TOUT
+                    // l'index (toutes machines) — plus d'hydratation prealable par
+                    // machine ici. Les corps se chargent au cas par cas via
+                    // ensureConversationHydrated / lecture bornee contentPattern.
                     const scsCache = await scsInstance.getCache();
                     const archiveSkeletons: ConversationSkeleton[] = [];
 
@@ -786,12 +782,29 @@ export const listConversationsTool = {
         // #1244 Couche 2.1 — Filtre par identifiant machine (cross-machine).
         // Permet d'isoler les conversations d'une machine specifique parmi les
         // squelettes charges depuis archive (Tier 3) ou Roo local.
+        let machineFilterNotice: string | undefined;
         if (args.machineId && args.machineId.trim().length > 0) {
             const targetMachineId = args.machineId.trim().toLowerCase();
             allSkeletons = allSkeletons.filter(skeleton => {
                 const m = (skeleton.metadata?.machineId || '').toLowerCase();
                 return m === targetMachineId;
             });
+            // #3661 review pt 5 — machineId inconnu : une machine absente de
+            // l'index Tier 3 rend une liste vide LEGITIME, mais "0 resultat"
+            // se lirait comme un corpus vide. Le signal porte la distinction.
+            if (allSkeletons.length === 0 && args.includeArchives) {
+                try {
+                    const known = SkeletonCacheService.getInstance().tier3KnowsMachine(args.machineId.trim());
+                    if (!known) {
+                        machineFilterNotice =
+                            `machineId "${args.machineId.trim()}" inconnu des archives Tier 3 — ` +
+                            `frappe, ou machine absente du corpus archive (le filtre rend une liste vide).`;
+                        console.warn(`[list_conversations] ${machineFilterNotice}`);
+                    }
+                } catch {
+                    // best effort — le signal est un enrichissement, pas un contrat
+                }
+            }
         }
 
         // Filtre : Tâches en attente de sous-tâche
@@ -1110,6 +1123,7 @@ export const listConversationsTool = {
             ...(tier3Info ? { tier3: tier3Info } : {}),
             ...(pgTierInfo ? { pg_tier: pgTierInfo } : {}),
             ...(archiveNotice ? { notice: archiveNotice } : {}),
+            ...(machineFilterNotice ? { machine_filter_notice: machineFilterNotice } : {}),
         }, null, 2);
 
 
@@ -1134,8 +1148,12 @@ async function hasPendingSubtask(taskId: string): Promise<boolean> {
  * Vérifie si les messages d'une tâche contiennent un motif de texte.
  *
  * #1244 Couche 2.4 — Multi-source contentPattern :
- *  - Tier 2 (Claude) et Tier 3 (Archive) : la sequence est deja en memoire
- *    (full skeleton dans le cache). On cherche directement dedans, sans I/O disque.
+ *  - Tier 2 (Claude) : la sequence est deja en memoire (full skeleton dans le
+ *    cache). On cherche directement dedans, sans I/O disque.
+ *  - Tier 3 (Archive, #3661 stubs) : si le corps est hydrate, recherche
+ *    memoire ; sinon lecture BORNEE de l'archive via `metadata.archiveFilePath`
+ *    (match puis jette le corps — aucun retained state). Une recherche par
+ *    contenu sur les archives ne rend JAMAIS un faux negatif silencieux.
  *  - Tier 1 (Roo local) : lecture de `api_conversation_history.json` depuis le disque
  *    via `loadApiMessages()`. Comportement historique.
  *
@@ -1159,7 +1177,7 @@ async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: st
         }
     }
 
-    // 1. Sequence deja chargee (Tier 2 Claude / Tier 3 Archive) — recherche memoire
+    // 1. Sequence deja chargee (Tier 2 Claude / Tier 3 Archive hydratee) — recherche memoire
     const sequence = (skeleton as any).sequence;
     if (Array.isArray(sequence) && sequence.length > 0) {
         return sequence.some((msg: any) => {
@@ -1167,6 +1185,24 @@ async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: st
             const raw = typeof msg.content === 'string' ? msg.content : '';
             return raw.toLowerCase().includes(normalizedPattern);
         });
+    }
+
+    // 1b. #3661 — Tier 3 STUB (corps non hydrate) : lecture disque bornee.
+    //     On lit l'archive, on matche, on jette le corps — le stub ne mute pas,
+    //     la recherche ne consomme ni cap ni memoire residente.
+    if (skeleton.metadata?.dataSource === 'gdrive-archive' && skeleton.metadata?.archiveFilePath) {
+        try {
+            const { TaskArchiver } = await import('../../services/task-archiver/index.js');
+            const archive = await TaskArchiver.readArchivedTaskFromPath(skeleton.metadata.archiveFilePath);
+            if (!archive) return false;
+            return (archive.messages || []).some(msg => {
+                const raw = typeof msg?.content === 'string' ? msg.content : '';
+                return raw.toLowerCase().includes(normalizedPattern);
+            });
+        } catch (error) {
+            console.warn(`[matchesContentPattern] Error reading archive ${skeleton.taskId}:`, error);
+            return false;
+        }
     }
 
     // 2. Tier 1 (Roo local) — lire api_conversation_history depuis le disque

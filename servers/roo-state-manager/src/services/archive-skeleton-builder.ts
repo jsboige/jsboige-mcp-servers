@@ -57,3 +57,37 @@ export function archiveToSkeleton(archive: ArchivedTask): ConversationSkeleton {
         sequence,
     };
 }
+
+/**
+ * #3661 — Variante stub du Tier 3 : metadata seule, AUCUNE construction de
+ * sequence (le mapping des messages est la partie chère — c'est elle qu'on
+ * ne paie pas au cold load). Le corps se charge à la demande via
+ * `SkeletonCacheService.ensureConversationHydrated()`, ou se lit en
+ * différé borné via `metadata.archiveFilePath` (recherche par contenu).
+ */
+export function archiveToStub(archive: ArchivedTask, filePath: string): ConversationSkeleton {
+    const fallbackTimestamp = archive.archivedAt;
+
+    return {
+        taskId: archive.taskId,
+        parentTaskId: archive.metadata?.parentTaskId,
+        isCompleted: archive.metadata?.isCompleted ?? false,
+        metadata: {
+            title: archive.metadata?.title,
+            workspace: archive.metadata?.workspace,
+            mode: archive.metadata?.mode,
+            createdAt: archive.metadata?.createdAt ?? fallbackTimestamp,
+            lastActivity: archive.metadata?.lastActivity ?? fallbackTimestamp,
+            messageCount: archive.metadata?.messageCount ?? (archive.messages?.length ?? 0),
+            actionCount: 0,
+            totalSize: 0,
+            machineId: archive.machineId,
+            source: archive.metadata?.source ?? 'roo',
+            parentTaskId: archive.metadata?.parentTaskId,
+            dataSource: 'gdrive-archive',
+            hydrated: false,
+            archiveFilePath: filePath,
+        },
+        sequence: [],
+    };
+}

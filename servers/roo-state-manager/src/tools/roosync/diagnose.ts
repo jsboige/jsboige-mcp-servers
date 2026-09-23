@@ -602,7 +602,9 @@ async function handleHealthAction(
   const tierSummary =
     `Tier1(Roo): ${stats.tier1_roo} | ` +
     `Tier2(Claude): ${stats.config.enableClaudeTier ? stats.tier2_claude : 'OFF'} | ` +
-    `Tier3(Archives): ${stats.config.enableArchiveTier ? stats.tier3_archives : 'OFF'}`;
+    // #3661 (stubs) — resident = stubs + corps hydratés ; l'index est la
+    // couche complète (les échecs de lecture stub laissent un écart visible).
+    `Tier3(Archives): ${stats.config.enableArchiveTier ? `${stats.tier3_archives} (index ${stats.tier3_index_count}, hydratés ${stats.tier3_hydrated_count}/${stats.tier3_cap_mb} Mo)` : 'OFF'}`;
 
   // #2766 S2+ (P2): surface cache freshness. Health no longer blocks on a refresh,
   // so the counts reflect the current in-memory snapshot — the consumer sees how
@@ -629,7 +631,14 @@ async function handleHealthAction(
       tiers: {
         tier1_roo: { enabled: true, count: stats.tier1_roo },
         tier2_claude: { enabled: stats.config.enableClaudeTier, count: stats.tier2_claude },
-        tier3_archives: { enabled: stats.config.enableArchiveTier, count: stats.tier3_archives },
+        tier3_archives: {
+          enabled: stats.config.enableArchiveTier,
+          count: stats.tier3_archives,
+          index_count: stats.tier3_index_count,
+          hydrated_count: stats.tier3_hydrated_count,
+          estimated_mb: stats.tier3_estimated_mb,
+          cap_mb: stats.tier3_cap_mb,
+        },
       },
       totalSkeletons: stats.total,
       envConfig: {
