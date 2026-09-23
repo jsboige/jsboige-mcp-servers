@@ -1095,6 +1095,10 @@ class TestMemorySetup:
                     "id": "mem-agent",
                     "model": "m1",
                     "system_prompt": "Base prompt.",
+                    # #3408: the memory plugin is capability-gated (default-deny)
+                    # like the MCP matrix — without this grant, _create_agent
+                    # refuses the plugin and the integration test sees 0 calls.
+                    "capabilities": ["memory"],
                     "memory": {
                         "enabled": memory_enabled,
                         "collection": "my-collection",
@@ -2080,6 +2084,8 @@ class TestSharedAgentResolutionPriority:
         mock_top_level_agent.kernel = MagicMock()
 
         runner = ConversationRunner.__new__(ConversationRunner)
+        runner._agent_factory = None
+        runner._spec_agent_builder = None
         runner.config = config
         runner.sk_agents = {"researcher": mock_top_level_agent}
 
@@ -2100,7 +2106,7 @@ class TestSharedAgentResolutionPriority:
             ],
         )
 
-        resolved = runner._resolve_conversation_agents(conv)
+        resolved = asyncio.run(runner._resolve_conversation_agents(conv))
         assert len(resolved) == 1
         # Must be the top-level mock, not a newly created inline agent
         assert resolved[0] is mock_top_level_agent
@@ -2117,6 +2123,8 @@ class TestSharedAgentResolutionPriority:
         mock_other.kernel = MagicMock()
 
         runner = ConversationRunner.__new__(ConversationRunner)
+        runner._agent_factory = None
+        runner._spec_agent_builder = None
         runner.config = config
         runner.sk_agents = {"other-agent": mock_other}
 
@@ -2139,7 +2147,7 @@ class TestSharedAgentResolutionPriority:
         with patch("sk_conversations.ChatCompletionAgent") as MockAgent:
             mock_created = MagicMock()
             MockAgent.return_value = mock_created
-            resolved = runner._resolve_conversation_agents(conv)
+            resolved = asyncio.run(runner._resolve_conversation_agents(conv))
             assert len(resolved) == 1
             # Must be the newly created inline agent
             assert resolved[0] is mock_created
@@ -2157,6 +2165,8 @@ class TestSharedAgentResolutionPriority:
         mock_shared.kernel = MagicMock()
 
         runner = ConversationRunner.__new__(ConversationRunner)
+        runner._agent_factory = None
+        runner._spec_agent_builder = None
         runner.config = config
         runner.sk_agents = {"shared-agent": mock_shared}
 
@@ -2179,7 +2189,7 @@ class TestSharedAgentResolutionPriority:
         with patch("sk_conversations.ChatCompletionAgent") as MockAgent:
             mock_inline = MagicMock()
             MockAgent.return_value = mock_inline
-            resolved = runner._resolve_conversation_agents(conv)
+            resolved = asyncio.run(runner._resolve_conversation_agents(conv))
             assert len(resolved) == 2
             assert resolved[0] is mock_shared  # top-level
             assert resolved[1] is mock_inline  # inline fallback
@@ -2192,6 +2202,8 @@ class TestSharedAgentResolutionPriority:
         )
 
         runner = ConversationRunner.__new__(ConversationRunner)
+        runner._agent_factory = None
+        runner._spec_agent_builder = None
         runner.config = config
         runner.sk_agents = {"a1": MagicMock(spec=ChatCompletionAgent)}
 
@@ -2203,7 +2215,7 @@ class TestSharedAgentResolutionPriority:
             max_rounds=1,
         )
 
-        resolved = runner._resolve_conversation_agents(conv)
+        resolved = asyncio.run(runner._resolve_conversation_agents(conv))
         assert len(resolved) == 0  # skipped, not crashed
 
 
