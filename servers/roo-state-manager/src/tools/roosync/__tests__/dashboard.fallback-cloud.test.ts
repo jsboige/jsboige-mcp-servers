@@ -588,6 +588,85 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(rejectedPass.llm.summary.finalOutcome).toBe('circuit-open');
     expect(rejectedPass.llm.summary.lastError).toBe('primary skipped (circuit breaker open); cloud: 401 invalid proxy authentication');
   });
+
+  /**
+   * #2719 observability (web1 c.450 §3, mesure 14/09) — the truncation notice lived
+   * ONLY in the intercom, which is ephemeral by construction: the next condensation
+   * archives it, and while the LLM stays down it archives it *by truncation*, leaving
+   * no successor. Measured on `workspace-roo-extensions` after two fallback archives:
+   * the `## Status` block — the surface the rules designate as the primary read —
+   * carried ZERO occurrence of "truncation|fallback". This test reads the STATUS
+   * SECTION ONLY, which is exactly what that reader does.
+   */
+  it('(o) #2719 both legs down → the Status block carries a persistent truncation marker, and it does not accumulate', { timeout: 90000 }, async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    // Cloud configured AND attempted, so the marker must name the cloud cause —
+    // "unconfigured" and "attempted but rejected" stay distinguishable there too.
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockRejectedValue(Object.assign(new Error('z.ai 503 unavailable'), { status: 503 }));
+
+    await fillUntilCondensed();
+
+    const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    const statusMarkdown: string = (read as any).data?.status?.markdown ?? '';
+
+    // Discrimination: greppable on the outcome label, in the section a Status-only reader opens.
+    expect(statusMarkdown).toContain('lastCondense: fallback-truncated');
+    // BOTH legs are named (ai-01 addendum 12/09 §2: the discriminant needs the leg
+    // dimension, not just a code). Without the cloud half, a Status-only reader cannot
+    // tell "cloud unconfigured" from "cloud attempted and rejected".
+    expect(statusMarkdown).toContain('primary: ');
+    expect(statusMarkdown).toContain('vLLM down');
+    expect(statusMarkdown).toContain('cloud: z.ai 503 unavailable');
+    // The breaker state rides along, as in the intercom notice.
+    expect(statusMarkdown).toMatch(/breaker \d+\/\d+/);
+
+    // #2463 invariant holds for the WHOLE block, marker included (the caller reserves
+    // the marker's bytes out of the cap rather than truncating to the full budget).
+    expect(Buffer.byteLength(statusMarkdown, 'utf8')).toBeLessThanOrEqual(15 * 1024);
+
+    // A second failing pass must REPLACE the marker, not append a second one.
+    await fillUntilCondensed();
+    const after = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    const afterMarkdown: string = (after as any).data?.status?.markdown ?? '';
+    const markerLines = afterMarkdown
+      .split('\n')
+      .filter(l => l.startsWith('> [!WARNING] **lastCondense: fallback-truncated**'));
+    expect(markerLines).toHaveLength(1);
+    expect(Buffer.byteLength(afterMarkdown, 'utf8')).toBeLessThanOrEqual(15 * 1024);
+  });
+
+  it('(p) #2719 successful condensation clears a previously stamped marker (self-clearing, not sticky)', { timeout: 90000 }, async () => {
+    // Pass 1: both legs down → marker stamped.
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue(null); // cloud unconfigured
+    await fillUntilCondensed();
+
+    const afterFailure = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    expect((afterFailure as any).data?.status?.markdown ?? '').toContain('lastCondense: fallback-truncated');
+
+    // Pass 2: primary healthy again → the LLM regenerates the status and the marker
+    // must be gone. A marker that survived a successful pass would be a stale claim.
+    resetCondenseCircuitBreaker();
+    mockPrimaryCreate.mockReset();
+    mockPrimaryCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Status\n\nAll nominal. Condensation healthy.' } }],
+    });
+    await fillUntilCondensed();
+
+    const afterSuccess = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    const markdown: string = (afterSuccess as any).data?.status?.markdown ?? '';
+    expect(markdown).not.toContain('lastCondense: fallback-truncated');
+    expect(markdown).toContain('All nominal');
+  });
 });
 
 // #3011: Direct classification tests. The integration test (g) proves end-to-end

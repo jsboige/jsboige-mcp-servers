@@ -3105,6 +3105,59 @@ export function truncateToMaxSize(text: string, maxSizeBytes: number, label: str
   return truncated;
 }
 
+/**
+ * #2719 (web1 c.450 §3, mesuré 14/09): sentinel prefix of the persistent Status-block
+ * marker. Its job is to be findable where the truncation is *read*, and strippable so a
+ * single marker always describes the LATEST pass (never an accumulation).
+ */
+const STATUS_FALLBACK_MARKER_PREFIX = '> [!WARNING] **lastCondense: fallback-truncated**';
+
+/**
+ * #2719 (web1 c.450 §3): the truncation notice lives in the intercom, which is
+ * ephemeral BY CONSTRUCTION — the next condensation archives it, and when the LLM
+ * stays down it archives it *by truncation*, with no successor. Measured on
+ * `workspace-roo-extensions` (14/09): the `## Status` block — the surface the rules
+ * designate as the primary read — carried ZERO occurrence of "truncation|fallback"
+ * after two fallback archives. A Status-only reader could not tell a hole had been
+ * dug. This stamps the outcome into the Status itself.
+ *
+ * Self-clearing by design: the next SUCCESSFUL pass regenerates the status from the
+ * LLM and the marker is gone; an explicit `update` replaces the section too. Only a
+ * repeat truncation re-stamps it (after stripping the previous one), so the block
+ * never accumulates stale markers.
+ *
+ * `truncateToMaxSize` keeps lines from the **end**, so the marker must be prepended
+ * AFTER truncation — hence the caller reserves `markerBytes` out of the cap rather
+ * than truncating to the full budget (#2463's ≤15 KB invariant is preserved for the
+ * whole block, marker included).
+ */
+export function buildStatusFallbackMarker(
+  now: string,
+  archivedCount: number,
+  legs: { primary: string; cloud: string },
+): string {
+  const breaker = `${condenseCB.consecutiveFailures}/${CONDENSE_CB_OPEN_THRESHOLD}`
+    + (condenseCB.isOpen ? ' OPEN' : '');
+  // Both legs are named, each bounded independently: appending the cloud discriminant
+  // AFTER a bounded primary would let a long primary error (a 502 HTML page) truncate
+  // away the very field that separates "cloud unconfigured" from "cloud rejected".
+  return `${STATUS_FALLBACK_MARKER_PREFIX} @${now} — ${archivedCount} message`
+    + `${archivedCount === 1 ? '' : 's'} archived without LLM summary`
+    + ` (breaker ${breaker}; primary: ${truncateError(legs.primary || 'failed')}`
+    + `; cloud: ${truncateError(legs.cloud)})`;
+}
+
+/**
+ * Remove a previously stamped truncation marker so at most one survives. Line-anchored
+ * on the sentinel, so LLM prose quoting the phrase is not mistaken for a marker.
+ */
+export function stripStatusFallbackMarker(text: string): string {
+  return text
+    .split('\n')
+    .filter(line => !line.startsWith(STATUS_FALLBACK_MARKER_PREFIX))
+    .join('\n');
+}
+
 async function executeTruncationFallback(
   key: string,
   dashboard: Dashboard,
@@ -3320,13 +3373,26 @@ ${archiveMessages}
 
   // #2463: Deterministic status truncation — never let status exceed its cap,
   // even when LLM is unavailable (the exact scenario where truncation matters most).
+  // #2719 (web1 c.450 §3): the budget is reduced by the marker's own size so the
+  // ≤15 KB invariant holds for the WHOLE block, marker included. The previous
+  // marker is stripped first: at most one must survive, describing the latest pass.
+  const statusMarker = buildStatusFallbackMarker(now, toArchive.length, {
+    primary: errorDetail.replace(/\s*\n\s*/g, ' ').trim(),
+    // The same discriminant the archive frontmatter carries (empty-content /
+    // attempted-no-error-captured / no-fallback-failure-captured / unconfigured),
+    // so the Status line and the archive cannot disagree about the cloud leg.
+    cloud: fallbackError,
+  });
+  const markerBytes = Buffer.byteLength(statusMarker + '\n', 'utf8');
   const truncatedStatus = truncateToMaxSize(
-    dashboard.status.markdown, MAX_STATUS_SIZE_BYTES, 'Status (fallback)'
+    stripStatusFallbackMarker(dashboard.status.markdown),
+    Math.max(0, MAX_STATUS_SIZE_BYTES - markerBytes),
+    'Status (fallback)'
   );
 
   return {
     ...dashboard,
-    status: { ...dashboard.status, markdown: truncatedStatus },
+    status: { ...dashboard.status, markdown: `${statusMarker}\n${truncatedStatus}` },
     lastModified: now,
     intercom: {
       messages: [noticeMessage, ...toKeep],
