@@ -892,6 +892,28 @@ describe('roosync_dashboard', () => {
       expect(mockChatCreate).not.toHaveBeenCalled();
     });
 
+    it('sizes report the PREEMPTIVE threshold that strikes first, with the hard cap explicit (#3174 defect 5)', async () => {
+      // The preemptive condense bills minutes of LLM to the in-flight append;
+      // the field named condensationThreshold must describe THAT event. It used
+      // to report the hard cap (51200) — a value no observable behaviour keys
+      // on, leaving the operator blind to the 4-minute pass starting at 92%.
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+      await roosyncDashboard({ action: 'append', type: 'global', content: 'filler for sizes' });
+
+      const result = await roosyncDashboard({ action: 'read', type: 'global', format: 'json' });
+
+      const sizes = result.sizes!;
+      expect(sizes.condensationThreshold).toBe(Math.floor(51200 * 0.92)); // 47104 — fires first
+      expect(sizes.hardCapBytes).toBe(51200);
+      expect(sizes.condensationThreshold).toBeLessThan(sizes.hardCapBytes);
+      // Documented invariant, now arithmetically consistent with the field:
+      // at the exact condensation point, utilization reads 92.0%.
+      expect(Math.round((sizes.condensationThreshold / sizes.hardCapBytes) * 1000) / 10).toBe(92);
+      expect(sizes.utilizationPct).toBe(
+        Math.round((sizes.totalLength / sizes.hardCapBytes) * 1000) / 10
+      );
+    });
+
     it('splits large incoming messages so condense can archive them (#1589)', async () => {
       // Regression: prior behaviour was "single large message protected by
       // CONDENSE_KEEP slice policy → dashboard stays above threshold forever".
