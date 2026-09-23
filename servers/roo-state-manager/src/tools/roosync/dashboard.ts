@@ -3644,7 +3644,17 @@ export interface DashboardSizes {
   statusLength: number;
   intercomLength: number;
   totalLength: number;
+  /**
+   * #3174 defect 5 — the threshold that STRIKES FIRST. The preemptive condense
+   * (the LLM pass that bills minutes to the in-flight append) fires here, not at
+   * the hard cap; the field previously reported the cap, describing no observable
+   * event. utilizationPct keeps the hard cap as denominator, so the exact point
+   * where condensation starts reads 92.0% — arithmetically consistent with this
+   * field (47104/51200).
+   */
   condensationThreshold: number;
+  /** The hard ceiling behind the preemptive threshold (MAX_DASHBOARD_SIZE_BYTES). */
+  hardCapBytes: number;
   utilizationPct: number;
 }
 
@@ -3762,7 +3772,8 @@ function buildSizes(dashboard: Dashboard): DashboardSizes {
     statusLength,
     intercomLength,
     totalLength,
-    condensationThreshold: MAX_DASHBOARD_SIZE_BYTES,
+    condensationThreshold: PREEMPTIVE_CONDENSE_THRESHOLD_BYTES,
+    hardCapBytes: MAX_DASHBOARD_SIZE_BYTES,
     utilizationPct: Math.round((totalLength / MAX_DASHBOARD_SIZE_BYTES) * 1000) / 10
   };
 }
