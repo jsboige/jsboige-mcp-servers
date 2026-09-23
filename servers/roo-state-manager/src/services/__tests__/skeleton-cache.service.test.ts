@@ -335,6 +335,34 @@ describe('SkeletonCacheService', () => {
 			expect(mockListArchivedTasks).not.toHaveBeenCalled();
 		});
 
+		test('#1747 D: no Roo storage (Claude-only host) — Tier 3 archives still load', async () => {
+			// Measured on po-204 (Roo uninstalled): detectStorageLocations → [],
+			// the old early return skipped Tiers 2/3 → cache empty forever,
+			// tier3.status=loading permanent, cross-machine list unreachable.
+			mockDetectStorageLocations.mockResolvedValue([]);
+			mockListArchivedTaskFiles.mockResolvedValue([
+				{ taskId: 'task-po2025', filePath: '/mock/archive/myia-po-2025/task-po2025.json.gz', machineId: 'myia-po-2025' },
+			]);
+			mockReadArchivedTaskFromPath.mockResolvedValueOnce({
+				version: 1,
+				taskId: 'task-po2025',
+				machineId: 'myia-po-2025',
+				hostIdentifier: 'h',
+				archivedAt: '2026-04-01T00:00:00Z',
+				metadata: { title: 'Remote task', source: 'roo' },
+				messages: []
+			});
+
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			const cache = await service.getCache();
+
+			expect(mockListArchivedTaskFiles).toHaveBeenCalled();
+			expect(cache.size).toBe(1);
+			expect(cache.get('task-po2025')!.metadata.dataSource).toBe('gdrive-archive');
+			expect(cache.get('task-po2025')!.metadata.machineId).toBe('myia-po-2025');
+		});
+
 		test('configure({ enableClaudeTier: true }) loads Tier 2', async () => {
 			setupTier1(['roo-1']);
 			mockClaudeDetectLocations.mockResolvedValue([

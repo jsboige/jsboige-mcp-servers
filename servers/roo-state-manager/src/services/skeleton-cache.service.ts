@@ -295,6 +295,16 @@ export class SkeletonCacheService {
     }
 
     /**
+     * #1747 D — Whether a full cache load is currently running (boot pre-warm or
+     * ensureFreshCache re-trigger). Lets callers distinguish `loading` (worth
+     * waiting — it will land) from an empty/stale cache with NOTHING running
+     * (never becomes ready on its own; reported as `failed`, not `loading`).
+     */
+    public isLoadInProgress(): boolean {
+        return this.loadPromise !== null;
+    }
+
+    /**
      * Charger les skeletons depuis le disque
      * FIX #623: Also creates missing skeletons for existing conversations
      */
@@ -302,23 +312,51 @@ export class SkeletonCacheService {
         try {
             const storageLocations = await RooStorageDetector.detectStorageLocations();
 
+            // #1747 D — Tier 1 (Roo local) is skipped when no Roo storage exists
+            // (Claude-only machines, e.g. po-204 where Roo is uninstalled), but
+            // Tiers 2/3 below MUST still load: they don't depend on local Roo
+            // storage. The early returns used to skip them, which left the cache
+            // empty forever on such hosts → tier3.status=loading permanent,
+            // cross-machine conversations unreachable (measured 3x on po-204).
             if (storageLocations.length === 0) {
-                console.warn('[SkeletonCacheService] Aucun storage Roo détecté');
-                return;
+                console.warn('[SkeletonCacheService] Aucun storage Roo détecté — Tier 1 ignoré, Tiers 2/3 continuent (#1747 D)');
+            } else {
+                // Utiliser le premier emplacement de stockage détecté
+                const storagePath = storageLocations[0];
+                // FIX #623: Correct path is storagePath/tasks/.skeletons
+                const tasksDir = path.join(storagePath, 'tasks');
+                const skeletonDir = path.join(tasksDir, SKELETON_CACHE_DIR_NAME);
+
+                // Check if tasks directory exists
+                if (!(await this.directoryExists(tasksDir))) {
+                    console.warn(`[SkeletonCacheService] Répertoire tasks introuvable: ${tasksDir} — Tier 1 ignoré, Tiers 2/3 continuent (#1747 D)`);
+                } else {
+                    await this.loadTier1Skeletons(tasksDir, skeletonDir);
+                }
             }
 
-            // Utiliser le premier emplacement de stockage détecté
-            const storagePath = storageLocations[0];
-            // FIX #623: Correct path is storagePath/tasks/.skeletons
-            const tasksDir = path.join(storagePath, 'tasks');
-            const skeletonDir = path.join(tasksDir, SKELETON_CACHE_DIR_NAME);
-
-            // Check if tasks directory exists
-            if (!(await this.directoryExists(tasksDir))) {
-                console.warn(`[SkeletonCacheService] Répertoire tasks introuvable: ${tasksDir}`);
-                return;
+            // #1244 Couche 1.1 — Tiers optionnels (opt-in via configure())
+            // L'opt-in evite de polluer les tests existants qui ne mockent que Tier 1.
+            // En production, index.ts active explicitement les tiers selon la dispo
+            // des dependances (ROOSYNC_SHARED_PATH pour archives, etc).
+            if (SkeletonCacheService.config.enableClaudeTier) {
+                await this.loadClaudeSessionsFromDisk();
             }
+            if (SkeletonCacheService.config.enableArchiveTier) {
+                await this.loadArchivedSkeletonsFromGDrive();
+            }
+        } catch (error) {
+            console.error('[SkeletonCacheService] Erreur lors du chargement des skeletons:', error);
+        }
+    }
 
+    /**
+     * Tier 1 — load Roo-local skeletons (disk cache + missing-skeleton build).
+     * Extracted from loadSkeletonsFromDisk so the no-storage / no-tasks-dir
+     * paths skip ONLY this tier, never Tiers 2/3 (#1747 D).
+     */
+    private async loadTier1Skeletons(tasksDir: string, skeletonDir: string): Promise<void> {
+        try {
             this.cache.clear();
             let loadedCount = 0;
 
@@ -355,19 +393,8 @@ export class SkeletonCacheService {
 
             // FIX #623: Build missing skeletons for conversations that don't have one yet
             await this.buildMissingSkeletons(tasksDir, skeletonDir);
-
-            // #1244 Couche 1.1 — Tiers optionnels (opt-in via configure())
-            // L'opt-in evite de polluer les tests existants qui ne mockent que Tier 1.
-            // En production, index.ts active explicitement les tiers selon la dispo
-            // des dependances (ROOSYNC_SHARED_PATH pour archives, etc).
-            if (SkeletonCacheService.config.enableClaudeTier) {
-                await this.loadClaudeSessionsFromDisk();
-            }
-            if (SkeletonCacheService.config.enableArchiveTier) {
-                await this.loadArchivedSkeletonsFromGDrive();
-            }
         } catch (error) {
-            console.error('[SkeletonCacheService] Erreur lors du chargement des skeletons:', error);
+            console.error('[SkeletonCacheService] Erreur lors du chargement Tier 1:', error);
         }
     }
 
