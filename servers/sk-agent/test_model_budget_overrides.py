@@ -10,6 +10,8 @@ Acceptance mapping (issue roo-extensions#3797):
   sampling-derived keys or the enable_thinking injection;
 - the ``call_agent`` wait_for ceiling for a model declaring
   ``request_timeout_s=600`` must be >= 600 (the coupling).
+- ``run_conversation`` agents must carry the model's max_tokens /
+  extra_body too, without mutating the shared agents ``call_agent`` reuses.
 """
 
 import asyncio
@@ -19,9 +21,11 @@ import pytest
 
 import sk_agent
 from sk_agent import SKAgentManager
+from sk_conversations import ConversationRunner
 from sk_agent_config import (
     DEFAULT_REQUEST_TIMEOUT_S,
     AgentConfig,
+    ConversationConfig,
     ModelConfig,
     SamplingConfig,
     SKAgentConfig,
@@ -342,6 +346,57 @@ class TestCeilingCoupling:
 # ---------------------------------------------------------------------------
 # Schema layer: the fields validate (extra=forbid) and are bounded
 # ---------------------------------------------------------------------------
+
+
+class TestConversationBudget:
+    """run_conversation invokes agents without call-time settings, so the
+    model budget must ride on a conversation-scoped copy of each agent."""
+
+    def _resolve(self, agent_ids):
+        manager = _manager()
+        _run(manager._init_model_pool())
+        runner = ConversationRunner(
+            manager.config, manager._sk_agents, manager._get_or_create_agent
+        )
+        conv = ConversationConfig(id="c", type="sequential", agents=agent_ids)
+        return manager, _run(runner._resolve_conversation_agents(conv))
+
+    def test_declared_budget_reaches_service_selection(self):
+        _, (agent,) = self._resolve(["a-budget"])
+        # Same resolution SK runs inside invoke() when no call-time
+        # arguments are given — the group-chat path.
+        service, s = _run(
+            agent._get_chat_completion_service_and_settings(
+                agent.kernel, agent._merge_arguments(None)
+            )
+        )
+        assert service.service_id == "m-budget"
+        assert s.max_tokens == 8000
+        assert s.extra_body == {
+            "top_k": 50,
+            "chat_template_kwargs": {"thinking_budget": 2048},
+        }
+
+    def test_undeclared_model_keeps_the_shared_agent(self):
+        manager, (agent,) = self._resolve(["a-std"])
+        assert agent is manager._sk_agents["a-std"]
+        assert agent.arguments is None
+
+    def test_shared_agent_is_not_mutated(self):
+        manager, (agent,) = self._resolve(["a-budget"])
+        shared = manager._sk_agents["a-budget"]
+        assert agent is not shared
+        assert shared.arguments is None
+        # A call-time override merged into the copy stays in the copy.
+        agent._merge_arguments(manager._get_invoke_kwargs("a-budget")["arguments"])
+        assert shared.arguments is None
+
+    def test_extra_body_is_not_shared_with_config(self):
+        manager, (agent,) = self._resolve(["a-budget"])
+        (s,) = agent.arguments.execution_settings.values()
+        s.extra_body["chat_template_kwargs"]["thinking_budget"] = 1
+        model = manager.config.get_model("m-budget")
+        assert model.extra_body["chat_template_kwargs"]["thinking_budget"] == 2048
 
 
 class TestSchemaFields:

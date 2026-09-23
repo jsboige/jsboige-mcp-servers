@@ -376,6 +376,17 @@ class TestReviewPrRealFunction:
         assert parsed["tier"] == 2
         assert parsed["timeout_used"] == 180
 
+    def test_timeout_used_reports_the_coupled_ceiling(self):
+        """#3797: a model declaring request_timeout_s raises call_agent's
+        ceiling above the tier value; the report must say what applied."""
+        mgr = self._manager_returning(
+            {"error": "call_agent timed out after 630.0s", "timeout": 630.0}
+        )
+        with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=2))
+        parsed = json.loads(out)
+        assert parsed["timeout_used"] == 630.0
+
     def test_agent_resolution_error_propagated(self):
         mgr = self._manager_returning({"error": "Agent 'nope' not found"})
         with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
