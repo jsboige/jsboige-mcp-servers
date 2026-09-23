@@ -15,6 +15,7 @@ Tests cover:
 - Context window inference
 """
 
+import asyncio
 import io
 import json
 import os
@@ -2341,7 +2342,8 @@ class TestSharedConversationAgentConfig:
         assert conv is not None
         assert conv.id == "deep-search"
 
-        resolved = runner._resolve_conversation_agents(conv)
+        # _resolve_conversation_agents went async in #1207 (spec builder path)
+        resolved = asyncio.run(runner._resolve_conversation_agents(conv))
         assert len(resolved) == 3
         assert resolved[0] is mock_agents["researcher"]
         assert resolved[1] is mock_agents["synthesizer"]
@@ -2376,6 +2378,80 @@ class TestSharedConversationAgentConfig:
         assert (
             len(models_used) >= 2
         ), f"Expected at least 2 different models across agents, got: {models_used}"
+
+
+class TestComplementaryLocalProfiles2002:
+    """#2002: the same local model ships as a thinking / non-thinking pair.
+
+    The non-thinking entry must DECLARE enable_thinking=false via the #3797
+    extra_body passthrough: call_agent injects the flag from ``thinking:
+    false``, but run_conversation agents only receive what the model entry
+    declares — without the key, a conversation preset on the no-thinking
+    profile would think anyway.
+    """
+
+    CHEAP_TASK_AGENTS = ("summarizer-local", "classifier-local", "formatter-local")
+
+    def _load_template(self) -> dict:
+        template_path = Path(__file__).parent / "sk_agent_config.template.json"
+        if not template_path.exists():
+            pytest.skip("Template config not found")
+        with open(template_path) as f:
+            return json.load(f)
+
+    def _get_model(self, raw: dict, model_id: str) -> dict:
+        models = {m["id"]: m for m in raw.get("models", [])}
+        assert model_id in models, f"Model '{model_id}' missing from template"
+        return models[model_id]
+
+    def test_no_thinking_model_declares_enable_thinking_false(self):
+        raw = self._load_template()
+        m = self._get_model(raw, "qwen3.6-35b-no-thinking")
+        assert m["thinking"] is False
+        assert m.get("extra_body", {}).get("chat_template_kwargs", {}).get(
+            "enable_thinking"
+        ) is False, (
+            "#2002: the conversation path only applies declared extra_body — "
+            "enable_thinking=false must be declared on the no-thinking model"
+        )
+
+    def test_thinking_pair_on_same_local_model(self):
+        raw = self._load_template()
+        thinking = self._get_model(raw, "qwen3.6-35b-a3b")
+        no_thinking = self._get_model(raw, "qwen3.6-35b-no-thinking")
+        assert thinking["thinking"] is True
+        assert no_thinking["thinking"] is False
+        # Complementary profiles on the SAME local model (same hardware, same
+        # served model_id) — two entries, one vLLM deployment.
+        assert thinking["base_url"] == no_thinking["base_url"]
+        assert thinking["model_id"] == no_thinking["model_id"]
+
+    def test_cheap_task_agents_pinned_to_no_thinking_model(self):
+        raw = self._load_template()
+        agents_by_id = {a["id"]: a for a in raw.get("agents", [])}
+        prompts = set()
+        for agent_id in self.CHEAP_TASK_AGENTS:
+            assert agent_id in agents_by_id, (
+                f"#2002: cheap-task agent '{agent_id}' missing from template"
+            )
+            agent = agents_by_id[agent_id]
+            assert agent.get("model") == "qwen3.6-35b-no-thinking", (
+                f"Agent '{agent_id}' must run on the non-thinking local profile"
+            )
+            assert agent.get("mcps", []) == [], (
+                f"Agent '{agent_id}' is a cheap-task lane: no tools expected"
+            )
+            assert not agent.get("memory", {}).get("enabled", False), (
+                f"Agent '{agent_id}' is a cheap-task lane: memory off expected"
+            )
+            prompt = agent.get("system_prompt", "")
+            assert len(prompt) > 50, (
+                f"Agent '{agent_id}' has a suspiciously short prompt"
+            )
+            assert prompt not in prompts, (
+                f"Agent '{agent_id}' reuses another agent's system_prompt"
+            )
+            prompts.add(prompt)
 
 
 # ---------------------------------------------------------------------------

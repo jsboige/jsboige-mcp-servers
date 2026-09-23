@@ -51,7 +51,12 @@
       "model_id": "qwen3.6-35b-a3b",
       "vision": false,
       "thinking": false,
-      "description": "Qwen3.6 35B MoE AWQ — no-thinking mode. Faster inference for coding tasks that don't need chain-of-thought. Same hardware as qwen3.6-35b-a3b.",
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "description": "Qwen3.6 35B MoE AWQ — no-thinking mode. Faster inference for short/cheap tasks (summaries, classification, formatting). Same hardware as qwen3.6-35b-a3b. enable_thinking=false also declared via extra_body (#3797) so the profile holds on the conversation path, not just call_agent (#2002).",
       "context_window": 262144
     },
 
@@ -234,6 +239,31 @@
       "description": "Quick local responses via direct vLLM Qwen3.6 35B no-thinking mode (fleet vLLM ai-01, 262K ctx). No tools, no thinking overhead",
       "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "You are a fast local assistant. Respond concisely and accurately without thinking mode. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "_comment": "=== #2002 cheap-task lane: task-tuned no-thinking profiles on the same local model as analyst (thinking). Short outputs, no tools, no memory — offloading epic #2404 ===",
+      "id": "summarizer-local",
+      "description": "Condenses logs, conversations, dumps and documents into short structured summaries — local Qwen3.6 35B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
+      "model": "qwen3.6-35b-no-thinking",
+      "system_prompt": "You are a summarizer. Condense the provided material into a short, faithful summary: key facts first, then decisions and open points. Never invent content, never drop a decision. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "classifier-local",
+      "description": "Classifies items (issues, PRs, alerts, notebooks, log lines) into a caller-provided label set — local Qwen3.6 35B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
+      "model": "qwen3.6-35b-no-thinking",
+      "system_prompt": "You are a classifier. Assign each provided item exactly one label from the caller's label set, with a one-line justification. If nothing fits, use 'other'. Output one line per item. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "formatter-local",
+      "description": "Normalizes and reformats text (markdown cleanup, dump normalization, consistent formatting) without changing meaning — local Qwen3.6 35B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
+      "model": "qwen3.6-35b-no-thinking",
+      "system_prompt": "You are a formatter. Rewrite the provided text into the requested format without changing its meaning. Preserve names, identifiers, paths and code verbatim. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
     },
