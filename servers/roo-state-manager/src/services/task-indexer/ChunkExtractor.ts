@@ -221,6 +221,118 @@ function extractToolResultText(content: any[]): string {
 }
 
 /**
+ * #3763: Inline condensation-boundary detection.
+ *
+ * Long Claude Code sessions are condensed several times during their lifetime;
+ * each condensation is a natural chapter break in the timeline, and the
+ * synthetic condensation-fallback tasks already produced by dashboard.ts carry
+ * well-known content markers. We re-use those markers here to detect chapter
+ * heads embedded in a *single* long task, so the extractor can split child
+ * units at chapter boundaries instead of at arbitrary `MAX_MESSAGES_PER_TASK`
+ * counts. When no markers are present (Roo sessions, sessions never condensed,
+ * Claude Code JSONL whose runtime uses different markers) we fall back to the
+ * count-based paging — no regression for the un-marked case.
+ *
+ * Patterns detected (intentionally narrow — false-negatives are cheap, false
+ * positives corrupt lineage):
+ *   - `[CONDENSATION ARCHIVE]` — user-message prefix written by dashboard.ts:2745
+ *   - `[Condensation summary]` — synthetic-task title written by dashboard.ts:2715
+ *
+ * @param messages Array of messages in chronological order. Each entry may be
+ *                 an ApiMessage (`{role, content, ...}`) or a UiMessage
+ *                 (`{author, text, ...}`); the helper extracts the relevant
+ *                 text field transparently.
+ * @returns 1-based indices into the `messages` array where a boundary starts
+ *          (i.e., the message AT the index is the head of a new chapter).
+ *          Empty array = no boundaries detected → caller falls back to count.
+ */
+export function detectCondensationBoundaries(messages: any[]): number[] {
+    const boundaries: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (!m) continue;
+        // UiMessage uses `text`; ApiMessage uses `content` (string or array of
+        // text blocks). We only inspect the leading string — the synthetic
+        // markers are written verbatim at message head.
+        let head = '';
+        if (typeof m.text === 'string') {
+            head = m.text;
+        } else if (typeof m.content === 'string') {
+            head = m.content;
+        } else if (Array.isArray(m.content)) {
+            const first = m.content[0];
+            if (first && typeof first.text === 'string') head = first.text;
+        }
+        if (
+            head.startsWith('[CONDENSATION ARCHIVE]') ||
+            head.startsWith('[Condensation summary]')
+        ) {
+            // 1-based: message N is the start of chapter N (not chapter N-1).
+            boundaries.push(i + 1);
+        }
+    }
+    return boundaries;
+}
+
+/**
+ * #3763: Pick the cut points for child-unit paging.
+ *
+ * If condensation boundaries were detected, use them as cut points (so each
+ * chapter becomes its own child unit). Otherwise fall back to count-based
+ * paging every `MESSAGES_PER_CHILD_UNIT` messages. Always includes 1 (head)
+ * and the count past the last message so callers can iterate uniformly.
+ *
+ * @param totalMessages Total emitted-message count (api + ui combined).
+ * @param boundaries 1-based indices where a boundary begins (output of
+ *                   `detectCondensationBoundaries`).
+ * @param messagesPerChildUnit Count-based paging budget (#1758/#2825 G2).
+ * @returns Sorted, deduped 1-based cut points. Always includes 1 and
+ *          `totalMessages + 1`.
+ */
+export function pickChildUnitCutPoints(
+    totalMessages: number,
+    boundaries: number[],
+    messagesPerChildUnit: number
+): number[] {
+    if (totalMessages <= 0) return [1];
+    const cuts = new Set<number>([1]);
+    if (boundaries.length > 0) {
+        // Use the detected boundaries as cut points (1-based; cap to totalMessages).
+        for (const b of boundaries) {
+            if (b >= 1 && b <= totalMessages) cuts.add(b);
+        }
+    } else {
+        // No boundaries — fall back to count-based paging every N messages.
+        for (let n = messagesPerChildUnit; n < totalMessages; n += messagesPerChildUnit) {
+            cuts.add(n + 1);
+        }
+    }
+    cuts.add(totalMessages + 1);
+    return Array.from(cuts).sort((a, b) => a - b);
+}
+
+/**
+ * #3763: Map a 1-based message index to its child-unit index, given the cut
+ * points from `pickChildUnitCutPoints`.
+ *
+ * @param messageIndex1 1-based index of the message within the emitted sequence.
+ * @param cutPoints Sorted 1-based cut points; child unit K spans
+ *                  `[cutPoints[K-1], cutPoints[K])`.
+ * @returns 1-based child unit index.
+ */
+export function childUnitIndexFor(
+    messageIndex1: number,
+    cutPoints: number[]
+): number {
+    for (let i = 0; i < cutPoints.length; i++) {
+        const start = cutPoints[i];
+        const end = i + 1 < cutPoints.length ? cutPoints[i + 1] : Number.POSITIVE_INFINITY;
+        if (messageIndex1 >= start && messageIndex1 < end) return i + 1;
+    }
+    return cutPoints.length;
+}
+
+/**
  * Extrait et structure les chunks d'une tâche selon la stratégie granulaire.
  * @param taskId L'ID de la tâche.
  * @param taskPath Le chemin vers le répertoire de la tâche.
@@ -248,6 +360,17 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
     // count toward the same child-unit boundary, preserving lineage across message sources.
     let MESSAGES_PER_CHILD_UNIT = MAX_MESSAGES_PER_TASK;
     let childUnitCount = 1;
+    // #3763: chapter-boundary state. Hoisted to function scope so the api
+    // loop (try block), ui loop (sibling block), and post-loop patch can all
+    // share the same accumulators. Pre-computing the boundary sets here (vs.
+    // inside the api try block) also avoids recomputing them when an api-read
+    // exception rethrows before the loop runs.
+    let emittedBoundaryPositions: number[] = [];
+    let childUnitIdx = 1;
+    let apiRawIndex = 0;
+    let uiRawIndex = 0;
+    let rawApiBoundaries: Set<number> = new Set();
+    let rawUiBoundaries: Set<number> = new Set();
 
     // 🎯 CORRECTION CRITIQUE - Extraction des métadonnées hiérarchiques
     // Utilisation de la même logique que roo-storage-detector.ts pour cohérence
@@ -332,9 +455,26 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
         }
         // Reassign the outer-scope paging constants (declared at function top).
         MESSAGES_PER_CHILD_UNIT = MAX_MESSAGES_PER_TASK;
-        childUnitCount = Math.max(1, Math.ceil(combinedCount / MESSAGES_PER_CHILD_UNIT));
+
+        // #3763: detect inline condensation boundaries on the raw arrays, then
+        // track emitted-boundary indices in step with `messageIndex` inside the
+        // loops below. `emittedBoundaryPositions` is appended each time an
+        // emitted message carries a known condensation marker; the resulting
+        // 1-based list feeds `pickChildUnitCutPoints` once both loops finish.
+        // We index the api and ui streams separately because filtering (system
+        // role, empty content) shifts the emitted index away from the raw index,
+        // and the mapping is computed at emit-time, not pre-scan-time.
+        rawApiBoundaries = new Set(detectCondensationBoundaries(apiMessages));
+        rawUiBoundaries = new Set(detectCondensationBoundaries(uiMessages));
 
         for (const msg of apiMessages) {
+            apiRawIndex++;
+            // #3763: detect a boundary marker on this RAW api message. We check
+            // at raw-index time so that empty-content / system-role skips don't
+            // shift the boundary off the marker. Only the emitted count matters
+            // for paging, and `emittedBoundaryPositions` records the EMITTED
+            // 1-based index below when the message is actually emitted.
+            const isApiBoundary = rawApiBoundaries.has(apiRawIndex);
             if (msg.role === 'system') continue;
             if (msg.content) {
                 messageIndex++;
@@ -398,11 +538,16 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         lowerContent.includes('erreur');
 
                     const seq = sequenceOrder++;
-                    // #2825 (G2/G3): assign to a child unit when crossing the page boundary.
-                    // Unit #1 keeps the original task_id so existing task_id filters still
-                    // find the head of the conversation; overflow pages get synthetic child ids.
+                    // #3763: provisional child-unit index from the running estimate
+                    // (placeholder cut points until both api + ui loops close).
+                    // Final index is patched below after `pickChildUnitCutPoints`
+                    // runs against `emittedBoundaryPositions`.
                     const unitIndex0 = Math.floor((messageIndex - 1) / MESSAGES_PER_CHILD_UNIT);
-                    const childUnitIdx = unitIndex0 + 1;
+                    childUnitIdx = unitIndex0 + 1;
+                    if (isApiBoundary) {
+                        // Record the EMITTED 1-based index where the boundary starts.
+                        emittedBoundaryPositions.push(messageIndex);
+                    }
                     const isOverflowUnit = childUnitIdx > 1;
                     const effectiveTaskId = isOverflowUnit
                         ? `${taskId}#unit-${childUnitIdx}`
@@ -464,6 +609,8 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                     const seq = sequenceOrder++;
                     // #2825 (G2/G3): tool calls belong to the same child unit as their
                     // parent message (use messageIndex as the paging anchor).
+                    // #3763: keep `toolChildUnitIdx` in lockstep with the text chunk's
+                    // provisional index — both are patched post-loop.
                     const toolUnitIndex0 = Math.floor((messageIndex - 1) / MESSAGES_PER_CHILD_UNIT);
                     const toolChildUnitIdx = toolUnitIndex0 + 1;
                     const toolIsOverflow = toolChildUnitIdx > 1;
@@ -492,6 +639,11 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                         workspace_name: workspace ? workspaceBasename(workspace) : undefined,
                         task_title: taskTitle,
                         host_os: getHostIdentifier(),
+                        // #3763 (review fix): tool chunks carry their PARENT
+                        // message's emitted index — the post-loop unit patch
+                        // reads `message_index` directly instead of inventing
+                        // one from a cursor (which drifted at boundaries).
+                        message_index: messageIndex,
                         // #2825 (G2/G3): pagination metadata
                         child_unit_index: toolChildUnitIdx,
                         child_unit_total: childUnitCount,
@@ -523,6 +675,7 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
     // an accurate childUnitCount. Iterate the in-memory array here — no second read.
     {
         for (const msg of uiMessages) {
+            uiRawIndex++;
             // #636: Detect error patterns
             const uiLower = (msg.text || '').toLowerCase();
             const uiHasError = uiLower.includes('error') || uiLower.includes('failed') || uiLower.includes('❌');
@@ -531,9 +684,15 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
 
             const seq = sequenceOrder++;
             // #2825 (G2/G3): UI messages count toward the same child-unit paging as api messages.
+            // #3763: provisional child-unit index — final index is patched below
+            // after both api + ui loops close, from `pickChildUnitCutPoints`.
             const uiMessageIndex = ++messageIndex;
             const uiUnitIndex0 = Math.floor((uiMessageIndex - 1) / MESSAGES_PER_CHILD_UNIT);
             const uiChildUnitIdx = uiUnitIndex0 + 1;
+            // #3763: detect condensation boundary on this ui message (raw index).
+            if (rawUiBoundaries.has(uiRawIndex)) {
+                emittedBoundaryPositions.push(uiMessageIndex);
+            }
             const uiIsOverflow = uiChildUnitIdx > 1;
             const uiEffectiveTaskId = uiIsOverflow
                 ? `${taskId}#unit-${uiChildUnitIdx}`
@@ -568,11 +727,42 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
                 // #636: Enriched metadata
                 model: taskModel,
                 has_error: uiHasError || undefined,
-                // #2825 (G2/G3): pagination metadata
+                // #3763 (review fix): ui chunks carry their own emitted index
+                // so the post-loop unit patch reads `message_index` directly
+                // (the old cursor fallback invented indices here).
+                message_index: uiMessageIndex,
+                // #2825 (G2/G3): pagination metadata — provisional, patched post-loop
                 child_unit_index: uiChildUnitIdx,
                 child_unit_total: childUnitCount,
             });
         }
+    }
+
+    // #3763: post-loop patch. Now that BOTH api and ui loops have closed,
+    // `emittedBoundaryPositions` holds the FINAL 1-based emitted indices
+    // where condensation chapters begin. Compute the real cut points and
+    // rebuild each chunk's pagination metadata so the boundaries — when
+    // present — supersede the count-based paging.
+    const finalCutPoints = pickChildUnitCutPoints(
+        messageIndex,
+        emittedBoundaryPositions,
+        MESSAGES_PER_CHILD_UNIT
+    );
+    const finalChildUnitTotal = Math.max(1, finalCutPoints.length - 1);
+    // #3763 (review fix): every emission site now stamps `message_index`
+    // (api text = its own index, api tool = parent message index, ui = its
+    // own `uiMessageIndex`), so the emitted index is read directly. The
+    // cursor heuristic that invented indices for unstamped tool/ui chunks
+    // corrupted unit assignment exactly at boundaries — it is gone.
+    for (const chunk of chunks) {
+        const emittedIdx = chunk.message_index!;
+        const newUnitIdx = childUnitIndexFor(emittedIdx, finalCutPoints);
+        const newIsOverflow = newUnitIdx > 1;
+        chunk.child_unit_index = newUnitIdx;
+        chunk.child_unit_total = finalChildUnitTotal;
+        chunk.task_id = newIsOverflow ? `${taskId}#unit-${newUnitIdx}` : taskId;
+        chunk.parent_task_id = newIsOverflow ? taskId : (parentTaskId || null);
+        chunk.root_task_id = parentTaskId || (newIsOverflow ? taskId : null);
     }
 
     return chunks.sort((a, b) => a.sequence_order - b.sequence_order);
@@ -693,6 +883,20 @@ export async function extractChunksFromClaudeSession(
 
                 let totalLines = 0;
                 let fileMessageCount = 0;
+                // #3763: track condensation boundaries per emitted-message index.
+                // Each emitted (post-filter) message that starts with a known
+                // marker pushes its global `messageIndex` here. Post-stream we
+                // patch every chunk from this file with the chapter-aligned
+                // child-unit index and total (same patch pattern as #2828 nit 2,
+                // which already runs in the `fileMessageCount > MAX_MESSAGES_PER_TASK`
+                // branch below).
+                const fileBoundaryPositions: number[] = [];
+                // Capture the global messageIndex at file start so we can map
+                // emitted-index <-> local-index within this file. `messageIndex`
+                // is global (not reset between files in this loop), so without
+                // this offset the boundary-patch branch would map boundaries
+                // from earlier files into the current file's range.
+                const fileStartGlobal = messageIndex + 1;
 
                 for await (const line of rl) {
                     if (!line.trim()) continue;
@@ -742,6 +946,18 @@ export async function extractChunksFromClaudeSession(
                         // #2825 (G1): content carried in FULL — split losslessly downstream by splitChunk (no mid-content amputation).
                         messageIndex++;
                         fileMessageCount++;
+                        // #3763: detect inline condensation boundary on this emitted
+                        // Claude Code message. We reuse the same marker regex as
+                        // `detectCondensationBoundaries` (synthetic condensation
+                        // archive prefix) — Claude Code's runtime may not emit
+                        // these markers natively, so detection on this path is
+                        // best-effort and the count-based fallback still dominates.
+                        if (
+                            contentText.startsWith('[CONDENSATION ARCHIVE]') ||
+                            contentText.startsWith('[Condensation summary]')
+                        ) {
+                            fileBoundaryPositions.push(messageIndex);
+                        }
                         // #636: Detect error patterns and extract model
                         const ccLower = contentText.toLowerCase();
                         const ccHasError = ccLower.includes('error') || ccLower.includes('failed') || ccLower.includes('❌');
@@ -832,6 +1048,12 @@ export async function extractChunksFromClaudeSession(
                                 task_title: metadata?.title,
                                 host_os: getHostIdentifier(),
                                 source: 'claude-code',
+                                // #3763 (review fix): tool chunks carry their
+                                // PARENT message's emitted index — the per-file
+                                // unit patch below reads `message_index`
+                                // directly (the old `?? fileStartLocal`
+                                // fallback pinned every tool chunk to unit 1).
+                                message_index: messageIndex,
                                 // #2825 (G2/G3): pagination metadata
                                 child_unit_index: claudeChildUnitIdx,
                                 child_unit_total: claudeChildUnitTotal,
@@ -856,6 +1078,45 @@ export async function extractChunksFromClaudeSession(
                         if (chunk.source === 'claude-code') {
                             chunk.child_unit_total = claudeChildUnitCount;
                         }
+                    }
+                }
+                // #3763: post-stream patch for chapter-aligned cut points. When
+                // boundaries were detected in this file, recompute cut points
+                // from `fileBoundaryPositions` and re-stamp each chunk from this
+                // file with the boundary-aligned child-unit index + total +
+                // task_id + parent_task_id + root_task_id (so the lineage chain
+                // stays reconstructible via `conversation_browser`).
+                if (fileBoundaryPositions.length > 0) {
+                    // `messageIndex` at file close is the GLOBAL emitted count;
+                    // `fileStartGlobal` captured at file start, so the file
+                    // occupies global indices [fileStartGlobal, messageIndex].
+                    const fileEndLocal = fileMessageCount;
+                    const fileStartLocal = 1;
+                    const localBoundaries = fileBoundaryPositions
+                        .filter(b => b >= fileStartGlobal && b <= messageIndex)
+                        .map(b => b - fileStartGlobal + 1);
+                    const localCutPoints = pickChildUnitCutPoints(
+                        fileMessageCount,
+                        localBoundaries,
+                        MAX_MESSAGES_PER_TASK
+                    );
+                    const localChildUnitTotal = Math.max(1, localCutPoints.length - 1);
+                    for (const chunk of chunks) {
+                        if (chunk.source !== 'claude-code') continue;
+                        // #3763 (review fix): translate the chunk's global
+                        // message_index to a local (1-based) emitted index
+                        // within this file — read directly, every emission
+                        // site stamps it (the old `?? fileStartLocal` fallback
+                        // collapsed all tool chunks onto unit 1).
+                        const localIdx = chunk.message_index! - fileStartGlobal + 1;
+                        if (localIdx < fileStartLocal || localIdx > fileEndLocal) continue;
+                        const newUnitIdx = childUnitIndexFor(localIdx, localCutPoints);
+                        const newIsOverflow = newUnitIdx > 1;
+                        chunk.child_unit_index = newUnitIdx;
+                        chunk.child_unit_total = localChildUnitTotal;
+                        chunk.task_id = newIsOverflow ? `${taskId}#unit-${newUnitIdx}` : taskId;
+                        chunk.parent_task_id = newIsOverflow ? taskId : null;
+                        chunk.root_task_id = newIsOverflow ? taskId : null;
                     }
                 }
 
