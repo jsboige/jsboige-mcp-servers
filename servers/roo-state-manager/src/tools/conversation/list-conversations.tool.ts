@@ -686,8 +686,16 @@ export const listConversationsTool = {
                     }
                     allSkeletons = allSkeletons.concat(archiveSkeletons);
                 } else {
-                    tier3Status = 'loading';
-                    archiveNotice = `tier3_status=loading: GDrive archive cache still warming in background; showing local results only. Deterministic options: waitForArchives=true blocks until ready (budget ${ARCHIVE_READY_BUDGET_MS}ms), or re-call once tier3.status=ready.`;
+                    // #1747 D — distinguish "a load is warming" (worth waiting) from
+                    // "nothing is running and the cache is not fresh" (never becomes
+                    // ready by itself: no Roo storage + tiers off/unreachable). The
+                    // unconditional 'loading' was a measured lie on po-204 — budget
+                    // exhausted, no load running, agent told to "re-call once ready".
+                    const loadInProgress = scsInstance.isLoadInProgress();
+                    tier3Status = loadInProgress ? 'loading' : 'failed';
+                    archiveNotice = loadInProgress
+                        ? `tier3_status=loading: GDrive archive cache still warming in background; showing local results only. Deterministic options: waitForArchives=true blocks until ready (budget ${ARCHIVE_READY_BUDGET_MS}ms), or re-call once tier3.status=ready.`
+                        : `tier3_status=failed: no archive load in progress and cache not fresh (empty cache or archives unreachable); showing local results only. waitForArchives=true retries a full load within its budget.`;
                     console.warn(`[list_conversations] ${archiveNotice}`);
                 }
             } catch (archiveError) {

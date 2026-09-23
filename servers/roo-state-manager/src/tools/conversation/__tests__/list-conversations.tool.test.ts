@@ -64,15 +64,19 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 
 // Mock SkeletonCacheService (needed for includeArchives / Bug #3 / #1752)
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
-const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge } = vi.hoisted(() => {
+// #1747 D: isLoadInProgress defaults to true — an elapsed budget with a load
+// running stays 'loading'; tests opt into false to pin the 'failed' arm.
+const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
 	const awaitFn = vi.fn(() => Promise.resolve(true));
 	const ageFn = vi.fn(() => 1234);
+	const loadInProgressFn = vi.fn(() => true);
 	return {
 		mockGetCache: cacheFn,
 		mockAwaitFreshness: awaitFn,
 		mockGetCacheAge: ageFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn }))
+		mockIsLoadInProgress: loadInProgressFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn }))
 	};
 });
 
@@ -540,7 +544,8 @@ describe('list-conversations', () => {
       // Re-wire after vi.restoreAllMocks() in afterEach may have cleared implementations.
       mockGetCache.mockResolvedValue(new Map());
       mockAwaitFreshness.mockResolvedValue(true);
-      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge });
+      mockIsLoadInProgress.mockReturnValue(true);
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress });
     });
 
     it('should not load archives when includeArchives is false (default)', async () => {
@@ -742,6 +747,40 @@ describe('list-conversations', () => {
         // Cache not ready within budget -> same graceful loading degradation.
         expect(_response.tier3.status).toBe('loading');
         expect(_response.tier3).toHaveProperty('cache_age_ms');
+      });
+
+      it('#1747 D: budget elapsed with NO load running -> tier3.status=failed, not the "still warming" lie', async () => {
+        // Measured 3x on po-204 (Claude-only host): budget exhausted, no load in
+        // progress, yet the response said "still warming in background; re-call
+        // once tier3.status=ready" — advice that never converges. The fix asks
+        // the service whether anything is actually loading.
+        mockAwaitFreshness.mockResolvedValue(false);
+        mockIsLoadInProgress.mockReturnValue(false);
+
+        const result = await listConversationsTool.handler(
+          { includeArchives: true, waitForArchives: true },
+          new Map()
+        );
+        const _response = JSON.parse(result.content[0].text as string);
+
+        expect(_response.tier3.status).toBe('failed');
+        expect(_response.notice).toContain('no archive load in progress');
+        // Must NOT advise "re-call once tier3.status=ready" — nothing will make it ready.
+        expect(_response.notice).not.toContain('re-call once tier3.status=ready');
+      });
+
+      it('#1747 D: budget elapsed WITH a load running -> stays loading (the wait advice is truthful)', async () => {
+        mockAwaitFreshness.mockResolvedValue(false);
+        mockIsLoadInProgress.mockReturnValue(true);
+
+        const result = await listConversationsTool.handler(
+          { includeArchives: true, waitForArchives: true },
+          new Map()
+        );
+        const _response = JSON.parse(result.content[0].text as string);
+
+        expect(_response.tier3.status).toBe('loading');
+        expect(_response.notice).toContain('waitForArchives=true');
       });
 
       it('cache fresh: tier3.status=ready with cache_age_ms, archives served in the same call', async () => {
