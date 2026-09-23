@@ -11,6 +11,9 @@
  *   (2) after the marker moves, the client receives notifications/tools/list_changed;
  *   (3) a tools/list sent after that notification returns the NEW vintage's list,
  *       although the startup vintage's persisted cache answered the first one.
+ * Follow-ups: an id the persisted cache answered gets no second (-32603) reply
+ * when a swap kills the child first (F2), and the retry and fallback respawns
+ * forget the tool list of the child they replace (NanoClaw reserve 2).
  *
  * Hermetic: the wrapper is copied into a temp dir with its own marker, so the
  * machine's real build-current is never touched (unlike scripts/hot-swap-probe.mjs,
@@ -30,8 +33,20 @@ const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..',
 const VINTAGE_A = 'build-aaaaaaaaaaaaaaaa';
 const VINTAGE_B = 'build-bbbbbbbbbbbbbbbb';
 
+// Switch files, read from the fake's own vintage dir (it runs as CommonJS):
+// `silent-tools-list` = never answer tools/list; `hang-initialize` = never answer
+// initialize; `hang-initialize-once` = the same for this spawn only (consumed at
+// startup, so the next spawn of the vintage answers). A spawn hung on initialize
+// still answers tools/list, under a `_hung` name: the stale list that a later
+// child's answer must not be replaced with.
 function fakeServer(toolName: string): string {
     return [
+        "const fs = require('fs');",
+        "const path = require('path');",
+        'const flag = (name) => fs.existsSync(path.join(__dirname, name));',
+        "const hungOnce = flag('hang-initialize-once');",
+        "if (hungOnce) fs.unlinkSync(path.join(__dirname, 'hang-initialize-once'));",
+        "const hung = hungOnce || flag('hang-initialize');",
         "let buf = '';",
         "process.stdin.on('data', (d) => {",
         '    buf += d;',
@@ -43,9 +58,11 @@ function fakeServer(toolName: string): string {
         '        if (m.id === undefined || m.id === null) continue;',
         '        let result = {};',
         "        if (m.method === 'initialize') {",
+        '            if (hung) continue;',
         `            result = { protocolVersion: '2024-11-05', capabilities: { tools: {}, logging: {} }, serverInfo: { name: 'fake', version: '${toolName}' } };`,
         "        } else if (m.method === 'tools/list') {",
-        `            result = { tools: [{ name: '${toolName}', inputSchema: { type: 'object' } }] };`,
+        "            if (flag('silent-tools-list')) continue;",
+        `            result = { tools: [{ name: hung ? '${toolName}_hung' : '${toolName}', inputSchema: { type: 'object' } }] };`,
         '        }',
         "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }) + '\\n');",
         '    }',
@@ -71,6 +88,29 @@ async function waitFor(pred: (m: any) => boolean, what: string, timeoutMs = 20_0
         await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error(`timeout waiting for ${what}; stderr tail:\n${stderrTail.slice(-2000)}`);
+}
+
+async function waitForStderr(fragment: string, timeoutMs = 20_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (stderrTail.includes(fragment)) return;
+        await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`timeout waiting for stderr "${fragment}"; stderr tail:\n${stderrTail.slice(-2000)}`);
+}
+
+function toolNames(msg: any): string[] {
+    return msg.result.tools.map((t: any) => t.name);
+}
+
+// Client handshake through the wrapper, then a swap onto vintage B that has
+// started (its child is spawned) but not finished its handshake.
+async function handshakeThenStartSwap(): Promise<void> {
+    initialize();
+    await waitFor((m) => m.id === 0, 'initialize result');
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    publishMarker(VINTAGE_B);
+    await waitForStderr(`Hot-swap: ${VINTAGE_A}`);
 }
 
 function publishMarker(vintage: string): void {
@@ -173,4 +213,58 @@ describe('mcp-wrapper hot-swap schema delivery (#3713 v5.1)', () => {
         await waitFor((m) => m.id === 2, 'second tools/list');
         expect(received.some((m) => m.method === 'notifications/tools/list_changed')).toBe(false);
     }, 30_000);
+
+    it('answers a cache-served tools/list once when a swap kills the child before it answers (F2)', async () => {
+        // Vintage A never answers tools/list: only the persisted cache answers id 1,
+        // and the child still holds the request when the swap kills it.
+        fs.writeFileSync(path.join(tmpRoot, VINTAGE_A, 'silent-tools-list'), '', 'utf-8');
+        initialize();
+        await waitFor((m) => m.id === 0, 'initialize result');
+        send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+        send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+        expect(toolNames(await waitFor((m) => m.id === 1, 'tools/list from cache'))).toEqual(['tool_from_a']);
+        // Positive control: a request the cache did NOT answer is lost with the child
+        // (the marker's 500 ms swap debounce leaves it ample time to reach the child).
+        send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+
+        publishMarker(VINTAGE_B);
+        // doSwap fails lost ids synchronously, before the new child's handshake:
+        // once list_changed is out, any second reply to id 1 is out too.
+        await waitFor((m) => m.method === 'notifications/tools/list_changed', 'notifications/tools/list_changed');
+        const lost = received.filter((m) => m.id === 2);
+        expect(lost).toHaveLength(1);
+        expect(lost[0].error.code).toBe(-32603);
+        expect(received.filter((m) => m.id === 1)).toHaveLength(1);
+    }, 45_000);
+
+    // NanoClaw reserve 2 on #1198: the reset lives in replayHandshakeAndDrain, shared
+    // by the three respawn paths, but only the nominal swap was exercised. A child
+    // that dies after serving a tools/list leaves that list cached; the respawned
+    // child's answer must not be replaced with it.
+    it('forgets the dead child tool list on the retry respawn', async () => {
+        fs.writeFileSync(path.join(tmpRoot, VINTAGE_B, 'hang-initialize-once'), '', 'utf-8');
+        await handshakeThenStartSwap();
+        send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+        expect(toolNames(await waitFor((m) => m.id === 1, 'tools/list from the hung child'))).toEqual(['tool_from_b_hung']);
+
+        // The handshake watchdog (20 s) retries the same vintage; its second spawn answers.
+        await waitFor((m) => m.method === 'notifications/tools/list_changed', 'list_changed after retry', 40_000);
+        expect(stderrTail).toContain('Hot-swap retry 1/2');
+        send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+        expect(toolNames(await waitFor((m) => m.id === 2, 'tools/list after retry'))).toEqual(['tool_from_b']);
+    }, 60_000);
+
+    it('forgets the dead child tool list on the fallback respawn', async () => {
+        fs.writeFileSync(path.join(tmpRoot, VINTAGE_B, 'hang-initialize'), '', 'utf-8');
+        await handshakeThenStartSwap();
+        // Without a valid marker the watchdog skips the retries and falls back to A.
+        fs.unlinkSync(path.join(tmpRoot, 'build-current'));
+        send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+        expect(toolNames(await waitFor((m) => m.id === 1, 'tools/list from the hung child'))).toEqual(['tool_from_b_hung']);
+
+        await waitFor((m) => m.method === 'notifications/tools/list_changed', 'list_changed after fallback', 40_000);
+        expect(stderrTail).toContain(`falling back to ${VINTAGE_A}`);
+        send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+        expect(toolNames(await waitFor((m) => m.id === 2, 'tools/list after fallback'))).toEqual(['tool_from_a']);
+    }, 60_000);
 });
