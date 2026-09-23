@@ -2580,6 +2580,34 @@ async def run_conversation(
         options=opts,
         conversation_spec=parsed_conversation_spec,
     )
+
+    # #1587 (conversations): a thinking model that exhausts its budget (observed
+    # glm-5.3, 4096-token thinking budget) returns a valid assistant message
+    # with empty content — the group chat completes "successfully" with
+    # response="" and empty steps. Mirror the agent-facing guards (#1182/#1192):
+    # surface an error, never a successful-looking empty answer.
+    if (
+        isinstance(result, dict)
+        and "error" not in result
+        and not str(result.get("response", "")).strip()
+    ):
+        steps = result.get("steps", [])
+        empty_steps = sum(
+            1
+            for s in steps
+            if isinstance(s, dict)
+            and not str(s.get("content", s.get("response", "")) or "").strip()
+        )
+        payload = {k: v for k, v in result.items() if k != "response"}
+        return json.dumps(
+            {
+                "error": "empty model response — conversation produced no output",
+                **payload,
+                "empty_steps": f"{empty_steps}/{len(steps)}",
+            },
+            ensure_ascii=False,
+        )
+
     return json.dumps(result, ensure_ascii=False)
 
 
