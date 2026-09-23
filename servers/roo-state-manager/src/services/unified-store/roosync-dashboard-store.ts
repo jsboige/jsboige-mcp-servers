@@ -192,6 +192,73 @@ export async function readDashboardFromPg(key: string): Promise<Dashboard | null
 }
 
 /**
+ * #3782 guard (a) — ungated journal probe for the append-on-absent-file guard.
+ *
+ * Unlike readDashboardFromPg, this probe is NOT behind the
+ * UNIFIED_STORE_DASHBOARD_READ_PG gate: that gate decides which surface
+ * serves READS (the T0 switchover, #3151/#3230), while the guard is an
+ * internal decision input on the append path — a path that already talks to
+ * PG through the dual-write. Bounded by a short race timeout (GO #3782
+ * condition 1: a hung pool must never block the append); on any failure the
+ * answer is 'unreachable' and the caller keeps today's behaviour.
+ *
+ * Recency threshold per the #3782 design: the journal qualifies as
+ * "disappeared" (DriveFS conflict in progress) when the status is non-empty
+ * OR at least one journal row is less than 6 h old. Anything else with a row
+ * is 'stale' (observable, normal creation); no row is 'empty' (genuinely new
+ * key, silent normal creation); no PG story on this host is 'pg-off'.
+ */
+export type GuardAProbe =
+  | { kind: 'pg-off' }
+  | { kind: 'unreachable' }
+  | { kind: 'empty' }
+  | { kind: 'stale'; rows: number }
+  | { kind: 'disappeared'; dashboard: Dashboard; rows: number };
+
+const GUARD_A_PROBE_TIMEOUT_MS = 3000;
+const GUARD_A_RECENCY_MS = 6 * 3600 * 1000;
+
+export async function probeDashboardJournalForHydration(key: string): Promise<GuardAProbe> {
+  if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+    return { kind: 'pg-off' };
+  }
+  const reader = getUnifiedStoreReader();
+  if (reader.isNull()) return { kind: 'pg-off' };
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => { timedOut = true; resolve(null); }, GUARD_A_PROBE_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([reader.getRooSyncDashboard(key), timeout]);
+    if (result === null && timedOut) return { kind: 'unreachable' };
+    if (!result) return { kind: 'empty' };
+    const statusNonEmpty = (result.dashboard.content ?? '').trim().length > 0;
+    const recencyCutoff = Date.now() - GUARD_A_RECENCY_MS;
+    const hasRecentMessage = result.messages.some(
+      (m) => new Date(m.created_at).getTime() > recencyCutoff
+    );
+    if (statusNonEmpty || hasRecentMessage) {
+      return {
+        kind: 'disappeared',
+        dashboard: mapRowsToDashboard(result.dashboard, result.messages),
+        rows: result.messages.length,
+      };
+    }
+    return { kind: 'stale', rows: result.messages.length };
+  } catch (error) {
+    logger.warn("[guard-a] journal probe failed — append keeps today's behaviour", {
+      key,
+      error: String(error),
+    });
+    return { kind: 'unreachable' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+
+/**
  * Dual-write a dashboard to PG (sync semantics: row upsert + journal upsert —
  * see PgUnifiedStoreWriter.syncRooSyncDashboard).
  *

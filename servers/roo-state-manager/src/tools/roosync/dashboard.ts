@@ -62,6 +62,7 @@ import {
   getDashboardPgReader,
   dualWriteDashboardSyncChecked,
   dualWriteDashboardDeleteChecked,
+  probeDashboardJournalForHydration,
 } from '../../services/unified-store/roosync-dashboard-store.js';
 // #3482-follow: the fork predicate + root recovery live in the reconcile
 // module, which owns the "fork by construction" policy. Sharing them keeps the
@@ -1604,6 +1605,55 @@ function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
 }
 
 /**
+ * Sérialise un Dashboard en markdown sur disque (frontmatter + Status +
+ * Intercom). Extrait de writeDashboardFile pour #3782 garde (a) : le
+ * write-back d'hydratation produit des fichiers byte-identiques via UN seul
+ * sérialiseur — deux constructeurs dériveraient.
+ */
+function buildDashboardMarkdown(dashboard: Dashboard): string {
+  const frontmatter: DashboardFrontmatter = {
+    type: dashboard.type,
+    lastModified: dashboard.lastModified,
+    lastModifiedBy: dashboard.lastModifiedBy,
+    totalMessages: dashboard.intercom.totalMessages,
+    lastCondensedAt: dashboard.intercom.lastCondensedAt
+  };
+
+  const yamlFrontmatter = yaml.dump(frontmatter);
+  const statusSection = dashboard.status.markdown || '*Aucun contenu.*';
+
+  // FIX #1123: Escape "### [" at line start in content to prevent false message splits
+  const escapeContent = (text: string): string =>
+    text.replace(/^### \[/gm, '\\#\\#\\# [');
+  const intercomSection = dashboard.intercom.messages.length > 0
+    ? dashboard.intercom.messages.map(msg => {
+        // v3 (#1363): persist message id on a dedicated line below header
+        // #1956: persist reply_to and acknowledged_at metadata
+        let metaLines = `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]`;
+        if (msg.reply_to) metaLines += `\n[reply-to: ${msg.reply_to}]`;
+        if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
+          const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
+          metaLines += `\n[ack: ${ackStr}]`;
+        }
+        return `${metaLines}\n\n${escapeContent(msg.content)}`;
+      }).join('\n\n---\n\n')
+    : '*Aucun message.*';
+
+  return `---
+${yamlFrontmatter.trim()}
+---
+
+## Status
+
+${statusSection}
+
+## Intercom (${dashboard.intercom.messages.length} messages)
+
+${intercomSection}
+`;
+}
+
+/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(
@@ -1622,49 +1672,7 @@ async function writeDashboardFile(
   const filePath = getDashboardPath(key);
   const tmpPath = `${filePath}.tmp`;
 
-  // Construire le frontmatter YAML
-  const frontmatter: DashboardFrontmatter = {
-    type: dashboard.type,
-    lastModified: dashboard.lastModified,
-    lastModifiedBy: dashboard.lastModifiedBy,
-    totalMessages: dashboard.intercom.totalMessages,
-    lastCondensedAt: dashboard.intercom.lastCondensedAt
-  };
-
-  // Construire le contenu markdown
-  const yamlFrontmatter = yaml.dump(frontmatter);
-  const statusSection = dashboard.status.markdown || '*Aucun contenu.*';
-
-  // Construire la section intercom (messages en markdown)
-  // FIX #1123: Escape "### [" at line start in content to prevent false message splits
-  const escapeContent = (text: string): string =>
-    text.replace(/^### \[/gm, '\\#\\#\\# [');
-  const intercomSection = dashboard.intercom.messages.length > 0
-    ? dashboard.intercom.messages.map(msg => {
-        // v3 (#1363): persist message id on a dedicated line below header
-        // #1956: persist reply_to and acknowledged_at metadata
-        let metaLines = `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]`;
-        if (msg.reply_to) metaLines += `\n[reply-to: ${msg.reply_to}]`;
-        if (msg.acknowledged_at && Object.keys(msg.acknowledged_at).length > 0) {
-          const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
-          metaLines += `\n[ack: ${ackStr}]`;
-        }
-        return `${metaLines}\n\n${escapeContent(msg.content)}`;
-      }).join('\n\n---\n\n')
-    : '*Aucun message.*';
-
-  const content = `---
-${yamlFrontmatter.trim()}
----
-
-## Status
-
-${statusSection}
-
-## Intercom (${dashboard.intercom.messages.length} messages)
-
-${intercomSection}
-`;
+  const content = buildDashboardMarkdown(dashboard);
 
   const writeStartedAtMs = Date.now();
   await fs.writeFile(tmpPath, content, 'utf8');
@@ -4487,6 +4495,7 @@ async function handleAppend(
   }
 
   let dashboard = await readDashboardFile(key);
+  let guardAWarning: string | undefined;
   if (!dashboard) {
     if (!createIfNotExists) {
       return {
@@ -4498,7 +4507,79 @@ async function handleAppend(
         message: `Dashboard '${key}' introuvable et createIfNotExists=false`
       };
     }
-    dashboard = createEmptyDashboard(args.type!, key, author);
+    // #3782 garde (a2) — un fichier absent n'est pas forcément une clé neuve.
+    // Le createIfNotExists inconditionnel recréait une coquille vide sur une
+    // clé en cours de disparition DriveFS alors que le journal PG portait tout
+    // le contenu (incident 23/09 00:54Z : workspace-CoursIA recréé coquille,
+    // 9 762 msgs vivants en PG). Avant de créer : sonder le journal PG
+    // (bornée, SANS la porte READ_PG — c'est une entrée de décision interne du
+    // chemin append, qui parle déjà à PG via le dual-write).
+    const probe = await probeDashboardJournalForHydration(key);
+    if (probe.kind === 'disappeared') {
+      try {
+        ensureStoreSubdir(getSharedStatePath(), 'dashboards');
+        await fs.writeFile(getDashboardPath(key), buildDashboardMarkdown(probe.dashboard), {
+          encoding: 'utf8',
+          flag: 'wx', // O_EXCL — ne jamais écraser un fichier qui revient
+        });
+        dashboard = probe.dashboard;
+        guardAWarning = `[guard-a #3782] clé '${key}' absente du disque mais vivante en PG (${probe.rows} messages) — réinstallée par hydratation O_EXCL avant l'append (disparition DriveFS probable)`;
+        logger.warn('[guard-a] hydratation avant append — clé disparue du disque, journal PG réinstallé', {
+          key,
+          rehydratedRows: probe.rows,
+          case: 'disappeared',
+        });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') {
+          // GO #3782 condition 2 : le fichier est réapparu entre le contrôle
+          // d'absence et l'écriture (DriveFS résout son conflit) — l'append
+          // va au fichier qui est revenu, jamais à une coquille.
+          const back = await readDashboardFile(key);
+          if (back) {
+            dashboard = back;
+            guardAWarning = `[guard-a #3782] course EEXIST sur '${key}' — fichier réapparu pendant l'hydratation, append appliqué au fichier de retour`;
+            logger.warn('[guard-a] course EEXIST — fichier réapparu, append sur le fichier de retour', {
+              key,
+              case: 'eexist-race',
+            });
+          } else {
+            dashboard = createEmptyDashboard(args.type!, key, author);
+            guardAWarning = `[guard-a #3782] course EEXIST sur '${key}' mais relecture introuvable — création normale, cas à observer`;
+            logger.warn('[guard-a] course EEXIST puis relecture absente — création normale', {
+              key,
+              case: 'eexist-race-no-reread',
+            });
+          }
+        } else {
+          dashboard = createEmptyDashboard(args.type!, key, author);
+          guardAWarning = `[guard-a #3782] échec d'écriture d'hydratation sur '${key}' (${(err as Error).message}) — création normale, comportement inchangé`;
+          logger.warn("[guard-a] écriture d'hydratation échouée — création normale", {
+            key,
+            case: 'hydration-write-failed',
+            error: String(err),
+          });
+        }
+      }
+    } else if (probe.kind === 'unreachable') {
+      dashboard = createEmptyDashboard(args.type!, key, author);
+      guardAWarning = `[guard-a #3782] PG injoignable pendant la sonde sur '${key}' — comportement actuel conservé (création normale)`;
+      logger.warn('[guard-a] sonde PG injoignable — création normale, canal non bloqué', {
+        key,
+        case: 'pg-unreachable',
+      });
+    } else if (probe.kind === 'stale') {
+      dashboard = createEmptyDashboard(args.type!, key, author);
+      guardAWarning = `[guard-a #3782] PG porte ${probe.rows} messages non récents pour '${key}' — création normale (seuil design), à observer`;
+      logger.warn('[guard-a] journal PG présent mais non récent — création normale (seuil design)', {
+        key,
+        rows: probe.rows,
+        case: 'pg-stale',
+      });
+    } else {
+      // pg-off / empty : clé réellement neuve — création normale, inchangée,
+      // sans bruit (la création légitime est le cas courant).
+      dashboard = createEmptyDashboard(args.type!, key, author);
+    }
   }
 
   // Append-first architecture: the message is persisted to disk BEFORE any
@@ -4982,6 +5063,7 @@ async function handleAppend(
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
+    warning: guardAWarning,
     writeVerification: writeVerify.forkSuspected ? writeVerify : undefined,
     durationBreakdown: {
       totalMs,

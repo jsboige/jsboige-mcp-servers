@@ -24,15 +24,17 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Dashboard } from '../dashboard-schemas.js';
 
-const { mockReadDashboardFromPg, mockDualWriteDashboardSync, mockDualWriteDashboardDelete } =
+const { mockReadDashboardFromPg, mockProbeHydration, mockDualWriteDashboardSync, mockDualWriteDashboardDelete } =
   vi.hoisted(() => ({
     mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
+    mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
     mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
     mockDualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
   }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   readDashboardFromPg: mockReadDashboardFromPg,
+  probeDashboardJournalForHydration: mockProbeHydration,
   dualWriteDashboardSync: mockDualWriteDashboardSync,
   dualWriteDashboardDelete: mockDualWriteDashboardDelete,
 }));
@@ -62,6 +64,7 @@ describe('condensation anchor × PG divergence (#3151)', () => {
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
     mockReadDashboardFromPg.mockResolvedValue(null);
     mockDualWriteDashboardSync.mockClear();
+    mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
   });
 
   afterEach(async () => {
