@@ -1630,16 +1630,37 @@ async function withRosterCheck(
 }
 
 /**
- * Check la cohérence du ROO_FLEET_ROSTER local contre les machines connues du dashboard (#2570).
+ * Machines du registre partagé `.machine-registry.json`, triées — `null` si absent ou illisible.
+ * Le registre est écrit par chaque machine à son enregistrement ; c'est la référence vivante.
+ */
+async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ machines: string[]; updated?: string } | null> {
+  if (!sharedPath) return null;
+  const registryPath = join(sharedPath, '.machine-registry.json');
+  try {
+    if (!existsSync(registryPath)) return null;
+    const data = JSON.parse(await fsPromises.readFile(registryPath, 'utf-8'));
+    const machines = Object.keys(data?.machines || {}).sort();
+    return machines.length > 0 ? { machines, updated: data?.lastUpdated } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check la cohérence du ROO_FLEET_ROSTER local contre les machines connues de la flotte (#2570).
  *
  * Le roster (env var) drive le hash-based task-space partitioning (task-partition.ts).
  * Il n'a aucune source-of-truth dans le repo ni dans les inventory snapshots GDrive,
  * donc le drift entre machines passe silencieusement (certaines 5-machine, d'autres unset).
- * Le dashboard partagé est la seule source canonique des machines vivantes de la flotte.
+ *
+ * Référence : le registre `.machine-registry.json` (vivant) ; le dashboard partagé seulement
+ * s'il manque. Le dashboard est un instantané historique : le 16/09, figé au 06/03 avec
+ * 6 machines, il faisait prescrire le RETRAIT de myia-po-2027, machine légitime.
+ * Une machine du roster absente de la référence n'est donc jamais « à retirer » : à vérifier.
  *
  * @param config Config RooSync (contient fleetRoster parsé + machineId)
  * @param service RooSyncService (pour loadDashboard)
- * @returns Diff(s) si le roster local diverge des machines du dashboard, [] sinon
+ * @returns Diff(s) si le roster local diverge des machines de la référence flotte (registre, sinon dashboard), [] sinon
  */
 async function checkRosterConsistency(
   config: any,
@@ -1661,14 +1682,22 @@ async function checkRosterConsistency(
 
   const localRoster: string[] | null = config?.fleetRoster ?? null;
 
-  // Charger les machines connues du dashboard (source canonique flotte)
+  // Référence flotte : registre vivant d'abord, dashboard (instantané) en repli
   let dashboardMachines: string[] = [];
-  try {
-    const dashboard = await service.loadDashboard();
-    dashboardMachines = Object.keys(dashboard.machines || {}).sort();
-  } catch {
-    // Dashboard injoignable (GDrive offline) — on ne peut pas comparer, skip silencieux
-    return diffs;
+  let refLabel: string;
+  const registry = await loadRegistryMachines(config?.sharedPath);
+  if (registry) {
+    dashboardMachines = registry.machines;
+    refLabel = `registre${registry.updated ? ` (maj ${registry.updated})` : ''}`;
+  } else {
+    try {
+      const dashboard = await service.loadDashboard();
+      dashboardMachines = Object.keys(dashboard.machines || {}).sort();
+      refLabel = `dashboard${dashboard?.lastUpdate ? ` (instantané ${dashboard.lastUpdate})` : ''}`;
+    } catch {
+      // Dashboard injoignable (GDrive offline) — on ne peut pas comparer, skip silencieux
+      return diffs;
+    }
   }
 
   if (dashboardMachines.length === 0) {
@@ -1683,7 +1712,7 @@ async function checkRosterConsistency(
       category: 'environment',
       severity: 'WARNING',
       path: 'env.ROO_FLEET_ROSTER',
-      description: `ROO_FLEET_ROSTER non défini — partitioning DÉSACTIVÉ. Cette machine indexe la totalité du task-space (pas de shard filtering), tandis que le dashboard voit ${dashboardMachines.length} machines (${dashboardMachines.join(', ')}). Contributeur de redondance d'indexation silencieuse (#2570).`,
+      description: `ROO_FLEET_ROSTER non défini — partitioning DÉSACTIVÉ. Cette machine indexe la totalité du task-space (pas de shard filtering), tandis que le ${refLabel} liste ${dashboardMachines.length} machines (${dashboardMachines.join(', ')}). Contributeur de redondance d'indexation silencieuse (#2570).`,
       action: `Définir ROO_FLEET_ROSTER="${dashboardMachines.join(',')}" dans ~/.claude.json mcpServers.roo-state-manager.env, puis restart MCP + roosync_indexing(rebuild)`
     });
     return diffs;
@@ -1692,19 +1721,32 @@ async function checkRosterConsistency(
   const rosterSet = new Set(localRoster);
   const rosterSorted = [...localRoster].sort();
 
+  // Jamais de retrait prescrit sur la foi de la seule référence : une machine absente
+  // de la référence peut être la référence périmée, pas la machine (#2570, 16/09).
+  const rosterAction = (missingFromRoster: string[], extraInRoster: string[]): string => {
+    const parts: string[] = [];
+    if (missingFromRoster.length) {
+      parts.push(`Ajouter ${missingFromRoster.join(', ')} au ROO_FLEET_ROSTER de TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts)`);
+    }
+    if (extraInRoster.length) {
+      parts.push(`NE PAS retirer ${extraInRoster.join(', ')} sur la seule foi du ${refLabel} : confirmer d'abord que la machine a quitté la flotte (ou qu'elle manque seulement à la référence)`);
+    }
+    return parts.join(' — ');
+  };
+
   // Mismatch de taille (5 vs 6 décale ~tous les buckets — hash % size)
   if (rosterSorted.length !== dashboardMachines.length) {
     const missingFromRoster = dashboardMachines.filter(m => !rosterSet.has(m));
     const extraInRoster = rosterSorted.filter(m => !dashSet.has(m));
-    const detail: string[] = [`roster=${rosterSorted.length} (${rosterSorted.join(', ')})`, `dashboard=${dashboardMachines.length} (${dashboardMachines.join(', ')})`];
+    const detail: string[] = [`roster=${rosterSorted.length} (${rosterSorted.join(', ')})`, `${refLabel}=${dashboardMachines.length} (${dashboardMachines.join(', ')})`];
     if (missingFromRoster.length) detail.push(`manquantes du roster: ${missingFromRoster.join(', ')}`);
-    if (extraInRoster.length) detail.push(`absentes du dashboard: ${extraInRoster.join(', ')}`);
+    if (extraInRoster.length) detail.push(`absentes de la référence: ${extraInRoster.join(', ')}`);
     diffs.push({
       category: 'environment',
       severity: 'CRITICAL',
       path: 'env.ROO_FLEET_ROSTER',
       description: `Mismatch taille ROO_FLEET_ROSTER — partition drift. ${detail.join(' | ')}. Un écart de taille (hash % roster.length) décale ~TOUS les buckets, pas seulement le shard de la machine manquante → recall/precision dégradés silencieusement (#2570).`,
-      action: `Aligner sur le roster canonique "${dashboardMachines.join(',')}" sur TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts)`
+      action: rosterAction(missingFromRoster, extraInRoster)
     });
     return diffs;
   }
@@ -1718,8 +1760,8 @@ async function checkRosterConsistency(
       category: 'environment',
       severity: 'CRITICAL',
       path: 'env.ROO_FLEET_ROSTER',
-      description: `Mismatch contenu ROO_FLEET_ROSTER (même taille, membres différents). roster=${rosterSorted.join(', ')} vs dashboard=${dashboardMachines.join(', ')}. Manquantes du roster: ${missingFromRoster.join(',') || 'none'}. Absentes du dashboard: ${extraInRoster.join(',') || 'none'}. → partition drift (#2570).`,
-      action: `Aligner sur le roster canonique "${dashboardMachines.join(',')}"`
+      description: `Mismatch contenu ROO_FLEET_ROSTER (même taille, membres différents). roster=${rosterSorted.join(', ')} vs ${refLabel}=${dashboardMachines.join(', ')}. Manquantes du roster: ${missingFromRoster.join(',') || 'none'}. Absentes de la référence: ${extraInRoster.join(',') || 'none'}. → partition drift (#2570).`,
+      action: rosterAction(missingFromRoster, extraInRoster)
     });
     return diffs;
   }
@@ -1729,7 +1771,7 @@ async function checkRosterConsistency(
     category: 'environment',
     severity: 'INFO',
     path: 'env.ROO_FLEET_ROSTER',
-    description: `ROO_FLEET_ROSTER consistant avec le dashboard flotte (${rosterSorted.length} machines: ${rosterSorted.join(', ')}). Partitioning sain.`
+    description: `ROO_FLEET_ROSTER consistant avec le ${refLabel} (${rosterSorted.length} machines: ${rosterSorted.join(', ')}). Partitioning sain.`
   });
 
   return diffs;
