@@ -376,6 +376,10 @@ function forwardClientLine(trimmed) {
                 const response = JSON.parse(JSON.stringify(persistedCache));
                 response.id = msg.id;
                 process.stdout.write(JSON.stringify(response) + '\n');
+                // The client has its answer: the id must not stay errorable, or a
+                // swap killing the child before it answers would send a second,
+                // -32603 reply for the same id (F2, #3713 follow-up).
+                inFlight.delete(msg.id);
                 answeredFromCache = true;
                 console.error('[MCP-WRAPPER] ⚡ Answered tools/list from persisted cache (<1ms)');
             }
