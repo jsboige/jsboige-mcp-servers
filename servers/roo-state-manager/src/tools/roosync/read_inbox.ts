@@ -138,8 +138,8 @@ ${args.status ? `**Filtre :** ${args.status}` : '**Filtre :** tous les messages'
     result += ` | 🆕 ${unreadCount} non-lu${unreadCount > 1 ? 's' : ''}`;
     result += ` | ✅ ${readCount} lu${readCount > 1 ? 's' : ''}\n\n`;
     
-    result += `| ID | De | Sujet | Priorité | Status | Date |\n`;
-    result += `|----|----|----|----------|--------|------|\n`;
+    result += `| ID | De | À | Sujet | Priorité | Status | Date |\n`;
+    result += `|----|----|----|----|----------|--------|------|\n`;
 
     for (const msg of messages) {
       const statusIcon = getStatusIcon(msg.status);
@@ -148,13 +148,14 @@ ${args.status ? `**Filtre :** ${args.status}` : '**Filtre :** tous les messages'
       // BUG FIX: Afficher l'ID complet au lieu de le tronquer (critique pour roosync_get_message)
       const fullId = msg.id;
       
-      // Tronquer le sujet si trop long
-      const maxSubjectLength = 25;
+      // Tronquer le sujet si trop long — #3174: plafond 25→120 (le préfixe
+      // "Worker Report - " seul en consommait 16)
+      const maxSubjectLength = 120;
       const truncatedSubject = msg.subject.length > maxSubjectLength
         ? msg.subject.substring(0, maxSubjectLength) + '...'
         : msg.subject;
 
-      result += `| ${fullId} | ${msg.from} | ${truncatedSubject} | ${priorityIcon} ${msg.priority} | ${statusIcon} ${msg.status} | ${date} |\n`;
+      result += `| ${fullId} | ${msg.from} | ${msg.to} | ${truncatedSubject} | ${priorityIcon} ${msg.priority} | ${statusIcon} ${msg.status} | ${date} |\n`;
     }
 
     result += `\n---\n\n`;

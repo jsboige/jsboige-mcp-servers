@@ -205,6 +205,35 @@ describe.sequential('roosyncRead', () => {
       expect((result.content[0] as any).text).toContain('2 message');
     });
 
+    // #3174: the list must distinguish what is addressed to me from what only
+    // passes through — without a recipient column, that costs one
+    // action:"message" call per row. The 25-char subject cap gutted anything
+    // behind a constant prefix ("Worker Report - " is 16 chars of the budget).
+    test('inbox table shows who each message is addressed to (#3174)', async () => {
+      await messageManager.sendMessage('sender-1', 'test-machine', 'Direct hit', 'B1', 'LOW');
+      await messageManager.sendMessage('sender-2', 'all', 'Broadcast wave', 'B2', 'LOW');
+      const longSubject = 'Worker Report - po-2027 checkpoint deploy finished';
+      await messageManager.sendMessage('sender-3', 'test-machine', longSubject, 'B3', 'HIGH');
+
+      const result = await roosyncRead({ mode: 'inbox' });
+      const text = (result.content[0] as any).text as string;
+
+      expect(text).toContain('| ID | De | À | Sujet | Priorité | Status | Date |');
+
+      const rows = text.split('\n');
+      const directRow = rows.find(l => l.includes('Direct hit'));
+      expect(directRow).toBeDefined();
+      expect(directRow).toContain('test-machine');
+      const broadcastRow = rows.find(l => l.includes('Broadcast wave'));
+      expect(broadcastRow).toBeDefined();
+      expect(broadcastRow).toContain('all');
+      // The table row itself carries the discriminating tail — the preview
+      // block would show it even with the row truncated.
+      const longRow = rows.find(l => l.startsWith('|') && l.includes('Worker Report'));
+      expect(longRow).toBeDefined();
+      expect(longRow).toContain('checkpoint deploy finished');
+    });
+
     test('should filter by status unread', async () => {
       // Créer un message et le marquer comme lu
       const msg = await messageManager.sendMessage(
