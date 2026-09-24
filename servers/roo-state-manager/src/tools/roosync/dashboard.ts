@@ -2861,6 +2861,253 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
 }
 
 /**
+ * #3803 (règle user RX38, 24/09) : réconciliation déterministe des contradictions
+ * détectées par detectStatusContradictions. Pour une entité donnée, quand TOUTES
+ * les lignes contradictoires portent un horodatage comparable, le DERNIER ÉTAT
+ * DATÉ gagne et les lignes plus anciennes sont retirées. Sans horodatage comparable
+ * (lignes non datées, précisions hétérogènes, égalité stricte) : RIEN n'est effacé —
+ * l'entité reste non réconciliée et le marqueur #1502 continue d'être émis.
+ *
+ * Sémantique tout-ou-rien par entité : une seule ligne non datée parmi les
+ * participantes bloque la réconciliation (on ne fond jamais partiellement).
+ * La polarité ne décide jamais seule : un état négatif plus récent gagne contre
+ * un état positif plus ancien (c'est la date qui tranche, pas le signe).
+ */
+export interface LineTimestamp {
+  /** Minuit UTC du jour porté par l'horodatage. */
+  dayMs: number;
+  /** Vrai si l'horodatage porte une heure (précision minute). */
+  hasTime: boolean;
+  /** Minutes depuis minuit (uniquement si hasTime). */
+  timeMin?: number;
+}
+
+export interface ReconciledEntity {
+  entity: string;
+  keptLine: string;
+  keptTimestamp: string;
+  droppedLines: Array<{ line: string; timestamp: string }>;
+}
+
+export interface StatusReconciliation {
+  status: string;
+  reconciled: ReconciledEntity[];
+}
+
+interface TsCandidate {
+  start: number;
+  end: number;
+  priority: number; // 0 = ISO date+heure, 1 = FR date+heure, 2 = ISO date, 3 = FR date, 4 = heure seule
+  ts: LineTimestamp;
+}
+
+function isValidDateParts(y: number, mo: number, d: number): boolean {
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && y >= 2000 && y <= 2100;
+}
+
+function isValidTimeParts(h: number, mi: number): boolean {
+  return h >= 0 && h <= 23 && mi >= 0 && mi <= 59;
+}
+
+/**
+ * Résout le jour d'une date FR « JJ/MM » : année = celle de la date de référence
+ * du status (header « État au »), avec retour d'un an si la date résolue tombe
+ * plus de ~6 mois dans le futur (31/12 mentionné dans un status de janvier).
+ */
+function resolveFrDay(day: number, month: number, refDayMs: number | null): number | null {
+  const ref = refDayMs ?? Date.now();
+  const refYear = new Date(ref).getUTCFullYear();
+  for (const year of [refYear, refYear - 1]) {
+    const ms = Date.UTC(year, month - 1, day);
+    if (ms <= ref + 183 * 86400000) return ms;
+  }
+  return null;
+}
+
+/**
+ * Extrait l'horodatage « pertinent » d'une ligne : parmi les candidats valides
+ * (dates ISO ou FR, heure seule résolue par la date de référence), on garde
+ * celui le plus proche d'un mot-clé d'état — l'heure citée est celle de l'état,
+ * pas d'un fait adjacent de la même ligne. Déterministe.
+ */
+export function extractLineTimestamp(
+  line: string,
+  keywords: string[],
+  refDayMs: number | null
+): LineTimestamp | null {
+  const candidates: TsCandidate[] = [];
+  const push = (matches: IterableIterator<RegExpMatchArray>, priority: number, parse: (g: string[]) => LineTimestamp | null) => {
+    for (const m of matches) {
+      const ts = parse(m.slice(1));
+      if (ts === null) continue; // Champs invalides (ex. « 13/14 ») : le candidat n'existe pas
+      candidates.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, priority, ts });
+    }
+  };
+
+  push(line.matchAll(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/g), 0, g => {
+    const [y, mo, d, h, mi] = g.map(Number);
+    if (!isValidDateParts(y, mo, d) || !isValidTimeParts(h, mi)) return null;
+    return { dayMs: Date.UTC(y, mo - 1, d), hasTime: true, timeMin: h * 60 + mi };
+  });
+  push(line.matchAll(/(\d{1,2})\/(\d{1,2})\s+(?:à\s+)?(\d{1,2})[h:](\d{2})/g), 1, g => {
+    const [d, mo, h, mi] = g.map(Number);
+    if (mo > 12 || d < 1 || d > 31 || !isValidTimeParts(h, mi)) return null;
+    const dayMs = resolveFrDay(d, mo, refDayMs);
+    return dayMs === null ? null : { dayMs, hasTime: true, timeMin: h * 60 + mi };
+  });
+  push(line.matchAll(/(\d{4})-(\d{2})-(\d{2})/g), 2, g => {
+    const [y, mo, d] = g.map(Number);
+    if (!isValidDateParts(y, mo, d)) return null;
+    return { dayMs: Date.UTC(y, mo - 1, d), hasTime: false };
+  });
+  push(line.matchAll(/(\d{1,2})\/(\d{1,2})/g), 3, g => {
+    const [d, mo] = g.map(Number);
+    if (mo > 12 || d < 1 || d > 31) return null;
+    const dayMs = resolveFrDay(d, mo, refDayMs);
+    return dayMs === null ? null : { dayMs, hasTime: false };
+  });
+  push(line.matchAll(/(\d{1,2})[h:](\d{2})/g), 4, g => {
+    const h = Number(g[0]);
+    const mi = Number(g[1]);
+    if (!isValidTimeParts(h, mi) || refDayMs === null) return null; // Heure sans jour de référence : non datable
+    return { dayMs: refDayMs, hasTime: true, timeMin: h * 60 + mi };
+  });
+
+  if (candidates.length === 0) return null;
+
+  // Un candidat chevauchant un candidat de priorité supérieure est un fragment
+  // du même horodatage (ex. « 14:16 » dans « 2026-09-24T14:16 ») : on l'écarte.
+  const kept: TsCandidate[] = [];
+  for (const c of candidates.sort((a, b) => a.priority - b.priority || a.start - b.start)) {
+    if (!kept.some(k => c.start < k.end && k.start < c.end)) kept.push(c);
+  }
+
+  const lower = line.toLowerCase();
+  const kwPositions: number[] = [];
+  for (const k of keywords) {
+    let from = 0;
+    for (;;) {
+      const p = lower.indexOf(k.toLowerCase(), from);
+      if (p === -1) break;
+      kwPositions.push(p);
+      from = p + k.length;
+    }
+  }
+  if (kwPositions.length === 0) return kept[0].ts;
+
+  // Dans un status français, l'horodatage de l'état SUIT le mot-clé
+  // (« opérationnel depuis 12:11Z », « DOWN (08:00Z) ») : on préfère le
+  // candidat situé APRÈS un mot-clé ; à défaut (mot-clé en fin de ligne),
+  // on retombe sur le plus proche.
+  const after = kept.filter(c => kwPositions.some(p => c.start > p));
+  const pool = after.length > 0 ? after : kept;
+  let best = pool[0];
+  let bestDist = Infinity;
+  for (const c of pool) {
+    for (const p of kwPositions) {
+      const dist = Math.min(Math.abs(c.start - p), Math.abs(c.end - p));
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = c;
+      }
+    }
+  }
+  return best.ts;
+}
+
+function formatTimestamp(ts: LineTimestamp): string {
+  const d = new Date(ts.dayMs);
+  const iso = d.toISOString().substring(0, 10);
+  if (!ts.hasTime) return iso;
+  const h = Math.floor((ts.timeMin ?? 0) / 60).toString().padStart(2, '0');
+  const mi = ((ts.timeMin ?? 0) % 60).toString().padStart(2, '0');
+  return `${iso} ${h}:${mi}`;
+}
+
+/**
+ * Réconcilie les contradictions d'un status : pour chaque entité contradictoire,
+ * si toutes ses lignes participantes portent un horodatage comparable ET qu'il
+ * existe un gagnant strictement unique (le plus récent), les lignes perdantes
+ * sont retirées. Retourne le status réécrit et la liste des réconciliations
+ * effectuées (piste d'audit pour le marqueur #3803).
+ */
+export function reconcileStatusContradictions(
+  status: string,
+  contradictions: Array<{ entity: string; conflictingStates: string[] }>
+): StatusReconciliation {
+  if (contradictions.length === 0) return { status, reconciled: [] };
+
+  const refDayMatch = status.match(/État au (\d{4})-(\d{2})-(\d{2})/);
+  const refDayMs = refDayMatch
+    ? Date.UTC(Number(refDayMatch[1]), Number(refDayMatch[2]) - 1, Number(refDayMatch[3]))
+    : null;
+
+  // Fusion des mots-clés par entité (une entité peut avoir une entrée par paire d'états)
+  const entityKeywords = new Map<string, string[]>();
+  for (const c of contradictions) {
+    const existing = entityKeywords.get(c.entity) ?? [];
+    for (const s of c.conflictingStates) {
+      if (!existing.includes(s)) existing.push(s);
+    }
+    entityKeywords.set(c.entity, existing);
+  }
+
+  const lines = status.split('\n');
+  const droppedIdx = new Set<number>();
+  const reconciled: ReconciledEntity[] = [];
+
+  const strictlyAfter = (a: LineTimestamp, b: LineTimestamp): boolean => {
+    if (a.dayMs !== b.dayMs) return a.dayMs > b.dayMs;
+    if (!a.hasTime || !b.hasTime) return false; // Précisions incomparables ou égalité
+    return (a.timeMin ?? 0) > (b.timeMin ?? 0);
+  };
+
+  // knownEntities liste les formes longues avant les courtes (« myia-po-2024 »
+  // avant « po-2024 ») : la réconciliation de la forme longue retire les lignes
+  // avant que la forme courte ne les revoie — un seul marqueur par incident.
+  for (const [entity, keywords] of entityKeywords) {
+    const entityLower = entity.toLowerCase();
+    const participating: Array<{ idx: number; ts: LineTimestamp }> = [];
+    let blocked = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (droppedIdx.has(i)) continue;
+      const lower = lines[i].toLowerCase();
+      if (!lower.includes(entityLower)) continue;
+      if (!keywords.some(k => lower.includes(k.toLowerCase()))) continue;
+      const ts = extractLineTimestamp(lines[i], keywords, refDayMs);
+      if (ts === null) {
+        blocked = true; // Tout-ou-rien : une ligne non datée bloque l'entité
+        break;
+      }
+      participating.push({ idx: i, ts });
+    }
+    if (blocked || participating.length < 2) continue;
+
+    const winners = participating.filter(w =>
+      participating.every(l => l === w || strictlyAfter(w.ts, l.ts))
+    );
+    if (winners.length !== 1) continue; // Pas de gagnant unique strict : rien n'est effacé
+
+    const winner = winners[0];
+    const droppedLines: ReconciledEntity['droppedLines'] = [];
+    for (const p of participating) {
+      if (p === winner) continue;
+      droppedIdx.add(p.idx);
+      droppedLines.push({ line: lines[p.idx].trim(), timestamp: formatTimestamp(p.ts) });
+    }
+    reconciled.push({
+      entity,
+      keptLine: lines[winner.idx].trim(),
+      keptTimestamp: formatTimestamp(winner.ts),
+      droppedLines,
+    });
+  }
+
+  if (droppedIdx.size === 0) return { status, reconciled: [] };
+  return { status: lines.filter((_, i) => !droppedIdx.has(i)).join('\n'), reconciled };
+}
+
+/**
  * #3771: Strip terminal-state assertions on PR/issue numbers that the LLM condensation
  * has NO source for. The LLM has no API access to GitHub, but infers merge/close states
  * from lexical cues (discussion of OTHER merges, mentions of "doublon", "pas de nouvelle
@@ -3562,8 +3809,33 @@ async function condenseIntercom(
   // each cycle's status carries exactly one fresh marker per conflicting
   // entity, and escalate to logger.error so the existing guard is no
   // longer a silent journal.
+  // #3803 (RX38, 24/09): après détection, réconciliation déterministe — quand
+  // toutes les lignes contradictoires d'une entité portent un horodatage
+  // comparable, le dernier état daté gagne et les lignes plus anciennes sont
+  // retirées. Sans horodatage comparable, RIEN n'est effacé et le marqueur
+  // #1502 reste émis (règle approuvée par le user, arbitrage RX38).
   newStatus = newStatus!.replace(/^[ \t]*<!-- #1502 CONTRADICTION:.*-->[ \t]*\n?/gm, '').trimEnd();
-  const detectedContradictions = detectStatusContradictions(newStatus!);
+  newStatus = newStatus!.replace(/^[ \t]*<!-- #3803 RECONCILED:.*-->[ \t]*\n?/gm, '').trimEnd();
+  let detectedContradictions = detectStatusContradictions(newStatus!);
+  let reconciledMarkers: string[] = [];
+  if (detectedContradictions.length > 0) {
+    const reconciliation = reconcileStatusContradictions(newStatus!, detectedContradictions);
+    if (reconciliation.reconciled.length > 0) {
+      logger.warn('Status contradictions reconciled — latest dated state wins (#3803)', {
+        key,
+        reconciled: reconciliation.reconciled.map(r =>
+          `${r.entity}: kept ${r.keptTimestamp}, dropped ${r.droppedLines.length} older line(s)`
+        ),
+      });
+      newStatus = reconciliation.status;
+      detectedContradictions = detectStatusContradictions(newStatus);
+      const snippet = (s: string) =>
+        s.replace(/\s+/g, ' ').slice(0, 100).replace(/--+/g, '—').replace(/>/g, '');
+      reconciledMarkers = reconciliation.reconciled.map(r =>
+        `<!-- #3803 RECONCILED: ${r.entity} kept «${snippet(r.keptLine)}» (${r.keptTimestamp}) — dropped ${r.droppedLines.length} older contradictory line(s): ${r.droppedLines.slice(0, 2).map(d => `«${snippet(d.line)}» (${d.timestamp})`).join(' ; ')} -->`
+      );
+    }
+  }
   if (detectedContradictions.length > 0) {
     logger.error('Status contradictions detected after LLM generation (#1502/#3329)', {
       contradictionCount: detectedContradictions.length,
@@ -3574,6 +3846,9 @@ async function condenseIntercom(
       `<!-- #1502 CONTRADICTION: ${c.entity} has conflicting states: ${c.conflictingStates.join(' vs ')} -->`
     ).join('\n');
     newStatus = newStatus + '\n\n' + warningLines;
+  }
+  if (reconciledMarkers.length > 0) {
+    newStatus = newStatus + '\n\n' + reconciledMarkers.join('\n');
   }
 
   const statusUpdated = true;
