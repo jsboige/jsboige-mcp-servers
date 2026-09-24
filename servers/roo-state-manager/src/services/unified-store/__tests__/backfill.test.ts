@@ -64,6 +64,22 @@ describe('runBackfill (#2581 volet 1)', () => {
     expect(writeFn).toHaveBeenCalledTimes(3);
   });
 
+  test('#2427 defect B: a resolved {ok:false} (swallowed DB failure) counts as error, not processed', async () => {
+    // dualWriteConversationToStore never rejects — it reports a swallowed failure via
+    // ok:false. runBackfill must read it, or a PG outage is silently reported as 0 errors.
+    const skeletons = [makeSkeleton('t1'), makeSkeleton('t2'), makeSkeleton('t3')];
+    const writeFn = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, error: 'db down' })
+      .mockResolvedValueOnce({ ok: true });
+
+    const result = await runBackfill(skeletons, writeFn);
+
+    expect(result).toEqual({ total: 3, processed: 2, skipped: 0, errors: 1 });
+    expect(writeFn).toHaveBeenCalledTimes(3);
+  });
+
   test('skips skeletons missing taskId (does not call writeFn)', async () => {
     const skeletons = [
       makeSkeleton('t1'),

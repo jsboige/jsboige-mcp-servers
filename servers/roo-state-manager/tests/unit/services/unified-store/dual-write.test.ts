@@ -80,11 +80,11 @@ describe('dualWriteConversationToStore (#692)', () => {
     expect(upsertConversationOnly.mock.calls[0][0].harness).toBe('roo');
   });
 
-  it('never throws when the writer rejects (fire-and-forget contract)', async () => {
+  it('never throws when the writer rejects (fire-and-forget contract); reports ok:false (#2427 defect B)', async () => {
     upsertConversationOnly.mockRejectedValueOnce(new Error('PG down'));
     await expect(
       dualWriteConversationToStore('t', makeSkeleton())
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ ok: false, error: 'PG down' });
   });
 
   it('never throws when the writer factory itself throws', async () => {
@@ -93,7 +93,7 @@ describe('dualWriteConversationToStore (#692)', () => {
     // by passing a skeleton that would make mapping throw (undefined metadata handled).
     await expect(
       dualWriteConversationToStore('t', { taskId: 't' } as ConversationSkeleton)
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ ok: true });
     // Writer still called with best-effort defaults
     expect(upsertConversationOnly).toHaveBeenCalled();
   });

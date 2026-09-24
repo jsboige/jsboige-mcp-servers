@@ -23,12 +23,18 @@
  */
 
 import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { DualWriteResult } from './dual-write.js';
 
-/** Injectable write function (signature matches dualWriteConversationToStore). */
+/**
+ * Injectable write function. Accepts either the legacy `Promise<void>` contract or the
+ * #2427 defect-B `Promise<DualWriteResult>` contract — runBackfill reads `result.ok`
+ * when present so a swallowed DB failure (dual-write never rejects) still counts as an
+ * error instead of being silently reported as processed.
+ */
 export type BackfillWriteFn = (
   taskId: string,
   skeleton: ConversationSkeleton,
-) => Promise<void>;
+) => Promise<void | DualWriteResult>;
 
 export interface BackfillOptions {
   /** Stop after N skeletons (testing / partial runs). Default: process all. */
@@ -38,11 +44,11 @@ export interface BackfillOptions {
 export interface BackfillResult {
   /** Total skeletons available before the limit is applied. */
   total: number;
-  /** Skeletons whose writeFn resolved (inspected by the caller's writer). */
+  /** Skeletons whose writeFn reported success (resolved with ok !== false). */
   processed: number;
   /** Skeletons skipped because they had no taskId. */
   skipped: number;
-  /** Skeletons whose writeFn rejected (counted; iteration continues). */
+  /** Skeletons whose writeFn failed (rejected, or resolved with ok === false). */
   errors: number;
 }
 
@@ -52,10 +58,12 @@ export interface BackfillResult {
  * Never throws on a single skeleton failure — the error is counted and iteration
  * continues, so a partial DB outage does not abort the whole backfill.
  *
+ * A failure is either a rejection (legacy writeFn contract) OR a resolved
+ * `DualWriteResult` with `ok === false` (#2427 defect B) — both count as `errors`.
+ *
  * @returns counts for reporting (the CLI prints them; ai-01 validates the real
  *          row delta via `SELECT count(*)` post-merge — that is the source of truth
- *          for rows actually persisted, since dualWriteConversationToStore is
- *          fire-and-forget by contract).
+ *          for rows actually persisted).
  */
 export async function runBackfill(
   skeletons: ConversationSkeleton[],
@@ -76,8 +84,14 @@ export async function runBackfill(
       continue;
     }
     try {
-      await writeFn(skeleton.taskId, skeleton);
-      processed++;
+      const outcome = await writeFn(skeleton.taskId, skeleton);
+      // #2427 defect B: dualWriteConversationToStore never rejects — it reports a
+      // swallowed DB failure via ok:false. Count it as an error, not as processed.
+      if (outcome && typeof outcome === 'object' && outcome.ok === false) {
+        errors++;
+      } else {
+        processed++;
+      }
     } catch {
       errors++;
     }

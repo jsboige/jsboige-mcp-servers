@@ -95,8 +95,8 @@ describe('dual-write — env-gate off (Null writer, silent no-op)', () => {
     resetWriterInstance();
   });
 
-  test('dual-write resolves without throwing when env-gate is OFF', async () => {
-    await expect(dualWriteConversationToStore('task-1', makeSkeleton())).resolves.toBeUndefined();
+  test('dual-write resolves with ok:true when env-gate is OFF (never throws)', async () => {
+    await expect(dualWriteConversationToStore('task-1', makeSkeleton())).resolves.toEqual({ ok: true });
   });
 
   test('dual-write does NOT call upsertConversationOnly on Null writer', async () => {
@@ -110,7 +110,7 @@ describe('dual-write — env-gate off (Null writer, silent no-op)', () => {
 
   test('dual-write never throws when env-gate is OFF and skeleton is empty', async () => {
     // Empty skeleton → metadata undefined → all fields fall back to defaults.
-    await expect(dualWriteConversationToStore('task-empty', makeSkeleton())).resolves.toBeUndefined();
+    await expect(dualWriteConversationToStore('task-empty', makeSkeleton())).resolves.toEqual({ ok: true });
   });
 });
 
@@ -442,10 +442,11 @@ describe('dual-write — error swallowing (never throws)', () => {
     resetWriterInstance();
   });
 
-  test('when upsertConversationOnly throws, dual-write swallows it (never rejects)', async () => {
+  test('when upsertConversationOnly throws, dual-write swallows it (never rejects) and reports ok:false', async () => {
     const spy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertConversationOnly')
       .mockRejectedValueOnce(new Error('Postgres down'));
-    await expect(dualWriteConversationToStore('task-1', makeSkeleton())).resolves.toBeUndefined();
+    // #2427 defect B: the failure is reported to awaiting callers via ok:false + error.
+    await expect(dualWriteConversationToStore('task-1', makeSkeleton())).resolves.toEqual({ ok: false, error: 'Postgres down' });
     spy.mockRestore();
   });
 
@@ -459,7 +460,8 @@ describe('dual-write — error swallowing (never throws)', () => {
     // Here we assert the no-throw contract with a sync throw from upsertConversationOnly.
     const spy = vi.spyOn(NullUnifiedStoreWriter.prototype, 'upsertConversationOnly')
       .mockImplementation(() => { throw new Error('sync throw'); });
-    await expect(dualWriteConversationToStore('task-1', makeSkeleton())).resolves.toBeUndefined();
+    // never rejects; reports ok:false with the swallowed error message
+    await expect(dualWriteConversationToStore('task-1', makeSkeleton())).resolves.toEqual({ ok: false, error: 'sync throw' });
     spy.mockRestore();
   });
 });
@@ -555,7 +557,7 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
     // Header-only toHeader() partials drop the sequence entirely. The nullish
     // fallback (`skeleton.sequence ?? []`) must absorb this without throwing.
     const headerOnly = { taskId: 'task-hdr', metadata: { source: 'roo' } } as unknown as ConversationSkeleton;
-    await expect(dualWriteConversationToStore('task-hdr', headerOnly)).resolves.toBeUndefined();
+    await expect(dualWriteConversationToStore('task-hdr', headerOnly)).resolves.toEqual({ ok: true });
     expect(msgSpy).not.toHaveBeenCalled();
   });
 

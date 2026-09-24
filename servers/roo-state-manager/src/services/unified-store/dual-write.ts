@@ -18,10 +18,12 @@
  * they would persist an incomplete row. Call sites that cache a `toHeader()` must dual-write
  * the in-scope full `skeleton`, not the header they cache.
  *
- * Never throws: the writer's circuit-breaker absorbs transient Postgres failures, and
- * dual-write must never block the local cache path. The returned promise therefore never
- * rejects, but callers attach `.catch(() => {})` (matching the fire-and-forget convention in
- * SkeletonCacheService.addOrUpdate) to satisfy floating-promise linting.
+ * #2427 defect B: the returned promise resolves with a DualWriteResult so callers that care
+ * (Worker A cursor gating, the backfill counter) can tell success from failure. The function
+ * still NEVER rejects — the writer's circuit-breaker absorbs transient Postgres failures, and
+ * dual-write must never block the local cache path. Fire-and-forget call sites that attach
+ * `.catch(() => {})` keep working unchanged (the result is simply ignored there); callers
+ * that await it read `result.ok`.
  */
 
 import type { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
@@ -71,14 +73,23 @@ function mapSequenceToMessageRows(
   return rows;
 }
 
+/** Outcome of a dual-write. The function never rejects — it reports failure via `ok: false`. */
+export interface DualWriteResult {
+  /** true when both the conversation row and (if present) message rows persisted. */
+  ok: boolean;
+  /** Short diagnostic when `ok` is false (never a secret; writer message only). */
+  error?: string;
+}
+
 /**
  * Map a ConversationSkeleton to a ConversationRow and upsert it into the unified store.
- * Fire-and-forget at call sites (never rejects, env-gated to a no-op when the flag is off).
+ * Fire-and-forget at call sites (never rejects, env-gated to a no-op when the flag is off);
+ * callers that await it read the DualWriteResult (#2427 defect B).
  */
 export async function dualWriteConversationToStore(
   taskId: string,
   skeleton: ConversationSkeleton
-): Promise<void> {
+): Promise<DualWriteResult> {
   try {
     const writer = getUnifiedStoreWriter();
 
@@ -133,9 +144,13 @@ export async function dualWriteConversationToStore(
     if (messageRows.length > 0) {
       await writer.upsertMessages(messageRows);
     }
-  } catch {
-    // Swallow all errors — dual-write must never block the caller.
-    // PgUnifiedStoreWriter has its own circuit-breaker; this catch covers the
-    // (rare) case where the writer factory or row mapping itself throws.
+    return { ok: true };
+  } catch (err) {
+    // Swallow all errors — dual-write must never block the caller (never rejects).
+    // PgUnifiedStoreWriter has its own circuit-breaker; this catch covers the (rare)
+    // case where the writer factory or row mapping itself throws. #2427 defect B:
+    // the failure is reported to awaiting callers via ok:false instead of vanishing.
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
   }
 }
