@@ -1,13 +1,14 @@
 """
 Multi-agent conversation runner for sk-agent v2.0.
 
-Uses Semantic Kernel's AgentGroupChat to orchestrate conversations
-between multiple agents with configurable selection and termination
-strategies.
+Sequential, group_chat and handoff turns are run here, one turn at a time,
+each agent receiving its peers' turns as attributed user content (#1587).
+Semantic Kernel's AgentGroupChat still drives magentic, whose next speaker
+is chosen by an LLM.
 
 Supported conversation types:
   - sequential: Each agent speaks once, in order (pipeline)
-  - group_chat: Round-robin for N rounds
+  - group_chat: Round-robin reviewers, then the synthesizer concludes
   - magentic: LLM-driven selection (smart manager picks next speaker)
   - concurrent: All agents run in parallel on the same prompt
 
@@ -333,11 +334,14 @@ class ConversationRunner:
         try:
             if conv_config.type == "concurrent":
                 result = await self._run_concurrent(prompt, agents, conv_config)
-            else:
-                # sequential / group_chat / magentic / handoff all run the
-                # group-chat path (handoff = round-robin alias, same as
-                # preset-defined handoff conversations).
+            elif conv_config.type == "magentic":
                 result = await self._run_group_chat(
+                    prompt, agents, conv_config, max_rounds
+                )
+            else:
+                # sequential / group_chat / handoff (handoff = round-robin
+                # alias) run their own turns (#1587).
+                result = await self._run_round_robin(
                     prompt, agents, conv_config, max_rounds
                 )
         except Exception as e:
@@ -507,100 +511,89 @@ class ConversationRunner:
         conv_config: ConversationConfig,
         max_rounds: int,
     ) -> dict[str, Any]:
-        """Run a group chat conversation (sequential, group_chat, or magentic)."""
-        # Build selection strategy
-        if conv_config.type == "magentic":
-            # For magentic: use KernelFunction-based selection if possible
-            # Fall back to sequential if no LLM selection available
-            try:
-                from semantic_kernel.agents.strategies import (
-                    KernelFunctionSelectionStrategy,
-                )
-                from semantic_kernel.functions import KernelFunctionFromPrompt
-                from semantic_kernel.prompt_template import (
-                    InputVariable,
-                    PromptTemplateConfig,
-                )
+        """Run a magentic conversation — an LLM picks who speaks next."""
+        # Only magentic reaches this method: its selection is LLM-driven, so
+        # SK's AgentGroupChat is still the orchestrator. sequential, group_chat
+        # and handoff run through _run_round_robin instead (#1587).
+        try:
+            from semantic_kernel.agents.strategies import (
+                KernelFunctionSelectionStrategy,
+            )
+            from semantic_kernel.functions import KernelFunctionFromPrompt
+            from semantic_kernel.prompt_template import (
+                InputVariable,
+                PromptTemplateConfig,
+            )
 
-                # Use the first agent's kernel for the manager
-                manager_kernel = agents[0].kernel if agents else Kernel()
-                agent_names = ", ".join(a.name for a in agents)
+            # Use the first agent's kernel for the manager
+            manager_kernel = agents[0].kernel if agents else Kernel()
+            agent_names = ", ".join(a.name for a in agents)
 
-                # Build prompt with allow_dangerously_set_content for the
-                # history variable (SK >= 1.39 requires explicit opt-in).
-                prompt_text = (
-                    "You are a conversation manager. Given the conversation so far, "
-                    f"decide which agent should speak next. Available agents: {agent_names}.\n\n"
-                    "Rules:\n"
-                    "- If research/facts are needed, pick the researcher.\n"
-                    "- If synthesis is needed, pick the synthesizer.\n"
-                    "- If quality review is needed, pick the critic.\n"
-                    "- Respond with ONLY the agent name, nothing else.\n\n"
-                    "{{$history}}\n\n"
-                    "Next agent:"
-                )
-                prompt_template_config = PromptTemplateConfig(
-                    template=prompt_text,
-                    allow_dangerously_set_content=True,
-                    input_variables=[
-                        InputVariable(
-                            name="history",
-                            allow_dangerously_set_content=True,
-                        ),
-                        InputVariable(
-                            name="agents",
-                            allow_dangerously_set_content=True,
-                        ),
-                    ],
-                )
-                selection_fn = KernelFunctionFromPrompt(
-                    function_name="select_next",
-                    prompt_template_config=prompt_template_config,
-                )
+            # Build prompt with allow_dangerously_set_content for the
+            # history variable (SK >= 1.39 requires explicit opt-in).
+            prompt_text = (
+                "You are a conversation manager. Given the conversation so far, "
+                f"decide which agent should speak next. Available agents: {agent_names}.\n\n"
+                "Rules:\n"
+                "- If research/facts are needed, pick the researcher.\n"
+                "- If synthesis is needed, pick the synthesizer.\n"
+                "- If quality review is needed, pick the critic.\n"
+                "- Respond with ONLY the agent name, nothing else.\n\n"
+                "{{$history}}\n\n"
+                "Next agent:"
+            )
+            prompt_template_config = PromptTemplateConfig(
+                template=prompt_text,
+                allow_dangerously_set_content=True,
+                input_variables=[
+                    InputVariable(
+                        name="history",
+                        allow_dangerously_set_content=True,
+                    ),
+                    InputVariable(
+                        name="agents",
+                        allow_dangerously_set_content=True,
+                    ),
+                ],
+            )
+            selection_fn = KernelFunctionFromPrompt(
+                function_name="select_next",
+                prompt_template_config=prompt_template_config,
+            )
 
-                def _parse_selection_result(result) -> str:
-                    """Extract the agent name string from the function result."""
-                    # result is a FunctionResult whose .value is list[ChatMessageContent]
-                    if hasattr(result, "value"):
-                        val = result.value
-                        # If it's a list of ChatMessageContent, get text from the last one
-                        if isinstance(val, list):
-                            for item in reversed(val):
-                                if hasattr(item, "items"):
-                                    for sub in item.items:
-                                        if hasattr(sub, "text") and sub.text:
-                                            return sub.text.strip()
-                                if hasattr(item, "content") and item.content:
-                                    return str(item.content).strip()
-                        return str(val).strip()
-                    return str(result).strip()
+            def _parse_selection_result(result) -> str:
+                """Extract the agent name string from the function result."""
+                # result is a FunctionResult whose .value is list[ChatMessageContent]
+                if hasattr(result, "value"):
+                    val = result.value
+                    # If it's a list of ChatMessageContent, get text from the last one
+                    if isinstance(val, list):
+                        for item in reversed(val):
+                            if hasattr(item, "items"):
+                                for sub in item.items:
+                                    if hasattr(sub, "text") and sub.text:
+                                        return sub.text.strip()
+                            if hasattr(item, "content") and item.content:
+                                return str(item.content).strip()
+                    return str(val).strip()
+                return str(result).strip()
 
-                selection_strategy = KernelFunctionSelectionStrategy(
-                    kernel=manager_kernel,
-                    function=selection_fn,
-                    agent_variable_name="agents",
-                    history_variable_name="history",
-                    result_parser=_parse_selection_result,
-                )
-            except (ImportError, Exception) as e:
-                log.warning(
-                    "KernelFunctionSelectionStrategy not available, falling back to sequential: %s",
-                    e,
-                )
-                selection_strategy = SequentialSelectionStrategy()
-        else:
-            # sequential and group_chat both use round-robin
+            selection_strategy = KernelFunctionSelectionStrategy(
+                kernel=manager_kernel,
+                function=selection_fn,
+                agent_variable_name="agents",
+                history_variable_name="history",
+                result_parser=_parse_selection_result,
+            )
+        except (ImportError, Exception) as e:
+            log.warning(
+                "KernelFunctionSelectionStrategy not available, falling back to sequential: %s",
+                e,
+            )
             selection_strategy = SequentialSelectionStrategy()
 
-        # Build termination strategy
-        if conv_config.type == "sequential":
-            # Each agent speaks exactly once
-            max_iter = len(agents)
-        else:
-            max_iter = max_rounds
-
         termination_strategy = DefaultTerminationStrategy(
-            maximum_iterations=max_iter,
+            maximum_iterations=max_rounds,
             agents=agents,
         )
 
@@ -626,6 +619,74 @@ class ConversationRunner:
             }
             steps.append(step)
             final_response = step["content"]
+
+        return {
+            "response": final_response,
+            "conversation_type": conv_config.type,
+            "conversation_id": conv_config.id,
+            "agents_used": [a.name for a in agents],
+            "rounds": len(steps),
+            "steps": steps,
+        }
+
+    async def _run_round_robin(
+        self,
+        prompt: str,
+        agents: list[ChatCompletionAgent],
+        conv_config: ConversationConfig,
+        max_rounds: int,
+    ) -> dict[str, Any]:
+        """Run sequential / group_chat / handoff, one turn at a time (#1587).
+
+        Two defects measured on `code-review` (ai-01, 24/09) came from handing
+        the turns to SK's AgentGroupChat, and are fixed by running them here:
+
+          1. the returned `response` was the chronologically last message,
+             whoever sent it — a round ending mid-cycle dropped the
+             synthesizer's answer and returned an echo of a reviewer;
+          2. peers' turns reached each agent as `assistant` messages carrying
+             a `name` the hub may drop, so each agent read the previous review
+             as its own words and answered "that's my own review echoed back".
+
+        Each turn is therefore composed here as one user message carrying the
+        peers' turns with an explicit `[agent]` attribution, and the last
+        agent of the conversation — its synthesizer by convention — speaks
+        last and is what gets returned.
+        """
+        from semantic_kernel.agents import ChatHistoryAgentThread
+
+        synthesizer = agents[-1]
+        if conv_config.type == "sequential":
+            turns = list(agents)  # each agent speaks exactly once, in order
+        else:
+            # group_chat / handoff: reviewers round-robin within the round
+            # budget, then the synthesizer concludes — never mid-cycle.
+            reviewers = agents[:-1]
+            turns = (
+                [reviewers[i % len(reviewers)] for i in range(max_rounds - 1)]
+                if reviewers
+                else []  # a lone agent is its own synthesizer
+            )
+            turns.append(synthesizer)
+
+        steps = []
+        transcript: list[tuple[str, str]] = []
+        final_response = ""
+        for agent in turns:
+            content = prompt
+            if transcript:
+                content = prompt + "\n\n" + "\n\n".join(
+                    f"[{name}] {text}" for name, text in transcript
+                )
+            message = ChatMessageContent(role=AuthorRole.USER, content=content)
+            thread = ChatHistoryAgentThread()
+            text = ""
+            async for response in agent.invoke(messages=message, thread=thread):
+                text = str(response) if response else ""
+            steps.append({"agent": agent.name, "content": text})
+            transcript.append((agent.name, text))
+            if agent is synthesizer:
+                final_response = text
 
         return {
             "response": final_response,

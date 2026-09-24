@@ -1024,7 +1024,11 @@ class TestConversationRunnerSpec:
             config, {}, fake_factory, spec_agent_builder=fake_builder
         )
         monkeypatch.setattr(runner, "_create_inline_agent", fake_create_inline)
+        # sequential / group_chat / handoff run through _run_round_robin;
+        # magentic keeps _run_group_chat. Both record the same `kind`, since
+        # the assertions here are about the round-robin shape's arguments.
         monkeypatch.setattr(runner, "_run_group_chat", fake_group_chat)
+        monkeypatch.setattr(runner, "_run_round_robin", fake_group_chat)
         monkeypatch.setattr(runner, "_run_concurrent", fake_concurrent)
         runner._test_inline_legacy = inline_legacy
         runner._test_inline_built = inline_built

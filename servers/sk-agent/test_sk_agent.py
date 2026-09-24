@@ -1379,9 +1379,38 @@ class TestConversationExecution:
         )
         return ConversationRunner(config, sk_agents), sk_agents
 
+    def _wire_responses(self, agents):
+        """Give the mock agents a working invoke(), recording what they receive.
+
+        The round-robin runner (#1587) invokes the agents itself, so a mock
+        whose invoke() returns a bare MagicMock is no longer enough.
+        Returns {agent name: [user content seen per turn]}.
+        """
+        seen_by_agent: dict[str, list[str]] = {}
+        for agent in agents.values():
+            seen: list[str] = seen_by_agent.setdefault(agent.name, [])
+            name = agent.name
+
+            def _invoke(messages=None, thread=None, _seen=seen, _name=name, **kwargs):
+                _seen.append(messages.content)
+                reply = f"Response from {_name}"
+
+                class _Response:
+                    def __str__(self) -> str:
+                        return reply
+
+                async def _gen():
+                    yield _Response()
+
+                return _gen()
+
+            agent.invoke = _invoke
+        return seen_by_agent
+
     @pytest.mark.asyncio
     async def test_run_group_chat_collects_steps(self):
-        """Group chat run collects steps from all agents."""
+        """Group chat collects one step per turn and concludes on its last
+        agent — the round never ends mid-cycle (#1587)."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["agent-a", "agent-b"],
             config_conversations=[
@@ -1394,39 +1423,23 @@ class TestConversationExecution:
                 }
             ],
         )
+        self._wire_responses(agents)
 
-        # Mock AgentGroupChat to yield fake messages
-        mock_messages = [
-            MagicMock(name="agent-a", content="Response A1", role=MagicMock()),
-            MagicMock(name="agent-b", content="Response B1", role=MagicMock()),
-        ]
-        # Fix: MagicMock(name=...) sets the mock's name attribute
-        mock_messages[0].name = "sk-agent-agent-a"
-        mock_messages[1].name = "sk-agent-agent-b"
-
-        with patch("sk_conversations.AgentGroupChat") as MockChat:
-            mock_chat_instance = MagicMock()
-
-            async def fake_invoke():
-                for msg in mock_messages:
-                    yield msg
-
-            mock_chat_instance.invoke = fake_invoke
-            mock_chat_instance.add_chat_message = AsyncMock()
-            MockChat.return_value = mock_chat_instance
-
-            result = await runner.run("test prompt", conversation_id="test-conv")
+        result = await runner.run("test prompt", conversation_id="test-conv")
 
         assert "error" not in result
         assert result["conversation_type"] == "group_chat"
-        assert len(result["steps"]) == 2
-        assert result["steps"][0]["agent"] == "sk-agent-agent-a"
-        assert result["steps"][1]["agent"] == "sk-agent-agent-b"
-        assert result["response"] == "Response B1"  # Last response
+        assert [s["agent"] for s in result["steps"]] == [
+            "sk-agent-agent-a",
+            "sk-agent-agent-a",
+            "sk-agent-agent-a",
+            "sk-agent-agent-b",
+        ]
+        assert result["response"] == "Response from sk-agent-agent-b"
 
     @pytest.mark.asyncio
     async def test_run_sequential_limits_to_agent_count(self):
-        """Sequential conversation sets max_iterations to number of agents."""
+        """Sequential runs each agent exactly once, whatever max_rounds says."""
         runner, agents = self._make_runner_with_agents(
             agent_names=["a", "b", "c"],
             config_conversations=[
@@ -1435,30 +1448,20 @@ class TestConversationExecution:
                     "description": "Sequential test",
                     "type": "sequential",
                     "agents": ["a", "b", "c"],
-                    "max_rounds": 99,  # Should be ignored, capped to len(agents)=3
+                    "max_rounds": 99,  # ignored: one turn per agent
                 }
             ],
         )
+        self._wire_responses(agents)
 
-        with patch("sk_conversations.AgentGroupChat") as MockChat, patch(
-            "sk_conversations.DefaultTerminationStrategy"
-        ) as MockTermination:
-            mock_chat_instance = MagicMock()
+        result = await runner.run("test", conversation_id="seq-conv")
 
-            async def fake_invoke():
-                return
-                yield  # Make this an async generator
-
-            mock_chat_instance.invoke = fake_invoke
-            mock_chat_instance.add_chat_message = AsyncMock()
-            MockChat.return_value = mock_chat_instance
-
-            await runner.run("test", conversation_id="seq-conv")
-
-            # Verify termination strategy was created with max_iterations = len(agents) = 3
-            MockTermination.assert_called_once()
-            call_kwargs = MockTermination.call_args.kwargs
-            assert call_kwargs["maximum_iterations"] == 3
+        assert [s["agent"] for s in result["steps"]] == [
+            "sk-agent-a",
+            "sk-agent-b",
+            "sk-agent-c",
+        ]
+        assert result["rounds"] == 3
 
     @pytest.mark.asyncio
     async def test_run_concurrent_parallel_execution(self):
@@ -1498,37 +1501,28 @@ class TestConversationExecution:
 
     @pytest.mark.asyncio
     async def test_run_with_max_rounds_override(self):
-        """Options can override max_rounds."""
+        """Options can override max_rounds — the budget is the turn count."""
         runner, agents = self._make_runner_with_agents(
-            agent_names=["a"],
+            agent_names=["a", "b"],
             config_conversations=[
                 {
                     "id": "gc",
                     "description": "Test",
                     "type": "group_chat",
-                    "agents": ["a"],
+                    "agents": ["a", "b"],
                     "max_rounds": 6,
                 }
             ],
         )
+        self._wire_responses(agents)
 
-        with patch("sk_conversations.AgentGroupChat") as MockChat, patch(
-            "sk_conversations.DefaultTerminationStrategy"
-        ) as MockTermination:
-            mock_chat_instance = MagicMock()
+        configured = await runner.run("test", conversation_id="gc")
+        overridden = await runner.run(
+            "test", conversation_id="gc", options={"max_rounds": 20}
+        )
 
-            async def fake_invoke():
-                return
-                yield
-
-            mock_chat_instance.invoke = fake_invoke
-            mock_chat_instance.add_chat_message = AsyncMock()
-            MockChat.return_value = mock_chat_instance
-
-            await runner.run("test", conversation_id="gc", options={"max_rounds": 20})
-
-            call_kwargs = MockTermination.call_args.kwargs
-            assert call_kwargs["maximum_iterations"] == 20
+        assert configured["rounds"] == 6
+        assert overridden["rounds"] == 20
 
     @pytest.mark.asyncio
     async def test_run_magentic_tries_kernel_function_selection(self):
@@ -1583,13 +1577,19 @@ class TestConversationExecution:
             ],
         )
 
-        with patch("sk_conversations.AgentGroupChat") as MockChat:
-            MockChat.side_effect = Exception("SK initialization error")
+        def exploding_invoke(messages=None, thread=None, **kwargs):
+            async def _gen():
+                raise Exception("agent exploded mid-turn")
+                yield  # unreachable: makes _gen an async generator
 
-            result = await runner.run("test", conversation_id="fail-conv")
+            return _gen()
 
-            assert "error" in result
-            assert "SK initialization error" in result["error"]
+        agents["a"].invoke = exploding_invoke
+
+        result = await runner.run("test", conversation_id="fail-conv")
+
+        assert "error" in result
+        assert "agent exploded mid-turn" in result["error"]
 
     @pytest.mark.asyncio
     async def test_run_with_inline_agents(self):
