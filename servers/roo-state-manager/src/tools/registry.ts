@@ -22,7 +22,7 @@ import { createLogger } from '../utils/logger.js';
 import { getToolTimeoutMs } from '../config/tool-timeouts.js';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
-import { resolveFullConversationSkeleton } from '../utils/server-helpers.js';
+import { resolveFullConversationSkeleton, hydrateTier3SkeletonFromCache } from '../utils/server-helpers.js';
 
 // 511396f0: Lazy-loaded heavy modules — these pull deep ESM dependency chains
 // (roo-storage-detector → glob, cache-manager, skeleton-*; background-services → task-indexer, etc.)
@@ -227,6 +227,13 @@ export function registerCallToolHandler(
                             } catch { /* Claude fallback failed */ }
                             return null;
                         }
+                        // 2b. #3661 AC8 — Tier 3 stub (archive GDrive) : le corps
+                        //     vit dans le SkeletonCacheService, pas dans conversationCache.
+                        //     Peek + hydratation à la demande — pré-#1163 le corps
+                        //     résidait en RAM ; depuis les stubs, le view d'une
+                        //     archive listée rendait null sans cette branche.
+                        const tier3 = await hydrateTier3SkeletonFromCache(id);
+                        if (tier3) return tier3;
                         // 3. Fallback: scan disk for Roo conversations
                         try {
                             const { RooStorageDetector } = await getRooStorageDetector();

@@ -830,6 +830,25 @@ describe('SkeletonCacheService', () => {
 			expect(stats.tier3_hydrated_count).toBe(0);
 		});
 
+		test('#3661 AC8 — peekSkeleton: sync read, no cold load triggered, no side effect', async () => {
+			setupArchiveHost([
+				{ taskId: 't-web1', machineId: 'myia-web1', content: 'distant-body' },
+			]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+
+			// Hôte froid : peek rend undefined SANS déclencher le chargement
+			expect(service.peekSkeleton('t-web1')).toBeUndefined();
+			expect(mockListArchivedTaskFiles).not.toHaveBeenCalled();
+
+			// Hôte chaud : peek rend le stub tel quel (identité d'entrée du cache)
+			const cache = await service.getCache();
+			const peeked = service.peekSkeleton('t-web1');
+			expect(peeked).toBe(cache.get('t-web1'));
+			expect(peeked!.metadata.dataSource).toBe('gdrive-archive');
+			expect(peeked!.sequence).toEqual([]);
+		});
+
 		test('ensureConversationHydrated fills the body on demand and is idempotent (no re-read)', async () => {
 			setupArchiveHost([
 				{ taskId: 't1', machineId: LOCAL_MACHINE, content: 'needle-in-archive' },
