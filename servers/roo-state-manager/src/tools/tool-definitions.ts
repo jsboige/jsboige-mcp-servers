@@ -227,7 +227,7 @@ export const roosyncIndexingDefinition = {
 // ============================================================
 export const codebaseSearchDefinition = {
     name: 'codebase_search',
-    description: 'Recherche sémantique dans le code par concept. ALWAYS pass workspace explicitly — auto-detection hard-fails if MCP roots/WORKSPACE_PATH unavailable (#1861). Use English keywords matching code vocabulary, not natural language. Validated usability criterion (#3174 AC4): results are navigable — a real file:line pointing at the source, not a data/config copy (source files rank above fixtures since #1180).',
+    description: 'Recherche sémantique dans le code par concept. ALWAYS pass workspace explicitly — auto-detection hard-fails if MCP roots/WORKSPACE_PATH unavailable (#1861). Use English keywords matching code vocabulary, not natural language. Validated usability criterion (#3174 AC4): results are navigable — a real file:line pointing at the source, not a data/config copy (source ranks above data/config copies since #1180 and fixtures since #3172).',
     inputSchema: {
         type: 'object',
         properties: {
@@ -606,7 +606,7 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
     inputSchema: {
         type: 'object',
         properties: {
