@@ -254,7 +254,7 @@ as a thinking / non-thinking pair:
 | Profile | Model entry | Use |
 |---------|-------------|-----|
 | Thinking | `qwen3.6-35b-a3b` | analysis and review — chain-of-thought (`analyst`, `qwen-local`, `fast-local-thinking`) |
-| Non-thinking | `qwen3.6-35b-no-thinking` | short, cheap tasks: summaries, classification, formatting (`summarizer-local`, `classifier-local`, `formatter-local`, `fast`, `coder`) |
+| Non-thinking | `qwen3.6-35b-no-thinking` | short, cheap tasks: summaries, classification, formatting (`summarizer-local`, `classifier-local`, `formatter-local`, `fast`, `fast-local`, `coder`) |
 
 The non-thinking entry declares `extra_body.chat_template_kwargs.enable_thinking = false`
 via the #3797 passthrough. `call_agent` already injects that flag from
