@@ -262,13 +262,19 @@ async function getIndexerStatePath(): Promise<string | null> {
 }
 
 /** Persiste le curseur. Ne rejette jamais (fire-and-forget safe). */
-export async function persistIndexerCursor(lastSkeletonRefreshAt: number): Promise<void> {
+export async function persistIndexerCursor(lastSkeletonRefreshAt: number, lastClaudeRefreshAt?: number): Promise<void> {
     try {
         const statePath = await getIndexerStatePath();
         if (!statePath) return;
         await fs.mkdir(path.dirname(statePath), { recursive: true });
         const tmpPath = `${statePath}.tmp-${process.pid}`;
-        await fs.writeFile(tmpPath, JSON.stringify({ version: 1, lastSkeletonRefreshAt }), 'utf8');
+        // #2427 defect B: the Claude cursor rides in the same file (optional field) so a
+        // single atomic write keeps both consistent. Omitted when undefined → pre-#2427
+        // files (lastSkeletonRefreshAt only) are read back with lastClaudeRefreshAt=0,
+        // which triggers a one-time full Claude catch-up scan. That is the safe default.
+        const payload: Record<string, number> = { version: 1, lastSkeletonRefreshAt };
+        if (typeof lastClaudeRefreshAt === 'number') payload.lastClaudeRefreshAt = lastClaudeRefreshAt;
+        await fs.writeFile(tmpPath, JSON.stringify(payload), 'utf8');
         await fs.rename(tmpPath, statePath);
     } catch (error: any) {
         console.warn('[Indexer-State] Cursor persist failed (non-blocking):', error?.message || error);
@@ -280,13 +286,26 @@ export async function persistIndexerCursor(lastSkeletonRefreshAt: number): Promi
  * ne rejette jamais.
  */
 export async function loadPersistedIndexerCursor(): Promise<number> {
+    return (await loadPersistedIndexerCursors()).lastSkeletonRefreshAt;
+}
+
+/**
+ * #2427 defect B: charge les deux curseurs (partagé Roo + spécifique Claude) depuis le
+ * même fichier. lastClaudeRefreshAt est 0 pour un fichier pré-#2427 (champ absent) → le
+ * premier tick fait un catch-up scan Claude complet, qui ré-écrit les sessions manquantes.
+ * Ne rejette jamais.
+ */
+export async function loadPersistedIndexerCursors(): Promise<{ lastSkeletonRefreshAt: number; lastClaudeRefreshAt: number }> {
     try {
         const statePath = await getIndexerStatePath();
-        if (!statePath) return 0;
+        if (!statePath) return { lastSkeletonRefreshAt: 0, lastClaudeRefreshAt: 0 };
         const data = JSON.parse(await fs.readFile(statePath, 'utf8'));
-        return typeof data.lastSkeletonRefreshAt === 'number' ? data.lastSkeletonRefreshAt : 0;
+        return {
+            lastSkeletonRefreshAt: typeof data.lastSkeletonRefreshAt === 'number' ? data.lastSkeletonRefreshAt : 0,
+            lastClaudeRefreshAt: typeof data.lastClaudeRefreshAt === 'number' ? data.lastClaudeRefreshAt : 0,
+        };
     } catch {
-        return 0;
+        return { lastSkeletonRefreshAt: 0, lastClaudeRefreshAt: 0 };
     }
 }
 
@@ -536,6 +555,16 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
             // so previously unseen files (e.g., old Claude Code sessions) get discovered.
             const forceRescan = process.env.ROO_INDEX_FORCE === '1' || process.env.ROO_INDEX_FORCE === 'true';
             const lastCheck = forceRescan ? 0 : (state.lastSkeletonRefreshAt || 0);
+            // #2427 defect B: the Claude scan is gated on its OWN cursor (persisted only
+            // when the tick's Claude dual-writes all succeeded), NOT on the shared one.
+            // This makes the Claude scan retry any session whose dual-write failed, instead
+            // of permanently losing it behind an unconditionally-advanced cursor.
+            const lastClaudeCheck = forceRescan ? 0 : (state.lastClaudeRefreshAt || 0);
+            // #2427 defect B: collect the Claude dual-write promises so the tick can decide
+            // whether the Claude cursor is safe to advance. Roo writes stay fire-and-forget
+            // (their cursor semantics are unchanged and out of this defect's scope).
+            const claudeWrites: Promise<unknown>[] = [];
+            let claudeScannedCount = 0;
             let updatedCount = 0;
             let newCount = 0;
 
@@ -631,7 +660,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                             try {
                                 const filePath = path.join(location.projectPath, file);
                                 const stat = await fs.stat(filePath);
-                                if (stat.mtime.getTime() <= lastCheck) continue;
+                                // #2427 defect B: gate on the Claude cursor, not the shared one.
+                                if (stat.mtime.getTime() <= lastClaudeCheck) continue;
+                                claudeScannedCount++;
 
                                 // #937 FIX: Use project-dir--UUID format so TaskIndexer can resolve the path
                                 const projectBasename = path.basename(location.projectPath);
@@ -660,7 +691,10 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         state.conversationCache.set(taskId, newHeader);
                                         // #692: dual-write the FULL Claude skeleton (in scope above) to the unified store.
                                         // The cache holds a toHeader() partial; the dual-write needs the complete skeleton.
-                                        dualWriteConversationToStore(taskId, skeleton).catch(() => {});
+                                        // #2427 defect B: collect the promise (result-read) instead of pure
+                                        // fire-and-forget, so a failed write freezes the Claude cursor and the
+                                        // session is retried next tick instead of being permanently lost.
+                                        claudeWrites.push(dualWriteConversationToStore(taskId, skeleton).catch(() => ({ ok: false })));
                                         // #2227: Use newHeader (not skeleton) — skeleton doesn't carry indexingState
                                         const lastIndexed = newHeader.metadata?.indexingState?.lastIndexedAt;
                                         const indexStatus = newHeader.metadata?.indexingState?.indexStatus;
@@ -694,8 +728,30 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                 // Claude detection not critical
             }
 
+            // #2427 defect B: settle the tick's Claude dual-writes BEFORE persisting any
+            // cursor. The Claude cursor advances ONLY if every write succeeded; a single
+            // failure freezes it so the failed session(s) re-scan (and retry the write)
+            // on the next tick. This replaces the unconditional cursor advance that
+            // permanently lost every session scanned during a PG outage / misconfig.
+            const claudeResults = await Promise.all(claudeWrites);
+            const claudeFailed = claudeResults.filter(
+                (r) => r && typeof r === 'object' && (r as { ok?: boolean }).ok === false
+            ).length;
+
             state.lastSkeletonRefreshAt = startTime;
-            persistIndexerCursor(startTime);
+            if (claudeFailed === 0) {
+                state.lastClaudeRefreshAt = startTime;
+                persistIndexerCursor(startTime, startTime);
+            } else {
+                // Freeze the Claude cursor at its prior value; persist the shared Roo cursor
+                // alone so the Roo scan still advances. Next tick re-scans Claude from the
+                // frozen point and retries the failed write(s).
+                persistIndexerCursor(startTime, state.lastClaudeRefreshAt ?? 0);
+                console.warn(
+                    `[Skeleton-Worker] ${claudeFailed}/${claudeWrites.length} Claude dual-write(s) failed — ` +
+                    `Claude cursor frozen at ${state.lastClaudeRefreshAt ?? 0} (will retry next tick)`
+                );
+            }
             const elapsed = Date.now() - startTime;
 
             if (updatedCount > 0 || newCount > 0) {
@@ -815,7 +871,11 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // un chargement initial lent/rejete laisse lastSkeletonRefreshAt=0 et le worker
         // de 2 min re-analyse tout a chaque tick (boucle 11 Mo/s disque).
         if (!state.lastSkeletonRefreshAt) {
-            state.lastSkeletonRefreshAt = await loadPersistedIndexerCursor();
+            const cursors = await loadPersistedIndexerCursors();
+            state.lastSkeletonRefreshAt = cursors.lastSkeletonRefreshAt;
+            // #2427 defect B: hydrate the Claude cursor too (0 for pre-#2427 files →
+            // the first tick runs a one-time Claude catch-up scan).
+            state.lastClaudeRefreshAt = cursors.lastClaudeRefreshAt;
         }
 
         // Load skeleton index in background — first tool call that needs it

@@ -29,6 +29,16 @@ export interface ServerState {
     // Worker A: Skeleton refresh
     skeletonRefreshInterval: NodeJS.Timeout | null;
     lastSkeletonRefreshAt: number;
+    /**
+     * #2427 defect B: Claude-specific refresh cursor, persisted alongside the shared one.
+     * The shared `lastSkeletonRefreshAt` gates BOTH the Roo scan and the Claude scan and is
+     * persisted unconditionally at the end of every tick — so a Claude dual-write that failed
+     * (PG outage, misconfig) still moved the cursor and the session was permanently lost.
+     * This cursor is persisted ONLY when the tick's Claude dual-writes all succeeded, so a
+     * failed batch re-scans (and re-attempts the write) on the next tick. Optional for
+     * backward compatibility with pre-#2427 state (and test fixtures that omit it).
+     */
+    lastClaudeRefreshAt?: number;
     // Worker B: Qdrant indexation (driven by skeleton state)
     qdrantIndexQueue: Set<string>;
     qdrantIndexInterval: NodeJS.Timeout | null;
@@ -137,6 +147,8 @@ export class StateManager {
             },
             skeletonRefreshInterval: null,
             lastSkeletonRefreshAt: 0,
+            // #2427 defect B: Claude cursor starts at 0 (full catch-up scan on first tick).
+            lastClaudeRefreshAt: 0,
             qdrantIndexQueue: new Set(),
             qdrantIndexInterval: null,
             // Fuite bande passante po-2025 (2026-08-14): ROO_INDEXING_ENABLED=false coupe

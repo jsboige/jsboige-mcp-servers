@@ -63,7 +63,7 @@ vi.mock('../task-partition.js', () => ({
 }));
 
 vi.mock('../unified-store/dual-write.js', () => ({
-    dualWriteConversationToStore: vi.fn().mockResolvedValue(undefined),
+    dualWriteConversationToStore: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
 import { promises as fs } from 'fs';
@@ -126,7 +126,7 @@ beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // sensible defaults; individual tests override
     mockShouldIndex.mockReturnValue(true);
-    mockDualWrite.mockResolvedValue(undefined);
+    mockDualWrite.mockResolvedValue({ ok: true });
     delete process.env.ROO_INDEX_FORCE;
 });
 
@@ -445,12 +445,14 @@ describe('startSkeletonRefreshWorker', () => {
         expect(state.conversationCache.size).toBeGreaterThanOrEqual(2);
     });
 
-    it('skips a Claude session not modified since last check (stat.mtime <= lastCheck, L543)', async () => {
+    it('skips a Claude session not modified since last check (stat.mtime <= Claude cursor, #2427)', async () => {
         mockRoo.detectStorageLocations.mockResolvedValue([]);
         mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/z' }]);
         mockFs.readdir.mockResolvedValue(['old.jsonl']);
         mockFs.stat.mockResolvedValue({ mtime: new Date('2020-01-01T00:00:00Z') } as any);
-        const state = makeState({ lastSkeletonRefreshAt: new Date('2026-01-01T00:00:00Z').getTime() });
+        // #2427 defect B: the Claude scan is gated on lastClaudeRefreshAt (not the shared
+        // cursor). A session older than the CLAUDE cursor is skipped.
+        const state = makeState({ lastClaudeRefreshAt: new Date('2026-01-01T00:00:00Z').getTime() });
 
         await fireOnce(state);
 
@@ -519,5 +521,87 @@ describe('startSkeletonRefreshWorker', () => {
 
         await expect(fireOnce(state)).resolves.toBeUndefined();
         expect(errSpy).toHaveBeenCalled();
+    });
+
+    // =========================================================================
+    // #2427 defect B — Claude cursor is conditioned on dual-write success
+    // =========================================================================
+    describe('#2427 defect B: Claude cursor gating', () => {
+        it('advances the Claude cursor when all Claude dual-writes succeed', async () => {
+            mockRoo.detectStorageLocations.mockResolvedValue([]);
+            mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/ok' }]);
+            mockFs.readdir.mockResolvedValue(['a.jsonl']);
+            mockFs.stat.mockResolvedValue({ mtime: new Date('2026-03-01T00:00:00Z') } as any);
+            mockClaude.analyzeConversation.mockResolvedValue(makeSkeleton('claude-ok--a'));
+            mockDualWrite.mockResolvedValue({ ok: true });
+            const state = makeState();
+
+            await fireOnce(state);
+
+            expect(state.lastClaudeRefreshAt).toBeGreaterThan(0);
+            expect(state.lastClaudeRefreshAt).toBe(state.lastSkeletonRefreshAt);
+        });
+
+        it('freezes the Claude cursor when a Claude dual-write fails (ok:false)', async () => {
+            mockRoo.detectStorageLocations.mockResolvedValue([]);
+            mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/ko' }]);
+            mockFs.readdir.mockResolvedValue(['a.jsonl', 'b.jsonl']);
+            mockFs.stat.mockResolvedValue({ mtime: new Date('2026-03-01T00:00:00Z') } as any);
+            mockClaude.analyzeConversation.mockImplementation(async (id: string) => makeSkeleton(id));
+            // one succeeds, one reports a swallowed DB failure
+            mockDualWrite
+                .mockResolvedValueOnce({ ok: true })
+                .mockResolvedValueOnce({ ok: false, error: 'pg down' });
+            // Claude cursor already at a frozen point — must NOT advance on failure.
+            const state = makeState({ lastClaudeRefreshAt: 111 });
+
+            await fireOnce(state);
+
+            expect(state.lastClaudeRefreshAt).toBe(111);
+            // the SHARED (Roo) cursor still advances even though Claude's is frozen.
+            expect(state.lastSkeletonRefreshAt).toBeGreaterThan(0);
+        });
+
+        it('treats a legacy resolved undefined (older writers) as success (no false freeze)', async () => {
+            mockRoo.detectStorageLocations.mockResolvedValue([]);
+            mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/legacy' }]);
+            mockFs.readdir.mockResolvedValue(['a.jsonl']);
+            mockFs.stat.mockResolvedValue({ mtime: new Date('2026-03-01T00:00:00Z') } as any);
+            mockClaude.analyzeConversation.mockResolvedValue(makeSkeleton('claude-legacy--a'));
+            mockDualWrite.mockResolvedValue(undefined); // legacy contract — no result object
+            const state = makeState();
+
+            await fireOnce(state);
+
+            expect(state.lastClaudeRefreshAt).toBeGreaterThan(0);
+        });
+
+        it('gates the Claude scan on lastClaudeRefreshAt (skips older sessions), independent of the shared cursor', async () => {
+            mockRoo.detectStorageLocations.mockResolvedValue([]);
+            mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/gate' }]);
+            mockFs.readdir.mockResolvedValue(['old.jsonl']);
+            mockFs.stat.mockResolvedValue({ mtime: new Date('2020-01-01T00:00:00Z') } as any);
+            // shared cursor says "everything is old" but the CLAUDE cursor is what gates.
+            const state = makeState({ lastClaudeRefreshAt: new Date('2026-01-01T00:00:00Z').getTime() });
+
+            await fireOnce(state);
+
+            expect(mockClaude.analyzeConversation).not.toHaveBeenCalled();
+        });
+
+        it('does a full Claude catch-up scan when lastClaudeRefreshAt is 0 (pre-#2427 state)', async () => {
+            mockRoo.detectStorageLocations.mockResolvedValue([]);
+            mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/cold' }]);
+            mockFs.readdir.mockResolvedValue(['x.jsonl']);
+            mockFs.stat.mockResolvedValue({ mtime: new Date('2020-01-01T00:00:00Z') } as any);
+            mockClaude.analyzeConversation.mockResolvedValue(makeSkeleton('claude-cold--x'));
+            // shared cursor is recent (so the Roo branch would skip), but Claude cursor is 0.
+            const state = makeState({ lastSkeletonRefreshAt: new Date('2026-01-01T00:00:00Z').getTime(), lastClaudeRefreshAt: 0 });
+
+            await fireOnce(state);
+
+            expect(mockClaude.analyzeConversation).toHaveBeenCalled();
+            expect(state.conversationCache.has('claude-cold--x')).toBe(true);
+        });
     });
 });
