@@ -33,7 +33,7 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 
 export const DiagnoseArgsSchema = z.object({
   action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'])
-    .describe('Operation: env, debug, reset, test, health, lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
+    .describe('Operation: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Vérifier l\'espace disque (action: env)'),
