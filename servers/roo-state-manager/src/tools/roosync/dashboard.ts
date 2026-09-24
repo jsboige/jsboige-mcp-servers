@@ -5677,16 +5677,47 @@ async function handleMerge(
   let mergedMessages = [...byId.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   const deduped = totalSeen - mergedMessages.length;
 
-  // --- Statut : celui de la vue la plus récemment modifiée (égalité → cible).
+  // --- Statut : celui de la vue dont le STATUT est le plus récent, pas celle
+  // dont le fichier l'est. `lastModified` est bumpé par TOUTE écriture, appends
+  // compris : un fork vivant l'emportait alors qu'il porte une copie FIGÉE du
+  // statut (#3782 §3 — mesuré le 23/09 : 11 964 caractères dans le fork contre
+  // 14 993 sur la clé canonique ; le fork gagnait parce qu'il recevait des
+  // appends, et le statut union aurait régressé de 3 Ko).
+  // `intercom.lastCondensedAt` est le seul horodatage du statut lui-même : il
+  // n'est posé que par les chemins de condensation, qui sont les seuls à
+  // réécrire le statut automatiquement. Il tranche donc les vues qui en portent
+  // un toutes les deux (le fork d'un incident DriveFS porte celui de la copie
+  // qu'il a gelée, donc antérieur). Hors de ce cas — une vue jamais condensée,
+  // ou deux horodatages égaux — le critère reste `lastModified` : une vue sans
+  // horodatage ne porte aucune preuve de fraîcheur de statut, et son statut peut
+  // avoir été écrit par `write`/`update`, qui n'en posent pas.
   // NB : js-yaml parse les timestamps frontmatter non quotés en Date — et
   // `Date > string ISO` rend TOUJOURS false en JS. Normaliser en ISO avant
   // toute comparaison.
   const lastModifiedIso = (v: string | Date | undefined): string =>
     v instanceof Date ? v.toISOString() : String(v ?? '');
+  const statusStamp = (v: Dashboard): string | undefined =>
+    v.intercom.lastCondensedAt === undefined ? undefined : lastModifiedIso(v.intercom.lastCondensedAt);
+  const fresherBy = (v: Dashboard, best: Dashboard): 'stamp' | 'lastModified' | null => {
+    const vStamp = statusStamp(v);
+    const bestStamp = statusStamp(best);
+    if (vStamp !== undefined && bestStamp !== undefined && vStamp !== bestStamp) {
+      return vStamp > bestStamp ? 'stamp' : null;
+    }
+    return lastModifiedIso(v.lastModified) > lastModifiedIso(best.lastModified) ? 'lastModified' : null;
+  };
   const statusHolder = distinctViews.reduce<Dashboard>(
-    (best, v) => (lastModifiedIso(v.lastModified) > lastModifiedIso(best.lastModified) ? v : best),
+    (best, v) => (fresherBy(v, best) === null ? best : v),
     distinctViews[0]
   );
+  // Le critère qui a réellement ordonné : l'horodatage n'a gouverné que si
+  // TOUTES les vues en portent un et qu'ils divergent — sinon `fresherBy` est
+  // retombé sur `lastModified` pour au moins une paire, et le rapport le dit.
+  const stampedViews = distinctViews.filter(v => statusStamp(v) !== undefined);
+  const statusBasis: 'stamp' | 'lastModified' =
+    stampedViews.length === distinctViews.length && new Set(stampedViews.map(statusStamp)).size > 1
+      ? 'stamp'
+      : 'lastModified';
   const statusFromSource = sourceViews.has(statusHolder);
   const lastDiffCommit =
     targetPg?.status.lastDiffCommit ??
@@ -5998,7 +6029,8 @@ async function handleMerge(
       `${target?.intercom.messages.length ?? 0} msg(cible) → ${mergedMessages.length} msg ` +
       `(${deduped} doublon(s) par id, ${newerSourceWins} résolu(s) vers la copie plus récente ; ` +
       `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}). ` +
-      `Statut retenu : ${statusFromSource ? 'source' : 'cible'} (lastModified plus récent). ` +
+      `Statut retenu : ${statusFromSource ? 'source' : 'cible'} ` +
+      `(${statusBasis === 'stamp' ? 'horodatage de condensation le plus récent' : 'lastModified le plus récent'}). ` +
       sourceDisposition
   };
 }
