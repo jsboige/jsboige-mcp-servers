@@ -53,7 +53,7 @@ function nullableConversationProperties<T extends Record<string, ToolPropertySch
 // ============================================================
 export const conversationBrowserDefinition = {
     name: 'conversation_browser',
-    description: 'Navigate, visualize and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster), rebuild. Gotchas: (1) ALWAYS start with "list" to discover IDs — other actions need task_id. (2) synthesis is disabled (#788), use trace or cluster. (3) For view, use smart_truncation:true for conversations >10K chars.',
+    description: 'Navigate, visualize and summarize conversations. Actions: list, tree, current, view, summarize (trace/cluster), rebuild. Gotchas: (1) ALWAYS start with "list" to discover IDs — other actions need task_id. (2) synthesis is disabled (#788), use trace or cluster. (3) For view, use smart_truncation:true for conversations >10K chars. Validated usability criteria (#3174 AC4): view renders within the requested budget and is self-sufficient (no second call needed); list lets you pick a session from its output alone (ago, sizeHuman, workspaceShort, machineId, pagination); summarize reports exact numbers without render noise (no <style> block).',
     inputSchema: {
         type: 'object',
         properties: {
@@ -227,7 +227,7 @@ export const roosyncIndexingDefinition = {
 // ============================================================
 export const codebaseSearchDefinition = {
     name: 'codebase_search',
-    description: 'Recherche sémantique dans le code par concept. ALWAYS pass workspace explicitly — auto-detection hard-fails if MCP roots/WORKSPACE_PATH unavailable (#1861). Use English keywords matching code vocabulary, not natural language.',
+    description: 'Recherche sémantique dans le code par concept. ALWAYS pass workspace explicitly — auto-detection hard-fails if MCP roots/WORKSPACE_PATH unavailable (#1861). Use English keywords matching code vocabulary, not natural language. Validated usability criterion (#3174 AC4): results are navigable — a real file:line pointing at the source, not a data/config copy (source files rank above fixtures since #1180).',
     inputSchema: {
         type: 'object',
         properties: {
