@@ -663,3 +663,73 @@ describe('action merge — workspace (cas CoursIA-like, cible vivante)', () => {
     expect(pgDeleteCheckedSpy).toHaveBeenCalledWith('workspace-CoursIA (1)');
   });
 });
+
+// #3782 §3 — le statut ne doit pas régresser : un fork VIVANT (donc de
+// `lastModified` plus récent, bumpé par ses appends) portait une copie FIGÉE du
+// statut et l'emportait. Mesure du 23/09 sur `workspace-CoursIA (1)` :
+// 11 964 caractères de statut dans le fork contre 14 993 sur la canonique — la
+// fusion aurait rendu le statut 3 Ko plus court que la clé qu'elle remplace.
+describe('action merge — le fork appendé ne peut pas imposer son statut périmé (#3782 §3)', () => {
+  it("statut retenu sur l'horodatage de condensation, pas sur lastModified", async () => {
+    // Cible : fichier plus ancien (05/09) mais statut condensé le PLUS RÉCEMMENT.
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z',
+      [M.m1old, M.m2],
+      { totalMessages: '9', lastCondensedAt: '2026-09-08T12:00:00.000Z' });
+    // Fork : fichier plus récent (appends) mais statut gelé AVANT cette
+    // condensation — sous l'ancien critère (`lastModified`), il l'emportait.
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z',
+      [M.m1new, M.m3],
+      { totalMessages: '10', lastCondensedAt: '2026-09-07T10:00:00.000Z' });
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toContain('Statut retenu : cible');
+    expect(String(result.message)).toContain('horodatage de condensation le plus récent');
+    const merged = fileText('machine-myia-po-2025.md');
+    expect(merged).toContain('Statut de machine-myia-po-2025.md');
+    expect(merged).not.toContain('Statut de machine-myia-po-2025 (1).md');
+    // L'union des journaux, elle, reste inchangée : rien n'est perdu côté messages.
+    expect(merged).toContain('m3 — fork seul');
+    expect(merged).toContain('m2 — cible seule');
+  });
+
+  it('aucune vue horodatée → repli inchangé sur lastModified (critère rapporté)', async () => {
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m2]);
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toContain('Statut retenu : source');
+    expect(String(result.message)).toContain('lastModified le plus récent');
+  });
+
+  // Limite NOMMÉE, pas un comportement souhaité : `write`/`update` écrivent le
+  // statut sans poser d'horodatage, donc deux vues dont le statut a été
+  // réécrit hors condensation partagent le même `lastCondensedAt` alors que
+  // leur contenu diverge — l'ordre reste indécidable et le critère retombe sur
+  // `lastModified`. Ce test fixe l'état actuel pour qu'il soit visible ; le
+  // remède serait un horodatage de statut posé par `write`/`update` aussi.
+  it('horodatages ÉGAUX + statuts divergents → indécidable, repli lastModified (limite nommée)', async () => {
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m2],
+      { lastCondensedAt: '2026-09-07T10:00:00.000Z' });
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3],
+      { lastCondensedAt: '2026-09-07T10:00:00.000Z' });
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toContain('Statut retenu : source');
+    expect(String(result.message)).toContain('lastModified le plus récent');
+  });
+});
