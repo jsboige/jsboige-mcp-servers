@@ -169,7 +169,7 @@ describe('roosync_read_inbox - Couverture icônes et troncature', () => {
   const messagesWithAllVariants = [
     {
       id: 'msg-1', from: 'machine-1', to: 'test-machine',
-      subject: 'Ce sujet est très long et devrait être tronqué car il dépasse 25 caractères',
+      subject: 'Ce sujet est volontairement très long et doit être tronqué car il dépasse désormais 120 caractères, un plafond qu aucun sujet réel de la flotte n atteint jamais',
       body: 'Body 1', preview: 'Preview 1', priority: 'URGENT',
       timestamp: '2026-01-15T10:00:00.000Z', status: 'unread', tags: []
     },

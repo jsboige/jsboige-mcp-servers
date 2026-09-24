@@ -339,12 +339,17 @@ Votre inbox est vide pour le moment.
   }
 
   // Tableau des messages
-  result += `| ID | De | Sujet | Priorité | Status | Date |\n`;
-  result += `|----|----|----|----------|--------|------|\n`;
+  // #3174: la colonne À distingue ce qui m'est adressé de ce qui ne fait que
+  // passer — sans elle, le tri coûte un appel action:"message" par ligne.
+  result += `| ID | De | À | Sujet | Priorité | Status | Date |\n`;
+  result += `|----|----|----|----|----------|--------|------|\n`;
 
   for (const msg of messages) {
     const fullId = msg.id;
-    const maxSubjectLength = 25;
+    // #3174: 25 chars gutted any subject behind a constant prefix ("Worker
+    // Report - " alone eats 16). 120 keeps every real fleet subject intact
+    // while bounding a pathological one.
+    const maxSubjectLength = 120;
     let shortSubject = msg.subject.length > maxSubjectLength ? msg.subject.substring(0, maxSubjectLength) + '...' : msg.subject;
     // Auto-destruct indicator (#629)
     if ((msg as any).destroyed_at) {
@@ -352,7 +357,7 @@ Votre inbox est vide pour le moment.
     } else if ((msg as any).auto_destruct) {
       shortSubject = `⏳ ${shortSubject}`;
     }
-    result += `| ${fullId} | ${msg.from} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
+    result += `| ${fullId} | ${msg.from} | ${msg.to} | ${shortSubject} | ${getPriorityIcon(msg.priority)} ${msg.priority} | ${getStatusIcon(msg.status)} ${msg.status} | ${formatDate(msg.timestamp)} |\n`;
   }
 
   result += `\n---\n\n`;
