@@ -497,9 +497,9 @@ describe('tool-definitions.ts — Schema Validation', () => {
     // static served schema. The tool-module schemas declare these keys and the
     // handlers read them, but the static definitions never exposed them — the
     // features were unreachable by every conforming caller.
-    // NOT exposed on purpose: roosync_indexing claude_code_sessions/max_sessions
-    // (sanctuary guard #1621 rejects them — advertising a forbidden lever on the
-    // wire would only invite rejected calls).
+    // Exposed since #1747 (RX46 24/09): roosync_indexing claude_code_sessions/
+    // max_sessions were deliberately NOT exposed while the #1621 sanctuary guard
+    // rejected them; the guard is lifted, so the params must be on the wire too.
     describe('wire-parity audit — roosync_search / roosync_indexing handler reads reachable on the wire', () => {
         it('roosync_search must expose reset_circuit_breaker (#2634 forward, diagnose action)', () => {
             const props = roosyncSearchDefinition.inputSchema.properties as Record<string, unknown>;
@@ -515,6 +515,17 @@ describe('tool-definitions.ts — Schema Validation', () => {
             const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, unknown>;
             expect(props).toHaveProperty('error_class');
             expect(props).toHaveProperty('max_cleanup_tasks');
+        });
+
+        // #1747 (RX46 24/09): guard lifted — the claude_code_sessions archive lever
+        // must now be reachable by conforming callers, not just by raw handler calls.
+        it('roosync_indexing must expose the claude_code_sessions archive params (guard lifted #1747)', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, unknown>;
+            expect(props).toHaveProperty('claude_code_sessions');
+            expect(props).toHaveProperty('max_sessions');
+            const flag = props.claude_code_sessions as { type?: string; default?: boolean };
+            expect(flag?.type).toBe('boolean');
+            expect(flag?.default).toBe(false);
         });
 
         // 6th occurrence of the class: trend_report fleet:true shipped on the

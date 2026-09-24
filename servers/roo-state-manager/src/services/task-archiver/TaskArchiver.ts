@@ -283,7 +283,10 @@ export class TaskArchiver {
      * Archive une session Claude Code depuis un fichier JSONL
      * Stocke sur GDrive avec un prefixe "claude-" pour distinguer des taches Roo
      *
-     * Meme strategie upgrade-if-v1 que archiveTask.
+     * Strategie upgrade-if-v1 + refresh (#1747, ruling RX46 24/09 : le sanctuaire
+     * est l'acces, pas le confinement) : une session Claude vivante grandit apres
+     * son premier archivage — l'archive v2 est refraichie quand le JSONL source
+     * est plus recent que l'archive, sinon la copie cloud devient perimee.
      */
     static async archiveClaudeCodeSession(
         sessionId: string,
@@ -294,10 +297,22 @@ export class TaskArchiver {
         const archiveDir = path.join(getArchiveBasePath(), machineId);
         const archivePath = path.join(archiveDir, `claude-${sessionId}.json.gz`);
 
-        // Verifier la version existante : skip si v2, upgrade si v1
+        // Verifier la version existante : skip si v2 ET source inchangee, upgrade si v1
         const existingVersion = await readArchiveVersion(archivePath);
         if (existingVersion !== null && existingVersion >= ARCHIVE_CURRENT_VERSION) {
-            return; // Deja en v2, rien a faire
+            try {
+                const [archiveStat, sourceStat] = await Promise.all([
+                    fs.stat(archivePath),
+                    fs.stat(jsonlPath),
+                ]);
+                if (sourceStat.mtimeMs <= archiveStat.mtimeMs) {
+                    return; // v2 et source inchangee — rien a faire
+                }
+                // Source plus recente : re-archiver (fall through)
+            } catch {
+                // stat indisponible (archive/source injoignables) : laisser le chemin
+                // normal tenter la relecture, ses erreurs sont gerées en aval
+            }
         }
 
         // Lire le fichier JSONL
@@ -338,7 +353,7 @@ export class TaskArchiver {
         const compressed = await gzipAsync(Buffer.from(jsonData, 'utf-8'));
         await fs.writeFile(archivePath, compressed);
 
-        const verb = existingVersion === 1 ? 'upgraded v1->v2' : 'archived';
+        const verb = existingVersion === 1 ? 'upgraded v1->v2' : existingVersion === 2 ? 'refreshed' : 'archived';
         console.log(`[ARCHIVE] Claude Code session ${sessionId} ${verb} (${messages.length} msgs, ${compressed.length} bytes gz)`);
     }
 

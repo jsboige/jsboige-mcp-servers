@@ -599,12 +599,12 @@ export const roosyncIndexingTool: Tool = {
             },
             claude_code_sessions: {
                 type: 'boolean',
-                description: 'Archive Claude Code sessions (BLOCKED - sessions are sanctuary).',
+                description: 'For action=archive. Archive Claude Code JSONL sessions to GDrive as cloud copies (#1747, RX46: sanctuary = access). Sessions that grew since their last archive are re-archived.',
                 default: false
             },
             max_sessions: {
                 type: 'number',
-                description: 'Max Claude Code sessions to archive (0 = all).',
+                description: 'For action=archive with claude_code_sessions=true. Max sessions to process (0 = all).',
                 default: 0
             },
             source: {
@@ -816,19 +816,10 @@ export async function handleRooSyncIndexing(
             const { TaskArchiver } = await import('../../services/task-archiver/index.js');
             const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
 
-            // GARDE-FOU SESSIONS SANCTUAIRE #1621
-            // Les sessions Claude/Roo sont sanctuarisées pour RL futur - aucun archivage sans approbation explicite
-            if (args.claude_code_sessions) {
-                return {
-                    isError: true,
-                    content: [{
-                        type: 'text',
-                        text: 'ERREUR: Les sessions Claude Code sont SANCTUAIRES pour Reinforcement Learning futur. Aucun archivage ne peut être effectué sans approbation utilisateur explicite. Voir: #1621'
-                    }]
-                };
-            }
-
-            // Support pour l'archivage des sessions Claude Code (bloqué par le garde-fou ci-dessus)
+            // #1747 (ruling user RX46, 24/09): le sanctuaire des sessions est l'ACCÈS, pas le
+            // confinement — la copie cloud est la voie voulue. Le garde-fou #1621 qui bloquait
+            // ce chemin est levé; l'action reste un opt-in explicite (claude_code_sessions=true)
+            // et n'écrit jamais sur la source (gzip vers GDrive uniquement).
             if (args.claude_code_sessions) {
                 const os = await import('os');
                 const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');

@@ -11,16 +11,21 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
 
 // Mock external dependencies before importing
-const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir, mockExistsSync } = vi.hoisted(() => ({
-	mockReadFile: vi.fn(),
-	mockWriteFile: vi.fn(),
-	mockMkdir: vi.fn(),
-	mockAccess: vi.fn(),
-	mockReaddir: vi.fn(),
-	// #608: getArchiveBasePath() sonde les deux emplacements d'archive.
-	// Mocke pour que la resolution reste deterministe sans toucher le disque.
-	mockExistsSync: vi.fn(() => false),
-}));
+const { mockReadFile, mockWriteFile, mockMkdir, mockAccess, mockReaddir, mockExistsSync, mockStat, mockCreateReadStream, jsonlLines } =
+	vi.hoisted(() => ({
+		mockReadFile: vi.fn(),
+		mockWriteFile: vi.fn(),
+		mockMkdir: vi.fn(),
+		mockAccess: vi.fn(),
+		mockReaddir: vi.fn(),
+		// #608: getArchiveBasePath() sonde les deux emplacements d'archive.
+		// Mocke pour que la resolution reste deterministe sans toucher le disque.
+		mockExistsSync: vi.fn(() => false),
+		// #1747: freshness check (stat archive vs source) + readJsonlFile stream.
+		mockStat: vi.fn(),
+		mockCreateReadStream: vi.fn(),
+		jsonlLines: [] as string[],
+	}));
 
 vi.mock('fs', () => ({
 	promises: {
@@ -29,8 +34,10 @@ vi.mock('fs', () => ({
 		mkdir: mockMkdir,
 		access: mockAccess,
 		readdir: mockReaddir,
+		stat: mockStat,
 	},
 	existsSync: mockExistsSync,
+	createReadStream: mockCreateReadStream,
 	default: {
 		promises: {
 			readFile: mockReadFile,
@@ -38,10 +45,28 @@ vi.mock('fs', () => ({
 			mkdir: mockMkdir,
 			access: mockAccess,
 			readdir: mockReaddir,
+			stat: mockStat,
 		},
 		existsSync: mockExistsSync,
+		createReadStream: mockCreateReadStream,
 	},
 }));
+
+// #1747: readJsonlFile parse le JSONL via readline sur un stream — fake emitter
+// pilote par le holder hoisted, pour driver 'line'/'close' sans disque.
+vi.mock('readline', () => {
+	const createInterface = () => ({
+		on(event: string, cb: (arg?: unknown) => void) {
+			if (event === 'line') {
+				for (const line of jsonlLines) cb(line);
+			} else if (event === 'close') {
+				cb();
+			}
+			return this;
+		},
+	});
+	return { createInterface, default: { createInterface } };
+});
 
 vi.mock('os', () => {
 	const m = {
@@ -76,7 +101,9 @@ vi.mock('zlib', () => ({
 
 vi.mock('util', () => ({
 	promisify: (fn: any) => {
-		if (fn === mockGzip) return async (buf: Buffer) => Buffer.from(JSON.stringify({ compressed: true }));
+		// Passthrough symetrique au gunzip : un "gzipped" archive = le payload brut
+		// (convention documentee ci-dessus), ce qui rend les buffers ecrits lisibles.
+		if (fn === mockGzip) return async (buf: Buffer) => buf;
 		if (fn === mockGunzip) return async (buf: Buffer) => buf;
 		return fn;
 	},
@@ -90,6 +117,7 @@ import { TaskArchiver } from '../TaskArchiver.js';
 describe('TaskArchiver', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		jsonlLines.length = 0;
 	});
 
 	// ============================================================
@@ -377,20 +405,63 @@ describe('TaskArchiver', () => {
 	// ============================================================
 
 	describe('archiveClaudeCodeSession', () => {
-		test('skips if Claude Code session already archived as v2', async () => {
+		// Ligne JSONL valide pour transformClaudeCodeJsonl (message non vide requis).
+		const jsonlLine = (content: string, role = 'user') =>
+			JSON.stringify({ timestamp: '2026-01-01T00:00:00Z', message: { role, content } });
+
+		test('skips if Claude Code session already archived as v2 and source unchanged', async () => {
 			mockReadFile.mockResolvedValueOnce(
 				Buffer.from(JSON.stringify({ version: 2, taskId: 'x', messages: [] }))
 			);
+			// #1747 freshness check : stat(archive) puis stat(source) via Promise.all
+			// — archive plus recente que la source → skip.
+			mockStat.mockResolvedValueOnce({ mtimeMs: 2000 }); // archive
+			mockStat.mockResolvedValueOnce({ mtimeMs: 1000 }); // source
 			await TaskArchiver.archiveClaudeCodeSession('session-456', '/path/to/session.jsonl');
-			// Version check returned v2 → skip path, no mkdir/writeFile.
+			// Version check + les deux stats ; aucun re-archivage.
 			expect(mockReadFile).toHaveBeenCalledTimes(1);
+			expect(mockStat).toHaveBeenCalledTimes(2);
+			expect(mockCreateReadStream).not.toHaveBeenCalled();
 			expect(mockWriteFile).not.toHaveBeenCalled();
+		});
+
+		test('refreshes a v2 archive when the source JSONL grew (mtime newer) (#1747)', async () => {
+			mockReadFile.mockResolvedValueOnce(
+				Buffer.from(JSON.stringify({ version: 2, taskId: 'x', messages: [] }))
+			);
+			// Archive plus ancienne que la source → fall through vers le re-archivage.
+			mockStat.mockResolvedValueOnce({ mtimeMs: 1000 }); // archive
+			mockStat.mockResolvedValueOnce({ mtimeMs: 2000 }); // source
+			jsonlLines.push(jsonlLine('hello'), jsonlLine('world again', 'assistant'));
+
+			await TaskArchiver.archiveClaudeCodeSession('session-456', '/path/to/session.jsonl');
+
+			expect(mockCreateReadStream).toHaveBeenCalledWith('/path/to/session.jsonl', { encoding: 'utf-8' });
+			expect(mockWriteFile).toHaveBeenCalledTimes(1);
+			const written = JSON.parse((mockWriteFile.mock.calls[0][1] as Buffer).toString('utf-8'));
+			expect(written.version).toBe(2);
+			expect(written.metadata.source).toBe('claude-code');
+			expect(written.metadata.messageCount).toBe(2);
+		});
+
+		test('falls through to re-archive when stat fails on a v2 archive (#1747)', async () => {
+			mockReadFile.mockResolvedValueOnce(
+				Buffer.from(JSON.stringify({ version: 2, taskId: 'x', messages: [] }))
+			);
+			mockStat.mockRejectedValueOnce(new Error('ENOENT')); // stat archive
+			jsonlLines.push(jsonlLine('recovered content'));
+
+			await TaskArchiver.archiveClaudeCodeSession('session-789', '/path/to/session.jsonl');
+
+			// stat KO ne bloque pas : le chemin normal re-lit et re-archivera si lisible.
+			expect(mockCreateReadStream).toHaveBeenCalled();
+			expect(mockWriteFile).toHaveBeenCalledTimes(1);
 		});
 
 		test('handles no message files found gracefully', async () => {
 			mockReadFile.mockRejectedValueOnce(new Error('ENOENT')); // archive version check
-			// readJsonlFile uses createReadStream which will fail, simulating no valid JSONL
-			// The archiveClaudeCodeSession should handle this by catching and returning early
+			// readJsonlFile resolves with zero lines → transformClaudeCodeJsonl → []
+			// → early return, pas d'ecriture.
 			await TaskArchiver.archiveClaudeCodeSession('session-empty', '/path/to/session.jsonl');
 			// Should not attempt to write if parsing fails
 			expect(mockWriteFile).not.toHaveBeenCalled();
