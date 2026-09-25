@@ -2,7 +2,7 @@
  * Tests for UnifiedTask schema — #1391
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   UnifiedTaskSchema,
   toUnifiedTask,
@@ -266,6 +266,18 @@ describe('toUnifiedTask', () => {
 // ─── computeStorageTier ───────────────────────────────────────────────────────
 
 describe('computeStorageTier', () => {
+  // Fake timers freeze Date.now(): computeStorageTier calls it internally
+  // (unified-task.ts) and the boundary fixtures below call it again — with
+  // real timers, a 1 ms drift between the two calls pushes "just under 7/90
+  // days" over the boundary and flips the tier (observed on the 90 d case).
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test('returns hot for recent tasks (<=7 days)', () => {
     const task = { ...validClaudeTask, lastActivity: new Date().toISOString() };
     expect(computeStorageTier(task)).toBe('hot');
@@ -286,7 +298,6 @@ describe('computeStorageTier', () => {
   });
 
   test('boundary: just under 7 days = hot', () => {
-    // Use -1ms to avoid microsecond drift between Date.now() calls
     const date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000 + 1).toISOString();
     const task = { ...validClaudeTask, lastActivity: date };
     expect(computeStorageTier(task)).toBe('hot');
