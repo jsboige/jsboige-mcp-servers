@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -1671,6 +1671,204 @@ describe('roosync_dashboard', () => {
       // Sanity: detectStatusContradictions still fires on the deduped content
       const contradictions = detectStatusContradictions(deduped);
       expect(contradictions.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ============================================================
+  // Tests reconcileStatusContradictions (#3803 — règle RX38 :
+  // dernier état daté gagne, déterministe ; sans horodatage
+  // comparable, rien n'est fondu)
+  // ============================================================
+  describe('reconcileStatusContradictions (#3803)', () => {
+    it('reconciles a dated DOWN-vs-opérationnel pair: latest state wins, older line dropped', () => {
+      const status = [
+        '## [global] — État au 2026-09-23T12:43:00.000Z',
+        '',
+        '### État des systèmes',
+        '- **po-2026** : embeddings DOWN 08:00Z (wedge embedding-proxy-logger)',
+        '- **po-2026** : embeddings opérationnel depuis 10:00Z (restart ciblé)',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(1);
+      const entry = rec.reconciled[0]!;
+      expect(entry.entity).toBe('po-2026');
+      expect(entry.keptLine).toContain('opérationnel');
+      expect(entry.keptTimestamp).toBe('2026-09-23 10:00');
+      expect(entry.droppedLines).toHaveLength(1);
+      expect(entry.droppedLines[0]!.line).toContain('DOWN');
+      expect(rec.status).toContain('opérationnel');
+      expect(rec.status).not.toContain('DOWN 08:00Z');
+    });
+
+    it('reconciles the five real 23/09 contradictions (dated reconstructions from the issue body)', () => {
+      const status = [
+        '## [global] — État au 2026-09-23T12:43:00.000Z',
+        '',
+        '### État des systèmes',
+        '- **ai-01** : mémoire WSL bloqué, arbitrage requis (06:30Z)',
+        '- **ai-01** : crash Docker/WSL résolu (22:10Z)',
+        '- **po-2024** : analyse minidump BSOD bloqué (07:15Z)',
+        '- **po-2024** : jambe claudish #2612 résolue (08:00Z)',
+        '- **po-2025** : census GDrive en cours (09:00Z)',
+        '- **po-2025** : runbook T0 résolu (10:00Z)',
+        '- **po-2026** : embeddings DOWN 08:00Z (wedge logger)',
+        '- **po-2026** : hub vision résolu (05:00Z)',
+        '- **po-2026** : résidu g33 bloqué (05:30Z)',
+        '- **po-2026** : embeddings opérationnel 10:00Z (restart ciblé)',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      const entities = new Set(contradictions.map(c => c.entity));
+      // Les 4 entités contradictoires du body sont détectées
+      for (const e of ['ai-01', 'po-2024', 'po-2025', 'po-2026']) {
+        expect(entities.has(e)).toBe(true);
+      }
+      const rec = reconcileStatusContradictions(status, contradictions);
+      const recEntities = new Set(rec.reconciled.map(r => r.entity));
+      for (const e of ['ai-01', 'po-2024', 'po-2025', 'po-2026']) {
+        expect(recEntities.has(e)).toBe(true);
+      }
+      // Le dernier état daté gagne pour chacune
+      expect(rec.status).toContain('crash Docker/WSL résolu');
+      expect(rec.status).not.toContain('mémoire WSL bloqué');
+      expect(rec.status).toContain('jambe claudish #2612 résolue');
+      expect(rec.status).not.toContain('minidump BSOD bloqué');
+      expect(rec.status).toContain('runbook T0 résolu');
+      expect(rec.status).not.toContain('census GDrive en cours');
+      expect(rec.status).toContain('embeddings opérationnel 10:00Z');
+      expect(rec.status).not.toContain('embeddings DOWN 08:00Z');
+      // po-2026 : les DEUX paires participent (union des mots-clés) — les trois
+      // lignes plus anciennes tombent, l'opérationnel 10:00Z reste seul
+      expect(rec.status).not.toContain('résidu g33 bloqué');
+      expect(rec.status).not.toContain('hub vision résolu');
+    });
+
+    it('negative case (RX38): undated contradictory states are NEVER merged — nothing erased', () => {
+      const status = [
+        '## [global] — État au 2026-09-23T12:43:00.000Z',
+        '',
+        '- **web1** : battement mcp-chain absent (offline)',
+        '- **web1** : hôte ok, sessions vivantes',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(0);
+      expect(rec.status).toBe(status);
+    });
+
+    it('negative case: heterogeneous precision (date-only vs time-only, same day) is not comparable', () => {
+      const status = [
+        '## [global] — État au 2026-09-24T14:16:06.696Z',
+        '',
+        '- **web1** : battement absent depuis 24/09 (offline)',
+        '- **web1** : hôte ok à 11:11Z',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(0);
+      expect(rec.status).toContain('battement absent depuis 24/09');
+      expect(rec.status).toContain('hôte ok à 11:11Z');
+    });
+
+    it('negative case: strict tie (same timestamp, different states) is not resolvable', () => {
+      const status = [
+        '## Status — État au 2026-09-23T12:43:00.000Z',
+        '',
+        '- **qdrant** : UP (10:00Z)',
+        '- **qdrant** : DOWN (10:00Z)',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(0);
+      expect(rec.status).toContain('UP (10:00Z)');
+      expect(rec.status).toContain('DOWN (10:00Z)');
+    });
+
+    it('all-or-nothing: ONE undated conflicting line blocks the whole entity', () => {
+      const status = [
+        '## [global] — État au 2026-09-23T12:43:00.000Z',
+        '',
+        '- **po-2023** : IIS qdrant.myia.io DOWN (07:00Z)',
+        '- **po-2023** : infra globale opérationnelle',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(0);
+      expect(rec.status).toContain('IIS qdrant.myia.io DOWN');
+    });
+
+    it('recency beats polarity: a LATER negative state wins over an earlier positive one', () => {
+      const status = [
+        '## [global] — État au 2026-09-24T14:16:06.696Z',
+        '',
+        '- **vllm** : UP et opérationnel (2026-09-23T10:00:00Z)',
+        '- **vllm** : DOWN depuis 2026-09-24T06:00:00Z',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(1);
+      expect(rec.reconciled[0]!.keptLine).toContain('DOWN');
+      expect(rec.status).not.toContain('UP et opérationnel');
+    });
+
+    it('line with several timestamps: the one nearest a state keyword is the line\'s timestamp', () => {
+      const status = [
+        '## [global] — État au 2026-09-24T14:16:06.696Z',
+        '',
+        '- **ai-01** : battement absent 07:29Z ; vLLM opérationnel depuis 12:11Z',
+        '- **ai-01** : vLLM DOWN (08:00Z)',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.reconciled).toHaveLength(1);
+      expect(rec.reconciled[0]!.keptLine).toContain('opérationnel');
+      // La ligne gardée porte 12:11Z (près du mot-clé), pas 07:29Z (battement)
+      expect(rec.reconciled[0]!.keptTimestamp).toBe('2026-09-24 12:11');
+      expect(rec.status).not.toContain('vLLM DOWN (08:00Z)');
+      // La ligne gagnante survit intégralement (le fait « battement absent » n'est pas amputé)
+      expect(rec.status).toContain('battement absent 07:29Z');
+    });
+
+    it('preserves unrelated lines and list structure around reconciled drops', () => {
+      const status = [
+        '## [global] — État au 2026-09-23T12:43:00.000Z',
+        '',
+        '### Résumé',
+        'Flotte stable.',
+        '',
+        '### État des systèmes',
+        '- **po-2024** : jambe claudish résolue (08:00Z)',
+        '- **po-2024** : analyse BSOD bloqué (07:15Z)',
+        '- **po-2025** : HEALTHY, rien à signaler',
+      ].join('\n');
+      const contradictions = detectStatusContradictions(status);
+      const rec = reconcileStatusContradictions(status, contradictions);
+      expect(rec.status).toContain('### Résumé');
+      expect(rec.status).toContain('Flotte stable.');
+      expect(rec.status).toContain('HEALTHY, rien à signaler');
+      expect(rec.status).toContain('jambe claudish résolue');
+      expect(rec.status).not.toContain('BSOD bloqué');
+    });
+
+    it('regression #3803: stale #3803 RECONCILED markers are stripped before re-emission (same dedup as #3329)', () => {
+      const staleStatus = [
+        '## Status',
+        '- vllm : DOWN (ancien 08:00Z)',
+        '- vllm : opérationnel (10:00Z)',
+        '',
+        '<!-- #3803 RECONCILED: vllm kept «vllm : opérationnel» (2026-09-23 10:00) — dropped 1 older contradictory line(s): «vllm : DOWN» (2026-09-23 08:00) -->',
+      ].join('\n');
+      const stripped = staleStatus
+        .replace(/^[ \t]*<!-- #1502 CONTRADICTION:.*-->[ \t]*\n?/gm, '')
+        .replace(/^[ \t]*<!-- #3803 RECONCILED:.*-->[ \t]*\n?/gm, '')
+        .trimEnd();
+      expect(stripped).not.toContain('#3803 RECONCILED');
+      expect(stripped).toContain('## Status');
+      expect(stripped).toContain('opérationnel');
     });
   });
 
