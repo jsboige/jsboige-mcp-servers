@@ -13,10 +13,15 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { promises as fs } from 'fs';
+import path from 'path';
+import os from 'os';
 
-const { peekMock, hydrateMock } = vi.hoisted(() => ({
+const { peekMock, hydrateMock, detectMock, analyzeMock } = vi.hoisted(() => ({
 	peekMock: vi.fn(),
 	hydrateMock: vi.fn(),
+	detectMock: vi.fn(),
+	analyzeMock: vi.fn(),
 }));
 
 vi.mock('../../services/skeleton-cache.service.js', () => ({
@@ -27,6 +32,13 @@ vi.mock('../../services/skeleton-cache.service.js', () => ({
 		}),
 		reset: vi.fn(),
 		configure: vi.fn(),
+	},
+}));
+
+vi.mock('../../utils/roo-storage-detector.js', () => ({
+	RooStorageDetector: {
+		detectStorageLocations: detectMock,
+		analyzeConversation: analyzeMock,
 	},
 }));
 
@@ -60,6 +72,11 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 	beforeEach(() => {
 		peekMock.mockReset();
 		hydrateMock.mockReset();
+		detectMock.mockReset();
+		analyzeMock.mockReset();
+		// Défaut déterministe : aucune location Roo locale (le garde de
+		// précédence passe, l'archive n'a pas de dossier local).
+		detectMock.mockResolvedValue([]);
 	});
 
 	test('stub chaud → view hydrate, publie le corps dans conversationCache et le rend', async () => {
@@ -108,5 +125,75 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 		await expect(
 			viewConversationTree.handler({ task_id: 't-web1' }, cache)
 		).rejects.toThrow("Task with ID 't-web1' not found");
+	});
+
+	// ---- #1217 follow-up 1 (review ai-01) : re-view après éviction LRU ----
+	// Le write-back de #1217 stocke la MÊME référence que l'entrée du
+	// SkeletonCacheService ; l'éviction la déshydrate in place — conversation
+	// Cache tient alors un stub (séquence vide, messageCount > 0) et le view
+	// rendait skeleton-only sans jamais ré-hydrater.
+
+	test('re-view après éviction LRU (stub déshydraté dans conversationCache) → ré-hydrate et rend le corps', async () => {
+		const evicted = tier3Stub('t-web1');
+		const cache = new Map<string, ConversationSkeleton>();
+		cache.set('t-web1', evicted);
+		peekMock.mockReturnValueOnce(evicted).mockReturnValueOnce(tier3Body('t-web1'));
+		hydrateMock.mockResolvedValue(true);
+
+		const result = await viewConversationTree.handler(
+			{ task_id: 't-web1', view_mode: 'single', detail_level: 'full' },
+			cache
+		);
+
+		expect(hydrateMock).toHaveBeenCalledWith('t-web1');
+		expect((result.content[0] as any).text).toContain('distant archive body');
+	});
+
+	test('ré-hydratation impossible (helper null) sur stub en cache → dégradation skeleton-only, pas de crash', async () => {
+		const evicted = tier3Stub('t-web1');
+		const cache = new Map<string, ConversationSkeleton>();
+		cache.set('t-web1', evicted);
+		peekMock.mockReturnValue(tier3Stub('t-web1'));
+		hydrateMock.mockResolvedValue(false);
+
+		const result = await viewConversationTree.handler(
+			{ task_id: 't-web1', view_mode: 'single', detail_level: 'full' },
+			cache
+		);
+
+		const text = (result.content[0] as any).text;
+		expect(text).toContain('Skeleton Only');
+		expect(text).not.toContain('distant archive body');
+	});
+
+	test('#1217 follow-up 3 — précédence local > archive : dossier tasks/<id> vivant → le local est servi, Tier 3 jamais hydraté', async () => {
+		// Vrai mkdir : le garde (existsSync réel dans le helper) et le fs.stat
+		// du chemin Roo voient le dossier comme le runtime le verra.
+		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'view-tier3-guard-'));
+		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
+		try {
+			const evicted = tier3Stub('t-web1');
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('t-web1', evicted);
+			peekMock.mockReturnValue(tier3Stub('t-web1'));
+			hydrateMock.mockResolvedValue(true);
+			detectMock.mockResolvedValue([tmpBase]);
+			analyzeMock.mockResolvedValue({
+				taskId: 't-web1',
+				metadata: { ...tier3Stub('t-web1').metadata, dataSource: 'roo', messageCount: 1 },
+				sequence: [{ role: 'user', content: 'fresh local body', timestamp: '2026-09-25T00:00:00.000Z' }],
+			} as any);
+
+			const result = await viewConversationTree.handler(
+				{ task_id: 't-web1', view_mode: 'single', detail_level: 'full' },
+				cache
+			);
+
+			expect(hydrateMock).not.toHaveBeenCalled();
+			expect((result.content[0] as any).text).toContain('fresh local body');
+			expect((result.content[0] as any).text).not.toContain('distant archive body');
+		} finally {
+			await fs.rm(tmpBase, { recursive: true, force: true });
+		}
 	});
 });
