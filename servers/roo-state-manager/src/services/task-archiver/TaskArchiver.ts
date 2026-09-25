@@ -31,6 +31,14 @@ function getMachineId(): string {
     return os.hostname().toLowerCase();
 }
 
+// #1747 (C2): les sessionIds composites du batch portent des separateurs de
+// chemin (`projet/session/fichier`). A plat dans un nom de fichier ils creent
+// une arborescence sous archiveDir que le mkdir ne cree pas (ENOENT), et le
+// layout attendu par readArchivedTask / listArchivedTasksBySource est plat.
+function sanitizeClaudeSessionId(sessionId: string): string {
+    return sessionId.replace(/[/\\]/g, '__');
+}
+
 interface UiMessage {
     author: 'user' | 'agent';
     text: string;
@@ -283,7 +291,10 @@ export class TaskArchiver {
      * Archive une session Claude Code depuis un fichier JSONL
      * Stocke sur GDrive avec un prefixe "claude-" pour distinguer des taches Roo
      *
-     * Meme strategie upgrade-if-v1 que archiveTask.
+     * Strategie upgrade-if-v1 + refresh (#1747, ruling RX46 24/09 : le sanctuaire
+     * est l'acces, pas le confinement) : une session Claude vivante grandit apres
+     * son premier archivage — l'archive v2 est refraichie quand le JSONL source
+     * est plus recent que l'archive, sinon la copie cloud devient perimee.
      */
     static async archiveClaudeCodeSession(
         sessionId: string,
@@ -292,12 +303,25 @@ export class TaskArchiver {
     ): Promise<void> {
         const machineId = getMachineId();
         const archiveDir = path.join(getArchiveBasePath(), machineId);
-        const archivePath = path.join(archiveDir, `claude-${sessionId}.json.gz`);
+        const safeSessionId = sanitizeClaudeSessionId(sessionId);
+        const archivePath = path.join(archiveDir, `claude-${safeSessionId}.json.gz`);
 
-        // Verifier la version existante : skip si v2, upgrade si v1
+        // Verifier la version existante : skip si v2 ET source inchangee, upgrade si v1
         const existingVersion = await readArchiveVersion(archivePath);
         if (existingVersion !== null && existingVersion >= ARCHIVE_CURRENT_VERSION) {
-            return; // Deja en v2, rien a faire
+            try {
+                const [archiveStat, sourceStat] = await Promise.all([
+                    fs.stat(archivePath),
+                    fs.stat(jsonlPath),
+                ]);
+                if (sourceStat.mtimeMs <= archiveStat.mtimeMs) {
+                    return; // v2 et source inchangee — rien a faire
+                }
+                // Source plus recente : re-archiver (fall through)
+            } catch {
+                // stat indisponible (archive/source injoignables) : laisser le chemin
+                // normal tenter la relecture, ses erreurs sont gerées en aval
+            }
         }
 
         // Lire le fichier JSONL
@@ -319,7 +343,7 @@ export class TaskArchiver {
 
         const archived: ArchivedTask = {
             version: ARCHIVE_CURRENT_VERSION,
-            taskId: sessionId,
+            taskId: safeSessionId,
             machineId,
             hostIdentifier: getHostIdentifier(),
             archivedAt: new Date().toISOString(),
@@ -338,7 +362,7 @@ export class TaskArchiver {
         const compressed = await gzipAsync(Buffer.from(jsonData, 'utf-8'));
         await fs.writeFile(archivePath, compressed);
 
-        const verb = existingVersion === 1 ? 'upgraded v1->v2' : 'archived';
+        const verb = existingVersion === 1 ? 'upgraded v1->v2' : existingVersion === 2 ? 'refreshed' : 'archived';
         console.log(`[ARCHIVE] Claude Code session ${sessionId} ${verb} (${messages.length} msgs, ${compressed.length} bytes gz)`);
     }
 
@@ -367,6 +391,28 @@ export class TaskArchiver {
                     for (const sessionDir of sessionDirs) {
                         const sessionPath = path.join(projectPath, sessionDir);
                         const sessionStat = await fs.stat(sessionPath);
+
+                        // #1747 (C1) : les sessions principales sont des fichiers
+                        // <uuid>.jsonl poses a PLAT dans le repertoire projet
+                        // (profondeur 2). L'ancien filtre isDirectory() ne voyait
+                        // que les transcripts de subagents (profondeur >= 3).
+                        if (sessionStat.isFile()) {
+                            if (!sessionDir.endsWith('.jsonl')) continue;
+                            try {
+                                const sessionId = `${project}/${sessionDir.replace(/\.jsonl$/, '')}`;
+                                await TaskArchiver.archiveClaudeCodeSession(sessionId, sessionPath);
+                                archivedCount++;
+                            } catch (err) {
+                                console.error(`[ARCHIVE] Failed to archive ${sessionPath}: ${err}`);
+                                failedCount++;
+                            }
+
+                            processedCount++;
+                            if (maxSessions && processedCount >= maxSessions) {
+                                return { archived: archivedCount, failed: failedCount };
+                            }
+                            continue;
+                        }
                         if (!sessionStat.isDirectory()) continue;
 
                         // Chercher des fichiers JSONL dans ce repertoire ou sous-repertoires
@@ -449,8 +495,12 @@ export class TaskArchiver {
             const rooResult = await TaskArchiver.readArchivedTaskFromPath(rooArchivePath);
             if (rooResult) return rooResult;
 
-            // Essayer le format Claude Code
-            const claudeArchivePath = path.join(archiveBase, machineDir, `claude-${taskId}.json.gz`);
+            // Essayer le format Claude Code (sessionId sanitize : cf. sanitizeClaudeSessionId)
+            const claudeArchivePath = path.join(
+                archiveBase,
+                machineDir,
+                `claude-${sanitizeClaudeSessionId(taskId)}.json.gz`
+            );
             const claudeResult = await TaskArchiver.readArchivedTaskFromPath(claudeArchivePath);
             if (claudeResult) return claudeResult;
         }

@@ -210,6 +210,10 @@ describe('TaskArchiver - Additional Coverage Tests', () => {
 			mockReadFile.mockResolvedValueOnce(
 				Buffer.from(JSON.stringify({ version: 2, taskId: 'x', messages: [] }))
 			);
+			// #1747 freshness check : stat(archive) puis stat(source) — archive
+			// plus recente que la source → skip conserve.
+			mockStat.mockResolvedValueOnce({ mtimeMs: 2000 }); // archive
+			mockStat.mockResolvedValueOnce({ mtimeMs: 1000 }); // source
 			const jsonlPath = '/some/weird/path/conversations.jsonl';
 
 			await TaskArchiver.archiveClaudeCodeSession('session-123', jsonlPath, 'Custom Title');

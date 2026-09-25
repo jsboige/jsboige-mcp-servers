@@ -355,47 +355,38 @@ describe('roosyncIndexingTool', () => {
 	});
 
 	// ============================================================
-	// Archive action - Claude Code sessions (#611)
+	// Archive action - Claude Code sessions (#611, garde levée #1747/RX46)
 	// ============================================================
 
-	test('archive action with claude_code_sessions=true returns error (sanctuary protection)', async () => {
-		// Sanctuary protection prevents this path from being reached
+	test('archive action with claude_code_sessions=true delegates to TaskArchiver (#1747)', async () => {
+		mockArchiveClaudeCodeSessions.mockResolvedValueOnce({ archived: 5, failed: 1 });
 
 		const result = await handleRooSyncIndexing(
 			{ action: 'archive', claude_code_sessions: true },
 			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
 		);
 
-		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
-		expect((result as any).isError).toBe(true);
-		expect(result.content[0].text).toContain('SANCTUAIRES');
-		expect(result.content[0].text).toContain('Reinforcement Learning futur');
+		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalledTimes(1);
+		const callArgs = mockArchiveClaudeCodeSessions.mock.calls[0];
+		expect(callArgs[0]).toContain('.claude');
+		expect(callArgs[0]).toContain('projects');
+		expect(callArgs[1]).toBe(0);
+		expect((result as any).isError).toBe(false);
+		expect(result.content[0].text).toContain('5 réussies');
+		expect(result.content[0].text).toContain('1 échecs');
 	});
 
-	test('archive action with claude_code_sessions and max_sessions returns error (sanctuary protection)', async () => {
-		// Sanctuary protection prevents this path from being reached
+	test('archive action with claude_code_sessions and max_sessions=10 passes the cap (#1747)', async () => {
+		mockArchiveClaudeCodeSessions.mockResolvedValueOnce({ archived: 10, failed: 0 });
 
 		const result = await handleRooSyncIndexing(
 			{ action: 'archive', claude_code_sessions: true, max_sessions: 10 },
 			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
 		);
 
-		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
-		expect((result as any).isError).toBe(true);
-			expect(result.content[0].text).toContain('SANCTUAIRES');
-		expect(result.content[0].text).toContain('Reinforcement Learning futur');
-	});
-
-	test('archive action with claude_code_sessions=true returns error (sanctuary protection)', async () => {
-		const result = await handleRooSyncIndexing(
-			{ action: 'archive', claude_code_sessions: true },
-			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
-		);
-
-		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
-		expect((result as any).isError).toBe(true);
-		expect(result.content[0].text).toContain('SANCTUAIRES');
-		expect(result.content[0].text).toContain('Reinforcement Learning futur');
+		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalledWith(expect.any(String), 10);
+		expect((result as any).isError).toBe(false);
+		expect(result.content[0].text).toContain('10 réussies');
 	});
 });
 
@@ -1163,15 +1154,16 @@ describe('roosync_indexing archive action', () => {
 		vi.clearAllMocks();
 	});
 
-	test('blocks claude_code_sessions with sanctuary error (#1621, L358-366)', async () => {
+	test('claude_code_sessions archive goes through — guard lifted (#1747, RX46)', async () => {
+		mockArchiveClaudeCodeSessions.mockResolvedValueOnce({ archived: 2, failed: 0 });
 		const result: any = await handleRooSyncIndexing(
 			{ action: 'archive', claude_code_sessions: true } as any,
 			new Map(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
 		);
-		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toContain('SANCTUAIRES');
-		// The unreachable 2nd claude_code_sessions block (L369) must NOT execute
-		expect(mockArchiveClaudeCodeSessions).not.toHaveBeenCalled();
+		expect(result.isError).toBe(false);
+		// The claude_code_sessions branch (ex-guarded #1621) now executes
+		expect(mockArchiveClaudeCodeSessions).toHaveBeenCalledTimes(1);
+		expect(result.content[0].text).toContain('2 réussies');
 	});
 
 	test('returns error when task_id not found locally (L389-393)', async () => {
