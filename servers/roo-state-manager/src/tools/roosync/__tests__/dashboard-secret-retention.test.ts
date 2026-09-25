@@ -61,6 +61,14 @@ vi.mock('@/services/openai', () => ({
 
 import { roosyncDashboard } from '../dashboard.js';
 
+// web1 measured this suite at 15-20 s under parallel CI load (#1222): the
+// tests drive real fs I/O (42 KB pads, several full dashboard read-modify-write
+// cycles per case), so the 15 s suite-level default (vitest.config.ts
+// testTimeout) flips the late tests over their timeout whenever a heavy
+// sibling file runs in parallel. 30 s keeps the suite light to schedule while
+// clearing the measured ceiling with margin.
+vi.setConfig({ testTimeout: 30_000 });
+
 const LEAKED_KEY = '89ed6fb1' + 'a1b2c3d4'.repeat(7);
 const REDACTION = '<redacted:EMBEDDINGS_API_KEY>';
 const GIT_SHA = 'b'.repeat(40);
