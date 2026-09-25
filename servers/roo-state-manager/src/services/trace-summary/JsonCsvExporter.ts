@@ -222,7 +222,9 @@ export class JsonCsvExporter {
         if (userMessages.length > 0) {
             return userMessages[0].content || '';
         }
-        return '';
+        // #3174: no user message in the sequence (slash-command sessions whose
+        // preview was a bare placeholder) — fall back to the session title.
+        return conversation.metadata.title || '';
     }
 
     private convertToJsonMessages(

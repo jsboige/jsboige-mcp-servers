@@ -145,7 +145,9 @@ describe('generateJsonSummary — light variant', () => {
 
         expect(result.success).toBe(true);
         const parsed = JSON.parse(result.content);
-        expect(parsed.conversations[0].firstUserMessage).toBe('');
+        // #3174: with no user message in the sequence, the session title is the
+        // fallback preview (the fixture hardcodes title: 'Test conversation').
+        expect(parsed.conversations[0].firstUserMessage).toBe('Test conversation');
     });
 
     it('computes compression ratio', async () => {
