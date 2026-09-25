@@ -23,9 +23,12 @@
 // gates are stripped (NullUnifiedStoreWriter, zero rows persisted).
 // --task-ids bypasses the anti-join selection: replay the write on known ids
 // (idempotence verification) or target a rollback lot.
-// Any malformed argument or machine-id mismatch exits 2 — this script is
-// replayed as-is on other hosts against the shared production store, so its
-// guards fail closed. Exit 1 in LIVE mode if any task failed.
+// Any malformed or repeated argument, or a machine-id mismatch, exits 2 — this
+// script is replayed as-is on other hosts against the shared production store,
+// so its guards fail closed. Tasks with no local source files are SKIPPED, not
+// failures (expected cross-host). Exit 1 in LIVE mode only on real errors.
+// The PG connection is resolved ONCE before the dry-run gate strip, so dry and
+// live always read the same database.
 // Scope: Zoo tasks only (harness='zoo') — Claude orphans come from a different
 // source layout and are not covered here.
 import { createRequire } from 'module';
@@ -60,8 +63,14 @@ const flag = (name) => {
   return i !== -1 ? args[i + 1] : undefined;
 };
 
+const seen = new Set();
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
+  if (seen.has(a)) {
+    console.error(`Repeated argument: ${a} (first occurrence wins is not acceptable — exit).`);
+    process.exit(2);
+  }
+  seen.add(a);
   if (VALUE_FLAGS.has(a)) {
     const v = args[i + 1];
     if (v === undefined || VALUE_FLAGS.has(v) || BOOL_FLAGS.has(v)) {
@@ -109,6 +118,12 @@ if (ti !== -1) {
   TASK_IDS = parts;
 }
 
+// Capture the connection BEFORE stripping the write gates (W1): the read
+// clients below must see the same DB a --live run would write to, whether the
+// URL came from the shell env or from .env. Resolving after the delete made a
+// dry run silently fall back to .env while --live wrote to the env DB.
+const PG_URL = process.env.UNIFIED_STORE_PG_URL ?? readEnvKey('UNIFIED_STORE_PG_URL');
+
 // Without an explicit --live, strip the write gates: the default is dry run.
 if (!LIVE) {
   delete process.env.UNIFIED_STORE_DUAL_WRITE;
@@ -148,7 +163,7 @@ function readEnvKey(k) {
   return undefined;
 }
 
-const client = new Client({ connectionString: process.env.UNIFIED_STORE_PG_URL ?? readEnvKey('UNIFIED_STORE_PG_URL') });
+const client = new Client({ connectionString: PG_URL });
 await client.connect();
 
 let orphans;
@@ -178,13 +193,16 @@ console.log(`Processing: ${slice.length}`);
 
 let processed = 0, emptySeq = 0, errors = 0, msgsTotal = 0;
 const failed = [];
+const skipped = [];
+const written = [];
 for (const taskId of slice) {
   try {
     const skeleton = await RooStorageDetector.analyzeConversation(taskId, path.join(base, taskId));
     const seqLen = (skeleton?.sequence ?? []).length;
     if (!skeleton || seqLen === 0) {
+      // No local source files is the expected cross-host case, not a failure.
       emptySeq++;
-      failed.push(taskId + ' (empty sequence)');
+      skipped.push(taskId);
       continue;
     }
 
@@ -197,6 +215,10 @@ for (const taskId of slice) {
       ?? '').toLowerCase();
     if (resolvedMachine !== MACHINE.toLowerCase()) {
       console.error(`machine-id mismatch for ${taskId}: write would stamp "${resolvedMachine}" but --machine is "${MACHINE}" — aborting before write.`);
+      if (written.length > 0) {
+        console.error(`--- ids WRITTEN before this abort (${written.length}) — rollback key: ---`);
+        for (const w of written) console.error(`  ${w}`);
+      }
       process.exit(2);
     }
 
@@ -208,7 +230,8 @@ for (const taskId of slice) {
       continue;
     }
     processed++;
-    console.log(`  ok: ${taskId}  seq=${seqLen}`);
+    written.push(taskId);
+    console.log(`  ${liveMode ? 'ok:' : 'would-write:'} ${taskId}  seq=${seqLen}`);
   } catch (e) {
     errors++;
     failed.push(taskId + ' (' + (e?.message ?? e) + ')');
@@ -218,15 +241,16 @@ for (const taskId of slice) {
 
 console.log('\n=== Result ===');
 console.log(`  processed:      ${processed}`);
-console.log(`  empty seq:      ${emptySeq}  (analyze OK but no messages)`);
+console.log(`  skipped:        ${emptySeq}  (no local source files — not a failure)`);
 console.log(`  errors:         ${errors}`);
 console.log(`  seq entries:    ${msgsTotal}`);
+if (skipped.length) console.log('  skipped task_ids (first 15):', skipped.slice(0, 15));
 if (failed.length) console.log('  failed task_ids (first 15):', failed.slice(0, 15));
 
 // Post-run message-row counts for every id in this run's slice — the
 // verification key for replay idempotence and targeted rollback.
 if (slice.length > 0) {
-  const vc = new Client({ connectionString: process.env.UNIFIED_STORE_PG_URL ?? readEnvKey('UNIFIED_STORE_PG_URL') });
+  const vc = new Client({ connectionString: PG_URL });
   await vc.connect();
   const counts = await vc.query(
     'select m.task_id, count(*)::int n from messages m where m.task_id = any($1::text[]) group by m.task_id',
@@ -241,4 +265,4 @@ console.log(liveMode
   ? 'LIVE repair complete — re-run the BEFORE predicate to measure delta.'
   : 'DRY-RUN complete — zero rows persisted.');
 
-if (liveMode && (errors > 0 || emptySeq > 0)) process.exit(1);
+if (liveMode && errors > 0) process.exit(1);
