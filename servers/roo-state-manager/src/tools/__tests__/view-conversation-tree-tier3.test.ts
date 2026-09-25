@@ -166,11 +166,15 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 		expect(text).not.toContain('distant archive body');
 	});
 
-	test('#1217 follow-up 3 — précédence local > archive : dossier tasks/<id> vivant → le local est servi, Tier 3 jamais hydraté', async () => {
+	test('#1217 follow-up 3 — précédence local > archive : tâche locale UTILISABLE → le local est servi, Tier 3 jamais hydraté', async () => {
 		// Vrai mkdir : le garde (existsSync réel dans le helper) et le fs.stat
 		// du chemin Roo voient le dossier comme le runtime le verra.
+		// #1225 follow-up : le dossier porte un fichier lisible — c'est lui
+		// qui signale une tâche locale vivante, pas l'existence du dossier.
 		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'view-tier3-guard-'));
-		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
+		const taskDir = path.join(tmpBase, 'tasks', 't-web1');
+		await fs.mkdir(taskDir, { recursive: true });
+		await fs.writeFile(path.join(taskDir, 'ui_messages.json'), '[]');
 		try {
 			const evicted = tier3Stub('t-web1');
 			const cache = new Map<string, ConversationSkeleton>();
@@ -192,6 +196,33 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 			expect(hydrateMock).not.toHaveBeenCalled();
 			expect((result.content[0] as any).text).toContain('fresh local body');
 			expect((result.content[0] as any).text).not.toContain('distant archive body');
+		} finally {
+			await fs.rm(tmpBase, { recursive: true, force: true });
+		}
+	});
+
+	test('#1225 follow-up — dossier tasks/<id> local VIDE (moitié synchronisé) → l\'archive est servie, pas de throw « corrupted »', async () => {
+		// Un dossier sans fichier lisible n'est pas une tâche vivante : sans
+		// cette garde, le court-circuit local laissait view finir en throw
+		// « may be corrupted » alors que le corps existe dans l'archive
+		// (review ai-01 sur #1225, 25/09).
+		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'view-tier3-empty-'));
+		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
+		try {
+			const evicted = tier3Stub('t-web1');
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('t-web1', evicted);
+			peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
+			hydrateMock.mockResolvedValue(true);
+			detectMock.mockResolvedValue([tmpBase]);
+
+			const result = await viewConversationTree.handler(
+				{ task_id: 't-web1', view_mode: 'single', detail_level: 'full' },
+				cache
+			);
+
+			expect(hydrateMock).toHaveBeenCalledWith('t-web1');
+			expect((result.content[0] as any).text).toContain('distant archive body');
 		} finally {
 			await fs.rm(tmpBase, { recursive: true, force: true });
 		}

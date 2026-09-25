@@ -120,11 +120,15 @@ describe('#3661 AC8 — hydrateTier3SkeletonFromCache', () => {
 		expect((cache.get('t-web1') as any).sequence.length).toBe(1);
 	});
 
-	test('#1217 follow-up 3 — précédence local > archive : un dossier tasks/<id> local vivant court-circuite la branche, hydratation jamais tentée', async () => {
+	test('#1217 follow-up 3 — précédence local > archive : une tâche locale UTILISABLE court-circuite la branche, hydratation jamais tentée', async () => {
 		// Vrai mkdir (pas un mock de existsSync) : le garde doit voir le dossier
-		// comme le runtime le verra.
+		// comme le runtime le verra. #1225 follow-up : le dossier doit porter un
+		// fichier qu'analyzeConversation sait lire — c'est lui, pas le dossier,
+		// qui signale une tâche locale vivante.
 		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'tier3-guard-'));
-		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
+		const taskDir = path.join(tmpBase, 'tasks', 't-web1');
+		await fs.mkdir(taskDir, { recursive: true });
+		await fs.writeFile(path.join(taskDir, 'ui_messages.json'), '[]');
 		try {
 			peekMock.mockReturnValue(tier3Stub('t-web1'));
 			mockDetectStorageLocations.mockResolvedValue([tmpBase]);
@@ -132,6 +136,27 @@ describe('#3661 AC8 — hydrateTier3SkeletonFromCache', () => {
 
 			expect(await hydrateTier3SkeletonFromCache('t-web1')).toBeNull();
 			expect(hydrateMock).not.toHaveBeenCalled();
+		} finally {
+			await fs.rm(tmpBase, { recursive: true, force: true });
+		}
+	});
+
+	test('#1225 follow-up — dossier tasks/<id> local VIDE (moitié synchronisé) : PAS de court-circuit, l\'archive est servie', async () => {
+		// Un dossier sans fichier lisible n'est pas une tâche vivante : la
+		// précédence ne doit pas s'appliquer, sinon view finit en throw
+		// « may be corrupted » alors que le corps existe dans l'archive
+		// (review ai-01 sur #1225, 25/09).
+		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'tier3-guard-empty-'));
+		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
+		try {
+			peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
+			mockDetectStorageLocations.mockResolvedValue([tmpBase]);
+			hydrateMock.mockResolvedValue(true);
+
+			const result = await hydrateTier3SkeletonFromCache('t-web1');
+			expect(hydrateMock).toHaveBeenCalledWith('t-web1');
+			expect(result).not.toBeNull();
+			expect(result!.sequence.length).toBe(1);
 		} finally {
 			await fs.rm(tmpBase, { recursive: true, force: true });
 		}
