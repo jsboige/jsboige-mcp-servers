@@ -227,4 +227,33 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 			await fs.rm(tmpBase, { recursive: true, force: true });
 		}
 	});
+
+	test('#1229 follow-up — ui_messages.json local de 0 octet → l\'archive est servie, pas de throw « corrupted »', async () => {
+		// Fichier présent mais vide : analyzeConversation ne peut pas le
+		// lire (JSON.parse sur chaîne vide) — la garde de précédence ne
+		// doit pas le compter comme tâche locale vivante (review ai-01
+		// sur #1229, 25/09).
+		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'view-tier3-zero-'));
+		const taskDir = path.join(tmpBase, 'tasks', 't-web1');
+		await fs.mkdir(taskDir, { recursive: true });
+		await fs.writeFile(path.join(taskDir, 'ui_messages.json'), '');
+		try {
+			const evicted = tier3Stub('t-web1');
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('t-web1', evicted);
+			peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
+			hydrateMock.mockResolvedValue(true);
+			detectMock.mockResolvedValue([tmpBase]);
+
+			const result = await viewConversationTree.handler(
+				{ task_id: 't-web1', view_mode: 'single', detail_level: 'full' },
+				cache
+			);
+
+			expect(hydrateMock).toHaveBeenCalledWith('t-web1');
+			expect((result.content[0] as any).text).toContain('distant archive body');
+		} finally {
+			await fs.rm(tmpBase, { recursive: true, force: true });
+		}
+	});
 });
