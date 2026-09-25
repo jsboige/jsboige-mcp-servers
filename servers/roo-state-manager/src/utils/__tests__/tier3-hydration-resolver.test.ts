@@ -161,6 +161,28 @@ describe('#3661 AC8 — hydrateTier3SkeletonFromCache', () => {
 			await fs.rm(tmpBase, { recursive: true, force: true });
 		}
 	});
+
+	test('#1229 follow-up — ui_messages.json local de 0 octet : PAS de court-circuit, l\'archive est servie', async () => {
+		// Fichier présent mais vide : le JSON.parse d'analyzeConversation
+		// échoue au même titre qu'une absence — la garde ne doit pas le
+		// compter comme tâche locale vivante (review ai-01 sur #1229, 25/09).
+		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'tier3-guard-zero-'));
+		const taskDir = path.join(tmpBase, 'tasks', 't-web1');
+		await fs.mkdir(taskDir, { recursive: true });
+		await fs.writeFile(path.join(taskDir, 'ui_messages.json'), '');
+		try {
+			peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
+			mockDetectStorageLocations.mockResolvedValue([tmpBase]);
+			hydrateMock.mockResolvedValue(true);
+
+			const result = await hydrateTier3SkeletonFromCache('t-web1');
+			expect(hydrateMock).toHaveBeenCalledWith('t-web1');
+			expect(result).not.toBeNull();
+			expect(result!.sequence.length).toBe(1);
+		} finally {
+			await fs.rm(tmpBase, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('#3661 AC8 — resolveFullConversationSkeleton Tier 3 branch', () => {

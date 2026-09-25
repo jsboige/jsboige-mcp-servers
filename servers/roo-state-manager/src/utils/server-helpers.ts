@@ -11,7 +11,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
 import { RooStorageDetector } from './roo-storage-detector.js';
 import { OUTPUT_CONFIG } from '../config/server-config.js';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 // FIX: Dynamic import to break circular dependency cycle:
 // server-helpers → tools/index → roosync/* → RooSyncService → InventoryCollector → server-helpers
 // This circular dep causes ESM module evaluation deadlock (Node.js v24).
@@ -315,13 +315,18 @@ export async function hydrateTier3SkeletonFromCache(
         // analyzeConversation rend null et view termine en throw « may be
         // corrupted » alors que le corps existe dans l'archive. La précédence
         // ne se déclenche que sur un local UTILISABLE (un des deux fichiers
-        // que lit réellement analyzeConversation).
+        // que lit réellement analyzeConversation). #1229 follow-up : un
+        // fichier PRÉSENT mais de 0 octet fait échouer son JSON.parse au même
+        // titre qu'une absence — il ne compte pas comme lisible non plus.
         try {
             const locations = await RooStorageDetector.detectStorageLocations();
+            const readable = (f: string) => {
+                try { return statSync(f).size > 0; } catch { return false; }
+            };
             for (const loc of locations) {
                 const taskDir = path.join(loc, 'tasks', id);
-                const usable = existsSync(path.join(taskDir, 'ui_messages.json'))
-                    || existsSync(path.join(taskDir, 'api_conversation_history.json'));
+                const usable = readable(path.join(taskDir, 'ui_messages.json'))
+                    || readable(path.join(taskDir, 'api_conversation_history.json'));
                 if (usable) return null;
             }
         } catch {
