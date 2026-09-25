@@ -223,6 +223,20 @@ describe('TraceSummaryService', () => {
             expect(parsed.drillDown.endpoint).toBe('view_task_details');
         });
 
+        test('json light falls back to metadata.title when no user message in sequence (#3174)', async () => {
+            const conv: ConversationSkeleton = {
+                ...makeSkeleton('task-3174'),
+                // Slash-command session shape: no user message survives in the
+                // sequence — extractFirstUserMessage must fall back to the title.
+                sequence: [makeMessage('assistant', 'work done')],
+                metadata: { ...makeSkeleton('task-3174').metadata, title: 'Slash-command session title' },
+            };
+            const result = await service.generateSummary(conv, { outputFormat: 'json', jsonVariant: 'light' });
+
+            const parsed = JSON.parse(result.content);
+            expect(parsed.conversations[0].firstUserMessage).toBe('Slash-command session title');
+        });
+
         test('json full export should include messages', async () => {
             const conv = makeSkeleton('task-013');
             const result = await service.generateSummary(conv, { outputFormat: 'json', jsonVariant: 'full' });

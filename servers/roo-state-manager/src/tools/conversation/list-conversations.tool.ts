@@ -990,11 +990,14 @@ export const listConversationsTool = {
             }
 
             // Last-resort fallback: promote metadata.title to firstUserMessage when no
-            // pre-extracted preview exists. Comes AFTER the _claude*/_stub* fields:
+            // USABLE pre-extracted preview exists — missing OR a bare placeholder
+            // ("-", ≤1 char after trim; #3174: slash-command sessions render "-" until
+            // the ai-title is exposed). Comes AFTER the _claude*/_stub* fields:
             // a pre-extracted first user message (900 chars) is strictly richer than
             // a title (~100 chars). Still covers Roo tasks loaded via quickAnalyze
             // (sequence: []) where title IS the first user message from the cache.
-            if (!firstUserMessage && s.metadata.title) {
+            const firstIsPlaceholder = !firstUserMessage || firstUserMessage.trim().length <= 1;
+            if (firstIsPlaceholder && s.metadata.title) {
                 firstUserMessage = s.metadata.title;
             }
 
@@ -1503,6 +1506,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
         let sampledUser = 0;
         let sampledAssistant = 0;
         let fileFullyRead = false;
+        let aiTitle: string | undefined;
 
         // --- Read first chunk (first 48KB) ---
         const headBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize));
@@ -1537,6 +1541,11 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                         }
                     }
                 }
+                // #3174: ai-title entries (Claude Code's generated session title).
+                // Forward scan → the last one seen wins within the head chunk.
+                if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string' && entry.aiTitle.trim()) {
+                    aiTitle = entry.aiTitle.split('\n')[0].substring(0, 80);
+                }
             } catch {
                 // Skip unparseable lines (e.g., truncated at chunk boundary)
             }
@@ -1554,6 +1563,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
             // but we already guarded fileSize > CHUNK_SIZE above, so no overlap here)
             let tailUser = 0;
             let tailAssistant = 0;
+            let tailAiTitle: string | undefined;
 
             // Walk backwards to find the last message (any role) and the last user message
             let foundLastAny = false;
@@ -1567,6 +1577,12 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                     const isAssistant = entry.type === 'assistant' && entry.message?.role === 'assistant';
                     if (isUser) tailUser++;
                     if (isAssistant) tailAssistant++;
+
+                    // #3174: backward walk → the first ai-title seen is the LAST in
+                    // file order, which is the current session title.
+                    if (!tailAiTitle && entry.type === 'ai-title' && typeof entry.aiTitle === 'string' && entry.aiTitle.trim()) {
+                        tailAiTitle = entry.aiTitle.split('\n')[0].substring(0, 80);
+                    }
 
                     if (!foundLastAny && (isUser || isAssistant)) {
                         const content = extractClaudeMessageText(entry.message.content);
@@ -1591,6 +1607,9 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
 
             sampledUser += tailUser;
             sampledAssistant += tailAssistant;
+            if (tailAiTitle) {
+                aiTitle = tailAiTitle; // tail chunk is later in file order than head
+            }
         } else {
             // Small file: entire file was in head chunk. Scan backwards through headLines
             // for lastMessage/lastUserMessage.
@@ -1624,6 +1643,14 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
                     // Skip unparseable lines
                 }
             }
+        }
+
+        // #3174: the ai-title is Claude Code's authoritative session title — it
+        // wins over the title derived from the first user message (which is empty
+        // or wrapper-only for slash-command sessions). Mirrors
+        // claude-storage-detector.extractTitle (last entry in file order).
+        if (aiTitle) {
+            result.title = aiTitle;
         }
 
         // --- Per-role counts + approximate total message count ---
