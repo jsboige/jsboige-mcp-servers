@@ -176,7 +176,12 @@ export async function scanDiskForNewTasks(
             const taskPath = path.join(tasksDir, taskId);
             const uiPath = path.join(taskPath, 'ui_messages.json');
             try {
-                await fs.access(uiPath);
+                // #3661 suite (#1231 même classe) : un ui_messages.json de 0 octet
+                // passe fs.access mais fait échouer le JSON.parse de quickAnalyze,
+                // qui rend alors un skeleton « Unknown Task » fantôme. Ne retenir
+                // que les répertoires portant un fichier réellement lisible.
+                const stat = await fs.stat(uiPath);
+                if (stat.size <= 0) return null;
             } catch {
                 return null; // not a valid conversation directory
             }

@@ -78,17 +78,19 @@ describe("disk-scanner — analyzeTask + TTL-cache coverage", () => {
 	});
 
 	describe("analyzeTask — invalid directory branch (L180-182)", () => {
-		test("skips a task directory whose ui_messages.json fs.access rejects", async () => {
+		test("skips a task directory whose ui_messages.json stat rejects", async () => {
 			// 'bad-task' has no readable ui_messages.json → analyzeTask returns null → excluded.
+			// #3661 suite : la sonde d'existence est passée de fs.access à fs.stat
+			// (garde size>0, même classe que #1231) — le rejet vient de stat.
 			mockReaddir.mockResolvedValue(["good-task", "bad-task"]);
-			mockAccess.mockImplementation((p: string) => {
+			mockStat.mockImplementation((p: any) => {
 				if (String(p).includes("bad-task")) return Promise.reject(new Error("ENOENT"));
-				return Promise.resolve();
+				return Promise.resolve({ mtimeMs: 1_700_000_000_000, size: 2048 });
 			});
 
 			const result = await scanDiskForNewTasks(new Map());
 
-			// Only good-task survives; bad-task skipped via L181 `return null`.
+			// Only good-task survives; bad-task skipped via the `return null` branch.
 			expect(result.map(s => s.taskId)).toEqual(["good-task"]);
 			expect(result).toHaveLength(1);
 		});
