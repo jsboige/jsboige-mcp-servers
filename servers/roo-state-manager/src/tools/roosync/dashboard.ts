@@ -5829,7 +5829,9 @@ function mergeGuardRefusal(
  *   - journal : union par id de message sur les QUATRE vues distinctes (PG +
  *     fichier de chaque clé) ; sur doublon, la copie au timestamp le plus
  *     récent gagne (égalité → cible). Tri par timestamp.
- *   - statut : celui de la vue au lastModified le plus récent.
+ *   - statut : celui de la vue au STATUT le plus récent — horodatage de
+ *     condensation (lastCondensedAt) en premier critère quand les deux vues
+ *     de la paire en portent un, repli lastModified sinon (#3782 §3).
  *   - cible absente : chemin RENAME pur (le contenu de la source devient la
  *     cible sous la clé canonique — cas po-2025 : canonique manquant).
  *   - source retirée par défaut (deleteSource) : archivée par RENOMMAGE
@@ -5981,18 +5983,25 @@ async function handleMerge(
     }
     return lastModifiedIso(v.lastModified) > lastModifiedIso(best.lastModified) ? 'lastModified' : null;
   };
+  // Le critère rapporté est celui de la DERNIÈRE paire évaluée : le choix se
+  // fait par paire (`fresherBy`), et avec des vues mixtes — certaines
+  // horodatées, d'autres non — une reconstitution globale annoncerait
+  // `lastModified` alors que la paire finale a pu être tranchée par
+  // l'horodatage. Null = vue unique, aucun arbitrage n'a eu lieu.
+  let statusBasis: 'stamp' | 'lastModified' | null = null;
+  const pairBasis = (v: Dashboard, best: Dashboard): 'stamp' | 'lastModified' => {
+    const vStamp = statusStamp(v);
+    const bestStamp = statusStamp(best);
+    return vStamp !== undefined && bestStamp !== undefined && vStamp !== bestStamp ? 'stamp' : 'lastModified';
+  };
   const statusHolder = distinctViews.reduce<Dashboard>(
-    (best, v) => (fresherBy(v, best) === null ? best : v),
+    (best, v) => {
+      if (v === best) return best; // seed = distinctViews[0] : la 1re paire est une self-paire
+      statusBasis = pairBasis(v, best);
+      return fresherBy(v, best) === null ? best : v;
+    },
     distinctViews[0]
   );
-  // Le critère qui a réellement ordonné : l'horodatage n'a gouverné que si
-  // TOUTES les vues en portent un et qu'ils divergent — sinon `fresherBy` est
-  // retombé sur `lastModified` pour au moins une paire, et le rapport le dit.
-  const stampedViews = distinctViews.filter(v => statusStamp(v) !== undefined);
-  const statusBasis: 'stamp' | 'lastModified' =
-    stampedViews.length === distinctViews.length && new Set(stampedViews.map(statusStamp)).size > 1
-      ? 'stamp'
-      : 'lastModified';
   const statusFromSource = sourceViews.has(statusHolder);
   const lastDiffCommit =
     targetPg?.status.lastDiffCommit ??
@@ -6305,7 +6314,7 @@ async function handleMerge(
       `(${deduped} doublon(s) par id, ${newerSourceWins} résolu(s) vers la copie plus récente ; ` +
       `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}). ` +
       `Statut retenu : ${statusFromSource ? 'source' : 'cible'} ` +
-      `(${statusBasis === 'stamp' ? 'horodatage de condensation le plus récent' : 'lastModified le plus récent'}). ` +
+      `(arbitré par ${statusBasis === 'stamp' ? "l'horodatage de condensation" : statusBasis === 'lastModified' ? 'lastModified' : 'aucune concurrence — vue unique'}). ` +
       sourceDisposition
   };
 }

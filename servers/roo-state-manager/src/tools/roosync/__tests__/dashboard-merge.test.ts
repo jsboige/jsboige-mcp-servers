@@ -688,7 +688,7 @@ describe('action merge — le fork appendé ne peut pas imposer son statut péri
 
     expect(result.success).toBe(true);
     expect(String(result.message)).toContain('Statut retenu : cible');
-    expect(String(result.message)).toContain('horodatage de condensation le plus récent');
+    expect(String(result.message)).toContain("arbitré par l'horodatage de condensation");
     const merged = fileText('machine-myia-po-2025.md');
     expect(merged).toContain('Statut de machine-myia-po-2025.md');
     expect(merged).not.toContain('Statut de machine-myia-po-2025 (1).md');
@@ -708,7 +708,7 @@ describe('action merge — le fork appendé ne peut pas imposer son statut péri
 
     expect(result.success).toBe(true);
     expect(String(result.message)).toContain('Statut retenu : source');
-    expect(String(result.message)).toContain('lastModified le plus récent');
+    expect(String(result.message)).toContain('arbitré par lastModified');
   });
 
   // Limite NOMMÉE, pas un comportement souhaité : `write`/`update` écrivent le
@@ -730,6 +730,80 @@ describe('action merge — le fork appendé ne peut pas imposer son statut péri
 
     expect(result.success).toBe(true);
     expect(String(result.message)).toContain('Statut retenu : source');
-    expect(String(result.message)).toContain('lastModified le plus récent');
+    expect(String(result.message)).toContain('arbitré par lastModified');
+  });
+});
+
+// Suivi #1219 (review ai-01) : le choix du statut se fait PAR PAIRE, mais le
+// rapport le reconstituait GLOBALEMENT. Avec des vues mixtes — certaines
+// horodatées, d'autres non — l'ancien `statusBasis` global annonçait
+// `lastModified` dès qu'UNE vue manquait d'horodatage, alors que la paire
+// décisive avait pu être tranchée par l'horodatage. Le rapport doit dire ce
+// qui a réellement ordonné la dernière paire évaluée.
+describe('action merge — critère de statut rapporté par paire (suivi #1219)', () => {
+  it('vues mixtes : paire finale arbitrée par horodatage alors que toutes les vues ne sont pas horodatées', async () => {
+    // Cible, vue FICHIER : PAS d'horodatage de condensation (jamais condensée),
+    // et copie PLUS ANCIENNE que la vue PG (fichier en retard sur PG) — elle ne
+    // doit jamais déloger l'incumbent horodaté avant la paire décisive.
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-08T09:00:00.000Z',
+      [{ id: 'f2', timestamp: '2026-09-08T09:00:00.000Z', content: 'f2 — fichier cible' }]);
+    // Cible, vue PG : horodatage de condensation LE PLUS RÉCENT (12:00) — c'est
+    // elle qui doit détenir le statut.
+    const targetPgView = {
+      type: 'machine' as const,
+      key: 'machine-myia-po-2025',
+      lastModified: '2026-09-08T10:00:00.000Z',
+      lastModifiedBy: { machineId: 'pg', workspace: 'pg' },
+      status: { markdown: '*Statut PG cible (détenteur attendu).*' },
+      intercom: {
+        messages: [{
+          id: 'p1', timestamp: '2026-09-08T10:00:00.000Z',
+          author: { machineId: 'pg', workspace: 'pg' },
+          content: 'p1 — PG seul (cible)'
+        }],
+        totalMessages: 1,
+        lastCondensedAt: '2026-09-08T12:00:00.000Z'
+      }
+    };
+    // Source (fork) : fichier le plus récent (12:48 — l'emporterait sous un
+    // critère lastModified pur) mais horodatage de condensation PLUS ANCIEN.
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z',
+      [{ id: 'f1', timestamp: '2026-09-08T12:48:00.000Z', content: 'f1 — fichier source' }],
+      { lastCondensedAt: '2026-09-07T10:00:00.000Z' });
+    pgReadSpy.mockImplementation(async (k: string) =>
+      k === 'machine-myia-po-2025' ? targetPgView : null);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    // Le statut vient bien de la vue PG (cible) — l'union des journaux reste
+    // par id, les messages fichier cible/fichier source/PG seul survivent.
+    expect(String(result.message)).toContain('Statut retenu : cible');
+    // LE point du suivi #1219 : la paire finale (source horodatée vs cible PG
+    // horodatée) a été tranchée par l'horodatage — l'ancien statusBasis global
+    // aurait annoncé `lastModified` (la vue fichier cible n'a pas d'horodatage).
+    expect(String(result.message)).toContain("arbitré par l'horodatage de condensation");
+    const merged = fileText('machine-myia-po-2025.md');
+    expect(merged).toContain('Statut PG cible (détenteur attendu)');
+    expect(merged).not.toContain('Statut de machine-myia-po-2025 (1).md');
+    expect(merged).toContain('f1 — fichier source');
+    expect(merged).toContain('f2 — fichier cible');
+    expect(merged).toContain('p1 — PG seul (cible)');
+  });
+
+  it('vue unique (RENAME pur) → rapport « aucune concurrence »', async () => {
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toContain('RENAME — cible créée depuis la source');
+    expect(String(result.message)).toContain('aucune concurrence — vue unique');
   });
 });
