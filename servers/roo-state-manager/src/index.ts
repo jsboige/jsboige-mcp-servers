@@ -107,7 +107,7 @@ if (!hasEmbeddingKey) {
     const primaryModel = process.env.OPENAI_CHAT_MODEL_ID || 'qwen3.6-35b-a3b';
     const primaryEndpoint = process.env.OPENAI_BASE_URL || '(OpenAI cloud default)';
     const chatKey = resolveChatApiKey();
-    const fbModel = process.env.FALLBACK_LLM_MODEL_ID || 'glm-4.7-flash';
+    const fbModel = process.env.FALLBACK_LLM_MODEL_ID || 'glm-5.3-flash';
     const hasFallbackKey = !!(process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY);
     getDefaultLogger().info(`🧊 Condensation LLM config: primary=${primaryModel} @ ${primaryEndpoint} key=${chatKey ? chatKey.source : 'MISSING'} | cloud-fallback=${fbModel} key=${hasFallbackKey ? 'OK' : 'MISSING'}`);
     if (!chatKey && !hasFallbackKey) {
