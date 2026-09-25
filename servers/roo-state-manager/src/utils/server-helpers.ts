@@ -310,10 +310,19 @@ export async function hydrateTier3SkeletonFromCache(
         // le local (le frais bat le snapshot). Garde à moindre coût : un dossier
         // tasks/<id> local court-circuite la branche ; l'appelant retombe alors
         // sur ses chemins locaux inchangés.
+        // #1225 follow-up (review ai-01, 25/09) — un dossier VIDE ou à moitié
+        // synchronisé n'est pas une tâche vivante : sans fichier lisible,
+        // analyzeConversation rend null et view termine en throw « may be
+        // corrupted » alors que le corps existe dans l'archive. La précédence
+        // ne se déclenche que sur un local UTILISABLE (un des deux fichiers
+        // que lit réellement analyzeConversation).
         try {
             const locations = await RooStorageDetector.detectStorageLocations();
             for (const loc of locations) {
-                if (existsSync(path.join(loc, 'tasks', id))) return null;
+                const taskDir = path.join(loc, 'tasks', id);
+                const usable = existsSync(path.join(taskDir, 'ui_messages.json'))
+                    || existsSync(path.join(taskDir, 'api_conversation_history.json'));
+                if (usable) return null;
             }
         } catch {
             // Détection impossible : ne pas bloquer le chemin archive pour autant.
