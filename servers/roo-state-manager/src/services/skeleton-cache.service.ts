@@ -115,6 +115,16 @@ export class SkeletonCacheService {
     }
 
     /**
+     * #3661 AC8 — Lecture sync d'un skeleton SANS ensureFreshCache ni side effect.
+     * Sert les resolvers (view/export) à sonder le Tier 3 sans déclencher de
+     * cold load : hôte froid → undefined (dégradation identique au comportement
+     * sans ce chemin), hôte chaud → le stub tel quel.
+     */
+    public peekSkeleton(taskId: string): ConversationSkeleton | undefined {
+        return this.cache.get(taskId);
+    }
+
+    /**
      * Vérifier si le cache contient une tâche
      */
     public async has(taskId: string): Promise<boolean> {

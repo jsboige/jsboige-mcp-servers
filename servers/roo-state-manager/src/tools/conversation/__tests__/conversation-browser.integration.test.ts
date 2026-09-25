@@ -38,7 +38,10 @@ vi.mock('../../../utils/message-helpers.js', async () => {
 // Mock getSharedStatePath pour utiliser un chemin de test
 const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-conversation-browser');
 vi.mock('../../../utils/server-helpers.js', () => ({
-  getSharedStatePath: () => testSharedStatePath
+  getSharedStatePath: () => testSharedStatePath,
+  // #3661 AC8 — le chemin view importe aussi cet export ; mock absent = erreur
+  // d'import qui masquait l'erreur métier testée ici. null = pas d'archive Tier 3.
+  hydrateTier3SkeletonFromCache: vi.fn().mockResolvedValue(null),
 }));
 
 // Import après les mocks
