@@ -104,10 +104,10 @@ export function getLLMModelId(): string {
 
 /**
  * #2719: Cloud fallback LLM model ID for condensation when vLLM is down.
- * Defaults to a fast, lightweight model on z.ai (GLM-4.7-flash).
+ * Defaults to a fast, lightweight model (GLM-5.3-flash via the hub).
  */
 export function getFallbackLLMModelId(): string {
-  return process.env.FALLBACK_LLM_MODEL_ID || 'glm-4.7-flash';
+  return process.env.FALLBACK_LLM_MODEL_ID || 'glm-5.3-flash';
 }
 
 /**

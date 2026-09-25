@@ -201,9 +201,9 @@ describe('openai', () => {
 		});
 
 		describe('getFallbackLLMModelId', () => {
-			test('returns default glm-4.7-flash when env not set', async () => {
+			test('returns default glm-5.3-flash when env not set', async () => {
 				const { getFallbackLLMModelId } = await import('../openai.js');
-				expect(getFallbackLLMModelId()).toBe('glm-4.7-flash');
+				expect(getFallbackLLMModelId()).toBe('glm-5.3-flash');
 			});
 
 			test('returns custom model from FALLBACK_LLM_MODEL_ID', async () => {
