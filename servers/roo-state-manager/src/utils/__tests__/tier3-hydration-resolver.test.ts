@@ -9,6 +9,9 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { promises as fs } from 'fs';
+import path from 'path';
+import os from 'os';
 
 const { peekMock, hydrateMock } = vi.hoisted(() => ({
 	peekMock: vi.fn(),
@@ -54,6 +57,11 @@ describe('#3661 AC8 — hydrateTier3SkeletonFromCache', () => {
 	beforeEach(() => {
 		peekMock.mockReset();
 		hydrateMock.mockReset();
+		// #1217 follow-up 3 : le garde de précédence sonde les locations Roo —
+		// défaut déterministe « aucune location » (l'archive n'a jamais de
+		// dossier local).
+		mockDetectStorageLocations.mockReset();
+		mockDetectStorageLocations.mockResolvedValue([]);
 	});
 
 	test('Tier 3 stub hot → hydrates on demand and returns the body', async () => {
@@ -111,6 +119,23 @@ describe('#3661 AC8 — hydrateTier3SkeletonFromCache', () => {
 		expect(cache.get('t-web1')).toBeDefined();
 		expect((cache.get('t-web1') as any).sequence.length).toBe(1);
 	});
+
+	test('#1217 follow-up 3 — précédence local > archive : un dossier tasks/<id> local vivant court-circuite la branche, hydratation jamais tentée', async () => {
+		// Vrai mkdir (pas un mock de existsSync) : le garde doit voir le dossier
+		// comme le runtime le verra.
+		const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'tier3-guard-'));
+		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
+		try {
+			peekMock.mockReturnValue(tier3Stub('t-web1'));
+			mockDetectStorageLocations.mockResolvedValue([tmpBase]);
+			hydrateMock.mockResolvedValue(true);
+
+			expect(await hydrateTier3SkeletonFromCache('t-web1')).toBeNull();
+			expect(hydrateMock).not.toHaveBeenCalled();
+		} finally {
+			await fs.rm(tmpBase, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('#3661 AC8 — resolveFullConversationSkeleton Tier 3 branch', () => {
@@ -118,6 +143,7 @@ describe('#3661 AC8 — resolveFullConversationSkeleton Tier 3 branch', () => {
 		peekMock.mockReset();
 		hydrateMock.mockReset();
 		mockDetectStorageLocations.mockReset();
+		mockDetectStorageLocations.mockResolvedValue([]);
 	});
 
 	test('local cache miss + hot Tier 3 stub → returns the hydrated archive body, no disk scan', async () => {
@@ -131,8 +157,11 @@ describe('#3661 AC8 — resolveFullConversationSkeleton Tier 3 branch', () => {
 		expect(result!.sequence.length).toBe(1);
 		// Write-back : les résolutions suivantes voient le corps dans le cache.
 		expect((cache.get('t-web1') as any).sequence.length).toBe(1);
-		// La branche Tier 3 précède le disk scan : il ne doit jamais s'exécuter.
-		expect(mockDetectStorageLocations).not.toHaveBeenCalled();
+		// #1217 follow-up 3 : le garde de précédence sonde UNE fois les
+		// locations (listing + existsSync, pas le scan complet) — c'est le
+		// nouveau contrat de la branche. Le disk scan proprement dit
+		// (analyzeConversation) ne s'exécute pas : pas de dossier local.
+		expect(mockDetectStorageLocations).toHaveBeenCalledTimes(1);
 	});
 
 	test('cold host + no local entry → unchanged behavior: null via empty disk scan', async () => {

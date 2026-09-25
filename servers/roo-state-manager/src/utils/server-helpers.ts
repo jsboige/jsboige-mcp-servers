@@ -305,6 +305,19 @@ export async function hydrateTier3SkeletonFromCache(
         const scs = SkeletonCacheService.getInstance();
         const stub = scs.peekSkeleton(id);
         if (!stub || (stub as any).metadata?.dataSource !== 'gdrive-archive') return null;
+        // #1217 follow-up 3 (review ai-01) — précédence local > archive : un id
+        // à la fois stub Tier 3 et tâche Roo LOCALE vivante doit être servi par
+        // le local (le frais bat le snapshot). Garde à moindre coût : un dossier
+        // tasks/<id> local court-circuite la branche ; l'appelant retombe alors
+        // sur ses chemins locaux inchangés.
+        try {
+            const locations = await RooStorageDetector.detectStorageLocations();
+            for (const loc of locations) {
+                if (existsSync(path.join(loc, 'tasks', id))) return null;
+            }
+        } catch {
+            // Détection impossible : ne pas bloquer le chemin archive pour autant.
+        }
         if (!(await scs.ensureConversationHydrated(id))) return null;
         // hydrateTier3Entry mute l'entrée in place : le peek relit le corps.
         const hydrated = scs.peekSkeleton(id) ?? null;

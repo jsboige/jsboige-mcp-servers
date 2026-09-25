@@ -379,11 +379,30 @@ async function handleViewConversationTreeExecutionAsync(
     if ((!mainTask.sequence || mainTask.sequence.length === 0) && mainTask.metadata.messageCount > 0) {
         console.log(`[view] Lazy loading full skeleton for ${task_id} (messageCount: ${mainTask.metadata.messageCount})`);
 
-        const isClaudeTask = task_id.startsWith('claude-')
-            || (mainTask.metadata as any)?.source === 'claude-code'
-            || (mainTask.metadata as any)?.dataSource === 'claude';
+        // #1217 follow-up 1 (review ai-01) — après une éviction LRU, le
+        // write-back a laissé dans conversationCache la MÊME référence que
+        // l'entrée du SkeletonCacheService, et l'éviction l'a déshydratée in
+        // place : mainTask existe, séquence vide, messageCount > 0. Le chemin
+        // Roo ci-dessous ne trouve aucun dossier tasks/<id> local pour une
+        // archive et rend skeleton-only — le corps reste invisible. On repasse
+        // par l'hydratation Tier 3 ; un retour null (garde de précédence :
+        // dossier local vivant, ou échec d'hydratation) laisse la séquence
+        // vide, et le dispatch historique ci-dessous la re-teste.
+        if ((mainTask.metadata as any)?.dataSource === 'gdrive-archive') {
+            const { hydrateTier3SkeletonFromCache } = await import('../utils/server-helpers.js');
+            const tier3 = await hydrateTier3SkeletonFromCache(task_id, conversationCache as any);
+            if (tier3) {
+                mainTask = tier3;
+                console.log(`[view] Re-hydrated Tier 3 archive ${task_id} (${(tier3.sequence ?? []).length} sequence items)`);
+            }
+        }
 
-        if (isClaudeTask) {
+        if (!mainTask.sequence || mainTask.sequence.length === 0) {
+            const isClaudeTask = task_id.startsWith('claude-')
+                || (mainTask.metadata as any)?.source === 'claude-code'
+                || (mainTask.metadata as any)?.dataSource === 'claude';
+
+            if (isClaudeTask) {
             // #1244 Couche 2.7 — Claude path: utiliser ClaudeStorageDetector
             const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
             const claudeLocations = await ClaudeStorageDetector.detectStorageLocations();
@@ -502,6 +521,7 @@ async function handleViewConversationTreeExecutionAsync(
                 // Task path not found — graceful degradation instead of hard error
                 console.warn(`[view] Task '${task_id}' directory not found in ${storageLocations.length} location(s) — showing skeleton only`);
                 return formatSkeletonOnlyResponse(task_id, mainTask);
+            }
             }
         }
     }
