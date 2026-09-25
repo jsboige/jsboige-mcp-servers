@@ -11,15 +11,23 @@
 // (po-2025 paradox, 995/995 without resorption).
 //
 // Usage:
-//   node scripts/orphan-repair.mjs --machine myia-web1 --dry-run            # analyze, write nothing
-//   node scripts/orphan-repair.mjs --machine myia-web1 --dry-run --limit 5  # canary
-//   node scripts/orphan-repair.mjs --machine myia-web1 --limit 5            # LIVE pilot lot
-//   node scripts/orphan-repair.mjs --machine myia-web1                       # LIVE full repair
+//   node scripts/orphan-repair.mjs --machine myia-web1                     # dry run (default)
+//   node scripts/orphan-repair.mjs --machine myia-web1 --limit 5           # dry-run canary
+//   node scripts/orphan-repair.mjs --machine myia-web1 --live --limit 5    # LIVE pilot lot
+//   node scripts/orphan-repair.mjs --machine myia-web1 --live              # LIVE full repair
+//   node scripts/orphan-repair.mjs --machine myia-web1 --live --task-ids id1,id2  # replay/rollback
 //
-// LIVE requires UNIFIED_STORE_DUAL_WRITE=1 + UNIFIED_STORE_PG_URL in the
-// server .env (same gate as the backfill scripts). Exit 1 in LIVE mode if any
-// task failed. Scope: Zoo tasks only (harness='zoo') — Claude orphans come
-// from a different source layout and are not covered here.
+// LIVE is opt-in (--live) and additionally gated by UNIFIED_STORE_DUAL_WRITE +
+// UNIFIED_STORE_PG_URL in the server .env (same gate as the backfill scripts);
+// if --live is asked while the gates are absent, exit 2. Without --live the
+// gates are stripped (NullUnifiedStoreWriter, zero rows persisted).
+// --task-ids bypasses the anti-join selection: replay the write on known ids
+// (idempotence verification) or target a rollback lot.
+// Any malformed argument or machine-id mismatch exits 2 — this script is
+// replayed as-is on other hosts against the shared production store, so its
+// guards fail closed. Exit 1 in LIVE mode if any task failed.
+// Scope: Zoo tasks only (harness='zoo') — Claude orphans come from a different
+// source layout and are not covered here.
 import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import path from 'path';
@@ -45,22 +53,64 @@ function loadEnv(file) {
 loadEnv(path.join(RSM_ROOT, '.env'));
 
 const args = process.argv.slice(2);
+const VALUE_FLAGS = new Set(['--machine', '--limit', '--task-ids']);
+const BOOL_FLAGS = new Set(['--dry-run', '--live']);
 const flag = (name) => {
   const i = args.indexOf(name);
   return i !== -1 ? args[i + 1] : undefined;
 };
-const DRY_RUN = args.includes('--dry-run');
-const MACHINE = flag('--machine');
-const li = args.indexOf('--limit');
-const PL = parseInt(li !== -1 ? args[li + 1] : '', 10);
-const LIMIT = Number.isFinite(PL) && PL >= 0 ? PL : undefined;
 
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  if (VALUE_FLAGS.has(a)) {
+    const v = args[i + 1];
+    if (v === undefined || VALUE_FLAGS.has(v) || BOOL_FLAGS.has(v)) {
+      console.error(`${a} requires a value.`);
+      process.exit(2);
+    }
+    i++;
+  } else if (!BOOL_FLAGS.has(a)) {
+    console.error(`Unknown argument: ${a}`);
+    process.exit(2);
+  }
+}
+
+const DRY_RUN = args.includes('--dry-run');
+const LIVE = args.includes('--live');
+if (DRY_RUN && LIVE) {
+  console.error('--dry-run and --live are mutually exclusive.');
+  process.exit(2);
+}
+const MACHINE = flag('--machine');
 if (!MACHINE) {
   console.error('--machine <machine-id> is required (fail-closed: never guess the corpus to mutate).');
   process.exit(2);
 }
 
-if (DRY_RUN) {
+let LIMIT;
+const li = args.indexOf('--limit');
+if (li !== -1) {
+  const raw = args[li + 1];
+  if (!/^\d+$/.test(raw)) {
+    console.error(`--limit requires a non-negative integer, got: "${raw}"`);
+    process.exit(2);
+  }
+  LIMIT = parseInt(raw, 10);
+}
+
+let TASK_IDS;
+const ti = args.indexOf('--task-ids');
+if (ti !== -1) {
+  const parts = args[ti + 1].split(',').map((s) => s.trim());
+  if (parts.some((p) => p.length === 0)) {
+    console.error('--task-ids requires a comma-separated list of non-empty task ids.');
+    process.exit(2);
+  }
+  TASK_IDS = parts;
+}
+
+// Without an explicit --live, strip the write gates: the default is dry run.
+if (!LIVE) {
   delete process.env.UNIFIED_STORE_DUAL_WRITE;
   delete process.env.UNIFIED_STORE_PG_URL;
 }
@@ -69,7 +119,9 @@ const require = createRequire(path.join(RSM_ROOT, 'package.json'));
 const { Client } = require('pg');
 const { resolveBuildDir } = await import('./lib/resolve-build-dir.mjs');
 
-const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
+const BUILD_DIR = resolveBuildDir(RSM_ROOT);
+console.log(`Build dir: ${BUILD_DIR}`);
+const buildUrl = (rel) => pathToFileURL(path.join(BUILD_DIR, rel)).href;
 const [{ RooStorageDetector }, { dualWriteConversationToStore }, { getUnifiedStoreWriter }] =
   await Promise.all([
     import(buildUrl('utils/roo-storage-detector.js')),
@@ -78,10 +130,14 @@ const [{ RooStorageDetector }, { dualWriteConversationToStore }, { getUnifiedSto
   ]);
 
 const writer = getUnifiedStoreWriter();
-const liveMode = writer.constructor?.name !== 'NullUnifiedStoreWriter';
-console.log(`Mode: ${liveMode ? 'LIVE (PgUnifiedStoreWriter)' : 'DRY RUN (NullUnifiedStoreWriter)'}`);
-console.log(`Machine: ${MACHINE}${LIMIT !== undefined ? ` | limit: ${LIMIT}` : ''}`);
-if (liveMode && !DRY_RUN) console.log('⚠️  LIVE — rows WILL be upserted into the unified store.');
+const liveMode = LIVE && writer.constructor?.name !== 'NullUnifiedStoreWriter';
+if (LIVE && !liveMode) {
+  console.error('--live requested but the write gates are absent (UNIFIED_STORE_DUAL_WRITE / UNIFIED_STORE_PG_URL) — writer resolved to NullUnifiedStoreWriter.');
+  process.exit(2);
+}
+console.log(`Mode: ${liveMode ? 'LIVE (PgUnifiedStoreWriter, --live)' : 'DRY RUN (NullUnifiedStoreWriter)'}`);
+console.log(`Machine: ${MACHINE}${LIMIT !== undefined ? ` | limit: ${LIMIT}` : ''}${TASK_IDS ? ` | task-ids: ${TASK_IDS.length}` : ''}`);
+if (liveMode) console.log('⚠️  LIVE — rows WILL be upserted into the unified store.');
 
 function readEnvKey(k) {
   const c = readFileSync(path.join(RSM_ROOT, '.env'), 'utf-8');
@@ -94,18 +150,25 @@ function readEnvKey(k) {
 
 const client = new Client({ connectionString: process.env.UNIFIED_STORE_PG_URL ?? readEnvKey('UNIFIED_STORE_PG_URL') });
 await client.connect();
-const PREDICATE = `
-  select c.task_id
-  from conversations c
-  where c.msg_count > 0
-    and c.machine_id = $1
-    and c.harness = 'zoo'
-    and not exists (select 1 from messages m where m.task_id = c.task_id)
-  order by c.last_ts desc
-`;
-const beforeCount = (await client.query(`select count(*)::int n from (${PREDICATE}) o`, [MACHINE])).rows[0].n;
-const orphans = (await client.query(PREDICATE, [MACHINE])).rows.map((r) => r.task_id);
-console.log(`Orphans BEFORE (${MACHINE}/zoo, anti-join): ${beforeCount}`);
+
+let orphans;
+if (TASK_IDS) {
+  orphans = TASK_IDS;
+  console.log(`Explicit task ids: ${orphans.length} (--task-ids — anti-join predicate bypassed)`);
+} else {
+  const PREDICATE = `
+    select c.task_id
+    from conversations c
+    where c.msg_count > 0
+      and c.machine_id = $1
+      and c.harness = 'zoo'
+      and not exists (select 1 from messages m where m.task_id = c.task_id)
+    order by c.last_ts desc
+  `;
+  const beforeCount = (await client.query(`select count(*)::int n from (${PREDICATE}) o`, [MACHINE])).rows[0].n;
+  orphans = (await client.query(PREDICATE, [MACHINE])).rows.map((r) => r.task_id);
+  console.log(`Orphans BEFORE (${MACHINE}/zoo, anti-join): ${beforeCount}`);
+}
 await client.end();
 
 const base = path.join(process.env.APPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Roaming'),
@@ -124,6 +187,19 @@ for (const taskId of slice) {
       failed.push(taskId + ' (empty sequence)');
       continue;
     }
+
+    // The write path stamps machine_id from the skeleton/env chain (dual-write.ts),
+    // not from --machine. A divergence means the upsert would re-attribute
+    // another host's rows to this one — fail closed before the first write.
+    const resolvedMachine = (skeleton.metadata?.machineId
+      ?? process.env.ROOSYNC_MACHINE_ID
+      ?? process.env.COMPUTERNAME
+      ?? '').toLowerCase();
+    if (resolvedMachine !== MACHINE.toLowerCase()) {
+      console.error(`machine-id mismatch for ${taskId}: write would stamp "${resolvedMachine}" but --machine is "${MACHINE}" — aborting before write.`);
+      process.exit(2);
+    }
+
     msgsTotal += seqLen;
     const res = await dualWriteConversationToStore(taskId, skeleton);
     if (res && res.ok === false) {
@@ -146,8 +222,23 @@ console.log(`  empty seq:      ${emptySeq}  (analyze OK but no messages)`);
 console.log(`  errors:         ${errors}`);
 console.log(`  seq entries:    ${msgsTotal}`);
 if (failed.length) console.log('  failed task_ids (first 15):', failed.slice(0, 15));
-console.log(liveMode && !DRY_RUN
+
+// Post-run message-row counts for every id in this run's slice — the
+// verification key for replay idempotence and targeted rollback.
+if (slice.length > 0) {
+  const vc = new Client({ connectionString: process.env.UNIFIED_STORE_PG_URL ?? readEnvKey('UNIFIED_STORE_PG_URL') });
+  await vc.connect();
+  const counts = await vc.query(
+    'select m.task_id, count(*)::int n from messages m where m.task_id = any($1::text[]) group by m.task_id',
+    [slice]
+  );
+  const byId = new Map(counts.rows.map((r) => [r.task_id, r.n]));
+  for (const taskId of slice) console.log(`  post: ${taskId}  messages=${byId.get(taskId) ?? 0}`);
+  await vc.end();
+}
+
+console.log(liveMode
   ? 'LIVE repair complete — re-run the BEFORE predicate to measure delta.'
   : 'DRY-RUN complete — zero rows persisted.');
 
-if (liveMode && !DRY_RUN && (errors > 0 || emptySeq > 0)) process.exit(1);
+if (liveMode && (errors > 0 || emptySeq > 0)) process.exit(1);
