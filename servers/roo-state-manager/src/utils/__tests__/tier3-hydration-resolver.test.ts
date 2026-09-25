@@ -91,6 +91,26 @@ describe('#3661 AC8 — hydrateTier3SkeletonFromCache', () => {
 		hydrateMock.mockRejectedValue(new Error('GDrive down'));
 		expect(await hydrateTier3SkeletonFromCache('t-web1')).toBeNull();
 	});
+
+	test('stub survivant après éviction (re-peek hydrated=false) → null, jamais rendu comme résolu', async () => {
+		// ensureConversationHydrated peut rendre true alors qu'une éviction LRU
+		// concurrente a déjà re-stubbé l'entrée : un corps vide ne doit pas
+		// passer pour la résolution de l'archive.
+		peekMock.mockReturnValue(tier3Stub('t-web1'));
+		hydrateMock.mockResolvedValue(true);
+		expect(await hydrateTier3SkeletonFromCache('t-web1')).toBeNull();
+	});
+
+	test('write-back : le corps hydraté est publié dans le cache appelant', async () => {
+		peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
+		hydrateMock.mockResolvedValue(true);
+		const cache = new Map();
+
+		const result = await hydrateTier3SkeletonFromCache('t-web1', cache as any);
+		expect(result).not.toBeNull();
+		expect(cache.get('t-web1')).toBeDefined();
+		expect((cache.get('t-web1') as any).sequence.length).toBe(1);
+	});
 });
 
 describe('#3661 AC8 — resolveFullConversationSkeleton Tier 3 branch', () => {
@@ -109,6 +129,8 @@ describe('#3661 AC8 — resolveFullConversationSkeleton Tier 3 branch', () => {
 		expect(result).not.toBeNull();
 		expect((result as any).metadata.dataSource).toBe('gdrive-archive');
 		expect(result!.sequence.length).toBe(1);
+		// Write-back : les résolutions suivantes voient le corps dans le cache.
+		expect((cache.get('t-web1') as any).sequence.length).toBe(1);
 		// La branche Tier 3 précède le disk scan : il ne doit jamais s'exécuter.
 		expect(mockDetectStorageLocations).not.toHaveBeenCalled();
 	});

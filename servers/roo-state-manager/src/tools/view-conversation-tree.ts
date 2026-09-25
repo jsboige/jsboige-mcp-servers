@@ -354,6 +354,21 @@ async function handleViewConversationTreeExecutionAsync(
     let tasksToDisplay: ConversationSkeleton[] = [];
     let mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
+        // #3661 AC8 — une archive Tier 3 listée (stub dans le SkeletonCacheService,
+        // absente de conversationCache) n'est résolue par AUCUN chemin local :
+        // hydratation à la demande avant d'abandonner. L'helper écrit le corps
+        // dans conversationCache ; les cartes sont reconstruites pour le voir.
+        // Import dynamique : même cycle de dépendances que server-helpers
+        // (tools/index → roosync/* → RooSyncService → server-helpers).
+        const { hydrateTier3SkeletonFromCache } = await import('../utils/server-helpers.js');
+        const tier3 = await hydrateTier3SkeletonFromCache(task_id, conversationCache as any);
+        if (tier3) {
+            skeletons = Array.from(conversationCache.values());
+            skeletonMap = new Map(skeletons.map(s => [s.taskId, s]));
+            mainTask = skeletonMap.get(task_id);
+        }
+    }
+    if (!mainTask) {
         throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
     }
 

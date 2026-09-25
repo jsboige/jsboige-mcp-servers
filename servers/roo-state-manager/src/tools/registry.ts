@@ -225,14 +225,16 @@ export function registerCallToolHandler(
                                     return skeleton;
                                 }
                             } catch { /* Claude fallback failed */ }
-                            return null;
+                            // #3661 AC8 — un claude-* absent du store local peut vivre en
+                            // archive Tier 3 (conversation Claude d'une AUTRE machine) :
+                            // ne pas court-circuiter le peek Tier 3 ci-dessous.
                         }
                         // 2b. #3661 AC8 — Tier 3 stub (archive GDrive) : le corps
                         //     vit dans le SkeletonCacheService, pas dans conversationCache.
                         //     Peek + hydratation à la demande — pré-#1163 le corps
                         //     résidait en RAM ; depuis les stubs, le view d'une
                         //     archive listée rendait null sans cette branche.
-                        const tier3 = await hydrateTier3SkeletonFromCache(id);
+                        const tier3 = await hydrateTier3SkeletonFromCache(id, cache);
                         if (tier3) return tier3;
                         // 3. Fallback: scan disk for Roo conversations
                         try {

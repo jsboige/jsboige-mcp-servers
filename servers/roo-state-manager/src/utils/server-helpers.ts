@@ -297,7 +297,8 @@ export async function handleExportConversationCsv(
  * ses chemins locaux normaux, comportement inchangé.
  */
 export async function hydrateTier3SkeletonFromCache(
-    id: string
+    id: string,
+    cache?: Map<string, SkeletonHeader>
 ): Promise<ConversationSkeleton | null> {
     try {
         const { SkeletonCacheService } = await import('../services/skeleton-cache.service.js');
@@ -306,7 +307,15 @@ export async function hydrateTier3SkeletonFromCache(
         if (!stub || (stub as any).metadata?.dataSource !== 'gdrive-archive') return null;
         if (!(await scs.ensureConversationHydrated(id))) return null;
         // hydrateTier3Entry mute l'entrée in place : le peek relit le corps.
-        return scs.peekSkeleton(id) ?? null;
+        const hydrated = scs.peekSkeleton(id) ?? null;
+        // Éviction LRU concurrente : un stub survivant (hydrated=false) n'est PAS
+        // un corps résolu — le rendre ferait afficher une archive vide au lieu de
+        // laisser l'appelant retomber sur ses chemins locaux.
+        if (!hydrated || (hydrated as any).metadata?.hydrated !== true) return null;
+        // Écriture dans le cache appelant : view reconstruit ses cartes dessus,
+        // et les résolutions suivantes court-circuitent sur la séquence non vide.
+        cache?.set(id, hydrated as any);
+        return hydrated;
     } catch {
         return null;
     }
@@ -368,7 +377,7 @@ export async function resolveFullConversationSkeleton(
         // 3b. #3661 AC8 — Tier 3 stub (archive GDrive) : le corps vit dans le
         //     SkeletonCacheService, pas dans ce cache. Peek + hydratation à la
         //     demande ; null si l'entrée n'est pas un stub Tier 3 chaud.
-        const tier3 = await hydrateTier3SkeletonFromCache(id);
+        const tier3 = await hydrateTier3SkeletonFromCache(id, cache);
         if (tier3) return tier3;
 
         // 4. Disk scan — Roo tasks whose header was never loaded into cache.
