@@ -3912,7 +3912,7 @@ ${archiveMessages}
   }
 
   const statusSizeBytes = Buffer.byteLength(newStatus!, 'utf8');
-  const summarySizeBytes = Buffer.byteLength(llmSummary!, 'utf8');
+  const summarySizeBytes = Buffer.byteLength(llmSummary ?? '', 'utf8');
   logger.info('Status updated from archived messages', {
     previousLength: previousStatus.length,
     newLength: newStatus!.length,
@@ -3921,6 +3921,19 @@ ${archiveMessages}
   });
 
   // Ajouter le message de condensation standard avec timing et tailles
+  // #2719 (ask CoursIA 25/09 20:10Z, dispatch ai-01 26/09) : le notice ne doit
+  // plus revendiquer « résumé LLM généré » quel que soit le résultat. Les chemins
+  // qui atteignent ce bloc ont toujours un résumé (le garde !llmSummary dévie vers
+  // executeTruncationFallback, qui poste son propre [WARN] FALLBACK TRUNCATION) —
+  // mais la provenance compte : un résumé sauvé par le fallback cloud est un
+  // résultat dégradé, pas un succès primaire. La branche sans résumé reste
+  // défensive : elle nomme l'archive au lieu de mentir avec 0.0KB.
+  const summaryViaCloud = summaryCall.stats.fallbackUsed === true;
+  const summaryClause = !llmSummary
+    ? `RÉSUMÉ ABSENT (échec LLM) — messages archivés SANS résumé : \`archive/${path.basename(archivePath)}\``
+    : summaryViaCloud
+      ? `résumé généré via fallback cloud (${(summarySizeBytes / 1024).toFixed(1)}KB, modèle primaire en échec)`
+      : `résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)`;
   const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId('system', 'system'),
@@ -3929,7 +3942,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 
@@ -4021,6 +4034,15 @@ export interface DashboardResult {
   messageCount?: number;
   condensed?: boolean;
   archivedCount?: number;
+  /**
+   * #2719 (ask CoursIA 25/09 20:10Z, dispatch ai-01 26/09) — true when a
+   * condensation pass archived messages WITHOUT any LLM summary (truncation
+   * fallback). `condensed: true` alone reads as success; this field exposes
+   * the summary loss at the top level for consumers that don't drill into
+   * condenseDiagnostic. Deliberately absent (not false) on clean passes to
+   * keep the historical payload shape.
+   */
+  summaryFailed?: boolean;
   message?: string;
   dashboards?: DashboardSummary[];
   /**
@@ -5391,6 +5413,11 @@ async function handleAppend(
   // #1791: Auto-register heartbeat on dashboard append (fire-and-forget)
   recordRooSyncActivityAsync('dashboard-append', { key, type: args.type });
 
+  // #2719 (dispatch ai-01 26/09): structured top-level exposure of the summary
+  // loss — condensed stays true (the archive DID happen, and a false would imply
+  // the messages are still visible), but the silent-success shape is gone.
+  const summaryFailed = condenseDiagnostics.some(d => d.outcome === 'fallback-truncated');
+
   return {
     success: true,
     action: 'append',
@@ -5401,6 +5428,7 @@ async function handleAppend(
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
     archivedCount: reportedArchivedCount,
+    summaryFailed: summaryFailed || undefined,
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
