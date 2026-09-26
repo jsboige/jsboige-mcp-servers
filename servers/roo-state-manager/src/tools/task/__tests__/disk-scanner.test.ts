@@ -68,7 +68,8 @@ describe('disk-scanner', () => {
             { text: 'Last message content', ts: Date.now() + 1000 }
         ]));
         // Return unique mtime each call to force full scan (no cache hit)
-        mockStat.mockResolvedValue({ mtimeMs: Date.now() + Math.random() });
+        // size>0 : le garde #3661 (ui_messages.json lisible) passe par défaut
+        mockStat.mockResolvedValue({ mtimeMs: Date.now() + Math.random(), size: 2048 });
         // Default: access resolves for ui_messages.json, rejects for invalid paths
         mockAccess.mockImplementation((path: string) => {
             if (typeof path === 'string' && path.includes('ui_messages.json') && !path.includes('invalid')) {
@@ -202,6 +203,25 @@ describe('disk-scanner', () => {
 
             // Both tasks should be returned since both match the mock pattern
             expect(result.length).toBe(2);
+        });
+
+        test('#3661 suite — ui_messages.json de 0 octet : répertoire écarté, pas de skeleton « Unknown Task » fantôme', async () => {
+            // Même classe de défaut que #1231 (garde Tier 3) : fs.access passe sur
+            // un fichier vide, mais quickAnalyze JSON.parse('') échoue et rend le
+            // fallback « Unknown Task ». Le scanner ne retient que le lisible.
+            mockReaddir.mockResolvedValue(['zero-task', 'valid-task']);
+            mockStat.mockImplementation((p: string) => {
+                if (typeof p === 'string' && p.includes('zero-task')) {
+                    return Promise.resolve({ mtimeMs: 1, size: 0 });
+                }
+                return Promise.resolve({ mtimeMs: Date.now() + Math.random(), size: 2048 });
+            });
+
+            const result = await scanDiskForNewTasks(mockCache);
+
+            expect(result.length).toBe(1);
+            expect(result[0].taskId).toBe('valid-task');
+            expect(result.map(t => t.metadata.title)).not.toContain('Unknown Task');
         });
 
         test('should filter by workspace when specified', async () => {
