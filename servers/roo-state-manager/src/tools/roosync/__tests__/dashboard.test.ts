@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath, getCondenseLockPath } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -2371,6 +2371,63 @@ describe('#3205 write-side — append lock cross-process', () => {
     // Le message est bien là (chemin complet append → pas de régression).
     const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
     expect(read.data?.intercom?.messages.some(m => m.content === 'Msg append-lock')).toBe(true);
+  });
+
+  it('#3782 stall visible — condensation requise mais verrou condense détenu → condensationStalled + warning', async () => {
+    // Dashboard AU-DESSUS du seuil (résurrection CoursIA 26/09 : 332 %, appends
+    // verts, stall invisible hors logs locaux de l'hôte appendant).
+    const pad = 'x'.repeat(900);
+    const msgs = Array.from({ length: 60 }, (_, i) => ({
+      id: `stall-${i}`,
+      timestamp: new Date(Date.UTC(2026, 8, 26, 8, i, 0)).toISOString(),
+      content: `message ${i} ${pad}`
+    }));
+    const body = msgs
+      .map(m => `### [${m.timestamp}] other-machine|other-ws\n[msg: ${m.id}]\n\n${m.content}`)
+      .join('\n\n---\n\n');
+    const big = [
+      '---',
+      'type: global',
+      "lastModified: '2026-09-26T09:00:00.000Z'",
+      'totalMessages: 60',
+      '---',
+      '',
+      '## Status',
+      '',
+      '# Statut saturé',
+      '',
+      `## Intercom (60 messages)`,
+      '',
+      body,
+      ''
+    ].join('\n');
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    await fsp.writeFile(path.join(lockTmpDir, 'dashboards', 'global.md'), big, 'utf8');
+
+    // Le verrou condense est tenu par un autre process FRAIS (pas de vol TTL).
+    const foreignCondense: { machineId: string; workspace: string; pid: number; acquiredAt: string } = {
+      machineId: 'condenser-machine', workspace: 'other-ws', pid: 555555,
+      acquiredAt: new Date().toISOString()
+    };
+    await fsp.writeFile(getCondenseLockPath('global'), JSON.stringify(foreignCondense), 'utf8');
+
+    const result = await roosyncDashboard({ action: 'append', type: 'global', content: 'APPEND SUR DASHBOARD SATURE' }) as any;
+
+    expect(result.success).toBe(true); // fail-open : l'append passe
+    expect(result.messageCount).toBe(61);
+    expect(result.condensed).toBe(false);
+    // Le stall est désormais STRUCTURÉ et visible dans le message.
+    expect(result.condensationStalled).toBe('lock-held');
+    expect(String(result.message)).toMatch(/Condensation requise/);
+    expect(String(result.message)).toMatch(/NON exécutée/);
+    // Le verrou étranger n'a pas été volé ni relâché.
+    const raw = await fsp.readFile(getCondenseLockPath('global'), 'utf8');
+    expect(JSON.parse(raw).machineId).toBe('condenser-machine');
+
+    // Contre-épreuve : append sous le seuil (clé vierge) → PAS de champ condensationStalled.
+    const small = await roosyncDashboard({ action: 'append', type: 'workspace', workspace: 'stall-small', content: 'petit append' }) as any;
+    expect(small.success).toBe(true);
+    expect(small.condensationStalled).toBeUndefined();
   });
 
   it('append sous verrou étranger frais → procède fail-open, message persisté, verrou étranger PAS touché', async () => {

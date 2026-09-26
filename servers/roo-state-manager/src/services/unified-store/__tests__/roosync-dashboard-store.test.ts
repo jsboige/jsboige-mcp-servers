@@ -29,11 +29,14 @@ import type {
 // ─── Reader factory mock (controllable double) ──────────────────────
 
 const mockGetRooSyncDashboard = vi.fn().mockResolvedValue(null);
+const mockGetArchivedIds = vi.fn().mockResolvedValue(null);
 
 vi.mock('../reader-factory.js', () => ({
   getUnifiedStoreReader: () => ({
     isNull: () => false,
     getRooSyncDashboard: mockGetRooSyncDashboard,
+    // #3782 tombstones : décision merge — ids archivés sur la clé.
+    getArchivedRooSyncDashboardMessageIds: mockGetArchivedIds,
   }),
   resetReaderInstance: vi.fn(),
 }));
@@ -81,6 +84,7 @@ import {
   dualWriteDashboardSync,
   dualWriteDashboardDelete,
   backfillDashboardToStore,
+  fetchArchivedDashboardMessageIds,
 } from '../roosync-dashboard-store.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { PgUnifiedStoreReader } from '../PgUnifiedStoreReader.js';
@@ -157,6 +161,7 @@ function withReadGate(fn: () => void | Promise<void>): () => Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetRooSyncDashboard.mockReset().mockResolvedValue(null);
+  mockGetArchivedIds.mockReset().mockResolvedValue(null);
   mockSyncRooSyncDashboard.mockReset().mockResolvedValue(undefined);
   mockDeleteRooSyncDashboard.mockReset().mockResolvedValue(undefined);
   mockQuery.mockReset().mockResolvedValue({ rows: [] });
@@ -498,5 +503,101 @@ describe('PgUnifiedStoreReader.getRooSyncDashboard SQL shape', () => {
     const journalSql = String(mockQuery.mock.calls[1][0]);
     expect(journalSql).toContain('archived_at IS NULL');
     expect(journalSql).toContain('ORDER BY created_at ASC, id ASC');
+  });
+});
+
+// ─── #3782 tombstones — wrapper fetchArchivedDashboardMessageIds ────
+
+describe('fetchArchivedDashboardMessageIds (#3782 merge tombstones)', () => {
+  function withDualWriteGate(fn: () => void | Promise<void>): () => Promise<void> {
+    return async () => {
+      process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+      process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+      try {
+        await fn();
+      } finally {
+        delete process.env.UNIFIED_STORE_DUAL_WRITE;
+        delete process.env.UNIFIED_STORE_PG_URL;
+      }
+    };
+  }
+
+  test('gate off (pas de DUAL_WRITE) → null, reader jamais consulté', async () => {
+    const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
+    expect(result).toBeNull();
+    expect(mockGetArchivedIds).not.toHaveBeenCalled();
+  });
+
+  test('gate on, hit → Set des ids archivés (le merge peut filtrer l\'union)', withDualWriteGate(async () => {
+    mockGetArchivedIds.mockResolvedValueOnce(['ic-a', 'ic-b', 'ic-c']);
+    const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
+    expect(result).toBeInstanceOf(Set);
+    expect([...result!]).toEqual(['ic-a', 'ic-b', 'ic-c']);
+    expect(mockGetArchivedIds).toHaveBeenCalledWith('workspace-coursia-fork');
+  }));
+
+  test('gate on, reader sans histoire → [] puis Set vide → union inchangée', withDualWriteGate(async () => {
+    mockGetArchivedIds.mockResolvedValueOnce([]);
+    const result = await fetchArchivedDashboardMessageIds('global');
+    expect(result).toBeInstanceOf(Set);
+    expect(result!.size).toBe(0);
+  }));
+
+  test('gate on, reader null → null (fail-open explicite)', withDualWriteGate(async () => {
+    mockGetArchivedIds.mockResolvedValueOnce(null);
+    const result = await fetchArchivedDashboardMessageIds('global');
+    expect(result).toBeNull();
+  }));
+
+  test('gate on, reader en échec → null + WARN (jamais de throw vers le merge)', withDualWriteGate(async () => {
+    mockGetArchivedIds.mockRejectedValueOnce(new Error('connection refused'));
+    const result = await fetchArchivedDashboardMessageIds('global');
+    expect(result).toBeNull();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('archived-id fetch failed'),
+      expect.objectContaining({ key: 'global' })
+    );
+  }));
+
+  test('gate on, reader muet > 3 s → timeout → null (le merge n\'attend jamais)', withDualWriteGate(async () => {
+    mockGetArchivedIds.mockImplementationOnce(() => new Promise<string[] | null>(() => { /* never resolves */ }));
+    vi.useFakeTimers();
+    try {
+      const pending = fetchArchivedDashboardMessageIds('global');
+      await vi.advanceTimersByTimeAsync(3000);
+      const result = await pending;
+      expect(result).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  }));
+});
+
+// ─── SQL shape — reader concret, ids archivés ───────────────────────
+
+describe('PgUnifiedStoreReader.getArchivedRooSyncDashboardMessageIds SQL shape', () => {
+  const reader = new PgUnifiedStoreReader({ connectionString: 'postgres://t:t@localhost:5432/x' });
+
+  test('hit → ids archivés, filtre archived_at IS NOT NULL, clé paramétrée', async () => {
+    // Premier appel = self-init SELECT 1.
+    mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] })
+      .mockResolvedValueOnce({ rows: [{ message_id: 'ic-a' }, { message_id: 'ic-b' }] });
+    const result = await reader.getArchivedRooSyncDashboardMessageIds('workspace-coursia-fork');
+    expect(result).toEqual(['ic-a', 'ic-b']);
+
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('archived_at IS NOT NULL'));
+    expect(call).toBeDefined();
+    const sql = String(call![0]);
+    expect(sql).toContain('FROM roosync_dashboard_messages');
+    expect(sql).toContain('dashboard_key = $1');
+    expect(sql).toContain('message_id IS NOT NULL');
+    expect(call![1]).toEqual(['workspace-coursia-fork']);
+  });
+
+  test('aucun archivé → [] (pas null : l\'histoire existe, elle est vide)', async () => {
+    // Reader déjà initialisé par le test précédent (init() garde) — pas de SELECT 1.
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    const result = await reader.getArchivedRooSyncDashboardMessageIds('global');
+    expect(result).toEqual([]);
   });
 });

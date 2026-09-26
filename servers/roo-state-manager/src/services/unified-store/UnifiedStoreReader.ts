@@ -135,6 +135,12 @@ export interface IUnifiedStoreReader {
   getRooSyncDashboardRetirement(key: string): Promise<DashboardRetirementMark | null>;
   /** #3782 — every key carrying an ACTIVE mark (list filtering, fork detector). */
   listRetiredRooSyncDashboardKeys(): Promise<string[]>;
+  /**
+   * #3782 (résurrection CoursIA 26/09) — message_ids ARCHIVED on a key
+   * (archived_at IS NOT NULL). Decision input for the merge tombstones, same
+   * ungated contract as the retirement reads; null = no PG story (fail-open).
+   */
+  getArchivedRooSyncDashboardMessageIds(key: string): Promise<string[] | null>;
 
   // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
 
@@ -177,6 +183,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   } | null> { return null; }
   async getRooSyncDashboardRetirement(_key: string): Promise<DashboardRetirementMark | null> { return null; }
   async listRetiredRooSyncDashboardKeys(): Promise<string[]> { return []; }
+  async getArchivedRooSyncDashboardMessageIds(_key: string): Promise<string[] | null> { return null; }
   async getRooSyncAttachmentById(_id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> { return null; }
   async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
