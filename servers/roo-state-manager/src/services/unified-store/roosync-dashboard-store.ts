@@ -34,7 +34,7 @@ import type {
   DashboardRetirementMark,
 } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
-import type { UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
+import type { RooSyncLockAcquireStatus, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { createLogger } from '../../utils/logger.js';
@@ -434,6 +434,56 @@ export async function unretireDashboardKeyChecked(
   } catch (error) {
     logger.warn('[retirement #3782] mark lift failed', { key, error: String(error) });
     return { ok: false, reason: 'exhausted', detail: String(error) };
+  }
+}
+
+// ─── #3782 locks-off-Drive — consultative PG lock, wrapper layer ─────────────
+
+/** One lock op must answer within this budget; past it the caller falls back to its machine-local lock. */
+const LOCK_OP_TIMEOUT_MS = 3000;
+
+/**
+ * #3782 locks-off-Drive — acquire the PG consultative lock row. The lock files
+ * used to live in dashboards/ on GDrive, where Drive re-parents them to the
+ * drive root under contention (58 orphans measured, po-2027 26/09); this row
+ * replaces the cross-machine half of that lock. Errors, timeouts, breaker-open
+ * and missing writer methods ALL degrade to 'unavailable' — the caller then
+ * uses its machine-local lock and #2328 remains the correctness backstop.
+ */
+export async function acquireDashboardSharedLock(
+  lockKey: string,
+  holderJson: string,
+  ttlMs: number
+): Promise<RooSyncLockAcquireStatus> {
+  try {
+    const timeout = new Promise<RooSyncLockAcquireStatus>((resolve) => {
+      setTimeout(() => resolve('unavailable'), LOCK_OP_TIMEOUT_MS);
+    });
+    return await Promise.race([
+      getUnifiedStoreWriter().tryAcquireRooSyncDashboardLock(lockKey, holderJson, ttlMs),
+      timeout,
+    ]);
+  } catch (error) {
+    logger.warn('[locks #3782] PG lock acquire failed — machine-local layer takes over', {
+      lockKey,
+      error: String(error),
+    });
+    return 'unavailable';
+  }
+}
+
+/** #3782 — best-effort release of the PG lock row (TTL steal recovers an unreleased row). */
+export async function releaseDashboardSharedLock(lockKey: string, holderJson: string): Promise<void> {
+  try {
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), LOCK_OP_TIMEOUT_MS);
+    });
+    await Promise.race([
+      getUnifiedStoreWriter().releaseRooSyncDashboardLock(lockKey, holderJson),
+      timeout,
+    ]);
+  } catch {
+    // Best-effort: the TTL steal recovers an unreleased row.
   }
 }
 

@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -2259,6 +2259,9 @@ describe('#3205 résiduel — retry borné readDashboardFromGdrive', () => {
 // #2818) + fail-OPEN au-delà du budget.
 describe('#3205 write-side — append lock cross-process', () => {
   let lockTmpDir: string;
+  // Valeur posée par tests/setup-env.ts (isolation par worker #3782) — afterEach
+  // y REVIENT au lieu de deleter.
+  const setupLockDir = process.env.ROOSYNC_LOCK_DIR;
 
   const mkHolder = (machineId: string, ageMs = 0): { machineId: string; workspace: string; pid: number; acquiredAt: string } => ({
     machineId,
@@ -2274,6 +2277,10 @@ describe('#3205 write-side — append lock cross-process', () => {
     process.env.ROOSYNC_SHARED_PATH = lockTmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // #3782 locks-off-Drive : verrous fichier dans un tmpdir dédié au test,
+    // PLUS dans dashboards/ du store GDrive.
+    process.env.ROOSYNC_LOCK_DIR = path.join(lockTmpDir, 'locks');
+    await fsp.mkdir(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
     // Budget court : les tests fail-open attendent ~250 ms, pas 5 s.
     process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS = '250';
   });
@@ -2281,13 +2288,14 @@ describe('#3205 write-side — append lock cross-process', () => {
   afterEach(async () => {
     delete process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS;
     delete process.env.ROOSYNC_SHARED_PATH;
+    if (setupLockDir === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+    else process.env.ROOSYNC_LOCK_DIR = setupLockDir;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     await rm(lockTmpDir, { recursive: true, force: true });
   });
 
   it('acquire → true ; détenteur frais concurrent → false après budget (fail-open), verrou étranger intact', async () => {
-    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
     const mine = mkHolder('machine-a');
     const got = await acquireAppendLock('workspace-x', mine);
     expect(got).toBe(true);
@@ -2300,7 +2308,7 @@ describe('#3205 write-side — append lock cross-process', () => {
     expect(waited).toBeGreaterThanOrEqual(200); // il a bien ATTENDU (sémantique WAIT, pas skip immédiat)
 
     // Le verrou du détenteur A n'a pas été touché par l'acquis échoué de B.
-    const raw = await fsp.readFile(path.join(lockTmpDir, 'dashboards', 'workspace-x.append.lock'), 'utf8');
+    const raw = await fsp.readFile(getAppendLockPath('workspace-x'), 'utf8');
     expect(JSON.parse(raw).machineId).toBe('machine-a');
 
     await releaseAppendLock('workspace-x', mine);
@@ -2309,24 +2317,19 @@ describe('#3205 write-side — append lock cross-process', () => {
   it('verrou STALE (âge > TTL 30 s) → volé → true, payload maintenant le nôtre', async () => {
     // Posé "il y a 60 s" par un process mort — au-delà du TTL par défaut.
     const dead = mkHolder('dead-machine', 60_000);
-    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
-    await fsp.writeFile(
-      path.join(lockTmpDir, 'dashboards', 'workspace-y.append.lock'),
-      JSON.stringify(dead), 'utf8'
-    );
+    await fsp.writeFile(getAppendLockPath('workspace-y'), JSON.stringify(dead), 'utf8');
 
     const mine = mkHolder('live-machine');
     const got = await acquireAppendLock('workspace-y', mine);
     expect(got).toBe(true);
 
-    const raw = await fsp.readFile(path.join(lockTmpDir, 'dashboards', 'workspace-y.append.lock'), 'utf8');
+    const raw = await fsp.readFile(getAppendLockPath('workspace-y'), 'utf8');
     expect(JSON.parse(raw).machineId).toBe('live-machine');
     await releaseAppendLock('workspace-y', mine);
   });
 
   it('release ne supprime QUE son propre verrou (garde ownership)', async () => {
-    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
-    const foreignPath = path.join(lockTmpDir, 'dashboards', 'workspace-z.append.lock');
+    const foreignPath = getAppendLockPath('workspace-z');
     const foreign = mkHolder('foreign-machine');
     await fsp.writeFile(foreignPath, JSON.stringify(foreign), 'utf8');
 
@@ -2338,8 +2341,7 @@ describe('#3205 write-side — append lock cross-process', () => {
   });
 
   it('verrou GARBAGE (JSON corrompu) → volé immédiatement, pas après budget (fix web1 c.318)', async () => {
-    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
-    const garbagePath = path.join(lockTmpDir, 'dashboards', 'workspace-g.append.lock');
+    const garbagePath = getAppendLockPath('workspace-g');
     // Write partiel d'un process crashé — le payload n'est pas du JSON valide.
     await fsp.writeFile(garbagePath, '{ invalid json', 'utf8');
 
@@ -2364,8 +2366,7 @@ describe('#3205 write-side — append lock cross-process', () => {
     const result = await roosyncDashboard({ action: 'append', type: 'global', content: 'Msg append-lock' });
 
     expect(result.success).toBe(true);
-    const locksDir = path.join(lockTmpDir, 'dashboards');
-    const leftovers = (await fsp.readdir(locksDir)).filter(f => f.endsWith('.append.lock'));
+    const leftovers = (await fsp.readdir(process.env.ROOSYNC_LOCK_DIR!)).filter(f => f.endsWith('.append.lock'));
     expect(leftovers).toEqual([]); // relâché dans le finally — pas de verrou orphelin
     // Le message est bien là (chemin complet append → pas de régression).
     const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'intercom' });
@@ -2376,8 +2377,7 @@ describe('#3205 write-side — append lock cross-process', () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: '# Seed foreign' });
 
     // Un autre process/machine "détient" le verrou (acquis à l'instant).
-    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
-    const foreignPath = path.join(lockTmpDir, 'dashboards', 'global.append.lock');
+    const foreignPath = getAppendLockPath('global');
     const foreign = mkHolder('other-process');
     await fsp.writeFile(foreignPath, JSON.stringify(foreign), 'utf8');
 
@@ -2407,6 +2407,9 @@ describe('#3205 write-side — append lock cross-process', () => {
 describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sous verrou append', () => {
   let rlTmpDir: string;
   const pendingTimers: NodeJS.Timeout[] = [];
+  // Valeur posée par tests/setup-env.ts (isolation par worker #3782) — afterEach
+  // y REVIENT au lieu de deleter.
+  const setupLockDir = process.env.ROOSYNC_LOCK_DIR;
 
   const mkHolder = (machineId: string): { machineId: string; workspace: string; pid: number; acquiredAt: string } => ({
     machineId,
@@ -2422,6 +2425,9 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     process.env.ROOSYNC_SHARED_PATH = rlTmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // #3782 locks-off-Drive : verrous fichier en tmpdir dédié.
+    process.env.ROOSYNC_LOCK_DIR = path.join(rlTmpDir, 'locks');
+    await fsp.mkdir(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
     // Budget 600 ms : les tests « chemin sérialisé » laissent le verrou partir
     // à ~250 ms (après mutation à 150 ms) — un retry (~150 ms de période)
     // gagne avant le deadline. Les tests fail-open attendent ~600 ms.
@@ -2432,12 +2438,14 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     for (const t of pendingTimers.splice(0)) clearTimeout(t);
     delete process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS;
     delete process.env.ROOSYNC_SHARED_PATH;
+    if (setupLockDir === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+    else process.env.ROOSYNC_LOCK_DIR = setupLockDir;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     await rm(rlTmpDir, { recursive: true, force: true });
   });
 
-  const lockPathFor = (k: string) => path.join(rlTmpDir, 'dashboards', `${k}.append.lock`);
+  const lockPathFor = (k: string) => getAppendLockPath(k);
   const filePathFor = (k: string) => path.join(rlTmpDir, 'dashboards', `${k}.md`);
 
   // Injecte un bloc message dans le fichier dashboard, comme le ferait une
@@ -2463,7 +2471,7 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
     expect(read.data?.status?.markdown).toContain('# Status v1'); // le SUT a bien écrit
 
-    const leftovers = (await fsp.readdir(path.join(rlTmpDir, 'dashboards'))).filter(f => f.endsWith('.append.lock'));
+    const leftovers = (await fsp.readdir(process.env.ROOSYNC_LOCK_DIR!)).filter(f => f.endsWith('.append.lock'));
     expect(leftovers).toEqual([]); // relâché dans le finally
   });
 
@@ -2502,7 +2510,7 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     expect(r1?.reply_to).toBe('m1-seed');
     expect(r1?.acknowledged_at?.['test-machine']).toBeDefined(); // l'ack a été posé ET servi
 
-    const leftovers = (await fsp.readdir(path.join(rlTmpDir, 'dashboards'))).filter(f => f.endsWith('.append.lock'));
+    const leftovers = (await fsp.readdir(process.env.ROOSYNC_LOCK_DIR!)).filter(f => f.endsWith('.append.lock'));
     expect(leftovers).toEqual([]);
   });
 
@@ -2552,7 +2560,7 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     const target = await roosyncDashboard({ action: 'read', type: 'machine', machineId: 'other-machine', section: 'intercom' });
     expect(target.data?.intercom?.messages.some(m => m.id === 'xpost-seed')).toBe(true); // répliqué
 
-    const leftovers = (await fsp.readdir(path.join(rlTmpDir, 'dashboards'))).filter(f => f.endsWith('.append.lock'));
+    const leftovers = (await fsp.readdir(process.env.ROOSYNC_LOCK_DIR!)).filter(f => f.endsWith('.append.lock'));
     expect(leftovers).toEqual([]); // source ET cible relâchés
   });
 

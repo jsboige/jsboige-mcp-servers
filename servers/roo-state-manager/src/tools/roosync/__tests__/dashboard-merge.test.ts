@@ -82,7 +82,7 @@ vi.mock('@/services/openai', () => ({
   getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard } from '../dashboard.js';
+import { roosyncDashboard, getAppendLockPath } from '../dashboard.js';
 
 // --- Isolation : un store unique par test --------------------------------
 let testDir = '';
@@ -90,6 +90,7 @@ let dashboardsDir = '';
 
 const WATCHED_ENV = [
   'ROOSYNC_SHARED_PATH',
+  'ROOSYNC_LOCK_DIR',
   'ROOSYNC_MACHINE_ID',
   'ROOSYNC_WORKSPACE_ID',
   'UNIFIED_STORE_DASHBOARD_READ_PG',
@@ -640,9 +641,13 @@ describe('action merge — rework #1134 ask 1 : verrou append FAIL-CLOSED', () =
     seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
     // Holder frais d'un autre process sur la clé CIBLE (première de l'ordre
     // trié), budget d'acquisition court → acquisition impossible.
+    // #3782 locks-off-Drive : verrou fichier en tmpdir dédié (hashé), pas
+    // dans dashboards/ du store.
     process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS = '60';
+    process.env.ROOSYNC_LOCK_DIR = path.join(testDir, 'locks');
+    mkdirSync(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
     writeFileSync(
-      path.join(dashboardsDir, 'machine-myia-po-2025.append.lock'),
+      getAppendLockPath('machine-myia-po-2025'),
       JSON.stringify({
         machineId: 'myia-po-2026', workspace: 'roo-extensions',
         pid: 999999, acquiredAt: new Date().toISOString()
