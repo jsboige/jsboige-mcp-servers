@@ -33,6 +33,8 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
     // #3782 locks-off-Drive : couche PG → 'unavailable' (hôte sans PG — fallback fichier).
     acquireDashboardSharedLock: vi.fn().mockResolvedValue('unavailable'),
     releaseDashboardSharedLock: vi.fn().mockResolvedValue(undefined),
+    // #3782 tombstones : pas d histoire PG archivee -> null (fail-open).
+    fetchArchivedDashboardMessageIds: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('@/services/openai', () => ({

@@ -258,6 +258,53 @@ export async function probeDashboardJournalForHydration(key: string): Promise<Gu
   }
 }
 
+/**
+ * #3782 (résurrection workspace-CoursIA 26/09) — tombstones d'archive pour le
+ * merge. Un message archivé sur la CIBLE (row journal `archived_at` posé) n'est
+ * pas « perdu » quand il apparaît dans une vue source : il est condensé. Sans
+ * ce filtre, l'union du merge ressuscite tout message déjà condensé que porte
+ * encore une vue fichier périmée ou le journal jamais condensé d'une clé fork
+ * (mesuré : 84 messages réimportés vivants, dashboard à 332 %).
+ *
+ * Même contrat que la sonde guard-a : UNGATED (l'hôte dual-écrit, il peut
+ * décider), course de timeout courte, fail-open — `null` (pas d'histoire PG)
+ * laisse l'union inchangée.
+ */
+const ARCHIVED_IDS_TIMEOUT_MS = 3000;
+
+export async function fetchArchivedDashboardMessageIds(key: string): Promise<Set<string> | null> {
+  if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+    return null;
+  }
+  const reader = getUnifiedStoreReader();
+  if (reader.isNull()) return null;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => { timedOut = true; resolve(null); }, ARCHIVED_IDS_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([
+      reader.getArchivedRooSyncDashboardMessageIds(key),
+      timeout,
+    ]);
+    if (result === null && timedOut) {
+      logger.warn('[merge-tombstones] archived-id fetch timed out — union proceeds unfiltered (fail-open)', { key });
+      return null;
+    }
+    if (!result) return null;
+    return new Set(result);
+  } catch (error) {
+    logger.warn('[merge-tombstones] archived-id fetch failed — union proceeds unfiltered (fail-open)', {
+      key,
+      error: String(error),
+    });
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 
 /**
  * Dual-write a dashboard to PG (sync semantics: row upsert + journal upsert —

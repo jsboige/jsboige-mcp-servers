@@ -48,7 +48,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 // sauf readDashboardFromPg (contrôlable : simule la vue PG d'un hôte à porte
 // ouverte — défaut null = pas de vue PG, comme une porte fermée) et les
 // variantes checked (issues PG simulables).
-const { dualWriteSyncSpy, dualWriteDeleteSpy, pgReadSpy, pgSyncCheckedSpy, pgDeleteCheckedSpy, retireCheckedSpy, getRetirementSpy, listRetiredSpy } = vi.hoisted(() => ({
+const { dualWriteSyncSpy, dualWriteDeleteSpy, pgReadSpy, pgSyncCheckedSpy, pgDeleteCheckedSpy, retireCheckedSpy, getRetirementSpy, listRetiredSpy, archivedIdsSpy } = vi.hoisted(() => ({
   dualWriteSyncSpy: vi.fn(),
   dualWriteDeleteSpy: vi.fn(),
   pgReadSpy: vi.fn(),
@@ -57,6 +57,7 @@ const { dualWriteSyncSpy, dualWriteDeleteSpy, pgReadSpy, pgSyncCheckedSpy, pgDel
   retireCheckedSpy: vi.fn(),
   getRetirementSpy: vi.fn(),
   listRetiredSpy: vi.fn(),
+  archivedIdsSpy: vi.fn(),
 }));
 vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -70,6 +71,7 @@ vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (imp
     retireDashboardKeyChecked: retireCheckedSpy,
     getDashboardRetirement: getRetirementSpy,
     listRetiredDashboardKeys: listRetiredSpy,
+    fetchArchivedDashboardMessageIds: archivedIdsSpy,
   };
 });
 
@@ -199,6 +201,9 @@ beforeEach(() => {
   // écrit-sans-lire — le writer est aussi OFF dans cet env).
   pgReadSpy.mockReset();
   pgReadSpy.mockResolvedValue(null);
+  // #3782 tombstones — défaut : pas d'histoire PG archivée (fail-open).
+  archivedIdsSpy.mockReset();
+  archivedIdsSpy.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -261,6 +266,79 @@ describe('action merge — refus (aucune écriture)', () => {
     expect(fileExists('machine-myia-po-2025.md')).toBe(false);
     expect(dualWriteSyncSpy).not.toHaveBeenCalled();
     expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('action merge — #3782 tombstones d’archive (résurrection CoursIA 26/09)', () => {
+  // Reproduction du scénario mesuré : la vue source (fichier fork périmé OU
+  // journal fork jamais condensé) porte des messages que la cible a déjà
+  // CONDENSÉS (rows archived_at posés). Sans filtre, l'union les réimporte
+  // vivants (84 messages, dashboard à 332 %). Avec tombstones : exclus, et
+  // rapportés dans le message du résultat.
+  const t1 = { id: 't1', timestamp: '2026-09-26T08:00:00.000Z', content: 't1 — déjà archivé sur la cible (résurrection bloquée)' };
+  const t2 = { id: 't2', timestamp: '2026-09-26T09:00:00.000Z', content: 't2 — déjà archivé sur la cible (résurrection bloquée)' };
+  const live1 = { id: 'live1', timestamp: '2026-09-26T10:00:00.000Z', content: 'live1 — message vivant du fork' };
+  const live2 = { id: 'live2', timestamp: '2026-09-26T11:00:00.000Z', content: 'live2 — message vivant de la cible' };
+
+  function seedForkPair(): void {
+    // Cible : 1 message vivant.
+    seedDashboard('workspace-tomb.md', 'workspace', '2026-09-26T11:00:00.000Z', [live2]);
+    // Source fork : porte les 2 archivés + 1 vivant (vue périmée).
+    seedDashboard('workspace-tomb (1).md', 'workspace', '2026-09-26T10:00:00.000Z', [t1, t2, live1]);
+  }
+
+  it('exclut de l’union les ids déjà archivés sur la cible et le rapporte', async () => {
+    seedForkPair();
+    // Le journal PG de la CIBLE connaît t1/t2 comme archivés.
+    archivedIdsSpy.mockResolvedValue(new Set(['t1', 't2']));
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'workspace', workspace: 'tomb',
+      sourceKey: 'workspace-tomb (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    // live1 + live2 seulement — t1/t2 exclus.
+    expect(result.messageCount).toBe(2);
+    expect(String(result.message)).toContain('2 message(s) déjà archivé(s)');
+    expect(String(result.message)).toContain('tombstones #3782');
+    // L'union persistée ne porte PAS les exclus.
+    const synced = pgSyncCheckedSpy.mock.calls[0][0];
+    expect(synced.intercom.messages.map((m: { id: string }) => m.id).sort()).toEqual(['live1', 'live2']);
+    // Le fichier cible non plus.
+    expect(fileText('workspace-tomb.md')).not.toContain('résurrection bloquée');
+    expect(fileText('workspace-tomb.md')).toContain('live1');
+    // La requête tombstone a bien porté la clé CIBLE.
+    expect(archivedIdsSpy).toHaveBeenCalledWith('workspace-tomb');
+  });
+
+  it('fail-open : fetch → null (hôte sans histoire PG) laisse l’union inchangée', async () => {
+    seedForkPair();
+    archivedIdsSpy.mockResolvedValue(null);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'workspace', workspace: 'tomb',
+      sourceKey: 'workspace-tomb (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    // 4 messages : la cible + tout le fork, résurrection incluse (comportement d'avant).
+    expect(result.messageCount).toBe(4);
+    expect(String(result.message)).not.toContain('tombstones #3782');
+  });
+
+  it('set vide (aucun archivé) : union inchangée, pas de mention', async () => {
+    seedForkPair();
+    archivedIdsSpy.mockResolvedValue(new Set<string>());
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'workspace', workspace: 'tomb',
+      sourceKey: 'workspace-tomb (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.messageCount).toBe(4);
+    expect(String(result.message)).not.toContain('tombstones #3782');
   });
 });
 
