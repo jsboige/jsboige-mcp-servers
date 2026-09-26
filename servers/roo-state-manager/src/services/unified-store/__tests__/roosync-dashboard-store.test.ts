@@ -522,11 +522,22 @@ describe('fetchArchivedDashboardMessageIds (#3782 merge tombstones)', () => {
     };
   }
 
-  test('gate off (pas de DUAL_WRITE) → null, reader jamais consulté', async () => {
+  test('gate off (pas de PG_URL) → null, reader jamais consulté', async () => {
+    delete process.env.UNIFIED_STORE_PG_URL;
     const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
     expect(result).toBeNull();
     expect(mockGetArchivedIds).not.toHaveBeenCalled();
   });
+
+  test('WARNING NanoClaw #1242 : SANS dual-write mais AVEC lecture PG → le fetch passe (la lecture n\'exige pas le droit d\'écrire)', withDualWriteGate(async () => {
+    // Un hôte read-only (T0 flotte, pas de flag d\'écriture) filtre quand même
+    // l\'union du merge — c\'est l\'élargissement demandé par la review #1242.
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    mockGetArchivedIds.mockResolvedValueOnce(['ic-x']);
+    const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
+    expect(result).toBeInstanceOf(Set);
+    expect([...result!]).toEqual(['ic-x']);
+  }));
 
   test('gate on, hit → Set des ids archivés (le merge peut filtrer l\'union)', withDualWriteGate(async () => {
     mockGetArchivedIds.mockResolvedValueOnce(['ic-a', 'ic-b', 'ic-c']);

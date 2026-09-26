@@ -266,14 +266,16 @@ export async function probeDashboardJournalForHydration(key: string): Promise<Gu
  * encore une vue fichier périmée ou le journal jamais condensé d'une clé fork
  * (mesuré : 84 messages réimportés vivants, dashboard à 332 %).
  *
- * Même contrat que la sonde guard-a : UNGATED (l'hôte dual-écrit, il peut
- * décider), course de timeout courte, fail-open — `null` (pas d'histoire PG)
- * laisse l'union inchangée.
+ * WARNING NanoClaw #1242 (dispatch ai-01 26/09 23:00Z) : la lecture des ids
+ * archivés n'exige PAS le droit d'écrire — le gate est la CAPACITÉ d'interroger
+ * PG (URL + reader), pas le flag dual-write. Tout hôte qui peut lire filtre
+ * l'union ; `null` (aucune histoire lisible, échec, timeout 3 s) laisse
+ * l'union inchangée et le merge avertit (handleMerge — sens sûr).
  */
 const ARCHIVED_IDS_TIMEOUT_MS = 3000;
 
 export async function fetchArchivedDashboardMessageIds(key: string): Promise<Set<string> | null> {
-  if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+  if (!process.env.UNIFIED_STORE_PG_URL) {
     return null;
   }
   const reader = getUnifiedStoreReader();
