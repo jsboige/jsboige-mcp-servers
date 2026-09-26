@@ -4347,6 +4347,31 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
         const guardRefusal = mergeGuardRefusal(sourceKey, key, args);
         if (guardRefusal) return guardRefusal;
 
+        // #3782 suite (review ai-01 26/09) — mergeGuardRefusal est PURE (aucun
+        // I/O) : la marque de retraite se lit ici, toujours AVANT les verrous.
+        // Fail-open : marque invisible (PG injoignable) ⇒ merge autorisé — le
+        // merge reste le geste de réparation de dernier recours.
+        const sourceMark = await getDashboardRetirement(sourceKey);
+        if (sourceMark) {
+          return {
+            action: 'merge',
+            key,
+            type: args.type ?? '',
+            success: false,
+            message: `⛔ REFUSÉ: la source '${sourceKey}' est retirée (marque #3782 : merge vers '${sourceMark.targetKey}' par ${sourceMark.retiredBy}) — son contenu vit déjà dans '${sourceMark.targetKey}'. Pour réparer la marque : la lever, puis re-merger.`,
+          };
+        }
+        const targetMark = await getDashboardRetirement(key);
+        if (targetMark) {
+          return {
+            action: 'merge',
+            key,
+            type: args.type ?? '',
+            success: false,
+            message: `⛔ REFUSÉ: la cible '${key}' est elle-même retirée (marque #3782 : merge vers '${targetMark.targetKey}' par ${targetMark.retiredBy}) — merger directement vers '${targetMark.targetKey}'.`,
+          };
+        }
+
         // Verrou in-process sur les DEUX clés (ordre trié anti-interblocage),
         // puis verrou append CROSS-PROCESS sur les deux clés, en mode
         // FAIL-CLOSED (rework #1134, review ask 1) : le merge est un

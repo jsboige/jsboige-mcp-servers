@@ -385,7 +385,18 @@ export async function listRetiredDashboardKeys(): Promise<Set<string>> {
   try {
     const reader = getUnifiedStoreReader();
     if (reader.isNull()) return new Set();
-    return new Set(await reader.listRetiredRooSyncDashboardKeys());
+    // Same 3s race as getDashboardRetirement (#3782 suite, review ai-01 26/09):
+    // list feeds handleList on EVERY dashboard call — a hung PG read must not
+    // hang every read/append on the host.
+    let timedOut = false;
+    const timeout = new Promise<string[]>((resolve) => {
+      setTimeout(() => { timedOut = true; resolve([]); }, RETIREMENT_LOOKUP_TIMEOUT_MS);
+    });
+    const keys = await Promise.race([reader.listRetiredRooSyncDashboardKeys(), timeout]);
+    if (timedOut) {
+      logger.warn('[retirement #3782] list timed out — treating as no retired keys (fail-open)');
+    }
+    return new Set(keys);
   } catch (error) {
     logger.warn('[retirement #3782] list failed — treating as no retired keys (fail-open)', {
       error: String(error),
