@@ -3991,6 +3991,11 @@ ${archiveMessages}
   // résultat dégradé, pas un succès primaire. La branche sans résumé reste
   // défensive : elle nomme l'archive au lieu de mentir avec 0.0KB.
   const summaryViaCloud = summaryCall.stats.fallbackUsed === true;
+  // #2719 review follow-up (ai-01, #1233 non-blocking): the notice must carry the
+  // same algebra as the outcome below — a STATUS leg salvaged by the cloud fallback
+  // makes the pass `fallback-cloud` even when the summary came from the primary.
+  // Qualify the status line with its own provenance so the two surfaces agree.
+  const statusViaCloud = statusCall.stats.fallbackUsed === true;
   const summaryClause = !llmSummary
     ? `RÉSUMÉ ABSENT (échec LLM) — messages archivés SANS résumé : \`archive/${path.basename(archivePath)}\``
     : summaryViaCloud
@@ -4004,7 +4009,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour (${(statusSizeBytes / 1024).toFixed(1)}KB), ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour${statusViaCloud ? ' via fallback cloud' : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB), ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 
@@ -5529,6 +5534,15 @@ async function handleAppend(
     diagSuffix = ` — ⚠️ ${head}${why ? `: ${why}` : ''}${dedupNote}${truncNote}`;
   }
 
+  // #2719 review follow-up (ai-01, #1233 non-blocking): a `fallback-cloud` pass left
+  // no trace in the primary tool-result message — the degraded provenance was only
+  // visible in condenseDiagnostic[].outcome. Neutral marker (no ⚠️): messages were
+  // NOT lost, the salvage succeeded — but the caller should know it ran on the cloud.
+  const cloudSalvaged = condenseDiagnostics.filter(d => d.outcome === 'fallback-cloud');
+  const cloudSuffix = cloudSalvaged.length > 0
+    ? ` — [cloud fallback: primary LLM down, condensation salvaged by cloud (${cloudSalvaged.length} dashboard${cloudSalvaged.length > 1 ? 's' : ''})]`
+    : '';
+
   const totalMs = Date.now() - appendStart;
   const splitSuffix = isMultiPart ? ` [split en ${newMessages.length} parts]` : '';
 
@@ -5562,7 +5576,7 @@ async function handleAppend(
       reactiveCondenseMs,
       writeMs
     },
-    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${crossPostSuffix}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
+    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${crossPostSuffix}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
   };
 }
 
