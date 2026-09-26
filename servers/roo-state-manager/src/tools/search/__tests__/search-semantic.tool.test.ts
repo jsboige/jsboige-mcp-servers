@@ -18,7 +18,9 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 const { mockQdrantClient, mockOpenAIClient, mockGetEmbeddingModel } = vi.hoisted(() => ({
 	mockQdrantClient: {
 		search: vi.fn(),
-		getCollection: vi.fn()
+		getCollection: vi.fn(),
+		// #2609 V3: context expansion scrolls adjacent turns
+		scroll: vi.fn()
 	},
 	mockOpenAIClient: {
 		embeddings: {
@@ -2132,4 +2134,236 @@ describe('helper functions (indirect via handler)', () => {
 		});
 	});
 });
+});
+
+// ============================================================
+// #2609 V3 — result quality: coherent passage (rubric (a)),
+// drill-down handle (b), adjacent-turn context (c).
+// The Epic's target: "the result is exploitable without
+// re-opening a grep".
+// ============================================================
+describe('#2609 V3 result quality', () => {
+	beforeEach(() => {
+		mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+		mockUnifiedStoreReader.isNull.mockReturnValue(true);
+		mockQdrantClient.scroll.mockReset();
+		delete process.env.SEARCH_CONTEXT_EXPANSION;
+	});
+
+	test('extractSnippet: window boundaries snap to sentence ends (rubric (a))', async () => {
+		// Leading/trailing fillers are made of short sentences; the raw 300-char
+		// half-window around the match would cut mid-sentence in both directions.
+		// The snap must land the snippet on sentence boundaries while keeping the
+		// query match inside the window.
+		const sentence = 'The coordinator cadence decision was to keep the cron at three hours. ';
+		const leading = 'Unrelated filler sentence that keeps going and going. '.repeat(12); // ends '. '
+		const trailing = 'Post match filler sentence continues here. '.repeat(8);
+		const content = leading + sentence + trailing;
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 't1', content, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'coordinator cadence decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const snippet: string = parsed.results[0].chunks[0].snippet;
+		expect(snippet).toContain('coordinator cadence decision');
+		// Outer truncation markers present (window smaller than content)
+		expect(snippet.startsWith('...')).toBe(true);
+		expect(snippet.endsWith('...')).toBe(true);
+		// Body must start at a sentence start and end on a sentence end —
+		// pre-#2609 the raw substring cut mid-word in both directions.
+		const body = snippet.replace(/^\.\.\./, '').replace(/\.\.\.$/, '');
+		expect(body).toMatch(/^[A-Z]/);
+		expect(body).toMatch(/[.!?]\s*$/);
+	});
+
+	test('drill_down: pre-windowed conversation_browser handle (rubric (b))', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.85, payload: { task_id: 'task-x', content: 'decision passage', host_os: 'h1', message_index: 5, total_messages: 10 } }
+		]);
+		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const chunk = parsed.results[0].chunks[0];
+		expect(chunk.drill_down).toEqual({
+			tool: 'conversation_browser',
+			action: 'view',
+			task_id: 'task-x',
+			messageStart: 2,
+			messageEnd: 8
+		});
+		expect(chunk.message_index).toBe(5);
+		expect(chunk.message_position).toBe('5/10');
+	});
+
+	test('drill_down: clamped at conversation bounds', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.85, payload: { task_id: 'task-edge', content: 'early decision', host_os: 'h1', message_index: 2, total_messages: 3 } }
+		]);
+		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const chunk = parsed.results[0].chunks[0];
+		expect(chunk.drill_down).toEqual({
+			tool: 'conversation_browser',
+			action: 'view',
+			task_id: 'task-edge',
+			messageStart: 1,
+			messageEnd: 3
+		});
+	});
+
+	test('drill_down: absent message_index degrades to task-level handle', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 'task-old', content: 'legacy point', host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'legacy' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const chunk = parsed.results[0].chunks[0];
+		expect(chunk.drill_down).toEqual({
+			tool: 'conversation_browser',
+			action: 'view',
+			task_id: 'task-old'
+		});
+		expect(chunk.message_index).toBeUndefined();
+		expect(chunk.message_position).toBeUndefined();
+	});
+
+	test('Qdrant payload include list retrieves message_index/total_messages', async () => {
+		// Regression guard: the fields existed in the payload but were absent from
+		// the with_payload whitelist, so message_position was ALWAYS undefined on
+		// live results (#2609 V3, found while implementing the handle).
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 't1', content: 'x', host_os: 'h1' } }
+		]);
+
+		await searchTasksByContentTool.handler(
+			{ search_query: 'x' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		expect(mockQdrantClient.search).toHaveBeenCalled();
+		const call = mockQdrantClient.search.mock.calls[0];
+		const include: string[] = call[1].with_payload.include;
+		expect(include).toContain('message_index');
+		expect(include).toContain('total_messages');
+	});
+
+	test('conversation_context: adjacent turns attached, same-message pages collapsed (rubric (c))', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.85, payload: { task_id: 'task-ctx', content: 'the cadence decision passage', host_os: 'h1', message_index: 5, total_messages: 9 } }
+		]);
+		mockQdrantClient.scroll.mockResolvedValue({ points: [
+			{ payload: { message_index: 4, role: 'user', content: 'Pour quelle cadence avons-nous tranche ?', timestamp: '2026-09-20T10:00:00Z', chunk_index: 1 } },
+			// Same message as the anchor (5) — must never become turn context
+			{ payload: { message_index: 5, role: 'assistant', content: 'same-message other page', chunk_index: 2 } },
+			// message 6 paginated: chunk 2 must lose to chunk 1
+			{ payload: { message_index: 6, role: 'user', content: 'second page of follow-up turn', chunk_index: 2 } },
+			{ payload: { message_index: 6, role: 'user', content: 'Suivi de la decision sur la cadence du cron coordinateur.', timestamp: '2026-09-20T10:05:00Z', chunk_index: 1 } }
+		] });
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'cadence decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const ctx = parsed.results[0].conversation_context;
+		expect(ctx).toBeDefined();
+		expect(ctx.before_turn).toMatchObject({ role: 'user', message_index: 4 });
+		expect(ctx.before_turn.excerpt).toContain('cadence');
+		expect(ctx.after_turn).toMatchObject({ role: 'user', message_index: 6 });
+		expect(ctx.after_turn.excerpt).toContain('Suivi de la decision');
+		expect(ctx.after_turn.excerpt).not.toContain('second page');
+		// Observability follows the quiet convention: present when it attached
+		expect(parsed.current_machine.context_expansion).toMatchObject({ attached_groups: 1, enabled: true });
+	});
+
+	test('scroll failure is non-blocking: results survive without context', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 't1', content: 'passage', host_os: 'h1', message_index: 3 } }
+		]);
+		mockQdrantClient.scroll.mockRejectedValue(new Error('qdrant scroll down'));
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'passage' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results).toHaveLength(1);
+		expect(parsed.results[0].conversation_context).toBeUndefined();
+	});
+
+	test('SEARCH_CONTEXT_EXPANSION=0 disables the scroll (rollback flag)', async () => {
+		process.env.SEARCH_CONTEXT_EXPANSION = '0';
+		try {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.8, payload: { task_id: 't1', content: 'p', host_os: 'h1', message_index: 3 } }
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'p' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.current_machine.context_expansion).toEqual({ attached_groups: 0, enabled: false });
+			expect(parsed.results[0].conversation_context).toBeUndefined();
+		} finally {
+			delete process.env.SEARCH_CONTEXT_EXPANSION;
+		}
+	});
+
+	test('anchor without message_index skips context expansion entirely (legacy points)', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 'old', content: 'legacy point without message_index', host_os: 'h1' } }
+		]);
+
+		await searchTasksByContentTool.handler(
+			{ search_query: 'legacy' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+	});
 });
