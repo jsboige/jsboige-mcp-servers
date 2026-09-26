@@ -342,6 +342,11 @@ interface RawSearchResult {
         tool: 'conversation_browser';
         action: 'view';
         task_id: string;
+        // #1234 : contrat de bases épinglé — message_index (payload Qdrant) est
+        // 1-based (ChunkExtractor ++messageIndex) mais ces deux bornes suivent
+        // la convention conversation_browser view : messageStart 0-based
+        // INCLUSIF, messageEnd EXCLUSIF. Toute prochaine collision de bases
+        // se règle contre ces lignes, pas contre buildDrillDown.
         messageStart?: number;
         messageEnd?: number;
     };
