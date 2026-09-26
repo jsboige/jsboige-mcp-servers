@@ -106,7 +106,7 @@ export interface ConversationBrowserArgs {
     };
     /** [view] #1244 Couche 2.6 — Index 0-based du premier message a inclure (inclusif). */
     messageStart?: number;
-    /** [view] #1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). */
+    /** [view] #1244 Couche 2.6 — Borne superieure 0-based EXCLUSIVE : un de plus que le dernier message rendu. Contrat epinglé #1234 (identique au drill_down de search-semantic). */
     messageEnd?: number;
     /** [view] Chemin pour sauvegarder l'arbre */
     output_file?: string;
