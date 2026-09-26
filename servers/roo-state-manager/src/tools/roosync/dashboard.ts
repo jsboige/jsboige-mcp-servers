@@ -63,6 +63,7 @@ import {
   getDashboardPgReader,
   dualWriteDashboardSyncChecked,
   probeDashboardJournalForHydration,
+  fetchArchivedDashboardMessageIds,
   getDashboardRetirement,
   listRetiredDashboardKeys,
   retireDashboardKeyChecked,
@@ -4139,6 +4140,16 @@ export interface DashboardResult {
    * keep the historical payload shape.
    */
   summaryFailed?: boolean;
+  /**
+   * #3782 (résurrection CoursIA 26/09) — set when the dashboard was ABOVE the
+   * condensation threshold at append time but the condensation did NOT run
+   * (condense lock held by another process, or #2464 unchanged-content skip).
+   * Before this field, a saturated dashboard could sit at 300 %+ for hours
+   * with every append reporting plain success — the stall was only visible in
+   * host-local logs. LLM failures are NOT here: they already surface via the
+   * message suffix and condenseDiagnostic.
+   */
+  condensationStalled?: 'lock-held' | 'unchanged-hash';
   message?: string;
   dashboards?: DashboardSummary[];
   /**
@@ -5248,6 +5259,8 @@ async function handleAppend(
   let condensed = false;
   let archivedCount = 0;
   let finalDashboard = updatedDashboard;
+  // #3782 — why a REQUIRED condensation didn't run (surface, not just logs).
+  let condensationStalled: 'lock-held' | 'unchanged-hash' | undefined;
 
   const tWrite = Date.now();
   let writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
@@ -5291,6 +5304,7 @@ async function handleAppend(
       });
       condensed = false;
       archivedCount = 0;
+      condensationStalled = 'unchanged-hash';
     } else {
       logger.info('Post-append condensation triggered (append-first)', {
         key,
@@ -5317,6 +5331,7 @@ async function handleAppend(
         // and will be merged into the holder's condensed result (#2328).
         condensed = false;
         archivedCount = 0;
+        condensationStalled = 'lock-held';
         const skippedDiag = newDiagnostic('post-append');
         skippedDiag.outcome = 'skipped-lock-held';
         condenseDiagnostics.push(skippedDiag);
@@ -5576,6 +5591,14 @@ async function handleAppend(
   const totalMs = Date.now() - appendStart;
   const splitSuffix = isMultiPart ? ` [split en ${newMessages.length} parts]` : '';
 
+  // #3782 (résurrection CoursIA 26/09) — un dashboard au-dessus du seuil dont
+  // la condensation n'a pas tourné doit le DIRE : le stall 17:06Z→19:02Z du
+  // workspace-CoursIA (332 %, appends succès verts) n'était visible que dans
+  // les logs locaux des hôtes appendants.
+  const stallSuffix = condensationStalled && !condensed
+    ? ` — ⚠️ Condensation requise (${Math.round(estimatedSize / 1024)} Ko > seuil ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko) mais NON exécutée (${condensationStalled === 'lock-held' ? 'verrou condense détenu par un autre process' : 'contenu inchangé depuis la dernière passe (#2464)'}) — le dashboard reste au-dessus du seuil.`
+    : '';
+
   // #1791: Auto-register heartbeat on dashboard append (fire-and-forget)
   recordRooSyncActivityAsync('dashboard-append', { key, type: args.type });
 
@@ -5595,6 +5618,7 @@ async function handleAppend(
     condensed,
     archivedCount: reportedArchivedCount,
     summaryFailed: summaryFailed || undefined,
+    condensationStalled: condensationStalled && !condensed ? condensationStalled : undefined,
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
@@ -5606,7 +5630,7 @@ async function handleAppend(
       reactiveCondenseMs,
       writeMs
     },
-    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${crossPostSuffix}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
+    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${stallSuffix}${crossPostSuffix}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
   };
 }
 
@@ -6162,6 +6186,32 @@ async function handleMerge(
   let mergedMessages = [...byId.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   const deduped = totalSeen - mergedMessages.length;
 
+  // --- #3782 (résurrection CoursIA 26/09) — tombstones d'archive ---
+  // Un message déjà ARCHIVÉ sur la cible (row journal `archived_at` posé) est
+  // condensé, pas perdu : le réimporter vivant depuis une vue périmée (fichier
+  // canonique DriveFS en retard sur sa condensation, journal jamais condensé
+  // d'une clé fork) a ressuscité 84 messages et poussé le dashboard à 332 %.
+  // L'union exclut ces ids ; fail-open quand PG n'a pas d'histoire (null).
+  const archivedIds = await fetchArchivedDashboardMessageIds(key);
+  let excludedAlreadyArchived = 0;
+  if (archivedIds && archivedIds.size > 0) {
+    const keptAfterTombstones: IntercomMessage[] = [];
+    for (const m of mergedMessages) {
+      if (m.id && archivedIds.has(m.id)) {
+        excludedAlreadyArchived++;
+      } else {
+        keptAfterTombstones.push(m);
+      }
+    }
+    if (excludedAlreadyArchived > 0) {
+      logger.warn(
+        `[MERGE] #3782 tombstones — ${excludedAlreadyArchived} message(s) déjà archivés sur '${key}' exclus de l'union (vues sources périmées)`,
+        { sourceKey, targetKey: key, unionBefore: mergedMessages.length }
+      );
+      mergedMessages = keptAfterTombstones;
+    }
+  }
+
   // --- Statut : celui de la vue dont le STATUT est le plus récent, pas celle
   // dont le fichier l'est. `lastModified` est bumpé par TOUTE écriture, appends
   // compris : un fork vivant l'emportait alors qu'il porte une copie FIGÉE du
@@ -6414,7 +6464,11 @@ async function handleMerge(
       try {
         const archivedText = await fs.readFile(archivePath, 'utf8');
         const reparsed = parseDashboardMarkdown(archivedText, sourceKey);
-        const unseen = reparsed.intercom.messages.filter(m => !byId.has(m.id));
+        // #3782 tombstones — même filtre que l'union initiale : les octets
+        // archivés peuvent porter des messages déjà condensés sur la cible.
+        const unseen = reparsed.intercom.messages.filter(
+          m => !byId.has(m.id) && !(archivedIds && m.id && archivedIds.has(m.id))
+        );
         if (unseen.length > 0) {
           reUnionedCount = unseen.length;
           reUnionPersisted = false; // fail-closed : ne compte comme persistée qu'une fois confirmée en PG
@@ -6542,8 +6596,11 @@ async function handleMerge(
       `Clé '${sourceKey}' fusionnée dans '${key}' : ${source.intercom.messages.length} msg(source) ∪ ` +
       `${target?.intercom.messages.length ?? 0} msg(cible) → ${mergedMessages.length} msg ` +
       `(${deduped} doublon(s) par id, ${newerSourceWins} résolu(s) vers la copie plus récente ; ` +
-      `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}). ` +
-      `Statut retenu : ${statusFromSource ? 'source' : 'cible'} ` +
+      `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}).` +
+      (excludedAlreadyArchived > 0
+        ? ` ${excludedAlreadyArchived} message(s) déjà archivé(s) sur la cible exclu(s) de l'union (tombstones #3782 — condensés, pas perdus).`
+        : '') +
+      ` Statut retenu : ${statusFromSource ? 'source' : 'cible'} ` +
       `(arbitré par ${statusBasis === 'stamp' ? "l'horodatage de condensation" : statusBasis === 'lastModified' ? 'lastModified' : 'aucune concurrence — vue unique'}). ` +
       sourceDisposition
   };
