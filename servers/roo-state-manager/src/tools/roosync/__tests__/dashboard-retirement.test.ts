@@ -253,6 +253,57 @@ describe('#3782 (a) — merge deleteSource=false retire la source au niveau jour
   });
 });
 
+// ─── (suite, review ai-01 26/09) — merge refuse source ET cible retirées ───
+
+describe('#3782 suite — merge refuse une clé retirée (source comme cible)', () => {
+  it('source retirée → REFUS nommant la marque, AUCUN merge exécuté', async () => {
+    seedDashboard(CANONICAL_KEY + '.md', 'machine', '2026-09-20T10:00:00.000Z', [
+      { id: 'm2', timestamp: '2026-09-20T10:00:00.000Z', content: 'm2 — cible seule' },
+    ]);
+    seedDashboard(FORK_KEY + '.md', 'machine', '2026-09-24T12:00:00.000Z', [
+      { id: 'm3', timestamp: '2026-09-24T12:00:00.000Z', content: 'm3 — fork seul' },
+    ]);
+    const forkBefore = fileText(FORK_KEY + '.md');
+    getRetirementSpy.mockImplementation(async (k: string) =>
+      k === FORK_KEY ? markOf(FORK_KEY, CANONICAL_KEY) : null);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: FORK_KEY, deleteSource: false
+    }) as any;
+
+    expect(result.success).toBe(false);
+    expect(String(result.message)).toContain('retirée');
+    expect(String(result.message)).toContain(CANONICAL_KEY);
+    // Aucun merge exécuté : pas de nouvelle marque, pas de delete, fichier intact.
+    expect(retireCheckedSpy).not.toHaveBeenCalled();
+    expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
+    expect(fileText(FORK_KEY + '.md')).toBe(forkBefore);
+  });
+
+  it('cible retirée → REFUS pointant vers la cible finale de la marque', async () => {
+    seedDashboard(FORK_KEY + '.md', 'machine', '2026-09-24T12:00:00.000Z', [
+      { id: 'm3', timestamp: '2026-09-24T12:00:00.000Z', content: 'm3 — fork seul' },
+    ]);
+    seedDashboard(CHAIN_MID_KEY + '.md', 'machine', '2026-09-24T13:00:00.000Z', [
+      { id: 'm4', timestamp: '2026-09-24T13:00:00.000Z', content: 'm4 — mid' },
+    ]);
+    // La CIBLE du merge demandé porte elle-même une marque.
+    getRetirementSpy.mockImplementation(async (k: string) =>
+      k === CHAIN_MID_KEY ? markOf(CHAIN_MID_KEY, CANONICAL_KEY) : null);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025 (1) (1)',
+      sourceKey: FORK_KEY
+    }) as any;
+
+    expect(result.success).toBe(false);
+    expect(String(result.message)).toContain(CHAIN_MID_KEY);
+    expect(String(result.message)).toContain(CANONICAL_KEY);
+    expect(retireCheckedSpy).not.toHaveBeenCalled();
+  });
+});
+
 // ─── (b) append sur clé retirée → redirigé vers la cible ───────────────────
 
 describe('#3782 (b) — append sur une clé retirée atterrit sur la cible', () => {

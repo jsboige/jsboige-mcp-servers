@@ -122,6 +122,22 @@ describe('getDashboardRetirement (fail-open lookups)', () => {
       expect.objectContaining({ key: 'k (1)' })
     );
   });
+
+  test('reader hang → null after the 3s lookup timeout (the race, not just rejections)', async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetRooSyncDashboardRetirement.mockImplementation(() => new Promise(() => {}));
+      const pending = getDashboardRetirement('k (1)');
+      await vi.advanceTimersByTimeAsync(3100);
+      await expect(pending).resolves.toBeNull();
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('timed out'),
+        expect.objectContaining({ key: 'k (1)' })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('listRetiredDashboardKeys (fail-open listing)', () => {
@@ -139,6 +155,21 @@ describe('listRetiredDashboardKeys (fail-open listing)', () => {
     readerIsNull = false;
     mockListRetiredRooSyncDashboardKeys.mockRejectedValueOnce(new Error('PG down'));
     await expect(listRetiredDashboardKeys()).resolves.toEqual(new Set());
+  });
+
+  // #3782 suite (review ai-01 26/09) : list alimente handleList à CHAQUE appel
+  // dashboard — une lecture PG pendante ne doit pas pendre tout l'hôte.
+  test('reader hang → empty Set after the 3s lookup timeout (same race as getDashboardRetirement)', async () => {
+    vi.useFakeTimers();
+    try {
+      mockListRetiredRooSyncDashboardKeys.mockImplementation(() => new Promise<string[]>(() => {}));
+      const pending = listRetiredDashboardKeys();
+      await vi.advanceTimersByTimeAsync(3100);
+      await expect(pending).resolves.toEqual(new Set());
+      expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
