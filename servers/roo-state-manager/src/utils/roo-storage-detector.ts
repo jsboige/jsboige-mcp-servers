@@ -466,13 +466,21 @@ export class RooStorageDetector {
     const { metadataPath, apiHistoryPath, uiMessagesPath, historyItemPath } = paths;
 
     try {
-        const [taskDirStats, metadataStats, apiHistoryStats, uiMessagesStats, historyItemStats] = await Promise.all([
+        const [taskDirStats, metadataStatsRaw, apiHistoryStatsRaw, uiMessagesStatsRaw, historyItemStatsRaw] = await Promise.all([
             fs.stat(taskPath).catch(() => null), //
             fs.stat(metadataPath).catch(() => null),
             fs.stat(apiHistoryPath).catch(() => null),
             fs.stat(uiMessagesPath).catch(() => null),
             fs.stat(historyItemPath).catch(() => null)
         ]);
+        // #3661 : un fichier de 0 octet n'est pas une conversation exploitable — le
+        // traiter comme absent évite un squelette fantôme (messageCount 0) que la
+        // réparation proactive rendrait permanent via task_metadata.json.
+        const usable = (s: { size: number } | null) => (s && s.size > 0 ? s : null);
+        const metadataStats = usable(metadataStatsRaw);
+        const apiHistoryStats = usable(apiHistoryStatsRaw);
+        const uiMessagesStats = usable(uiMessagesStatsRaw);
+        const historyItemStats = usable(historyItemStatsRaw);
 
         // Validation robuste : accepter la conversation si au moins UN fichier existe
         if (!apiHistoryStats && !uiMessagesStats && !metadataStats) {
@@ -1671,6 +1679,7 @@ export class RooStorageDetector {
             } else {
                 if (!existsSync(filePath)) return [];
                 const stat = await fs.stat(filePath);
+                if (stat.size === 0) return []; // #3661 : 0 octet n'est pas une conversation
                 if (stat.size > RooStorageDetector.MAX_CONVERSATION_FILE_SIZE) return [];
                 content = await fs.readFile(filePath, 'utf-8');
                 if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);

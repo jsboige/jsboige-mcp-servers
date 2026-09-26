@@ -347,7 +347,16 @@ export async function startProactiveMetadataRepair(): Promise<void> {
                         try {
                             await fs.access(metadataPath);
                         } catch {
-                            tasksToRepair.push({ taskId, taskPath });
+                            // #3661 : ne réparer que si une conversation exploitable existe —
+                            // un dossier réduit à un ui_messages.json de 0 octet produirait un
+                            // squelette vide dont le repair écrirait task_metadata.json.
+                            let hasUsableConversation = false;
+                            for (const convFile of ['ui_messages.json', 'api_conversation_history.json']) {
+                                if (!files.includes(convFile)) continue;
+                                const st = await fs.stat(path.join(taskPath, convFile)).catch(() => null);
+                                if (st && st.size > 0) { hasUsableConversation = true; break; }
+                            }
+                            if (hasUsableConversation) tasksToRepair.push({ taskId, taskPath });
                         }
                     } catch (error) {
                         console.debug(`[Auto-Repair] Erreur lors de l'analyse de ${taskId}:`, error);

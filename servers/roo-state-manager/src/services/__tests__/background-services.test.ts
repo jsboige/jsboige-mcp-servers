@@ -329,7 +329,9 @@ describe('background-services', () => {
         .mockResolvedValueOnce(['task-001'])
         // Second call: readdir for task-001 directory (non-empty)
         .mockResolvedValueOnce(['api_conversation_history.json']);
-      mockFs.stat.mockResolvedValue({ isDirectory: () => true });
+      // #3661 : size > 0 requis — le garde-fou 0 octet de la file de repair
+      // statue sur fs.stat(convFile).size
+      mockFs.stat.mockResolvedValue({ isDirectory: () => true, size: 1024 });
       // access throws = metadata doesn't exist
       mockFs.access.mockRejectedValue(new Error('ENOENT'));
       mockDetector.analyzeConversation.mockResolvedValue(repairedSkeleton);
@@ -372,7 +374,9 @@ describe('background-services', () => {
       mockFs.readdir
         .mockResolvedValueOnce(['task-001'])
         .mockResolvedValueOnce(['api_conversation_history.json']);
-      mockFs.stat.mockResolvedValue({ isDirectory: () => true });
+      // #3661 : size > 0 pour franchir le garde-fou de la file — sinon le
+      // assert writeFile-not-called passe à vide (analyze jamais invoqué)
+      mockFs.stat.mockResolvedValue({ isDirectory: () => true, size: 1024 });
       mockFs.access.mockRejectedValue(new Error('ENOENT'));
       mockDetector.analyzeConversation.mockResolvedValue(null);
 
@@ -396,9 +400,12 @@ describe('background-services', () => {
       mockFs.readdir.mockResolvedValueOnce(taskIds);
 
       // For each task: stat + readdir + access
+      // #3661 : le garde-fou de la file appelle fs.stat sur le fichier de
+      // conversation (2 stat/tâche désormais) — implémentation persistante
+      // plutôt que des Once qui se désalignent.
+      mockFs.stat.mockImplementation(async () => ({ isDirectory: () => true, size: 1024 }));
       for (const _ of taskIds) {
-        mockFs.stat.mockResolvedValueOnce({ isDirectory: () => true });
-        mockFs.readdir.mockResolvedValueOnce(['history.json']);
+        mockFs.readdir.mockResolvedValueOnce(['api_conversation_history.json']);
         mockFs.access.mockRejectedValueOnce(new Error('ENOENT'));
       }
 
