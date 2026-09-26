@@ -200,8 +200,57 @@ function truncateMessage(message: string, truncate: number): string {
 }
 
 /**
+ * #2609 V3 (rubric (a) — coherent passage): how far a boundary snap may scan
+ * from the raw window edge before falling back to a word boundary. Bounded so
+ * the snippet never drifts far from the requested size.
+ */
+const SENTENCE_SNAP_SCAN = 160;
+
+/**
+ * #2609 V3 (rubric (a) — coherent passage): snap a raw character offset to the
+ * nearest sentence boundary within `maxScan` chars, falling back to a word
+ * boundary, so the snippet starts/ends on a sentence instead of mid-word.
+ * 'forward' finds the first sentence START at/after rawPos; 'backward' finds
+ * the position just after the last sentence END at/before rawPos.
+ * Returns rawPos unchanged when nothing suitable is found (hard cut, unavoidable).
+ */
+function snapToSentence(content: string, rawPos: number, direction: 'forward' | 'backward', maxScan: number): number {
+    const n = content.length;
+    if (direction === 'forward') {
+        const limit = Math.min(n, rawPos + maxScan);
+        for (let i = Math.max(0, rawPos); i < limit; i++) {
+            const ch = content[i];
+            if (ch === '\n') return i + 1;
+            if ((ch === '.' || ch === '!' || ch === '?') && (i + 1 >= n || /[\s")'\]]/.test(content[i + 1]))) {
+                let j = i + 1;
+                while (j < limit && /[\s")'\]]/.test(content[j])) j++;
+                return Math.min(n, j);
+            }
+        }
+        // Word-boundary fallback: skip the partial word cut at rawPos
+        const ws = content.indexOf(' ', rawPos);
+        return (ws !== -1 && ws < limit) ? ws + 1 : rawPos;
+    } else {
+        const limit = Math.max(0, rawPos - maxScan);
+        for (let i = Math.min(rawPos, n) - 1; i >= limit; i--) {
+            const ch = content[i];
+            if (ch === '.' || ch === '!' || ch === '?' || ch === '\n') return i + 1;
+        }
+        // Word-boundary fallback: cut before the partial word ending at rawPos
+        const ws = content.lastIndexOf(' ', Math.min(rawPos, n));
+        return (ws !== -1 && ws >= limit) ? ws : rawPos;
+    }
+}
+
+/**
  * Extract a context snippet centered around the best matching portion of content.
  * Looks for query words in the content and returns surrounding text.
+ *
+ * #2609 V3 (rubric (a) — coherent passage): window boundaries snap to sentence
+ * boundaries (word-boundary fallback) instead of cutting at an arbitrary
+ * character offset. A fragment cut mid-sentence forces the agent to re-open the
+ * source in grep/Read to understand it — the exact decoupling this Epic targets.
+ * The query match always stays inside the window.
  */
 function extractSnippet(content: string, query: string, maxChars: number = 600): string {
     if (!content) return '';
@@ -221,13 +270,20 @@ function extractSnippet(content: string, query: string, maxChars: number = 600):
 
     if (bestPos === -1) {
         // No keyword match, return the start of the content
-        return content.length <= maxChars ? content : content.substring(0, maxChars) + '...';
+        if (content.length <= maxChars) return content;
+        const end = snapToSentence(content, maxChars, 'backward', SENTENCE_SNAP_SCAN);
+        return content.substring(0, Math.min(end, maxChars + SENTENCE_SNAP_SCAN)).trim() + '...';
     }
 
     // Center the snippet around the match
     const halfWindow = Math.floor(maxChars / 2);
-    const start = Math.max(0, bestPos - halfWindow);
-    const end = Math.min(content.length, bestPos + halfWindow);
+    const rawStart = Math.max(0, bestPos - halfWindow);
+    const rawEnd = Math.min(content.length, bestPos + halfWindow);
+    // #2609 V3: snap to sentence boundaries — clamped so the match never falls out
+    let start = rawStart > 0 ? snapToSentence(content, rawStart, 'forward', SENTENCE_SNAP_SCAN) : 0;
+    if (start > bestPos) start = Math.min(rawStart, bestPos);
+    let end = rawEnd < content.length ? snapToSentence(content, rawEnd, 'backward', SENTENCE_SNAP_SCAN) : content.length;
+    if (end <= bestPos) end = Math.min(Math.max(rawEnd, bestPos + 1), content.length);
     let snippet = content.substring(start, end).trim();
 
     if (start > 0) snippet = '...' + snippet;
@@ -278,6 +334,17 @@ interface RawSearchResult {
     content: string;
     snippet: string;
     relevance: string;
+    // #2609 V3 (rubric (b) — handle): ready-to-execute re-expansion command.
+    // The Epic's failure mode was "a panel pointing at a file group": the agent
+    // had a pointer but still had to grep to use it. This is the executable
+    // counterpart — conversation_browser view, pre-windowed around the hit.
+    drill_down: {
+        tool: 'conversation_browser';
+        action: 'view';
+        task_id: string;
+        messageStart?: number;
+        messageEnd?: number;
+    };
     metadata: {
         chunk_id: string | undefined;
         chunk_type: string | undefined;
@@ -287,6 +354,10 @@ interface RawSearchResult {
         timestamp: string | undefined;
         relative_time: string;
         message_position: string | undefined;
+        // #2609 V3: raw ints (query-ready) in addition to the display string —
+        // message_position alone cannot drive a conversation_browser call.
+        message_index: number | undefined;
+        total_messages: number | undefined;
         host_os: string;
         // #636: Enriched metadata
         source: string | undefined;
@@ -294,6 +365,33 @@ interface RawSearchResult {
         model: string | undefined;
         has_error: boolean | undefined;
     };
+}
+
+// #2609 V3: half-window (messages) around the hit for the drill_down handle.
+const DRILL_DOWN_WINDOW = 3;
+
+/**
+ * #2609 V3 (rubric (b) — handle): build the conversation_browser re-expansion
+ * command for a hit. When message_index is known the window is pre-clamped to
+ * the conversation bounds so the agent can fire it as-is.
+ */
+function buildDrillDown(taskId: string, messageIndex: number | undefined, totalMessages: number | undefined): RawSearchResult['drill_down'] {
+    if (messageIndex === undefined) {
+        return { tool: 'conversation_browser', action: 'view', task_id: taskId };
+    }
+    const start = Math.max(1, messageIndex - DRILL_DOWN_WINDOW);
+    const end = totalMessages !== undefined
+        ? Math.min(totalMessages, messageIndex + DRILL_DOWN_WINDOW)
+        : messageIndex + DRILL_DOWN_WINDOW;
+    return { tool: 'conversation_browser', action: 'view', task_id: taskId, messageStart: start, messageEnd: end };
+}
+
+// #2609 V3 (rubric (c) — surrounding context): adjacent conversation turn.
+interface ConversationTurnExcerpt {
+    role: string;
+    message_index: number;
+    timestamp: string | undefined;
+    excerpt: string;
 }
 
 interface GroupedTask {
@@ -312,6 +410,13 @@ interface GroupedTask {
         workspace: string | undefined;
         last_activity: string | undefined;
     };
+    // #2609 V3 (rubric (c) — surrounding context): turns adjacent to the best
+    // chunk, so a "decision" hit carries the turn that motivated it. Absent
+    // when the anchor point lacks message_index or the scroll failed (non-blocking).
+    conversation_context?: {
+        before_turn?: ConversationTurnExcerpt;
+        after_turn?: ConversationTurnExcerpt;
+    };
     chunks: Array<{
         score: number;
         relevance: string;
@@ -320,6 +425,9 @@ interface GroupedTask {
         role: string | undefined;
         relative_time: string;
         message_position: string | undefined;
+        // #2609 V3 (rubric (b)): raw handle fields threaded to the rendered output.
+        message_index: number | undefined;
+        drill_down: RawSearchResult['drill_down'];
         // #636: Enriched chunk-level metadata
         tool_name: string | undefined;
         has_error: boolean | undefined;
@@ -346,6 +454,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 role: r.metadata.role,
                 relative_time: r.metadata.relative_time,
                 message_position: r.metadata.message_position,
+                message_index: r.metadata.message_index,
+                drill_down: r.drill_down,
                 tool_name: r.metadata.tool_name,
                 has_error: r.metadata.has_error,
             });
@@ -371,6 +481,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                     role: r.metadata.role,
                     relative_time: r.metadata.relative_time,
                     message_position: r.metadata.message_position,
+                    message_index: r.metadata.message_index,
+                    drill_down: r.drill_down,
                     tool_name: r.metadata.tool_name,
                     has_error: r.metadata.has_error,
                 }],
@@ -505,6 +617,98 @@ export function applyDiversifyCap(groups: GroupedTask[], cap: number): {
         }
     }
     return { truncated_groups, chunks_capped };
+}
+
+// #2609 V3 (rubric (c) — surrounding context): excerpt budget per neighbor turn.
+const CONTEXT_EXPANSION_EXCERPT_CHARS = 320;
+
+/**
+ * #2609 V3: leading excerpt of a neighbor turn, snapped to a sentence end so
+ * the context itself is a coherent passage (same discipline as extractSnippet).
+ */
+function excerptFromStart(content: string, maxChars: number): string {
+    if (!content) return '';
+    if (content.length <= maxChars) return content;
+    const end = snapToSentence(content, maxChars, 'backward', 80);
+    const cut = (end > 0 && end <= maxChars + 80) ? end : maxChars;
+    return content.substring(0, cut).trim() + '…';
+}
+
+/**
+ * #2609 V3 (rubric (c) — surrounding context): for each retained task, fetch
+ * the conversation turns adjacent to the best chunk (message_index ± 1) so a
+ * "decision" hit carries the turn that motivated it, not just the matched
+ * fragment. One filtered scroll per task (≤ max_results extra Qdrant calls on
+ * the local engine — milliseconds); points paginated over several chunk_index
+ * within the SAME message are collapsed to their first page.
+ *
+ * Non-blocking by design: any failure leaves the group without context —
+ * search results are never dropped or delayed by context expansion.
+ * Rollback / A-B: SEARCH_CONTEXT_EXPANSION=0 (same convention as SEARCH_DEDUP_ENABLED).
+ *
+ * Must run AFTER grouping + diversify + Postgres enrichment + cross-task dedup,
+ * so no fetch is spent on a group that a later stage would prune.
+ */
+async function attachConversationContext(groups: GroupedTask[], qdrant: any, collectionName: string): Promise<number> {
+    if (process.env.SEARCH_CONTEXT_EXPANSION === '0') return 0;
+    let attached = 0;
+    for (const group of groups) {
+        const anchor = group.chunks[0]?.message_index;
+        if (typeof anchor !== 'number') continue;
+        try {
+            const scrollResult: any = await qdrant.scroll(collectionName, {
+                filter: {
+                    must: [
+                        { key: 'task_id', match: { value: group.taskId } },
+                        { key: 'message_index', range: { gte: anchor - 1, lte: anchor + 1 } },
+                    ],
+                },
+                limit: 12,
+                with_vector: false,
+                with_payload: { include: ['message_index', 'role', 'content', 'timestamp', 'chunk_index'] },
+            });
+            const points = Array.isArray(scrollResult?.points)
+                ? scrollResult.points
+                : (Array.isArray(scrollResult) ? scrollResult : []);
+            // First page per adjacent message_index (a message may be split into
+            // several chunk_index pages — the turn opening is the useful excerpt).
+            const byMessage = new Map<number, { chunkIndex: number; payload: any }>();
+            for (const p of points) {
+                const payload = p?.payload ?? p;
+                const mi = payload?.message_index;
+                if (typeof mi !== 'number' || mi === anchor) continue;
+                const ci = typeof payload?.chunk_index === 'number' ? payload.chunk_index : 1;
+                const cur = byMessage.get(mi);
+                if (!cur || ci < cur.chunkIndex) byMessage.set(mi, { chunkIndex: ci, payload });
+            }
+            const context: NonNullable<GroupedTask['conversation_context']> = {};
+            const before = byMessage.get(anchor - 1);
+            if (before) {
+                context.before_turn = {
+                    role: String(before.payload?.role ?? 'unknown'),
+                    message_index: anchor - 1,
+                    timestamp: before.payload?.timestamp,
+                    excerpt: excerptFromStart(String(before.payload?.content ?? ''), CONTEXT_EXPANSION_EXCERPT_CHARS),
+                };
+            }
+            const after = byMessage.get(anchor + 1);
+            if (after) {
+                context.after_turn = {
+                    role: String(after.payload?.role ?? 'unknown'),
+                    message_index: anchor + 1,
+                    timestamp: after.payload?.timestamp,
+                    excerpt: excerptFromStart(String(after.payload?.content ?? ''), CONTEXT_EXPANSION_EXCERPT_CHARS),
+                };
+            }
+            if (context.before_turn || context.after_turn) {
+                group.conversation_context = context;
+                attached++;
+            }
+        } catch {
+            // Non-blocking: a task without context is still a valid search result.
+        }
+    }
+    return attached;
 }
 
 /**
@@ -838,7 +1042,7 @@ export const searchTasksByContentTool = {
                     // #2426 follow-up: 'host_os' must be in the include whitelist, otherwise
                     // cross_machine_analysis.machines_found is always ['unknown'] (the payload
                     // field exists but is never retrieved).
-                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os']
+                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os', 'message_index', 'total_messages']
                 },
                 timeout: searchTimeoutSec,
             }));
@@ -858,12 +1062,21 @@ export const searchTasksByContentTool = {
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
                 const content = String(result.payload?.content_summary || result.payload?.content || '');
                 const score = result.score || 0;
+                // #2609 V3: raw ints for the handle — message_position is a display
+                // string and cannot drive a conversation_browser re-expansion.
+                const messageIndex = typeof result.payload?.message_index === 'number'
+                    ? result.payload.message_index
+                    : undefined;
+                const totalMessages = typeof result.payload?.total_messages === 'number'
+                    ? result.payload.total_messages
+                    : undefined;
                 return {
                     taskId: result.payload?.task_id || 'unknown',
                     score,
                     content: truncateMessage(content, 5),
                     snippet: extractSnippet(fullContent, search_query),
                     relevance: interpretScore(score),
+                    drill_down: buildDrillDown(result.payload?.task_id || 'unknown', messageIndex, totalMessages),
                     metadata: {
                         chunk_id: result.payload?.chunk_id,
                         chunk_type: result.payload?.chunk_type,
@@ -872,9 +1085,11 @@ export const searchTasksByContentTool = {
                         role: result.payload?.role,
                         timestamp: result.payload?.timestamp,
                         relative_time: formatRelativeTime(result.payload?.timestamp),
-                        message_position: result.payload?.message_index && result.payload?.total_messages
-                            ? `${result.payload.message_index}/${result.payload.total_messages}`
+                        message_position: messageIndex !== undefined && totalMessages !== undefined
+                            ? `${messageIndex}/${totalMessages}`
                             : undefined,
+                        message_index: messageIndex,
+                        total_messages: totalMessages,
                         host_os: result.payload?.host_os || 'unknown',
                         // #636: Enriched metadata
                         source: result.payload?.source,
@@ -974,6 +1189,12 @@ export const searchTasksByContentTool = {
             // dedupGroupedChunksByContent for rationale and flags.
             const dedupStats = dedupGroupedChunksByContent(groupedResults);
 
+            // #2609 V3 (rubric (c) — surrounding context): expand the turns adjacent
+            // to each retained task's best chunk. Runs after every filter/prune stage
+            // so no fetch is wasted; non-blocking on failure; rollback via
+            // SEARCH_CONTEXT_EXPANSION=0.
+            const contextAttached = await attachConversationContext(groupedResults, qdrant, collectionName);
+
             // Cross-machine analysis
             const allHosts = filteredResults.map(r => r.metadata.host_os);
             const machinesFound = [...new Set(allHosts)];
@@ -1025,6 +1246,16 @@ export const searchTasksByContentTool = {
                             cap_per_task: DIVERSIFY_MAX_CHUNKS_PER_TASK,
                             truncated_groups: diversifyStats.truncated_groups,
                             chunks_capped: diversifyStats.chunks_capped,
+                        }
+                    } : {}),
+                    // #2609 V3 (rubric (c)): context-expansion observability. Emitted
+                    // only when it attached something OR is explicitly disabled
+                    // (rollback visibility) — quiet for the common query, same
+                    // convention as dedup/diversify above.
+                    ...(contextAttached > 0 || process.env.SEARCH_CONTEXT_EXPANSION === '0' ? {
+                        context_expansion: {
+                            attached_groups: contextAttached,
+                            enabled: process.env.SEARCH_CONTEXT_EXPANSION !== '0',
                         }
                     } : {})
                 },
