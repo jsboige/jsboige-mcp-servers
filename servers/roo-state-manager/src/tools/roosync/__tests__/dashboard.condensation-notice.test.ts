@@ -16,6 +16,12 @@
  *        plain primary claim; `summaryFailed` is absent.
  *   (t3) primary ok → the notice keeps the plain "résumé LLM généré" claim;
  *        `summaryFailed` is absent.
+ *   (t4) #1233 review follow-up (ai-01 non-blocking points 2+3): STATUS leg salvaged
+ *        by the cloud while the SUMMARY came from the primary → the notice says
+ *        "Statut mis à jour via fallback cloud" (same algebra as the outcome, which
+ *        is `fallback-cloud`), keeps the honest "résumé LLM généré" claim for the
+ *        summary, and the append message carries a neutral "[cloud fallback: ...]"
+ *        marker (no ⚠️: nothing was lost).
  *
  * @module tools/roosync/__tests__/dashboard.condensation-notice
  */
@@ -153,6 +159,9 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
 
     expect(result.condenseDiagnostic.some((d: any) => d.outcome === 'fallback-cloud')).toBe(true);
     expect(result.summaryFailed).toBeUndefined();
+    // #1233 follow-up point 3: the cloud salvage is visible in the primary
+    // tool-result message, not only in condenseDiagnostic[].outcome.
+    expect(result.message).toContain('[cloud fallback: primary LLM down, condensation salvaged by cloud');
 
     const md = await readDashboardFile();
     expect(md).toContain('résumé généré via fallback cloud');
@@ -172,9 +181,49 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
 
     expect(result.condenseDiagnostic.some((d: any) => d.outcome === 'condensed')).toBe(true);
     expect(result.summaryFailed).toBeUndefined();
+    expect(result.message).not.toContain('cloud fallback');
 
     const md = await readDashboardFile();
     expect(md).toContain('résumé LLM généré (');
     expect(md).not.toContain('via fallback cloud');
+  });
+
+  it('(t4) status leg salvaged by cloud, summary from primary → notice carries the status provenance, message carries the cloud marker', async () => {
+    // Route the PRIMARY by prompt: the summary leg (system prompt "synthèse de
+    // communications inter-agents") succeeds on the primary, the status leg
+    // ("synthèse de dashboards de coordination") fails — the cloud fallback
+    // answers the status. This is the divergent-legs shape the #1233 review
+    // pointed at: outcome = fallback-cloud while the summary is a primary success.
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockImplementation(async (req: any) => {
+      const sys = req?.messages?.[0]?.content ?? '';
+      if (sys.includes('synthèse de communications inter-agents')) {
+        return { choices: [{ message: { content: '## Primary summary\n\nSummary leg succeeded on the primary.' } }] };
+      }
+      throw Object.assign(new Error('502 Bad Gateway (status leg)'), { status: 502 });
+    });
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Statut évolutif\n\n- Élément durable conservé.' } }],
+    });
+
+    const result = await fillUntilCondensed();
+
+    // The pass IS degraded (a leg ran on the cloud), nothing was lost.
+    expect(result.condenseDiagnostic.some((d: any) => d.outcome === 'fallback-cloud')).toBe(true);
+    expect(result.summaryFailed).toBeUndefined();
+    expect(result.message).toContain('[cloud fallback: primary LLM down, condensation salvaged by cloud');
+
+    const md = await readDashboardFile();
+    // Point 2: the notice's status line carries its own cloud provenance — the
+    // notice and the outcome now agree on this divergent-legs shape.
+    expect(md).toContain('Statut mis à jour via fallback cloud');
+    // The summary really came from the primary: the plain claim is honest here.
+    expect(md).toContain('résumé LLM généré (');
+    expect(md).not.toContain('résumé généré via fallback cloud');
   });
 });
