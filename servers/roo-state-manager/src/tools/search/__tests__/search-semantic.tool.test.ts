@@ -2202,7 +2202,8 @@ describe('#2609 V3 result quality', () => {
 			tool: 'conversation_browser',
 			action: 'view',
 			task_id: 'task-x',
-			messageStart: 2,
+			// #1234 : base 1 → base 0 — start descend d'un cran
+			messageStart: 1,
 			messageEnd: 8
 		});
 		expect(chunk.message_index).toBe(5);
@@ -2228,8 +2229,35 @@ describe('#2609 V3 result quality', () => {
 			tool: 'conversation_browser',
 			action: 'view',
 			task_id: 'task-edge',
-			messageStart: 1,
+			// #1234 : clamp désormais à 0, pas 1
+			messageStart: 0,
 			messageEnd: 3
+		});
+	});
+
+	// #1234 : mi=1 — sur main le plancher Math.max(1, …) exclut le premier
+	// message : le hit mi=1 était invisible dans sa propre fenêtre de re-expansion.
+	test('drill_down: hit sur le premier message (mi=1) — fenêtre part de 0, hit visible', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.85, payload: { task_id: 'task-first', content: 'opening decision', host_os: 'h1', message_index: 1, total_messages: 10 } }
+		]);
+		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'opening' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const chunk = parsed.results[0].chunks[0];
+		expect(chunk.drill_down).toEqual({
+			tool: 'conversation_browser',
+			action: 'view',
+			task_id: 'task-first',
+			messageStart: 0,
+			messageEnd: 4
 		});
 	});
 
