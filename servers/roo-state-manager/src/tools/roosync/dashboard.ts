@@ -1060,7 +1060,10 @@ export async function acquireAppendLock(key: string, holder: CondenseLockInfo): 
     if (pg === 'acquired') {
       return true;
     }
-    if (pg === 'unavailable') {
+    if (pg !== 'held') {
+      // 'unavailable' — or ANY value outside the contract (undefined from a
+      // stripped mock, a future status): degrade to the machine-local layer.
+      // Only an explicit 'held' is a fresh live holder worth waiting for.
       break;
     }
     if (Date.now() >= deadline) {

@@ -30,6 +30,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
     getDashboardRetirement: vi.fn().mockResolvedValue(null),
     listRetiredDashboardKeys: vi.fn().mockResolvedValue(new Set<string>()),
     retireDashboardKeyChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
+    // #3782 locks-off-Drive : couche PG → 'unavailable' (hôte sans PG — fallback fichier).
+    acquireDashboardSharedLock: vi.fn().mockResolvedValue('unavailable'),
+    releaseDashboardSharedLock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/services/openai', () => ({

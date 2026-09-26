@@ -2259,6 +2259,9 @@ describe('#3205 résiduel — retry borné readDashboardFromGdrive', () => {
 // #2818) + fail-OPEN au-delà du budget.
 describe('#3205 write-side — append lock cross-process', () => {
   let lockTmpDir: string;
+  // Valeur posée par tests/setup-env.ts (isolation par worker #3782) — afterEach
+  // y REVIENT au lieu de deleter.
+  const setupLockDir = process.env.ROOSYNC_LOCK_DIR;
 
   const mkHolder = (machineId: string, ageMs = 0): { machineId: string; workspace: string; pid: number; acquiredAt: string } => ({
     machineId,
@@ -2285,7 +2288,8 @@ describe('#3205 write-side — append lock cross-process', () => {
   afterEach(async () => {
     delete process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS;
     delete process.env.ROOSYNC_SHARED_PATH;
-    delete process.env.ROOSYNC_LOCK_DIR;
+    if (setupLockDir === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+    else process.env.ROOSYNC_LOCK_DIR = setupLockDir;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     await rm(lockTmpDir, { recursive: true, force: true });
@@ -2403,6 +2407,9 @@ describe('#3205 write-side — append lock cross-process', () => {
 describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sous verrou append', () => {
   let rlTmpDir: string;
   const pendingTimers: NodeJS.Timeout[] = [];
+  // Valeur posée par tests/setup-env.ts (isolation par worker #3782) — afterEach
+  // y REVIENT au lieu de deleter.
+  const setupLockDir = process.env.ROOSYNC_LOCK_DIR;
 
   const mkHolder = (machineId: string): { machineId: string; workspace: string; pid: number; acquiredAt: string } => ({
     machineId,
@@ -2431,7 +2438,8 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     for (const t of pendingTimers.splice(0)) clearTimeout(t);
     delete process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS;
     delete process.env.ROOSYNC_SHARED_PATH;
-    delete process.env.ROOSYNC_LOCK_DIR;
+    if (setupLockDir === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+    else process.env.ROOSYNC_LOCK_DIR = setupLockDir;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     await rm(rlTmpDir, { recursive: true, force: true });

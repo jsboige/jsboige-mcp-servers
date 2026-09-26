@@ -43,6 +43,9 @@ import {
 
 const testTmpBase = path.join(os.tmpdir(), 'condense-lock-test-');
 const KEY = 'workspace-test';
+// Valeur posée par tests/setup-env.ts (isolation par worker #3782) — afterEach
+// y REVIENT au lieu de deleter, pour ne pas rouvrir le partage entre workers.
+const SETUP_LOCK_DIR = process.env.ROOSYNC_LOCK_DIR;
 
 function holder(overrides: Partial<CondenseLockInfo> = {}): CondenseLockInfo {
   return {
@@ -80,7 +83,8 @@ describe('condense lock — couche fichier (fallback machine-local #3782)', () =
 
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true });
-    delete process.env.ROOSYNC_LOCK_DIR;
+    if (SETUP_LOCK_DIR === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+    else process.env.ROOSYNC_LOCK_DIR = SETUP_LOCK_DIR;
   });
 
   it('acquires on a free key and creates the lock file', async () => {
@@ -252,7 +256,8 @@ describe('condense lock — couche PG (#3782 locks-off-Drive)', () => {
 
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true });
-    delete process.env.ROOSYNC_LOCK_DIR;
+    if (SETUP_LOCK_DIR === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+    else process.env.ROOSYNC_LOCK_DIR = SETUP_LOCK_DIR;
   });
 
   it("PG 'acquired' → true, AUCUN fichier verrou créé (la couche fichier dort)", async () => {

@@ -33,3 +33,12 @@ if (!fs.existsSync(sentinelPath)) {
 if (!process.env.APPDATA?.includes('__test-data__')) {
   process.env.APPDATA = testAppData;
 }
+
+// #3782 locks-off-Drive — per-WORKER lock dir. The dashboard locks default to
+// os.tmpdir()/roosync-locks, which parallel vitest workers would SHARE: workers
+// running the same dashboard keys would see each other's fresh locks (condense
+// skips, append fail-opens) and leak locks between test files. One mkdtemp per
+// worker process; specific suites may still override with their own dir.
+if (!process.env.ROOSYNC_LOCK_DIR) {
+  process.env.ROOSYNC_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-locks-'));
+}
