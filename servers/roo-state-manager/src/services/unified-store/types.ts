@@ -236,6 +236,33 @@ export interface RooSyncDashboardMessageRow {
   created_at: string;
 }
 
+/**
+ * A row of `roosync_dashboard_retirements` (migrations/008, #3782).
+ *
+ * A mark, never a DELETE: after a merge the source key keeps its
+ * `roosync_dashboards` / `roosync_dashboard_messages` rows (gel des purges)
+ * and becomes invisible to reads/listings/fork detection; writes addressed to
+ * it are redirected to `target_key`. Setting `lifted_at` restores the key
+ * readable with its original content.
+ */
+export interface RooSyncDashboardRetirementRow {
+  source_key: string;
+  target_key: string;
+  /** 'machine:workspace' of the merge author. */
+  retired_by: string;
+  retired_at: string;
+  /** NULL = active mark. A lifted mark is history only — never returned by lookups. */
+  lifted_at: string | null;
+}
+
+/** The ACTIVE mark of a retired key, as consumed by the tool layer (#3782). */
+export interface DashboardRetirementMark {
+  sourceKey: string;
+  targetKey: string;
+  retiredBy: string;
+  retiredAt: string;
+}
+
 /** Search filters for the reader (Phase C). */
 export interface UnifiedStoreSearchFilters {
   workspace?: string;

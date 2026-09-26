@@ -30,6 +30,7 @@ import type {
   RooSyncMessageRow,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
+  DashboardRetirementMark,
 } from './types.js';
 
 export interface UnifiedStoreReaderConfig {
@@ -124,6 +125,17 @@ export interface IUnifiedStoreReader {
     messages: RooSyncDashboardMessageRow[];
   } | null>;
 
+  /**
+   * #3782 — the ACTIVE retirement mark of a key, or null when the key is not
+   * retired (a lifted mark is history: null). Mirrors the guard-a probe
+   * contract: this is a decision input for the dashboard tool path, NOT gated
+   * behind UNIFIED_STORE_DASHBOARD_READ_PG — a dual-write host must see the
+   * marks it writes even when its read gate is off.
+   */
+  getRooSyncDashboardRetirement(key: string): Promise<DashboardRetirementMark | null>;
+  /** #3782 — every key carrying an ACTIVE mark (list filtering, fork detector). */
+  listRetiredRooSyncDashboardKeys(): Promise<string[]>;
+
   // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
 
   /**
@@ -163,6 +175,8 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
     dashboard: RooSyncDashboardRow;
     messages: RooSyncDashboardMessageRow[];
   } | null> { return null; }
+  async getRooSyncDashboardRetirement(_key: string): Promise<DashboardRetirementMark | null> { return null; }
+  async listRetiredRooSyncDashboardKeys(): Promise<string[]> { return []; }
   async getRooSyncAttachmentById(_id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> { return null; }
   async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }

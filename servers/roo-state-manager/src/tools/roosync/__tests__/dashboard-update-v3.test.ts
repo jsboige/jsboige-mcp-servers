@@ -37,6 +37,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   probeDashboardJournalForHydration: mockProbeHydration,
   dualWriteDashboardSync: mockDualWriteDashboardSync,
   dualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
+  getDashboardRetirement: vi.fn().mockResolvedValue(null),
+  listRetiredDashboardKeys: vi.fn().mockResolvedValue(new Set<string>()),
+  retireDashboardKeyChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
 }));
 
 vi.mock('@/services/openai', () => ({

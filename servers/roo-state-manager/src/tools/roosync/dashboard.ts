@@ -61,9 +61,13 @@ import {
   dualWriteDashboardDelete,
   getDashboardPgReader,
   dualWriteDashboardSyncChecked,
-  dualWriteDashboardDeleteChecked,
   probeDashboardJournalForHydration,
+  getDashboardRetirement,
+  listRetiredDashboardKeys,
+  retireDashboardKeyChecked,
 } from '../../services/unified-store/roosync-dashboard-store.js';
+// #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
+import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
 // #3482-follow: the fork predicate + root recovery live in the reconcile
 // module, which owns the "fork by construction" policy. Sharing them keeps the
 // enumeration-side detector and the pass that refuses to touch forks in sync
@@ -1183,8 +1187,25 @@ export async function withAppendLockRequired<T>(
  * Lit un dashboard : PG d'abord (#3151 Phase C, gate
  * UNIFIED_STORE_DASHBOARD_READ_PG), puis fichier Markdown GDrive en fallback.
  * Retourne null si inexistant partout.
+ *
+ * #3782 — une clé retirée (marque active en base, posée par un merge) est
+ * INVISIBLE ici dans les DEUX moitiés : ses lignes restent en base (gel des
+ * purges) mais le choke point rend la clé absente pour read/append/merge.
+ * Fail-open : lookup PG injoignable ⇒ clé traitée comme non retirée (comportement d'avant).
  */
 async function readDashboardFile(key: string): Promise<Dashboard | null> {
+  // #3782 — retired key: ignore it before touching either half. The retained
+  // PG rows would otherwise serve the fork (the rows survive the mark by
+  // design), and the preserved file (deleteSource:false) would serve it too.
+  const retirement = await getDashboardRetirement(key);
+  if (retirement) {
+    logger.debug('[retirement #3782] clé retirée ignorée à la lecture', {
+      key,
+      targetKey: retirement.targetKey,
+      retiredAt: retirement.retiredAt,
+    });
+    return null;
+  }
   // #3151 Phase C — PG-primary read, GDrive fallback (dégradation gracieuse).
   // readDashboardFromPg returns null when the gate is off, PG fails, or the
   // key has no row — all three mean "not authoritative", fall through to the
@@ -1193,6 +1214,47 @@ async function readDashboardFile(key: string): Promise<Dashboard | null> {
   const pgDashboard = await readDashboardFromPg(key);
   if (pgDashboard !== null) return pgDashboard;
   return readDashboardFromGdrive(key);
+}
+
+/**
+ * #3782 — suit la chaîne des marques de retraite (A→B, B→C) et rend la marque
+ * DERNIÈRE résolue : `targetKey` est la cible finale, non une clé elle-même
+ * retirée. Borné (5 sauts) + garde de cycle — une base marquée en boucle ne
+ * doit jamais boucler l'écriture.
+ */
+async function resolveRetirementRedirect(
+  key: string
+): Promise<DashboardRetirementMark | null> {
+  const visited = new Set<string>([key]);
+  let currentKey = key;
+  let activeMark: DashboardRetirementMark | null = null;
+  for (let hop = 0; hop < 5; hop++) {
+    const mark = await getDashboardRetirement(currentKey);
+    if (!mark) break;
+    activeMark = mark;
+    if (visited.has(mark.targetKey)) {
+      logger.warn('[retirement #3782] cycle de marques — redirection arrêtée sur la dernière cible résolue', {
+        requestedKey: key,
+        resolvedTarget: mark.targetKey,
+      });
+      break;
+    }
+    visited.add(mark.targetKey);
+    currentKey = mark.targetKey;
+  }
+  return activeMark;
+}
+
+/** #3782 — préfixe la note de redirection au message de la réponse écrite. */
+async function withRedirectNote(
+  note: string | undefined,
+  run: Promise<DashboardResult>
+): Promise<DashboardResult> {
+  const result = await run;
+  if (note && result && typeof result.message === 'string') {
+    result.message = `${note} ${result.message}`;
+  }
+  return result;
 }
 
 /**
@@ -4201,8 +4263,39 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
 
   const resolvedMachineId = args.machineId ?? getLocalMachineId();
   const resolvedWorkspace = args.workspace ?? getLocalWorkspaceId();
-  const key = buildDashboardKey(args.type, resolvedMachineId, resolvedWorkspace);
+  let key = buildDashboardKey(args.type, resolvedMachineId, resolvedWorkspace);
   const createIfNotExists = args.createIfNotExists !== false; // défaut: true
+
+  // #3782 — anti-rebirth : une écriture adressée à une clé retirée (marque
+  // active posée par un merge) atterrit sur sa cible. AVANT les verrous et le
+  // registre pendingMessageIds — tout le downstream (lock, handler, réponse)
+  // ne voit que la clé finale. Read/merge/delete ne redirigent PAS : read
+  // ignore la clé (readDashboardFile), merge refuse une source retirée,
+  // delete reste un geste opérateur explicite sur le fichier.
+  let retiredRedirectNote: string | undefined;
+  if (
+    args.action === 'append' ||
+    args.action === 'write' ||
+    args.action === 'update' ||
+    args.action === 'scrub'
+  ) {
+    const mark = await resolveRetirementRedirect(key);
+    if (mark) {
+      retiredRedirectNote =
+        `⚠️ [retirement #3782] clé '${mark.sourceKey}' retirée (merge vers '${mark.targetKey}' par ${mark.retiredBy}) — ` +
+        `écriture REDIRIGÉE vers la cible (hôte écrivain : ${resolvedMachineId}:${resolvedWorkspace}).`;
+      logger.warn(
+        "[retirement #3782] écriture adressée à une clé retirée — redirection vers la cible",
+        {
+          requestedKey: key,
+          targetKey: mark.targetKey,
+          writingHost: `${resolvedMachineId}:${resolvedWorkspace}`,
+          retiredAt: mark.retiredAt,
+        }
+      );
+      key = mark.targetKey;
+    }
+  }
 
   // Store pending custom messageId for append action
   if (customMessageId && args.action === 'append') {
@@ -4218,23 +4311,27 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
       case 'write':
         // Serialized: read-modify-write races can overwrite concurrent updates
         return withKeyLock(key, () =>
-          handleWrite(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
+          withRedirectNote(retiredRedirectNote,
+            handleWrite(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho))
         );
       case 'append':
         // Serialized: prevents concurrent condensations producing duplicate archives
         return withKeyLock(key, () =>
-          handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
+          withRedirectNote(retiredRedirectNote,
+            handleAppend(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho))
         );
       case 'update':
         // #3549: update = read-modify-write v3, même discipline de sérialisation
         // que write/append (per-key + cross-process append lock dans le handler)
         return withKeyLock(key, () =>
-          handleUpdate(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho)
+          withRedirectNote(retiredRedirectNote,
+            handleUpdate(key, args, createIfNotExists, resolvedMachineId, resolvedWorkspace, requestEcho))
         );
       case 'scrub':
         // #3584 (retrait) : même discipline read-modify-write sérialisée que write.
         return withKeyLock(key, () =>
-          handleScrub(key, args, resolvedMachineId, resolvedWorkspace, requestEcho)
+          withRedirectNote(retiredRedirectNote,
+            handleScrub(key, args, resolvedMachineId, resolvedWorkspace, requestEcho))
         );
 
     case 'delete':
@@ -5618,10 +5715,16 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
     ensureStoreSubdir(getSharedStatePath(), 'dashboards');
     const files = await fs.readdir(dir);
     const mdFiles = files.filter(f => f.endsWith('.md') && !f.endsWith('.tmp'));
+    // #3782 — les clés retirées (marque active, posée par un merge) n'existent
+    // pas pour un lecteur : ni dans les résumés, ni dans les familles de forks.
+    // Le FICHIER reste (deleteSource gouverne le fichier, la marque gouverne la
+    // visibilité) — un opérateur qui lève la marque rend la clé listable à nouveau.
+    const retiredKeys = await listRetiredDashboardKeys();
     const summaries: DashboardSummary[] = [];
 
     for (const file of mdFiles) {
       const key = file.replace(/\.md$/, '');
+      if (retiredKeys.has(key)) continue;
       try {
         const dashboard = await readDashboardFile(key);
         if (dashboard) {
@@ -5651,7 +5754,9 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
     // the listing (a detector that can break `list` would be a regression).
     let forks: DashboardForkGroup[] = [];
     try {
-      forks = detectDashboardForks(mdFiles.map(f => f.replace(/\.md$/, '')));
+      forks = detectDashboardForks(
+        mdFiles.map(f => f.replace(/\.md$/, '')).filter(k => !retiredKeys.has(k))
+      );
       for (const group of forks) {
         logger.warn('[DASHBOARD-FORK] clé(s) forkée(s) détectée(s) (#3482) — writers potentiellement divergents', {
           canonical: group.canonical,
@@ -5821,8 +5926,7 @@ function mergeGuardRefusal(
   // Revue #1134 — garde anti-écrasement-à-l'aveugle : un hôte qui DUAL-ÉCRIT
   // PG sans le LIRE (porte UNIFIED_STORE_DASHBOARD_READ_PG fermée) ferait une
   // union qui ne voit que les fichiers, puis dualWriteDashboardSync
-  // remplacerait le journal PG de la cible et dualWriteDashboardDelete
-  // détruirait celui de la source — anéantissant tout message vivant
+  // remplacerait le journal PG de la cible — anéantissant tout message vivant
   // uniquement en PG, sans archive. Conditions lues sur l'env (miroir exact du
   // writer-factory, sans l'instantier) : refuser l'asymétrie écrit-sans-lire ;
   // un monde sans PG du tout reste légitime (rien à écraser).
@@ -5851,7 +5955,9 @@ function mergeGuardRefusal(
  * de système de fichiers (renommer/supprimer un ` (1)`) ne répare que la moitié
  * fichier et laisse la moitié PG — celle que servent les hôtes à porte PG
  * ouverte — intacte, SANS erreur. Seul le canal API écrit les deux
- * (writeDashboardFile → dualWriteDashboardSync, retrait → dualWriteDashboardDelete).
+ * (writeDashboardFile → dualWriteDashboardSync ; retrait du journal → MARQUE
+ * `roosync_dashboard_retirements` #3782, jamais un DELETE — les lignes
+ * restent en base, gel des purges, geste réversible par `lifted_at`).
  *
  * Sémantique :
  *   - journal : union par id de message sur les QUATRE vues distinctes (PG +
@@ -5862,9 +5968,13 @@ function mergeGuardRefusal(
  *     de la paire en portent un, repli lastModified sinon (#3782 §3).
  *   - cible absente : chemin RENAME pur (le contenu de la source devient la
  *     cible sous la clé canonique — cas po-2025 : canonique manquant).
- *   - source retirée par défaut (deleteSource) : archivée par RENOMMAGE
- *     ATOMIQUE (source → archive/<sourceKey>-pre-merge-<ts>.md), ligne PG
- *     supprimée en DERNIER.
+ *   - `deleteSource` ne gouverne QUE LE FICHIER (#3782, arbitrage 5844675985) :
+ *     true (défaut) → archivage par RENOMMAGE ATOMIQUE puis retrait du
+ *     fichier ; false → fichier préservé tel quel. Dans les DEUX cas le
+ *     JOURNAL retire la source par une MARQUE `roosync_dashboard_retirements`
+ *     (posée en DERNIER, gated sur la persistance vérifiée de l'union) : les
+ *     lignes restent en base, mais read/list/fork-detector ignorent la clé et
+ *     les écritures adressées à la clé atterrissent sur la cible (anti-rebirth).
  *
  * Trois gardes d'intégrité (revue #1134 + rework) :
  *   1. ANTI-ÉCRASEMENT À L'AVEUGLE : un hôte qui dual-écrit PG sans le lire
@@ -5872,9 +5982,9 @@ function mergeGuardRefusal(
  *      aux messages vivant uniquement en PG, puis écraserait leur journal —
  *      refus net ; le merge court sur un hôte qui voit ce qu'il écrase, ou
  *      dans un monde sans PG.
- *   2. PERSISTANCE PG VÉRIFIÉE (rework, ask 2) : la suppression de la source
- *      n'a lieu que si le upsert PG de la cible est CONFIRMÉ (outcome `written`
- *      ou `disabled` — pas de moitié PG sur cet hôte). L'ancien chemin
+ *   2. PERSISTANCE PG VÉRIFIÉE (rework, ask 2) : la marque de retraite de la
+ *      source ne se pose que si le upsert PG de la cible est CONFIRMÉ (outcome
+ *      `written` ou `disabled` — pas de moitié PG sur cet hôte). L'ancien chemin
  *      avalait les échecs (dualWriteDashboardSync → withRetry void) : un merge
  *      sous breaker OPEN aurait retiré la source pendant que l'union n'existe
  *      nulle part en PG. Sur échec : union écrite dans le FICHIER cible,
@@ -5885,8 +5995,9 @@ function mergeGuardRefusal(
  *      fenêtre lecture→rename est rattrapé par la re-union post-rename (les
  *      octets archivés sont re-parsés ; tout message absent de l'union y est
  *      réintégré et la cible réécrite) ; un append APRÈS le rename recrée le
- *      fichier source — détecté par re-stat après la suppression PG et
- *      rapporté non-silencieusement (jamais écrasé : c'est une écriture vivante).
+ *      fichier source — détecté par re-stat après la marque et rapporté
+ *      non-silencieusement (jamais écrasé : c'est une écriture vivante ; la
+ *      marque redirige désormais les appends suivants vers la cible).
  *
  * Le verrou append cross-process sur les DEUX clés est acquis en amont par le
  * dispatcher, en mode FAIL-CLOSED (withAppendLockRequired) — pas de merge sans
@@ -6142,12 +6253,30 @@ async function handleMerge(
   let sourceDisposition = '';
 
   if (!deleteSource) {
-    sourceDisposition = 'Source préservée (deleteSource=false).';
-    logger.warn(`[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; source PRÉSERVÉE (deleteSource=false)`, {
+    // #3782 (arbitrage 5844675985) — `deleteSource` ne gouverne plus que le
+    // FICHIER. Le journal retire la source dans les DEUX cas, par une MARQUE
+    // (jamais un DELETE — gel des purges, geste réversible) : l'union PG est
+    // déjà vérifiée ci-dessus (early return sinon), les lignes restent en
+    // base, seule la visibilité change. Sans marque, un hôte qui lit le
+    // fichier préservé continue de nourrir le fork (mesuré J+2 : 101,8 %).
+    const retireOutcome = await retireDashboardKeyChecked(
       sourceKey,
-      targetKey: key,
-      mergedMessages: mergedMessages.length
-    });
+      key,
+      `${author.machineId}:${author.workspace}`
+    );
+    const journalRetired = retireOutcome.ok || retireOutcome.reason === 'disabled';
+    sourceDisposition = journalRetired
+      ? `Source préservée (deleteSource=false) — journal RETIRÉ par marque #3782 vers '${key}' (lignes conservées en base).`
+      : `Source préservée (deleteSource=false) — ⚠️ marque de retraite #3782 NON POSÉE (${retireOutcome.reason}${retireOutcome.detail ? ` : ${retireOutcome.detail}` : ''}) : la clé reste visible, réessayer le merge une fois PG revenu (l'union est idempotente).`;
+    logger.warn(
+      `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; source PRÉSERVÉE (deleteSource=false), journal retiré par marque #3782 (${journalRetired ? 'ok' : 'différé'})`,
+      {
+        sourceKey,
+        targetKey: key,
+        mergedMessages: mergedMessages.length,
+        retireOutcome,
+      }
+    );
   } else {
     // Rework #1134 (ask 1) — retrait du fichier source par RENOMMAGE ATOMIQUE
     // vers l'archive : l'archive et le retrait sont UN SEUL geste (plus de
@@ -6266,32 +6395,36 @@ async function handleMerge(
       }
     }
 
-    // Suppression PG en DERNIER : tant qu'elle n'a pas eu lieu, la ligne PG
-    // de la source survit — un hôte à porte PG ouverte qui lit la clé entre
-    // temps voit encore son journal (l'union l'a déjà capturé). Gate re-union
-    // (review ai-01) : si la re-union n'est pas confirmée en PG, la ligne PG de
-    // la source reste la seule trace PG des messages réintégrés — le delete ne
-    // s'exécute pas (retrait partiel, rapporté ci-dessous).
-    const delOutcome = reUnionPersisted
-      ? await dualWriteDashboardDeleteChecked(sourceKey)
+    // Retrait journal en DERNIER, par MARQUE #3782 (jamais un DELETE — gel des
+    // purges : les lignes dashboard + journal restent en base, seules les
+    // lectures/listings/détecteur cessent de voir la clé et les écritures sont
+    // redirigées vers la cible). Gate re-union (review ai-01) inchangée : si la
+    // re-union n'est pas confirmée en PG, le journal de la source reste la
+    // seule trace PG des messages réintégrés — marquer la clé la rendrait
+    // invisible alors que son contenu n'est pas encore dans la cible ; la
+    // marque ne se pose pas (retrait partiel, rapporté ci-dessous).
+    const retireOutcome = reUnionPersisted
+      ? await retireDashboardKeyChecked(sourceKey, key, `${author.machineId}:${author.workspace}`)
       : undefined;
-    const pgDeleted = delOutcome !== undefined && (delOutcome.ok || delOutcome.reason === 'disabled');
+    const journalRetired = retireOutcome !== undefined && (retireOutcome.ok || retireOutcome.reason === 'disabled');
     let pgDispositionNote = '';
-    if (delOutcome === undefined) {
+    if (retireOutcome === undefined) {
       pgDispositionNote =
-        `. ⚠️ Suppression de la ligne PG de la source DIFFÉRÉE : la re-union post-rename ` +
+        `. ⚠️ Marque de retraite #3782 DIFFÉRÉE : la re-union post-rename ` +
         `(${reUnionedCount} msg réintégré(s)) n'est pas confirmée en PG` +
-        `${reUnionFailDetail ?? ' (chaîne interrompue avant confirmation)'} — la ligne PG de la source ` +
+        `${reUnionFailDetail ?? ' (chaîne interrompue avant confirmation)'} — le journal de la source ` +
         `est la seule trace PG des messages réintégrés. Réessayer le merge une fois PG revenu (l'union est idempotente).`;
-    } else if (!(delOutcome.ok || delOutcome.reason === 'disabled')) {
+    } else if (!(retireOutcome.ok || retireOutcome.reason === 'disabled')) {
       pgDispositionNote =
-        `. ⚠️ La ligne PG de la source n'a PAS été supprimée (${delOutcome.reason}${delOutcome.detail ? ` : ${delOutcome.detail}` : ''}) — ` +
-        `retrait partiel : moitié fichier faite, moitié PG résiduelle. Le contenu est préservé (union + archive).`;
+        `. ⚠️ La marque de retraite #3782 n'a PAS été posée (${retireOutcome.reason}${retireOutcome.detail ? ` : ${retireOutcome.detail}` : ''}) — ` +
+        `retrait partiel : moitié fichier faite, journal encore visible sous la clé source. Le contenu est préservé (union + archive + lignes en base).`;
     }
 
     // Re-stat : un append concurrent post-rename recrée le fichier source.
     // C'est une écriture VIVANTE (jamais écrasée) — mais l'opérateur doit
-    // savoir que la clé fork respire encore.
+    // savoir que la clé fork respire encore. Avec la marque posée, un tel
+    // append est redirigé vers la cible (#3782 anti-rebirth) — le fichier
+    // recréé reste un cadavre froid que seul un opérateur verra.
     let sourceRecreated = false;
     try {
       await fs.stat(sourcePath);
@@ -6301,9 +6434,9 @@ async function handleMerge(
     }
 
     logger.warn(
-      pgDeleted
-        ? `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' puis supprimée (les DEUX artefacts)`
-        : `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; retrait PG ÉCHOUÉ/DIFFÉRÉ — ligne PG résiduelle`,
+      journalRetired
+        ? `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; fichier retiré + journal retiré par marque #3782 (lignes conservées)`
+        : `[MERGE] #3537 §6.2 — clé '${sourceKey}' fusionnée dans '${key}' ; marque #3782 ÉCHOUÉE/DIFFÉRÉE — journal encore visible`,
       {
         sourceKey,
         targetKey: key,
@@ -6313,8 +6446,8 @@ async function handleMerge(
         deduped,
         archiveFile,
         reUnionedCount,
-        pgDeleteOutcome:
-          delOutcome ?? { ok: false, reason: 'deferred-reunion-sync', detail: 're-union post-rename non confirmée en PG' },
+        retireOutcome:
+          retireOutcome ?? { ok: false, reason: 'deferred-reunion-sync', detail: 're-union post-rename non confirmée en PG' },
         sourceRecreated,
         by: author
       }
@@ -6322,12 +6455,12 @@ async function handleMerge(
 
     sourceDisposition =
       (archiveFile
-        ? `Source archivée (${archiveFile}) par renommage atomique puis supprimée des deux artefacts`
-        : 'Source supprimée des deux artefacts (aucun contenu à archiver)') +
+        ? `Source archivée (${archiveFile}) par renommage atomique, fichier retiré et journal retiré par marque #3782 vers '${key}' (lignes conservées en base)`
+        : `Source retirée des deux artefacts (aucun contenu à archiver) — journal retiré par marque #3782 (lignes conservées en base)`) +
       (reUnionedCount > 0 ? ` — re-union post-rename : ${reUnionedCount} msg(s) réintégré(s)` : '') +
       pgDispositionNote +
       (sourceRecreated
-        ? `. ⚠️ Le fichier source a été RECREE après le merge (append concurrent) — la clé '${sourceKey}' respire à nouveau ; relire avant tout nouveau merge.`
+        ? `. ⚠️ Le fichier source a été RECREE après le merge (append concurrent pré-marque) — la marque #3782 redirige désormais les écritures vers '${key}' ; le fichier recréé est un cadavre froid, supprimable à la main.`
         : '');
   }
 
@@ -6350,9 +6483,14 @@ async function handleMerge(
 async function handleDelete(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   const filePath = getDashboardPath(key);
 
-  // Safety check: read the dashboard to verify it's not recently active (#1128)
+  // Safety check: read the dashboard to verify it's not recently active (#1128).
+  // #3782 — lecture GDrive DIRECTE (pas readDashboardFile) : le delete est un
+  // geste opérateur explicite qui doit continuer de voir le fichier réel —
+  // y compris celui d'une clé retirée (deleteSource=false a préservé le
+  // fichier, la marque ne rend pas le geste aveugle : protection #1128 et
+  // archive pré-suppression s'appliquent au fichier sur disque).
   try {
-    const dashboard = await readDashboardFile(key);
+    const dashboard = await readDashboardFromGdrive(key);
     if (dashboard) {
       const lastModified = new Date(dashboard.lastModified);
       const ageMs = Date.now() - lastModified.getTime();

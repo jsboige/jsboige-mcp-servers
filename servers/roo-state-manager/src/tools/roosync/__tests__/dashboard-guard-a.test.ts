@@ -25,6 +25,9 @@ const {
   mockDualWriteDashboardDeleteChecked,
   mockGetDashboardPgReader,
   mockProbe,
+  mockGetDashboardRetirement,
+  mockListRetiredDashboardKeys,
+  mockRetireDashboardKeyChecked,
 } = vi.hoisted(() => ({
   mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
   mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
@@ -33,6 +36,9 @@ const {
   mockDualWriteDashboardDeleteChecked: vi.fn().mockResolvedValue({ ok: true }),
   mockGetDashboardPgReader: vi.fn().mockReturnValue(null),
   mockProbe: vi.fn().mockResolvedValue({ kind: 'empty' }),
+  mockGetDashboardRetirement: vi.fn().mockResolvedValue(null),
+  mockListRetiredDashboardKeys: vi.fn().mockResolvedValue(new Set<string>()),
+  mockRetireDashboardKeyChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
 }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
@@ -43,6 +49,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   dualWriteDashboardDeleteChecked: mockDualWriteDashboardDeleteChecked,
   getDashboardPgReader: mockGetDashboardPgReader,
   probeDashboardJournalForHydration: mockProbe,
+  getDashboardRetirement: mockGetDashboardRetirement,
+  listRetiredDashboardKeys: mockListRetiredDashboardKeys,
+  retireDashboardKeyChecked: mockRetireDashboardKeyChecked,
   mapDashboardToRows: vi.fn(),
   mapRowsToDashboard: vi.fn(),
   backfillDashboardToStore: vi.fn(),
