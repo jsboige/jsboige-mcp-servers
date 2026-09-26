@@ -139,6 +139,30 @@ export const viewTaskDetailsTool = {
                 }
             }
 
+            // #3661 (arbitrage 5828790877) — même nature que `view` : lecture
+            // explicite par-id. Une archive Tier 3 listée par le scanner mais
+            // absente de conversationCache (stub du SkeletonCacheService), et
+            // un stub déshydraté in place par éviction LRU (séquence vide,
+            // messageCount > 0, dataSource gdrive-archive), se ré-hydratent
+            // ici aussi. Un retour null (garde de précédence : tâche locale
+            // vivante ; échec d'hydratation) laisse les chemins suivants inchangés.
+            const isEvictedArchiveStub = !!skeleton
+                && (!skeleton.sequence || skeleton.sequence.length === 0)
+                && skeleton.metadata.messageCount > 0
+                && (skeleton.metadata as any)?.dataSource === 'gdrive-archive';
+            if (!skeleton || isEvictedArchiveStub) {
+                try {
+                    const { hydrateTier3SkeletonFromCache } = await import('../../utils/server-helpers.js');
+                    const tier3 = await hydrateTier3SkeletonFromCache(task_id, conversationCache as any);
+                    if (tier3) {
+                        skeleton = tier3;
+                        console.log(`[view_task_details] Tier 3 ${isEvictedArchiveStub ? 're-hydrated archive' : 'hydrated archive'} ${task_id} (${(tier3.sequence ?? []).length} sequence items)`);
+                    }
+                } catch (err) {
+                    console.warn(`[view_task_details] Tier 3 hydration failed for ${task_id}:`, err instanceof Error ? err.message : err);
+                }
+            }
+
             if (!skeleton) {
                 return {
                     content: [{
