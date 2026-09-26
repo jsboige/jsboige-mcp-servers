@@ -379,7 +379,13 @@ function buildDrillDown(taskId: string, messageIndex: number | undefined, totalM
     if (messageIndex === undefined) {
         return { tool: 'conversation_browser', action: 'view', task_id: taskId };
     }
-    const start = Math.max(1, messageIndex - DRILL_DOWN_WINDOW);
+    // #1234 : message_index est 1-based (ChunkExtractor ++messageIndex) mais
+    // conversation_browser messageStart est 0-based inclusif (view-conversation-tree
+    // slice depuis 0). Sans le -1 la fenêtre est décalée d'un message et le
+    // plancher 1 exclut toujours le premier message : un hit mi=1 devenait
+    // invisible dans sa propre fenêtre. end est exclusif et reste juste :
+    // (mi-1) + 1 + window = mi + window.
+    const start = Math.max(0, messageIndex - 1 - DRILL_DOWN_WINDOW);
     const end = totalMessages !== undefined
         ? Math.min(totalMessages, messageIndex + DRILL_DOWN_WINDOW)
         : messageIndex + DRILL_DOWN_WINDOW;
