@@ -31,6 +31,7 @@ import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-s
 import type {
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
+  DashboardRetirementMark,
 } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import type { UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
@@ -337,6 +338,90 @@ export async function dualWriteDashboardDeleteChecked(
     return await getUnifiedStoreWriter().deleteRooSyncDashboardChecked(key);
   } catch (error) {
     logger.warn('[dashboard-pg] checked dual-write delete failed', { key, error: String(error) });
+    return { ok: false, reason: 'exhausted', detail: String(error) };
+  }
+}
+
+// ─── Journal-level key retirement (#3782 — arbitration comment 5844675985) ──
+
+const RETIREMENT_LOOKUP_TIMEOUT_MS = 3000;
+
+/**
+ * #3782 — the ACTIVE retirement mark of a key, or null (not retired / lifted /
+ * no PG half / lookup failure — fail-open everywhere: the worst case is
+ * today's behaviour, the fork stays visible).
+ *
+ * Like the guard-a probe, NOT behind UNIFIED_STORE_DASHBOARD_READ_PG: the
+ * marks are decision inputs for every dashboard read/list/write, including on
+ * dual-write hosts whose read gate is still off. Bounded by a short race so a
+ * hung pool never blocks the read path.
+ */
+export async function getDashboardRetirement(
+  key: string
+): Promise<DashboardRetirementMark | null> {
+  try {
+    const reader = getUnifiedStoreReader();
+    if (reader.isNull()) return null;
+    let timedOut = false;
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => { timedOut = true; resolve(null); }, RETIREMENT_LOOKUP_TIMEOUT_MS);
+    });
+    const mark = await Promise.race([reader.getRooSyncDashboardRetirement(key), timeout]);
+    if (mark === null && timedOut) {
+      logger.warn('[retirement #3782] lookup timed out — treating key as NOT retired (fail-open)', { key });
+    }
+    return mark;
+  } catch (error) {
+    logger.warn('[retirement #3782] lookup failed — treating key as NOT retired (fail-open)', {
+      key,
+      error: String(error),
+    });
+    return null;
+  }
+}
+
+/** #3782 — every key carrying an ACTIVE mark. Fail-open: empty set. */
+export async function listRetiredDashboardKeys(): Promise<Set<string>> {
+  try {
+    const reader = getUnifiedStoreReader();
+    if (reader.isNull()) return new Set();
+    return new Set(await reader.listRetiredRooSyncDashboardKeys());
+  } catch (error) {
+    logger.warn('[retirement #3782] list failed — treating as no retired keys (fail-open)', {
+      error: String(error),
+    });
+    return new Set();
+  }
+}
+
+/**
+ * #3782 — retire a merged-away source key: a MARK, never a DELETE. The
+ * dashboard + journal rows stay in base (gel des purges); reads, listings and
+ * the fork detector stop seeing the key; writes are redirected to the target.
+ * Checked variant — the merge gates its source disposition on the outcome
+ * (`disabled` on a host with no PG half is acceptable, same as the deletes).
+ */
+export async function retireDashboardKeyChecked(
+  sourceKey: string,
+  targetKey: string,
+  retiredBy: string
+): Promise<UnifiedStoreWriteOutcome> {
+  try {
+    return await getUnifiedStoreWriter().retireRooSyncDashboardKeyChecked(sourceKey, targetKey, retiredBy);
+  } catch (error) {
+    logger.warn('[retirement #3782] mark write failed', { sourceKey, targetKey, error: String(error) });
+    return { ok: false, reason: 'exhausted', detail: String(error) };
+  }
+}
+
+/** #3782 — lift an active mark: the key becomes readable again with its original content. */
+export async function unretireDashboardKeyChecked(
+  key: string
+): Promise<UnifiedStoreWriteOutcome> {
+  try {
+    return await getUnifiedStoreWriter().unretireRooSyncDashboardKeyChecked(key);
+  } catch (error) {
+    logger.warn('[retirement #3782] mark lift failed', { key, error: String(error) });
     return { ok: false, reason: 'exhausted', detail: String(error) };
   }
 }

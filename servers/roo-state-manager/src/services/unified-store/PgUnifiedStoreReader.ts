@@ -24,6 +24,7 @@ import type {
   RooSyncMessageRow,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
+  DashboardRetirementMark,
 } from './types.js';
 import type {
   IUnifiedStoreReader,
@@ -216,6 +217,40 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
       dashboard: this.mapRooSyncDashboardRow(dashResult.rows[0]),
       messages: msgResult.rows.map(r => this.mapRooSyncDashboardMessageRow(r)),
     };
+  }
+
+  // ─── RooSync dashboard retirements (#3782) ───────────────────────
+
+  async getRooSyncDashboardRetirement(key: string): Promise<DashboardRetirementMark | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      `SELECT source_key, target_key, retired_by, retired_at
+       FROM roosync_dashboard_retirements
+       WHERE source_key = $1 AND lifted_at IS NULL`,
+      [key],
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      sourceKey: row.source_key,
+      targetKey: row.target_key,
+      retiredBy: row.retired_by,
+      retiredAt: row.retired_at instanceof Date
+        ? row.retired_at.toISOString()
+        : String(row.retired_at),
+    };
+  }
+
+  async listRetiredRooSyncDashboardKeys(): Promise<string[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      'SELECT source_key FROM roosync_dashboard_retirements WHERE lifted_at IS NULL',
+    );
+    return result.rows.map(r => String(r.source_key));
   }
 
   private mapRooSyncDashboardRow(row: pg.QueryResult['rows'][0]): RooSyncDashboardRow {

@@ -37,6 +37,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   probeDashboardJournalForHydration: mockProbeHydration,
   dualWriteDashboardSync: mockDualWriteDashboardSync,
   dualWriteDashboardDelete: mockDualWriteDashboardDelete,
+  getDashboardRetirement: vi.fn().mockResolvedValue(null),
+  listRetiredDashboardKeys: vi.fn().mockResolvedValue(new Set<string>()),
+  retireDashboardKeyChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
 }));
 
 // Condensation falls back to truncation when no chat client is configured

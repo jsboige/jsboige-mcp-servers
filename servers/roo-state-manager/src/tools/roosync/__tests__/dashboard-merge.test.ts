@@ -6,13 +6,16 @@
  *
  * Couverture :
  *   - RENAME pur : cible manquante (cas po-2025 — canonique absent), le
- *     contenu de la source devient la cible, source supprimée des deux artefacts ;
+ *     contenu de la source devient la cible, source retirée des deux artefacts ;
  *   - UNION divergente : journaux partiellement disjoints, doublon par id
  *     résolu vers la copie au timestamp le plus récent, tri par timestamp,
  *     compteur totalMessages monotone (jamais régressé) ;
  *   - refus : sourceKey absent, source === cible, source inexistante,
  *     type mismatch (workspace → machine) ;
- *   - deleteSource=false : la source survit, AUCUN delete PG ;
+ *   - #3782 : `deleteSource` ne gouverne QUE le fichier — le journal retire
+ *     la source par une MARQUE (`roosync_dashboard_retirements`) dans les DEUX
+ *     cas, jamais par le DELETE cascade (les lignes restent en base, gel des
+ *     purges) ; deleteSource=false : fichier préservé + marque posée ;
  *   - archives : la source est archivée AVANT retrait (renommage atomique) ;
  *   - rework #1134 ask 1 : verrou append FAIL-CLOSED — pas de verrou, pas de
  *     merge (le fail-open du verrou append des write/append serait destructif
@@ -22,8 +25,9 @@
  *     intacte + rapport honnête ; `disabled` (hôte sans moitié PG) ⇒ retrait.
  *
  * Preuves d'artefacts : spies sur dualWriteDashboardSync (le write dual-write
- * de la cible) + dualWriteDashboardSyncChecked / dualWriteDashboardDeleteChecked
- * (les issues PG vérifiées) + lecture directe des fichiers sur disque.
+ * de la cible) + dualWriteDashboardSyncChecked (l'issue PG vérifiée de
+ * l'union) + retireDashboardKeyChecked (la marque #3782 — le DELETE cascade
+ * reste l'apanage du delete explicite) + lecture directe des fichiers sur disque.
  *
  * Non couvert ici (ininjectable sans point d'injection) : la re-union
  * post-rename (append concurrent DANS la fenêtre lecture→rename) et le re-stat
@@ -44,12 +48,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 // sauf readDashboardFromPg (contrôlable : simule la vue PG d'un hôte à porte
 // ouverte — défaut null = pas de vue PG, comme une porte fermée) et les
 // variantes checked (issues PG simulables).
-const { dualWriteSyncSpy, dualWriteDeleteSpy, pgReadSpy, pgSyncCheckedSpy, pgDeleteCheckedSpy } = vi.hoisted(() => ({
+const { dualWriteSyncSpy, dualWriteDeleteSpy, pgReadSpy, pgSyncCheckedSpy, pgDeleteCheckedSpy, retireCheckedSpy, getRetirementSpy, listRetiredSpy } = vi.hoisted(() => ({
   dualWriteSyncSpy: vi.fn(),
   dualWriteDeleteSpy: vi.fn(),
   pgReadSpy: vi.fn(),
   pgSyncCheckedSpy: vi.fn(),
   pgDeleteCheckedSpy: vi.fn(),
+  retireCheckedSpy: vi.fn(),
+  getRetirementSpy: vi.fn(),
+  listRetiredSpy: vi.fn(),
 }));
 vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -60,6 +67,9 @@ vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (imp
     dualWriteDashboardSyncChecked: pgSyncCheckedSpy,
     dualWriteDashboardDeleteChecked: pgDeleteCheckedSpy,
     readDashboardFromPg: pgReadSpy,
+    retireDashboardKeyChecked: retireCheckedSpy,
+    getDashboardRetirement: getRetirementSpy,
+    listRetiredDashboardKeys: listRetiredSpy,
   };
 });
 
@@ -176,6 +186,14 @@ beforeEach(() => {
   // Défaut : PG sain et vérifié (outcome checked nominal).
   pgSyncCheckedSpy.mockResolvedValue({ ok: true, reason: 'written' });
   pgDeleteCheckedSpy.mockResolvedValue({ ok: true, reason: 'written' });
+  // #3782 — défauts : marque posée au premier tour, aucune marque active côté
+  // lectures (fail-open, aucune clé retirée).
+  retireCheckedSpy.mockReset();
+  retireCheckedSpy.mockResolvedValue({ ok: true, reason: 'written' });
+  getRetirementSpy.mockReset();
+  getRetirementSpy.mockResolvedValue(null);
+  listRetiredSpy.mockReset();
+  listRetiredSpy.mockResolvedValue(new Set<string>());
   // Défaut : pas de vue PG (équivalent porte fermée SANS l'asymétrie
   // écrit-sans-lire — le writer est aussi OFF dans cet env).
   pgReadSpy.mockReset();
@@ -271,9 +289,11 @@ describe('action merge — RENAME pur (cible manquante, cas po-2025 #3537 §3)',
 
     // Le fork est retiré du disque…
     expect(fileExists('machine-myia-po-2025 (1).md')).toBe(false);
-    // …et de la moitié PG (le geste fichier seul ne l'aurait JAMAIS fait) —
-    // par le chemin CHECKED (issue vérifiée), pas le void avalé.
-    expect(pgDeleteCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)');
+    // …et de la moitié journal par la MARQUE #3782 (le geste fichier seul ne
+    // l'aurait JAMAIS fait) — jamais par le DELETE cascade, qui détruirait les
+    // lignes (gel des purges).
+    expect(retireCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)', 'machine-myia-po-2025', expect.any(String));
+    expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
     // La cible est écrite via le chemin dual-write (les deux artefacts)…
     expect(dualWriteSyncSpy).toHaveBeenCalledTimes(1);
     expect(dualWriteSyncSpy.mock.calls[0][0].key).toBe('machine-myia-po-2025');
@@ -338,9 +358,11 @@ describe('action merge — UNION de journaux divergents (fork + cible vivants)',
     expect(iM1).toBeGreaterThan(iM2);
     expect(iM3).toBeGreaterThan(iM1);
 
-    // Source retirée des deux artefacts.
+    // Source retirée des deux artefacts — fichier par renommage, journal par
+    // la marque #3782 (jamais le DELETE cascade).
     expect(fileExists('machine-myia-po-2025 (1).md')).toBe(false);
-    expect(pgDeleteCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)');
+    expect(retireCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)', 'machine-myia-po-2025', expect.any(String));
+    expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
     expect(dualWriteSyncSpy).toHaveBeenCalledTimes(1);
     expect(dualWriteSyncSpy.mock.calls[0][0].key).toBe('machine-myia-po-2025');
   });
@@ -358,7 +380,7 @@ describe('action merge — UNION de journaux divergents (fork + cible vivants)',
     expect(fileText('machine-myia-po-2025.md')).toContain('Statut de machine-myia-po-2025 (1).md');
   });
 
-  it('deleteSource=false : la source survit, aucun delete PG, cible quand même fusionnée', async () => {
+  it('deleteSource=false : le fichier survit, aucun delete PG, mais le journal est RETIRÉ par la marque #3782', async () => {
     const result = await roosyncDashboard({
       action: 'merge', type: 'machine', machineId: 'myia-po-2025',
       sourceKey: 'machine-myia-po-2025 (1)', deleteSource: false
@@ -366,7 +388,11 @@ describe('action merge — UNION de journaux divergents (fork + cible vivants)',
 
     expect(result.success).toBe(true);
     expect(String(result.message)).toContain('Source préservée');
+    // deleteSource gouverne le FICHIER : la source survit sur disque…
     expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+    // …mais le journal retire la source dans les DEUX cas (arbitrage #3782) —
+    // marque, jamais delete (les lignes restent en base, gel des purges).
+    expect(retireCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)', 'machine-myia-po-2025', expect.any(String));
     expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
     expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
     // La cible porte quand même l'union complète.
@@ -495,7 +521,8 @@ describe('action merge — gardes d’intégrité, 2e série (revue #1134, bis)'
     expect(merged).toContain('Statut de machine-myia-po-2025 (1).md');
     expect(merged).not.toContain('Statut PG');
     expect(fileExists('machine-myia-po-2025 (1).md')).toBe(false);
-    expect(pgDeleteCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)');
+    expect(retireCheckedSpy).toHaveBeenCalledWith('machine-myia-po-2025 (1)', 'machine-myia-po-2025', expect.any(String));
+    expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
   });
 
   it('source statut-seul (0 message) → ARCHIVÉE quand même avant retrait (revue #1134 mineur)', async () => {
@@ -579,8 +606,8 @@ describe('action merge — rework #1134 ask 2 : retrait GATING sur la persistanc
     expect(String(result.message)).not.toContain('DIFFÉRÉE');
   });
 
-  it("échec du DELETE PG de la source (union persistée) → retrait partiel RAPPORTÉ honnêtement, archive conservée", async () => {
-    pgDeleteCheckedSpy.mockResolvedValue({ ok: false, reason: 'breaker-skip', detail: 'circuit breaker OPEN' });
+  it("échec de la MARQUE de retraite (union persistée) → retrait partiel RAPPORTÉ honnêtement, archive conservée", async () => {
+    retireCheckedSpy.mockResolvedValue({ ok: false, reason: 'breaker-skip', detail: 'circuit breaker OPEN' });
 
     const result = await roosyncDashboard({
       action: 'merge', type: 'machine', machineId: 'myia-po-2025',
@@ -660,7 +687,8 @@ describe('action merge — workspace (cas CoursIA-like, cible vivante)', () => {
     expect(String(result.message)).toContain('Statut retenu : cible');
     expect(fileExists('workspace-CoursIA (1).md')).toBe(false);
     expect(fileExists('workspace-CoursIA.md')).toBe(true);
-    expect(pgDeleteCheckedSpy).toHaveBeenCalledWith('workspace-CoursIA (1)');
+    expect(retireCheckedSpy).toHaveBeenCalledWith('workspace-CoursIA (1)', 'workspace-CoursIA', expect.any(String));
+    expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
   });
 });
 

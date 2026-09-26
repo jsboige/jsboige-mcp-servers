@@ -660,6 +660,49 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     }
   }
 
+  // ─── RooSync dashboard retirements (#3782) ───────────────────────
+
+  /**
+   * Mark (never DELETE) a source key as retired into `targetKey`. The
+   * dashboard + journal rows are left untouched (gel des purges) — only the
+   * mark row is written. ON CONFLICT re-marks idempotently and clears any
+   * previous lift (a re-merge of the same source refreshes the mark).
+   */
+  async retireRooSyncDashboardKeyChecked(
+    sourceKey: string,
+    targetKey: string,
+    retiredBy: string
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return this.withRetryResult('retireRooSyncDashboardKey', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      await this.pool.query(
+        `INSERT INTO roosync_dashboard_retirements (source_key, target_key, retired_by)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (source_key) DO UPDATE SET
+           target_key = EXCLUDED.target_key,
+           retired_by = EXCLUDED.retired_by,
+           retired_at = NOW(),
+           lifted_at = NULL`,
+        [sourceKey, targetKey, retiredBy]
+      );
+    });
+  }
+
+  /** Lift an active mark (idempotent — COALESCE keeps the first lift timestamp). */
+  async unretireRooSyncDashboardKeyChecked(key: string): Promise<UnifiedStoreWriteOutcome> {
+    return this.withRetryResult('unretireRooSyncDashboardKey', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      await this.pool.query(
+        `UPDATE roosync_dashboard_retirements
+         SET lifted_at = COALESCE(lifted_at, NOW())
+         WHERE source_key = $1 AND lifted_at IS NULL`,
+        [key]
+      );
+    });
+  }
+
   /**
    * Targeted archival of explicit journal rows (#3151-D gate — the reconcile
    * archival pass). Single atomic UPDATE, no transaction needed. The

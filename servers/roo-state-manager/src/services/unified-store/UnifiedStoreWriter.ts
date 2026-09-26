@@ -146,6 +146,19 @@ export interface IUnifiedStoreWriter {
   deleteRooSyncDashboard(key: string): Promise<void>;
   /** RooSync dashboards — same delete, outcome returned instead of swallowed (rework #1134). */
   deleteRooSyncDashboardChecked(key: string): Promise<UnifiedStoreWriteOutcome>;
+  /**
+   * #3782 — retire a source key at the journal level after a merge: a MARK in
+   * `roosync_dashboard_retirements`, never a DELETE (the dashboard/journal rows
+   * stay — gel des purges). Re-marking a lifted key refreshes it and lifts the
+   * lift. Outcome returned (the merge gates its source disposition on it).
+   */
+  retireRooSyncDashboardKeyChecked(
+    sourceKey: string,
+    targetKey: string,
+    retiredBy: string
+  ): Promise<UnifiedStoreWriteOutcome>;
+  /** #3782 — lift an active mark: the key becomes readable again with its original content. */
+  unretireRooSyncDashboardKeyChecked(key: string): Promise<UnifiedStoreWriteOutcome>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
@@ -199,6 +212,16 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async archiveRooSyncDashboardMessages(_key: string, _messageIds: string[]): Promise<number> { return 0; }
   async deleteRooSyncDashboard(_key: string): Promise<void> {}
   async deleteRooSyncDashboardChecked(_key: string): Promise<UnifiedStoreWriteOutcome> {
+    return { ok: false, reason: 'disabled' };
+  }
+  async retireRooSyncDashboardKeyChecked(
+    _sourceKey: string,
+    _targetKey: string,
+    _retiredBy: string
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return { ok: false, reason: 'disabled' };
+  }
+  async unretireRooSyncDashboardKeyChecked(_key: string): Promise<UnifiedStoreWriteOutcome> {
     return { ok: false, reason: 'disabled' };
   }
   async ping(): Promise<boolean> { return false; }

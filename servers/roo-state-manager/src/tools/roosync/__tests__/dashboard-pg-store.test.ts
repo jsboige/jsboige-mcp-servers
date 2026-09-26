@@ -40,6 +40,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   probeDashboardJournalForHydration: mockProbeHydration,
   dualWriteDashboardSync: mockDualWriteDashboardSync,
   dualWriteDashboardDelete: mockDualWriteDashboardDelete,
+  getDashboardRetirement: vi.fn().mockResolvedValue(null),
+  listRetiredDashboardKeys: vi.fn().mockResolvedValue(new Set<string>()),
+  retireDashboardKeyChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
 }));
 
 // #858: Mock OpenAI chat client — LLM condensation is out of scope here.
