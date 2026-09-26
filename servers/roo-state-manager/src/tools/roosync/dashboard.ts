@@ -37,6 +37,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import * as os from 'os';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
@@ -65,6 +66,8 @@ import {
   getDashboardRetirement,
   listRetiredDashboardKeys,
   retireDashboardKeyChecked,
+  acquireDashboardSharedLock,
+  releaseDashboardSharedLock,
 } from '../../services/unified-store/roosync-dashboard-store.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
@@ -197,24 +200,12 @@ const CONDENSE_LLM_TIMEOUT_MS = Number(process.env.CONDENSE_LLM_TIMEOUT_MS) || 7
 // the merge backstop), so we err on the generous side. Env-overridable.
 const CONDENSE_LOCK_TTL_MS = Number(process.env.CONDENSE_LOCK_TTL_MS) || (CONDENSE_LLM_TIMEOUT_MS + 180000); // ~15 min
 
-// #2818 follow-up (GDrive): `wx` exclusive-create is atomic on a local FS, but
-// this lock lives on DriveFS — a caching sync layer, not a POSIX-coherent shared
-// filesystem. Two machines can each succeed against their own mirror. Settle
-// delay before confirming sole ownership; the mirrors converge to ONE payload,
-// and exactly its owner proceeds. Read at CALL time (not module load) so the
-// fleet can tune it without an MCP restart, and tests can zero it.
-const condenseLockConfirmDelayMs = (): number => {
-  const raw = process.env.CONDENSE_LOCK_CONFIRM_DELAY_MS;
-  if (raw === undefined || raw === '') return 1500;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : 1500;
-};
-
-// #2818 follow-up: `acquiredAt` is stamped by the HOLDER's clock and compared
-// against OURS. A holder whose clock lags inflates the computed age and gets its
-// live lock stolen mid-condense. Tolerance added to the TTL before declaring a
-// lock stale — err toward respecting a lock, since a false steal costs a
-// redundant multi-minute LLM pass.
+// #2818: `acquiredAt` is stamped by the HOLDER's clock and compared against
+// OURS, so a lagging clock inflates the computed age and a live lock gets
+// stolen mid-condense. On the PG layer the TTL steal runs on the single PG
+// clock (no skew possible) — this tolerance only matters for the machine-local
+// fallback layer, where it is belt-and-suspenders. Err toward respecting a
+// lock: a false steal costs a redundant multi-minute LLM pass.
 const condenseLockClockSkewMs = (): number => {
   const raw = process.env.CONDENSE_LOCK_CLOCK_SKEW_MS;
   if (raw === undefined || raw === '') return 120000;
@@ -829,23 +820,28 @@ function getArchiveDir(): string {
 // Without a shared lock, N agents that all hit the 92% threshold each run the
 // full multi-minute LLM condense concurrently; N−1 results are then discarded by
 // the applyCondensedWithMerge/#2328 `lastCondensedAt` guard — AFTER the tokens
-// and wall-clock are already spent. This lock is the "file-based lock with stale
-// detection" the perKeyLocks comment (above) said was "tracked separately".
+// and wall-clock are already spent.
 //
-// Contract:
-//   - First appender to reach condense wins the lock and condenses.
+// #3782 locks-off-Drive — the lock used to be a file in dashboards/ on the
+// GDrive store, which Drive RE-PARENTS to the drive root under contention
+// (58 orphans measured, po-2027 26/09): the lock becomes invisible to peers
+// and litters the store. The lock is now layered:
+//
+//   - Layer 1 (PG half present): consultative row in roosync_dashboard_locks
+//     (migration 009) — atomic INSERT, TTL steal on the single PG clock, all
+//     fleet machines serialize on it. Errors/timeouts degrade to layer 2.
+//   - Layer 2 (fallback): machine-local tmpdir file lock (wx create, TTL
+//     steal, garbage steal — same semantics as the old GDrive file lock).
+//     Serializes same-machine processes only; cross-machine correctness rests
+//     on the #2328 merge guard, exactly as the old best-effort path did.
+//
+// Contract (unchanged):
+//   - First appender to reach condense wins and condenses.
 //   - Losers SKIP the condense entirely. Their message is already persisted
-//     (append-first, before this point), and the winner's condensation re-reads
-//     disk and stitches it back in via applyCondensedWithMerge (#2328). So a skip
-//     is not a loss — it just declines to run a redundant LLM pass.
-//   - A crashed holder (never released) is recovered after CONDENSE_LOCK_TTL_MS.
-//
-// Guarantees: `fs.open(path, 'wx')` (O_CREAT|O_EXCL) is atomic on a single
-// machine → fully solves the common multi-session/multi-cron-worker case. Across
-// machines it is best-effort (GDrive replication lag can briefly hide a peer's
-// lock); there, the #2328 merge guard remains the correctness backstop. Strict
-// improvement, zero regression: worst case is the pre-existing behavior (a
-// redundant condense that #2328 discards).
+//     (append-first), and the winner's condensation re-reads disk and stitches
+//     it back in via applyCondensedWithMerge (#2328). A skip is not a loss.
+//   - A crashed holder (never released) is recovered after the TTL (PG row
+//     steal, or tmpdir file steal on the fallback layer).
 
 // Exported (with tryAcquire/release below) for unit tests — the cross-process
 // contract is pure filesystem and is verified directly rather than by driving
@@ -858,11 +854,42 @@ export interface CondenseLockInfo {
 }
 
 /**
+ * #3782 locks-off-Drive — directory of the machine-local fallback lock files.
+ * NEVER on the GDrive store: under contention Drive re-parents lock files to
+ * the drive root (58 orphans measured, po-2027 26/09), making them invisible
+ * to peers. Env-overridable (`ROOSYNC_LOCK_DIR`) for tests.
+ */
+export function getLockDir(): string {
+  return process.env.ROOSYNC_LOCK_DIR || path.join(os.tmpdir(), 'roosync-locks');
+}
+
+/**
+ * Fallback lock filename for a dashboard key: sha256(key), NOT the raw key —
+ * dashboard keys are attacker-shaped file names on a shared store (#1134
+ * traversal family), and the tmpdir is world-writable by definition. The
+ * `.condense.lock` / `.append.lock` suffix survives the hash so extension-based
+ * scans keep working.
+ */
+function hashedLockName(key: string, suffix: string): string {
+  return `${createHash('sha256').update(key, 'utf8').digest('hex')}${suffix}`;
+}
+
+/** PG lock-row key for the condense lock of a dashboard key. */
+function condenseLockRowKey(key: string): string {
+  return `condense:${key}`;
+}
+
+/** PG lock-row key for the append lock of a dashboard key. */
+function appendLockRowKey(key: string): string {
+  return `append:${key}`;
+}
+
+/**
  * Lock file path for a dashboard key. Uses `.condense.lock` (not `.md`) so
  * handleList / archive scans — which match `*.md` — never pick it up.
  */
 export function getCondenseLockPath(key: string): string {
-  return path.join(getDashboardsDir(), `${key}.condense.lock`);
+  return path.join(getLockDir(), hashedLockName(key, '.condense.lock'));
 }
 
 /**
@@ -887,59 +914,14 @@ function isCondenseLockStale(existing: CondenseLockInfo): boolean {
 }
 
 /**
- * #2818 follow-up: confirm we are the SOLE holder after writing our payload.
- *
- * On GDrive two writers can both believe they created the file. After a settle
- * delay the mirrors converge to one payload; its owner proceeds and the other
- * backs off. This cannot wedge: the surviving owner holds a real lock and
- * releases it in its `finally`. Before the delay elapses the behaviour simply
- * degrades to the pre-existing one (both condense) — never worse.
- *
- * Fail-OPEN on any read/parse failure, matching the rest of this lock layer.
- */
-async function confirmSoleCondenseHolder(
-  key: string,
-  lockPath: string,
-  holder: CondenseLockInfo
-): Promise<boolean> {
-  const delayMs = condenseLockConfirmDelayMs();
-  if (delayMs > 0) {
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-  }
-  let onDisk: CondenseLockInfo;
-  try {
-    onDisk = JSON.parse(await fs.readFile(lockPath, 'utf8')) as CondenseLockInfo;
-  } catch {
-    // Vanished or unreadable between write and confirm — fail open.
-    return true;
-  }
-  if (sameLockHolder(onDisk, holder)) {
-    return true;
-  }
-  if (isCondenseLockStale(onDisk)) {
-    // The payload that survived belongs to a crashed holder — reclaim it.
-    logger.warn('Condense lock: survivor payload is stale — reclaiming (#2818 GDrive confirm)', {
-      key, survivor: `${onDisk.machineId}:${onDisk.workspace}#${onDisk.pid}`
-    });
-    try {
-      await fs.writeFile(lockPath, JSON.stringify(holder), { encoding: 'utf8', flag: 'w' });
-    } catch { /* best-effort */ }
-    return true;
-  }
-  // Another holder's payload won the mirror merge: it condenses, we skip. Our
-  // message is already persisted (append-first) and #2328 stitches it back in.
-  logger.info('Condense lock: lost the GDrive merge to a concurrent holder — skipping (#2818 GDrive confirm)', {
-    key,
-    wonBy: `${onDisk.machineId}:${onDisk.workspace}#${onDisk.pid}`,
-    ours: `${holder.machineId}:${holder.workspace}#${holder.pid}`
-  });
-  return false;
-}
-
-/**
  * Try to acquire the cross-process condensation lock for `key`.
  * Returns true if this caller now holds the lock (and MUST release it), false if
  * a fresh holder already owns it (caller should skip condensing).
+ *
+ * Layered (#3782 locks-off-Drive): PG consultative row first (fleet-wide when
+ * the PG half is present — atomic INSERT, TTL steal on the single PG clock);
+ * 'unavailable' (no PG / error / timeout) degrades to the machine-local tmpdir
+ * file lock, which serializes same-machine processes only.
  *
  * Fail-OPEN: on any unexpected filesystem error we return true (proceed to
  * condense). A bug in the locking layer must never be able to wedge condensation
@@ -947,18 +929,30 @@ async function confirmSoleCondenseHolder(
  * safe fallback.
  */
 export async function tryAcquireCondenseLock(key: string, holder: CondenseLockInfo): Promise<boolean> {
-  const lockPath = getCondenseLockPath(key);
   const payload = JSON.stringify(holder);
+  const pg = await acquireDashboardSharedLock(
+    condenseLockRowKey(key),
+    payload,
+    CONDENSE_LOCK_TTL_MS + condenseLockClockSkewMs()
+  );
+  if (pg === 'acquired') {
+    return true;
+  }
+  if (pg === 'held') {
+    logger.info('Condense lock held by fresh holder (PG row) — skipping redundant condense (#3782)', { key });
+    return false;
+  }
+  // 'unavailable' → machine-local fallback layer.
+  const lockPath = getCondenseLockPath(key);
   try {
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
     // Atomic exclusive-create: fails with EEXIST if a lock file already exists.
     await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'wx' });
-    // Observed twice in production (2026-08-30 19:22Z, 2026-09-01 05:05Z): both
-    // holders condensed and #2328 discarded one multi-minute result. Confirm.
-    return await confirmSoleCondenseHolder(key, lockPath, holder);
+    return true;
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code !== 'EEXIST') {
-      // Unexpected FS error (permissions, GDrive hiccup) — fail open.
+      // Unexpected FS error (permissions, tmpdir hiccup) — fail open.
       logger.debug('Condense lock acquire errored, failing open (will condense)', {
         key, error: err instanceof Error ? err.message : String(err)
       });
@@ -986,7 +980,7 @@ export async function tryAcquireCondenseLock(key: string, holder: CondenseLockIn
         ttlSeconds: Math.round(CONDENSE_LOCK_TTL_MS / 1000)
       });
       await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'w' });
-      return await confirmSoleCondenseHolder(key, lockPath, holder);
+      return true;
     } catch (inner: unknown) {
       // Could not read/parse the existing lock (corrupt or vanished mid-check).
       // Reclaim it so a garbage lock can't wedge condensation forever.
@@ -1005,9 +999,11 @@ export async function tryAcquireCondenseLock(key: string, holder: CondenseLockIn
  * Release the condensation lock for `key`, but ONLY if we still own it (same
  * machineId + pid + acquiredAt). This avoids deleting a lock that a stealer legitimately
  * took over after our TTL expired. Best-effort: a failed unlink is harmless
- * (the next holder's TTL check recovers it).
+ * (the next holder's TTL check recovers it). Releases BOTH layers — whichever
+ * one this acquisition actually used, the other is a no-op.
  */
 export async function releaseCondenseLock(key: string, holder: CondenseLockInfo): Promise<void> {
+  await releaseDashboardSharedLock(condenseLockRowKey(key), JSON.stringify(holder));
   const lockPath = getCondenseLockPath(key);
   try {
     const raw = await fs.readFile(lockPath, 'utf8');
@@ -1033,15 +1029,18 @@ export async function releaseCondenseLock(key: string, holder: CondenseLockInfo)
 
 /**
  * Lock file path for a dashboard key's append window. `.append.lock` (not
- * `.md`) so handleList / archive scans never pick it up.
+ * `.md`) so handleList / archive scans never pick it up. Same #3782 hashed
+ * tmpdir scheme as the condense lock.
  */
 export function getAppendLockPath(key: string): string {
-  return path.join(getDashboardsDir(), `${key}.append.lock`);
+  return path.join(getLockDir(), hashedLockName(key, '.append.lock'));
 }
 
 /**
  * Try to acquire the cross-process append lock for `key`, retrying while a
- * fresh holder owns it.
+ * fresh holder owns it. Layered (#3782 locks-off-Drive): PG consultative row
+ * first (fleet-wide), retried within the same acquire budget; 'unavailable'
+ * (no PG / error / timeout) degrades to the machine-local tmpdir file lock.
  *
  * @returns true if this caller now holds the lock (and MUST release it in a
  *   `finally`); false if the acquire budget was exhausted — the caller should
@@ -1050,9 +1049,33 @@ export function getAppendLockPath(key: string): string {
  *   behavior is the fallback.
  */
 export async function acquireAppendLock(key: string, holder: CondenseLockInfo): Promise<boolean> {
-  const lockPath = getAppendLockPath(key);
   const payload = JSON.stringify(holder);
   const deadline = Date.now() + appendLockAcquireBudgetMs();
+  // Layer 1 — PG row. If PG is ANSWERING but the lock stays held through the
+  // whole budget, fail open WITHOUT touching the file layer: a machine-local
+  // "acquisition" would give the caller the illusion of serialization while
+  // the real (PG) holder is live.
+  for (;;) {
+    const pg = await acquireDashboardSharedLock(appendLockRowKey(key), payload, appendLockTtlMs());
+    if (pg === 'acquired') {
+      return true;
+    }
+    if (pg === 'unavailable') {
+      break;
+    }
+    if (Date.now() >= deadline) {
+      logger.warn('Append lock budget exhausted (PG held) — proceeding unserialized (fail-open) (#3205 write)', {
+        key, budgetMs: appendLockAcquireBudgetMs()
+      });
+      return false;
+    }
+    await new Promise(resolve => setTimeout(resolve, appendLockRetryMs()));
+  }
+  // Layer 2 — machine-local tmpdir file lock (PG unreachable).
+  const lockPath = getAppendLockPath(key);
+  try {
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  } catch { /* best-effort: the wx below fails open on a bad dir */ }
   for (;;) {
     try {
       await fs.writeFile(lockPath, payload, { encoding: 'utf8', flag: 'wx' });
@@ -1111,8 +1134,11 @@ export async function acquireAppendLock(key: string, holder: CondenseLockInfo): 
 /**
  * Release the append lock for `key`, only if still owned (same machineId +
  * pid + acquiredAt). A failed unlink is harmless — the TTL steal recovers.
+ * Releases BOTH layers (#3782) — whichever one this acquisition actually used,
+ * the other is a no-op.
  */
 export async function releaseAppendLock(key: string, holder: CondenseLockInfo): Promise<void> {
+  await releaseDashboardSharedLock(appendLockRowKey(key), JSON.stringify(holder));
   const lockPath = getAppendLockPath(key);
   try {
     const raw = await fs.readFile(lockPath, 'utf8');
@@ -4339,10 +4365,11 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
       case 'merge': {
         // #3537 §6.2 — les gardes PURES d'abord (validation de sourceKey,
         // store joignable, asymétrie PG) : elles doivent trancher AVANT toute
-        // acquisition de verrou — getAppendLock ferait un path.join sur la
-        // clé brute, et un traversal y écrirait un fichier de verrou HORS du
-        // store ; un répertoire dashboards absent y masquerait le refus
-        // métier derrière un refus de verrou.
+        // acquisition de verrou. (Le verrou append est désormais hashé en
+        // tmpdir #3782 — le traversal fichier n'y a plus de prise — mais
+        // l'ordre reste : un refus métier ne doit jamais se masquer derrière
+        // un refus de verrou, et le fail-closed du merge suppose un store
+        // sain vérifié d'abord.)
         const sourceKey = String((args as Record<string, unknown>).sourceKey ?? '').trim();
         const guardRefusal = mergeGuardRefusal(sourceKey, key, args);
         if (guardRefusal) return guardRefusal;

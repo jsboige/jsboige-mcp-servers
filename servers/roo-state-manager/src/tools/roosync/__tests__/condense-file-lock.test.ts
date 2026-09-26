@@ -1,5 +1,5 @@
 /**
- * #2818: Tests for the cross-process condensation file-lock.
+ * #2818 / #3782: Tests for the cross-process condensation lock (layered).
  *
  * The lock is what makes N concurrent agents on a saturated dashboard NOT each
  * run the multi-minute LLM condense: the first appender wins the lock and
@@ -7,15 +7,33 @@
  * later stitched back in by applyCondensedWithMerge / #2328). A crashed holder is
  * recovered after CONDENSE_LOCK_TTL_MS.
  *
- * These tests exercise the lock primitives directly (pure filesystem) rather than
- * driving the full append+LLM path — that is where the cross-process contract
+ * #3782 locks-off-Drive: layer 1 is a PG consultative row (mocked here with
+ * spies defaulting to 'unavailable' so the FILE layer tests below exercise the
+ * machine-local fallback exactly as a host without PG sees it); layer 2 is the
+ * tmpdir file lock asserted directly — that is where the cross-process contract
  * actually lives, and it is deterministic to assert here.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile, access, mkdir } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+
+// La couche PG est espionnée : défaut 'unavailable' (= hôte sans PG / PG
+// injoignable) pour les tests fichier ; pilotable pour les tests de couche PG.
+const { pgAcquireSpy, pgReleaseSpy } = vi.hoisted(() => ({
+  pgAcquireSpy: vi.fn(),
+  pgReleaseSpy: vi.fn(),
+}));
+vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    acquireDashboardSharedLock: pgAcquireSpy,
+    releaseDashboardSharedLock: pgReleaseSpy,
+  };
+});
+
 import {
   tryAcquireCondenseLock,
   releaseCondenseLock,
@@ -45,23 +63,24 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-describe('condense file-lock #2818', () => {
+describe('condense lock — couche fichier (fallback machine-local #3782)', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(testTmpBase);
-    process.env.ROOSYNC_SHARED_PATH = tmpDir;
-    // The GDrive settle delay is not what these assert; zero it so the confirm
-    // re-read still runs but the suite stays fast.
-    process.env.CONDENSE_LOCK_CONFIRM_DELAY_MS = '0';
-    // The lock lives under <shared>/dashboards/. That dir exists in production
-    // (the dashboard file is written before condense); create it here too.
-    await mkdir(path.join(tmpDir, 'dashboards'), { recursive: true });
+    // #3782 : le verrou fichier vit dans un tmpdir dédié (ROOSYNC_LOCK_DIR),
+    // PLUS dans dashboards/ du store GDrive.
+    process.env.ROOSYNC_LOCK_DIR = path.join(tmpDir, 'locks');
+    await mkdir(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
+    pgAcquireSpy.mockReset();
+    pgAcquireSpy.mockResolvedValue('unavailable');
+    pgReleaseSpy.mockReset();
+    pgReleaseSpy.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true });
-    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_LOCK_DIR;
   });
 
   it('acquires on a free key and creates the lock file', async () => {
@@ -182,43 +201,12 @@ describe('condense file-lock #2818', () => {
     expect(lockPath.endsWith('.md')).toBe(false);
   });
 
-  // === #2818 follow-up: GDrive sole-ownership confirmation ===
-
-  it('backs off when another holder payload survived the mirror merge', async () => {
-    // Simulates DriveFS letting both writers create the file: our `wx` succeeds,
-    // but by confirm time the converged payload belongs to machine-B.
-    process.env.CONDENSE_LOCK_CONFIRM_DELAY_MS = '250';
-    const lockPath = getCondenseLockPath(KEY);
-    const mine = holder({ machineId: 'machine-A', pid: 1111 });
-    const rival = holder({ machineId: 'machine-B', pid: 2222 });
-
-    const acquiring = tryAcquireCondenseLock(KEY, mine);
-    await new Promise(r => setTimeout(r, 60));
-    await writeFile(lockPath, JSON.stringify(rival), 'utf8');
-
-    expect(await acquiring).toBe(false);
-    // We must not have clobbered the winner's lock: it releases in its finally.
-    const still = JSON.parse(await readFile(lockPath, 'utf8')) as CondenseLockInfo;
-    expect(still.pid).toBe(2222);
-  });
-
-  it('reclaims when the surviving payload belongs to a crashed holder', async () => {
-    process.env.CONDENSE_LOCK_CONFIRM_DELAY_MS = '250';
-    const lockPath = getCondenseLockPath(KEY);
-    const mine = holder({ machineId: 'machine-A', pid: 1111 });
-    const crashed = holder({
-      machineId: 'machine-dead',
-      pid: 9999,
-      acquiredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-    });
-
-    const acquiring = tryAcquireCondenseLock(KEY, mine);
-    await new Promise(r => setTimeout(r, 60));
-    await writeFile(lockPath, JSON.stringify(crashed), 'utf8');
-
-    expect(await acquiring).toBe(true);
-    const now = JSON.parse(await readFile(lockPath, 'utf8')) as CondenseLockInfo;
-    expect(now.pid).toBe(1111);
+  it('hashes the key into the filename — no raw key, no traversal surface (#3782)', () => {
+    const p = getCondenseLockPath('../../evil/key with spaces');
+    expect(p).not.toContain('evil');
+    expect(path.basename(p)).toMatch(/^[0-9a-f]{64}\.condense\.lock$/);
+    // Deux clés distinctes → deux fichiers distincts.
+    expect(getCondenseLockPath('a')).not.toBe(getCondenseLockPath('b'));
   });
 
   it('does NOT steal a lock past the TTL but inside the clock-skew tolerance', async () => {
@@ -247,5 +235,68 @@ describe('condense file-lock #2818', () => {
     expect(await tryAcquireCondenseLock(KEY, holder({ machineId: 'machine-B', pid: 2222 }))).toBe(true);
     const now = JSON.parse(await readFile(lockPath, 'utf8')) as CondenseLockInfo;
     expect(now.pid).toBe(2222);
+  });
+});
+
+describe('condense lock — couche PG (#3782 locks-off-Drive)', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(testTmpBase);
+    process.env.ROOSYNC_LOCK_DIR = path.join(tmpDir, 'locks');
+    await mkdir(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
+    pgAcquireSpy.mockReset();
+    pgReleaseSpy.mockReset();
+    pgReleaseSpy.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    delete process.env.ROOSYNC_LOCK_DIR;
+  });
+
+  it("PG 'acquired' → true, AUCUN fichier verrou créé (la couche fichier dort)", async () => {
+    pgAcquireSpy.mockResolvedValue('acquired');
+    const h = holder({ pid: 4242 });
+
+    expect(await tryAcquireCondenseLock(KEY, h)).toBe(true);
+
+    expect(pgAcquireSpy).toHaveBeenCalledTimes(1);
+    expect(pgAcquireSpy).toHaveBeenCalledWith(
+      `condense:${KEY}`,
+      JSON.stringify(h),
+      // TTL passé au wrapper = TTL condense + tolérance d'horloge.
+      expect.any(Number)
+    );
+    // La couche fichier n'a JAMAIS couru : aucun verrou tmpdir.
+    expect(await exists(getCondenseLockPath(KEY))).toBe(false);
+  });
+
+  it("PG 'held' → false (skip), AUCUN fichier verrou créé", async () => {
+    pgAcquireSpy.mockResolvedValue('held');
+    const h = holder();
+
+    expect(await tryAcquireCondenseLock(KEY, h)).toBe(false);
+    expect(await exists(getCondenseLockPath(KEY))).toBe(false);
+  });
+
+  it("release relâche la couche PG (rowKey préfixé condense:, holder identique)", async () => {
+    pgAcquireSpy.mockResolvedValue('acquired');
+    const h = holder({ pid: 5151 });
+    expect(await tryAcquireCondenseLock(KEY, h)).toBe(true);
+
+    await releaseCondenseLock(KEY, h);
+    expect(pgReleaseSpy).toHaveBeenCalledWith(`condense:${KEY}`, JSON.stringify(h));
+  });
+
+  it("PG 'unavailable' → dégradation SILENCIEUSE vers la couche fichier", async () => {
+    pgAcquireSpy.mockResolvedValue('unavailable');
+    const h = holder({ pid: 6161 });
+
+    expect(await tryAcquireCondenseLock(KEY, h)).toBe(true);
+    // C'est bien le fallback fichier qui détient le verrou.
+    const raw = JSON.parse(await readFile(getCondenseLockPath(KEY), 'utf8')) as CondenseLockInfo;
+    expect(raw.pid).toBe(6161);
+    expect(pgAcquireSpy).toHaveBeenCalledTimes(1);
   });
 });

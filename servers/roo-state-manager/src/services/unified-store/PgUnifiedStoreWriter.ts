@@ -29,7 +29,7 @@ import type {
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
 } from './types.js';
-import type { IUnifiedStoreWriter, UnifiedStoreWriterConfig, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
+import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus, UnifiedStoreWriterConfig, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 
 // ─── Circuit Breaker ───────────────────────────────────────────────
 
@@ -701,6 +701,46 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
         [key]
       );
     });
+  }
+
+  /**
+   * #3782 locks-off-Drive — single-shot acquire (no retry loop: latency matters
+   * on the append path, and the store wrapper turns any error into
+   * 'unavailable' so the caller falls back to its machine-local lock).
+   * Steal compares against the single PG clock — no cross-machine skew.
+   */
+  async tryAcquireRooSyncDashboardLock(
+    lockKey: string,
+    holderJson: string,
+    ttlMs: number
+  ): Promise<RooSyncLockAcquireStatus> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+    const insert = await this.pool.query(
+      `INSERT INTO roosync_dashboard_locks (lock_key, holder, acquired_at)
+       VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (lock_key) DO NOTHING`,
+      [lockKey, holderJson]
+    );
+    if (insert.rowCount && insert.rowCount > 0) return 'acquired';
+    const steal = await this.pool.query(
+      `UPDATE roosync_dashboard_locks
+       SET holder = $2::jsonb, acquired_at = NOW()
+       WHERE lock_key = $1
+         AND acquired_at < NOW() - ($3::double precision * interval '1 millisecond')`,
+      [lockKey, holderJson, ttlMs]
+    );
+    return steal.rowCount && steal.rowCount > 0 ? 'acquired' : 'held';
+  }
+
+  /** #3782 — release only if still owned by this exact holder payload. */
+  async releaseRooSyncDashboardLock(lockKey: string, holderJson: string): Promise<void> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+    await this.pool.query(
+      `DELETE FROM roosync_dashboard_locks WHERE lock_key = $1 AND holder = $2::jsonb`,
+      [lockKey, holderJson]
+    );
   }
 
   /**

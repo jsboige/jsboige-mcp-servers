@@ -159,6 +159,19 @@ export interface IUnifiedStoreWriter {
   ): Promise<UnifiedStoreWriteOutcome>;
   /** #3782 — lift an active mark: the key becomes readable again with its original content. */
   unretireRooSyncDashboardKeyChecked(key: string): Promise<UnifiedStoreWriteOutcome>;
+  /**
+   * #3782 locks-off-Drive — atomically acquire the consultative lock row for
+   * `lockKey`: INSERT wins, conflict + age >= ttlMs steals (single PG clock),
+   * fresh conflict = 'held'. 'unavailable' = no PG half (Null) so the caller
+   * falls back to its machine-local lock.
+   */
+  tryAcquireRooSyncDashboardLock(
+    lockKey: string,
+    holderJson: string,
+    ttlMs: number
+  ): Promise<RooSyncLockAcquireStatus>;
+  /** #3782 — release the lock row, only if still owned by this exact holder. */
+  releaseRooSyncDashboardLock(lockKey: string, holderJson: string): Promise<void>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
@@ -180,6 +193,16 @@ export type UnifiedStoreWriteOutcome =
   | { ok: false; reason: 'breaker-skip'; detail: string }
   | { ok: false; reason: 'deterministic'; detail: string }
   | { ok: false; reason: 'exhausted'; detail: string };
+
+/**
+ * #3782 locks-off-Drive — outcome of a consultative lock acquisition.
+ *
+ * - `acquired` — we hold the row (fresh INSERT or TTL steal).
+ * - `held` — a fresh holder owns it; caller must skip/wait.
+ * - `unavailable` — no PG half on this host, or the table/store is not
+ *   reachable: the caller falls back to its machine-local lock layer.
+ */
+export type RooSyncLockAcquireStatus = 'acquired' | 'held' | 'unavailable';
 
 /**
  * Null object — used when the env var UNIFIED_STORE_DUAL_WRITE is unset/false.
@@ -224,5 +247,15 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async unretireRooSyncDashboardKeyChecked(_key: string): Promise<UnifiedStoreWriteOutcome> {
     return { ok: false, reason: 'disabled' };
   }
+
+  async tryAcquireRooSyncDashboardLock(
+    _lockKey: string,
+    _holderJson: string,
+    _ttlMs: number
+  ): Promise<RooSyncLockAcquireStatus> {
+    return 'unavailable';
+  }
+
+  async releaseRooSyncDashboardLock(_lockKey: string, _holderJson: string): Promise<void> {}
   async ping(): Promise<boolean> { return false; }
 }
