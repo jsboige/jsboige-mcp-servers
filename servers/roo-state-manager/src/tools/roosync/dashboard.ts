@@ -180,6 +180,47 @@ const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
 const FB_MAX_ATTEMPTS = 3;
 const FB_INITIAL_BACKOFF_MS = 2000;
 
+// #2719 borne (ai-01 arbitration 27/09) — timeout dimensionné au prompt + deadline de passe.
+// The 14-day fallbackError census (38 archives, c.5852733240) put `Request timed out.`
+// first at 34%: the fix targets the right cause. Two bounds, both derived from the
+// MEASURED append client timeout of 180s (docs/harness/reference/intercom-append-timeout.md,
+// po-2024 c.327; open-webui saw 300s — 180 is the binding floor):
+//   1. Per-attempt timeout PROPORTIONAL to the prompt: floor 30s + 0.9s/KB, capped by
+//      FALLBACK_TIMEOUT_MS (unchanged 120s default). Small prompts stop waiting on a
+//      slow/hung endpoint early; only near-cap dashboards (~50KB) reach the ceiling.
+//   2. PASS deadline (default 165s = 180s client - ~2s write - margin): the condensation
+//      two LLM paths run in PARALLEL (#1497) and the model CHAIN advances on any failure
+//      (#2719 22/09), so no per-attempt value alone can bound the pass — N models × T
+//      would exceed the client. The deadline is what makes "server timeout < client
+//      timeout" true for the whole append. Attempts past it are refused without traffic.
+const FB_DEADLINE_SKIP_FLOOR_MS = 5000; // don't START an attempt with less than this left
+
+/**
+ * #2719 borne: per-attempt cloud-fallback timeout, proportional to the prompt size
+ * and clamped to [floor, FALLBACK_TIMEOUT_MS]; further clipped to the remaining pass
+ * deadline when one is given. Returns null when the deadline is exhausted — the caller
+ * must refuse the attempt (no traffic) rather than send it into a certain expiry.
+ * Env is read per call (not at module load) so the .env hot-reload applies without
+ * a host restart, mirroring the lazy fallback-client singleton.
+ */
+export function computeFallbackAttemptTimeoutMs(
+  promptBytes: number,
+  passDeadlineMs?: number,
+): number | null {
+  const floorMs = parseInt(process.env.FALLBACK_TIMEOUT_MIN_MS || '30000', 10);
+  const perKbMs = parseInt(process.env.FALLBACK_TIMEOUT_MS_PER_KB || '900', 10);
+  const ceilingMs = parseInt(process.env.FALLBACK_TIMEOUT_MS || '120000', 10);
+  const kb = promptBytes / 1024;
+  let timeoutMs = floorMs + perKbMs * kb;
+  if (timeoutMs > ceilingMs) timeoutMs = ceilingMs;
+  if (passDeadlineMs !== undefined) {
+    const remainingMs = passDeadlineMs - Date.now();
+    if (remainingMs < FB_DEADLINE_SKIP_FLOOR_MS) return null;
+    if (timeoutMs > remainingMs) timeoutMs = remainingMs;
+  }
+  return Math.max(Math.round(timeoutMs), 1000);
+}
+
 // #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
 // generation is already bounded UNDER the ~600s IIS→vLLM gateway by
 // CONDENSE_LLM_MAX_TOKENS, so the only thing the old 1800s/900s ceilings ever
@@ -368,6 +409,7 @@ async function cloudCondenseOnce(
   userPrompt: string,
   opts: { maxTokens: number; temperature: number },
   fbModel: string,
+  attemptTimeoutMs: number | null,
 ): Promise<CloudCondenseOnceResult> {
   const fallbackClient = getFallbackChatOpenAIClient();
   if (!fallbackClient) {
@@ -382,6 +424,14 @@ async function cloudCondenseOnce(
       });
     }
     return null;
+  }
+  if (attemptTimeoutMs === null) {
+    // #2719 borne (ai-01 arbitration 27/09): the condensation PASS deadline is
+    // exhausted — starting this attempt would push the append that pays for it past
+    // the client timeout (180s measured, intercom-append-timeout.md), turning a slow
+    // fallback into an expired append the agent retries blindly. Refuse BEFORE any
+    // traffic; non-retryable by construction (backoff cannot create budget).
+    return { ok: false, retryable: false, error: 'budget-exhausted (condensation pass deadline)', elapsedMs: 0, model: fbModel };
   }
   const fbStart = Date.now();
   try {
@@ -408,6 +458,10 @@ async function cloudCondenseOnce(
             max_tokens: opts.maxTokens,
             temperature: opts.temperature,
           },
+      // #2719 borne: per-request timeout override — prompt-proportional and
+      // deadline-clamped (computeFallbackAttemptTimeoutMs), so the singleton's
+      // constructor default never gates this call.
+      { timeout: attemptTimeoutMs },
     );
     const content = response.choices[0]?.message?.content;
     const elapsedMs = Date.now() - fbStart;
@@ -463,15 +517,26 @@ function getFallbackModelChain(): string[] {
 async function cloudCondenseWithRetry(
   systemPrompt: string,
   userPrompt: string,
-  opts: { maxTokens: number; temperature: number },
+  opts: { maxTokens: number; temperature: number; passDeadlineMs?: number },
 ): Promise<{ content: string; elapsedMs: number; model: string } | { error: string; attempts: number } | null> {
   const modelErrors: string[] = [];
   let attempts = 0;
-  for (const [position, fbModel] of getFallbackModelChain().entries()) {
+  // #2719 borne: computed once — the prompt size is fixed for the whole retry/chain.
+  const promptBytes = Buffer.byteLength(systemPrompt + userPrompt, 'utf8');
+  budgetExhausted: for (const [position, fbModel] of getFallbackModelChain().entries()) {
     const maxAttempts = position === 0 ? FB_MAX_ATTEMPTS : 1;
     let lastError: string | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts, fbModel);
+      // Per-attempt recompute: the deadline shrinks as time passes (retries, backoffs,
+      // previous chain models), so a late attempt gets only what the pass has left.
+      const attemptTimeoutMs = computeFallbackAttemptTimeoutMs(promptBytes, opts.passDeadlineMs);
+      if (attemptTimeoutMs === null) {
+        attempts++;
+        lastError = 'budget-exhausted (condensation pass deadline)';
+        modelErrors.push(`${fbModel}: ${lastError}`);
+        break budgetExhausted; // no model in the chain has budget left — stop, don't traffic
+      }
+      const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts, fbModel, attemptTimeoutMs);
       if (result === null) return null; // unconfigured (empty content is a stamped non-retryable error since the #2719 discriminant fix)
       if (result.ok) return result; // success
       attempts++;
@@ -504,7 +569,7 @@ async function cloudCondenseWithRetry(
 async function tryCloudCondenseFallback(
   systemPrompt: string,
   userPrompt: string,
-  opts: { maxTokens: number; temperature: number },
+  opts: { maxTokens: number; temperature: number; passDeadlineMs?: number },
   stats: LLMCallStats,
   callStart: number,
 ): Promise<LLMCallResult | null> {
@@ -2353,7 +2418,7 @@ export function describeLLMError(
  * @param messages - Messages à résumer
  * @returns Résumé markdown + stats. content = null si échec (3 retries failed).
  */
-async function generateLLMSummary(messages: IntercomMessage[], opts?: { skipPrimary?: boolean }): Promise<LLMCallResult> {
+async function generateLLMSummary(messages: IntercomMessage[], opts?: { skipPrimary?: boolean; passDeadlineMs?: number }): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497). The 1800s ceiling only ever caught a TRUE
   // hang — CONDENSE_LLM_MAX_TOKENS already bounds a runaway under the ~600s gateway.
   // See CONDENSE_LLM_TIMEOUT_MS definition for the full rationale.
@@ -2413,7 +2478,7 @@ FORMAT :
   // cloud tier is an independent provider: try it before resigning to truncation.
   if (opts?.skipPrimary) {
     stats.finalOutcome = 'circuit-open';
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
     return fb ?? circuitOpenFailure(stats, callStart);
   }
 
@@ -2430,7 +2495,7 @@ FORMAT :
     stats.finalOutcome = 'client-init-failed';
     stats.lastError = truncateError(errStr);
     stats.elapsedMs = Date.now() - callStart;
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
     return fb ?? { content: null, stats };
   }
   const modelId = getLLMModelId();
@@ -2475,7 +2540,7 @@ FORMAT :
         stats.elapsedMs = Date.now() - callStart;
         stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
         // #2719: primary exhausted with null content (likely thinking-loop) → cloud fallback
-        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
         if (fbNull) return fbNull;
         return { content: null, stats };
       }
@@ -2517,7 +2582,7 @@ FORMAT :
       stats.elapsedMs = Date.now() - callStart;
       stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
-      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
       if (fbErr) return fbErr;
       return { content: null, stats };
     }
@@ -2541,7 +2606,7 @@ async function generateStatusUpdate(
   allMessages: IntercomMessage[],
   archivedCount: number,
   dashboardKey: string,
-  opts?: { skipPrimary?: boolean }
+  opts?: { skipPrimary?: boolean; passDeadlineMs?: number }
 ): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497) — see generateLLMSummary / CONDENSE_LLM_TIMEOUT_MS.
   const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
@@ -2662,7 +2727,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
   // cloud tier is an independent provider: try it before resigning to truncation.
   if (opts?.skipPrimary) {
     stats.finalOutcome = 'circuit-open';
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
     return fb ?? circuitOpenFailure(stats, callStart);
   }
 
@@ -2678,7 +2743,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     stats.finalOutcome = 'client-init-failed';
     stats.lastError = truncateError(errStr);
     stats.elapsedMs = Date.now() - callStart;
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
     return fb ?? { content: null, stats };
   }
   const modelId = getLLMModelId();
@@ -2718,7 +2783,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         stats.elapsedMs = Date.now() - callStart;
         stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
         // #2719: primary exhausted with null content (likely thinking-loop) → cloud fallback
-        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
         if (fbNull) return fbNull;
         return { content: null, stats };
       }
@@ -2754,7 +2819,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       stats.elapsedMs = Date.now() - callStart;
       stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
-      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 }, stats, callStart);
+      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
       if (fbErr) return fbErr;
       return { content: null, stats };
     }
@@ -2773,7 +2838,8 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
 export async function condenseTextIfTooLarge(
   text: string,
   maxSizeBytes: number,
-  label: string
+  label: string,
+  passDeadlineMs?: number
 ): Promise<string> {
   const sizeBytes = Buffer.byteLength(text, 'utf8');
   if (sizeBytes <= maxSizeBytes) return text;
@@ -2882,7 +2948,7 @@ RÈGLES :
   const fbCloud = await cloudCondenseWithRetry(
     `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.`,
     text,
-    { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3 },
+    { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs },
   );
   if (fbCloud && 'content' in fbCloud) {
     const fbSize = Buffer.byteLength(fbCloud.content, 'utf8');
@@ -3829,9 +3895,14 @@ async function condenseIntercom(
   // races the client timeout. A single failing call still cancels condensation
   // via the existing null-check below.
   const tParallel = Date.now();
+  // #2719 borne: one deadline for the WHOLE pass (both parallel LLM paths + the model
+  // chain inside each) — default 165s, under the measured 180s append client timeout
+  // (intercom-append-timeout.md). WRITE-FIRST already persisted the message before
+  // this; the deadline keeps the append's answer from expiring client-side.
+  const passDeadlineMs = condensationStart + parseInt(process.env.CONDENSE_PASS_DEADLINE_MS || '165000', 10);
   const [statusCall, summaryCall] = await Promise.all([
-    generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key, { skipPrimary: primaryCircuitOpen }),
-    generateLLMSummary(toArchive, { skipPrimary: primaryCircuitOpen })
+    generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key, { skipPrimary: primaryCircuitOpen, passDeadlineMs }),
+    generateLLMSummary(toArchive, { skipPrimary: primaryCircuitOpen, passDeadlineMs })
   ]);
   if (diagnostic) {
     diagnostic.llm = { summary: summaryCall.stats, status: statusCall.stats };
@@ -3870,8 +3941,8 @@ async function condenseIntercom(
   if (!primaryCircuitOpen) condenseCBRecordSuccess();
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
-  newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status');
-  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary');
+  newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status', passDeadlineMs);
+  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary', passDeadlineMs);
 
   // #3771: Post-LLM guardrail — the LLM has no GitHub API access and has been measured
   // fabricating terminal states (MERGÉ/CLOSED/« Merge validé ») for PR/issue numbers
