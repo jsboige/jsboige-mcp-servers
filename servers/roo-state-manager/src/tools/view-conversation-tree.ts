@@ -267,11 +267,23 @@ async function handleViewConversationTreeExecutionAsync(
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
+        // #2609 V4 — squelette essentiel : un message au contenu vide ne porte
+        // aucun signal. Rendre un marqueur `[role]:` vide noie le squelette
+        // (milliers de marqueurs vides mesurés en baseline Epic #2609) et
+        // consomme le budget de sortie. L'omission est comptée puis annoncée
+        // en une ligne après la séquence.
+        let emptyMessagesSkipped = 0;
         (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
                 // #1271: Guard against null/undefined content
                 const content = item.content ?? '';
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
+
+                // #2609 V4 — skip compté, annoncé par la note d'omission finale
+                if (content.trim().length === 0) {
+                    emptyMessagesSkipped++;
+                    return;
+                }
 
                 // #901: skeleton shows first 300 chars (was 50 — unusable)
                 // #902: respect truncate parameter in skeleton mode
@@ -287,7 +299,11 @@ async function handleViewConversationTreeExecutionAsync(
                         output += `${indent}  [${role}]: ${summary}\n`;
                     } else {
                         // Fallback: show first 300 chars (legacy behavior)
-                        const summary = content.substring(0, 300).replace(/\n/g, ' ');
+                        // #2609 V4 — coupe alignée sur frontière de mot
+                        const raw = content.substring(0, 300);
+                        const lastSpace = raw.lastIndexOf(' ');
+                        const clipped = lastSpace > 240 ? raw.substring(0, lastSpace) : raw;
+                        const summary = clipped.replace(/\n/g, ' ');
                         const ellipsis = content.length > 300 ? '...' : '';
                         output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                     }
@@ -332,6 +348,10 @@ async function handleViewConversationTreeExecutionAsync(
                 }
             }
         });
+        // #2609 V4 — note d'omission : une ligne résume les marqueurs vides sautés
+        if (emptyMessagesSkipped > 0) {
+            output += `${indent}  [... ${emptyMessagesSkipped} message(s) vide(s) omis(s) ...]\n`;
+        }
         return output;
     };
 
@@ -1119,11 +1139,23 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
         output += `${indent}  Parent: ${skeleton.parentTaskId || 'None'}\n`;
         output += `${indent}  Messages: ${skeleton.metadata.messageCount}\n`;
         
+        // #2609 V4 — squelette essentiel : un message au contenu vide ne porte
+        // aucun signal. Rendre un marqueur `[role]:` vide noie le squelette
+        // (milliers de marqueurs vides mesurés en baseline Epic #2609) et
+        // consomme le budget de sortie. L'omission est comptée puis annoncée
+        // en une ligne après la séquence.
+        let emptyMessagesSkipped = 0;
         (skeleton.sequence ?? []).forEach(item => {
             if ('role' in item) { // Message user/assistant
                 // #1271: Guard against null/undefined content
                 const content = item.content ?? '';
                 const role = item.role === 'user' ? '👤 User' : '🤖 Assistant';
+
+                // #2609 V4 — skip compté, annoncé par la note d'omission finale
+                if (content.trim().length === 0) {
+                    emptyMessagesSkipped++;
+                    return;
+                }
 
                 // #901: skeleton shows first 300 chars (was 50 — unusable)
                 // #902: respect truncate parameter in skeleton mode
@@ -1139,7 +1171,11 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
                         output += `${indent}  [${role}]: ${summary}\n`;
                     } else {
                         // Fallback: show first 300 chars (legacy behavior)
-                        const summary = content.substring(0, 300).replace(/\n/g, ' ');
+                        // #2609 V4 — coupe alignée sur frontière de mot
+                        const raw = content.substring(0, 300);
+                        const lastSpace = raw.lastIndexOf(' ');
+                        const clipped = lastSpace > 240 ? raw.substring(0, lastSpace) : raw;
+                        const summary = clipped.replace(/\n/g, ' ');
                         const ellipsis = content.length > 300 ? '...' : '';
                         output += `${indent}  [${role}]: ${summary}${ellipsis}\n`;
                     }
@@ -1184,6 +1220,10 @@ function createFormatTaskFunction(detail_level: string, truncate: number, curren
                 }
             }
         });
+        // #2609 V4 — note d'omission : une ligne résume les marqueurs vides sautés
+        if (emptyMessagesSkipped > 0) {
+            output += `${indent}  [... ${emptyMessagesSkipped} message(s) vide(s) omis(s) ...]\n`;
+        }
         return output;
     };
 }

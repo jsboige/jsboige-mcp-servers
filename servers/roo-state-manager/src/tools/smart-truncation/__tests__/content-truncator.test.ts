@@ -50,6 +50,70 @@ describe('ContentTruncator', () => {
         truncationParams: params
     });
 
+    describe('hardCapString — #2609 V4 : coupes alignées sur frontière de ligne', () => {
+        // Contenu multi-lignes où chaque ligne fait ~120 chars : toute coupe
+        // char-level tombe en plein milieu d'un mot (défaut de la baseline
+        // Epic #2609 : « tronqué en plein milieu de phrase »).
+        const LINE = 'ligne-de-contenu-longue-avec-des-mots-signifiants-'.padEnd(120, 'x');
+        const buildContent = (lineCount: number): string =>
+            Array.from({ length: lineCount }, (_, i) => `${LINE}#${i}`).join('\n');
+
+        test('no-op : contenu sous la borne rendu intact', () => {
+            const content = buildContent(10); // ~1 200 chars
+            expect(ContentTruncator.hardCapString(content, 5000)).toBe(content);
+        });
+
+        test('la borne stricte ≤ maxChars tient après alignement', () => {
+            const content = buildContent(500); // ~60 000 chars
+            const capped = ContentTruncator.hardCapString(content, 10_000);
+            expect(capped.length).toBeLessThanOrEqual(10_000);
+            expect(capped).toContain('hard cap');
+        });
+
+        test('la tête finit sur une frontière de ligne (pas de mot coupé)', () => {
+            const content = buildContent(500);
+            const capped = ContentTruncator.hardCapString(content, 10_000);
+            const marker = capped.indexOf('\n\n[... ');
+            expect(marker).toBeGreaterThan(0);
+            const head = capped.substring(0, marker);
+            // La tête se termine par une fin de ligne complète : sa dernière
+            // ligne non vide porte le suffixe d'index du gabarit (#N).
+            const lastLine = head.trimEnd().split('\n').pop() ?? '';
+            expect(lastLine).toMatch(/#(\d+)$/); // ligne complète, pas un mot coupé
+        });
+
+        test('la queue commence sur une frontière de ligne (pas de mot coupé)', () => {
+            const content = buildContent(500);
+            const capped = ContentTruncator.hardCapString(content, 10_000);
+            const markerSuffix = 'chars by hard cap ...]';
+            const markerEnd = capped.indexOf(markerSuffix);
+            expect(markerEnd).toBeGreaterThan(0);
+            // La queue commence après le « ...]\n\n » du marqueur.
+            const tail = capped.substring(markerEnd + markerSuffix.length + 2);
+            const firstLine = tail.split('\n')[0];
+            expect(firstLine).toMatch(/^ligne-de-contenu-longue.*#(\d+)$/); // ligne entière
+        });
+
+        test('sans saut de ligne dans la fenêtre de scan : coupe dure, borne tenue', () => {
+            // Une seule ligne de 60 000 chars : aucun \n → snap impossible.
+            const content = 'a'.repeat(60_000);
+            const capped = ContentTruncator.hardCapString(content, 10_000, { headerKeepChars: 2000 });
+            expect(capped.length).toBeLessThanOrEqual(10_000);
+            expect(capped).toContain('hard cap');
+        });
+
+        test('le marqueur rend le nombre réel de chars retirés (post-alignement)', () => {
+            const content = buildContent(500);
+            const capped = ContentTruncator.hardCapString(content, 10_000);
+            const match = capped.match(/\[\.\.\. (\d+) chars by hard cap \.\.\.\]/);
+            expect(match).not.toBeNull();
+            const removed = parseInt(match![1], 10);
+            const kept = capped.replace(`\n\n${match![0]}\n\n`, '');
+            // head + tail = kept ; removed = content - head - tail → égalité exacte
+            expect(removed + kept.length).toBe(content.length);
+        });
+    });
+
     describe('applyTruncationPlans', () => {
         test('should return unchanged tasks when no plans provided', () => {
             const tasks = [createMockTask('task1', ['Hello', 'Hi there'])];
