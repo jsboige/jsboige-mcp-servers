@@ -7,6 +7,38 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { TaskTruncationPlan, ElementTruncationPlan } from './types.js';
 
 /**
+ * #2609 V4 (rubric « troncature qui préserve le signal ») — fenêtre maximale
+ * de recul/avance pour aligner une coupe de hardCapString sur une frontière
+ * de ligne. Au-delà, la coupe reste brute (dure) : bornée pour ne jamais
+ * dériver loin du budget demandé.
+ */
+const LINE_SNAP_SCAN = 300;
+
+/**
+ * #2609 V4 — aligne la FIN du segment de tête sur la dernière frontière de
+ * ligne dans la fenêtre de scan (recul uniquement : ne grossit jamais).
+ * Retourne rawEnd inchangé si aucune frontière acceptable n'existe.
+ */
+function snapHeadEndToLineBoundary(content: string, rawEnd: number): number {
+    if (rawEnd <= 0) return rawEnd;
+    const nl = content.lastIndexOf('\n', rawEnd - 1);
+    if (nl === -1 || rawEnd - (nl + 1) > LINE_SNAP_SCAN) return rawEnd;
+    return nl + 1;
+}
+
+/**
+ * #2609 V4 — aligne le DÉBUT du segment de queue sur la première frontière
+ * de ligne dans la fenêtre de scan (avance uniquement : ne grossit jamais).
+ * Retourne rawStart inchangé si aucune frontière acceptable n'existe.
+ */
+function snapTailStartToLineBoundary(content: string, rawStart: number): number {
+    if (rawStart >= content.length) return rawStart;
+    const nl = content.indexOf('\n', rawStart);
+    if (nl === -1 || (nl + 1) - rawStart > LINE_SNAP_SCAN) return rawStart;
+    return nl + 1;
+}
+
+/**
  * Troncateur de contenu avec méthodes sémantiques
  */
 export class ContentTruncator {
@@ -20,7 +52,9 @@ export class ContentTruncator {
      *
      * Caracteristiques :
      *  - Operation char-level (pas line-level), donc applicable a n'importe quelle
-     *    sortie textuelle deja formattee.
+     *    sortie textuelle deja formattee. #2609 V4 : chaque coupe s'aligne sur la
+     *    frontiere de ligne la plus proche dans une fenetre bornee (300 chars),
+     *    pour ne pas rendre de fragment coupé en plein milieu d'un mot/ligne.
      *  - Reserve `headerKeepChars` au debut (par defaut 2000) pour conserver
      *    metadata, titre, breakdown, etc.
      *  - Le reste du budget va a la fin pour preserver le dernier contexte utile.
@@ -44,9 +78,15 @@ export class ContentTruncator {
         }
 
         const tailBudget = maxChars - headerKeepChars - marker.length;
-        const head = content.substring(0, headerKeepChars);
-        const tail = content.substring(content.length - tailBudget);
-        const removed = content.length - headerKeepChars - tailBudget;
+        // #2609 V4 — les coupes s'alignent sur des frontières de ligne (recul
+        // borné pour la tête, avance bornée pour la queue) au lieu de couper
+        // en plein milieu d'un mot/ligne. Les deux snaps ne font que rétrécir
+        // les segments : la borne stricte ≤ maxChars tient par construction.
+        const headEnd = snapHeadEndToLineBoundary(content, headerKeepChars);
+        const head = content.substring(0, headEnd);
+        const tailStart = snapTailStartToLineBoundary(content, content.length - tailBudget);
+        const tail = content.substring(tailStart);
+        const removed = content.length - head.length - tail.length;
 
         return `${head}${marker.replace('TRUNCATED chars', `${removed} chars`)}${tail}`;
     }
