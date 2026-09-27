@@ -36,6 +36,7 @@ import type {
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import type { RooSyncLockAcquireStatus, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -266,18 +267,43 @@ export async function probeDashboardJournalForHydration(key: string): Promise<Gu
  * encore une vue fichier périmée ou le journal jamais condensé d'une clé fork
  * (mesuré : 84 messages réimportés vivants, dashboard à 332 %).
  *
- * Même contrat que la sonde guard-a : UNGATED (l'hôte dual-écrit, il peut
- * décider), course de timeout courte, fail-open — `null` (pas d'histoire PG)
- * laisse l'union inchangée.
+ * WARNING NanoClaw #1242 (dispatch ai-01 26/09 23:00Z, review #1244) : la
+ * lecture des ids archivés n'exige PAS le droit d'écrire — le gate est la
+ * CAPACITÉ d'interroger PG (URL), pas le flag dual-write. Le singleton de la
+ * factory exige UNIFIED_STORE_DUAL_WRITE=1 (correct pour la lecture
+ * générale) ; sur un hôte lecture-PG-seule (PG_URL sans dual-write, stade
+ * d'entrée du rollout), un reader DÉDIÉ est construit pour ce chemin sans
+ * toucher au singleton ni aux autres consommateurs. `null` (aucune URL,
+ * échec, timeout 3 s) laisse l'union inchangée et le merge avertit
+ * (handleMerge — sens sûr).
  */
 const ARCHIVED_IDS_TIMEOUT_MS = 3000;
 
+let dedicatedArchivedIdsReader: PgUnifiedStoreReader | null = null;
+
+function getDedicatedArchivedIdsReader(pgUrl: string): PgUnifiedStoreReader {
+  if (!dedicatedArchivedIdsReader) {
+    dedicatedArchivedIdsReader = new PgUnifiedStoreReader({
+      connectionString: pgUrl,
+      // Une requête séquentielle par merge — un seul client suffit au pool.
+      poolMax: 1,
+      statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '5000', 10),
+    });
+  }
+  return dedicatedArchivedIdsReader;
+}
+
+export function resetArchivedIdsReaderForTests(): void {
+  dedicatedArchivedIdsReader = null;
+}
+
 export async function fetchArchivedDashboardMessageIds(key: string): Promise<Set<string> | null> {
-  if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+  const pgUrl = process.env.UNIFIED_STORE_PG_URL;
+  if (!pgUrl) {
     return null;
   }
-  const reader = getUnifiedStoreReader();
-  if (reader.isNull()) return null;
+  const shared = getUnifiedStoreReader();
+  const reader = shared.isNull() ? getDedicatedArchivedIdsReader(pgUrl) : shared;
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {

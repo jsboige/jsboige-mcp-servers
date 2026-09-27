@@ -4221,6 +4221,14 @@ export interface DashboardResult {
    * message suffix and condenseDiagnostic.
    */
   condensationStalled?: 'lock-held' | 'unchanged-hash';
+  /**
+   * #3782 (WARNING NanoClaw #1242) — merge-only : aucun historique d'archive
+   * lisible sur cet hôte alors que les vues sources amènent des messages
+   * absents de la cible. Ces entrées n'ont PAS été vérifiées contre les
+   * tombstones : risque de résurrection d'archivés. Posé uniquement dans ce
+   * cas ; absent quand les tombstones ont vérifié l'union (Set, même vide).
+   */
+  tombstonesUnavailable?: boolean;
   message?: string;
   dashboards?: DashboardSummary[];
   /**
@@ -6257,6 +6265,16 @@ async function handleMerge(
   let mergedMessages = [...byId.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   const deduped = totalSeen - mergedMessages.length;
 
+  // WARNING NanoClaw #1242 — exposition mesurable AVANT tombstones : les ids
+  // que les vues SOURCES amènent et qu'aucune vue cible ne portait. C'est le
+  // vecteur résurrection exact ; si les tombstones sont indisponibles (null),
+  // ces messages entrent dans l'union SANS vérification contre les archives.
+  const targetIds = new Set<string>();
+  for (const v of [targetPg, targetFileView]) {
+    if (v) for (const m of v.intercom.messages) targetIds.add(m.id);
+  }
+  const sourceOnlyAdds = mergedMessages.filter(m => !targetIds.has(m.id)).length;
+
   // --- #3782 (résurrection CoursIA 26/09) — tombstones d'archive ---
   // Un message déjà ARCHIVÉ sur la cible (row journal `archived_at` posé) est
   // condensé, pas perdu : le réimporter vivant depuis une vue périmée (fichier
@@ -6265,6 +6283,7 @@ async function handleMerge(
   // L'union exclut ces ids ; fail-open quand PG n'a pas d'histoire (null).
   const archivedIds = await fetchArchivedDashboardMessageIds(key);
   let excludedAlreadyArchived = 0;
+  const tombstonesUnavailable = archivedIds === null && sourceOnlyAdds > 0;
   if (archivedIds && archivedIds.size > 0) {
     const keptAfterTombstones: IntercomMessage[] = [];
     for (const m of mergedMessages) {
@@ -6662,6 +6681,7 @@ async function handleMerge(
     ...base,
     success: true,
     messageCount: mergedMessages.length,
+    tombstonesUnavailable: tombstonesUnavailable || undefined,
     writeVerification: writeVerification.forkSuspected ? writeVerification : undefined,
     message:
       `Clé '${sourceKey}' fusionnée dans '${key}' : ${source.intercom.messages.length} msg(source) ∪ ` +
@@ -6670,6 +6690,9 @@ async function handleMerge(
       `${target ? 'cible existante' : 'RENAME — cible créée depuis la source'}).` +
       (excludedAlreadyArchived > 0
         ? ` ${excludedAlreadyArchived} message(s) déjà archivé(s) sur la cible exclu(s) de l'union (tombstones #3782 — condensés, pas perdus).`
+        : '') +
+      (tombstonesUnavailable
+        ? ` ⚠️ Tombstones d'archive INDISPONIBLES sur cet hôte (aucune histoire PG lisible) — ${sourceOnlyAdds} message(s) repris depuis les vues sources SANS vérification contre les archives : risque de résurrection (#3782). En cas de doute, refaire le merge depuis un hôte avec lecture PG.`
         : '') +
       ` Statut retenu : ${statusFromSource ? 'source' : 'cible'} ` +
       `(arbitré par ${statusBasis === 'stamp' ? "l'horodatage de condensation" : statusBasis === 'lastModified' ? 'lastModified' : 'aucune concurrence — vue unique'}). ` +

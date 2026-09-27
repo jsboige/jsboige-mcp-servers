@@ -30,10 +30,13 @@ import type {
 
 const mockGetRooSyncDashboard = vi.fn().mockResolvedValue(null);
 const mockGetArchivedIds = vi.fn().mockResolvedValue(null);
+// Review #1244 : isNull pilotable — la vraie factory rend un Null reader sans
+// UNIFIED_STORE_DUAL_WRITE=1 ; le test du reader dédié exige ce comportement.
+const mockFactoryIsNull = { value: false };
 
 vi.mock('../reader-factory.js', () => ({
   getUnifiedStoreReader: () => ({
-    isNull: () => false,
+    isNull: () => mockFactoryIsNull.value,
     getRooSyncDashboard: mockGetRooSyncDashboard,
     // #3782 tombstones : décision merge — ids archivés sur la clé.
     getArchivedRooSyncDashboardMessageIds: mockGetArchivedIds,
@@ -85,6 +88,7 @@ import {
   dualWriteDashboardDelete,
   backfillDashboardToStore,
   fetchArchivedDashboardMessageIds,
+  resetArchivedIdsReaderForTests,
 } from '../roosync-dashboard-store.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { PgUnifiedStoreReader } from '../PgUnifiedStoreReader.js';
@@ -522,11 +526,41 @@ describe('fetchArchivedDashboardMessageIds (#3782 merge tombstones)', () => {
     };
   }
 
-  test('gate off (pas de DUAL_WRITE) → null, reader jamais consulté', async () => {
+  test('gate off (pas de PG_URL) → null, reader jamais consulté', async () => {
+    delete process.env.UNIFIED_STORE_PG_URL;
     const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
     expect(result).toBeNull();
     expect(mockGetArchivedIds).not.toHaveBeenCalled();
   });
+
+  test('review #1244 : SANS dual-write mais AVEC PG_URL → tombstones ACTIFS via reader dédié (vrai câblage, pas de mock factory)', withDualWriteGate(async () => {
+    // Finding review #1244 : la factory rend un Null reader sans
+    // UNIFIED_STORE_DUAL_WRITE=1 — l'ancien test mockait la factory entière
+    // et validait le gate sans le câblage réel. Ici le double factory rend
+    // isNull=true (comme la vraie factory le ferait) et le fetch passe quand
+    // même : un PgUnifiedStoreReader DÉDIÉ est construit pour ce chemin et
+    // traverse la vraie classe + le pool pg mocké.
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    mockFactoryIsNull.value = true;
+    resetArchivedIdsReaderForTests();
+    try {
+      mockGetArchivedIds.mockClear();
+      mockQuery.mockClear();
+      // Self-init probe (SELECT 1) puis la requête archived.
+      mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] })
+        .mockResolvedValueOnce({ rows: [{ message_id: 'ic-x' }] });
+      const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
+      expect(result).toBeInstanceOf(Set);
+      expect([...result!]).toEqual(['ic-x']);
+      // Servi par le reader dédié (pool pg), PAS par le double factory.
+      expect(mockGetArchivedIds).not.toHaveBeenCalled();
+      const call = mockQuery.mock.calls.find(c => String(c[0]).includes('archived_at IS NOT NULL'));
+      expect(call).toBeDefined();
+      expect(call![1]).toEqual(['workspace-coursia-fork']);
+    } finally {
+      mockFactoryIsNull.value = false;
+    }
+  }));
 
   test('gate on, hit → Set des ids archivés (le merge peut filtrer l\'union)', withDualWriteGate(async () => {
     mockGetArchivedIds.mockResolvedValueOnce(['ic-a', 'ic-b', 'ic-c']);

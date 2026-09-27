@@ -310,9 +310,11 @@ describe('action merge — #3782 tombstones d’archive (résurrection CoursIA 2
     expect(fileText('workspace-tomb.md')).toContain('live1');
     // La requête tombstone a bien porté la clé CIBLE.
     expect(archivedIdsSpy).toHaveBeenCalledWith('workspace-tomb');
+    // Union vérifiée contre l'archive : pas d'avertissement d'indisponibilité.
+    expect((result as any).tombstonesUnavailable).toBeUndefined();
   });
 
-  it('fail-open : fetch → null (hôte sans histoire PG) laisse l’union inchangée', async () => {
+  it('fail-open : fetch → null (hôte sans histoire PG) laisse l’union inchangée + AVERTIT (WARNING NanoClaw #1242)', async () => {
     seedForkPair();
     archivedIdsSpy.mockResolvedValue(null);
 
@@ -325,9 +327,31 @@ describe('action merge — #3782 tombstones d’archive (résurrection CoursIA 2
     // 4 messages : la cible + tout le fork, résurrection incluse (comportement d'avant).
     expect(result.messageCount).toBe(4);
     expect(String(result.message)).not.toContain('tombstones #3782');
+    // Sens sûr : l'exposition est STRUCTURÉE et nommée — t1/t2/live1 viennent
+    // des vues sources et n'ont pas pu être vérifiés contre les archives.
+    expect(result.tombstonesUnavailable).toBe(true);
+    expect(String(result.message)).toContain('Tombstones d\'archive INDISPONIBLES');
+    expect(String(result.message)).toContain('3 message(s) repris');
+    expect(String(result.message)).toContain('risque de résurrection');
   });
 
-  it('set vide (aucun archivé) : union inchangée, pas de mention', async () => {
+  it('null + source strictement incluse dans la cible : pas d\'avertissement (aucune exposition)', async () => {
+    // La source n'amène RIEN que la cible ne connaisse déjà → rien à vérifier.
+    seedDashboard('workspace-tomb.md', 'workspace', '2026-09-26T11:00:00.000Z', [t1, t2, live1, live2]);
+    seedDashboard('workspace-tomb (1).md', 'workspace', '2026-09-26T10:00:00.000Z', [t1, live1]);
+    archivedIdsSpy.mockResolvedValue(null);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'workspace', workspace: 'tomb',
+      sourceKey: 'workspace-tomb (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.tombstonesUnavailable).toBeUndefined();
+    expect(String(result.message)).not.toContain('INDISPONIBLES');
+  });
+
+  it('set vide (aucun archivé) : union inchangée, pas de mention, union VÉRIFIÉE (pas d\'avertissement)', async () => {
     seedForkPair();
     archivedIdsSpy.mockResolvedValue(new Set<string>());
 
@@ -339,6 +363,8 @@ describe('action merge — #3782 tombstones d’archive (résurrection CoursIA 2
     expect(result.success).toBe(true);
     expect(result.messageCount).toBe(4);
     expect(String(result.message)).not.toContain('tombstones #3782');
+    // L'histoire était disponible (vide) : l'union a été vérifiée — pas de warning.
+    expect(result.tombstonesUnavailable).toBeUndefined();
   });
 });
 
