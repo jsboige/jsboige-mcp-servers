@@ -13,7 +13,7 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, join } from 'path';
 
 /**
@@ -683,6 +683,214 @@ function extractSnippet(codeChunk: string, query: string, maxChars: number = 500
 	return snippet;
 }
 
+// ─── #2609 V2(a): query-time block expansion ────────────────────────────────
+// The Epic baseline (2026-06-16) measured hits as `start_line == end_line`
+// single-line chunks — "un panneau vers un groupe de fichiers", the wrong one.
+// Root cause is index-side: the Roo/Zoo indexer splits oversized blocks/lines
+// into SEGMENTS (roo-code parser.ts createSegmentBlock — a segment of a long
+// line carries start_line == end_line BY CONSTRUCTION), and no query-time fix
+// can change what vectors exist. BUT the rubric targets the RESULT, not the
+// index: each hit carries filePath + startLine, and the tool already proves
+// the file is on disk (isFilePathReachable). Re-reading the CURRENT file and
+// expanding the hit's anchor line to its enclosing declaration delivers
+// rubric (a) passage (the function block, not a line) and (c) context
+// (surrounding lines) with no re-indexation — same pattern as V3's
+// conversation_context (post-retrieval enrichment from a second read).
+//
+// Safety: expansion only applies when the anchor is VERIFIABLE in the current
+// file (the stored chunk's head must still be found within ±5 lines of the
+// stored startLine) — a stale index must degrade to the raw chunk snippet,
+// never render the wrong block. Bounded walks (≤200 back, ≤400 forward),
+// bounded render (≤80 lines / ≤3000 chars, cut on line boundaries per the V4
+// signal lesson), files ≤2 MB. Rollback: CODEBASE_BLOCK_EXPANSION=0.
+/** Read per call (not at module load) so the rollback env is testable and applies without a restart. */
+function blockExpansionEnabled(): boolean {
+	return process.env.CODEBASE_BLOCK_EXPANSION !== '0';
+}
+const BLOCK_EXPANSION_SOURCE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|psm1|ps1|go|rs|java|cs|cpp|cc|c|h|hpp)$/i;
+const BLOCK_EXPANSION_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const BLOCK_EXPANSION_MAX_RENDER_LINES = 80;
+const BLOCK_EXPANSION_MAX_RENDER_CHARS = 3000;
+const BLOCK_EXPANSION_MAX_BACKWARD_WALK = 200;
+const BLOCK_EXPANSION_MAX_FORWARD_WALK = 400;
+const BLOCK_EXPANSION_ANCHOR_TOLERANCE = 5;
+
+/** Naive per-line brace delta — heuristic (string literals/comments can skew, the bounded fallback keeps it honest). */
+function countBraces(line: string): number {
+	let depth = 0;
+	for (const ch of line) {
+		if (ch === '{') depth++;
+		else if (ch === '}') depth--;
+	}
+	return depth;
+}
+
+function leadingWhitespace(line: string): number {
+	const m = line.match(/^[ \t]*/);
+	return m ? m[0].length : 0;
+}
+
+/** A declaration-looking line (function/class/method/def). The nearest one ABOVE the anchor bounds the block.
+ * Plain `const x = ...;` statements do NOT count — they are statements INSIDE the enclosing
+ * function, and matching them would shrink the block to the anchor line itself. */
+const DECL_START_RE = /^\s*(export\s+)?(default\s+)?(declare\s+)?(abstract\s+)?(async\s+)?(function\b|class\b|interface\b|enum\b|def\s+\w+|param\s*\(|using\s+namespace)/;
+/** const/let only count as block starts when the RHS IS a function (arrow or function expr) —
+ * `export const handleX = async (...)` spans lines and owns a body. */
+const ASSIGN_FN_START_RE = /^\s*(export\s+)?(const|let)\s+\w+(\s*:\s*[^=]+)?\s*=\s*(async\s*)?(\([^)]*\)\s*=>|function\b)/;
+
+/** Walk endIdx back over trailing blank lines (cosmetic — a block doesn't end on a blank). */
+function trimTrailingBlanks(lines: string[], idx: number): number {
+	while (idx > 0 && lines[idx].trim() === '') idx--;
+	return idx;
+}
+
+/**
+ * Expand the anchor line (0-based index) to its enclosing declaration block.
+ * Brace languages: walk forward from the declaration until depth closes.
+ * Braceless languages (python): end when indentation drops below the FIRST BODY
+ * line's indent (the declaration itself may sit at column 0).
+ * No declaration found in bounded walk → blank-line window fallback (still a
+ * passage, not a fragment).
+ */
+export function computeBlockRange(lines: string[], anchorIdx: number): { startIdx: number; endIdx: number } | null {
+	if (anchorIdx < 0 || anchorIdx >= lines.length) return null;
+
+	// 1. Backward: nearest declaration-looking line at or above the anchor.
+	let startIdx = -1;
+	for (let i = anchorIdx; i >= 0 && i >= anchorIdx - BLOCK_EXPANSION_MAX_BACKWARD_WALK; i--) {
+		if (DECL_START_RE.test(lines[i]) || ASSIGN_FN_START_RE.test(lines[i])) { startIdx = i; break; }
+	}
+
+	if (startIdx >= 0) {
+		let endIdx = Math.min(lines.length - 1, startIdx + BLOCK_EXPANSION_MAX_FORWARD_WALK);
+		let depth = 0;
+		let opened = false;
+		let bodyIndent: number | null = null;
+		for (let i = startIdx; i <= endIdx; i++) {
+			const line = lines[i];
+			depth += countBraces(line);
+			if (line.includes('{')) opened = true;
+			if (opened && depth <= 0) { endIdx = i; break; }
+			if (!opened && i > startIdx && line.trim() !== '') {
+				if (bodyIndent === null) {
+					bodyIndent = leadingWhitespace(line);
+				} else if (leadingWhitespace(line) < bodyIndent) {
+					endIdx = trimTrailingBlanks(lines, i - 1);
+					break;
+				}
+			}
+		}
+		// Correctness guard: the computed block MUST contain the anchor. On minified or
+		// compiled code (build-* artifacts, anonymous assignments) the declaration regex
+		// can latch onto a function that CLOSES BEFORE the anchor line — rendering it
+		// would show the wrong code while the block range reads like a confident handle.
+		// Fall through to the blank-line window, which contains the anchor by construction.
+		if (endIdx >= anchorIdx) {
+			return { startIdx, endIdx };
+		}
+	}
+
+	// 2. Fallback: blank-line-delimited window around the anchor (±15 lines, snapped to blanks).
+	let s = anchorIdx;
+	const stopUp = Math.max(0, anchorIdx - 15);
+	while (s > stopUp && lines[s - 1] !== undefined && lines[s - 1].trim() !== '') s--;
+	let e = anchorIdx;
+	const stopDown = Math.min(lines.length - 1, anchorIdx + 15);
+	while (e < stopDown && lines[e + 1] !== undefined && lines[e + 1].trim() !== '') e++;
+	return { startIdx: s, endIdx: e };
+}
+
+/**
+ * Stale-index guard: the stored chunk's head must still be locatable within
+ * ±tolerance lines of the stored startLine in the CURRENT file. A segment of a
+ * long line is a substring of the file line, so we test containment of the
+ * chunk's first non-empty 40 chars, not equality.
+ */
+export function verifyAnchor(lines: string[], anchorIdx: number, codeChunk: string): boolean {
+	const firstChunkLine = codeChunk.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
+	if (!firstChunkLine) return false;
+	const probe = firstChunkLine.slice(0, 40);
+	if (!probe) return false;
+	const from = Math.max(0, anchorIdx - BLOCK_EXPANSION_ANCHOR_TOLERANCE);
+	const to = Math.min(lines.length - 1, anchorIdx + BLOCK_EXPANSION_ANCHOR_TOLERANCE);
+	for (let i = from; i <= to; i++) {
+		if (lines[i].includes(probe)) return true;
+	}
+	return false;
+}
+
+/**
+ * Render the block as a passage: window the render around the anchor if the
+ * block exceeds the line/char budget (cuts on LINE boundaries — never
+ * mid-line), with honest omission markers. Returns 1-based line numbers.
+ */
+export function renderBlock(
+	lines: string[],
+	range: { startIdx: number; endIdx: number },
+	anchorIdx: number
+): { text: string; startLine: number; endLine: number } {
+	let s = range.startIdx;
+	let e = range.endIdx;
+	if (e - s + 1 > BLOCK_EXPANSION_MAX_RENDER_LINES) {
+		s = Math.max(range.startIdx, anchorIdx - Math.floor(BLOCK_EXPANSION_MAX_RENDER_LINES / 2));
+		e = Math.min(range.endIdx, s + BLOCK_EXPANSION_MAX_RENDER_LINES - 1);
+	}
+	// Char budget: shrink the window around the anchor, line by line, until it fits.
+	while (e - s + 1 > 5 && lines.slice(s, e + 1).join('\n').length > BLOCK_EXPANSION_MAX_RENDER_CHARS) {
+		if (anchorIdx - s >= e - anchorIdx) s++;
+		else e--;
+	}
+	const above = s - range.startIdx;
+	const below = range.endIdx - e;
+	const parts: string[] = [];
+	if (above > 0) parts.push(`[... ${above} lines above the rendered window omitted within the block ...]`);
+	parts.push(lines.slice(s, e + 1).join('\n'));
+	if (below > 0) parts.push(`[... ${below} lines below the rendered window omitted within the block ...]`);
+	return { text: parts.join('\n'), startLine: s + 1, endLine: e + 1 };
+}
+
+/**
+ * #2609 V2(a): expand one hit to its enclosing block read from the CURRENT file.
+ * Returns null (caller keeps the raw chunk snippet) when: disabled by env,
+ * non-source file, file unreadable/too large/absent, anchor line out of range,
+ * or the anchor can't be verified (file drifted since indexing).
+ */
+export function expandHitBlock(
+	filePath: string,
+	storedStartLine: number,
+	codeChunk: string,
+	workspaceRoot: string,
+	fileLinesCache: Map<string, string[] | null>
+): { text: string; startLine: number; endLine: number } | null {
+	if (!blockExpansionEnabled()) return null;
+	try {
+		const abs = isAbsolute(filePath) ? filePath : join(workspaceRoot, filePath);
+		let lines = fileLinesCache.get(abs);
+		if (lines === undefined) {
+			try {
+				if (statSync(abs).size > BLOCK_EXPANSION_MAX_FILE_BYTES) {
+					fileLinesCache.set(abs, null);
+					return null;
+				}
+				lines = readFileSync(abs, 'utf-8').split(/\r?\n/);
+			} catch {
+				fileLinesCache.set(abs, null);
+				return null;
+			}
+			fileLinesCache.set(abs, lines);
+		}
+		if (!lines) return null;
+		const anchorIdx = storedStartLine - 1; // payload startLine is 1-based (parser: row + 1)
+		if (anchorIdx < 0 || anchorIdx >= lines.length) return null;
+		if (!verifyAnchor(lines, anchorIdx, codeChunk)) return null;
+		const range = computeBlockRange(lines, anchorIdx);
+		if (!range) return null;
+		return renderBlock(lines, range, anchorIdx);
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Handler principal de l'outil codebase_search
  */
@@ -1068,6 +1276,19 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// 0.7 × 0.75 = 0.525 would drop a 0.75 archived config to 0.39.
 		const ARCHIVE_FILE_RE = /(^|[\\/])docs[\\/]archive[\\/]/;
 		const ARCHIVE_FILE_MALUS = 0.7;
+		// #2609 V2(a) — compiled-build malus (×0.7): `build-<hash>/` vintages and the
+		//     `build-out/` staging dir are compiled derivatives of the source — a
+		//     near-verbatim echo of the query vocabulary without the type noise, and STALE
+		//     by construction (only the marker's vintage is live). Measured ai-01
+		//     2026-09-27, golden scenario 3 re-run: the TOP source hits of the verbatim
+		//     baseline query were `…/build-80b4b9a14965a403/…` and `…/build-out/…`
+		//     compiled copies, above every living source chunk. Same family as
+		//     #3172/#1180: a derivative is never the actionable answer to "find the code
+		//     that does X". Degraded, not removed — an agent debugging the LIVE deployed
+		//     vintage can still find it. PRECEDENCE over data (build-x/foo.json is first
+		//     a compiled artifact), same rationale as archive-over-data.
+		const BUILD_DIR_RE = /(^|[\\/])build(-[a-z0-9]+)?[\\/]/i;
+		const BUILD_DIR_MALUS = 0.7;
 		const MAX_CHUNKS_PER_FILE = 2;
 
 		// Single source of truth for the malus: ranking and the rendered `score` MUST agree.
@@ -1077,12 +1298,14 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			const isTestFile = TEST_FILE_RE.test(fp);
 			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
 			const isArchiveFile = ARCHIVE_FILE_RE.test(fp);
-			const isDataFile = !isTestFile && !isFixtureFile && !isArchiveFile && DATA_FILE_RE.test(fp);
+			const isBuildDirFile = BUILD_DIR_RE.test(fp);
+			const isDataFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && DATA_FILE_RE.test(fp);
 			const factor = (isTestFile ? TEST_FILE_MALUS : 1)
 				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1)
 				* (isArchiveFile ? ARCHIVE_FILE_MALUS : 1)
+				* (isBuildDirFile ? BUILD_DIR_MALUS : 1)
 				* (isDataFile ? DATA_FILE_MALUS : 1);
-			return { isTestFile, isFixtureFile, isArchiveFile, isDataFile, factor };
+			return { isTestFile, isFixtureFile, isArchiveFile, isBuildDirFile, isDataFile, factor };
 		};
 
 		const adjusted: { point: any; score: number }[] = finalHits
@@ -1100,14 +1323,21 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 
 		// Per-file cap (A): greedy walk by adjusted score, then backfill with leftovers so
 		// recall is preserved when the cap drops hits below the requested limit.
+		// #2609 V2(a): the cap key strips the compiled-vintage component (`build-<hash>/`,
+		// `build-out/`) — measured live 2026-09-27, golden scenario 3: the same logical file
+		// existed as 4 path-distinct copies (3 vintages + staging) and occupied up to 6 of
+		// 15 slots, each with its own cap budget. Keyed on the LOGICAL file, the compiled
+		// copies share one budget and the freed slots backfill with distinct files.
+		const capKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-z0-9]+)?[\\/]/ig, '');
 		const perFileCount = new Map<string, number>();
 		const picked: any[] = [];
 		const leftovers: { point: any; score: number }[] = [];
 		for (const a of adjusted) {
 			const fp = String(a.point.payload.filePath || '');
-			if ((perFileCount.get(fp) || 0) < MAX_CHUNKS_PER_FILE) {
+			const capKey = capKeyOf(fp);
+			if ((perFileCount.get(capKey) || 0) < MAX_CHUNKS_PER_FILE) {
 				picked.push(a.point);
-				perFileCount.set(fp, (perFileCount.get(fp) || 0) + 1);
+				perFileCount.set(capKey, (perFileCount.get(capKey) || 0) + 1);
 			} else {
 				leftovers.push(a);
 			}
@@ -1121,23 +1351,52 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let fixtureMalusApplied = 0;
 		let dataFileMalusApplied = 0;
 		let archiveMalusApplied = 0;
+		let buildDirMalusApplied = 0;
+
+		// #2609 V2(a): per-call cache of file contents read for block expansion
+		// (multiple hits in one file must not re-read it). null = unreadable/skipped.
+		const fileLinesCache = new Map<string, string[] | null>();
+		let blockExpansionApplied = 0;
 
 		const results = rankedHits.map((point: any) => {
 			const fp = String(point.payload.filePath || '');
-			const { isTestFile, isFixtureFile, isDataFile, isArchiveFile, factor } = classifyFilePath(fp);
+			const { isTestFile, isFixtureFile, isDataFile, isArchiveFile, isBuildDirFile, factor } = classifyFilePath(fp);
 			if (isTestFile) testFileMalusApplied++;
 			if (isFixtureFile) fixtureMalusApplied++;
 			if (isDataFile) dataFileMalusApplied++;
 			if (isArchiveFile) archiveMalusApplied++;
+			if (isBuildDirFile) buildDirMalusApplied++;
 			// Expose the adjusted (post-malus) score so the value matches the rank order;
 			// an unadjusted test at 0.72 ranked below a source at 0.68 would otherwise read
 			// as a contradiction. The raw cosine is not surfaced (the order is the signal).
 			const adjustedScore = point.score * factor;
+			// #2609 V2(a): expand source-code hits to their enclosing declaration block,
+			// read from the CURRENT file on disk (anchor-verified against the stored chunk;
+			// see expandHitBlock). The rendered snippet becomes the block passage, and
+			// start_line/end_line become the BLOCK range — the honest handle an agent can
+			// open directly. The line(s) the vector actually matched stay as `match_lines`.
+			// Skipped for fixtures (embedded code inside a JSON container — #3172 contract:
+			// line fields stay omitted), archives (stale-by-design docs) and data/config
+			// files (no block structure); those keep the raw extractSnippet shape.
+			const expandable = !isFixtureFile && !isArchiveFile && !isDataFile
+				&& BLOCK_EXPANSION_SOURCE_RE.test(fp)
+				&& typeof point.payload.startLine === 'number';
+			const expanded = expandable
+				? expandHitBlock(fp, point.payload.startLine, String(point.payload.codeChunk || ''), workspace, fileLinesCache)
+				: null;
+			if (expanded) blockExpansionApplied++;
 			// #3172: a fixture chunk embeds source code inside a JSON capture — the stored
 			// startLine/endLine point at the single-line JSON container, not at the embedded
 			// code shown in the snippet ("1-1" navigates to nothing). Omit the line fields
 			// rather than render numbers that lead nowhere; the snippet keeps the real line.
-			const lineFields = isFixtureFile ? {} : {
+			const lineFields = isFixtureFile ? {} : expanded ? {
+				start_line: expanded.startLine,
+				end_line: expanded.endLine,
+				lines: `${expanded.startLine}-${expanded.endLine}`,
+				match_lines: point.payload.startLine && point.payload.endLine
+					? `${point.payload.startLine}-${point.payload.endLine}`
+					: String(point.payload.startLine)
+			} : {
 				start_line: point.payload.startLine,
 				end_line: point.payload.endLine,
 				lines: point.payload.startLine && point.payload.endLine
@@ -1148,7 +1407,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				file_path: point.payload.filePath,
 				score: adjustedScore,
 				relevance: interpretScore(adjustedScore),
-				snippet: extractSnippet(point.payload.codeChunk || '', query),
+				snippet: expanded ? expanded.text : extractSnippet(point.payload.codeChunk || '', query),
 				...lineFields
 			};
 		});
@@ -1187,6 +1446,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			...(dataFileMalusApplied > 0 ? { data_file_malus_applied: dataFileMalusApplied } : {}),
 			// #3174 (defect 3): archive-file malus observability — hits from docs/archive/** demoted ×0.7.
 			...(archiveMalusApplied > 0 ? { archive_malus_applied: archiveMalusApplied } : {}),
+			// #2609 V2(a): compiled-build malus observability — hits from build(-<hash>)/** demoted ×0.7.
+			...(buildDirMalusApplied > 0 ? { build_dir_malus_applied: buildDirMalusApplied } : {}),
+			// #2609 V2(a): block-expansion observability — how many hits were rendered as
+			// their enclosing declaration block (snippet = block, start/end_line = block
+			// range, match_lines = the lines the vector matched). Rollback:
+			// CODEBASE_BLOCK_EXPANSION=0.
+			...(blockExpansionApplied > 0 ? { block_expansion_applied: blockExpansionApplied } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results
