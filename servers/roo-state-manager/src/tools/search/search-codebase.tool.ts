@@ -822,13 +822,14 @@ export function verifyAnchor(lines: string[], anchorIdx: number, codeChunk: stri
 /**
  * Render the block as a passage: window the render around the anchor if the
  * block exceeds the line/char budget (cuts on LINE boundaries — never
- * mid-line), with honest omission markers. Returns 1-based line numbers.
+ * mid-line), with honest omission markers. Returns 1-based line numbers, or
+ * null when no line-bounded window fits the char budget (see below).
  */
 export function renderBlock(
 	lines: string[],
 	range: { startIdx: number; endIdx: number },
 	anchorIdx: number
-): { text: string; startLine: number; endLine: number } {
+): { text: string; startLine: number; endLine: number } | null {
 	let s = range.startIdx;
 	let e = range.endIdx;
 	if (e - s + 1 > BLOCK_EXPANSION_MAX_RENDER_LINES) {
@@ -840,6 +841,12 @@ export function renderBlock(
 		if (anchorIdx - s >= e - anchorIdx) s++;
 		else e--;
 	}
+	// The loop above stops at a 5-line floor, whatever those lines weigh: a minified
+	// bundle is ONE line and would otherwise ship whole (up to the 2 MB file cap) in a
+	// single atomic tool result (#3579 class). No line-bounded window fits, so degrade:
+	// null -> the caller keeps the raw chunk snippet (extractSnippet, bounded), which is
+	// also the segment the vector actually matched.
+	if (lines.slice(s, e + 1).join('\n').length > BLOCK_EXPANSION_MAX_RENDER_CHARS) return null;
 	const above = s - range.startIdx;
 	const below = range.endIdx - e;
 	const parts: string[] = [];
@@ -853,7 +860,8 @@ export function renderBlock(
  * #2609 V2(a): expand one hit to its enclosing block read from the CURRENT file.
  * Returns null (caller keeps the raw chunk snippet) when: disabled by env,
  * non-source file, file unreadable/too large/absent, anchor line out of range,
- * or the anchor can't be verified (file drifted since indexing).
+ * the anchor can't be verified (file drifted since indexing), or no line-bounded
+ * window fits the char budget (minified / very long lines).
  */
 export function expandHitBlock(
 	filePath: string,
@@ -1287,7 +1295,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		//     that does X". Degraded, not removed — an agent debugging the LIVE deployed
 		//     vintage can still find it. PRECEDENCE over data (build-x/foo.json is first
 		//     a compiled artifact), same rationale as archive-over-data.
-		const BUILD_DIR_RE = /(^|[\\/])build(-[a-z0-9]+)?[\\/]/i;
+		// Only the three real compiled forms: bare `build/`, a hashed vintage `build-<hex>/`
+		// and the `build-out/` staging dir. `build(-[a-z0-9]+)?` also caught source dirs such
+		// as `build-tools/` or `build-helpers/` (malussed AND merged into another file's cap
+		// budget). Keep this pattern and capKeyOf's below identical.
+		const BUILD_DIR_RE = /(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/i;
 		const BUILD_DIR_MALUS = 0.7;
 		const MAX_CHUNKS_PER_FILE = 2;
 
@@ -1328,7 +1340,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// existed as 4 path-distinct copies (3 vintages + staging) and occupied up to 6 of
 		// 15 slots, each with its own cap budget. Keyed on the LOGICAL file, the compiled
 		// copies share one budget and the freed slots backfill with distinct files.
-		const capKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-z0-9]+)?[\\/]/ig, '');
+		const capKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/ig, '');
 		const perFileCount = new Map<string, number>();
 		const picked: any[] = [];
 		const leftovers: { point: any; score: number }[] = [];

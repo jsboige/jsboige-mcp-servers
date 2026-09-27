@@ -938,7 +938,7 @@ describe('search-codebase.tool', () => {
 				// a 0.70 hit far under any threshold — silently removing it from recall.
 				mockQdrant.query.mockResolvedValue({
 					points: [
-						{ score: 0.70, payload: { filePath: 'mcps\\internal\\build-abc123\\config.json', codeChunk: '{"x": 1}', startLine: 1, endLine: 1 } }
+						{ score: 0.70, payload: { filePath: 'mcps\\internal\\build-abc123def4567890\\config.json', codeChunk: '{"x": 1}', startLine: 1, endLine: 1 } }
 					]
 				});
 
@@ -949,6 +949,48 @@ describe('search-codebase.tool', () => {
 				expect(parsed.results[0].score).toBeCloseTo(0.70 * 0.7, 5);
 				expect(parsed.build_dir_malus_applied).toBe(1);
 				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+
+			test('scope — source dirs named `build-<word>/` (build-tools, build-helpers) are NOT compiled output', async () => {
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.70, payload: { filePath: 'src\\build-tools\\hammer.ts', codeChunk: 'x', startLine: 1, endLine: 1 } },
+						{ score: 0.70, payload: { filePath: 'src\\build-helpers\\util.ts', codeChunk: 'y', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'module', workspace: '/ws', limit: 2, min_score: 0.2 });
+				const parsed = JSON.parse(result.content[0].text);
+				const byPath = Object.fromEntries(parsed.results.map((r: any) => [r.file_path, r.score]));
+				expect(byPath['src\\build-tools\\hammer.ts']).toBeCloseTo(0.70, 5);
+				expect(byPath['src\\build-helpers\\util.ts']).toBeCloseTo(0.70, 5);
+				expect(parsed.build_dir_malus_applied).toBeUndefined();
+			});
+
+			test('cap key — compiled copies of one logical file share ONE budget; a `build-helpers/` source keeps its own', async () => {
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.99, payload: { filePath: 'src\\util.ts', codeChunk: 'a1', startLine: 1, endLine: 1 } },
+						{ score: 0.98, payload: { filePath: 'src\\util.ts', codeChunk: 'a2', startLine: 20, endLine: 20 } },
+						{ score: 0.97, payload: { filePath: 'src\\build-helpers\\util.ts', codeChunk: 'b1', startLine: 1, endLine: 1 } },
+						{ score: 0.96, payload: { filePath: 'lib\\build\\mod.js', codeChunk: 'c1', startLine: 1, endLine: 1 } },
+						{ score: 0.95, payload: { filePath: 'lib\\build-out\\mod.js', codeChunk: 'c2', startLine: 1, endLine: 1 } },
+						{ score: 0.94, payload: { filePath: 'lib\\build-80b4b9a14965a403\\mod.js', codeChunk: 'c3', startLine: 1, endLine: 1 } },
+						{ score: 0.30, payload: { filePath: 'src\\other.ts', codeChunk: 'd1', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				// limit 5 < eligible picks: no backfill can rescue a capped hit, so the cap key decides.
+				const result = await handleCodebaseSearch({ query: 'module', workspace: '/ws', limit: 5, min_score: 0.2 });
+				const parsed = JSON.parse(result.content[0].text);
+				const paths = parsed.results.map((r: any) => r.file_path);
+				// build-helpers/util.ts is its own file: NOT capped against src/util.ts's two chunks
+				// (the old `build(-[a-z0-9]+)?` key stripped it to src/util.ts and dropped it).
+				expect(paths).toContain('src\\build-helpers\\util.ts');
+				// The three compiled copies of lib/mod.js share one budget of 2.
+				const compiled = paths.filter((p: string) => p.endsWith('mod.js'));
+				expect(compiled).toHaveLength(2);
+				expect(paths).not.toContain('lib\\build-80b4b9a14965a403\\mod.js');
 			});
 
 			test('scope — bare `build/`, hashed `build-<hex>/` and the `build-out/` staging dir match; src/ is untouched', async () => {
@@ -2075,7 +2117,8 @@ describe('#3344 transport resilience + hash convergence', () => {
 			lines.push('}');
 			const range = computeBlockRange(lines, 60);
 			expect(range).toEqual({ startIdx: 0, endIdx: 119 });
-			const rendered = renderBlock(lines, range!, 60);
+			const rendered = renderBlock(lines, range!, 60)!;
+			expect(rendered).not.toBeNull();
 			// Bounded render: ≤ 80 lines + 2 marker lines
 			const renderedLineCount = rendered.text.split('\n').length;
 			expect(renderedLineCount).toBeLessThanOrEqual(80 + 2);
@@ -2086,6 +2129,54 @@ describe('#3344 transport resilience + hash convergence', () => {
 			expect(rendered.text).toContain('line59();');
 			// 1-based handle covers the rendered window only
 			expect(rendered.endLine - rendered.startLine + 1).toBeLessThanOrEqual(80);
+		});
+
+		test('renderBlock: char budget shrinks a long-line block around the anchor (positive control)', () => {
+			// 60 lines x ~100 chars = ~6 000 chars: over the 3 000-char budget, but each line is short
+			// enough that a line-bounded window fits — the loop must shrink it, not give up.
+			const lines: string[] = ['export function wide() {'];
+			for (let i = 0; i < 60; i++) lines.push(`\tconst v${i} = '${'y'.repeat(80)}';`);
+			lines.push('}');
+			const range = computeBlockRange(lines, 30);
+			const rendered = renderBlock(lines, range!, 30);
+			expect(rendered).not.toBeNull();
+			const body = rendered!.text.split('\n').filter(l => !l.startsWith('[... ')).join('\n');
+			expect(body.length).toBeLessThanOrEqual(3000);
+			expect(rendered!.text).toContain('const v29 =');
+		});
+
+		test('renderBlock: a single 500 KB line (minified bundle) → null, never an unbounded render', () => {
+			const lines = ['var a=' + 'x'.repeat(500_000) + ';'];
+			const range = computeBlockRange(lines, 0);
+			expect(range).toEqual({ startIdx: 0, endIdx: 0 });
+			expect(renderBlock(lines, range!, 0)).toBeNull();
+		});
+
+		test('renderBlock: 5 lines of 1 KB each (below the 5-line floor, over budget) → null', () => {
+			const lines = Array.from({ length: 5 }, (_, i) => `const k${i} = '${'z'.repeat(1024)}';`);
+			const range = { startIdx: 0, endIdx: 4 };
+			expect(renderBlock(lines, range, 2)).toBeNull();
+		});
+
+		test('handler: a hit on a minified one-liner keeps the bounded raw snippet (no 500 KB result)', async () => {
+			const minified = 'var a=' + 'x'.repeat(500_000) + ';';
+			mockReadFileSync.mockReturnValue(minified);
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'dist/bundle.min.js', codeChunk: 'x'.repeat(1000), startLine: 1, endLine: 1 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'bundle', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.status).toBe('success');
+			expect(parsed.block_expansion_applied).toBeUndefined();
+			const hit = parsed.results[0];
+			expect(hit.match_lines).toBeUndefined();
+			expect(hit.snippet.length).toBeLessThanOrEqual(600);
+			expect(result.content[0].text.length).toBeLessThan(10_000);
 		});
 
 		test('anchor beyond EOF (file shrank since indexing) → null', () => {
