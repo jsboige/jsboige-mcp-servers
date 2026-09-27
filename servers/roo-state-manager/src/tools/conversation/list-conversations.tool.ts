@@ -1678,8 +1678,9 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
 
 // --- Claude session scan cache ---
 // Claude sessions are expensive to scan (2GB+, 200+ JSONL files parsed individually).
-// Cache results for 60s to avoid re-parsing on every list call.
-const CLAUDE_SCAN_CACHE_TTL = 60_000; // 60 seconds
+// #3661 : aligné sur DISK_SCAN_CACHE_TTL (5 min) — à 60 s, la sweep se rejouait
+// par client actif chaque minute sur les machines à nombreux hôtes MCP.
+const CLAUDE_SCAN_CACHE_TTL = 5 * 60_000; // 5 minutes
 let lastClaudeScanTime = 0;
 let lastClaudeScanResults: ConversationSkeleton[] | null = null;
 

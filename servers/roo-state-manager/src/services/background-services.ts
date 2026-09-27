@@ -896,6 +896,18 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             state.lastSkeletonRefreshAt = Date.now();
             persistIndexerCursor(state.lastSkeletonRefreshAt);
             // Once index is loaded, discover Claude sessions too
+            // #3661 (grain Tier 2 N×) : la sweep Claude startup échappe à
+            // l'élection Worker A ET au prewarm-off — chaque hôte paie un
+            // readdir + lecture de chaque .jsonl de chaque projet. Quand le
+            // prewarm est désactivé (auto haute-multiplicité ou kill-switch
+            // SKELETON_PREWARM=false), sauter AUSSI cette hydratation eager :
+            // la visibilité Tier 2 reste assurée par les lectures lazy
+            // (#1752 view/view_task_details via findConversationById) et par
+            // scanClaudeSessions (list source=claude, TTL 5 min).
+            if (!enablePrewarm) {
+                console.log('[Startup] Claude session sweep skipped (prewarm disabled — Tier 2 lazy reads preserved)');
+                return;
+            }
             return loadClaudeCodeSessions(state.conversationCache);
         }).then(async () => {
             // #1747 sub-issue B: Log tier summary after all background loading completes
