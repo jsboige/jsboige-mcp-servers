@@ -52,6 +52,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -183,6 +184,20 @@ def _sanitize_agent_name(name: str) -> str:
 # budget (max_retries=1 can double the wall time) is deliberately NOT
 # guaranteed — the ceiling may cut a pathological retry, as in #1587.
 CALL_CEILING_MARGIN_S = 30.0
+
+# Bound on the MCP stdio connect handshake (spawn + initialize). Without it,
+# a server process that starts but never answers initialize() hangs the
+# caller forever: MCPStdioPlugin created without request_timeout yields
+# ClientSession(read_timeout_seconds=None), and connect() waits on its
+# ready-event unbounded (po-203 finding: agent creation pend >= 90 s).
+# Overridable per entry via McpConfig.connect_timeout_s.
+DEFAULT_MCP_CONNECT_TIMEOUT_S = 30.0
+_MCP_CLOSE_TIMEOUT_S = 10.0
+# How long a failed plugin stays refused before a retry is allowed. Long
+# enough that agent creations inside one session stop paying the connect
+# budget, short enough that an operator fix (installing the binary) is
+# picked up without a host restart.
+_MCP_FAILURE_TTL_S = 300.0
 
 # File extension -> content type mapping
 _IMAGE_EXTENSIONS = {
@@ -429,6 +444,11 @@ class SKAgentManager:
 
         # Lazy MCP loading: track which MCPs are being loaded to avoid duplicates
         self._loading_mcps: set[str] = set()
+        # Negative cache: mcp_id -> monotonic time until which retries are
+        # refused. Without it, every agent creation re-pays the full connect
+        # budget (and re-spawns an orphan child) for a plugin that already
+        # failed (po-203: analyst creation pended on every attempt).
+        self._mcp_failed_until: dict[str, float] = {}
         self._mcp_configs: dict[str, McpConfig] = {
             cfg.id: cfg for cfg in self.config.mcps
         }
@@ -538,6 +558,13 @@ class SKAgentManager:
         if mcp_id in self._mcp_plugins:
             return True
 
+        # Recently failed? Refuse until the negative-cache TTL expires so a
+        # broken plugin does not tax every agent creation with a full
+        # connect budget (plus an orphan child process per attempt).
+        failed_until = self._mcp_failed_until.get(mcp_id)
+        if failed_until is not None and time.monotonic() < failed_until:
+            return False
+
         # Already loading?
         if mcp_id in self._loading_mcps:
             # Wait for existing load to complete (simple polling)
@@ -600,13 +627,58 @@ class SKAgentManager:
                 args=mcp_cfg.args,
                 env=env,
             )
-            connected = await self._exit_stack.enter_async_context(plugin)
+            timeout_s = (
+                mcp_cfg.connect_timeout_s
+                if mcp_cfg.connect_timeout_s is not None
+                else DEFAULT_MCP_CONNECT_TIMEOUT_S
+            )
+            try:
+                connected = await asyncio.wait_for(
+                    self._exit_stack.enter_async_context(plugin),
+                    timeout=timeout_s,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                # wait_for cancels the awaiting side; the plugin's detached
+                # _inner_connect task survives, so close it explicitly before
+                # degrading (agent proceeds without this plugin).
+                try:
+                    await asyncio.wait_for(plugin.close(), timeout=_MCP_CLOSE_TIMEOUT_S)
+                except Exception:
+                    log.exception(
+                        "Failed to close timed-out MCP plugin: %s", mcp_id
+                    )
+                log.warning(
+                    "MCP '%s': connect handshake not completed in %.1fs — plugin unavailable",
+                    mcp_id,
+                    timeout_s,
+                )
+                self._mcp_failed_until[mcp_id] = time.monotonic() + _MCP_FAILURE_TTL_S
+                return False
+            if getattr(connected, "session", None) is None:
+                # semantic_kernel 1.42.0: a failed spawn still sets the
+                # ready-event, so connect() returns a session-less zombie
+                # instead of raising (reproduced: missing binary -> True).
+                # Refuse it before it enters the shared pool.
+                try:
+                    await asyncio.wait_for(plugin.close(), timeout=_MCP_CLOSE_TIMEOUT_S)
+                except Exception:
+                    log.exception(
+                        "Failed to close zombie MCP plugin: %s", mcp_id
+                    )
+                log.warning(
+                    "MCP '%s': spawn/handshake failed (no session) — plugin unavailable",
+                    mcp_id,
+                )
+                self._mcp_failed_until[mcp_id] = time.monotonic() + _MCP_FAILURE_TTL_S
+                return False
             self._mcp_plugins[mcp_cfg.id] = connected
+            self._mcp_failed_until.pop(mcp_id, None)
             self._mcp_plugin_list.append(connected)
             log.info("MCP pool: %s loaded (lazy)", mcp_cfg.id)
             return True
         except Exception:
             log.exception("Failed to load MCP plugin: %s", mcp_id)
+            self._mcp_failed_until[mcp_id] = time.monotonic() + _MCP_FAILURE_TTL_S
             return False
         finally:
             self._loading_mcps.discard(mcp_id)
@@ -2916,6 +2988,12 @@ async def diagnostics() -> str:
         result["agents_created"] = list(_manager._sk_agents.keys())
         result["kernels"] = list(_manager._kernels.keys())
         result["mcp_plugins_loaded"] = list(_manager._mcp_plugins.keys())
+        configured_mcps = (
+            [m.id for m in _manager.config.mcps] if _manager.config else []
+        )
+        result["mcp_plugins_unavailable"] = [
+            m for m in configured_mcps if m not in _manager._mcp_plugins
+        ]
         result["threads_active"] = len(_manager._threads)
     else:
         result["status"] = "not_initialized"
