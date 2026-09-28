@@ -226,6 +226,9 @@ class McpConfig:
     env: dict[str, str] = field(default_factory=dict)
     risk_class: str = "read"  # see #3408: ToolRiskClass
     allowed_capabilities: list[str] = field(default_factory=list)
+    # None -> DEFAULT_MCP_CONNECT_TIMEOUT_S in sk_agent (bound handshake,
+    # po-203 finding: a spawned-but-silent server otherwise hangs forever)
+    connect_timeout_s: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> McpConfig:
@@ -237,6 +240,7 @@ class McpConfig:
             env=data.get("env", {}),
             risk_class=data.get("risk_class", "read"),
             allowed_capabilities=list(data.get("allowed_capabilities", [])),
+            connect_timeout_s=data.get("connect_timeout_s"),
         )
 
     def to_dict(self) -> dict:
@@ -252,6 +256,8 @@ class McpConfig:
             d["risk_class"] = self.risk_class
         if self.allowed_capabilities:
             d["allowed_capabilities"] = list(self.allowed_capabilities)
+        if self.connect_timeout_s is not None:
+            d["connect_timeout_s"] = self.connect_timeout_s
         return d
 
 
