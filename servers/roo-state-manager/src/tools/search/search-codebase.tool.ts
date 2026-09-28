@@ -14,7 +14,7 @@ import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { isAbsolute, join } from 'path';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'path';
 
 /**
  * #2609/#2554 (rename-GC gap): the Roo/Zoo Code indexer (reference-only submodule
@@ -334,6 +334,158 @@ export async function findCollectionByContent(
 		}
 	}
 	return best;
+}
+
+// ─── #2609 V2(c)(b): partial-collection detection at resolution time ──────────
+// V2(b) verdict (c.5869551111): the served collection ws-d2ffdbaa832aed16 was
+// PARTIAL (883/5013 files, src/tools/roosync absent) yet hash-matched and was
+// served as-is — the L1 content fallback only fires on a hash miss or an EMPTY
+// hash match. No ranking lever can surface a file absent from the corpus, so
+// V2(c)(b) makes the state visible at resolution time: count distinct indexed
+// files, count eligible files on disk, expose `coverage` + `coverage_warning`
+// below a named threshold so callers can propose a reindex instead of reading
+// silence as coverage.
+
+/** Warn when distinct indexed files / eligible disk files falls below this ratio. */
+const COVERAGE_WARN_RATIO = parseFloat(process.env.CODEBASE_COVERAGE_WARN_RATIO || '0.8');
+/** Scroll page size for the distinct-file count (payload-only, no vector). */
+const COVERAGE_SCROLL_LIMIT = 256;
+/** Hard cap on scroll pages — bounds the count on a runaway collection. */
+const COVERAGE_SCROLL_MAX_PAGES = 1200;
+/** Per-collection TTL: the full scroll is O(points), never re-paid per search. */
+const COVERAGE_CACHE_TTL_MS = parseInt(process.env.CODEBASE_COVERAGE_CACHE_TTL_MS || '900000', 10);
+/** Extensions the Roo/Zoo indexer parses — the denominator's eligible set. */
+const COVERAGE_ELIGIBLE_EXTENSIONS = new Set([
+	'.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.ps1', '.sh', '.sql',
+	'.json', '.md', '.yml', '.yaml', '.toml', '.cs', '.java', '.go', '.rs', '.rb',
+	'.php', '.c', '.h', '.cpp', '.hpp', '.vue', '.svelte'
+]);
+/** Directories the indexer never descends into (also keeps the walk bounded). */
+const COVERAGE_SKIP_DIRS = new Set([
+	'node_modules', '.git', 'build', 'build-out', 'dist', '.turbo',
+	'__pycache__', '.venv', 'venv', '.next', '.cache'
+]);
+
+/** Shape of the `coverage` block exposed in the search response. */
+export type CoverageInfo = {
+	indexed_files: number;
+	eligible_files: number;
+	coverage_ratio: number;
+	warn_threshold: number;
+	below_threshold: boolean;
+};
+
+/** Distinct-file count of a collection via full payload-only scroll (no vector). */
+async function countIndexedFiles(qdrant: any, collectionName: string): Promise<number | null> {
+	try {
+		const files = new Set<string>();
+		let offset: any = undefined;
+		for (let page = 0; page < COVERAGE_SCROLL_MAX_PAGES; page++) {
+			const result: any = await qdrant.scroll(collectionName, {
+				limit: COVERAGE_SCROLL_LIMIT,
+				...(offset !== undefined && offset !== null ? { offset } : {}),
+				with_payload: { include: ['filePath'] },
+				with_vector: false,
+			});
+			const points = result?.points || result?.result?.points || [];
+			for (const p of points) {
+				const fp = p?.payload?.filePath;
+				if (fp) files.add(String(fp));
+			}
+			offset = result?.next_page_offset ?? result?.result?.next_page_offset;
+			if (offset === undefined || offset === null) return files.size;
+		}
+		return files.size; // page cap hit — a lower bound, still reported as-is
+	} catch {
+		return null;
+	}
+}
+
+/** Eligible-file count of the workspace on disk (the denominator). 0 = unreadable/empty. */
+function countEligibleWorkspaceFiles(workspaceRoot: string): number {
+	try {
+		let count = 0;
+		// Two guards so a pathological (or mocked, path-blind) readdirSync cannot
+		// turn the walk into unbounded work: a depth cap AND a total-entry budget.
+		// A depth cap alone is NOT enough — a path-blind mock replays the same
+		// directory listing at every level, which multiplies into an exponential
+		// tree (3 dirs ^ depth 32) and OOMs the worker; the entry budget caps the
+		// multiplication itself. Real repos sit orders of magnitude below both.
+		const COVERAGE_WALK_MAX_DEPTH = 32;
+		const COVERAGE_WALK_MAX_ENTRIES = 100_000;
+		let budget = COVERAGE_WALK_MAX_ENTRIES;
+		const walk = (dir: string, depth: number): void => {
+			if (depth > COVERAGE_WALK_MAX_DEPTH || budget <= 0) return;
+			const entries = readdirSync(dir, { withFileTypes: true });
+			for (const e of entries) {
+				if (--budget <= 0) return;
+				if (e.isDirectory()) {
+					if (!COVERAGE_SKIP_DIRS.has(e.name)) walk(join(dir, e.name), depth + 1);
+				} else if (typeof e.isFile === 'function' && e.isFile() && COVERAGE_ELIGIBLE_EXTENSIONS.has(extname(e.name).toLowerCase())) {
+					count++;
+				}
+			}
+		};
+		walk(workspaceRoot, 0);
+		return count;
+	} catch {
+		return 0;
+	}
+}
+
+/**
+ * Pure coverage arithmetic — the 883/5013 shape measured on ws-d2ffdbaa832aed16
+ * at V2(b) time. Returns null when the ratio is undecidable (no denominator).
+ */
+export function evaluateCoverage(indexedFiles: number, eligibleFiles: number, threshold: number = COVERAGE_WARN_RATIO): CoverageInfo | null {
+	if (!Number.isFinite(indexedFiles) || !Number.isFinite(eligibleFiles) || eligibleFiles <= 0) return null;
+	const ratio = indexedFiles / eligibleFiles;
+	return {
+		indexed_files: indexedFiles,
+		eligible_files: eligibleFiles,
+		coverage_ratio: Math.round(ratio * 1000) / 1000,
+		warn_threshold: threshold,
+		below_threshold: ratio < threshold,
+	};
+}
+
+/** Per-collection coverage cache (module-level, TTL-bounded). */
+const coverageCache = new Map<string, { value: CoverageInfo; expiresAt: number }>();
+
+/** Test hook — clears the TTL cache between suites. */
+export function clearCoverageCache(): void {
+	coverageCache.clear();
+}
+
+/** Orchestrates the resolution-time coverage check (cache → scroll → disk walk). */
+async function computeCollectionCoverage(qdrant: any, collectionName: string, workspaceRoot: string): Promise<CoverageInfo | null> {
+	const cached = coverageCache.get(collectionName);
+	if (cached && cached.expiresAt > Date.now()) return cached.value;
+	const indexed = await countIndexedFiles(qdrant, collectionName);
+	if (indexed === null) return null;
+	const eligible = countEligibleWorkspaceFiles(workspaceRoot);
+	if (eligible <= 0) return null; // workspace not on disk here — ratio undecidable
+	const value = evaluateCoverage(indexed, eligible);
+	if (value) coverageCache.set(collectionName, { value, expiresAt: Date.now() + COVERAGE_CACHE_TTL_MS });
+	return value;
+}
+
+/**
+ * #2609 V2(c)(c): pin the build vintage that SERVES this response. The MCP host
+ * runs the compiled server from a vintaged dir (build-<hex>/ — per #3713 the
+ * served code legitimately lags the source tree), so two lanes can return
+ * divergent rankings while both report success. Callers pinning this field can
+ * compare probes across machines (ai-01 17:31Z input: its host served a
+ * pre-V2(a) build while po-2025 served fresh code — same query, different code).
+ */
+export function getServedBuildId(): string {
+	try {
+		const entry = process.argv[1];
+		if (!entry) return 'unknown';
+		return basename(dirname(resolve(entry)));
+	} catch {
+		return 'unknown';
+	}
 }
 
 /**
@@ -1106,6 +1258,19 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			}
 		}
 
+		// #2609 V2(c)(b): partial-collection detection at resolution time. A
+		// hash-matched but PARTIAL collection (V2(b): 883/5013, src/tools/roosync
+		// absent) is served as-is — the L1 fallback only fires on miss/empty. This
+		// surfaces the state in the response so callers can propose a reindex
+		// instead of reading silence as coverage. Fail-open: no `coverage` block
+		// when the ratio is undecidable (scroll error, workspace not on disk).
+		let coverage: CoverageInfo | null = null;
+		try {
+			coverage = await computeCollectionCoverage(qdrant, collectionName, workspace);
+		} catch {
+			coverage = null;
+		}
+
 		// 3. Générer l'embedding de la requête (uses dedicated codebase embedding client)
 		// #3279: Fast-fail check BEFORE the 60s OpenAI client timeout. If the breaker
 		// is open, return immediately with an informative error pointing to the
@@ -1456,6 +1621,16 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// top-level dirs vs the workspace's actual directory structure.
 			collection_resolved_by: collectionResolvedBy,
 			...(contentMatchDetails ? { content_match: contentMatchDetails } : {}),
+			// #2609 V2(c)(c): the build vintage serving this response — makes probes
+			// comparable across machines (divergent rankings ≠ divergent code when
+			// hosts serve different vintages; see getServedBuildId).
+			served_build: getServedBuildId(),
+			// #2609 V2(c)(b): partial-collection observability (computeCollectionCoverage).
+			// Absent when undecidable — never a fabricated ratio.
+			...(coverage ? { coverage } : {}),
+			...(coverage?.below_threshold ? {
+				coverage_warning: `collection ${collectionName} is PARTIAL: ${coverage.indexed_files}/${coverage.eligible_files} eligible workspace files indexed (ratio ${coverage.coverage_ratio} < ${coverage.warn_threshold}). Files absent from the corpus cannot be retrieved by any ranking — re-index this workspace (Roo/Zoo Code codebase index on this machine) to repair.`
+			} : {}),
 			results_count: results.length,
 			min_score_used: effectiveMinScore,
 			// #2609/#2554: dead-path filtering observability

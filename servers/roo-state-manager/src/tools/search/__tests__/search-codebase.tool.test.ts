@@ -57,7 +57,10 @@ import {
 	computeBlockRange,
 	verifyAnchor,
 	renderBlock,
-	expandHitBlock
+	expandHitBlock,
+	evaluateCoverage,
+	clearCoverageCache,
+	getServedBuildId
 } from '../search-codebase.tool.js';
 
 describe('search-codebase.tool', () => {
@@ -1179,6 +1182,159 @@ describe('search-codebase.tool', () => {
 		});
 
 		// ============================================================
+		// #2609 V2(c)(b) — partial-collection detection at resolution time
+		// V2(b) verdict: ws-d2ffdbaa832aed16 was served PARTIAL (883/5013,
+		// src/tools/roosync absent) while hash-matching — silence read as coverage.
+		// V2(c) exposes `coverage` + `coverage_warning` below a named threshold.
+		// ============================================================
+
+		describe('handleCodebaseSearch - partial-collection coverage (#2609 V2(c)(b)/(c))', () => {
+			beforeEach(() => {
+				clearCoverageCache();
+				process.env.EMBEDDING_API_KEY = 'test-key';
+				mockQdrant.getCollection.mockResolvedValue({ status: 'green', points_count: 100 });
+				mockEmbeddingCreate.mockResolvedValue({
+					data: [{ embedding: new Array(8).fill(0.1) }]
+				});
+				mockQdrant.query.mockResolvedValue({ points: [] });
+			});
+
+			afterEach(() => {
+				delete process.env.EMBEDDING_API_KEY;
+				// Restore the hoisted default so later suites stay deterministic.
+				mockReaddirSync.mockReturnValue([]);
+			});
+
+			// The exact shape measured on ws-d2ffdbaa832aed16 at V2(b) time
+			// (c.5869551111) — the dispatch's named fixture.
+			test('evaluateCoverage: 883/5013 → ratio 0.176, below threshold 0.8 (V2(b) fixture)', () => {
+				const c = evaluateCoverage(883, 5013);
+				expect(c).not.toBeNull();
+				expect(c!.indexed_files).toBe(883);
+				expect(c!.eligible_files).toBe(5013);
+				expect(c!.coverage_ratio).toBeCloseTo(0.176, 2);
+				expect(c!.warn_threshold).toBe(0.8);
+				expect(c!.below_threshold).toBe(true);
+			});
+
+			test('evaluateCoverage: full coverage does not breach the threshold', () => {
+				const c = evaluateCoverage(5013, 5013)!;
+				expect(c.coverage_ratio).toBe(1);
+				expect(c.below_threshold).toBe(false);
+			});
+
+			test('evaluateCoverage: null on an undecidable denominator', () => {
+				expect(evaluateCoverage(883, 0)).toBeNull();
+				expect(evaluateCoverage(Number.NaN, 10)).toBeNull();
+			});
+
+			test('response carries coverage + coverage_warning when the collection is partial (mocked scroll + disk)', async () => {
+				// 2 distinct indexed files, 10 eligible on disk → 0.2 < 0.8.
+				mockQdrant.scroll.mockResolvedValue({
+					points: [
+						{ payload: { filePath: 'src/a.ts' } },
+						{ payload: { filePath: 'src/b.ts' } }
+					]
+				});
+				mockReaddirSync.mockImplementation(() => Array.from({ length: 10 }, (_, i) => ({
+					name: `file${i}.ts`,
+					isDirectory: () => false,
+					isFile: () => true
+				})));
+
+				const result = await handleCodebaseSearch({
+					query: 'coverage probe',
+					workspace: '/ws/v2c-partial'
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.coverage).toBeDefined();
+				expect(parsed.coverage.indexed_files).toBe(2);
+				expect(parsed.coverage.eligible_files).toBe(10);
+				expect(parsed.coverage.coverage_ratio).toBe(0.2);
+				expect(parsed.coverage.below_threshold).toBe(true);
+				expect(parsed.coverage_warning).toContain('PARTIAL');
+				expect(parsed.coverage_warning).toContain('/10');
+			});
+
+			test('full coverage: coverage block present, no coverage_warning', async () => {
+				mockQdrant.scroll.mockResolvedValue({
+					points: [
+						{ payload: { filePath: 'a.ts' } },
+						{ payload: { filePath: 'b.ts' } }
+					]
+				});
+				mockReaddirSync.mockImplementation(() => [
+					{ name: 'a.ts', isDirectory: () => false, isFile: () => true },
+					{ name: 'b.ts', isDirectory: () => false, isFile: () => true },
+					{ name: 'node_modules', isDirectory: () => true, isFile: () => false }
+				]);
+
+				const result = await handleCodebaseSearch({
+					query: 'coverage probe',
+					workspace: '/ws/v2c-full'
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.coverage.coverage_ratio).toBe(1);
+				expect(parsed.coverage.below_threshold).toBe(false);
+				expect(parsed.coverage_warning).toBeUndefined();
+			});
+
+			test('no coverage block when the workspace is not on disk (denominator undecidable)', async () => {
+				mockQdrant.scroll.mockResolvedValue({
+					points: [{ payload: { filePath: 'a.ts' } }]
+				});
+				mockReaddirSync.mockImplementation(() => {
+					throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+				});
+
+				const result = await handleCodebaseSearch({
+					query: 'coverage probe',
+					workspace: '/ws/v2c-nodisk'
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.coverage).toBeUndefined();
+				expect(parsed.coverage_warning).toBeUndefined();
+			});
+
+			test('coverage is cached per collection: a second search does not re-scroll', async () => {
+				mockQdrant.scroll.mockResolvedValue({
+					points: [{ payload: { filePath: 'a.ts' } }]
+				});
+				mockReaddirSync.mockImplementation(() => [
+					{ name: 'a.ts', isDirectory: () => false, isFile: () => true },
+					{ name: 'b.ts', isDirectory: () => false, isFile: () => true }
+				]);
+
+				await handleCodebaseSearch({ query: 'one', workspace: '/ws/v2c-cache' });
+				await handleCodebaseSearch({ query: 'two', workspace: '/ws/v2c-cache' });
+				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+			});
+
+			test('served_build pins the running build dir on every success response (#2609 V2(c)(c))', async () => {
+				mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+				const result = await handleCodebaseSearch({
+					query: 'served build probe',
+					workspace: '/ws/v2c-build'
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(typeof parsed.served_build).toBe('string');
+				expect(parsed.served_build.length).toBeGreaterThan(0);
+			});
+
+			test('getServedBuildId: deterministic, never empty', () => {
+				const id = getServedBuildId();
+				expect(typeof id).toBe('string');
+				expect(id.length).toBeGreaterThan(0);
+				expect(getServedBuildId()).toBe(id);
+			});
+		});
+
+		// ============================================================
 		// #2609/#2554 L1 — content-based collection matching (hash-mismatch fallback)
 		// Root cause: the workspace path hash is fragile cross-agent; when no hash variant
 		// matches, the right ws-* collection is identified by its indexed top-level dirs vs
@@ -1448,7 +1604,13 @@ describe('search-codebase.tool', () => {
 				expect(parsed.collection).toBe('ws-c12');
 				expect(parsed.collection_resolved_by).toBe('content-match');
 				// All 12 candidates were actually probed — the rank-12 one included.
-				expect(mockQdrant.scroll).toHaveBeenCalledTimes(12);
+				// (#2609 V2(c): the success path may add ONE more scroll after resolution
+				// — the coverage count, identified by its `filePath` payload projection —
+				// which is not a fallback signature probe.)
+				const signatureProbes = mockQdrant.scroll.mock.calls.filter(
+					(args: any[]) => args[1]?.with_payload?.include?.[0] === 'pathSegments'
+				);
+				expect(signatureProbes).toHaveLength(12);
 			});
 
 			test('no match + candidates exceed the cap → diagnostic discloses scanned of total, not just total', async () => {
