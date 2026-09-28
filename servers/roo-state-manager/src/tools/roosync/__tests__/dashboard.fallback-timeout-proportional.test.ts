@@ -78,7 +78,12 @@ vi.mock('@/services/openai', async (importOriginal) => {
   };
 });
 
-import { roosyncDashboard, resetCondenseCircuitBreaker, computeFallbackAttemptTimeoutMs } from '../dashboard.js';
+import {
+  roosyncDashboard,
+  resetCondenseCircuitBreaker,
+  computeFallbackAttemptTimeoutMs,
+  computePrimaryAttemptTimeoutMs,
+} from '../dashboard.js';
 import { resetFallbackChatOpenAIClient } from '@/services/openai';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-proportional-');
@@ -113,6 +118,59 @@ describe('#2719 borne — computeFallbackAttemptTimeoutMs (unit)', () => {
   it('returns null (refuse, no traffic) when less than the skip floor remains', () => {
     expect(computeFallbackAttemptTimeoutMs(50 * 1024, Date.now() + 4000)).toBeNull();
     expect(computeFallbackAttemptTimeoutMs(50 * 1024, Date.now() - 1)).toBeNull();
+  });
+});
+
+describe('#2719 seconde borne — computePrimaryAttemptTimeoutMs (unit)', () => {
+  beforeEach(() => {
+    delete process.env.CONDENSE_LLM_TIMEOUT_MS;
+    delete process.env.FALLBACK_TIMEOUT_MS;
+    delete process.env.FALLBACK_TIMEOUT_MIN_MS;
+    delete process.env.FALLBACK_TIMEOUT_MS_PER_KB;
+    delete process.env.FALLBACK_LLM_MODEL_ID;
+    delete process.env.ZAI_API_KEY;
+    process.env.FALLBACK_API_KEY = 'test-fallback-key';
+  });
+
+  afterEach(() => {
+    delete process.env.FALLBACK_API_KEY;
+  });
+
+  it('no pass deadline → flat ceiling (non-append callers unchanged)', () => {
+    expect(computePrimaryAttemptTimeoutMs(50 * 1024)).toBe(720000);
+  });
+
+  it('no armed cloud tier → ceiling even under a deadline that would clip/refuse (GO #1)', () => {
+    delete process.env.FALLBACK_API_KEY;
+    // Armed, this deadline would clip to ~5000ms (< the 15s plancher) → null (refusal).
+    // Unarmed, the function must behave exactly as before the second bound: no clip.
+    expect(computePrimaryAttemptTimeoutMs(50 * 1024, Date.now() + 80000)).toBe(720000);
+  });
+
+  it('clips to remaining − fallback reserve (75000ms reserve on a 50 KB prompt)', () => {
+    // 50 KB → reserve = 30000 + 900 × 50 = 75000 (< the 120000 reserve ceiling).
+    // deadline +200s → clip ≈ 125000ms, strictly below the 720s ceiling.
+    const t = computePrimaryAttemptTimeoutMs(50 * 1024, Date.now() + 200000);
+    expect(t).not.toBeNull();
+    expect(t!).toBeLessThanOrEqual(125000);
+    expect(t!).toBeGreaterThan(124000);
+  });
+
+  it('keeps the 720s ceiling when the remaining budget can host it', () => {
+    // remaining − reserve ≈ 825000 > ceiling → min() keeps the flat ceiling.
+    expect(computePrimaryAttemptTimeoutMs(50 * 1024, Date.now() + 900000)).toBe(720000);
+  });
+
+  it('refuses (null) below the 15s plancher — no attempt started', () => {
+    expect(computePrimaryAttemptTimeoutMs(50 * 1024, Date.now() + 75000 + 14000)).toBeNull();
+    expect(computePrimaryAttemptTimeoutMs(50 * 1024, Date.now() - 1)).toBeNull();
+  });
+
+  it('returns the clipped budget when it sits just above the plancher', () => {
+    const t = computePrimaryAttemptTimeoutMs(50 * 1024, Date.now() + 75000 + 16000);
+    expect(t).not.toBeNull();
+    expect(t!).toBeGreaterThanOrEqual(15000);
+    expect(t!).toBeLessThanOrEqual(16000);
   });
 });
 

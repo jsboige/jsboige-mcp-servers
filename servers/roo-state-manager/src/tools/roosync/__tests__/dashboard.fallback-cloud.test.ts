@@ -27,7 +27,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, resetCondenseCircuitBreaker, isRetryableFallbackError } from '../dashboard.js';
+import {
+  roosyncDashboard,
+  resetCondenseCircuitBreaker,
+  isRetryableFallbackError,
+  condenseTextIfTooLarge,
+} from '../dashboard.js';
 
 // #3011 second tour: import the REAL SDK timeout class so the bite-test constructs the
 // exact error the fallback path throws on a hung endpoint. The global test setup
@@ -666,6 +671,161 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     const markdown: string = (afterSuccess as any).data?.status?.markdown ?? '';
     expect(markdown).not.toContain('lastCondense: fallback-truncated');
     expect(markdown).toContain('All nominal');
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // #2719 seconde borne (ai-01 GO 28/09, c.5866375743) — PRIMARY attempts clipped
+  // to the pass budget (remaining − fallback reserve). Pins the GO conditions:
+  //   (1) no clip when the cloud tier is unarmed — here the ARMED predicate is the
+  //       env key, the exact contract of getFallbackChatOpenAIClient
+  //       (services/openai.ts L123: null iff neither ZAI_API_KEY nor FALLBACK_API_KEY);
+  //   (2) the clip is stamped (llm.*.primaryClip) — countable, not inferred;
+  //   (3) refusal WITHOUT traffic under the 15s plancher;
+  //   (4) per-attempt recalc (a hoisted-before-loop value would be CONSTANT) and
+  //       the condenseTextIfTooLarge invariant (that path received passDeadlineMs
+  //       but ignored it for its local attempts before this change).
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('#2719 seconde borne — primary clip per pass', () => {
+    beforeEach(() => {
+      // Deterministic whether or not this machine's .env carries a cloud key:
+      // the clip predicate is exactly `ZAI_API_KEY || FALLBACK_API_KEY`.
+      delete process.env.ZAI_API_KEY;
+      delete process.env.FALLBACK_API_KEY;
+      delete process.env.CONDENSE_PASS_DEADLINE_MS;
+    });
+
+    afterEach(() => {
+      delete process.env.ZAI_API_KEY;
+      delete process.env.FALLBACK_API_KEY;
+      delete process.env.CONDENSE_PASS_DEADLINE_MS;
+    });
+
+    /** Per-request timeouts of every primary attempt, in call order. */
+    const primaryTimeouts = (): number[] =>
+      mockPrimaryCreate.mock.calls.map((c: any[]) => (c[1] as { timeout?: number } | undefined)?.timeout ?? 0);
+
+    /** Recorded calls grouped by system prompt: summary and status run in parallel. */
+    function primaryGroups(): number[][] {
+      const groups = new Map<string, number[]>();
+      for (const c of mockPrimaryCreate.mock.calls) {
+        const req = c[0] as { messages?: Array<{ content?: string }> } | undefined;
+        const key = String(req?.messages?.[0]?.content ?? '').slice(0, 60);
+        const list = groups.get(key) ?? [];
+        list.push((c[1] as { timeout?: number } | undefined)?.timeout ?? 0);
+        groups.set(key, list);
+      }
+      return [...groups.values()];
+    }
+
+    it('(A) clips every primary attempt and RECOMPUTES it per attempt (GO #2, #4)', async () => {
+      process.env.FALLBACK_API_KEY = 'test-fallback-key';
+      mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+      mockPrimaryCreate.mockRejectedValue(new Error('vLLM 192.168.0.47:5002 connection refused'));
+      mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+      mockFallbackCreate.mockResolvedValue({
+        choices: [{ message: { content: '## Cloud summary\n\nSalvaged under the second bound.' } }],
+      });
+
+      const condensedResult = await fillUntilCondensed();
+
+      const timeouts = primaryTimeouts();
+      expect(timeouts.length).toBeGreaterThanOrEqual(2); // the retry loop really ran
+      for (const t of timeouts) {
+        expect(t).toBeGreaterThan(0);
+        expect(t).toBeLessThan(720000); // CLIPPED — the flat ceiling is 720000
+      }
+
+      // Per-attempt recalc: within ONE generator's sequence the budget can only
+      // shrink (2s/4s backoffs eat wall-clock). A value hoisted before the loop
+      // would be constant → strictly decreasing by ≥ 500ms is the proof.
+      const retried = primaryGroups().filter(g => g.length >= 2);
+      expect(retried.length).toBeGreaterThanOrEqual(1);
+      for (const g of retried) {
+        for (let i = 1; i < g.length; i++) expect(g[i]).toBeLessThan(g[i - 1] - 500);
+      }
+
+      // GO #2 — the clip is stamped on the stats, tied to an actually-issued attempt.
+      const summaryStats = (condensedResult.condenseDiagnostic ?? [])
+        .map((d: any) => d.llm?.summary)
+        .find((s: any) => s?.primaryClip);
+      expect(summaryStats?.primaryClip).toBeDefined();
+      expect(summaryStats.primaryClip.budgetMs).toBeGreaterThan(0);
+      expect(summaryStats.primaryClip.budgetMs).toBeLessThan(720000);
+      expect(summaryStats.primaryClip.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(timeouts).toContain(summaryStats.primaryClip.budgetMs);
+
+      // Beyond the bound, the pass behaves as before: salvaged by the cloud.
+      expect(condensedResult.condenseDiagnostic!.some((d: any) => d.outcome === 'fallback-cloud')).toBe(true);
+    });
+
+    it('(B) GO #1 — no cloud key → no clip: every primary attempt keeps the flat 720s ceiling', async () => {
+      // Unarmed per the getter's contract: clipping a slow success would have
+      // nothing to redirect to, so the historical behavior must be bit-identical.
+      mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+      mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+      mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+      mockFallbackCreate.mockResolvedValue({ choices: [{ message: { content: '## Cloud summary\n\nSalvaged.' } }] });
+
+      const condensedResult = await fillUntilCondensed();
+
+      const timeouts = primaryTimeouts();
+      expect(timeouts.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(timeouts)).toEqual(new Set([720000]));
+      const stamps = (condensedResult.condenseDiagnostic ?? [])
+        .flatMap((d: any) => [d.llm?.summary?.primaryClip, d.llm?.status?.primaryClip])
+        .filter(Boolean);
+      expect(stamps).toHaveLength(0);
+      // Salvage is untouched (the mocked cloud client still answers).
+      expect(condensedResult.condenseDiagnostic!.some((d: any) => d.outcome === 'fallback-cloud')).toBe(true);
+    });
+
+    it('(C) GO #4 — condenseTextIfTooLarge clips its local attempts to the pass deadline', async () => {
+      process.env.FALLBACK_API_KEY = 'test-fallback-key';
+      mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+      // Attempt 1 comes back still over the 10 KB cap → attempt 2 (tighter target) converges.
+      mockPrimaryCreate
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'Y'.repeat(20000) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'short' } }] });
+
+      const out = await condenseTextIfTooLarge('X'.repeat(40000), 10 * 1024, 'Summary', Date.now() + 200000);
+
+      const timeouts = mockPrimaryCreate.mock.calls.map(
+        (c: any[]) => (c[1] as { timeout?: number } | undefined)?.timeout ?? 0,
+      );
+      expect(timeouts).toHaveLength(2);
+      // Pre-fix this path used the flat 720s ceiling despite receiving passDeadlineMs.
+      for (const t of timeouts) {
+        expect(t).toBeGreaterThan(0);
+        expect(t).toBeLessThan(720000);
+      }
+      // 40 KB text → reserve = 30000 + 900 × 39.06 ≈ 65156 → clip ≈ 200000 − 65156.
+      expect(timeouts[0]).toBeGreaterThan(120000);
+      expect(timeouts[0]).toBeLessThan(150000);
+      // Per-attempt recalc: fixed deadline, moving wall-clock → t2 ≤ t1.
+      expect(timeouts[1]).toBeLessThanOrEqual(timeouts[0]);
+      // The #2598 hard cap still holds (converged output, boundaries untouched).
+      expect(out).toBe('short');
+      expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(10 * 1024);
+    });
+
+    it('(D) GO #3 — an exhausted pass refuses the local attempt WITHOUT traffic', async () => {
+      process.env.FALLBACK_API_KEY = 'test-fallback-key';
+      process.env.CONDENSE_PASS_DEADLINE_MS = '1'; // already past when the loops run
+      mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+      mockPrimaryCreate.mockResolvedValue({ choices: [{ message: { content: 'must never be produced' } }] });
+      // An EXISTING cloud client too: "no traffic" must not be confounded with "no client".
+      mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+      mockFallbackCreate.mockResolvedValue({ choices: [{ message: { content: 'nor this one' } }] });
+
+      const condensedResult = await fillUntilCondensed();
+
+      expect(mockPrimaryCreate).not.toHaveBeenCalled();
+      expect(mockFallbackCreate).not.toHaveBeenCalled();
+      const errors = (condensedResult.condenseDiagnostic ?? [])
+        .flatMap((d: any) => [d.llm?.summary?.lastError, d.llm?.status?.lastError])
+        .filter(Boolean);
+      expect(errors.some((e: string) => e.includes('primary clip'))).toBe(true);
+    });
   });
 });
 
