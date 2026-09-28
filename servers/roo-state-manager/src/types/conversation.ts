@@ -76,6 +76,11 @@ export interface SkeletonHeader {
 /**
  * Full skeleton with conversation sequence. Loaded on-demand from disk.
  * Never stored in the cache — only used transiently by view/summarize/export.
+ *
+ * @deprecated Roo-specific conversation format — superseded by the unified
+ * PG-backed task extraction (roo-extensions #1360 / #1395). Do not add new
+ * consumers. Removal no earlier than 2026-10-28, gated on roo-extensions
+ * #1394 (src/tools consumer migration). See docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md.
  */
 export interface ConversationSkeleton extends SkeletonHeader {
    sequence: (MessageSkeleton | ActionMetadata)[];

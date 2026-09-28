@@ -27,8 +27,14 @@ const PREVIEW_FIRST_USER_MAX = 900;
 const PREVIEW_LAST_USER_MAX = 500;
 const PREVIEW_LAST_MESSAGE_MAX = 500;
 
+// #1395 J+0 — warn-once : archiveToSkeleton produit le format déprécié (voir MIGRATION-UNIFIED-TASK-EXTRACTION.md)
+let archiveToSkeletonDeprecationWarned = false;
+
 /**
  * Convert an `ArchivedTask` (cross-machine GDrive archive) into a `ConversationSkeleton`.
+ *
+ * #1395 J+0 : le type retourné (ConversationSkeleton) est déprécié —
+ * remplacement : unified store PG (src/services/unified-store/), warn-once dans le corps.
  *
  * Notes:
  * - Messages keep their role/content/timestamp from the archive.
@@ -38,6 +44,15 @@ const PREVIEW_LAST_MESSAGE_MAX = 500;
  *   tool/action metadata or original byte sizes.
  */
 export function archiveToSkeleton(archive: ArchivedTask): ConversationSkeleton {
+    if (!archiveToSkeletonDeprecationWarned) {
+        archiveToSkeletonDeprecationWarned = true;
+        console.warn(
+            '[Deprecation] archiveToSkeleton() returns the deprecated Roo-specific ConversationSkeleton format ' +
+            '(roo-extensions #1360/#1395). Replacement: unified PG-backed task extraction ' +
+            '(src/services/unified-store/, docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md). ' +
+            'Removal no earlier than 2026-10-28, gated on roo-extensions #1394.'
+        );
+    }
     const sequence: MessageSkeleton[] = (archive.messages || []).map(msg => ({
         role: msg.role,
         content: msg.content,
