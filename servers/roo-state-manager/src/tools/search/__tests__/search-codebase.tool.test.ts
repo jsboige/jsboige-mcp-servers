@@ -7,7 +7,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync, mockReaddirSync } = vi.hoisted(() => ({
+const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync, mockReaddirSync, mockReadFileSync, mockStatSync } = vi.hoisted(() => ({
 	mockGetQdrantClient: vi.fn(),
 	mockQdrant: { getCollection: vi.fn(), query: vi.fn(), getCollections: vi.fn(), scroll: vi.fn() },
 	mockEmbeddingCreate: vi.fn(),
@@ -16,12 +16,23 @@ const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync, mo
 	mockExistsSync: vi.fn(() => true),
 	// #2609/#2554 L1: mock readdirSync so content-based collection matching is deterministic.
 	// Default: empty array = no workspace dirs = content-match skipped. Individual tests override.
-	mockReaddirSync: vi.fn(() => [])
+	mockReaddirSync: vi.fn(() => []),
+	// #2609 V2(a): mock readFileSync/statSync so block expansion is deterministic.
+	// Defaults simulate an absent file (statSync throws ENOENT) → expansion safely
+	// skips to the raw chunk snippet — the existing tests' expectations hold.
+	mockReadFileSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }),
+	mockStatSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); })
 }));
 
 vi.mock('fs', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('fs')>();
-	return { ...actual, existsSync: mockExistsSync, readdirSync: mockReaddirSync };
+	return {
+		...actual,
+		existsSync: mockExistsSync,
+		readdirSync: mockReaddirSync,
+		readFileSync: mockReadFileSync,
+		statSync: mockStatSync
+	};
 });
 
 vi.mock('../../../services/qdrant.js', () => ({
@@ -42,7 +53,11 @@ import {
 	codebaseSearchTool,
 	handleCodebaseSearch,
 	resetCodebaseEmbeddingBreaker,
-	resetCodebaseEmbeddingClient
+	resetCodebaseEmbeddingClient,
+	computeBlockRange,
+	verifyAnchor,
+	renderBlock,
+	expandHitBlock
 } from '../search-codebase.tool.js';
 
 describe('search-codebase.tool', () => {
@@ -876,6 +891,125 @@ describe('search-codebase.tool', () => {
 		// the measured archive hits (0.72-0.75) stay above min_score 0.5 where
 		// the ×0.5 floated in the issue would silently drop them from recall.
 		// ============================================================
+
+			describe('handleCodebaseSearch - compiled-build re-ranking (#2609 V2(a))', () => {
+			beforeEach(() => {
+				process.env.EMBEDDING_API_KEY = 'test-key';
+				mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+				mockEmbeddingCreate.mockResolvedValue({
+					data: [{ embedding: new Array(8).fill(0.1) }]
+				});
+			});
+
+			afterEach(() => {
+				delete process.env.EMBEDDING_API_KEY;
+			});
+
+			test('repro — a stale build-<hash> vintage that outranked every living source chunk sinks below it', async () => {
+				// Exact shape of the live measurement (2026-09-27, golden scenario 3 re-run):
+				// the TOP source hit was …/build-80b4b9a14965a403/…compare-config.js, a dead
+				// compiled vintage, above every living .ts source chunk.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.83, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\build-80b4b9a14965a403\\tools\\roosync\\compare-config.js', codeChunk: 'const divergent_value = [];', startLine: 199, endLine: 199 } },
+						{ score: 0.80, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\search\\search-semantic.tool.ts', codeChunk: 'const joined = await postgres.query(SQL);', startLine: 300, endLine: 300 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({
+					query: 'unified store Postgres join filters Qdrant semantic search results',
+					workspace: '/ws',
+					limit: 2
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				const paths = parsed.results.map((r: any) => r.file_path);
+
+				// The living source now leads; the stale vintage stays visible, degraded.
+				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\search\\search-semantic.tool.ts');
+				expect(parsed.results[0].score).toBeCloseTo(0.80, 5);
+				expect(parsed.results[1].score).toBeCloseTo(0.83 * 0.7, 5);
+				expect(parsed.build_dir_malus_applied).toBe(1);
+			});
+
+			test('precedence — build dir wins over the data class, never compounded with ×0.75', async () => {
+				// build-x/foo.json is first a compiled artifact: 0.70 × 0.7 = 0.49, still above
+				// the min_score floor used here; compounding to 0.7 × 0.75 = 0.3675 would push
+				// a 0.70 hit far under any threshold — silently removing it from recall.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.70, payload: { filePath: 'mcps\\internal\\build-abc123def4567890\\config.json', codeChunk: '{"x": 1}', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'config', workspace: '/ws', limit: 1, min_score: 0.2 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results_count).toBe(1);
+				// ×0.7 (build) only — NOT ×0.7 × 0.75 (build × data).
+				expect(parsed.results[0].score).toBeCloseTo(0.70 * 0.7, 5);
+				expect(parsed.build_dir_malus_applied).toBe(1);
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+
+			test('scope — source dirs named `build-<word>/` (build-tools, build-helpers) are NOT compiled output', async () => {
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.70, payload: { filePath: 'src\\build-tools\\hammer.ts', codeChunk: 'x', startLine: 1, endLine: 1 } },
+						{ score: 0.70, payload: { filePath: 'src\\build-helpers\\util.ts', codeChunk: 'y', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'module', workspace: '/ws', limit: 2, min_score: 0.2 });
+				const parsed = JSON.parse(result.content[0].text);
+				const byPath = Object.fromEntries(parsed.results.map((r: any) => [r.file_path, r.score]));
+				expect(byPath['src\\build-tools\\hammer.ts']).toBeCloseTo(0.70, 5);
+				expect(byPath['src\\build-helpers\\util.ts']).toBeCloseTo(0.70, 5);
+				expect(parsed.build_dir_malus_applied).toBeUndefined();
+			});
+
+			test('cap key — compiled copies of one logical file share ONE budget; a `build-helpers/` source keeps its own', async () => {
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.99, payload: { filePath: 'src\\util.ts', codeChunk: 'a1', startLine: 1, endLine: 1 } },
+						{ score: 0.98, payload: { filePath: 'src\\util.ts', codeChunk: 'a2', startLine: 20, endLine: 20 } },
+						{ score: 0.97, payload: { filePath: 'src\\build-helpers\\util.ts', codeChunk: 'b1', startLine: 1, endLine: 1 } },
+						{ score: 0.96, payload: { filePath: 'lib\\build\\mod.js', codeChunk: 'c1', startLine: 1, endLine: 1 } },
+						{ score: 0.95, payload: { filePath: 'lib\\build-out\\mod.js', codeChunk: 'c2', startLine: 1, endLine: 1 } },
+						{ score: 0.94, payload: { filePath: 'lib\\build-80b4b9a14965a403\\mod.js', codeChunk: 'c3', startLine: 1, endLine: 1 } },
+						{ score: 0.30, payload: { filePath: 'src\\other.ts', codeChunk: 'd1', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				// limit 5 < eligible picks: no backfill can rescue a capped hit, so the cap key decides.
+				const result = await handleCodebaseSearch({ query: 'module', workspace: '/ws', limit: 5, min_score: 0.2 });
+				const parsed = JSON.parse(result.content[0].text);
+				const paths = parsed.results.map((r: any) => r.file_path);
+				// build-helpers/util.ts is its own file: NOT capped against src/util.ts's two chunks
+				// (the old `build(-[a-z0-9]+)?` key stripped it to src/util.ts and dropped it).
+				expect(paths).toContain('src\\build-helpers\\util.ts');
+				// The three compiled copies of lib/mod.js share one budget of 2.
+				const compiled = paths.filter((p: string) => p.endsWith('mod.js'));
+				expect(compiled).toHaveLength(2);
+				expect(paths).not.toContain('lib\\build-80b4b9a14965a403\\mod.js');
+			});
+
+			test('scope — bare `build/`, hashed `build-<hex>/` and the `build-out/` staging dir match; src/ is untouched', async () => {
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.70, payload: { filePath: 'frontend\\build\\bundle.js', codeChunk: 'x', startLine: 1, endLine: 1 } },
+						{ score: 0.70, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\build-out\\tools\\roosync\\compare-config.js', codeChunk: 'x', startLine: 1, endLine: 1 } },
+						{ score: 0.70, payload: { filePath: 'src\\plain\\module.ts', codeChunk: 'y', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'module', workspace: '/ws', limit: 3, min_score: 0.2 });
+				const parsed = JSON.parse(result.content[0].text);
+				const byPath = Object.fromEntries(parsed.results.map((r: any) => [r.file_path, r.score]));
+				expect(byPath['frontend\\build\\bundle.js']).toBeCloseTo(0.70 * 0.7, 5);
+				expect(byPath['mcps\\internal\\servers\\roo-state-manager\\build-out\\tools\\roosync\\compare-config.js']).toBeCloseTo(0.70 * 0.7, 5);
+				expect(byPath['src\\plain\\module.ts']).toBeCloseTo(0.70, 5);
+			});
+		});
 
 		describe('handleCodebaseSearch - archive-file re-ranking (#3174 defect 3)', () => {
 			test('repro — archived reports outranking the source sink below it after the malus, staying visible', async () => {
@@ -1795,5 +1929,268 @@ describe('#3344 transport resilience + hash convergence', () => {
 		} finally {
 			delete process.env.EMBEDDING_API_KEY;
 		}
+	});
+
+	// ============================================================
+	// #2609 V2(a) — query-time block expansion
+	// ============================================================
+	describe('block expansion (#2609 V2(a))', () => {
+		// Synthetic TS file: the anchor line lives INSIDE searchSemantic (line 7, 1-based).
+		// The nearest declaration above is the export function on line 5; braces close on line 9.
+		const TS_CONTENT = [
+			"import { join } from 'path';",
+			'',
+			'const VALUE = 42;',
+			'',
+			'export async function searchSemantic(query: string): Promise<Result> {',
+			'\tconst filter = buildFilter(query);',
+			'\tconst rows = await joinWithPostgres(filter);',
+			'\treturn { rows, filter };',
+			'}',
+			'',
+			'export function other() {',
+			'\treturn 1;',
+			'}'
+		].join('\n');
+		const ANCHOR_1BASED = 7; // '\tconst rows = await joinWithPostgres(filter);'
+		const ANCHOR_LINE = '\tconst rows = await joinWithPostgres(filter);';
+
+		beforeEach(() => {
+			vi.clearAllMocks();
+			mockGetQdrantClient.mockReturnValue(mockQdrant);
+			mockExistsSync.mockReturnValue(true);
+			mockReaddirSync.mockReturnValue([]);
+			mockStatSync.mockReturnValue({ size: 1000 });
+			mockReadFileSync.mockReturnValue(TS_CONTENT);
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+			mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: new Array(8).fill(0.1) }] });
+		});
+
+		afterEach(() => {
+			delete process.env.CODEBASE_BLOCK_EXPANSION;
+			delete process.env.EMBEDDING_API_KEY;
+		});
+
+		test('handler renders the enclosing declaration block, not the matched line', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: ANCHOR_LINE, startLine: ANCHOR_1BASED, endLine: ANCHOR_1BASED }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.status).toBe('success');
+			expect(parsed.block_expansion_applied).toBe(1);
+			const hit = parsed.results[0];
+			// Handle upgraded to the BLOCK range (the whole function), not the single-line chunk
+			expect(hit.start_line).toBe(5);
+			expect(hit.end_line).toBe(9);
+			expect(hit.lines).toBe('5-9');
+			// The line(s) the vector matched stay visible
+			expect(hit.match_lines).toBe('7-7');
+			// The snippet is the block passage: declaration + body + closing brace
+			expect(hit.snippet).toContain('export async function searchSemantic');
+			expect(hit.snippet).toContain('joinWithPostgres');
+			expect(hit.snippet).toContain('}');
+			expect(hit.snippet.length).toBeGreaterThan(150);
+		});
+
+		test('stale index (anchor not locatable) degrades to the raw chunk snippet', async () => {
+			// Chunk text that exists NOWHERE in the current file → verification must fail
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: 'GONE FROM DISK ages ago', startLine: ANCHOR_1BASED, endLine: ANCHOR_1BASED }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBeUndefined();
+			const hit = parsed.results[0];
+			// Raw shape preserved: stored (single-line) chunk lines, no match_lines
+			expect(hit.start_line).toBe(ANCHOR_1BASED);
+			expect(hit.end_line).toBe(ANCHOR_1BASED);
+			expect(hit.match_lines).toBeUndefined();
+			expect(hit.snippet).toContain('GONE FROM DISK');
+		});
+
+		test('data/config files keep the raw shape (no block structure, no expansion)', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'roo-config/baselines/idx.json', codeChunk: '"codebaseIndexQdrantUrl": "http://localhost:6333"', startLine: 3, endLine: 3 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'qdrant url', workspace: '/ws', min_score: 0.2 });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBeUndefined();
+			// readFileSync must never be called for a data file
+			expect(mockReadFileSync).not.toHaveBeenCalled();
+		});
+
+		test('CODEBASE_BLOCK_EXPANSION=0 disables expansion (rollback env)', async () => {
+			process.env.CODEBASE_BLOCK_EXPANSION = '0';
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: ANCHOR_LINE, startLine: ANCHOR_1BASED, endLine: ANCHOR_1BASED }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBeUndefined();
+			expect(parsed.results[0].match_lines).toBeUndefined();
+			expect(parsed.results[0].start_line).toBe(ANCHOR_1BASED);
+		});
+
+		test('oversized file (statSync > 2MB) skips expansion', () => {
+			mockStatSync.mockReturnValue({ size: 3 * 1024 * 1024 });
+			const cache = new Map<string, string[] | null>();
+			const out = expandHitBlock('src/foo.ts', ANCHOR_1BASED, ANCHOR_LINE, '/ws', cache);
+			expect(out).toBeNull();
+			expect(mockReadFileSync).not.toHaveBeenCalled();
+		});
+
+		test('computeBlockRange: braceless language (python def) closes on dedent', () => {
+			const py = [
+				'import os',
+				'',
+				'def run():',
+				'    a = 1',
+				'    b = 2',
+				'',
+				'x = 3'
+			];
+			// anchor on 'b = 2' (idx 4) → block = def run() .. idx 4 (blank line at 5 stops it)
+			const range = computeBlockRange(py, 4);
+			expect(range).toEqual({ startIdx: 2, endIdx: 4 });
+		});
+
+		test('computeBlockRange: blank-line fallback when no declaration above', () => {
+			const lines = ['let a = 1;', 'let b = 2;', 'let c = 3;', '', 'let d = 4;'];
+			const range = computeBlockRange(lines, 1);
+			expect(range).toEqual({ startIdx: 0, endIdx: 2 });
+		});
+
+		test('computeBlockRange: declaration that CLOSES BEFORE the anchor falls back (compiled-JS live case)', () => {
+			// Live eval finding (2026-09-27, golden scenario 3): on compiled build-* JS the
+			// decl regex latched onto a function above whose braces close before the anchor
+			// line — the anchor lives in the NEXT (anonymous, var-assigned) function.
+			// The guard must reject that block and serve the anchor-containing window.
+			const compiled = [
+				'function firstBlock(diffs) {', // idx 0 — matches DECL
+				'  const a = 1;',
+				'  return a;',
+				'}',                            // idx 3 — firstBlock closes here
+				'',
+				'var handler = function() {',   // idx 5 — NOT matched by the decl regexes (var-assigned)
+				'  doWork(target);',            // idx 6 — ANCHOR
+				'  return true;',
+				'};'
+			];
+			const range = computeBlockRange(compiled, 6);
+			// The naive decl walk would return {0,3} — a block NOT containing the anchor.
+			expect(range).toEqual({ startIdx: 5, endIdx: 8 });
+		});
+
+		test('verifyAnchor: segment chunk (substring of a long line) verifies via containment', () => {
+			const lines = ['const config = {"qdrant": "localhost:6333", "pg": "postgres://user:pass@host/db", "retries": 3};'];
+			// A segment chunk of that line — not equal to the whole line, but contained in it
+			const segmentChunk = '"pg": "postgres://user:pass@host/db", "retries": 3};';
+			expect(verifyAnchor(lines, 0, segmentChunk)).toBe(true);
+			expect(verifyAnchor(lines, 0, 'TOTALLY ABSENT TEXT')).toBe(false);
+		});
+
+		test('renderBlock: oversized block windows around the anchor with omission markers', () => {
+			const lines: string[] = ['export function huge() {'];
+			for (let i = 0; i < 118; i++) lines.push(`\tline${i}();`);
+			lines.push('}');
+			const range = computeBlockRange(lines, 60);
+			expect(range).toEqual({ startIdx: 0, endIdx: 119 });
+			const rendered = renderBlock(lines, range!, 60)!;
+			expect(rendered).not.toBeNull();
+			// Bounded render: ≤ 80 lines + 2 marker lines
+			const renderedLineCount = rendered.text.split('\n').length;
+			expect(renderedLineCount).toBeLessThanOrEqual(80 + 2);
+			// Markers present and honest
+			expect(rendered.text).toMatch(/\[\.\.\. \d+ lines above/);
+			expect(rendered.text).toMatch(/\[\.\.\. \d+ lines below/);
+			// The anchor stays inside the rendered window
+			expect(rendered.text).toContain('line59();');
+			// 1-based handle covers the rendered window only
+			expect(rendered.endLine - rendered.startLine + 1).toBeLessThanOrEqual(80);
+		});
+
+		test('renderBlock: char budget shrinks a long-line block around the anchor (positive control)', () => {
+			// 60 lines x ~100 chars = ~6 000 chars: over the 3 000-char budget, but each line is short
+			// enough that a line-bounded window fits — the loop must shrink it, not give up.
+			const lines: string[] = ['export function wide() {'];
+			for (let i = 0; i < 60; i++) lines.push(`\tconst v${i} = '${'y'.repeat(80)}';`);
+			lines.push('}');
+			const range = computeBlockRange(lines, 30);
+			const rendered = renderBlock(lines, range!, 30);
+			expect(rendered).not.toBeNull();
+			const body = rendered!.text.split('\n').filter(l => !l.startsWith('[... ')).join('\n');
+			expect(body.length).toBeLessThanOrEqual(3000);
+			expect(rendered!.text).toContain('const v29 =');
+		});
+
+		test('renderBlock: a single 500 KB line (minified bundle) → null, never an unbounded render', () => {
+			const lines = ['var a=' + 'x'.repeat(500_000) + ';'];
+			const range = computeBlockRange(lines, 0);
+			expect(range).toEqual({ startIdx: 0, endIdx: 0 });
+			expect(renderBlock(lines, range!, 0)).toBeNull();
+		});
+
+		test('renderBlock: 5 lines of 1 KB each (below the 5-line floor, over budget) → null', () => {
+			const lines = Array.from({ length: 5 }, (_, i) => `const k${i} = '${'z'.repeat(1024)}';`);
+			const range = { startIdx: 0, endIdx: 4 };
+			expect(renderBlock(lines, range, 2)).toBeNull();
+		});
+
+		test('handler: a hit on a minified one-liner keeps the bounded raw snippet (no 500 KB result)', async () => {
+			const minified = 'var a=' + 'x'.repeat(500_000) + ';';
+			mockReadFileSync.mockReturnValue(minified);
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'dist/bundle.min.js', codeChunk: 'x'.repeat(1000), startLine: 1, endLine: 1 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'bundle', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.status).toBe('success');
+			expect(parsed.block_expansion_applied).toBeUndefined();
+			const hit = parsed.results[0];
+			expect(hit.match_lines).toBeUndefined();
+			expect(hit.snippet.length).toBeLessThanOrEqual(600);
+			expect(result.content[0].text.length).toBeLessThan(10_000);
+		});
+
+		test('anchor beyond EOF (file shrank since indexing) → null', () => {
+			const cache = new Map<string, string[] | null>();
+			const out = expandHitBlock('src/foo.ts', 9999, ANCHOR_LINE, '/ws', cache);
+			expect(out).toBeNull();
+		});
+
+		test('unreadable file → null, and the miss is cached (one stat attempt per file)', () => {
+			mockStatSync.mockImplementation(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); });
+			const cache = new Map<string, string[] | null>();
+			expect(expandHitBlock('src/foo.ts', 1, 'whatever', '/ws', cache)).toBeNull();
+			expect(expandHitBlock('src/foo.ts', 1, 'whatever', '/ws', cache)).toBeNull();
+			expect(mockStatSync).toHaveBeenCalledTimes(1);
+		});
 	});
 });
