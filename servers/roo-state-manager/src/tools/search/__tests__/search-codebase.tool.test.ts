@@ -890,6 +890,19 @@ describe('search-codebase.tool', () => {
 		// corroborated web1 c.287/c.488). Malus ×0.7 — degraded, not removed:
 		// the measured archive hits (0.72-0.75) stay above min_score 0.5 where
 		// the ×0.5 floated in the issue would silently drop them from recall.
+		//
+		// #2609 V2(b) follow-up (po-2025, 2026-09-28) — measured verdict: the probe's
+		// negative is a CORPUS defect, not a ranking one. Same query, two collections
+		// of this workspace: the hash-resolved one (ws-d2ffd…) holds zero dashboard.ts /
+		// src/tools/roosync chunk — the file is absent from that corpus, so no lever
+		// (malus or bonus) can surface it; a fresh twin of the same repo returns the
+		// DEFINING source rank 1 (DashboardSizes interface — the declaration site of
+		// the threshold; 0.7607 vs 0.7587 for the tools-list script, docs/data/build
+		// malussed below). The `const MAX_DASHBOARD_SIZE_BYTES` line itself is never
+		// chunked (the indexer drops nodes under MIN_BLOCK_CHARS=50, roo-code
+		// parser.ts:180/226; the const is 43 chars) — "definition in top-3" can only
+		// mean the declaration site, and ranks only on a corpus that holds the file.
+		// The live-shape describe below pins that contract.
 		// ============================================================
 
 			describe('handleCodebaseSearch - compiled-build re-ranking (#2609 V2(a))', () => {
@@ -1073,6 +1086,95 @@ describe('search-codebase.tool', () => {
 				expect(md.score).toBeCloseTo(0.80, 5);
 				expect(parsed.archive_malus_applied).toBeUndefined();
 				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+		});
+
+		// ============================================================
+		// #2609 V2(b) — defining source vs tools-lists / docs (the :889 probe).
+		// Live shape measured 2026-09-28 (po-2025): on a corpus that holds the
+		// file, the SAME query returns the defining source rank 1 — the tools-list
+		// script 0.2% behind, data/build artifacts malussed below. The production
+		// negative on po-2025 is a corpus defect (the hash-resolved collection has
+		// no src/tools/roosync chunk at all), not a ranking one. These tests pin
+		// the ranking contract the probe checks, plus the doc case (item 3).
+		// ============================================================
+
+		describe('handleCodebaseSearch - #2609 V2(b) probe — defining source vs tools-lists (live shape 28/09)', () => {
+			beforeEach(() => {
+				process.env.EMBEDDING_API_KEY = 'test-key';
+				mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+				mockEmbeddingCreate.mockResolvedValue({
+					data: [{ embedding: new Array(8).fill(0.1) }]
+				});
+			});
+
+			afterEach(() => {
+				delete process.env.EMBEDDING_API_KEY;
+			});
+
+			test('live shape — the defining source leads; the tools-list script stays below; data/build sinks after their malus', async () => {
+				// Raw scores = measured response ÷ the malus where one applied, so the
+				// ADJUSTED values reproduce the live run (0.7607 / 0.7587 / 0.7484 /
+				// 0.7162 / 0.5914 / 0.5781 / 0.5204 / 0.5185).
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.7607, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts', codeChunk: 'export interface DashboardSizes {', startLine: 4173, endLine: 4189 } },
+						{ score: 0.7587, payload: { filePath: 'scripts\\validation\\e2e-test-tools.js', codeChunk: "{ name: 'roosync_refresh_dashboard', params: {}, description: 'Refresh dashboard' },", startLine: 50, endLine: 51 } },
+						{ score: 0.7484, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts', codeChunk: '// The dashboard should stay under 50KB thanks to size-based condensation,', startLine: 4779, endLine: 4779 } },
+						{ score: 0.7539, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\__tests__\\dashboard.test.ts', codeChunk: "it('auto-condensation triggers based on size, not message count', async () => {", startLine: 677, endLine: 680 } },
+						{ score: 0.7885, payload: { filePath: 'docs\\harness\\reference\\superseded-by-closed-issues-audit-table-2026-07-21.json', codeChunk: '"improve(dashboard): condensation status prompt — long-term state memory"', startLine: 10654, endLine: 10654 } },
+						{ score: 0.7708, payload: { filePath: 'docs\\harness\\reference\\superseded-by-closed-issues-audit-table-2026-07-21.json', codeChunk: '"title": "improve(dashboard): condensation status prompt"', startLine: 10654, endLine: 10654 } },
+						{ score: 0.7434, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\build-out\\tools\\tool-definitions.js', codeChunk: "task_id: { type: 'string', description: 'Required for action=index' },", startLine: 174, endLine: 194 } },
+						{ score: 0.7407, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\build-out\\tools\\indexing\\roosync-indexing.tool.d.ts', codeChunk: 'export interface RooSyncIndexingArgs {', startLine: 42, endLine: 88 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({
+					query: 'dashboard auto-condensation threshold MAX_DASHBOARD_SIZE_BYTES',
+					workspace: '/ws',
+					limit: 8
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				const paths = parsed.results.map((r: any) => r.file_path);
+
+				// The defining source leads — above the tools-list script (raw 0.7607 vs
+				// 0.7587) and above the two malussed data/build hits that Qdrant ranked
+				// FIRST on raw score (0.7885, 0.7708).
+				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts');
+				expect(parsed.results[0].score).toBeCloseTo(0.7607, 4);
+				expect(paths.indexOf('scripts\\validation\\e2e-test-tools.js')).toBeGreaterThan(0);
+				// Both dashboard.ts chunks survive (cap 2) — the second still ahead of the test file.
+				expect(paths.filter((p: string) => p.endsWith('roosync\\dashboard.ts'))).toHaveLength(2);
+				expect(paths[2]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts');
+				// Malus arithmetic agrees with the rendering (single source of truth).
+				expect(parsed.results[3].score).toBeCloseTo(0.7162, 4);   // test ×0.95
+				expect(parsed.results[4].score).toBeCloseTo(0.5914, 4);   // data ×0.75
+				expect(parsed.results[6].score).toBeCloseTo(0.5204, 4);   // build ×0.7
+				expect(parsed.test_file_malus_applied).toBe(1);
+				expect(parsed.data_file_malus_applied).toBe(2);
+				expect(parsed.build_dir_malus_applied).toBe(2);
+			});
+
+			test('doc case — a conceptual question keeps the living doc as the answer, untouched by any malus', async () => {
+				// #2609 V2(b) dispatch item 3: the source-first levers must never bury
+				// the doc when the doc IS the answer. Conceptual intent, no identifier
+				// in the query → nothing demotes the guide; the source stays second.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: 'docs\\harness\\reference\\roosync-tools-guide.md', codeChunk: '### Key Actions\n\n| Action | Purpose |\n| `append` | Post an intercom message |', startLine: 198, endLine: 207 } },
+						{ score: 0.70, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts', codeChunk: 'async function handleAppend(dashboard: Dashboard): Promise<void> {', startLine: 3000, endLine: 3020 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'how to post a message on the workspace dashboard', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.results[0].file_path).toBe('docs\\harness\\reference\\roosync-tools-guide.md');
+				expect(parsed.results[0].score).toBeCloseTo(0.80, 5);
+				expect(parsed.archive_malus_applied).toBeUndefined();
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+				expect(parsed.test_file_malus_applied).toBeUndefined();
 			});
 		});
 
