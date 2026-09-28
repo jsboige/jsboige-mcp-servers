@@ -1,8 +1,10 @@
 /**
  * #3482 — unit tests for the post-write fork guard (verifyDashboardWriteLanded).
  *
- * The guard runs after every dashboard write (tmp→rename) and must detect the
- * DriveFS/Windows deviation measured 06/09: the rename "succeeds" but lands on
+ * The guard runs after every dashboard write (#3782: tmp→copy-in-place; the
+ * fleet mixes builds for weeks, so the rename-era deviation stays live) and
+ * must detect the DriveFS/Windows deviation measured 06/09: the replace
+ * "succeeds" but lands on
  * a `<stem> (N).md` fork while the canonical stops advancing — an [ASK USER]
  * stayed invisible from the canonical that way.
  *

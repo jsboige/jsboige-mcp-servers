@@ -1868,13 +1868,20 @@ async function writeDashboardFile(
   const dir = getDashboardsDir();
   ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
-  const tmpPath = `${filePath}.tmp`;
+  // #3782 — tmp pid-suffixé : deux writers concurrents ne doivent pas se voler
+  // leur staging (le `.tmp` nu était une collision supplémentaire sous contention).
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
 
   const content = buildDashboardMarkdown(dashboard);
 
   const writeStartedAtMs = Date.now();
   await fs.writeFile(tmpPath, content, 'utf8');
-  await fs.rename(tmpPath, filePath);
+  // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
+  // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
+  // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
+  // remplace le contenu du même file-ID — pas de permutation de métadonnées.
+  await fs.copyFile(tmpPath, filePath);
+  await fs.unlink(tmpPath);
   logger.debug('Dashboard écrit', { key, path: filePath });
 
   // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
@@ -1992,7 +1999,7 @@ async function appendDashboardIncremental(
   const dir = getDashboardsDir();
   ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
-  const tmpPath = `${filePath}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.tmp`; // #3782 — cf. writeDashboardFile
 
   // #3205 write-side — the read→rename window below is the last-writer-wins
   // race: two processes/machines appending inside the same window each succeed
@@ -2052,7 +2059,10 @@ async function appendDashboardIncremental(
 
     const writeStartedAtMs = Date.now();
     await fs.writeFile(tmpPath, result, 'utf8');
-    await fs.rename(tmpPath, filePath);
+    // #3782 — copy-in-place au lieu du rename (cf. writeDashboardFile) : la
+    // permutation rename-over-existing est le chemin des orphelins racine Drive.
+    await fs.copyFile(tmpPath, filePath);
+    await fs.unlink(tmpPath);
     logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
 
     // #3482 — post-write guard (même contrat que writeDashboardFile) : un
