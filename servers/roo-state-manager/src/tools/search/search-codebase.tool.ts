@@ -1282,6 +1282,17 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// exactly what the #2609 V2 precedence note forbids. PRECEDENCE over data, same
 		// rationale: docs/archive/foo.json is first an archived document; compounding
 		// 0.7 × 0.75 = 0.525 would drop a 0.75 archived config to 0.39.
+		// #2609 V2(b) follow-up (po-2025, 2026-09-28) — the probe's negative is
+		// a CORPUS defect, not a ranking one. Same query on two collections of
+		// this workspace: the hash-resolved one (ws-d2ffd…) holds NO
+		// src/tools/roosync chunk at all — dashboard.ts absent, so no lever
+		// (malus or bonus) can surface the source there; a fresh twin of the
+		// same repo returns the DEFINING source rank 1 (DashboardSizes
+		// interface, the declaration site of the threshold; 0.7607 above the
+		// tools-list script at 0.7587). The `const` line itself can never be a
+		// chunk: the indexer drops nodes under MIN_BLOCK_CHARS=50 (roo-code
+		// parser.ts:180/226) and the const is 43 chars — "definition in top-3"
+		// can only mean the declaration site, on a corpus that holds the file.
 		const ARCHIVE_FILE_RE = /(^|[\\/])docs[\\/]archive[\\/]/;
 		const ARCHIVE_FILE_MALUS = 0.7;
 		// #2609 V2(a) — compiled-build malus (×0.7): `build-<hash>/` vintages and the
