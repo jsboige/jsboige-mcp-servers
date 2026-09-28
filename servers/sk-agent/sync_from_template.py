@@ -7,6 +7,10 @@ Reads sk_agent_config.template.json (git source of truth) and regenerates
 sk_agent_config.json by injecting API keys from the existing local config.
 Local-only additions (oracle agents, etc.) can be preserved via --local-additions.
 
+Exit code: 0 when every template model got a real key; 1 when at least one api_key
+is still a template placeholder (the config IS written — the non-zero code makes the
+silent degradation detectable by callers).
+
 Strategy:
 - Models: Take from template, inject api_key from local by matching base_url patterns
 - Agents: Take from template
@@ -231,18 +235,32 @@ def main():
     if removed_a:
         print(f"  Removed: {sorted(removed_a)}")
 
-    # Check for missing keys
+    # Missing-keys guard (sk-agent thread 27/09): a template placeholder left in the
+    # WRITTEN api_key is how the medium-key incident shipped — the old warning drowned
+    # in stdout and the script exited 0. The file is still written (operators may fix
+    # keys by hand; refusing would break the resync flow), but the warning goes to
+    # stderr as a banner and the exit code is non-zero so callers can detect it.
     missing = []
     for model in new_config.get("models", []):
-        if model.get("api_key", "").startswith("YOUR_") or model.get("api_key", "") == "REPLACE_ME":
-            missing.append(model["id"])
+        api_key = model.get("api_key", "")
+        if api_key.startswith("YOUR_") or api_key == "REPLACE_ME":
+            missing.append(model)
+
+    exit_code = 1 if missing else 0
     if missing:
-        print(f"\nWARNING: Missing API keys for: {missing}")
-        print("  → Set them manually in the generated config")
+        print("", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+        print("MISSING API KEYS — the generated config will NOT authenticate:", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+        for model in missing:
+            hint = f" (provision {model['api_key_env']})" if model.get("api_key_env") else ""
+            print(f"  - {model['id']}: api_key is a template placeholder{hint}", file=sys.stderr)
+        print("Config still written — fix these keys or the server will 401 on them.", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
 
     if args.dry_run:
         print("\n[DRY RUN] No changes written.")
-        return
+        sys.exit(exit_code)
 
     # Backup local config
     backup_path = LOCAL_PATH.with_suffix(".json.bak")
@@ -255,6 +273,7 @@ def main():
         json.dump(new_config, f, indent=2, ensure_ascii=False)
     print(f"Written: {LOCAL_PATH}")
     print("\nRestart sk-agent MCP to load the new config.")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
