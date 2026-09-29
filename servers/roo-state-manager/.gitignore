@@ -30,6 +30,9 @@ coverage/
 tmp-debug/
 mcp-debugging/
 
+# Reconcile manifests (reconcile-roosync-channel.mjs default output — rollback artifacts, never versioned)
+/scripts/manifests/
+
 # Reports and documentation
 README.md
 CHANGELOG.md

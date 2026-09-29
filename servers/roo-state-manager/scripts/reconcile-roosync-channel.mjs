@@ -14,7 +14,9 @@
  *   - --apply additionally requires UNIFIED_STORE_DUAL_WRITE=1 and
  *     UNIFIED_STORE_PG_URL set (same gate as the backfill scripts).
  *   - A manifest of every affected id (with status_before) is ALWAYS written —
- *     the pass is reversible by replaying the manifest.
+ *     the pass is reversible by replaying the manifest. Default location is
+ *     scripts/manifests/ (gitignored) so dry-runs never dirty the checkout;
+ *     --manifest-dir overrides.
  *   - Grace window (default 48 h) protects in-flight archive moves and
  *     DriveFS propagation: recent rows are never touched.
  *   - Sanity guards (review #1256): an empty or quasi-ghost pool (unmounted
@@ -26,11 +28,12 @@
  *   node scripts/reconcile-roosync-channel.mjs                     # dry-run
  *   node scripts/reconcile-roosync-channel.mjs --apply             # live
  *   node scripts/reconcile-roosync-channel.mjs --grace-hours 72
+ *   node scripts/reconcile-roosync-channel.mjs --manifest-dir DIR
  *
  * The .env at servers/roo-state-manager/.env is auto-loaded.
  */
 
-import { readFileSync, writeFileSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 
@@ -70,7 +73,8 @@ if (args.includes('--help')) {
   (default)          Dry run: report + manifest, no UPDATE.
   --apply            Live pass (requires UNIFIED_STORE_DUAL_WRITE=1 + UNIFIED_STORE_PG_URL).
   --grace-hours N    Rows newer than N hours are never touched (default 48).
-  --manifest-dir DIR Where the manifest is written (default: script dir).
+  --manifest-dir DIR Where the manifest is written (default: scripts/manifests/, gitignored —
+                     keeps the checkout clean; the dir is created if missing).
   --env-file PATH    .env to load (default: servers/roo-state-manager/.env — pass another checkout's .env when running from a worktree).
   --limit N          Cap candidate rows for a trial pass.`);
   process.exit(0);
@@ -85,7 +89,7 @@ if (!Number.isFinite(graceHours) || graceHours < 0) {
 const limitIdx = args.indexOf('--limit');
 const LIMIT = limitIdx !== -1 ? Number(args[limitIdx + 1]) : undefined;
 const manifestDirIdx = args.indexOf('--manifest-dir');
-const manifestDir = manifestDirIdx !== -1 ? args[manifestDirIdx + 1] : __dirname;
+const manifestDir = manifestDirIdx !== -1 ? args[manifestDirIdx + 1] : path.join(__dirname, 'manifests');
 const envFileIdx = args.indexOf('--env-file');
 const envFile = envFileIdx !== -1 ? args[envFileIdx + 1] : path.join(__dirname, '..', '.env');
 
@@ -134,6 +138,7 @@ const result = computeReconcileResult(rows, liveIds, Date.now() - graceHours * 3
 console.log(`ghosts: ${result.ghosts.length} | kept: ${result.kept.live} live + ${result.kept.withinGrace} within grace (${graceHours}h)`);
 
 const manifestPath = path.join(manifestDir, `reconcile-channel-manifest-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+mkdirSync(manifestDir, { recursive: true });
 writeFileSync(manifestPath, JSON.stringify(result.manifest, null, 2));
 console.log(`manifest: ${manifestPath} (${result.ghosts.length} entries, statuses before update)`);
 
