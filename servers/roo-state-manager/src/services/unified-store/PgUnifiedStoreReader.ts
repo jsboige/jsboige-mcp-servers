@@ -107,6 +107,7 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     const result = await this.pool.query(
       `SELECT * FROM roosync_messages
        WHERE status <> 'archived'
+         AND destroyed_at IS NULL
          AND (to_machine = $1 OR to_machine IN ('all', 'All'))
        ORDER BY created_at DESC`,
       [machineId],
