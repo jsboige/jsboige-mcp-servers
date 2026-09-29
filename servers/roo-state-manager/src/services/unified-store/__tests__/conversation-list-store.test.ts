@@ -12,6 +12,9 @@
  *   - loadPgConversationTier: dedup against the tiers already loaded, the
  *     `truncated` flag when the cap is reached, and graceful degradation
  *     (a throwing reader yields status 'failed', never an exception)
+ *   - loadPgConversationSkeleton (#2191, the `view` body load): same gate, the
+ *     cold-pool init, paging, user/assistant mapping, and null on every
+ *     degraded path so `view` keeps its historical answer
  *   - the SQL SHAPE of PgUnifiedStoreReader.listConversations, asserted against
  *     captured query text. This is a shape assertion, NOT acceptance: what the
  *     query actually returns was measured against the live store separately.
@@ -21,16 +24,23 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ConversationListRow } from '../UnifiedStoreReader.js';
+import type { ConversationRow, MessageRow } from '../types.js';
 
 // ─── Reader factory mock (controllable double) ──────────────────────
 
 const mockListConversations = vi.fn().mockResolvedValue([]);
 const mockIsNull = vi.fn().mockReturnValue(false);
+const mockInit = vi.fn().mockResolvedValue(undefined);
+const mockGetConversation = vi.fn().mockResolvedValue(null);
+const mockGetMessages = vi.fn().mockResolvedValue([]);
 
 vi.mock('../reader-factory.js', () => ({
   getUnifiedStoreReader: () => ({
     isNull: () => mockIsNull(),
     listConversations: mockListConversations,
+    init: mockInit,
+    getConversation: mockGetConversation,
+    getMessages: mockGetMessages,
   }),
   resetReaderInstance: vi.fn(),
 }));
@@ -62,8 +72,10 @@ import {
   resolveLabel,
   mapRowToSkeleton,
   loadPgConversationTier,
+  loadPgConversationSkeleton,
   PG_DATA_SOURCE,
   DEFAULT_PG_LIST_LIMIT,
+  PG_VIEW_PAGE_SIZE,
 } from '../conversation-list-store.js';
 
 // ─── Fixtures ───────────────────────────────────────────────────────
@@ -91,6 +103,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockIsNull.mockReturnValue(false);
   mockListConversations.mockResolvedValue([]);
+  mockInit.mockResolvedValue(undefined);
+  mockGetConversation.mockResolvedValue(null);
+  mockGetMessages.mockResolvedValue([]);
   // clearAllMocks wipes implementations too — re-arm the pg double so the
   // SQL-shape block below gets a usable pool on every test.
   mockQuery.mockResolvedValue({ rows: [] });
@@ -287,6 +302,126 @@ describe('loadPgConversationTier', () => {
     const result = await loadPgConversationTier({}, new Set());
     expect(result).toEqual({ status: 'ready', rows_read: 0, truncated: false, skeletons: [] });
     expect(mockListConversations).not.toHaveBeenCalled();
+  });
+});
+
+// ─── loadPgConversationSkeleton (#2191 view body load) ──────────────
+
+function convRow(overrides: Partial<ConversationRow> = {}): ConversationRow {
+  return {
+    task_id: 'claude-d--dev-CoursIA--0f1e2d3c',
+    machine_id: 'myia-po-2025',
+    harness: 'claude',
+    workspace: 'd:/dev/CoursIA',
+    parent_task_id: null,
+    title: null,
+    first_ts: '2026-09-05T12:14:55.368Z',
+    last_ts: '2026-09-06T03:37:15.817Z',
+    msg_count: 3,
+    metadata: null,
+    ...overrides,
+  };
+}
+
+function msg(seq: number, overrides: Partial<MessageRow> = {}): MessageRow {
+  return {
+    task_id: 'claude-d--dev-CoursIA--0f1e2d3c',
+    message_id: null,
+    seq,
+    role: seq % 2 === 0 ? 'user' : 'assistant',
+    content: `message ${seq}`,
+    tool_calls: null,
+    ts: '2026-09-05T12:14:55.368Z',
+    ...overrides,
+  };
+}
+
+describe('loadPgConversationSkeleton', () => {
+  test('returns null without touching the reader when the gate is off', async () => {
+    delete process.env.UNIFIED_STORE_CONVERSATION_READ_PG;
+    expect(await loadPgConversationSkeleton('any')).toBeNull();
+    expect(mockInit).not.toHaveBeenCalled();
+    expect(mockGetConversation).not.toHaveBeenCalled();
+  });
+
+  test('initialises the pool before reading (#2816: no self-init on a cold pool)', async () => {
+    await loadPgConversationSkeleton('any');
+    expect(mockInit).toHaveBeenCalledTimes(1);
+    expect(mockInit.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetConversation.mock.invocationCallOrder[0],
+    );
+  });
+
+  test('returns null when the store has no row for the task', async () => {
+    expect(await loadPgConversationSkeleton('absent')).toBeNull();
+    expect(mockGetMessages).not.toHaveBeenCalled();
+  });
+
+  test('maps user/assistant rows into the sequence, in order, with PG provenance', async () => {
+    mockGetConversation.mockResolvedValue(convRow());
+    mockGetMessages.mockResolvedValue([
+      msg(0, { content: 'first question' }),
+      msg(1, { content: null, ts: new Date('2026-09-05T12:15:00.000Z') as unknown as string }),
+      msg(2, { role: 'tool', content: 'tool output' }),
+      msg(3, { role: 'user', content: 'second question' }),
+    ]);
+
+    const skeleton = await loadPgConversationSkeleton('claude-d--dev-CoursIA--0f1e2d3c');
+
+    expect(skeleton).not.toBeNull();
+    expect(skeleton!.taskId).toBe('claude-d--dev-CoursIA--0f1e2d3c');
+    expect(skeleton!.metadata.dataSource).toBe(PG_DATA_SOURCE);
+    expect(skeleton!.metadata.machineId).toBe('myia-po-2025');
+    expect(skeleton!.sequence).toEqual([
+      { role: 'user', content: 'first question', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
+      { role: 'assistant', content: '', timestamp: '2026-09-05T12:15:00.000Z', isTruncated: false },
+      { role: 'user', content: 'second question', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
+    ]);
+    // Title is NULL on the row: the label falls back to the first user message.
+    expect(skeleton!.metadata.title).toBe('first question');
+  });
+
+  test('converts Date timestamps on the conversation row (node-pg TIMESTAMPTZ)', async () => {
+    mockGetConversation.mockResolvedValue(
+      convRow({
+        first_ts: new Date('2026-09-05T12:14:55.368Z') as unknown as string,
+        last_ts: new Date('2026-09-06T03:37:15.817Z') as unknown as string,
+      }),
+    );
+    mockGetMessages.mockResolvedValue([msg(0)]);
+
+    const skeleton = await loadPgConversationSkeleton('t');
+
+    expect(skeleton!.metadata.createdAt).toBe('2026-09-05T12:14:55.368Z');
+    expect(skeleton!.metadata.lastActivity).toBe('2026-09-06T03:37:15.817Z');
+  });
+
+  test('pages through the messages until a short page', async () => {
+    mockGetConversation.mockResolvedValue(convRow());
+    const full = Array.from({ length: PG_VIEW_PAGE_SIZE }, (_, i) => msg(i));
+    mockGetMessages.mockResolvedValueOnce(full).mockResolvedValueOnce([msg(PG_VIEW_PAGE_SIZE)]);
+
+    const skeleton = await loadPgConversationSkeleton('t');
+
+    expect(mockGetMessages).toHaveBeenNthCalledWith(1, 't', { limit: PG_VIEW_PAGE_SIZE, offset: 0 });
+    expect(mockGetMessages).toHaveBeenNthCalledWith(2, 't', {
+      limit: PG_VIEW_PAGE_SIZE,
+      offset: PG_VIEW_PAGE_SIZE,
+    });
+    expect(mockGetMessages).toHaveBeenCalledTimes(2);
+    expect(skeleton!.sequence).toHaveLength(PG_VIEW_PAGE_SIZE + 1);
+  });
+
+  test('returns null for a header-only row (no message rows: nothing to show)', async () => {
+    mockGetConversation.mockResolvedValue(convRow({ msg_count: 42 }));
+    expect(await loadPgConversationSkeleton('orphan')).toBeNull();
+  });
+
+  test('degrades to null with a warn when the store throws — never an exception', async () => {
+    mockGetConversation.mockResolvedValue(convRow());
+    mockGetMessages.mockRejectedValue(new Error('connection refused'));
+    expect(await loadPgConversationSkeleton('t')).toBeNull();
+    expect(mockLoggerWarn).toHaveBeenCalled();
   });
 });
 
