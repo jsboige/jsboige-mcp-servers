@@ -2022,7 +2022,12 @@ async function appendDashboardIncremental(
     try {
       existing = await fs.readFile(filePath, 'utf8');
     } catch {
-      return writeDashboardFile(key, dashboard);
+      // #3230 (b, dispatch ai-01 29/09) — await OBLIGATOIRE : sans lui le
+      // `finally` ci-dessous relâche l'append lock pendant que writeDashboardFile
+      // écrit encore, et sa rejection échappe au moment où le caller croit la
+      // publication terminée (le lock libéré ouvre en plus la fenêtre de course
+      // qu'il existait pour fermer).
+      return await writeDashboardFile(key, dashboard);
     }
 
     // #3230 write-side — un append depuis une copie locale en retard effaçait
@@ -2035,8 +2040,9 @@ async function appendDashboardIncremental(
     // vue au lieu d'y coller l'incrément (l'append devient une réparation).
     // Garde volontairement UNIDIRECTIONNELLE et GATED :
     //   - un fichier qui porte des ids ABSENTS de la vue (append d'un writer
-    //     concurrent, condensation qui a archivé) reste le suffixe intact de
-    //     l'incrément — jamais réécrit depuis une vue plus pauvre ;
+    //     concurrent, condensation qui a archivé) garde ces ids — via le
+    //     suffixe intact de l'incrément quand la vue est à jour, via la
+    //     réinjection du cas mixte ci-dessous quand la réparation se déclenche ;
     //   - hors READ_PG la vue provient du fichier lui-même, la garde ne peut
     //     que rester muette.
     if (process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1') {
@@ -2052,7 +2058,45 @@ async function appendDashboardIncremental(
           missingCount: missingIds.length,
           missingIds: missingIds.slice(0, 10),
         });
-        return await writeDashboardFile(key, dashboard);
+        // #3230 cas mixte (dispatch ai-01 29/09, suite #1258) — le fichier en
+        // retard peut AUSSI porter des ids ABSENTS de la vue (writer concurrent
+        // file-only, condensation archivée côté PG, lag PG) : l'écriture
+        // complète depuis la vue seule les perdait. Réinjection depuis le
+        // fichier lui-même — même patron que le stitch de condensation
+        // (#2328, applyCondensedWithMerge) : l'union vue ∪ file-only est
+        // écrite, tri stable par timestamp.
+        let repair: Dashboard = dashboard;
+        try {
+          const fileDashboard = parseDashboardMarkdown(existing, key);
+          const viewIds = new Set(dashboard.intercom.messages.map(m => m.id));
+          const fileOnly = fileDashboard.intercom.messages.filter(m => !viewIds.has(m.id));
+          if (fileOnly.length > 0) {
+            logger.warn('[STALE-FILE #3230] ids file-only réinjectés dans la réparation', {
+              key,
+              fileOnlyCount: fileOnly.length,
+              fileOnlyIds: fileOnly.slice(0, 10).map(m => m.id),
+            });
+            const merged = [...dashboard.intercom.messages, ...fileOnly]
+              .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+            repair = {
+              ...dashboard,
+              intercom: {
+                ...dashboard.intercom,
+                messages: merged,
+                totalMessages: dashboard.intercom.totalMessages + fileOnly.length,
+              },
+            };
+          }
+        } catch (parseErr) {
+          // Fichier local illisible (frontmatter cassé...) — réparation vue
+          // seule, comportement d'avant le cas mixte : writeDashboardFile garde
+          // ses propres gardes en aval.
+          logger.warn('[STALE-FILE #3230] parse du fichier local impossible — réparation vue seule', {
+            key,
+            error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+          });
+        }
+        return await writeDashboardFile(key, repair);
       }
     }
 
