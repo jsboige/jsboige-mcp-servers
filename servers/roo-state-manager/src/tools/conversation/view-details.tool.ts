@@ -6,6 +6,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import { toUnifiedTask } from '../../types/unified-task.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { ContentTruncator } from '../smart-truncation/content-truncator.js';
 import * as path from 'path';
@@ -172,12 +173,16 @@ export const viewTaskDetailsTool = {
                 };
             }
 
-            let output = `🔍 Détails techniques complets - Tâche: ${skeleton.metadata.title || skeleton.taskId}\n`;
+            // #1394 : l'en-tête du rapport (champs header-level uniquement) est
+            // rendu depuis la projection UnifiedTask ; les étapes sequence
+            // (extraction des actions) restent sur le squelette — couche compat.
+            const task = toUnifiedTask(skeleton);
+            let output = `🔍 Détails techniques complets - Tâche: ${task.title || task.id}\n`;
             output += `═══════════════════════════════════════════════════════════════════════════════════════════════════════\n`;
-            output += `ID: ${skeleton.taskId}\n`;
-            output += `Messages: ${skeleton.metadata.messageCount}\n`;
-            output += `Taille totale: ${skeleton.metadata.totalSize} octets\n`;
-            output += `Dernière activité: ${skeleton.metadata.lastActivity}\n\n`;
+            output += `ID: ${task.id}\n`;
+            output += `Messages: ${task.messageCount}\n`;
+            output += `Taille totale: ${task.totalSizeBytes} octets\n`;
+            output += `Dernière activité: ${task.lastActivity}\n\n`;
 
             // Filtrer pour ne garder que les actions (pas les messages)
             const actions = (skeleton.sequence ?? []).filter((item: any) => !('role' in item));

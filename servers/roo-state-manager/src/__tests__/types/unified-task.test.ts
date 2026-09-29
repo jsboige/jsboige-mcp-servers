@@ -6,6 +6,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   UnifiedTaskSchema,
   toUnifiedTask,
+  unifiedTaskToSkeletonHeader,
   computeStorageTier,
   parseUnifiedTask,
   safeParseUnifiedTask,
@@ -340,5 +341,116 @@ describe('safeParseUnifiedTask', () => {
       expect(result.errors).toBeDefined();
       expect(result.errors.issues.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ─── unifiedTaskToSkeletonHeader (#1394 backward-compat layer) ────────────────
+
+describe('unifiedTaskToSkeletonHeader', () => {
+  test('maps all header-level fields to the SkeletonHeader shape', () => {
+    const header = unifiedTaskToSkeletonHeader(validRooTask);
+
+    expect(header.taskId).toBe('task-001');
+    expect(header.parentTaskId).toBe('parent-001');
+    expect(header.metadata.title).toBe('Fix authentication bug');
+    expect(header.metadata.lastActivity).toBe('2026-05-10T11:30:00Z');
+    expect(header.metadata.createdAt).toBe('2026-05-10T10:00:00Z');
+    expect(header.metadata.mode).toBe('code-simple');
+    expect(header.metadata.messageCount).toBe(42);
+    expect(header.metadata.actionCount).toBe(15);
+    expect(header.metadata.totalSize).toBe(8192);
+    expect(header.metadata.workspace).toBe('/dev/roo-extensions');
+    expect(header.metadata.machineId).toBe('myia-po-2025');
+    expect(header.metadata.qdrantIndexedAt).toBe('2026-05-10T12:00:00Z');
+    expect(header.metadata.source).toBe('roo');
+    expect(header.isCompleted).toBe(true);
+    expect(header.truncatedInstruction).toBe('Fix the login flow bug in auth.ts');
+  });
+
+  test('isCompleted=false for non-completed statuses', () => {
+    expect(unifiedTaskToSkeletonHeader(validClaudeTask).isCompleted).toBe(false);
+    expect(unifiedTaskToSkeletonHeader({ ...validClaudeTask, status: 'stuck' as TaskStatus }).isCompleted).toBe(false);
+  });
+
+  test('truncates instructions over 500 chars (same convention as toUnifiedTask)', () => {
+    const header = unifiedTaskToSkeletonHeader({
+      ...validClaudeTask,
+      instruction: 'B'.repeat(600),
+    });
+    expect(header.truncatedInstruction).toBeDefined();
+    expect(header.truncatedInstruction!.length).toBe(503);
+    expect(header.truncatedInstruction!.endsWith('...')).toBe(true);
+  });
+});
+
+// ─── Round-trip toUnifiedTask ↔ unifiedTaskToSkeletonHeader ───────────────────
+
+describe('round-trip conversion', () => {
+  test('UnifiedTask → SkeletonHeader → UnifiedTask preserves header semantics', () => {
+    const roundTripped = toUnifiedTask(unifiedTaskToSkeletonHeader(validRooTask));
+
+    expect(roundTripped.id).toBe(validRooTask.id);
+    expect(roundTripped.source).toBe(validRooTask.source);
+    expect(roundTripped.parentId).toBe(validRooTask.parentId);
+    expect(roundTripped.title).toBe(validRooTask.title);
+    expect(roundTripped.instruction).toBe(validRooTask.instruction);
+    expect(roundTripped.createdAt).toBe(validRooTask.createdAt);
+    expect(roundTripped.lastActivity).toBe(validRooTask.lastActivity);
+    expect(roundTripped.messageCount).toBe(validRooTask.messageCount);
+    expect(roundTripped.actionCount).toBe(validRooTask.actionCount);
+    expect(roundTripped.totalSizeBytes).toBe(validRooTask.totalSizeBytes);
+    expect(roundTripped.workspace).toBe(validRooTask.workspace);
+    expect(roundTripped.machineId).toBe(validRooTask.machineId);
+    expect(roundTripped.mode).toBe(validRooTask.mode);
+    expect(roundTripped.indexedAt).toBe(validRooTask.indexedAt);
+    // status=completed round-trips through isCompleted
+    expect(roundTripped.status).toBe('completed');
+  });
+
+  test('round-trip preserves active status for recent tasks', () => {
+    const recentActivity = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const active: UnifiedTask = { ...validClaudeTask, lastActivity: recentActivity, createdAt: recentActivity };
+    const roundTripped = toUnifiedTask(unifiedTaskToSkeletonHeader(active));
+    expect(roundTripped.status).toBe('active');
+  });
+
+  test('SkeletonHeader-like → UnifiedTask → SkeletonHeader preserves skeleton semantics', () => {
+    const skeletonLike = {
+      taskId: 'sk-1',
+      parentTaskId: 'sk-0',
+      metadata: {
+        title: 'Skeleton round trip',
+        lastActivity: '2026-05-10T15:00:00Z',
+        createdAt: '2026-05-10T14:00:00Z',
+        mode: 'debug-complex',
+        messageCount: 12,
+        actionCount: 4,
+        totalSize: 2048,
+        workspace: '/dev/x',
+        machineId: 'myia-po-2026',
+        qdrantIndexedAt: '2026-05-10T16:00:00Z',
+        source: 'roo' as const,
+      },
+      truncatedInstruction: 'Do the thing',
+      isCompleted: true,
+    };
+
+    const header = unifiedTaskToSkeletonHeader(toUnifiedTask(skeletonLike));
+
+    expect(header.taskId).toBe('sk-1');
+    expect(header.parentTaskId).toBe('sk-0');
+    expect(header.metadata.title).toBe('Skeleton round trip');
+    expect(header.metadata.lastActivity).toBe('2026-05-10T15:00:00Z');
+    expect(header.metadata.createdAt).toBe('2026-05-10T14:00:00Z');
+    expect(header.metadata.mode).toBe('debug-complex');
+    expect(header.metadata.messageCount).toBe(12);
+    expect(header.metadata.actionCount).toBe(4);
+    expect(header.metadata.totalSize).toBe(2048);
+    expect(header.metadata.workspace).toBe('/dev/x');
+    expect(header.metadata.machineId).toBe('myia-po-2026');
+    expect(header.metadata.qdrantIndexedAt).toBe('2026-05-10T16:00:00Z');
+    expect(header.metadata.source).toBe('roo');
+    expect(header.truncatedInstruction).toBe('Do the thing');
+    expect(header.isCompleted).toBe(true);
   });
 });

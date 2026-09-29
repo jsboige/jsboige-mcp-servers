@@ -9,13 +9,12 @@ import {
     getConversationListPgReader,
     loadPgConversationTier,
 } from '../../services/unified-store/conversation-list-store.js';
-import { normalizePath } from '../../utils/path-normalizer.js';
-import { normalizeWorkspaceId } from '../../utils/message-helpers.js';
 import { scanDiskForNewTasks, evictGoneLocalTasks } from '../task/disk-scanner.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { stripXmlTags, truncateAtBoundary } from '../../utils/text-preview.js';
+import { matchesWorkspace } from '../../utils/workspace-match.js';
+import { applyUnifiedHeaderFiltersAndSort } from './unified-header-pipeline.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -446,33 +445,8 @@ function truncateSummary(summary: string, maxLength: number): string {
     return summary.substring(0, maxLength) + '...';
 }
 
-/**
- * #1244 Couche 2.2 — Strategie de matching de workspace.
- *
- * - 'exact'      : equivalent strict (apres normalisation forward-slash + lowercase)
- *                  via normalizePath. Conserve le chemin complet (`d:/dev/CoursIA` != `d:/CoursIA`).
- * - 'normalized' : (defaut) match basename via normalizeWorkspaceId. Tolere les
- *                  variations de chemin parent (`d:/dev/CoursIA` == `d:/CoursIA` == `CoursIA`).
- *                  C'est la strategie cross-machine la plus robuste — un meme workspace
- *                  ouvert depuis differents drives ou via des liens symboliques matche.
- * - 'substring'  : test `includes` lowercase. Le plus tolerant, pour les recherches
- *                  exploratoires (`workspace: 'CoursIA'` matche tout chemin contenant CoursIA).
- */
-function matchesWorkspace(
-    skeletonWorkspace: string | undefined,
-    queryWorkspace: string,
-    strategy: 'exact' | 'normalized' | 'substring' = 'normalized'
-): boolean {
-    if (!skeletonWorkspace) return false;
-    if (strategy === 'exact') {
-        return normalizePath(skeletonWorkspace) === normalizePath(queryWorkspace);
-    }
-    if (strategy === 'substring') {
-        return skeletonWorkspace.toLowerCase().includes(queryWorkspace.toLowerCase());
-    }
-    // 'normalized' (default)
-    return normalizeWorkspaceId(skeletonWorkspace) === normalizeWorkspaceId(queryWorkspace);
-}
+// #1244 Couche 2.2 — matchesWorkspace vit désormais dans utils/workspace-match.ts
+// (#1394), partagé avec le pipeline unifié unified-header-pipeline.ts.
 
 /**
  * Définition de l'outil list_conversations
@@ -725,53 +699,39 @@ export const listConversationsTool = {
             };
         }
 
-        // Filtrage par workspace
-        let workspaceFilteredCount = 0;
-        if (args.workspace) {
-            const countBeforeFilter = allSkeletons.length;
-            allSkeletons = allSkeletons.filter(skeleton =>
-                matchesWorkspace(skeleton.metadata.workspace, args.workspace!, workspaceMatchStrategy)
-            );
-            workspaceFilteredCount = countBeforeFilter - allSkeletons.length;
-            // 🔇 LOG VERBEUX COMMENTÉ (explosion contexte)
-            // console.log(`[DEBUG] Found ${allSkeletons.length} conversations matching workspace filter`);
-        }
+        // #1394 (Phase 4 #1360) — Filtres de niveau header + tri via la projection
+        // UnifiedTask. Parité comportementale avec l'implémentation legacy assertée
+        // par le test A/B unified-header-pipeline.test.ts (workspace, fenêtre
+        // temporelle, machineId, tri lastActivity/messageCount/totalSize).
+        // Les filtres pendingSubtaskOnly et contentPattern restent sur le squelette
+        // (dépendants sequence/IO) et s'appliquent après, comme avant.
+        const unifiedResult = applyUnifiedHeaderFiltersAndSort(allSkeletons, {
+            workspace: args.workspace,
+            workspacePathMatch: workspaceMatchStrategy,
+            startDate: args.startDate,
+            endDate: args.endDate,
+            machineId: args.machineId,
+            sortBy: args.sortBy,
+            sortOrder: args.sortOrder,
+        });
+        allSkeletons = unifiedResult.skeletons;
+        let workspaceFilteredCount = unifiedResult.workspaceFilteredCount;
 
-        // #1244 Couche 2.1 — Filtre par fenetre temporelle (lastActivity dans [startDate, endDate])
-        // Les bornes acceptent ISO 8601 ou YYYY-MM-DD. endDate inclut la journee entiere.
-        const parsedStartDate = parseFilterDate(args.startDate);
-        const parsedEndDate = parseFilterDate(args.endDate);
-        if (parsedStartDate || parsedEndDate) {
-            allSkeletons = allSkeletons.filter(skeleton =>
-                isWithinDateRange(skeleton.metadata?.lastActivity, parsedStartDate, parsedEndDate)
-            );
-        }
-
-        // #1244 Couche 2.1 — Filtre par identifiant machine (cross-machine).
-        // Permet d'isoler les conversations d'une machine specifique parmi les
-        // squelettes charges depuis archive (Tier 3) ou Roo local.
+        // #1244 Couche 2.1 / #3661 review pt 5 — machineId inconnu : une machine
+        // absente de l'index Tier 3 rend une liste vide LEGITIME, mais "0 resultat"
+        // se lirait comme un corpus vide. Le signal porte la distinction.
         let machineFilterNotice: string | undefined;
-        if (args.machineId && args.machineId.trim().length > 0) {
-            const targetMachineId = args.machineId.trim().toLowerCase();
-            allSkeletons = allSkeletons.filter(skeleton => {
-                const m = (skeleton.metadata?.machineId || '').toLowerCase();
-                return m === targetMachineId;
-            });
-            // #3661 review pt 5 — machineId inconnu : une machine absente de
-            // l'index Tier 3 rend une liste vide LEGITIME, mais "0 resultat"
-            // se lirait comme un corpus vide. Le signal porte la distinction.
-            if (allSkeletons.length === 0 && args.includeArchives) {
-                try {
-                    const known = SkeletonCacheService.getInstance().tier3KnowsMachine(args.machineId.trim());
-                    if (!known) {
-                        machineFilterNotice =
-                            `machineId "${args.machineId.trim()}" inconnu des archives Tier 3 — ` +
-                            `frappe, ou machine absente du corpus archive (le filtre rend une liste vide).`;
-                        console.warn(`[list_conversations] ${machineFilterNotice}`);
-                    }
-                } catch {
-                    // best effort — le signal est un enrichissement, pas un contrat
+        if (args.machineId && args.machineId.trim().length > 0 && allSkeletons.length === 0 && args.includeArchives) {
+            try {
+                const known = SkeletonCacheService.getInstance().tier3KnowsMachine(args.machineId.trim());
+                if (!known) {
+                    machineFilterNotice =
+                        `machineId "${args.machineId.trim()}" inconnu des archives Tier 3 — ` +
+                        `frappe, ou machine absente du corpus archive (le filtre rend une liste vide).`;
+                    console.warn(`[list_conversations] ${machineFilterNotice}`);
                 }
+            } catch {
+                // best effort — le signal est un enrichissement, pas un contrat
             }
         }
 
@@ -813,24 +773,9 @@ export const listConversationsTool = {
             allSkeletons = matchingTasks;
         }
 
-
-        // Tri
-        allSkeletons.sort((a, b) => {
-            let comparison = 0;
-            const sortBy = args.sortBy || 'lastActivity';
-            switch (sortBy) {
-                case 'lastActivity':
-                    comparison = new Date(b.metadata!.lastActivity).getTime() - new Date(a.metadata!.lastActivity).getTime();
-                    break;
-                case 'messageCount':
-                    comparison = (b.metadata?.messageCount || 0) - (a.metadata?.messageCount || 0);
-                    break;
-                case 'totalSize':
-                    comparison = (b.metadata?.totalSize || 0) - (a.metadata?.totalSize || 0);
-                    break;
-            }
-            return (args.sortOrder === 'asc') ? -comparison : comparison;
-        });
+        // Tri — appliqué par applyUnifiedHeaderFiltersAndSort (#1394) sur la
+        // projection UnifiedTask (mêmes clés, même comparateur, ordre stable
+        // identique ; filtrer après tri préserve l'ordre).
 
 
         // Créer les SkeletonNode SANS la propriété sequence MAIS avec toutes les infos importantes

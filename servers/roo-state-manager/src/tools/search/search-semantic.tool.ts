@@ -5,6 +5,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
+import { toUnifiedTask } from '../../types/unified-task.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
@@ -58,6 +59,26 @@ function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): Cal
 // #2167: Bumped default retry count from 1→2 (3 total attempts) for embedding reliability
 const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '2');
 const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
+
+/**
+ * #1394 : enrichissement `conversation_stats` d'un groupe de résultats depuis
+ * la projection UnifiedTask du squelette en cache. Sémantique legacy
+ * conservée à l'identique : `messageCount || 0`, repli `lastActivity ||
+ * createdAt` — assertée par le test A/B
+ * `search/__tests__/search-semantic-unified-stats.test.ts`.
+ */
+export function buildConversationStats(cached: ConversationSkeleton): {
+    total_messages: number;
+    workspace: string | undefined;
+    last_activity: string | undefined;
+} {
+    const task = toUnifiedTask(cached);
+    return {
+        total_messages: task.messageCount || 0,
+        workspace: task.workspace,
+        last_activity: task.lastActivity || task.createdAt,
+    };
+}
 
 /**
  * #2167: Query embedding cache — avoids re-embedding identical queries within TTL.
@@ -1183,14 +1204,11 @@ export const searchTasksByContentTool = {
             }
 
             // #636 Phase 2: Enrich grouped results with conversation stats from cache
+            // #1394 : champs header-level lus via la projection UnifiedTask.
             for (const group of groupedResults) {
                 const cached = conversationCache.get(group.taskId);
                 if (cached) {
-                    group.conversation_stats = {
-                        total_messages: cached.metadata?.messageCount || 0,
-                        workspace: cached.metadata?.workspace,
-                        last_activity: cached.metadata?.lastActivity || cached.metadata?.createdAt,
-                    };
+                    group.conversation_stats = buildConversationStats(cached);
                 }
             }
 
