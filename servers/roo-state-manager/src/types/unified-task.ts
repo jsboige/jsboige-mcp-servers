@@ -11,6 +11,7 @@
  */
 
 import { z } from 'zod';
+import type { SkeletonHeader } from './conversation.js';
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -157,6 +158,39 @@ export function computeStorageTier(task: UnifiedTask): StorageTier {
   if (days <= 7) return 'hot';
   if (days <= 90) return 'warm';
   return 'cold';
+}
+
+/**
+ * Convert a UnifiedTask back to a SkeletonHeader (#1394 backward-compat layer).
+ *
+ * Downstream tools migrated to UnifiedTask can hand their tasks to code that
+ * still consumes the legacy skeleton shape during the transition (#1395):
+ * header-level fields round-trip losslessly through
+ * toUnifiedTask ↔ unifiedTaskToSkeletonHeader; the `sequence` is NOT modeled
+ * by UnifiedTask v1 — sequence-carrying flows keep loading skeletons.
+ */
+export function unifiedTaskToSkeletonHeader(task: UnifiedTask): SkeletonHeader {
+  return {
+    taskId: task.id,
+    parentTaskId: task.parentId,
+    metadata: {
+      title: task.title,
+      lastActivity: task.lastActivity,
+      createdAt: task.createdAt,
+      mode: task.mode,
+      messageCount: task.messageCount,
+      actionCount: task.actionCount,
+      totalSize: task.totalSizeBytes,
+      workspace: task.workspace,
+      machineId: task.machineId,
+      qdrantIndexedAt: task.indexedAt,
+      source: task.source,
+    },
+    isCompleted: task.status === 'completed',
+    truncatedInstruction: task.instruction
+      ? (task.instruction.length > 500 ? task.instruction.slice(0, 500) + '...' : task.instruction)
+      : undefined,
+  };
 }
 
 /**
