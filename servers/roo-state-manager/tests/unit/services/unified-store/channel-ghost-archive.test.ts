@@ -1,11 +1,13 @@
 /**
- * channel-reconcile — #3151 Phase B arming prerequisite.
+ * channel-ghost-archive (ex-channel-reconcile, renamed per review #1256
+ * point 3) — #3151 Phase B arming prerequisite.
  *
  * Hardened per the user directive 29/09/2026 ("blindez les tests unitaires"):
  * every property the reconcile pass claims is asserted here — membership
  * rule, grace window boundary, manifest completeness (denominator =
- * ghosts + live + withinGrace), dry-run purity, batch chunking — plus the
- * reader guard that keeps destroyed rows out of PG-primary mailboxes.
+ * ghosts + live + withinGrace), dry-run purity, batch chunking, undatable
+ * created_at protection (review #1256 point 2) — plus the reader guard that
+ * keeps destroyed rows out of PG-primary mailboxes.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -14,8 +16,8 @@ import {
   buildLiveIdSet,
   computeReconcileResult,
   batchIds,
-} from '../../../../src/services/unified-store/channel-reconcile.js';
-import type { ReconcileCandidate } from '../../../../src/services/unified-store/channel-reconcile.js';
+} from '../../../../src/services/unified-store/channel-ghost-archive.js';
+import type { ReconcileCandidate } from '../../../../src/services/unified-store/channel-ghost-archive.js';
 
 // ─── Reconcile pure logic ───────────────────────────────────────────
 
@@ -194,6 +196,63 @@ describe('computeReconcileResult — sanity guards (#1256 review point 1)', () =
     expect(r.manifest.run_kind).toBe('apply');
     expect(r.manifest.aborted?.reason).toBe('pool-empty');
     expect(r.ghosts).toEqual([]);
+  });
+});
+
+// ─── Undatable created_at falls on the SAFE side (review #1256 point 2) ──
+
+describe('computeReconcileResult — undatable created_at (NaN protection)', () => {
+  const CUTOFF = Date.parse('2026-09-27T00:00:00Z');
+  const GRACE_HOURS = 48;
+  const SOME_LIVE = buildLiveIdSet(['live-anchor.json']);
+
+  it('an unparseable created_at string is grace-protected, never a ghost', () => {
+    const r = computeReconcileResult(
+      [{ id: 'undatable', status: 'unread', created_at: 'not-a-date' }],
+      SOME_LIVE,
+      CUTOFF,
+      'apply',
+      GRACE_HOURS
+    );
+    expect(r.ghosts).toEqual([]);
+    expect(r.kept.withinGrace).toBe(1);
+  });
+
+  it('an empty created_at string (Date.parse === NaN) is protected too', () => {
+    const r = computeReconcileResult(
+      [{ id: 'empty-date', status: 'unread', created_at: '' }],
+      SOME_LIVE,
+      CUTOFF,
+      'dry-run',
+      GRACE_HOURS
+    );
+    expect(r.ghosts).toEqual([]);
+    expect(r.kept.withinGrace).toBe(1);
+  });
+
+  it('an invalid Date object (getTime() === NaN) is protected', () => {
+    const r = computeReconcileResult(
+      [{ id: 'bad-date-obj', status: 'read', created_at: new Date('garbage') }],
+      SOME_LIVE,
+      CUTOFF,
+      'apply',
+      GRACE_HOURS
+    );
+    expect(r.ghosts.map(g => g.id)).toEqual([]);
+    expect(r.kept.withinGrace).toBe(1);
+  });
+
+  it('manifest denominator stays exact with an undatable row mixed into the pass', () => {
+    const mixed: ReconcileCandidate[] = [
+      { id: 'live-anchor', status: 'read', created_at: '2026-03-05T00:00:00Z' }, // live
+      { id: 'undatable', status: 'unread', created_at: 'garbage' }, // NaN → grace
+      { id: 'real-ghost', status: 'read', created_at: '2026-03-05T00:00:00Z' }, // ghost
+    ];
+    const r = computeReconcileResult(mixed, SOME_LIVE, CUTOFF, 'apply', GRACE_HOURS);
+    expect(r.ghosts.map(g => g.id)).toEqual(['real-ghost']);
+    expect(r.manifest.candidates).toBe(3);
+    expect(r.manifest.ghosts + r.kept.live + r.kept.withinGrace).toBe(3);
+    expect(r.manifest.aborted).toBeUndefined(); // guards unaffected by NaN rows
   });
 });
 

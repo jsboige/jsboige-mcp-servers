@@ -2,7 +2,7 @@
 /**
  * #3151 Phase B arming prerequisite — reconcile `roosync_messages` lifecycle
  * status against the GDrive inbox pool membership (see
- * src/services/unified-store/channel-reconcile.ts for the WHY).
+ * src/services/unified-store/channel-ghost-archive.ts for the WHY).
  *
  * One-time (re-runnable) pass run BEFORE arming UNIFIED_STORE_CHANNEL_READ_PG
  * on a machine — and once fleet-wide before the flag spreads. Marks PG rows
@@ -110,7 +110,7 @@ if (!SHARED) {
 const { resolveBuildDir } = await import(pathToFileURL(path.join(__dirname, 'lib', 'resolve-build-dir.mjs')).href);
 const buildDir = resolveBuildDir(path.join(__dirname, '..'));
 const { buildLiveIdSet, computeReconcileResult, batchIds } = await import(
-  pathToFileURL(path.join(buildDir, 'services', 'unified-store', 'channel-reconcile.js')).href
+  pathToFileURL(path.join(buildDir, 'services', 'unified-store', 'channel-ghost-archive.js')).href
 );
 const { Client } = await import('pg');
 

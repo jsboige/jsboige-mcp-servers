@@ -2,6 +2,13 @@
  * #3151 Phase B arming prerequisite — reconcile `roosync_messages` lifecycle
  * status against the GDrive inbox pool membership.
  *
+ * NAMING (review ai-01 #1256 point 3): this module and `roosync-channel-reconcile.ts`
+ * sit in the same directory and work in OPPOSITE directions. That one heals
+ * PRESENCE (GDrive files → PG rows, insert-only daemon); this one heals STATE
+ * (PG rows → archived, for rows whose file left the pool). Hence the distinct
+ * `channel-ghost-archive` name — a grep for "channel-reconcile" now finds only
+ * the presence daemon.
+ *
  * WHY this exists: the shared inbox pool is the system of record for LIVE
  * membership. When a machine archives a message, the file leaves the shared
  * pool for that machine's LOCAL archive dir — but if that machine's channel
@@ -93,6 +100,11 @@ function toEpoch(value: string | Date): number {
  *  - it is older than the grace cutoff (recent rows are never touched —
  *    their file may still be propagating through DriveFS, or the archive
  *    move may be in flight).
+ *
+ * A candidate whose `created_at` cannot be parsed (NaN epoch) counts as
+ * within grace — the safe side (review ai-01 #1256 point 2): a row we cannot
+ * date is never archived, since `NaN >= cutoff` is false and would otherwise
+ * fall through to the ghost bucket.
  */
 export function computeReconcileResult(
   candidates: ReconcileCandidate[],
@@ -110,7 +122,8 @@ export function computeReconcileResult(
       live++;
       continue;
     }
-    if (toEpoch(c.created_at) >= graceCutoffEpochMs) {
+    const epoch = toEpoch(c.created_at);
+    if (!Number.isFinite(epoch) || epoch >= graceCutoffEpochMs) {
       withinGrace++;
       continue;
     }
