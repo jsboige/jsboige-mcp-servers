@@ -24,6 +24,11 @@
  *   node scripts/backfill-roosync-channel.mjs --dirs inbox    # subset
  *
  * The .env at servers/roo-state-manager/.env is auto-loaded.
+ *
+ * Non-uuid dirs under attachments/ (hand-dropped folders) are skipped but
+ * counted and named ("foreign") — they do not gate the INCOMPLETE exit. An
+ * unreadable/empty metadata.json inside a real uuid dir remains an ERROR:
+ * that is exactly the truncation the gate exists to catch.
  */
 
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
@@ -199,20 +204,33 @@ let attTotal = 0;
 let attInserted = 0;
 let attUpgraded = 0;
 let attSkipped = 0;
+let foreignDirs = [];
+const UUID_DIR_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 if (PHASES.includes('attachments')) {
   console.log('');
   console.log('=== Attachments phase (#3151 §7.5.2) ===');
   const attachmentsRoot = path.join(sharedStatePath, 'attachments');
   let uuidDirs;
   try {
-    uuidDirs = (await readdir(attachmentsRoot, { withFileTypes: true }))
+    const allDirs = (await readdir(attachmentsRoot, { withFileTypes: true }))
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
+    // Foreign dirs (hand-dropped folders, not channel uploads) must not gate the
+    // INCOMPLETE exit — but they may not vanish silently either (ai-01 arbitrage
+    // i-a, 30/09): counted and named in the report. Only uuid-named dirs are
+    // channel data; an unreadable metadata.json in one of those stays an ERROR.
+    uuidDirs = allDirs.filter((n) => UUID_DIR_RE.test(n));
+    foreignDirs = allDirs.filter((n) => !UUID_DIR_RE.test(n));
   } catch {
     console.log('(attachments: no such directory — skipped)');
     uuidDirs = [];
+    foreignDirs = [];
   }
   console.log(`attachments: ${uuidDirs.length} uuid dirs`);
+  if (foreignDirs.length > 0) {
+    console.log(`  foreign dirs (not uuid-named, not channel data — skipped, listed): ${foreignDirs.length}`);
+    for (const d of foreignDirs) console.log(`    - ${d}`);
+  }
 
   // Raw client (not the writer): the metadata-upgrading upsert is
   // backfill-specific and has no place in the runtime writer surface.
@@ -286,6 +304,9 @@ if (PHASES.includes('attachments')) {
   console.log('');
   console.log('=== Attachments result ===');
   console.log(`  total:     ${attTotal}`);
+  if (foreignDirs.length > 0) {
+    console.log(`  foreign:   ${foreignDirs.length}  (not uuid-named, skipped — named in the phase log above)`);
+  }
   if (liveMode) {
     console.log(`  inserted:  ${attInserted}`);
     console.log(`  upgraded:  ${attUpgraded}  (metadata filled, payload untouched)`);
