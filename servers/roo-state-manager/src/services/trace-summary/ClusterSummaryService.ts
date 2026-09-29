@@ -16,6 +16,7 @@ import {
     CrossTaskPattern
 } from '../../types/conversation.js';
 import { SummaryOptions, SummaryResult, SummaryStatistics } from '../../types/trace-summary.js';
+import { toUnifiedTask } from '../../types/unified-task.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
 import { SummaryGenerator } from './SummaryGenerator.js';
 import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../../types/errors.js';
@@ -174,24 +175,11 @@ export class ClusterSummaryService {
 
         const allTasks = [rootTask, ...childTasks];
 
-        // Tri selon la stratégie choisie
-        let sortedTasks: ConversationSkeleton[];
-        switch (options.clusterSortBy) {
-            case 'chronological':
-                sortedTasks = this.sortTasksByChronology(allTasks);
-                break;
-            case 'size':
-                sortedTasks = this.sortTasksBySize(allTasks);
-                break;
-            case 'activity':
-                sortedTasks = this.sortTasksByActivity(allTasks);
-                break;
-            case 'alphabetical':
-                sortedTasks = this.sortTasksAlphabetically(allTasks);
-                break;
-            default:
-                sortedTasks = this.sortTasksByChronology(allTasks);
-        }
+        // #1394 : le tri de la grappe (champs header-level uniquement) opère sur
+        // la projection UnifiedTask de chaque tâche. Les squelettes d'origine
+        // sont restitués dans le nouvel ordre — le rendu aval (sequence) est
+        // inchangé.
+        const sortedTasks = this.sortClusterTasks(allTasks, options.clusterSortBy);
 
         // Construction de la hiérarchie
         const taskHierarchy = new Map<string, ConversationSkeleton[]>();
@@ -207,39 +195,41 @@ export class ClusterSummaryService {
     }
 
     /**
-     * Tri chronologique des tâches (par date de création)
+     * Tri des tâches de la grappe sur la projection UnifiedTask (#1394).
+     *
+     * Sémantique historique conservée à l'identique (assertée par le test A/B
+     * `cluster-unified-sort.test.ts`) : chronologie = createdAt asc, taille =
+     * totalSize desc, activité = lastActivity desc, alphabétique = title (avec
+     * repli taskId) asc via localeCompare. Tri stable — les ex æquo conservent
+     * l'ordre relatif d'entrée, comme les implémentations legacy.
      */
-    private sortTasksByChronology(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
-        return [...tasks].sort((a, b) =>
-            new Date(a.metadata.createdAt).getTime() - new Date(b.metadata.createdAt).getTime()
-        );
-    }
-
-    /**
-     * Tri par taille de contenu
-     */
-    private sortTasksBySize(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
-        return [...tasks].sort((a, b) => b.metadata.totalSize - a.metadata.totalSize);
-    }
-
-    /**
-     * Tri par activité récente
-     */
-    private sortTasksByActivity(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
-        return [...tasks].sort((a, b) =>
-            new Date(b.metadata.lastActivity).getTime() - new Date(a.metadata.lastActivity).getTime()
-        );
-    }
-
-    /**
-     * Tri alphabétique par titre
-     */
-    private sortTasksAlphabetically(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
-        return [...tasks].sort((a, b) => {
-            const titleA = a.metadata.title || a.taskId;
-            const titleB = b.metadata.title || b.taskId;
-            return titleA.localeCompare(titleB);
-        });
+    private sortClusterTasks(
+        tasks: ConversationSkeleton[],
+        sortBy: 'chronological' | 'size' | 'activity' | 'alphabetical' = 'chronological'
+    ): ConversationSkeleton[] {
+        const pairs = tasks.map(skeleton => ({ skeleton, task: toUnifiedTask(skeleton) }));
+        switch (sortBy) {
+            case 'size':
+                pairs.sort((a, b) => b.task.totalSizeBytes - a.task.totalSizeBytes);
+                break;
+            case 'activity':
+                pairs.sort((a, b) =>
+                    new Date(b.task.lastActivity).getTime() - new Date(a.task.lastActivity).getTime()
+                );
+                break;
+            case 'alphabetical':
+                pairs.sort((a, b) =>
+                    (a.task.title || a.task.id).localeCompare(b.task.title || b.task.id)
+                );
+                break;
+            case 'chronological':
+            default:
+                pairs.sort((a, b) =>
+                    new Date(a.task.createdAt).getTime() - new Date(b.task.createdAt).getTime()
+                );
+                break;
+        }
+        return pairs.map(pair => pair.skeleton);
     }
 
     // ============================================================================
