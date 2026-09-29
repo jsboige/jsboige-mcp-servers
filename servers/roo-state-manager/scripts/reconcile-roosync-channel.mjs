@@ -62,23 +62,31 @@ function loadEnv(file) {
 // --- args ---
 const args = process.argv.slice(2);
 if (args.includes('--help')) {
-  console.log(`Usage: node scripts/reconcile-roosync-channel.mjs [--apply] [--dry-run] [--grace-hours N] [--manifest-dir DIR] [--limit N]
+  console.log(`Usage: node scripts/reconcile-roosync-channel.mjs [--apply] [--dry-run] [--grace-hours N] [--manifest-dir DIR] [--env-file PATH] [--limit N]
 
   (default)          Dry run: report + manifest, no UPDATE.
   --apply            Live pass (requires UNIFIED_STORE_DUAL_WRITE=1 + UNIFIED_STORE_PG_URL).
   --grace-hours N    Rows newer than N hours are never touched (default 48).
   --manifest-dir DIR Where the manifest is written (default: script dir).
+  --env-file PATH    .env to load (default: servers/roo-state-manager/.env — pass another checkout's .env when running from a worktree).
   --limit N          Cap candidate rows for a trial pass.`);
   process.exit(0);
 }
 const APPLY = args.includes('--apply');
-const graceHours = Number(args[args.indexOf('--grace-hours') + 1] ?? 48);
+const graceIdx = args.indexOf('--grace-hours');
+const graceHours = graceIdx !== -1 ? Number(args[graceIdx + 1]) : 48;
+if (!Number.isFinite(graceHours) || graceHours < 0) {
+  console.error(`ABORT: --grace-hours must be a non-negative number (got: ${args[graceIdx + 1]}).`);
+  process.exit(1);
+}
 const limitIdx = args.indexOf('--limit');
 const LIMIT = limitIdx !== -1 ? Number(args[limitIdx + 1]) : undefined;
 const manifestDirIdx = args.indexOf('--manifest-dir');
 const manifestDir = manifestDirIdx !== -1 ? args[manifestDirIdx + 1] : __dirname;
+const envFileIdx = args.indexOf('--env-file');
+const envFile = envFileIdx !== -1 ? args[envFileIdx + 1] : path.join(__dirname, '..', '.env');
 
-loadEnv(path.join(__dirname, '..', '.env'));
+loadEnv(envFile);
 
 const PG_URL = process.env.UNIFIED_STORE_PG_URL;
 if (!PG_URL) {
@@ -97,7 +105,7 @@ if (!SHARED) {
 
 // --- import repo logic from the build dir ---
 const { resolveBuildDir } = await import(pathToFileURL(path.join(__dirname, 'lib', 'resolve-build-dir.mjs')).href);
-const buildDir = resolveBuildDir();
+const buildDir = resolveBuildDir(path.join(__dirname, '..'));
 const { buildLiveIdSet, computeReconcileResult, batchIds } = await import(
   pathToFileURL(path.join(buildDir, 'services', 'unified-store', 'channel-reconcile.js')).href
 );
