@@ -51,6 +51,9 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
       connectionString: this.config.connectionString,
       max: this.config.poolMax ?? 5,
       statement_timeout: this.config.statementTimeoutMs ?? 5000,
+      // #2191 deep-queue: without this, a dropped-SYN host hangs pool.connect()
+      // until the OS TCP timeout — the GDrive fallback catch never fires.
+      connectionTimeoutMillis: this.config.connectionTimeoutMillis ?? 5000,
     });
 
     // Idle-client errors are emitted on the POOL with no awaited query to

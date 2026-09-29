@@ -131,6 +131,9 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       connectionString: this.config.connectionString,
       max: this.config.poolMax ?? 5,
       statement_timeout: this.config.statementTimeoutMs ?? 5000,
+      // #2191 deep-queue: same guard as the reader — an unreachable host must
+      // reject fast, not hang the dual-write arming path until the OS TCP timeout.
+      connectionTimeoutMillis: this.config.connectionTimeoutMillis ?? 5000,
       // SSL is configured via the connection string (sslmode=require)
     });
 
