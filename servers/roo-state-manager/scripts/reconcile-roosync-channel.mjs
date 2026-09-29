@@ -17,6 +17,9 @@
  *     the pass is reversible by replaying the manifest.
  *   - Grace window (default 48 h) protects in-flight archive moves and
  *     DriveFS propagation: recent rows are never touched.
+ *   - Sanity guards (review #1256): an empty or quasi-ghost pool (unmounted
+ *     DriveFS) ABORTS the pass (exit 2) — nothing is archived when the pool
+ *     itself looks disconnected.
  *
  * Usage (from servers/roo-state-manager/):
  *   npm run build
@@ -133,6 +136,13 @@ console.log(`ghosts: ${result.ghosts.length} | kept: ${result.kept.live} live + 
 const manifestPath = path.join(manifestDir, `reconcile-channel-manifest-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
 writeFileSync(manifestPath, JSON.stringify(result.manifest, null, 2));
 console.log(`manifest: ${manifestPath} (${result.ghosts.length} entries, statuses before update)`);
+
+if (result.manifest.aborted) {
+  console.error(`\nABORTED (${result.manifest.aborted.reason}): ${result.manifest.aborted.detail}`);
+  console.error('NOTHING was updated — the manifest records the refusal. Fix the pool mount, then re-run.');
+  await client.end();
+  process.exit(2);
+}
 
 if (!APPLY) {
   console.log('DRY RUN — nothing updated. Re-run with --apply (and UNIFIED_STORE_DUAL_WRITE=1) to persist.');

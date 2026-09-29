@@ -94,13 +94,106 @@ describe('computeReconcileResult', () => {
   it('accepts Date objects as created_at and normalizes them to ISO in the manifest', () => {
     const r = computeReconcileResult(
       [{ id: 'g', status: 'unread', created_at: new Date('2026-01-01T00:00:00Z') }],
-      new Set<string>(),
+      buildLiveIdSet(['some-live.json']),
       CUTOFF,
       'apply',
       GRACE_HOURS
     );
     expect(r.ghosts[0].created_at).toBe('2026-01-01T00:00:00.000Z');
     expect(r.manifest.run_kind).toBe('apply');
+  });
+});
+
+// ─── Sanity guards: a disconnected pool must abort, never archive ────
+
+describe('computeReconcileResult — sanity guards (#1256 review point 1)', () => {
+  const CUTOFF = Date.parse('2026-09-27T00:00:00Z');
+  const GRACE_HOURS = 48;
+  const OLD = '2026-03-05T00:00:00Z';
+
+  const ghostBatch = (n: number, prefix = 'ghost'): ReconcileCandidate[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `${prefix}-${i}`, status: 'unread', created_at: OLD }));
+  const liveBatch = (n: number): ReconcileCandidate[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `live-${i}`, status: 'read', created_at: OLD }));
+
+  it('aborts (pool-empty) when the pool has NO live file but PG has candidates — nothing archived', () => {
+    const r = computeReconcileResult(
+      [...ghostBatch(3), ...liveBatch(2)],
+      new Set<string>(),
+      CUTOFF,
+      'apply',
+      GRACE_HOURS
+    );
+    expect(r.manifest.aborted?.reason).toBe('pool-empty');
+    expect(r.ghosts).toEqual([]);
+    expect(r.manifest.affected).toEqual([]);
+    expect(r.manifest.candidates).toBe(5); // the refusal is documented, not hidden
+  });
+
+  it('does NOT abort on an empty pool with zero candidates (first-run virgin store)', () => {
+    const r = computeReconcileResult([], new Set<string>(), CUTOFF, 'dry-run', GRACE_HOURS);
+    expect(r.manifest.aborted).toBeUndefined();
+    expect(r.ghosts).toEqual([]);
+  });
+
+  it('aborts (ghost-ratio) when > 90% of a large candidate set is ghosts — partial DriveFS mount', () => {
+    // 200 candidates: 195 ghosts (97.5%) + 5 live
+    const r = computeReconcileResult(
+      [...ghostBatch(195), ...liveBatch(5)],
+      buildLiveIdSet(liveBatch(5).map(c => `${c.id}.json`)),
+      CUTOFF,
+      'dry-run',
+      GRACE_HOURS
+    );
+    expect(r.manifest.aborted?.reason).toBe('ghost-ratio');
+    expect(r.ghosts).toEqual([]);
+    expect(r.manifest.affected).toEqual([]);
+  });
+
+  it('does NOT abort on the legitimate 29/09 first-pass ratio (61% ghosts)', () => {
+    // 200 candidates: 122 ghosts (61%) + 78 live — the measured fleet reconcile
+    const r = computeReconcileResult(
+      [...ghostBatch(122), ...liveBatch(78)],
+      buildLiveIdSet(liveBatch(78).map(c => `${c.id}.json`)),
+      CUTOFF,
+      'dry-run',
+      GRACE_HOURS
+    );
+    expect(r.manifest.aborted).toBeUndefined();
+    expect(r.ghosts).toHaveLength(122);
+  });
+
+  it('ratio boundary: exactly 90% does not abort (strict >)', () => {
+    // 100 candidates: 90 ghosts + 10 live = exactly 0.9
+    const r = computeReconcileResult(
+      [...ghostBatch(90), ...liveBatch(10)],
+      buildLiveIdSet(liveBatch(10).map(c => `${c.id}.json`)),
+      CUTOFF,
+      'dry-run',
+      GRACE_HOURS
+    );
+    expect(r.manifest.aborted).toBeUndefined();
+    expect(r.ghosts).toHaveLength(90);
+  });
+
+  it('ratio guard stays silent below the minimum population (99 candidates, 98% ghosts)', () => {
+    // Small pools (fresh machines, trial --limit runs) are not ratio-judged
+    const r = computeReconcileResult(
+      [...ghostBatch(97), ...liveBatch(2)],
+      buildLiveIdSet(liveBatch(2).map(c => `${c.id}.json`)),
+      CUTOFF,
+      'dry-run',
+      GRACE_HOURS
+    );
+    expect(r.manifest.aborted).toBeUndefined();
+    expect(r.ghosts).toHaveLength(97);
+  });
+
+  it('pool-empty guard holds in apply mode too — the UPDATE loop would receive nothing', () => {
+    const r = computeReconcileResult(ghostBatch(10), new Set<string>(), CUTOFF, 'apply', GRACE_HOURS);
+    expect(r.manifest.run_kind).toBe('apply');
+    expect(r.manifest.aborted?.reason).toBe('pool-empty');
+    expect(r.ghosts).toEqual([]);
   });
 });
 
