@@ -422,6 +422,7 @@ class AgentConfig:
     capabilities: list[str] = field(default_factory=list)  # see #3408
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     parameters: dict[str, Any] = field(default_factory=dict)
+    condensation: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> AgentConfig:
@@ -434,6 +435,7 @@ class AgentConfig:
             capabilities=list(data.get("capabilities", [])),
             memory=MemoryConfig.from_dict(data.get("memory")),
             parameters=data.get("parameters", {}),
+            condensation=dict(data.get("condensation") or {}),
         )
 
     def to_dict(self) -> dict:
@@ -448,6 +450,8 @@ class AgentConfig:
         }
         if self.capabilities:
             d["capabilities"] = list(self.capabilities)
+        if self.condensation:
+            d["condensation"] = dict(self.condensation)
         return d
 
 

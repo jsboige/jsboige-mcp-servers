@@ -112,6 +112,12 @@ from sk_agent_config import (
     can_spawn_recursive_agent,
     is_self_referential_mcp,
 )
+from sk_context_condensation import (
+    CondensationConfig,
+    CondensationMetrics,
+    CondensationPreset,
+    ContextCondenser,
+)
 from sk_conversations import ConversationRunner, build_run_conversation_description
 from sk_agent_specs import (
     SpecError,
@@ -433,6 +439,9 @@ class SKAgentManager:
 
         # Conversation threads
         self._threads: dict[str, ChatHistoryAgentThread] = {}
+
+        # Per-agent context condensers (#3944 — config-driven compaction)
+        self._condensers: dict[str, ContextCondenser] = {}
 
         # Memory
         self._memory_stores: dict[str, Any] = {}  # agent_id -> SemanticTextMemory
@@ -1048,6 +1057,75 @@ class SKAgentManager:
     # Agent Resolution
     # -----------------------------------------------------------------------
 
+    def _get_or_create_condenser(
+        self, agent_cfg: AgentConfig, model_cfg: ModelConfig | None
+    ) -> ContextCondenser | None:
+        """Return the per-agent condenser, building it lazily on first call.
+
+        The condenser's ``enabled`` flag and preset/threshold live on the
+        agent config (``agent_cfg.condensation``). When the field is
+        absent or ``enabled`` is False, a no-op condenser is still
+        returned so the call site does not need to branch — ``maybe_condense``
+        short-circuits internally.
+        """
+        agent_id = agent_cfg.id
+        if agent_id in self._condensers:
+            return self._condensers[agent_id]
+
+        raw = agent_cfg.condensation or {}
+        config = CondensationConfig.from_dict(raw)
+        # Apply default preset when the agent declares enabled=true but no preset.
+        if config.enabled and "preset" not in raw:
+            config = CondensationConfig(**{**config.to_dict(), "preset": CondensationPreset.BALANCED})
+        summariser = self._build_condenser_summariser(agent_cfg, model_cfg, config)
+        condenser = ContextCondenser(config=config, summariser=summariser)
+        self._condensers[agent_id] = condenser
+        return condenser
+
+    def _build_condenser_summariser(
+        self,
+        agent_cfg: AgentConfig,
+        model_cfg: ModelConfig | None,
+        config: CondensationConfig,
+    ):
+        """Return a summariser wired to the agent's own model by default.
+
+        Auto-hosted when no ``summarise_model_id`` is set — the condenser
+        runs on the same model that produced the conversation, keeping
+        the loop cloud-free (acceptance #5 of #3944).
+        """
+        try:
+            from sk_context_condensation import (
+                _FallbackSummariser,
+                _OpenAISummariser,
+            )
+
+            summarise_model_id = config.summarise_model_id
+            target = None
+            if summarise_model_id:
+                target = self.config.get_model(summarise_model_id)
+            elif model_cfg:
+                target = model_cfg
+
+            if target is None or not target.enabled:
+                return _FallbackSummariser()
+
+            client = self._openai_clients.get(target.id)
+            if client is None:
+                return _FallbackSummariser()
+
+            return _OpenAISummariser(
+                client=client,
+                model_id=target.model_id,
+            )
+        except Exception:
+            log.exception(
+                "Condenser summariser: failed to build client; using fallback"
+            )
+            from sk_context_condensation import _FallbackSummariser
+
+            return _FallbackSummariser()
+
     async def _resolve_agent(
         self,
         agent_id: str | None = None,
@@ -1647,6 +1725,41 @@ class SKAgentManager:
     # Handler Methods
     # -----------------------------------------------------------------------
 
+    async def _maybe_condense_thread(
+        self,
+        agent_id: str,
+        thread: ChatHistoryAgentThread,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Condense ``thread`` when configured, attach metrics to ``result``.
+
+        No-op when the agent has no ``condensation`` block. When the
+        condensation triggers, the result dict gains a ``condensation``
+        key with the :class:`CondensationMetrics` payload.
+        """
+        base_agent_id = agent_id.split("[")[0] if "[" in agent_id else agent_id
+        agent_cfg = next((a for a in self.config.agents if a.id == base_agent_id), None)
+        if agent_cfg is None:
+            return result
+        cfg = agent_cfg.condensation or {}
+        if not cfg.get("enabled"):
+            return result
+        model_cfg = self.config.get_model(agent_cfg.model)
+        model_window = model_cfg.context_window if model_cfg else None
+        condenser = self._get_or_create_condenser(agent_cfg, model_cfg)
+        if condenser is None:
+            return result
+        try:
+            metrics = await condenser.maybe_condense(
+                thread, model_context_window=model_window
+            )
+        except Exception:
+            log.exception("Condensation failed for agent '%s'", base_agent_id)
+            return result
+        if metrics.triggered or metrics.passes:
+            result["condensation"] = metrics.to_dict()
+        return result
+
     def _get_invoke_kwargs(
         self,
         agent_id: str = "",
@@ -1791,7 +1904,7 @@ class SKAgentManager:
         }
         if include_steps:
             result["steps"] = steps
-        return result
+        return await self._maybe_condense_thread(agent_id, thread, result)
 
     async def _handle_image(
         self,
@@ -1855,7 +1968,7 @@ class SKAgentManager:
             }
             if include_steps:
                 result["steps"] = steps
-            return result
+            return await self._maybe_condense_thread(agent_id, thread, result)
         except Exception as e:
             return {"error": str(e)}
 
@@ -1935,7 +2048,7 @@ class SKAgentManager:
                 result["zoom_context"] = zoom_context
             if include_steps:
                 result["steps"] = steps
-            return result
+            return await self._maybe_condense_thread(agent_id, thread, result)
         except Exception as e:
             return {"error": str(e)}
 
@@ -2021,7 +2134,7 @@ class SKAgentManager:
             }
         if include_steps:
             result["steps"] = steps
-        return result
+        return await self._maybe_condense_thread(agent_id, thread, result)
 
     async def _handle_document(
         self,
@@ -2142,7 +2255,7 @@ class SKAgentManager:
         }
         if include_steps:
             result["steps"] = steps
-        return result
+        return await self._maybe_condense_thread(agent_id, thread, result)
 
     # -----------------------------------------------------------------------
     # Utility Methods
