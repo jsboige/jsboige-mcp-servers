@@ -2025,6 +2025,37 @@ async function appendDashboardIncremental(
       return writeDashboardFile(key, dashboard);
     }
 
+    // #3230 write-side — un append depuis une copie locale en retard effaçait
+    // les messages que la copie n'avait pas encore reçus (mesuré ai-01 28/09 :
+    // 2 vagues d'écrasement, 11 des 15 messages vivants omis du fichier en
+    // ligne à 23:21Z — l'incrément vaut « copie locale + mon message », et
+    // DriveFS pousse ce fichier au cloud). Sur un hôte READ_PG, la vue en main
+    // (`dashboard`) est PG-première : si le fichier local lui manque des ids
+    // vivants, c'est une copie en retard — écrire le fichier COMPLET depuis la
+    // vue au lieu d'y coller l'incrément (l'append devient une réparation).
+    // Garde volontairement UNIDIRECTIONNELLE et GATED :
+    //   - un fichier qui porte des ids ABSENTS de la vue (append d'un writer
+    //     concurrent, condensation qui a archivé) reste le suffixe intact de
+    //     l'incrément — jamais réécrit depuis une vue plus pauvre ;
+    //   - hors READ_PG la vue provient du fichier lui-même, la garde ne peut
+    //     que rester muette.
+    if (process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1') {
+      const priorCount = dashboard.intercom.messages.length - newMessageCount;
+      const missingIds: string[] = [];
+      for (let i = 0; i < priorCount; i++) {
+        const id = dashboard.intercom.messages[i].id;
+        if (!existing.includes(`[msg: ${id}]`)) missingIds.push(id);
+      }
+      if (missingIds.length > 0) {
+        logger.warn('[STALE-FILE #3230] copie locale en retard — écriture complète depuis la vue PG', {
+          key,
+          missingCount: missingIds.length,
+          missingIds: missingIds.slice(0, 10),
+        });
+        return await writeDashboardFile(key, dashboard);
+      }
+    }
+
     const frontmatter: DashboardFrontmatter = {
       type: dashboard.type,
       lastModified: dashboard.lastModified,
