@@ -62,7 +62,7 @@ vi.mock('@/services/openai', () => ({
   getFallbackChatModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard } from '../dashboard.js';
+import { roosyncDashboard, acquireAppendLock, releaseAppendLock } from '../dashboard.js';
 
 // --- Isolation : un store unique par test, purgé en afterEach -------------
 let testDir = '';
@@ -242,5 +242,78 @@ describe('#3230 write-side — append depuis copie locale en retard', () => {
     expect(onDisk).toContain('[msg: ic-stale-a]');
     expect(onDisk).toContain('[msg: ic-stale-b]');
     expect(onDisk).toContain('message neuf');
+  });
+
+  it('CAS MIXTE (dispatch ai-01 29/09) : copie en retard QUI porte un id file-only → la réparation restaure les ids PG SANS perdre le file-only', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    // Vue PG : a, b, c. Fichier local en retard : a + « x » (writer concurrent
+    // livré au fichier, jamais miroité en PG). Sans le correctif, la réparation
+    // écrivait le fichier complet depuis la vue → « x » disparaissait.
+    readDashboardFromPgFake.mockResolvedValue({
+      type: 'workspace',
+      key: `workspace-${KEY}`,
+      lastModified: '2026-09-28T22:00:00.000Z',
+      lastModifiedBy: author,
+      status: { markdown: '# Statut PG\n' },
+      intercom: {
+        messages: [pgMessage('ic-stale-a', 'contenu A'), pgMessage('ic-stale-b', 'contenu B'), pgMessage('ic-stale-c', 'contenu C')],
+        totalMessages: 3,
+      },
+    });
+    seedLocalFile([
+      messageBlock('ic-stale-a', 'contenu A'),
+      messageBlock('ic-fileonly-x', 'contenu X — concurrent non-PG'),
+    ]);
+
+    const result = await roosyncDashboard({
+      action: 'append', type: 'workspace', workspace: KEY, content: 'message neuf',
+    }) as any;
+
+    expect(result.success).toBe(true);
+    const onDisk = readFileSync(path.join(dashboardsDir, FILE), 'utf8');
+    // L'union complète : ids PG restaurés + file-only préservé + message neuf.
+    expect(onDisk).toContain('[msg: ic-stale-b]');
+    expect(onDisk).toContain('[msg: ic-stale-c]');
+    expect(onDisk).toContain('[msg: ic-fileonly-x]');
+    expect(onDisk).toContain('contenu X — concurrent non-PG');
+    expect(onDisk).toContain('message neuf');
+    // Le full-write enrichi est bien le chemin : dual-write appelé.
+    expect(dualWriteSyncSpy).toHaveBeenCalled();
+  });
+
+  it('LOCK (b, dispatch ai-01 29/09) : fichier absent → l’append lock tient jusqu’au terme du full-write, pas jusqu’à son démarrage', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    readDashboardFromPgFake.mockResolvedValue(null);
+    // Pas de seedLocalFile : ENOENT au readFile → chemin writeDashboardFile,
+    // dont l'await du dual-write est la sonde de « write pas encore terminé ».
+    let releaseDualWrite!: () => void;
+    dualWriteSyncSpy.mockImplementation(() => new Promise<void>(resolve => { releaseDualWrite = resolve; }));
+
+    const appendPromise = roosyncDashboard({
+      action: 'append', type: 'workspace', workspace: KEY, content: 'message neuf lock',
+    }) as Promise<any>;
+
+    // Laisser l'append atteindre le dual-write (fichier écrit + vérifié, pas
+    // encore retourné) : la sonde est l'appel du spy lui-même.
+    const deadline = Date.now() + 5000;
+    while ((dualWriteSyncSpy as any).mock.calls.length === 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+    expect((dualWriteSyncSpy as any).mock.calls.length).toBeGreaterThan(0);
+
+    // Pendant que le full-write est en vol, un autre writer ne doit PAS pouvoir
+    // prendre l'append lock. Sans l'await du return, le finally l'avait déjà
+    // relâché (mesuré : probe acquérait).
+    const probeHolder = { machineId: 'probe-machine', workspace: 'probe-ws', pid: 424242, acquiredAt: new Date().toISOString() };
+    const probed = await acquireAppendLock(`workspace-${KEY}`, probeHolder);
+    expect(probed).toBe(false);
+
+    releaseDualWrite();
+    const result = await appendPromise;
+    expect(result.success).toBe(true);
+    // Post-retour : le lock est libre pour le writer suivant.
+    const after = await acquireAppendLock(`workspace-${KEY}`, probeHolder);
+    expect(after).toBe(true);
+    await releaseAppendLock(`workspace-${KEY}`, probeHolder);
   });
 });
