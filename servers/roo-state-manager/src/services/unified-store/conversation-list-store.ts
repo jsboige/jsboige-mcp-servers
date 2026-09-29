@@ -29,14 +29,18 @@
  * `conversations` rows, so mapping it straight through would REGRESS the
  * displayed label. `resolveLabel` coalesces title -> metadata.title -> first
  * user message, measured at 99.9% labelled (1113/1114) on po-2025.
+ *
+ * `loadPgConversationSkeleton` is the `view` counterpart (#2191): same gate,
+ * it loads ONE conversation's body when no local source can.
  */
 
-import type { ConversationSkeleton, SkeletonMetadata } from '../../types/conversation.js';
+import type { ConversationSkeleton, MessageSkeleton, SkeletonMetadata } from '../../types/conversation.js';
 import type {
   IUnifiedStoreReader,
   ConversationListFilters,
   ConversationListRow,
 } from './UnifiedStoreReader.js';
+import type { MessageRow } from './types.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -218,5 +222,69 @@ export async function loadPgConversationTier(
     const message = error instanceof Error ? error.message : String(error);
     getLogger().warn('[conversation-pg] read failed — rendering local tiers only', { error: message });
     return { status: 'failed', rows_read: 0, truncated: false, skeletons: [], error: message };
+  }
+}
+
+/** Message rows read per round-trip when `view` loads one conversation's body. */
+export const PG_VIEW_PAGE_SIZE = 1000;
+
+/** node-pg hands TIMESTAMPTZ columns back as Date objects; skeletons carry ISO strings. */
+function toIso(value: unknown): string | undefined {
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Load one conversation's body from the unified store, for `view` (#2191).
+ *
+ * `view` resolves a task from local files only, so a conversation listed by the
+ * PG tier — or one whose local source is gone — rendered "skeleton only" or
+ * "not found" while the store held its messages. Same gate as the list tier:
+ * with it off this returns null before any query, and `view` behaves as before.
+ *
+ * Returns null — never throws — when the gate is off, the row is absent, the
+ * store holds no message rows for it (a header-only row adds nothing over the
+ * skeleton-only degradation), or PG fails; the caller keeps its local path.
+ *
+ * Fidelity: `messages` stores user/assistant turns only. Tool/command actions
+ * are not persisted, so the returned sequence carries no ActionMetadata.
+ */
+export async function loadPgConversationSkeleton(taskId: string): Promise<ConversationSkeleton | null> {
+  const reader = getConversationListPgReader();
+  if (!reader) return null;
+
+  try {
+    // getConversation/getMessages answer null/[] on a cold pool instead of
+    // self-initialising (#2816): without this init a live row reads as absent.
+    await reader.init();
+    const row = await reader.getConversation(taskId);
+    if (!row) return null;
+
+    const messages: MessageRow[] = [];
+    for (let offset = 0; ; offset += PG_VIEW_PAGE_SIZE) {
+      const page = await reader.getMessages(taskId, { limit: PG_VIEW_PAGE_SIZE, offset });
+      messages.push(...page);
+      if (page.length < PG_VIEW_PAGE_SIZE) break;
+    }
+
+    const sequence: MessageSkeleton[] = [];
+    for (const m of messages) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue;
+      sequence.push({ role: m.role, content: m.content ?? '', timestamp: toIso(m.ts) ?? '', isTruncated: false });
+    }
+    if (sequence.length === 0) return null;
+
+    const skeleton = mapRowToSkeleton({
+      ...row,
+      first_ts: toIso(row.first_ts) ?? null,
+      last_ts: toIso(row.last_ts) ?? null,
+      ingested_at: toIso(row.ingested_at),
+      first_user_message: sequence.find(item => item.role === 'user')?.content ?? null,
+    });
+    return { ...skeleton, sequence };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    getLogger().warn('[conversation-pg] view read failed — keeping the local path', { taskId, error: message });
+    return null;
   }
 }

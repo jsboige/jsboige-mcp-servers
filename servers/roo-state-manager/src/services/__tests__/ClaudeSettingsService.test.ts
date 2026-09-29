@@ -251,6 +251,51 @@ describe('validateCanon — allow-list + valeurs sûres', () => {
   });
 });
 
+describe('clés harnais serré #3657 (canon settings #3924) — v2 allow-list', () => {
+  const harnessKeys: Record<string, unknown> = {
+    'env.ENABLE_TOOL_SEARCH': 'true',
+    'disableBundledSkills': true,
+    'disableClaudeAiConnectors': true,
+    'disableRemoteControl': true,
+    'outputStyle': 'Proactive',
+  };
+
+  test('les 5 clés harnais scalaires passent la validation canon (booléens inclus)', () => {
+    const v = validateCanon({ version: '2026.09.29-1', mode: 'enforce-value', keys: harnessKeys });
+    expect(v.valid).toBe(true);
+    expect(v.canonHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('les clés harnais sont allow-listées et couvertes par la projection', () => {
+    for (const p of Object.keys(harnessKeys)) {
+      expect(isAllowedKeyPath(p)).toBe(true);
+      expect(ALLOWED_KEY_PATHS).toContain(p);
+    }
+    const settings = {
+      env: { ENABLE_TOOL_SEARCH: 'true' },
+      disableBundledSkills: true,
+      disableClaudeAiConnectors: true,
+      disableRemoteControl: true,
+      outputStyle: 'Proactive',
+      model: 'sonnet[1m]',
+    };
+    const proj = projectSettings(settings as Record<string, unknown>);
+    expect(proj['env.ENABLE_TOOL_SEARCH']).toBe('true');
+    expect(proj['disableBundledSkills']).toBe(true);
+    expect(proj['disableClaudeAiConnectors']).toBe(true);
+    expect(proj['disableRemoteControl']).toBe(true);
+    expect(proj['outputStyle']).toBe('Proactive');
+  });
+
+  test('permissions.*/hooks restent hors allow-list (séparation des pouvoirs — le deny/mode sont portés par Deploy-GlobalConfig.ps1 #3924)', () => {
+    for (const p of ['permissions.mode', 'permissions.deny', 'permissions.allow', 'hooks.PreToolUse']) {
+      const v = validateCanon({ version: '2026.09.29-1', mode: 'ensure-present', keys: { [p]: 'auto-approve' } });
+      expect(v.valid).toBe(false);
+      expect(v.problems.join()).toMatch(/non allow-listé/);
+    }
+  });
+});
+
 describe('applyCanonToFile', () => {
   const canon: CanonPayload = {
     version: '2026.09.08-1',
