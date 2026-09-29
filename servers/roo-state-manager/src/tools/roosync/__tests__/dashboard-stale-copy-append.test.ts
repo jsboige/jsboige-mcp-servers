@@ -40,9 +40,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 // dual-write (seul writeDashboardFile — pas l'incrément — l'appelle avec la
 // vue complète). Le reste du module store reste RÉEL (retirement fail-open,
 // reader gate-off => null).
-const { readDashboardFromPgFake, dualWriteSyncSpy } = vi.hoisted(() => ({
+const { readDashboardFromPgFake, dualWriteSyncSpy, fetchArchivedIdsFake } = vi.hoisted(() => ({
   readDashboardFromPgFake: vi.fn(),
   dualWriteSyncSpy: vi.fn(),
+  fetchArchivedIdsFake: vi.fn(),
 }));
 vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -50,6 +51,7 @@ vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (imp
     ...actual,
     readDashboardFromPg: readDashboardFromPgFake,
     dualWriteDashboardSync: dualWriteSyncSpy,
+    fetchArchivedDashboardMessageIds: fetchArchivedIdsFake,
   };
 });
 
@@ -149,6 +151,9 @@ beforeEach(() => {
 
   readDashboardFromPgFake.mockReset();
   dualWriteSyncSpy.mockClear();
+  // Sans implémentation : rend undefined (falsy) — même chemin que le null
+  // fail-open du wrapper réel (pas d'URL PG / timeout / échec).
+  fetchArchivedIdsFake.mockReset();
 });
 
 afterEach(() => {
@@ -278,6 +283,43 @@ describe('#3230 write-side — append depuis copie locale en retard', () => {
     expect(onDisk).toContain('contenu X — concurrent non-PG');
     expect(onDisk).toContain('message neuf');
     // Le full-write enrichi est bien le chemin : dual-write appelé.
+    expect(dualWriteSyncSpy).toHaveBeenCalled();
+  });
+
+  it('TOMBSTONE (dispatch ai-01 30/09) : un id archivé porté par le fichier n’est PAS réinjecté dans la réparation', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    // Vue PG : a, b, c. Fichier local en retard : a + « t » — « t » est ARCHIVÉ
+    // côté PG (condensation déjà actée) mais la copie locale le porte encore.
+    // Le réinjecter le ressusciterait (pattern fork #3230).
+    readDashboardFromPgFake.mockResolvedValue({
+      type: 'workspace',
+      key: `workspace-${KEY}`,
+      lastModified: '2026-09-28T22:00:00.000Z',
+      lastModifiedBy: author,
+      status: { markdown: '# Statut PG\n' },
+      intercom: {
+        messages: [pgMessage('ic-stale-a', 'contenu A'), pgMessage('ic-stale-b', 'contenu B'), pgMessage('ic-stale-c', 'contenu C')],
+        totalMessages: 3,
+      },
+    });
+    seedLocalFile([
+      messageBlock('ic-stale-a', 'contenu A'),
+      messageBlock('ic-tomb-t', 'contenu T — archivé côté PG'),
+    ]);
+    fetchArchivedIdsFake.mockResolvedValue(new Set(['ic-tomb-t']));
+
+    const result = await roosyncDashboard({
+      action: 'append', type: 'workspace', workspace: KEY, content: 'message neuf',
+    }) as any;
+
+    expect(result.success).toBe(true);
+    const onDisk = readFileSync(path.join(dashboardsDir, FILE), 'utf8');
+    // Ids PG vivants restaurés + message neuf — l'archivé ne remonte PAS.
+    expect(onDisk).toContain('[msg: ic-stale-b]');
+    expect(onDisk).toContain('[msg: ic-stale-c]');
+    expect(onDisk).toContain('message neuf');
+    expect(onDisk).not.toContain('[msg: ic-tomb-t]');
+    // La réparation full-write est bien le chemin pris.
     expect(dualWriteSyncSpy).toHaveBeenCalled();
   });
 
