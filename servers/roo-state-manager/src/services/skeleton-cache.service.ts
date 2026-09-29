@@ -40,6 +40,8 @@ export interface SkeletonCacheServiceConfig {
  */
 export class SkeletonCacheService {
     private static instance: SkeletonCacheService | null = null;
+    // #1395 J+0 — warn-once : le format servi est déprécié (voir MIGRATION-UNIFIED-TASK-EXTRACTION.md)
+    private static deprecationWarned = false;
     private static config: SkeletonCacheServiceConfig = {};
     private cache: Map<string, ConversationSkeleton> = new Map();
     private lastRefreshTime: number = 0;
@@ -88,9 +90,20 @@ export class SkeletonCacheService {
     }
 
     /**
-     * Obtenir l'instance unique du service
+     * Obtenir l'instance unique du service.
+     * #1395 J+0 : le format servi (ConversationSkeleton) est déprécié —
+     * remplacement : unified store PG (src/services/unified-store/), warn-once ci-dessous.
      */
     public static getInstance(): SkeletonCacheService {
+        if (!SkeletonCacheService.deprecationWarned) {
+            SkeletonCacheService.deprecationWarned = true;
+            console.warn(
+                '[Deprecation] SkeletonCacheService serves the deprecated Roo-specific ConversationSkeleton format ' +
+                '(roo-extensions #1360/#1395). Replacement: unified PG-backed task extraction ' +
+                '(src/services/unified-store/, docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md). ' +
+                'Removal no earlier than 2026-10-28, gated on roo-extensions #1394.'
+            );
+        }
         if (!SkeletonCacheService.instance) {
             SkeletonCacheService.instance = new SkeletonCacheService();
         }
