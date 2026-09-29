@@ -37,6 +37,13 @@ export interface UnifiedStoreReaderConfig {
   connectionString: string;
   poolMax?: number;
   statementTimeoutMs?: number;
+  /**
+   * Connection establishment timeout in ms. Default 5000.
+   * Without it, pool.connect() to an unreachable host (dropped SYN) hangs until
+   * the OS TCP timeout and the file fallback never triggers (#2191 deep-queue,
+   * 2026-09-29: unreachable PG = hang, not degrade).
+   */
+  connectionTimeoutMillis?: number;
 }
 
 /**

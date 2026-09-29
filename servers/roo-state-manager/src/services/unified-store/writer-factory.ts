@@ -39,6 +39,7 @@ export function getUnifiedStoreWriter(): IUnifiedStoreWriter {
       connectionString: pgUrl,
       poolMax: parseInt(process.env.UNIFIED_STORE_POOL_MAX ?? '5', 10),
       statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '5000', 10),
+      connectionTimeoutMillis: parseInt(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS ?? '5000', 10),
     });
   } else {
     console.error('[UnifiedStore] Dual-write DISABLED — using NullUnifiedStoreWriter');

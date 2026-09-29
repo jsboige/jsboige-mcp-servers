@@ -40,6 +40,12 @@ export interface UnifiedStoreWriterConfig {
   poolMax?: number;
   /** Per-query timeout in ms. Default 5000. */
   statementTimeoutMs?: number;
+  /**
+   * Connection establishment timeout in ms. Default 5000.
+   * Guards the PG-unreachable case: a dropped SYN must reject fast so callers
+   * degrade to the file path instead of hanging (#2191 deep-queue, 2026-09-29).
+   */
+  connectionTimeoutMillis?: number;
   /** Max retry attempts on transient failure. Default 2. */
   maxRetries?: number;
   /** Base backoff delay (ms) between retries; actual delay = baseDelayMs × 2^attempt. Default 500. */
