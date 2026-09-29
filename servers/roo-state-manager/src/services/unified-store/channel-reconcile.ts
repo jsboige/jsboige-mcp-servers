@@ -40,7 +40,23 @@ export interface ReconcileManifest {
   candidates: number;
   ghosts: number;
   affected: ReconcileManifestEntry[];
+  /** Set when a sanity guard refused the pass — nothing is marked archived. */
+  aborted?: { reason: 'pool-empty' | 'ghost-ratio'; detail: string };
 }
+
+/**
+ * Sanity guards (review ai-01 #1256 point 1): an unmounted/empty DriveFS pool
+ * would make EVERY live message look like a ghost and archive the whole
+ * mailbox past the grace window. Both guards abort the pass (no ghosts
+ * emitted) rather than trust a pool that looks disconnected.
+ *
+ * Thresholds: a healthy pool always has live files (5,878 measured 29/09);
+ * the legitimate first-pass reconcile was 61% ghosts (9,346/15,225) — the
+ * ratio guard only fires when QUASI everything is a ghost, which no sane
+ * first pass produced.
+ */
+export const MAX_GHOST_RATIO = 0.9;
+export const MIN_CANDIDATES_FOR_RATIO = 100;
 
 export interface ReconcileResult {
   ghosts: ReconcileManifestEntry[];
@@ -103,6 +119,53 @@ export function computeReconcileResult(
       status_before: c.status,
       created_at: c.created_at instanceof Date ? c.created_at.toISOString() : c.created_at,
     });
+  }
+
+  // Sanity guards — evaluated AFTER classification so the manifest documents
+  // the observed pool/candidates, but BEFORE emitting ghosts so an aborted
+  // pass never feeds the UPDATE loop.
+  if (candidates.length > 0 && liveIds.size === 0) {
+    return {
+      ghosts: [],
+      kept: { live, withinGrace },
+      manifest: {
+        run_kind: runKind,
+        grace_hours: graceHours,
+        pool_files: liveIds.size,
+        candidates: candidates.length,
+        ghosts: 0,
+        affected: [],
+        aborted: {
+          reason: 'pool-empty',
+          detail:
+            'inbox pool readdir returned no live file while PG has candidates — the shared pool is ' +
+            'probably unmounted (DriveFS cold/failed mount). Archiving anything here would ghost-mark ' +
+            'every live message past the grace window. Fix the mount, re-run.',
+        },
+      },
+    };
+  }
+  if (candidates.length >= MIN_CANDIDATES_FOR_RATIO && ghosts.length / candidates.length > MAX_GHOST_RATIO) {
+    const ratio = (ghosts.length / candidates.length).toFixed(4);
+    return {
+      ghosts: [],
+      kept: { live, withinGrace },
+      manifest: {
+        run_kind: runKind,
+        grace_hours: graceHours,
+        pool_files: liveIds.size,
+        candidates: candidates.length,
+        ghosts: 0,
+        affected: [],
+        aborted: {
+          reason: 'ghost-ratio',
+          detail:
+            `${ratio} of candidates classified as ghosts (> ${MAX_GHOST_RATIO}) — the pool is likely ` +
+            'partially mounted. No legitimate first pass exceeded 0.61 (9,346/15,225, 29/09). ' +
+            'Verify the mount before forcing anything.',
+        },
+      },
+    };
   }
 
   return {

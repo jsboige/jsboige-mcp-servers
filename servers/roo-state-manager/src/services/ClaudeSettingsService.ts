@@ -54,8 +54,18 @@ export interface ClaudeSettingsReadResult {
  * Le picker Claude Code (#3545) : ANTHROPIC_BASE_URL, ANTHROPIC_DEFAULT_*_MODEL
  * (suffixes [1m] inclus dans les valeurs), fenêtre/pourcentage de compaction.
  * `model` est l'ID de modèle top-level du settings.
+ *
+ * Clés harnais serré #3657 (canon settings #3924) : ENABLE_TOOL_SEARCH,
+ * disableBundledSkills/disableClaudeAiConnectors/disableRemoteControl,
+ * outputStyle. `permissions.*` reste volontairement hors allow-list : le
+ * déploiement des permissions (deny ENSURE-list, mode) est porté par
+ * Deploy-GlobalConfig.ps1 (#3924) — le MCP ne touche jamais permissions
+ * (séparation des pouvoirs, principe l. « Jamais permissions/hooks »).
  */
 export const ALLOWED_KEY_PATHS: readonly string[] = Object.freeze([
+  'disableBundledSkills',
+  'disableClaudeAiConnectors',
+  'disableRemoteControl',
   'env.API_TIMEOUT_MS',
   'env.ANTHROPIC_BASE_URL',
   'env.ANTHROPIC_CUSTOM_MODEL_OPTION',
@@ -67,9 +77,11 @@ export const ALLOWED_KEY_PATHS: readonly string[] = Object.freeze([
   'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
   'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+  'env.ENABLE_TOOL_SEARCH',
   'env.MCP_TIMEOUT',
   'env.MCP_TOOL_TIMEOUT',
   'model',
+  'outputStyle',
   // #3545 — modelMap (la cartographie tier -> modèle). Forme défensive basée sur
   // le `modelMapping` des templates provider (opus/sonnet/haiku/fable -> string).
   // Chaque tier est un chemin point scalaire (comparable/applicable par tier),
@@ -100,9 +112,14 @@ export const KEY_PATH_SEVERITY: Record<string, string> = {
   'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 'IMPORTANT',
   'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': 'IMPORTANT',
   'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS': 'IMPORTANT',
+  'env.ENABLE_TOOL_SEARCH': 'IMPORTANT',
   'env.API_TIMEOUT_MS': 'WARNING',
   'env.MCP_TIMEOUT': 'WARNING',
   'env.MCP_TOOL_TIMEOUT': 'WARNING',
+  'disableBundledSkills': 'IMPORTANT',
+  'disableClaudeAiConnectors': 'IMPORTANT',
+  'disableRemoteControl': 'IMPORTANT',
+  'outputStyle': 'WARNING',
   'model': 'CRITICAL',
   'modelMap.fable': 'CRITICAL',
   'modelMap.haiku': 'CRITICAL',

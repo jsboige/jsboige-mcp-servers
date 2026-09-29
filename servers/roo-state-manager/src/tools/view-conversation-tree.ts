@@ -11,6 +11,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
+import { loadPgConversationSkeleton } from '../services/unified-store/conversation-list-store.js';
 
 /**
  * Tronque un message en gardant le début et la fin
@@ -189,6 +190,32 @@ function formatSkeletonOnlyResponse(taskId: string, skeleton: ConversationSkelet
         `  • Use conversation_browser(action: "list", includeArchives: true) to find GDrive archive copies`,
     ];
     return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+}
+
+/**
+ * #2191 — no local source for `taskId`: serve the unified store's copy before
+ * degrading. The PG body is cached, then the view re-renders from it: the second
+ * pass finds a non-empty sequence and never re-enters the lazy-load paths that
+ * call this. The output is prefixed with its provenance. Null when the gate is
+ * off, the store has no row, or the row has no messages — the caller then keeps
+ * its historical degradation unchanged.
+ */
+async function renderFromUnifiedStore(
+    taskId: string,
+    args: ViewConversationTreeArgs,
+    conversationCache: Map<string, ConversationSkeleton>
+): Promise<CallToolResult | null> {
+    const stored = await loadPgConversationSkeleton(taskId);
+    if (!stored) return null;
+    conversationCache.set(taskId, stored);
+    console.log(`[view] Task '${taskId}' served from the unified store (${stored.sequence.length} messages)`);
+    const result = await handleViewConversationTreeExecutionAsync({ ...args, task_id: taskId }, conversationCache);
+    const first = result.content?.[0];
+    if (first && first.type === 'text') {
+        first.text = `ℹ️ Source: unified store (PG, machine ${stored.metadata.machineId ?? 'unknown'}) — no local files for this task here. ` +
+            `Messages only: tool/command actions are not stored.\n\n${first.text}`;
+    }
+    return result;
 }
 
 /**
@@ -389,6 +416,8 @@ async function handleViewConversationTreeExecutionAsync(
         }
     }
     if (!mainTask) {
+        const fromStore = await renderFromUnifiedStore(task_id, args, conversationCache);
+        if (fromStore) return fromStore;
         throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
     }
 
@@ -442,6 +471,8 @@ async function handleViewConversationTreeExecutionAsync(
             locationsChecked.push(...claudeLocations.map(loc => loc.projectPath));
 
             if (!claudeProjectPath) {
+                const fromStore = await renderFromUnifiedStore(task_id, args, conversationCache);
+                if (fromStore) return fromStore;
                 console.warn(`[view] Claude task '${task_id}' project dir not found (${locationsChecked.length} locations checked) — showing skeleton only`);
                 return formatSkeletonOnlyResponse(task_id, mainTask);
             }
@@ -471,6 +502,8 @@ async function handleViewConversationTreeExecutionAsync(
                     sessionFileExists = false;
                 }
                 if (!sessionFileExists) {
+                    const fromStore = await renderFromUnifiedStore(task_id, args, conversationCache);
+                    if (fromStore) return fromStore;
                     throw new GenericError(
                         `Claude task '${task_id}' resolved to project '${claudeProjectPath}' but its session file ` +
                         `'${sessionUuid}.jsonl' does not exist — the session was deleted locally and this is a ` +
@@ -539,6 +572,8 @@ async function handleViewConversationTreeExecutionAsync(
                 }
             } else {
                 // Task path not found — graceful degradation instead of hard error
+                const fromStore = await renderFromUnifiedStore(task_id, args, conversationCache);
+                if (fromStore) return fromStore;
                 console.warn(`[view] Task '${task_id}' directory not found in ${storageLocations.length} location(s) — showing skeleton only`);
                 return formatSkeletonOnlyResponse(task_id, mainTask);
             }
