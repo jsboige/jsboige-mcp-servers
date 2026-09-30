@@ -2070,20 +2070,37 @@ async function appendDashboardIncremental(
           const fileDashboard = parseDashboardMarkdown(existing, key);
           const viewIds = new Set(dashboard.intercom.messages.map(m => m.id));
           const fileOnly = fileDashboard.intercom.messages.filter(m => !viewIds.has(m.id));
-          if (fileOnly.length > 0) {
+          // #3230 tombstones (dispatch ai-01 30/09) — un id file-only peut être un
+          // message ARCHIVÉ côté PG (condensation déjà actée, copie locale en
+          // retard qui le porte encore) : le réinjecter le ressuscite (pattern
+          // fork #3230). Les ids marqués archivés ne remontent pas ; null (pas
+          // d'URL PG, échec, timeout) laisse l'union inchangée — fail-open,
+          // même sens que handleMerge.
+          const archivedIds = await fetchArchivedDashboardMessageIds(key);
+          const resurrectable = archivedIds
+            ? fileOnly.filter(m => !archivedIds.has(m.id))
+            : fileOnly;
+          if (archivedIds && resurrectable.length < fileOnly.length) {
+            logger.warn('[STALE-FILE #3230] ids archivés exclus de la réinjection (tombstones)', {
+              key,
+              tombstonedCount: fileOnly.length - resurrectable.length,
+              resurrectableCount: resurrectable.length,
+            });
+          }
+          if (resurrectable.length > 0) {
             logger.warn('[STALE-FILE #3230] ids file-only réinjectés dans la réparation', {
               key,
-              fileOnlyCount: fileOnly.length,
-              fileOnlyIds: fileOnly.slice(0, 10).map(m => m.id),
+              fileOnlyCount: resurrectable.length,
+              fileOnlyIds: resurrectable.slice(0, 10).map(m => m.id),
             });
-            const merged = [...dashboard.intercom.messages, ...fileOnly]
+            const merged = [...dashboard.intercom.messages, ...resurrectable]
               .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
             repair = {
               ...dashboard,
               intercom: {
                 ...dashboard.intercom,
                 messages: merged,
-                totalMessages: dashboard.intercom.totalMessages + fileOnly.length,
+                totalMessages: dashboard.intercom.totalMessages + resurrectable.length,
               },
             };
           }
