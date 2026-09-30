@@ -2030,6 +2030,29 @@ async function appendDashboardIncremental(
       return await writeDashboardFile(key, dashboard);
     }
 
+    // #3782 correctif 1 (spec c.5907835962 ; incident 30/09 06:08Z — le feeder
+    // po-2025 a réécrit workspace-CoursIA.md avec 36 557 octets NUL en tête,
+    // puis DEUX appends ont empilé dessus sans jamais le guérir) — une tête de
+    // fichier qui n'est pas un frontmatter valide (octets NUL d'une réservation
+    // DriveFS lue à zéro, ou premier délimiteur `---` absent) rend l'incrément
+    // impuissant : le replace frontmatter ci-dessous est ancré `^---\n`, il ne
+    // matche jamais, donc l'append préserverait la corruption byte à byte. On
+    // traite ce fichier comme le fichier absent ci-dessus — full-write depuis
+    // la vue en main. Sur hôte READ_PG la vue est PG-première : c'est la
+    // guérison. Hors READ_PG la vue provient du fichier : un parse en échec a
+    // déjà fait échouer l'append en amont, la garde reste muette par
+    // construction.
+    if (!existing.startsWith('---\n') || existing.includes('\0')) {
+      logger.warn('[NUL-HEAD #3782] tête de fichier illisible — écriture complète depuis la vue au lieu de l’incrément', {
+        key,
+        reason: existing.includes('\0') ? 'nul-bytes' : 'no-frontmatter',
+        size: existing.length,
+      });
+      // await obligatoire, même contrat que le fichier absent (#3230 b) : la
+      // rejection ne doit pas échapper au finally qui relâche le verrou.
+      return await writeDashboardFile(key, dashboard);
+    }
+
     // #3230 write-side — un append depuis une copie locale en retard effaçait
     // les messages que la copie n'avait pas encore reçus (mesuré ai-01 28/09 :
     // 2 vagues d'écrasement, 11 des 15 messages vivants omis du fichier en
