@@ -53,8 +53,9 @@ the storage code changes semantics (e.g. tmp+copyFile instead of rename,
 
 ## Normalization contract
 
-`normalizeText` erases ONLY run-varying values: ISO timestamps, generated
-message ids (`msg-*`, `ic-*`), snapshot-style ids, uuids, pids, durations
-(`123ms` and `"totalMs": 123`). Anything semantic must stay byte-identical
-across backends. If a new field drifts, decide first whether it is
-run-varying (normalize it) or semantic (fix the mock).
+`normalizeText` erases ONLY run-varying values: ISO timestamps, localized
+timestamps (fr `dd/MM/yyyy HH:mm` — minute resolution, two runs can straddle
+a boundary), generated message ids (`msg-*`, `ic-*`), snapshot-style ids,
+uuids, pids, durations (`123ms` and `"totalMs": 123`). Anything semantic must
+stay byte-identical across backends. If a new field drifts, decide first
+whether it is run-varying (normalize it) or semantic (fix the mock).

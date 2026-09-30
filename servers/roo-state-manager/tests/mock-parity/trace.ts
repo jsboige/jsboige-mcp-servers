@@ -22,6 +22,9 @@ const MSG_ID = /\bmsg-\d{8}T\d{6}(?:-[0-9a-fA-F]{2,})?/g;
 const IC_ID = /\bic-\d{4}-\d{2}-\d{2}T\d+(?:-[0-9a-zA-Z]+)?/g;
 const SNAPSHOT_TS = /\b\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z?/g;
 const DURATION_MS = /\b\d+(?:\.\d+)?ms\b/g;
+// Localized timestamps (fr: dd/MM/yyyy HH:mm) — minute resolution, so two
+// runs can straddle a boundary. Date-only form included.
+const LOCAL_TS = /\b\d{2}\/\d{2}\/\d{4}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/g;
 // JSON fields whose VALUE is a duration (unit lives in the key): totalMs, writeMs...
 const DURATION_FIELD = /"(\w*(?:Ms|Millis|DurationLatency))":\s*\d+(?:\.\d+)?/g;
 const PID = /"pid":\s*\d+/g;
@@ -30,6 +33,7 @@ const UUID = /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9
 export function normalizeText(input: string): string {
   return input
     .replace(ISO_TS, '<TS>')
+    .replace(LOCAL_TS, '<LTS>')
     .replace(MSG_ID, 'msg-<ID>')
     .replace(IC_ID, 'ic-<ID>')
     .replace(SNAPSHOT_TS, '<SNAPTS>')
