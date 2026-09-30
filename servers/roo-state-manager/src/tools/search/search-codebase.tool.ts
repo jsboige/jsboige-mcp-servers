@@ -280,13 +280,13 @@ async function getCollectionSignature(qdrant: any, collectionName: string): Prom
  * @param qdrant - Qdrant client
  * @param candidates - ws-* collection names to probe (pre-sorted by points_count desc)
  * @param workspaceSignature - top-level dirs of the workspace on disk (null = skip)
- * @returns { name, jaccard, overlap } of the best strict match, or null
+ * @returns { name, jaccard, overlap, sharedDiscriminants } of the best strict match, or null
  */
 export async function findCollectionByContent(
 	qdrant: any,
 	candidates: string[],
 	workspaceSignature: Set<string> | null
-): Promise<{ name: string; jaccard: number; overlap: number } | null> {
+): Promise<{ name: string; jaccard: number; overlap: number; sharedDiscriminants: number } | null> {
 	if (!workspaceSignature || workspaceSignature.size === 0 || candidates.length === 0) {
 		return null;
 	}
@@ -294,7 +294,7 @@ export async function findCollectionByContent(
 	// Discriminant dirs = workspace dirs minus generic ones. At least one must be shared.
 	const discriminantDirs = new Set([...workspaceSignature].filter(d => !GENERIC_DIRS.has(d)));
 
-	let best: { name: string; jaccard: number; overlap: number } | null = null;
+	let best: { name: string; jaccard: number; overlap: number; sharedDiscriminants: number } | null = null;
 	// Rank by the stronger of the two metrics so the overlap path can win the tie-break
 	// on inflated workspaces where Jaccard is uniformly low across candidates.
 	let bestScore = -1;
@@ -328,7 +328,7 @@ export async function findCollectionByContent(
 		if (accept) {
 			const score = Math.max(jaccard, overlap);
 			if (!best || score > bestScore) {
-				best = { name, jaccard, overlap };
+				best = { name, jaccard, overlap, sharedDiscriminants: sharedDiscriminantCount };
 				bestScore = score;
 			}
 		}
@@ -360,11 +360,27 @@ const COVERAGE_ELIGIBLE_EXTENSIONS = new Set([
 	'.json', '.md', '.yml', '.yaml', '.toml', '.cs', '.java', '.go', '.rs', '.rb',
 	'.php', '.c', '.h', '.cpp', '.hpp', '.vue', '.svelte'
 ]);
-/** Directories the indexer never descends into (also keeps the walk bounded). */
-const COVERAGE_SKIP_DIRS = new Set([
-	'node_modules', '.git', 'build', 'build-out', 'dist', '.turbo',
-	'__pycache__', '.venv', 'venv', '.next', '.cache'
+/**
+ * #2609 V2(c)(b) follow-up (ai-01, 2026-09-30): the denominator must mirror what the
+ * Roo/Zoo indexer can actually parse. Its DIRS_TO_IGNORE (roo-code/src/services/glob/
+ * constants.ts) skips EVERY hidden directory (the ".*" pattern) plus an explicit list —
+ * and does NOT skip compiled dirs: bare `build/`, `build-<hash>/` and `build-out/` ARE
+ * indexed (measured ai-01 2026-09-30: ~1400 build-vintage and build-out files in a 10k-point
+ * corpus sample, ZERO dotdir paths). The previous MCP list skipped build dirs the
+ * numerator counts, and counted `.claude/worktrees/**` — 8390 of D:/roo-extensions'
+ * 17992 "eligible" files (47%, 3 agent worktrees) that no indexer ever descends into —
+ * so coverage read 0.348 where the indexer-aligned ratio is ~0.60. Same semantics as
+ * the indexer: hidden dirs + its explicit names, plus its two path patterns expressed
+ * as (parent, name) pairs.
+ */
+const COVERAGE_SKIP_DIR_NAMES = new Set([
+	'node_modules', '__pycache__', 'env', 'venv', 'dist', 'out', 'bundle',
+	'vendor', 'tmp', 'temp', 'deps', 'pkg', 'Pods',
 ]);
+const COVERAGE_SKIP_DIR_PAIRS = new Set(['target/dependency', 'build/dependencies']);
+const isCoverageSkippedDir = (name: string, parentName: string | null): boolean =>
+	name.startsWith('.') || COVERAGE_SKIP_DIR_NAMES.has(name)
+	|| (parentName !== null && COVERAGE_SKIP_DIR_PAIRS.has(`${parentName}/${name}`));
 
 /** Shape of the `coverage` block exposed in the search response. */
 export type CoverageInfo = {
@@ -414,19 +430,19 @@ function countEligibleWorkspaceFiles(workspaceRoot: string): number {
 		const COVERAGE_WALK_MAX_DEPTH = 32;
 		const COVERAGE_WALK_MAX_ENTRIES = 100_000;
 		let budget = COVERAGE_WALK_MAX_ENTRIES;
-		const walk = (dir: string, depth: number): void => {
+		const walk = (dir: string, depth: number, parentName: string | null): void => {
 			if (depth > COVERAGE_WALK_MAX_DEPTH || budget <= 0) return;
 			const entries = readdirSync(dir, { withFileTypes: true });
 			for (const e of entries) {
 				if (--budget <= 0) return;
 				if (e.isDirectory()) {
-					if (!COVERAGE_SKIP_DIRS.has(e.name)) walk(join(dir, e.name), depth + 1);
+					if (!isCoverageSkippedDir(e.name, parentName)) walk(join(dir, e.name), depth + 1, e.name);
 				} else if (typeof e.isFile === 'function' && e.isFile() && COVERAGE_ELIGIBLE_EXTENSIONS.has(extname(e.name).toLowerCase())) {
 					count++;
 				}
 			}
 		};
-		walk(workspaceRoot, 0);
+		walk(workspaceRoot, 0, null);
 		return count;
 	} catch {
 		return 0;
@@ -451,6 +467,49 @@ export function evaluateCoverage(indexedFiles: number, eligibleFiles: number, th
 
 /** Per-collection coverage cache (module-level, TTL-bounded). */
 const coverageCache = new Map<string, { value: CoverageInfo; expiresAt: number }>();
+
+// ─── #2609 V2 follow-up (ai-01, 2026-09-30): overlapping-window merge at ranking ──
+// The indexer stores overlapping windows as SEPARATE chunks — measured live, golden
+// q3 re-run: build-out/compare-config.js rendered windows 183-213 and 184-214 took
+// ranks 2-3 BOTH (same logical passage twice, two of five slots, while the defining
+// source sat outside the top-5). The stored chunks were ADJACENT single lines (198,
+// 199) that each EXPANDED to an overlapping block — so the merge must compare the
+// EXPANDED block ranges (the `range` the caller precomputes), not the stored lines:
+// 198 and 199 do not intersect. Merging before the per-file cap lets the freed budget
+// backfill with a distinct file instead of a near-duplicate echo.
+
+/**
+ * Drops same-logical-file hits whose line ranges strictly intersect, keeping the
+ * higher-scored window of each cluster.
+ * PRECONDITION: `hits` sorted by score descending (the caller sorts before capping).
+ * Hits with `range: null` (no usable lines) are kept as-is — the per-file cap still
+ * bounds them.
+ */
+export function dropOverlappingWindows<T extends { point: any; score: number; range: { s: number; e: number } | null }>(
+	hits: T[],
+	capKeyOf: (filePath: string) => string,
+): { kept: T[]; merged: number } {
+	const kept: T[] = [];
+	const rangesByCapKey = new Map<string, Array<{ s: number; e: number }>>();
+	let merged = 0;
+	for (const hit of hits) {
+		const { s, e } = hit.range ?? {};
+		if (typeof s !== 'number' || typeof e !== 'number') {
+			kept.push(hit);
+			continue;
+		}
+		const key = capKeyOf(String(hit.point?.payload?.filePath || ''));
+		const ranges = rangesByCapKey.get(key);
+		if (ranges?.some(r => s <= r.e && r.s <= e)) {
+			merged++;
+			continue;
+		}
+		if (ranges) ranges.push({ s, e });
+		else rangesByCapKey.set(key, [{ s, e }]);
+		kept.push(hit);
+	}
+	return { kept, merged };
+}
 
 /** Test hook — clears the TTL cache between suites. */
 export function clearCoverageCache(): void {
@@ -1104,7 +1163,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let collectionName = '';
 		// Tracks how the collection was resolved — 'hash' (normal) or 'content-match' (L1 fallback).
 		let collectionResolvedBy: 'hash' | 'content-match' = 'hash';
-		let contentMatchDetails: { jaccard: number; jaccard_threshold: number; overlap?: number; overlap_threshold?: number } | undefined;
+		let contentMatchDetails: {
+			jaccard: number; jaccard_threshold: number;
+			overlap?: number; overlap_threshold?: number;
+			shared_discriminant_dirs?: number; accepted_via?: 'jaccard' | 'overlap';
+		} | undefined;
 		// points_count of the hash-matched collection (if any). Used to detect the
 		// "collection exists but is empty" blind-spot: the hash resolves to a real
 		// collection that was never populated (e.g. the indexer hashed a different path
@@ -1180,11 +1243,18 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				collectionResolvedBy = 'content-match';
 				// #2554/#2766: report BOTH metrics so observability shows how the match was
 				// made — Jaccard alone would hide that an inflated workspace matched via overlap.
+				// #2609 follow-up (ai-01, 2026-09-30): also NAME the criterion that accepted.
+				// A live probe read `jaccard: 0.167 < threshold 0.6` alongside
+				// resolved_by=content-match as self-contradictory — it isn't (the
+				// overlap/containment path accepted), but the reader had to re-derive the
+				// gate from source to know that. accepted_via says it in one field.
 				contentMatchDetails = {
 					jaccard: contentMatch.jaccard,
 					jaccard_threshold: CONTENT_MATCH_MIN_JACCARD,
 					overlap: contentMatch.overlap,
 					overlap_threshold: CONTENT_MATCH_MIN_OVERLAP,
+					shared_discriminant_dirs: contentMatch.sharedDiscriminants,
+					accepted_via: contentMatch.jaccard >= CONTENT_MATCH_MIN_JACCARD ? 'jaccard' : 'overlap',
 				};
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
@@ -1517,14 +1587,41 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// 15 slots, each with its own cap budget. Keyed on the LOGICAL file, the compiled
 		// copies share one budget and the freed slots backfill with distinct files.
 		const capKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/ig, '');
+		// #2609 V2(a): per-call cache of file contents read for block expansion
+		// (multiple hits in one file must not re-read it). null = unreadable/skipped.
+		const fileLinesCache = new Map<string, string[] | null>();
+		// #2609 V2 follow-up (ai-01, 2026-09-30): expansion PRE-PASS on the sorted pool.
+		// The measured duplicate (golden q3) was two ADJACENT stored lines (198, 199)
+		// that each expanded to an overlapping block (183-213, 184-214) — strict overlap
+		// on stored lines cannot see it, so each hit's range is computed (expanded block
+		// when expansion applies, stored lines otherwise — the same predicate as render)
+		// and the merge runs on those ranges, BEFORE the cap, so the freed budget
+		// backfills with a distinct file instead of a near-duplicate echo. Bounded by
+		// the over-fetch pool (fetchLimit = 3 × limit), file reads cached per file.
+		const withRanges = adjusted.map((a: { point: any; score: number }) => {
+			const fp = String(a.point.payload.filePath || '');
+			const { isFixtureFile, isArchiveFile, isDataFile } = classifyFilePath(fp);
+			const expandable = !isFixtureFile && !isArchiveFile && !isDataFile
+				&& BLOCK_EXPANSION_SOURCE_RE.test(fp)
+				&& typeof a.point.payload.startLine === 'number';
+			const expanded = expandable
+				? expandHitBlock(fp, a.point.payload.startLine, String(a.point.payload.codeChunk || ''), workspace, fileLinesCache)
+				: null;
+			const s = expanded ? expanded.startLine
+				: (typeof a.point.payload.startLine === 'number' ? a.point.payload.startLine : null);
+			const e = expanded ? expanded.endLine
+				: (typeof a.point.payload.endLine === 'number' ? a.point.payload.endLine : null);
+			return { point: a.point, score: a.score, expanded, range: (s !== null && e !== null) ? { s, e } : null };
+		});
+		const { kept: dedupedAdjusted, merged: overlappingChunksMerged } = dropOverlappingWindows(withRanges, capKeyOf);
 		const perFileCount = new Map<string, number>();
-		const picked: any[] = [];
-		const leftovers: { point: any; score: number }[] = [];
-		for (const a of adjusted) {
+		const picked: { point: any; score: number; expanded: any }[] = [];
+		const leftovers: { point: any; score: number; expanded: any }[] = [];
+		for (const a of dedupedAdjusted) {
 			const fp = String(a.point.payload.filePath || '');
 			const capKey = capKeyOf(fp);
 			if ((perFileCount.get(capKey) || 0) < MAX_CHUNKS_PER_FILE) {
-				picked.push(a.point);
+				picked.push(a);
 				perFileCount.set(capKey, (perFileCount.get(capKey) || 0) + 1);
 			} else {
 				leftovers.push(a);
@@ -1532,7 +1629,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		}
 		for (const a of leftovers) {
 			if (picked.length >= effectiveLimit) break;
-			picked.push(a.point);
+			picked.push(a);
 		}
 		const rankedHits = picked.slice(0, effectiveLimit);
 		let testFileMalusApplied = 0;
@@ -1540,13 +1637,10 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let dataFileMalusApplied = 0;
 		let archiveMalusApplied = 0;
 		let buildDirMalusApplied = 0;
-
-		// #2609 V2(a): per-call cache of file contents read for block expansion
-		// (multiple hits in one file must not re-read it). null = unreadable/skipped.
-		const fileLinesCache = new Map<string, string[] | null>();
 		let blockExpansionApplied = 0;
 
-		const results = rankedHits.map((point: any) => {
+		const results = rankedHits.map((hit) => {
+			const point = hit.point;
 			const fp = String(point.payload.filePath || '');
 			const { isTestFile, isFixtureFile, isDataFile, isArchiveFile, isBuildDirFile, factor } = classifyFilePath(fp);
 			if (isTestFile) testFileMalusApplied++;
@@ -1566,12 +1660,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// Skipped for fixtures (embedded code inside a JSON container — #3172 contract:
 			// line fields stay omitted), archives (stale-by-design docs) and data/config
 			// files (no block structure); those keep the raw extractSnippet shape.
-			const expandable = !isFixtureFile && !isArchiveFile && !isDataFile
-				&& BLOCK_EXPANSION_SOURCE_RE.test(fp)
-				&& typeof point.payload.startLine === 'number';
-			const expanded = expandable
-				? expandHitBlock(fp, point.payload.startLine, String(point.payload.codeChunk || ''), workspace, fileLinesCache)
-				: null;
+			// #2609 V2 follow-up: the expansion now runs in the PRE-PASS above (the merge
+			// needs the block ranges before the cap) — reuse it here, never re-expand.
+			const expanded = hit.expanded;
 			if (expanded) blockExpansionApplied++;
 			// #3172: a fixture chunk embeds source code inside a JSON capture — the stored
 			// startLine/endLine point at the single-line JSON container, not at the embedded
@@ -1651,6 +1742,10 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// range, match_lines = the lines the vector matched). Rollback:
 			// CODEBASE_BLOCK_EXPANSION=0.
 			...(blockExpansionApplied > 0 ? { block_expansion_applied: blockExpansionApplied } : {}),
+			// #2609 V2 follow-up: overlapping-window merge observability — same-file
+			// chunks whose line windows overlap (or abut ≤2 lines) were folded into the
+			// higher-scored window, freeing their slot(s) for a distinct file.
+			...(overlappingChunksMerged > 0 ? { overlapping_chunks_merged: overlappingChunksMerged } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
 			results: results

@@ -60,7 +60,8 @@ import {
 	expandHitBlock,
 	evaluateCoverage,
 	clearCoverageCache,
-	getServedBuildId
+	getServedBuildId,
+	dropOverlappingWindows
 } from '../search-codebase.tool.js';
 
 describe('search-codebase.tool', () => {
@@ -990,8 +991,8 @@ describe('search-codebase.tool', () => {
 						{ score: 0.98, payload: { filePath: 'src\\util.ts', codeChunk: 'a2', startLine: 20, endLine: 20 } },
 						{ score: 0.97, payload: { filePath: 'src\\build-helpers\\util.ts', codeChunk: 'b1', startLine: 1, endLine: 1 } },
 						{ score: 0.96, payload: { filePath: 'lib\\build\\mod.js', codeChunk: 'c1', startLine: 1, endLine: 1 } },
-						{ score: 0.95, payload: { filePath: 'lib\\build-out\\mod.js', codeChunk: 'c2', startLine: 1, endLine: 1 } },
-						{ score: 0.94, payload: { filePath: 'lib\\build-80b4b9a14965a403\\mod.js', codeChunk: 'c3', startLine: 1, endLine: 1 } },
+						{ score: 0.95, payload: { filePath: 'lib\\build-out\\mod.js', codeChunk: 'c2', startLine: 20, endLine: 20 } },
+						{ score: 0.94, payload: { filePath: 'lib\\build-80b4b9a14965a403\\mod.js', codeChunk: 'c3', startLine: 40, endLine: 40 } },
 						{ score: 0.30, payload: { filePath: 'src\\other.ts', codeChunk: 'd1', startLine: 1, endLine: 1 } }
 					]
 				});
@@ -1003,7 +1004,10 @@ describe('search-codebase.tool', () => {
 				// build-helpers/util.ts is its own file: NOT capped against src/util.ts's two chunks
 				// (the old `build(-[a-z0-9]+)?` key stripped it to src/util.ts and dropped it).
 				expect(paths).toContain('src\\build-helpers\\util.ts');
-				// The three compiled copies of lib/mod.js share one budget of 2.
+				// The three compiled copies of lib/mod.js share one budget of 2. Their line
+				// ranges are DISJOINT (post-#2609-follow-up, same-range copies of one
+				// logical file are folded by the overlap merge BEFORE the cap — the
+				// cross-vintage merge has its own unit test).
 				const compiled = paths.filter((p: string) => p.endsWith('mod.js'));
 				expect(compiled).toHaveLength(2);
 				expect(paths).not.toContain('lib\\build-80b4b9a14965a403\\mod.js');
@@ -1150,12 +1154,19 @@ describe('search-codebase.tool', () => {
 				// Both dashboard.ts chunks survive (cap 2) — the second still ahead of the test file.
 				expect(paths.filter((p: string) => p.endsWith('roosync\\dashboard.ts'))).toHaveLength(2);
 				expect(paths[2]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\roosync\\dashboard.ts');
+				// #2609 V2 follow-up: the two audit-JSON chunks were BOTH pinned to line
+				// 10654 of the same file — same passage stored twice in the live corpus.
+				// The overlap merge folds the echo (overlapping_chunks_merged=1): ONE
+				// data hit renders, and every rank below shifts up by one.
+				expect(paths.filter((p: string) => p.endsWith('audit-table-2026-07-21.json'))).toHaveLength(1);
+				expect(parsed.overlapping_chunks_merged).toBe(1);
 				// Malus arithmetic agrees with the rendering (single source of truth).
 				expect(parsed.results[3].score).toBeCloseTo(0.7162, 4);   // test ×0.95
-				expect(parsed.results[4].score).toBeCloseTo(0.5914, 4);   // data ×0.75
-				expect(parsed.results[6].score).toBeCloseTo(0.5204, 4);   // build ×0.7
+				expect(parsed.results[4].score).toBeCloseTo(0.5914, 4);   // data ×0.75 (single copy)
+				expect(parsed.results[5].score).toBeCloseTo(0.5204, 4);   // build ×0.7
+				expect(parsed.results[6].score).toBeCloseTo(0.5185, 4);   // build ×0.7
 				expect(parsed.test_file_malus_applied).toBe(1);
-				expect(parsed.data_file_malus_applied).toBe(2);
+				expect(parsed.data_file_malus_applied).toBe(1);
 				expect(parsed.build_dir_malus_applied).toBe(2);
 			});
 
@@ -1332,6 +1343,40 @@ describe('search-codebase.tool', () => {
 				expect(id.length).toBeGreaterThan(0);
 				expect(getServedBuildId()).toBe(id);
 			});
+
+			// #2609 V2(c)(b) follow-up (ai-01, 2026-09-30): the denominator must mirror
+			// the Roo/Zoo indexer's DIRS_TO_IGNORE — every hidden dir (the ".*" pattern),
+			// its explicit names, its two path patterns — while COUNTING compiled dirs
+			// (build/, build-<hash>/, build-out/) the indexer does index. Measured on
+			// D:/roo-extensions: .claude/worktrees/** alone was 47% of the old denominator
+			// (8390/17992 files, 3 agent worktrees) yet ZERO dotdir paths exist in the
+			// corpus — coverage read 0.348 where the indexer-aligned ratio is ~0.60.
+			test('denominator mirrors the indexer: hidden dirs skipped, build dirs counted, target/dependency pair skipped', async () => {
+				mockQdrant.scroll.mockResolvedValue({ points: [{ payload: { filePath: 'a.ts' } }] });
+				const F = (name: string) => ({ name, isDirectory: () => false, isFile: () => true });
+				const D = (name: string) => ({ name, isDirectory: () => true, isFile: () => false });
+				mockReaddirSync.mockImplementation((p: any) => {
+					const n = String(p).replace(/\\/g, '/');
+					if (n.endsWith('/target')) return [D('dependency')];
+					if (n.endsWith('/dependency')) return [F('dep.java')];
+					if (n.endsWith('/build-out')) return [F('compiled.js')];
+					if (n.endsWith('.claude/worktrees/wt1')) return [F('file.ts')];
+					// Root listing — also served for any UNEXPECTED directory: a wrongly
+					// descended skip-dir replays this listing and breaks the exact count.
+					return [F('a.ts'), D('.claude'), D('build-out'), D('target'), D('node_modules')];
+				});
+
+				const result = await handleCodebaseSearch({ query: 'walk probe', workspace: '/ws/v2f-walk' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				// Eligible = a.ts (root) + compiled.js (build-out IS indexed by Roo).
+				// NOT eligible: .claude/** (hidden — never indexed, worktrees included),
+				// node_modules, target/dependency (indexer path-pattern skip).
+				expect(parsed.coverage.eligible_files).toBe(2);
+				expect(parsed.coverage.indexed_files).toBe(1);
+				expect(parsed.coverage.coverage_ratio).toBe(0.5);
+				expect(parsed.coverage_warning).toContain('PARTIAL');
+			});
 		});
 
 		// ============================================================
@@ -1399,6 +1444,10 @@ describe('search-codebase.tool', () => {
 				expect(parsed.collection).toBe('ws-contentmatched');
 				expect(parsed.collection_resolved_by).toBe('content-match');
 				expect(parsed.content_match.jaccard).toBeGreaterThanOrEqual(0.6);
+				// #2609 follow-up: the accepting criterion is named in the response — a
+				// reader must not re-derive the gate to interpret a low jaccard.
+				expect(parsed.content_match.accepted_via).toBe('jaccard');
+				expect(parsed.content_match.shared_discriminant_dirs).toBeGreaterThanOrEqual(1);
 				expect(parsed.results[0].file_path).toBe('mcps/internal/foo.ts');
 			});
 
@@ -1819,10 +1868,154 @@ describe('search-codebase.tool', () => {
 			// Jaccard, served the collection. (7/31 ≈ 0.226.)
 			expect(match!.jaccard).toBeLessThan(0.6);
 			expect(match!.overlap).toBeGreaterThanOrEqual(0.6);
+			// #2609 follow-up: the accepting path must be observable, not re-derived.
+			// This fixture is THE overlap-acceptance case — jaccard 0.226 < 0.6.
+			expect(match!.sharedDiscriminants).toBeGreaterThanOrEqual(2);
 		});
 	});
 
 	// ============================================================
+	// ============================================================
+	// #2609 V2 follow-up (ai-01, 2026-09-30) — overlapping-window merge at ranking
+	// Measured live, golden q3 re-run: build-out/compare-config.js rendered windows
+	// 183-213 and 184-214 took ranks 2-3 BOTH — two stored ADJACENT single lines (198,
+	// 199) that each expanded to an overlapping block. Same passage twice, two of the
+	// five top slots, while the defining source sat outside the top-5.
+	// ============================================================
+
+	describe('dropOverlappingWindows (#2609 V2 follow-up) — pure merge', () => {
+		const key = (fp: string) => fp;
+		const hit = (fp: string, s: number, e: number, score: number) => ({
+			point: { payload: { filePath: fp, startLine: s, endLine: e } },
+			score,
+			range: { s, e } as { s: number; e: number } | null,
+		});
+
+		test('merges same-file windows that strictly intersect, keeping the higher score', () => {
+			const { kept, merged } = dropOverlappingWindows([
+				hit('a.ts', 183, 213, 0.9),
+				hit('a.ts', 184, 214, 0.85),
+			], key);
+			expect(kept).toHaveLength(1);
+			expect(kept[0].score).toBe(0.9);
+			expect(merged).toBe(1);
+		});
+
+		test('adjacent-but-disjoint windows are BOTH kept — adjacency is not overlap', () => {
+			// The stored chunks of the measured defect were ADJACENT lines; the merge
+			// catches them via their EXPANDED ranges (e2e below), never by treating
+			// adjacency alone as duplication. Consecutive single-line chunks (the
+			// diversification fixture uses lines 1,2,3) must survive.
+			const { kept, merged } = dropOverlappingWindows([
+				hit('a.ts', 10, 20, 0.9),
+				hit('a.ts', 21, 30, 0.85),
+			], key);
+			expect(kept).toHaveLength(2);
+			expect(merged).toBe(0);
+		});
+
+		test('distant chunks of the same file are kept (the per-file cap still governs them)', () => {
+			const { kept, merged } = dropOverlappingWindows([
+				hit('a.ts', 922, 925, 0.9),
+				hit('a.ts', 1162, 1177, 0.85),
+			], key);
+			expect(kept).toHaveLength(2);
+			expect(merged).toBe(0);
+		});
+
+		test('compiled vintages of the same logical file share the merge key', () => {
+			// capKeyOf strips build-<hash>/ and build-out/ — the same passage in two
+			// vintages is one echo, exactly like the same passage twice in one file.
+			const stripVintage = (fp: string) => fp.replace(/build(-[a-f0-9]{8,}|-out)\//g, '');
+			const { kept, merged } = dropOverlappingWindows([
+				hit('build-aaa11111/foo.ts', 5, 9, 0.9),
+				hit('build-out/foo.ts', 5, 9, 0.85),
+			], stripVintage);
+			expect(kept).toHaveLength(1);
+			expect(merged).toBe(1);
+		});
+
+		test('hits without a usable range are kept as-is', () => {
+			const noRange = { point: { payload: { filePath: 'a.json' } }, score: 0.9, range: null };
+			const { kept, merged } = dropOverlappingWindows([noRange], key);
+			expect(kept).toHaveLength(1);
+			expect(merged).toBe(0);
+		});
+
+		test('the kept window shields EVERY later intersecting echo (transitive containment)', () => {
+			const { kept, merged } = dropOverlappingWindows([
+				hit('a.ts', 100, 200, 0.95),
+				hit('a.ts', 150, 160, 0.9),
+				hit('a.ts', 190, 210, 0.85),
+			], key);
+			expect(kept).toHaveLength(1);
+			expect(merged).toBe(2);
+		});
+	});
+
+	describe('overlapping-window merge — end to end (#2609 V2 follow-up)', () => {
+		// Same synthetic file as the block-expansion suite: searchSemantic spans
+		// lines 5-9; body lines 6 and 7 are ADJACENT stored chunks that both expand
+		// to the SAME block — the exact shape measured on golden q3.
+		const TS_CONTENT = [
+			"import { join } from 'path';",
+			'',
+			'const VALUE = 42;',
+			'',
+			'export async function searchSemantic(query: string): Promise<Result> {',
+			'\tconst filter = buildFilter(query);',
+			'\tconst rows = await joinWithPostgres(filter);',
+			'\treturn { rows, filter };',
+			'}',
+			'',
+			'export function other() {',
+			'\treturn 1;',
+			'}'
+		].join('\n');
+		const LINE_6 = '\tconst filter = buildFilter(query);';
+		const LINE_7 = '\tconst rows = await joinWithPostgres(filter);';
+
+		beforeEach(() => {
+			vi.clearAllMocks();
+			mockGetQdrantClient.mockReturnValue(mockQdrant);
+			mockExistsSync.mockReturnValue(true);
+			mockReaddirSync.mockReturnValue([]);
+			mockStatSync.mockReturnValue({ size: 1000 });
+			mockReadFileSync.mockReturnValue(TS_CONTENT);
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+			mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: new Array(8).fill(0.1) }] });
+		});
+
+		afterEach(() => {
+			delete process.env.EMBEDDING_API_KEY;
+		});
+
+		test('adjacent stored lines expanding to the same block yield ONE slot; the freed slot backfills with a distinct file', async () => {
+			mockQdrant.query.mockResolvedValue({
+				points: [
+					{ score: 0.9, payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: LINE_7, startLine: 7, endLine: 7 } },
+					{ score: 0.85, payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: LINE_6, startLine: 6, endLine: 6 } },
+					{ score: 0.7, payload: { filePath: 'src/bar.ts', codeChunk: 'GONE FROM DISK — anchors nowhere', startLine: 1, endLine: 1 } }
+				]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws', limit: 2 });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.overlapping_chunks_merged).toBe(1);
+			expect(parsed.results_count).toBe(2);
+			// The surviving hit is the higher-scored window, rendered as its block.
+			expect(parsed.results[0].file_path).toBe('src/search-semantic.tool.ts');
+			expect(parsed.results[0].start_line).toBe(5);
+			expect(parsed.results[0].end_line).toBe(9);
+			// Without the merge the echo (same file, cap 2 allows it) took the slot;
+			// with it, the slot backfills with a DISTINCT file.
+			expect(parsed.results[1].file_path).toBe('src/bar.ts');
+			expect(parsed.results.filter((r: any) => r.file_path === 'src/search-semantic.tool.ts')).toHaveLength(1);
+		});
+	});
+
 	// handleCodebaseSearch - outer catch block (embedding errors)
 	// ============================================================
 

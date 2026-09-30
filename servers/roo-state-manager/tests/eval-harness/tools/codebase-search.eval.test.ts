@@ -105,6 +105,20 @@ describe('codebase_search — golden query eval', () => {
       observed: String(topScore),
     });
 
+    // ---- Check: served_build pinned (#2609 V2(c)(c), ai-01 17:31Z input) ----
+    // Probes are only comparable across machines when each records the build vintage
+    // that served it — divergent rankings between lanes were vintage divergence, not
+    // code divergence (measured 2026-09-28: ai-01 served a pre-V2(a) build). Presence
+    // + a usable value, not a `build-<hex>` shape: getServedBuildId is
+    // basename(dirname(argv[1])), which under vitest (source-run harness) is the
+    // runner dir, not a deployed vintage.
+    const servedBuild = parsed?.served_build ?? 'missing';
+    checks.push({
+      name: 'served_build pinned on every success response',
+      ok: typeof servedBuild === 'string' && servedBuild.length > 0 && servedBuild !== 'unknown' && servedBuild !== 'missing',
+      observed: String(servedBuild),
+    });
+
     // ---- Quality check: at least one .ts/.js file ----
     // Note: codebase_search may return relative paths (without repo root prefix) or
     // absolute paths depending on how Roo indexed them. We accept both.
