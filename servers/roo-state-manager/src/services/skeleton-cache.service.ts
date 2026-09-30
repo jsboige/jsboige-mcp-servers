@@ -20,9 +20,26 @@
 import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import path from 'path';
+import os from 'os';
 import { promises as fs } from 'fs';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
+
+/**
+ * #1747 E (requalifié, mesure po-2027 24/09 + ai-01 30/09) — Snapshot local des
+ * stubs Tier 3. Le cold load GDrive (listing + lecture de chaque .json.gz pour
+ * construire les stubs, ~8k archives) dépasse le budget `waitForArchives` de 45 s
+ * (mesuré 168 s sur po-204, ~3 min sur ai-01) : pendant la fenêtre, toute requête
+ * cross-machine rend 0 + `tier3_status=loading`. Le snapshot casse cette fenêtre :
+ * après un premier load réussi, les stubs (metadata seule, ~585 o/entrée) sont
+ * persistés localement ; au boot suivant le cache est SEMÉ depuis le snapshot en
+ * ~1-2 s (servable immédiatement), pendant que le scan GDrive rattrape en arrière-
+ * plan (index + stubs des seules archives nouvelles). Machine-local par nature :
+ * jamais sur GDrive (7 machines = collision), jamais dans le storage Roo (absent
+ * sur les machines Claude-only). Override test/ops : `SKELETON_TIER3_SNAPSHOT`.
+ */
+const TIER3_SNAPSHOT_FILENAME = 'tier3-stub-snapshot.json';
+const TIER3_SNAPSHOT_VERSION = 1;
 
 /**
  * Configuration optionnelle pour activer les tiers cache supplementaires.
@@ -70,6 +87,16 @@ export class SkeletonCacheService {
     private tier3HydratedBytes: Map<string, number> = new Map();
     private tier3HydrationPromises: Map<string, Promise<boolean>> = new Map();
     private tier3LruCounter = 0;
+    /**
+     * #1747 E — instant du `savedAt` du snapshot Tier 3 dont les stubs ont été
+     * semés dans le cache au boot (null = pas de seed). Tant que ce champ est
+     * posé, `awaitFreshnessWithBudget` sert les archives sans attendre la fin
+     * du scan GDrive : le cache contient des données réelles (éventuellement
+     * anciennes de quelques heures), pas un état vide.
+     */
+    private tier3SnapshotSeededAt: number | null = null;
+    /** #1747 E — nombre de stubs réellement semés depuis le snapshot (observabilité). */
+    private tier3SnapshotSeededCount = 0;
 
     private constructor() {
         // Constructor privé pour pattern singleton
@@ -116,6 +143,19 @@ export class SkeletonCacheService {
      */
     public async getCache(): Promise<Map<string, ConversationSkeleton>> {
         await this.ensureFreshCache();
+        return this.cache;
+    }
+
+    /**
+     * #1747 E — lecture du cache SANS ensureFreshCache ni attente du load en
+     * cours. Pour les appelants qui viennent de franchir le fast-path
+     * `awaitFreshnessWithBudget` (cache frais ou semé depuis le snapshot) :
+     * `getCache()` attendrait la fin du load complet (minutes sur corpus froid),
+     * ce qui défait précisément le bénéfice du seed. A n'utiliser qu'après un
+     * probe de fraîcheur réussi — contrairement à getCache(), aucun rattrapage
+     * n'est déclenché si le cache est vide.
+     */
+    public getCacheImmediate(): Map<string, ConversationSkeleton> {
         return this.cache;
     }
 
@@ -314,6 +354,14 @@ export class SkeletonCacheService {
             if ((now - this.lastRefreshTime) <= this.CACHE_VALIDITY_MS && this.cache.size > 0) {
                 return true;
             }
+            // #1747 E — cache semé depuis le snapshot local Tier 3 : les stubs sont
+            // des données réelles (le corpus GDrive au moment du dernier load
+            // persisté). Servir immédiatement plutôt que de rendre 0 pendant que
+            // le scan GDrive de rattrapage tourne en arrière-plan ; la fraîcheur
+            // réelle reste visible via getCacheTierStats().tier3_snapshot.
+            if (this.tier3SnapshotSeededAt !== null && this.cache.size > 0) {
+                return true;
+            }
             // ensureFreshCache dedups via loadPromise (boot pre-warm reuse). Race it
             // against the budget; the underlying load keeps running in the background
             // either way, warming the cache for the next call.
@@ -353,6 +401,22 @@ export class SkeletonCacheService {
      */
     private async loadSkeletonsFromDisk(): Promise<void> {
         try {
+            // #1747 E — semer le cache Tier 3 depuis le snapshot local AVANT tout
+            // le reste : le Tier 1 (buildMissingSkeletons peut prendre des minutes
+            // sur un hôte à 7k+ tâches) et le scan GDrive restent en arrière-plan,
+            // tandis que le fast-path awaitFreshnessWithBudget devient franchis-
+            // sable dès la fin du seed (~1-2 s). loadTier1Skeletons préserve les
+            // stubs semés (clear sélectif).
+            if (SkeletonCacheService.config.enableArchiveTier) {
+                const seeded = await this.seedTier3FromSnapshot();
+                if (seeded > 0) {
+                    console.log(
+                        `[SkeletonCacheService] Tier 3 (snapshot): ${seeded} stubs semes — ` +
+                        `service immediat, scan GDrive en rattrapage (#1747 E)`
+                    );
+                }
+            }
+
             const storageLocations = await RooStorageDetector.detectStorageLocations();
 
             // #1747 D — Tier 1 (Roo local) is skipped when no Roo storage exists
@@ -400,7 +464,15 @@ export class SkeletonCacheService {
      */
     private async loadTier1Skeletons(tasksDir: string, skeletonDir: string): Promise<void> {
         try {
-            this.cache.clear();
+            // #1747 E — clear sélectif : les stubs Tier 3 semés depuis le snapshot
+            // au début du load survivent au rechargement Tier 1 (le merge reste
+            // local-first : un stub ne remplace jamais une entrée locale, il ne
+            // comble que les taskIds absents — invariante inchangée de #1244).
+            for (const [taskId, skeleton] of this.cache) {
+                if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') {
+                    this.cache.delete(taskId);
+                }
+            }
             let loadedCount = 0;
 
             // Load existing skeletons if directory exists
@@ -677,8 +749,122 @@ export class SkeletonCacheService {
                 `${this.tier3HydratedBytes.size} corps hydrates, ${failed} echecs — ` +
                 `corps a la demande via ensureConversationHydrated (#3661)`
             );
+
+            // #1747 E — persister les stubs pour le prochain boot. Uniquement sur
+            // succès du listing + stubbing (un GDrive indisponible ne doit pas
+            // écraser un bon snapshot par un fichier vide).
+            await this.persistTier3Snapshot();
         } catch (error) {
             console.warn('[SkeletonCacheService] Tier 3 (archives): chargement non-bloquant a echoue:', error);
+        }
+    }
+
+    /**
+     * #1747 E — Chemin du snapshot Tier 3. Machine-local (~/.roo-state-manager/),
+     * override absolu via SKELETON_TIER3_SNAPSHOT (tests/ops), chaîne vide =
+     * désactivé (comportement pré-snapshot).
+     */
+    private getTier3SnapshotPath(): string | null {
+        const override = process.env.SKELETON_TIER3_SNAPSHOT;
+        if (override === '') return null;
+        if (override && path.isAbsolute(override)) return override;
+        return path.join(os.homedir(), '.roo-state-manager', TIER3_SNAPSHOT_FILENAME);
+    }
+
+    /**
+     * #1747 E — Semer le cache depuis le snapshot local. Lit le fichier, pose
+     * chaque stub dont le taskId n'est pas déjà résident (local-first inchangé),
+     * reconstruit l'index Tier 3 (taskId → fichier/machine) et arme le fast-path
+     * `awaitFreshnessWithBudget`. Défenses : fichier absent/corrompu → no-op
+     * silencieux (cold load GDrive comme avant) ; un stub portant à tort un
+     * corps hydraté est re-stubbé (le snapshot ne persiste que des stubs).
+     */
+    private async seedTier3FromSnapshot(): Promise<number> {
+        const snapshotPath = this.getTier3SnapshotPath();
+        if (!snapshotPath) return 0;
+        try {
+            // Sonde d'existence d'abord : la grande majorité des boots n'ont pas
+            // (encore) de snapshot, et un read d'un chemin inexistant pollue le
+            // bruit I/O inutilement.
+            await fs.access(snapshotPath);
+            let content = await fs.readFile(snapshotPath, 'utf-8');
+            if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+            const parsed = JSON.parse(content) as {
+                version?: number;
+                savedAt?: number;
+                stubs?: ConversationSkeleton[];
+            };
+            if (parsed.version !== TIER3_SNAPSHOT_VERSION || !Array.isArray(parsed.stubs)) {
+                console.warn('[SkeletonCacheService] Tier 3 (snapshot): format inconnu, ignore');
+                return 0;
+            }
+            let seeded = 0;
+            for (const stub of parsed.stubs) {
+                const taskId = stub?.taskId;
+                const filePath = (stub as any)?.metadata?.archiveFilePath;
+                if (!taskId || !filePath) continue;
+                if (stub.metadata?.dataSource !== 'gdrive-archive') continue;
+                if (this.cache.has(taskId)) continue;
+                if (stub.metadata.hydrated === true || (stub.sequence?.length ?? 0) > 0) {
+                    // Invariant : le cache résident ne retient pas de corps au seed.
+                    stub.sequence = [];
+                    stub.metadata.hydrated = false;
+                }
+                this.cache.set(taskId, stub);
+                this.tier3Index.set(taskId, {
+                    filePath,
+                    machineId: stub.metadata?.machineId ?? '',
+                });
+                seeded++;
+            }
+            if (seeded > 0) {
+                this.tier3SnapshotSeededAt = typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now();
+                this.tier3SnapshotSeededCount = seeded;
+            }
+            return seeded;
+        } catch {
+            // Absent (premier boot) ou illisible : cold load GDrive comme avant.
+            return 0;
+        }
+    }
+
+    /**
+     * #1747 E — Persister les stubs Tier 3 résidents. Écriture atomique
+     * (tmp + rename) ; les corps hydratés sont sanitisés en stubs (le snapshot
+     * ne porte jamais de séquence — ~585 o/entrée, jamais des Mo). Échec =
+     * warn non-fatal : le boot suivant retombera sur le snapshot précédent.
+     */
+    private async persistTier3Snapshot(): Promise<void> {
+        const snapshotPath = this.getTier3SnapshotPath();
+        if (!snapshotPath) return;
+        try {
+            const stubs: ConversationSkeleton[] = [];
+            for (const skeleton of this.cache.values()) {
+                if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') continue;
+                if (skeleton.metadata?.hydrated === true || (skeleton.sequence?.length ?? 0) > 0) {
+                    const sanitized = {
+                        ...skeleton,
+                        sequence: [],
+                        metadata: { ...skeleton.metadata, hydrated: false },
+                    } as ConversationSkeleton;
+                    stubs.push(sanitized);
+                } else {
+                    stubs.push(skeleton);
+                }
+            }
+            if (stubs.length === 0) return;
+            const payload = JSON.stringify({
+                version: TIER3_SNAPSHOT_VERSION,
+                savedAt: Date.now(),
+                stubs,
+            });
+            const dir = path.dirname(snapshotPath);
+            await fs.mkdir(dir, { recursive: true });
+            const tmpPath = `${snapshotPath}.tmp-${process.pid}`;
+            await fs.writeFile(tmpPath, payload, 'utf-8');
+            await fs.rename(tmpPath, snapshotPath);
+        } catch (error) {
+            console.warn('[SkeletonCacheService] Tier 3 (snapshot): ecriture non-bloquante a echoue:', error);
         }
     }
 
@@ -851,6 +1037,15 @@ export class SkeletonCacheService {
         tier3_hydrated_count: number;
         tier3_estimated_mb: number;
         tier3_cap_mb: number;
+        /** #1747 E — état du snapshot Tier 3 : seed effectué ce boot, âge du
+         *  snapshot servi, nombre de stubs semés. `seeded=false` + cache chaud
+         *  = load GDrive complet déjà terminé (le seed est then superflu). */
+        tier3_snapshot: {
+            seeded: boolean;
+            savedAt: number | null;
+            ageMs: number | null;
+            entries: number;
+        };
     }> {
         const cacheAgeMs = this.lastRefreshTime === 0 ? null : Date.now() - this.lastRefreshTime;
         const stale = cacheAgeMs === null ? true : cacheAgeMs > this.CACHE_VALIDITY_MS;
@@ -888,6 +1083,12 @@ export class SkeletonCacheService {
             tier3_hydrated_count: this.tier3HydratedBytes.size,
             tier3_estimated_mb: Math.round(tier3Bytes / 1024 / 1024),
             tier3_cap_mb: Math.round(this.getTier3CapBytes() / 1024 / 1024),
+            tier3_snapshot: {
+                seeded: this.tier3SnapshotSeededAt !== null,
+                savedAt: this.tier3SnapshotSeededAt,
+                ageMs: this.tier3SnapshotSeededAt !== null ? Date.now() - this.tier3SnapshotSeededAt : null,
+                entries: this.tier3SnapshotSeededCount,
+            },
         };
     }
 
