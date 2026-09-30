@@ -199,6 +199,7 @@ describe('roosync_diagnose tool', () => {
                 tier3_archives: 25,
                 total: 175,
                 config: { enableClaudeTier: true, enableArchiveTier: true },
+                tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
             });
             const result = await roosyncDiagnose({ action: 'health' });
             expect(result.success).toBe(true);
@@ -215,6 +216,7 @@ describe('roosync_diagnose tool', () => {
                 tier3_archives: 0,
                 total: 80,
                 config: { enableClaudeTier: false, enableArchiveTier: false },
+                tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
             });
             const result = await roosyncDiagnose({ action: 'health' });
             expect(result.data?.tiers?.tier2_claude?.enabled).toBe(false);
