@@ -155,4 +155,62 @@ describe('roosyncManage — machine-wide targets (integration)', () => {
     expect(getText(await roosyncManage({ action: 'mark_read', message_id: msg.id })))
       .toContain('déjà marqué comme lu');
   });
+
+  test('#3960: a globally-flipped machine-wide message stays unread for workspaces that never read it', async () => {
+    // Incident 30/09 (msg-20260930T0450): a URGENT machine-wide DM was read
+    // by one workspace, then its GLOBAL status got flipped to 'read' (a
+    // workspace-less reader falls back to the global flip) — and every other
+    // workspace of the machine stopped seeing it. perReaderStatus used to
+    // honour the global 'read' whenever the reader was not listed, hiding the
+    // message from the very session it was addressed to.
+    const msg = await messageManager.sendMessage(
+      'myia-po-2025:roo-extensions', MACHINE, 'Decision attendue dans la journee', 'body', 'URGENT'
+    );
+
+    // Another workspace reads it first -> tracked per workspace, global stays 'unread'.
+    await messageManager.markAsRead(msg.id, MACHINE + ':Argumentum');
+    expect(onDisk(msg.id).read_by_workspace).toEqual([MACHINE + ':Argumentum']);
+    expect(onDisk(msg.id).status).toBe('unread');
+
+    // A workspace-less reader then clears it globally (legacy fallback).
+    await messageManager.markAsRead(msg.id, MACHINE);
+    expect(onDisk(msg.id).status).toBe('read');
+    expect(onDisk(msg.id).read_by_workspace).toEqual([MACHINE + ':Argumentum']);
+
+    // The workspaces that never read it still see it — including in the
+    // unread-only inbox view, the exact surface the incident hid it from.
+    const unreadHere = await messageManager.readInbox(MACHINE, 'unread', undefined, 'CoursIA');
+    expect(unreadHere.map((m: any) => m.id)).toContain(msg.id);
+    const allHere = await messageManager.readInbox(MACHINE, 'all', undefined, 'CoursIA');
+    const shown = allHere.find((m: any) => m.id === msg.id);
+    expect(shown?.status).toBe('unread');
+
+    // The workspace that read it still sees it read.
+    const allArg = await messageManager.readInbox(MACHINE, 'all', undefined, 'Argumentum');
+    expect(allArg.find((m: any) => m.id === msg.id)?.status).toBe('read');
+
+    // And the session it was destined for can now consume it for real.
+    const marked = getText(await roosyncManage({ action: 'mark_read', message_id: msg.id, as: MACHINE + ':CoursIA' }));
+    expect(marked).toContain('marqué comme lu');
+    expect(onDisk(msg.id).read_by_workspace).toContain(MACHINE + ':CoursIA');
+  });
+
+  test('#3960: a legacy machine-wide message (global read, no workspace record) stays read everywhere', async () => {
+    // Negative control: messages consumed under the OLD semantics — global
+    // 'read' with NO per-workspace record at all — must not resurface as
+    // unread for every workspace the day this ships.
+    const msg = await messageManager.sendMessage(
+      'myia-po-2023:roo-extensions', MACHINE, 'Legacy notice', 'body', 'LOW'
+    );
+
+    // Workspace-less reader only: global flip, no read_by_workspace entry.
+    await messageManager.markAsRead(msg.id, MACHINE);
+    expect(onDisk(msg.id).status).toBe('read');
+    expect(onDisk(msg.id).read_by_workspace).toBeUndefined();
+
+    const unreadHere = await messageManager.readInbox(MACHINE, 'unread', undefined, 'CoursIA');
+    expect(unreadHere.map((m: any) => m.id)).not.toContain(msg.id);
+    const allHere = await messageManager.readInbox(MACHINE, 'all', undefined, 'CoursIA');
+    expect(allHere.find((m: any) => m.id === msg.id)?.status).toBe('read');
+  });
 });

@@ -449,12 +449,17 @@ export function perReaderStatus(
       // global status rather than report every such message as unread forever.
       if (!workspaceId) return null;
       const full = canonicalizeFullId(parseMachineWorkspace(machineId).machineId + ':' + workspaceId);
-      if ((message.read_by_workspace ?? []).includes(full)) return 'read';
-      // A message already flipped GLOBALLY has no per-workspace record and never
-      // will: it was consumed under the old semantics, before this tracking
-      // existed. Honour that flag instead of overriding it, or every machine-wide
-      // message ever read on the fleet resurfaces as unread the day this ships.
-      if (message.status === 'read') return null;
+      const readers = message.read_by_workspace ?? [];
+      if (readers.includes(full)) return 'read';
+      // A message flipped GLOBALLY with NO per-workspace record at all was
+      // consumed under the old semantics, before this tracking existed. Honour
+      // that flag, or every machine-wide message ever read on the fleet
+      // resurfaces as unread the day this ships. But once ANY workspace is
+      // tracked, the per-workspace record owns the verdict: the global status
+      // is also flipped by workspace-less readers and by the PG-primary write
+      // path, so falling back to it here hides the message from every other
+      // workspace of the machine (#3960).
+      if (readers.length === 0 && message.status === 'read') return null;
       return 'unread';
     }
     return null;

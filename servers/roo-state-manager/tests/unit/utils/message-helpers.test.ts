@@ -14,7 +14,8 @@ import {
   formatDate,
   formatDateFull,
   getPriorityIcon,
-  getStatusIcon
+  getStatusIcon,
+  perReaderStatus
 } from '../../../src/utils/message-helpers.js';
 
 describe('message-helpers', () => {
@@ -172,6 +173,56 @@ describe('message-helpers', () => {
     it('devrait retourner 📧 par défaut pour statut inconnu', () => {
       expect(getStatusIcon('unknown')).toBe('📧');
       expect(getStatusIcon('')).toBe('📧');
+    });
+  });
+
+  describe('perReaderStatus (#3960)', () => {
+    it('broadcast : suivi par machine via read_by, null si aucun tracking', () => {
+      const msg = { to: 'all', read_by: ['myia-po-2023'] };
+      expect(perReaderStatus(msg, 'myia-po-2023')).toBe('read');
+      expect(perReaderStatus(msg, 'myia-ai-01')).toBe('unread');
+      expect(perReaderStatus({ to: 'all' }, 'myia-ai-01')).toBeNull();
+    });
+
+    it('cible machine entière : workspace lecteur listé -> read', () => {
+      const msg = { to: 'myia-ai-01', read_by_workspace: ['myia-ai-01:roo-extensions'] };
+      expect(perReaderStatus(msg, 'myia-ai-01', 'roo-extensions')).toBe('read');
+    });
+
+    it('#3960 : lue par un autre workspace + statut global flippé -> unread ici quand même', () => {
+      // État mesuré le 30/09 sur msg-20260930T0450 : trois workspaces avaient
+      // lu, le statut global était passé à 'read' (lecteur sans workspace) —
+      // CoursIA ne voyait jamais le message qui lui était destiné.
+      const msg = {
+        to: 'myia-ai-01',
+        status: 'read',
+        read_by_workspace: ['myia-ai-01:Argumentum', 'myia-ai-01:nanoclaw', 'myia-ai-01:roo-extensions']
+      };
+      expect(perReaderStatus(msg, 'myia-ai-01', 'CoursIA')).toBe('unread');
+      expect(perReaderStatus(msg, 'myia-ai-01', 'Argumentum')).toBe('read');
+    });
+
+    it('message ancien (status read, AUCUN suivi par workspace) -> null : fallback global, pas de résurrection', () => {
+      expect(perReaderStatus({ to: 'myia-ai-01', status: 'read' }, 'myia-ai-01', 'CoursIA')).toBeNull();
+      expect(perReaderStatus(
+        { to: 'myia-ai-01', status: 'read', read_by_workspace: [] }, 'myia-ai-01', 'CoursIA'
+      )).toBeNull();
+    });
+
+    it('lecteur sans workspace -> null (pas de discrimination possible)', () => {
+      const msg = { to: 'myia-ai-01', read_by_workspace: ['myia-ai-01:roo-extensions'] };
+      expect(perReaderStatus(msg, 'myia-ai-01')).toBeNull();
+    });
+
+    it('cible workspace précis -> null (statut global)', () => {
+      const msg = { to: 'myia-ai-01:CoursIA', status: 'read' };
+      expect(perReaderStatus(msg, 'myia-ai-01', 'CoursIA')).toBeNull();
+    });
+
+    it('forme machine courte canonisée des deux côtés', () => {
+      const msg = { to: 'myia-po-2024', read_by_workspace: ['myia-po-2024:roo-extensions'] };
+      expect(perReaderStatus(msg, 'po-2024', 'roo-extensions')).toBe('read');
+      expect(perReaderStatus(msg, 'po-2024', 'vllm')).toBe('unread');
     });
   });
 });
