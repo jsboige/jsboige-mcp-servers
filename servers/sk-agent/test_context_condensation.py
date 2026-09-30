@@ -249,16 +249,18 @@ async def test_summarise_uses_fallback_when_no_client():
 
 @pytest.mark.asyncio
 async def test_threshold_keeps_recent_window():
+    # All-USER thread: the first user message is protected (mission
+    # preservation, review #1266), so it holds the oldest slot and the
+    # recent window fills with the latest messages.
     messages = [_text_msg(AuthorRole.USER, f"msg-{i}") for i in range(20)]
     cfg = CondensationConfig(enabled=True, recent_message_window=4)
     condenser = ContextCondenser(config=cfg)
     out, m = await condenser._pass_threshold(messages, 1024, cfg)
     assert m.messages_in == 20
     assert m.messages_out == 4
-    # Must keep the last 4 messages.
     texts = [_message_text(m) for m in out]
     assert texts[-1] == "msg-19"
-    assert texts[0] == "msg-16"
+    assert texts[0] == "msg-0"
 
 
 @pytest.mark.asyncio
@@ -274,6 +276,22 @@ async def test_threshold_never_trims_the_system_prompt():
     assert m.messages_out < len(messages)  # the pass actually trimmed
     assert out[0].role == AuthorRole.SYSTEM
     assert _message_text(out[0]) == "system prompt"
+
+
+@pytest.mark.asyncio
+async def test_threshold_never_trims_the_first_user_message():
+    # Review #1266: the first USER message is the mission — a tight budget
+    # must eat the assistant turns that follow, never the original ask.
+    messages = [_text_msg(AuthorRole.SYSTEM, "system prompt")]
+    messages.append(_text_msg(AuthorRole.USER, "mission: summarize the repo"))
+    messages += [_text_msg(AuthorRole.ASSISTANT, "x" * 300) for _ in range(10)]
+    cfg = CondensationConfig(enabled=True, recent_message_window=2)
+    condenser = ContextCondenser(config=cfg)
+    out, m = await condenser._pass_threshold(messages, 1000, cfg)
+    assert m.messages_out < len(messages)  # the pass actually trimmed
+    assert out[0].role == AuthorRole.SYSTEM
+    assert out[1].role == AuthorRole.USER
+    assert _message_text(out[1]) == "mission: summarize the repo"
 
 
 def test_message_tokens_counts_full_tool_results():

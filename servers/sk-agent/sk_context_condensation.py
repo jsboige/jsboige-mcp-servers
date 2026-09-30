@@ -887,14 +887,23 @@ class ContextCondenser:
             total = sum(_message_tokens(m) for m in out)
             if target is not None and total <= target:
                 break
-            # Review #3944 pt 1: never trim the system prompt — pop the
-            # OLDEST NON-SYSTEM message ("oldest non-system" per the spec).
+            # Review #3944 pt 1 + #1266: never trim the system prompt nor
+            # the FIRST user message (mission preservation) — pop the
+            # oldest message that is neither.
+            first_user_idx = next(
+                (i for i, m in enumerate(out) if m.role == AuthorRole.USER),
+                None,
+            )
             idx = next(
-                (i for i, m in enumerate(out) if m.role != AuthorRole.SYSTEM),
+                (
+                    i
+                    for i, m in enumerate(out)
+                    if m.role != AuthorRole.SYSTEM and i != first_user_idx
+                ),
                 None,
             )
             if idx is None:
-                break  # only system messages left — nothing trimmable
+                break  # only protected messages left — nothing trimmable
             out.pop(idx)
         chars_out = sum(_message_chars(m) for m in out)
         return out, PassMetrics(
