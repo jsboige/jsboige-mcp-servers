@@ -359,3 +359,81 @@ describe('#3230 write-side — append depuis copie locale en retard', () => {
     await releaseAppendLock(`workspace-${KEY}`, probeHolder);
   });
 });
+
+describe('#3782 correctif 1 — append sur fichier à tête illisible (NUL / sans frontmatter)', () => {
+  it('NUL-HEAD : tête d’octets nuls + queue COMPLÈTE (tous les ids de la vue présents) → full-write, aucun NUL survivant', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    // Vue PG : 2 messages vivants. Fichier local : 256 octets NUL (réservation
+    // DriveFS lue à zéro, incident 30/09 06:08Z) + la queue INTACTE portant
+    // les DEUX ids de la vue — la réparation #3230 (missingIds) reste alors
+    // muette : c'est précisément la forme de l'incident (les appends ont
+    // empilé sur la tête NUL sans jamais la guérir).
+    readDashboardFromPgFake.mockResolvedValue({
+      type: 'workspace',
+      key: `workspace-${KEY}`,
+      lastModified: '2026-09-30T08:00:00.000Z',
+      lastModifiedBy: author,
+      status: { markdown: '# Statut PG\n' },
+      intercom: {
+        messages: [pgMessage('ic-nul-a', 'contenu A'), pgMessage('ic-nul-b', 'contenu B')],
+        totalMessages: 2,
+      },
+    });
+    writeFileSync(
+      path.join(dashboardsDir, FILE),
+      '\0'.repeat(256) + messageBlock('ic-nul-a', 'contenu A') + '\n\n---\n\n' + messageBlock('ic-nul-b', 'contenu B'),
+      'utf8',
+    );
+
+    const result = await roosyncDashboard({
+      action: 'append', type: 'workspace', workspace: KEY, content: 'message neuf',
+    }) as any;
+
+    expect(result.success).toBe(true);
+    const onDisk = readFileSync(path.join(dashboardsDir, FILE), 'utf8');
+    // L'incrément ne peut PAS remplacer un frontmatter qu'il ne matche jamais
+    // (regex ancrée ^---\n) : avant ce correctif, la tête NUL survivait et le
+    // message s'y ajoutait — c'est la forme mesurée sur workspace-CoursIA.
+    expect(onDisk).not.toContain('\0');
+    expect(onDisk.startsWith('---\n')).toBe(true);
+    expect(onDisk).toContain('[msg: ic-nul-a]');
+    expect(onDisk).toContain('[msg: ic-nul-b]');
+    expect(onDisk).toContain('message neuf');
+    // La réparation full-write est bien le chemin pris.
+    expect(dualWriteSyncSpy).toHaveBeenCalled();
+  });
+
+  it('NO-FRONTMATTER : tête UTF-8 valide mais sans délimiteur --- → full-write depuis la vue, pas d’append sur du texte mort', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    readDashboardFromPgFake.mockResolvedValue({
+      type: 'workspace',
+      key: `workspace-${KEY}`,
+      lastModified: '2026-09-30T08:00:00.000Z',
+      lastModifiedBy: author,
+      status: { markdown: '# Statut PG\n' },
+      intercom: {
+        messages: [pgMessage('ic-nf-a', 'contenu A')],
+        totalMessages: 1,
+      },
+    });
+    // Pas un seul octet NUL, mais pas de frontmatter non plus : l'incrément
+    // aurait collé le message neuf sous cette prose orpheline.
+    writeFileSync(
+      path.join(dashboardsDir, FILE),
+      'débris de fichier sans frontmatter du tout\n\n' + messageBlock('ic-nf-a', 'contenu A'),
+      'utf8',
+    );
+
+    const result = await roosyncDashboard({
+      action: 'append', type: 'workspace', workspace: KEY, content: 'message neuf',
+    }) as any;
+
+    expect(result.success).toBe(true);
+    const onDisk = readFileSync(path.join(dashboardsDir, FILE), 'utf8');
+    expect(onDisk.startsWith('---\n')).toBe(true);
+    expect(onDisk).not.toContain('débris de fichier sans frontmatter');
+    expect(onDisk).toContain('[msg: ic-nf-a]');
+    expect(onDisk).toContain('message neuf');
+    expect(dualWriteSyncSpy).toHaveBeenCalled();
+  });
+});
