@@ -608,11 +608,11 @@ export const roosyncStorageManagementDefinition = {
 
 export const roosyncDiagnoseDefinition = {
     name: 'roosync_diagnose',
-    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state machine #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
+    description: 'RooSync diagnostics and debug. Actions: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state machine #1320), recovery (recovery-before-escalation decision #1320 — classify an error, get the auto-heal action to execute once before escalating), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into THIS live process — use after a fleet key rotation instead of restarting the session; only lazily-read keys are reloadable, everything else still needs a restart). Gotcha: analyze auto-detects roadmap path via getSharedStatePath() — pass roadmapPath only if non-standard.',
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'] },
+            action: { type: 'string', enum: ['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'recovery', 'analyze', 'best-practices', 'reload'] },
             checkDiskSpace: { type: 'boolean' },
             verbose: { type: 'boolean' },
             clearCache: { type: 'boolean' },
@@ -624,7 +624,12 @@ export const roosyncDiagnoseDefinition = {
             // lifecycle action params (#1320)
             state: { type: 'string', enum: ['BOOTSTRAPPING', 'READY', 'CLAIMED', 'WORKING', 'REPORTING', 'IDLE', 'ERROR', 'RECOVERING'], description: 'Target lifecycle state (action: lifecycle)' },
             machineId: { type: 'string', description: 'Machine ID (default: hostname)' },
-            reason: { type: 'string', description: 'Reason for lifecycle transition' }
+            reason: { type: 'string', description: 'Reason for lifecycle transition' },
+            // recovery action params (#1320 — Recovery-Before-Escalation)
+            errorMessage: { type: 'string', description: 'Error message to classify (action: recovery — returns matched auto-heal action or no_match)' },
+            success: { type: 'boolean', description: 'Outcome of the executed recovery action (action: recovery, with outcomeAction)' },
+            outcomeAction: { type: 'string', enum: ['rebuild_mcp', 'rebase_git', 'reset_submodule', 'retry_once'], description: 'Executed recovery action to record the outcome of (action: recovery)' },
+            limit: { type: 'number', description: 'Max recovery history entries (action: recovery, no errorMessage/outcomeAction)' }
         },
         required: ['action'],
         additionalProperties: false
