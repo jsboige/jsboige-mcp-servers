@@ -177,7 +177,14 @@ def _build_self_inclusion_manager(
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # Review #1266: get_event_loop() fails with "no current event loop"
+    # once the asyncio-marked condensation tests have closed the main
+    # thread's loop — always run on a fresh loop.
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 @pytest.fixture
