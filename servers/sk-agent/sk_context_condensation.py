@@ -392,14 +392,14 @@ class _OpenAISummariser:
 # ---------------------------------------------------------------------------
 
 
-def _estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    return max(1, int(len(text) / _DEFAULT_CHARS_PER_TOKEN))
-
-
 def _message_text(message: ChatMessageContent) -> str:
-    """Extract a plain-text rendering of a message for sizing and summaries."""
+    """Extract a plain-text rendering of a message for summaries.
+
+    Tool results are capped at 200 chars here — this rendering feeds the
+    summariser, not the metrics: sizing and triggers use
+    :func:`_message_tokens` so they never understate tool results
+    (review #3944, minor / acceptance #4 of the spec).
+    """
     parts: list[str] = []
     for item in message.items:
         if isinstance(item, TextContent):
@@ -428,6 +428,24 @@ def _message_chars(message: ChatMessageContent) -> int:
             # ImageContent is base64 payload — count size but never inline.
             total += 200  # placeholder budget for image references
     return total
+
+
+def _message_tokens(message: ChatMessageContent) -> int:
+    """Token estimate over the FULL message — tool results uncapped.
+
+    Metrics and the trigger use this, not :func:`_message_text`, so the
+    reduction ratio cannot overstate savings on tool results (review
+    #3944, minor — acceptance criterion #4 of the spec).
+    """
+    return int(_message_chars(message) / _DEFAULT_CHARS_PER_TOKEN)
+
+
+def _has_text_or_call(message: ChatMessageContent) -> bool:
+    """True when the message carries text or a tool call (not result-only)."""
+    return any(
+        isinstance(item, (TextContent, FunctionCallContent))
+        for item in message.items
+    )
 
 
 def _thread_messages(thread: Any) -> list[ChatMessageContent]:
@@ -577,7 +595,7 @@ class ContextCondenser:
         start = time.monotonic()
         messages = _thread_messages(thread)
         total_chars = sum(_message_chars(m) for m in messages)
-        total_tokens = sum(_estimate_tokens(_message_text(m)) for m in messages)
+        total_tokens = sum(_message_tokens(m) for m in messages)
 
         trigger, reason = self._should_trigger(
             total_tokens=total_tokens,
@@ -629,7 +647,7 @@ class ContextCondenser:
             total_duration_s=time.monotonic() - start,
             total_tokens_in=total_tokens,
             total_tokens_out=sum(
-                _estimate_tokens(_message_text(m)) for m in working
+                _message_tokens(m) for m in working
             ),
             passes=passes,
             dry_run=cfg.dry_run,
@@ -662,30 +680,48 @@ class ContextCondenser:
     async def _pass_lossless_dedup(
         self, messages: list[ChatMessageContent]
     ) -> tuple[list[ChatMessageContent], PassMetrics]:
-        """Drop consecutive messages whose tool calls are identical.
+        """Drop consecutive duplicate tool calls together with their results.
 
         A "consecutive run" of identical tool calls is collapsed to the
-        first occurrence; the kept message is updated with the latest
-        text so the most recent result survives. Tool result messages
-        are kept in the run (they follow their call); only the second
-        and later identical call+result pairs are dropped. Messages
-        with no tool-call signature (text, system, image-only) reset
-        the run.
+        first occurrence: the duplicate call message AND the tool-result
+        messages that immediately follow it are dropped as a pair, so no
+        ``FunctionResultContent`` is ever left without its call (SK and
+        OpenAI-compatible endpoints pair call/result — an orphan result
+        breaks the thread; review #3944 pt 2). Tool-result messages inside
+        the run keep it alive (call, result, same call = retry loop);
+        any other signature-less message (text, system, image-only)
+        RESETS the run — a call repeated after intervening text is not a
+        duplicate (review #3944 pt 3).
         """
         start = time.monotonic()
         chars_in = sum(_message_chars(m) for m in messages)
         out: list[ChatMessageContent] = []
         last_sig: tuple | None = None
+        dropping_results = False
         for m in messages:
             sig = _tool_call_signature(m)
             if sig is not None and sig == last_sig:
-                # Identical tool call to the previous kept message — drop.
+                # Duplicate of the previous kept call — drop it and stay in
+                # "dropping results" mode until the run ends.
+                dropping_results = True
                 continue
+            if (
+                dropping_results
+                and sig is None
+                and _has_tool_result(m)
+                and not _has_text_or_call(m)
+            ):
+                # Pure result message of a dropped duplicate call — drop the
+                # pair's second half. Mixed messages are kept (conservative:
+                # never drop text).
+                continue
+            dropping_results = False
             out.append(m)
-            # Only update last_sig when the message carries a tool call
-            # signature; tool-result messages (sig=None) keep the run alive.
             if sig is not None:
                 last_sig = sig
+            elif not _has_tool_result(m):
+                # Text/system/image breaks the run.
+                last_sig = None
         chars_out = sum(_message_chars(m) for m in out)
         return out, PassMetrics(
             name="lossless_dedup",
@@ -694,8 +730,8 @@ class ContextCondenser:
             messages_out=len(out),
             chars_in=chars_in,
             chars_out=chars_out,
-            tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-            tokens_out=sum(_estimate_tokens(_message_text(m)) for m in out),
+            tokens_in=sum(_message_tokens(m) for m in messages),
+            tokens_out=sum(_message_tokens(m) for m in out),
         )
 
     # ----- pass 2 -------------------------------------------------------
@@ -720,8 +756,8 @@ class ContextCondenser:
                 messages_out=len(messages),
                 chars_in=chars_in,
                 chars_out=chars_in,
-                tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-                tokens_out=sum(_estimate_tokens(_message_text(m)) for m in messages),
+                tokens_in=sum(_message_tokens(m) for m in messages),
+                tokens_out=sum(_message_tokens(m) for m in messages),
             )
         drop_below = tool_indices[-cfg.tool_result_window]
 
@@ -729,9 +765,16 @@ class ContextCondenser:
         for i, m in enumerate(messages):
             if _has_tool_result(m) and i < drop_below:
                 # Drop the tool result payload entirely; keep the message
-                # so the model still sees the call happened.
+                # so the model still sees the call happened. Measure the
+                # actual FunctionResultContent items — items[0] may be a
+                # text item on a multi-item message (review Hermes 30/09).
+                pruned_chars = sum(
+                    len(str(item.result or ""))
+                    for item in m.items
+                    if isinstance(item, FunctionResultContent)
+                )
                 pruned = _set_tool_result_text(
-                    m, f"[tool result pruned by condensation, {len(str(getattr(m.items[0], 'result', '') or ''))} chars]"
+                    m, f"[tool result pruned by condensation, {pruned_chars} chars]"
                 )
                 out.append(pruned)
             elif _has_tool_result(m) and _message_chars(m) > cfg.max_tool_chars:
@@ -751,8 +794,8 @@ class ContextCondenser:
             messages_out=len(out),
             chars_in=chars_in,
             chars_out=chars_out,
-            tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-            tokens_out=sum(_estimate_tokens(_message_text(m)) for m in out),
+            tokens_in=sum(_message_tokens(m) for m in messages),
+            tokens_out=sum(_message_tokens(m) for m in out),
         )
 
     # ----- pass 3 -------------------------------------------------------
@@ -773,8 +816,8 @@ class ContextCondenser:
                 messages_out=len(messages),
                 chars_in=chars_in,
                 chars_out=chars_in,
-                tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-                tokens_out=sum(_estimate_tokens(_message_text(m)) for m in messages),
+                tokens_in=sum(_message_tokens(m) for m in messages),
+                tokens_out=sum(_message_tokens(m) for m in messages),
             )
         boundary = len(messages) - cfg.recent_message_window
         out: list[ChatMessageContent] = []
@@ -795,8 +838,8 @@ class ContextCondenser:
             messages_out=len(out),
             chars_in=chars_in,
             chars_out=chars_out,
-            tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-            tokens_out=sum(_estimate_tokens(_message_text(m)) for m in out),
+            tokens_in=sum(_message_tokens(m) for m in messages),
+            tokens_out=sum(_message_tokens(m) for m in out),
         )
 
     # ----- pass 4 -------------------------------------------------------
@@ -832,8 +875,8 @@ class ContextCondenser:
                 messages_out=len(messages),
                 chars_in=chars_in,
                 chars_out=chars_in,
-                tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-                tokens_out=sum(_estimate_tokens(_message_text(m)) for m in messages),
+                tokens_in=sum(_message_tokens(m) for m in messages),
+                tokens_out=sum(_message_tokens(m) for m in messages),
             )
         # Soft target: trim until under the trigger budget (or min keep).
         target = None
@@ -841,10 +884,18 @@ class ContextCondenser:
             target = int(context_window * cfg.trigger_fraction * 0.6)
         out = list(messages)
         while len(out) > keep:
-            total = sum(_estimate_tokens(_message_text(m)) for m in out)
+            total = sum(_message_tokens(m) for m in out)
             if target is not None and total <= target:
                 break
-            out.pop(0)
+            # Review #3944 pt 1: never trim the system prompt — pop the
+            # OLDEST NON-SYSTEM message ("oldest non-system" per the spec).
+            idx = next(
+                (i for i, m in enumerate(out) if m.role != AuthorRole.SYSTEM),
+                None,
+            )
+            if idx is None:
+                break  # only system messages left — nothing trimmable
+            out.pop(idx)
         chars_out = sum(_message_chars(m) for m in out)
         return out, PassMetrics(
             name="threshold",
@@ -853,8 +904,8 @@ class ContextCondenser:
             messages_out=len(out),
             chars_in=chars_in,
             chars_out=chars_out,
-            tokens_in=sum(_estimate_tokens(_message_text(m)) for m in messages),
-            tokens_out=sum(_estimate_tokens(_message_text(m)) for m in out),
+            tokens_in=sum(_message_tokens(m) for m in messages),
+            tokens_out=sum(_message_tokens(m) for m in out),
         )
 
     # ----- thread write-back -------------------------------------------

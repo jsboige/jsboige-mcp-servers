@@ -7,7 +7,7 @@ Tests cover:
 - Pass 1 (lossless dedup) — collapses identical consecutive tool calls
 - Pass 2 (truncate old tools) — keeps the recent window, prunes the rest
 - Pass 3 (summarise) — uses fallback summariser when no client
-- Pass 4 (threshold) — drops oldest messages until under target
+- Pass 4 (threshold) — drops oldest NON-SYSTEM messages until under target
 - Trigger logic — tokens threshold and fraction threshold
 - Thread write-back — replaced history reflects the new messages
 """
@@ -38,6 +38,7 @@ from sk_context_condensation import (
     _FallbackSummariser,
     _message_chars,
     _message_text,
+    _message_tokens,
     _tool_call_signature,
 )
 
@@ -140,10 +141,41 @@ async def test_lossless_dedup_collapses_identical_consecutive_calls():
     ]
     condenser = ContextCondenser(config=CondensationConfig(enabled=True))
     out, m = await condenser._pass_lossless_dedup(messages)
-    # Same sig twice — second occurrence collapses into the first kept msg.
+    # Same sig twice — the duplicate call AND its result drop together
+    # (review #3944 pt 2: an orphan FunctionResultContent without its
+    # call breaks the thread on SK / OpenAI-compatible endpoints).
     assert m.messages_in == 4
-    assert m.messages_out == 3
+    assert m.messages_out == 2
     assert m.reduction_ratio > 0
+    kept_results = [
+        str(item.result)
+        for msg in out
+        for item in msg.items
+        if isinstance(item, FunctionResultContent)
+    ]
+    assert kept_results == ["result-1"]
+    kept_calls = [
+        item.function_name
+        for msg in out
+        for item in msg.items
+        if isinstance(item, FunctionCallContent)
+    ]
+    assert kept_calls == ["search"]
+
+
+@pytest.mark.asyncio
+async def test_lossless_dedup_text_breaks_the_run():
+    # Review #3944 pt 3: a call repeated AFTER intervening text is not a
+    # duplicate — the run resets on signature-less non-result messages.
+    messages = [
+        _tool_call_msg(AuthorRole.ASSISTANT, "search", {"q": "x"}),
+        _text_msg(AuthorRole.USER, "intervening text"),
+        _tool_call_msg(AuthorRole.ASSISTANT, "search", {"q": "x"}),
+    ]
+    condenser = ContextCondenser(config=CondensationConfig(enabled=True))
+    out, m = await condenser._pass_lossless_dedup(messages)
+    assert m.messages_in == 3
+    assert m.messages_out == 3
 
 
 @pytest.mark.asyncio
@@ -227,6 +259,31 @@ async def test_threshold_keeps_recent_window():
     texts = [_message_text(m) for m in out]
     assert texts[-1] == "msg-19"
     assert texts[0] == "msg-16"
+
+
+@pytest.mark.asyncio
+async def test_threshold_never_trims_the_system_prompt():
+    # Review #3944 pt 1: pop(0) trimmed the system prompt first — the spec
+    # says "oldest non-system". A tight budget must eat user messages and
+    # leave the system message in place.
+    messages = [_text_msg(AuthorRole.SYSTEM, "system prompt")]
+    messages += [_text_msg(AuthorRole.USER, "x" * 300) for _ in range(10)]
+    cfg = CondensationConfig(enabled=True, recent_message_window=2)
+    condenser = ContextCondenser(config=cfg)
+    out, m = await condenser._pass_threshold(messages, 1000, cfg)
+    assert m.messages_out < len(messages)  # the pass actually trimmed
+    assert out[0].role == AuthorRole.SYSTEM
+    assert _message_text(out[0]) == "system prompt"
+
+
+def test_message_tokens_counts_full_tool_results():
+    # Review #3944 minor / acceptance #4: metrics must not understate tool
+    # results — _message_text caps them at 200 chars, _message_tokens
+    # counts everything.
+    big_result = "y" * 4000
+    msg = _tool_result_msg(AuthorRole.TOOL, "f", big_result)
+    assert _message_tokens(msg) >= 1000  # 4000 chars / 4
+    assert len(_message_text(msg)) < 300  # the capped rendering stays short
 
 
 # ---------------------------------------------------------------------------
