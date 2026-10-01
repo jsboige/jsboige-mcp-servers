@@ -111,8 +111,13 @@ describe('export_data registry wiring — #3007 regression', () => {
         );
 
         const xml = (result.content[0] as any).text as string;
+        // #4005 fix: inline export responses are now wrapped with a stats header
+        // comment (format/target/subject/size) — strip it before asserting on the
+        // payload itself.
+        const payloadMatch = xml.match(/^<!-- export_data inline [^>]*-->\n([\s\S]*)$/);
+        const payload = payloadMatch ? payloadMatch[1] : xml;
         // Le bug : séquence vide même avec 5 messages dans metadata.messageCount.
-        expect(xml).toBe('<task></task>');  // <sequence/> vide
+        expect(payload).toBe('<task></task>');  // <sequence/> vide
     });
 
     test('FIX: callback resolves full skeleton from disk → <sequence> contains N messages', async () => {

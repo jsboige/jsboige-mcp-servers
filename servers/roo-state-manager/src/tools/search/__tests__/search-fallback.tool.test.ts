@@ -61,6 +61,9 @@ describe('searchFallbackTool', () => {
 	describe('validation', () => {
 		test('returns error for empty query', async () => {
 			const result = await searchFallbackTool({ query: '' }, new Map());
+			// #4005 fix: empty-query error now sets isError: true so LLM clients
+			// do not read it as a successful empty result.
+			expect(result.isError).toBe(true);
 			const parsed = parseResult(result);
 			expect(parsed.success).toBe(false);
 			expect(parsed.error).toContain('required');
@@ -68,6 +71,8 @@ describe('searchFallbackTool', () => {
 
 		test('returns error for whitespace-only query', async () => {
 			const result = await searchFallbackTool({ query: '   ' }, new Map());
+			// #4005 fix: whitespace-only query also has isError: true.
+			expect(result.isError).toBe(true);
 			const parsed = parseResult(result);
 			expect(parsed.success).toBe(false);
 		});
@@ -75,6 +80,8 @@ describe('searchFallbackTool', () => {
 		test('returns empty results for no matches', async () => {
 			const cache = makeCache(makeSkeleton('task-1'));
 			const result = await searchFallbackTool({ query: 'nonexistent' }, cache);
+			// Genuine empty result remains isError: undefined/false.
+			expect(result.isError).toBeFalsy();
 			const parsed = parseResult(result);
 			expect(parsed.success).toBe(true);
 			expect(parsed.totalFound).toBe(0);

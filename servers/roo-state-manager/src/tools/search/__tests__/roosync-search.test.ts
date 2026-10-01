@@ -327,9 +327,12 @@ describe('roosync_search', () => {
 				mockDiagnoseHandler
 			);
 
+			// #4005 fix: search_query is no longer the literal 'diagnose' string —
+			// it's now a representative probe ('_index_diagnostic_probe_') so the
+			// semantic measurement tracks the action being diagnosed.
 			expect(mockSemanticHandler).toHaveBeenCalledWith(
 				expect.objectContaining({
-					search_query: 'diagnose',
+					search_query: '_index_diagnostic_probe_',
 					diagnose_index: true
 				}),
 				mockCache,

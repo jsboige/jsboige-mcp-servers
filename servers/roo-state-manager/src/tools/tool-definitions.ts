@@ -176,7 +176,8 @@ export const roosyncSearchDefinition = {
             exclude_tool_results: { type: 'boolean' },
             reset_circuit_breaker: { type: 'boolean', description: '#2634: Reset embeddings circuit breaker if armed (diagnose action only)' }
         },
-        required: ['action']
+        required: ['action'],
+        additionalProperties: false
     }
 };
 

@@ -26,6 +26,7 @@ import { normalizePath } from '../../utils/path-normalizer.js';
 import { handleExportTaskTreeMarkdown, ExportTaskTreeMarkdownArgs } from '../task/export-tree-md.tool.js';
 import { handleDebugTaskParsing, DebugTaskParsingArgs } from '../task/debug-parsing.tool.js';
 import { handleGetTaskTree } from '../task/get-tree.tool.js';
+import { validateExportFilePath } from '../../utils/export-file-path.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -48,6 +49,37 @@ function getMaxProjectExportBytes(): number {
         process.env.EXPORT_MAX_PROJECT_BYTES || String(100 * 1024 * 1024),
         10
     );
+}
+
+/**
+ * #4005 fix: UTF-8 BOM prepended to CSV exports so Excel Windows auto-detects
+ * the encoding. Without it, Excel reads Latin-1 by default, mangling accented
+ * characters (Dév → DÃ©v). The BOM (U+FEFF) is invisible in compliant readers.
+ */
+const CSV_UTF8_BOM = '﻿';
+
+/**
+ * #4005 fix: Build the inline return for an export when no filePath was provided.
+ *
+ * All formats (XML/JSON/CSV) now wrap the raw payload with a short stats header
+ * (format, target, size, record count where known). Consumers no longer have to
+ * guess whether a payload is bare text or already wrapped.
+ */
+function buildInlineExportResult(
+    format: ExportFormat,
+    target: ExportTarget,
+    content: string,
+    meta?: { taskId?: string; conversationId?: string; projectPath?: string; recordCount?: number }
+): { content: Array<{ type: 'text'; text: string }> } {
+    const sizeKb = Math.round(content.length / 1024 * 10) / 10;
+    const subject =
+        meta?.taskId ? `task '${meta.taskId}'`
+        : meta?.conversationId ? `conversation '${meta.conversationId}'`
+        : meta?.projectPath ? `project '${meta.projectPath}'`
+        : `(no subject)`;
+    const records = meta?.recordCount !== undefined ? `${meta.recordCount} record(s), ` : '';
+    const header = `<!-- export_data inline | format=${format} target=${target} | ${subject} | ${records}${sizeKb} KB -->\n`;
+    return { content: [{ type: 'text', text: header + content }] };
 }
 
 /**
@@ -308,34 +340,10 @@ function validateRequiredParams(args: ExportDataArgs): void {
 }
 
 /**
- * Validate filePath for security (path traversal, unsafe characters).
- * Shared across JSON and CSV export handlers — XML uses XmlExporterService.validateFilePath.
+ * #4005 fix: Path validation moved to ../../utils/export-file-path.ts.
+ * Both export-data.ts and XmlExporterService.validateFilePath now share that
+ * single implementation — no risk of silent drift.
  */
-function validateExportFilePath(filePath: string): void {
-    const dangerousPatterns = [
-        /\.\./,          // Directory traversal
-        /^[\/\\]/,       // Absolute paths
-        /[<>:"|?*]/,     // Windows forbidden characters
-    ];
-
-    if (dangerousPatterns.some(pattern => pattern.test(filePath))) {
-        throw new StateManagerError(
-            `Unsafe file path: ${filePath}`,
-            'PATH_TRAVERSAL_DETECTED',
-            'ExportDataTool',
-            { filePath }
-        );
-    }
-
-    if (filePath.length > 260) {
-        throw new StateManagerError(
-            `File path too long (${filePath.length} chars, max 260)`,
-            'PATH_TOO_LONG',
-            'ExportDataTool',
-            { filePath, length: filePath.length }
-        );
-    }
-}
 
 /**
  * Handler pour export XML d'une tâche individuelle
@@ -391,7 +399,7 @@ async function handleTaskXml(
         };
     }
 
-    return { content: [{ type: 'text', text: xmlContent }] };
+    return buildInlineExportResult('xml', 'task', xmlContent, { taskId });
 }
 
 /**
@@ -449,7 +457,7 @@ async function handleConversationXml(
         };
     }
 
-    return { content: [{ type: 'text', text: xmlContent }] };
+    return buildInlineExportResult('xml', 'conversation', xmlContent, { conversationId });
 }
 
 /**
@@ -533,7 +541,7 @@ async function handleProjectXml(
         };
     }
 
-    return { content: [{ type: 'text', text: xmlContent }] };
+    return buildInlineExportResult('xml', 'project', xmlContent, { projectPath });
 }
 
 /**
@@ -581,7 +589,7 @@ async function handleConversationJson(
     }
 
     if (filePath) {
-        validateExportFilePath(filePath);
+        validateExportFilePath(filePath, 'ExportDataTool');
 
         const dirPath = path.dirname(filePath);
         await fs.mkdir(dirPath, { recursive: true });
@@ -596,7 +604,7 @@ async function handleConversationJson(
         };
     }
 
-    return { content: [{ type: 'text', text: result.content }] };
+    return buildInlineExportResult('json', 'task', result.content, { taskId });
 }
 
 /**
@@ -646,11 +654,14 @@ async function handleConversationCsv(
     const csvLines = result.content.split('\n').length;
 
     if (filePath) {
-        validateExportFilePath(filePath);
+        validateExportFilePath(filePath, 'ExportDataTool');
 
         const dirPath = path.dirname(filePath);
         await fs.mkdir(dirPath, { recursive: true });
-        await fs.writeFile(filePath, result.content, 'utf8');
+        // #4005 fix: Prepend UTF-8 BOM so Excel Windows auto-detects encoding
+        // instead of falling back to Latin-1 (Dév → DÃ©v).
+        const csvBytes = Buffer.from(CSV_UTF8_BOM + result.content, 'utf8');
+        await fs.writeFile(filePath, csvBytes);
 
         return {
             content: [{
@@ -661,7 +672,7 @@ async function handleConversationCsv(
         };
     }
 
-    return { content: [{ type: 'text', text: result.content }] };
+    return buildInlineExportResult('csv', 'task', result.content, { taskId, recordCount: csvLines });
 }
 
 /**

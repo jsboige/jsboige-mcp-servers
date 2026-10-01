@@ -1,6 +1,6 @@
 import { create } from 'xmlbuilder2';
 import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../types/conversation.js';
-import { StateManagerError } from '../types/errors.js';
+import { validateExportFilePath } from '../utils/export-file-path.js';
 
 /**
  * Options pour l'export XML
@@ -259,34 +259,13 @@ export class XmlExporterService {
     }
 
     /**
-     * Valide un chemin de fichier pour éviter les attaques de path traversal
+     * Valide un chemin de fichier pour éviter les attaques de path traversal.
+     *
+     * #4005 fix: Delegates to the shared validator (utils/export-file-path) so
+     * JSON/CSV and XML export paths cannot silently diverge.
      */
     private validateFilePath(filePath: string): void {
-        // Vérifie les patterns dangereux
-        const dangerousPatterns = [
-            /\.\./,  // Directory traversal
-            /^[\/\\]/,  // Absolute paths
-            /[<>:"|?*]/,  // Caractères interdits sur Windows
-        ];
-
-        if (dangerousPatterns.some(pattern => pattern.test(filePath))) {
-            throw new StateManagerError(
-                `Unsafe file path: ${filePath}`,
-                'PATH_TRAVERSAL_DETECTED',
-                'XmlExporterService',
-                { filePath, method: 'validateFilePath' }
-            );
-        }
-
-        // Vérifie que le chemin n'est pas trop long
-        if (filePath.length > 260) {
-            throw new StateManagerError(
-                `File path too long: ${filePath}`,
-                'PATH_TOO_LONG',
-                'XmlExporterService',
-                { filePath, length: filePath.length, maxLength: 260 }
-            );
-        }
+        validateExportFilePath(filePath, 'XmlExporterService');
     }
 
     /**
