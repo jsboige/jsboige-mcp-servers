@@ -67,10 +67,55 @@ export const IntercomMessageSchema = z.object({
   teamStageData: TeamStageDataSchema.optional().describe('Team stage transition data'),
   reply_to: z.string().optional().describe('Message ID being replied to (#1956)'),
   acknowledged_at: z.record(z.string(), z.string()).optional()
-    .describe('Machine ID → ISO timestamp of acknowledgment (#1956)')
+    .describe('Machine ID → ISO timestamp of acknowledgment (#1956)'),
+  tags: z.array(z.string()).optional()
+    .describe('Message tags in normalized form (#4003) — canonical action tags + free-form audience tags, persisted in the [tags: …] meta line')
 });
 
 export type IntercomMessage = z.infer<typeof IntercomMessageSchema>;
+
+// === Canonical dashboard tags (#4003) ===
+//
+// The scheduler-cycle detection (#1442) and the intercom priority conventions
+// key on these. Free-form audience tags (claude-interactive, cron-worker…)
+// stay accepted and are persisted verbatim — only the canonical spellings are
+// normalized (case-insensitive, surrounding brackets tolerated).
+
+export const DASHBOARD_TAG_CANONICAL = [
+  'INFO', 'TASK', 'DONE', 'WARN', 'ERROR', 'ASK', 'REPLY', 'ACK', 'PROPOSAL', 'BLOCKED', 'CLAIMED', 'IDLE',
+] as const;
+
+export type CanonicalDashboardTag = (typeof DASHBOARD_TAG_CANONICAL)[number];
+
+const CANONICAL_TAG_SET = new Set<string>(DASHBOARD_TAG_CANONICAL);
+
+/**
+ * #4003 — normalize one raw tag for persistence/detection.
+ *
+ * - trims, strips surrounding brackets (`[done]` → canonical `DONE`);
+ * - canonical spellings (case-insensitive) fold to their canonical form;
+ * - free-form tags pass through verbatim;
+ * - returns null for empty or persistence-unsafe tags: the `[tags: a, b]`
+ *   meta line is comma-joined and `]`-terminated, so a tag carrying either
+ *   separator (or a newline) cannot round-trip.
+ */
+export function normalizeDashboardTag(raw: string): string | null {
+  const stripped = raw.trim().replace(/^\[+|\]+$/g, '').trim();
+  if (stripped === '') return null;
+  if (stripped.includes(',') || stripped.includes(']') || /[\r\n]/.test(stripped)) return null;
+  const upper = stripped.toUpperCase();
+  return CANONICAL_TAG_SET.has(upper) ? upper : stripped;
+}
+
+/** #4003 — normalize a tag list: fold canonical forms, drop unsafe/empty, dedupe (order kept). */
+export function normalizeDashboardTags(tags: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of tags) {
+    const n = normalizeDashboardTag(raw);
+    if (n !== null && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
 
 // === Mentions v3 (#1363) ===
 // userId = { machineId, workspace } tuple. Exactly one of userId/messageId (XOR).
@@ -169,8 +214,8 @@ export const DashboardArgsSchema = z.object({
     .describe('(append) Custom message ID. Idempotency key (#3276): if an entry with this id already exists, the append is skipped (deduplicated=true)'),
 
   // Pour append — tags
-  tags: z.array(z.string()).optional()
-    .describe('(append) Message tags'),
+  tags: z.array(z.string().min(1).max(64)).max(8).optional()
+    .describe('(append) Message tags. Canonical: INFO|TASK|DONE|WARN|ERROR|ASK|REPLY|ACK|PROPOSAL|BLOCKED|CLAIMED|IDLE (any case, surrounding brackets tolerated — normalized then persisted in the [tags: …] meta line, #4003). Free-form audience tags (e.g. claude-interactive) accepted verbatim; empty strings, >64 chars or >8 tags rejected.'),
 
   // Pour append — Team pipeline stage (#1853)
   teamStage: TeamStageSchema.optional()

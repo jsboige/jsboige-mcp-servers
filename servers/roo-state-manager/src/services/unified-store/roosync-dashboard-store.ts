@@ -119,7 +119,9 @@ function mapIntercomMessageToRow(key: string, m: IntercomMessage): RooSyncDashbo
     author_machine: m.author.machineId,
     author_workspace: m.author.workspace,
     content: m.content,
-    tags: [],
+    // #4003 — tags persistés à nouveau (colonne déjà là, tenue à [] depuis le
+    // retrait du format 2026-04) : normalisés côté append, relu par mapRowsToDashboard.
+    tags: m.tags ?? [],
     team_stage: m.teamStage ?? null,
     reply_to: m.reply_to ?? null,
     acknowledged_at: m.acknowledged_at ?? null,
@@ -151,6 +153,7 @@ export function mapRowsToDashboard(
     if (m.acknowledged_at && Object.keys(m.acknowledged_at).length > 0) {
       msg.acknowledged_at = m.acknowledged_at;
     }
+    if (m.tags && m.tags.length > 0) msg.tags = m.tags;
     return msg;
   });
 

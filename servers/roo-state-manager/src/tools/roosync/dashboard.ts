@@ -28,7 +28,7 @@
  *   ...
  *
  * @module tools/roosync/dashboard
- * @version 2.0.0
+ * @version 2.1.0
  * @issue #675
  */
 
@@ -99,6 +99,7 @@ import {
   CrossPostSchema,
   DashboardArgsSchema,
   TeamStageSchema,
+  normalizeDashboardTags,
   type Author,
   type IntercomMessage,
   type UserId,
@@ -917,6 +918,77 @@ function getDashboardPath(key: string): string {
  */
 function getArchiveDir(): string {
   return path.join(getDashboardsDir(), 'archive');
+}
+
+// ─── #4003 : sweep des staging .tmp orphelins ───
+
+/** #4003 — un tmp plus jeune que ce seuil est présumé in-flight et laissé en place. */
+export const TMP_SWEEP_MIN_AGE_MS = 15 * 60_000;
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM : le process existe mais n'est pas signalable par nous — vivant.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * #4003 — sweep des staging `*.md.<pid>.tmp` orphelins de dashboards/.
+ *
+ * Les chemins d'écriture (#3782) staged chaque write dans `<fichier>.<pid>.tmp`
+ * puis copy-in-place + unlink sous try/finally ; un writer tué avant l'unlink
+ * laisse son staging derrière, et aucun run ultérieur ne le reconnaît (PID
+ * différent) — accumulation DriveFS jusqu'à saturation. Le sweep ne supprime
+ * un staging que si les DEUX conditions tiennent :
+ *   - plus vieux que `minAgeMs` (défaut 15 min : un write vivant tient son tmp
+ *     au pire le budget d'append, ~2 min mesuré le 30/09) ;
+ *   - son PID est mort sur CETTE machine. Le store est partagé flotte
+ *     (GDrive) : une collision de PID cross-machine ferait prendre le writer
+ *     vivant d'une autre machine pour un mort — la porte d'âge rend cette
+ *     fenêtre impossible (le tmp d'un writer actif a quelques secondes).
+ *
+ * Best-effort : jamais d'exception, les échecs individuels sont comptés
+ * `skipped`. Appelé une fois au démarrage du serveur (index.ts), testable
+ * directement (opts.minAgeMs).
+ */
+export async function sweepOrphanDashboardTmpFiles(
+  opts?: { minAgeMs?: number }
+): Promise<{ swept: string[]; skipped: string[] }> {
+  const dir = getDashboardsDir();
+  const minAge = opts?.minAgeMs ?? TMP_SWEEP_MIN_AGE_MS;
+  const swept: string[] = [];
+  const skipped: string[] = [];
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return { swept, skipped }; // store absent/illisible — rien à sweeper
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    const m = entry.match(/\.md\.(\d+)\.tmp$/);
+    if (!m) continue;
+    const pid = parseInt(m[1], 10);
+    const full = path.join(dir, entry);
+    try {
+      const st = await fs.stat(full);
+      if (now - st.mtimeMs < minAge || pid === process.pid || isPidAlive(pid)) {
+        skipped.push(entry);
+        continue;
+      }
+      await fs.unlink(full);
+      swept.push(entry);
+    } catch {
+      skipped.push(entry);
+    }
+  }
+  if (swept.length > 0) {
+    logger.info('[TmpSweep #4003] staging orphelins supprimés', { dir, count: swept.length, swept });
+  }
+  return { swept, skipped };
 }
 
 // === Cross-process condensation file-lock (#2818) ===
@@ -1833,6 +1905,11 @@ function buildDashboardMarkdown(dashboard: Dashboard): string {
           const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
           metaLines += `\n[ack: ${ackStr}]`;
         }
+        // #4003 — persister les tags dans le bloc : sans eux, un relecteur ne
+        // peut vérifier a posteriori si le cycle a été correctement taggé.
+        if (msg.tags && msg.tags.length > 0) {
+          metaLines += `\n[tags: ${msg.tags.join(', ')}]`;
+        }
         return `${metaLines}\n\n${escapeContent(msg.content)}`;
       }).join('\n\n---\n\n')
     : '*Aucun message.*';
@@ -1875,13 +1952,23 @@ async function writeDashboardFile(
   const content = buildDashboardMarkdown(dashboard);
 
   const writeStartedAtMs = Date.now();
-  await fs.writeFile(tmpPath, content, 'utf8');
-  // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
-  // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
-  // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
-  // remplace le contenu du même file-ID — pas de permutation de métadonnées.
-  await fs.copyFile(tmpPath, filePath);
-  await fs.unlink(tmpPath);
+  // #4003 — le staging tmp doit mourir sur TOUT chemin de sortie de l'écriture :
+  // un writer tué entre copyFile et unlink laissait un `*.md.<pid>.tmp` qu'aucun
+  // run ultérieur ne reconnaissait (PID différent) — accumulation DriveFS.
+  // try/finally ; l'unlink reste best-effort (son échec ne doit ni masquer
+  // celui de la copie ni faire échouer l'écriture).
+  try {
+    await fs.writeFile(tmpPath, content, 'utf8');
+    // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
+    // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
+    // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
+    // remplace le contenu du même file-ID — pas de permutation de métadonnées.
+    await fs.copyFile(tmpPath, filePath);
+  } finally {
+    await fs.unlink(tmpPath).catch((err: Error) => {
+      logger.debug('Dashboard tmp staging cleanup failed (non-critical)', { tmpPath, error: err.message });
+    });
+  }
   logger.debug('Dashboard écrit', { key, path: filePath });
 
   // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
@@ -2162,6 +2249,11 @@ async function appendDashboardIncremental(
         const ackStr = Object.entries(msg.acknowledged_at).map(([m, t]) => `${m}:${t}`).join(', ');
         metaLines += `\n[ack: ${ackStr}]`;
       }
+      // #4003 — même persistance tags que buildDashboardMarkdown (l'incrément
+      // est le chemin d'écriture de production pour un append).
+      if (msg.tags && msg.tags.length > 0) {
+        metaLines += `\n[tags: ${msg.tags.join(', ')}]`;
+      }
       return `${metaLines}\n\n${escapeContent(msg.content)}`;
     }).join('\n\n---\n\n');
 
@@ -2173,11 +2265,18 @@ async function appendDashboardIncremental(
     }
 
     const writeStartedAtMs = Date.now();
-    await fs.writeFile(tmpPath, result, 'utf8');
-    // #3782 — copy-in-place au lieu du rename (cf. writeDashboardFile) : la
-    // permutation rename-over-existing est le chemin des orphelins racine Drive.
-    await fs.copyFile(tmpPath, filePath);
-    await fs.unlink(tmpPath);
+    // #4003 — même contrat try/finally que writeDashboardFile : le staging tmp
+    // est retiré même si writeFile/copyFile échoue en cours de route.
+    try {
+      await fs.writeFile(tmpPath, result, 'utf8');
+      // #3782 — copy-in-place au lieu du rename (cf. writeDashboardFile) : la
+      // permutation rename-over-existing est le chemin des orphelins racine Drive.
+      await fs.copyFile(tmpPath, filePath);
+    } finally {
+      await fs.unlink(tmpPath).catch((err: Error) => {
+        logger.debug('Dashboard incremental tmp cleanup failed (non-critical)', { tmpPath, error: err.message });
+      });
+    }
     logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
 
     // #3482 — post-write guard (même contrat que writeDashboardFile) : un
@@ -4440,6 +4539,12 @@ export interface DashboardResult {
    */
   condensationStalled?: 'lock-held' | 'unchanged-hash';
   /**
+   * #4003 — append-only : la forme NORMALISÉE des tags effectivement persistée
+   * (variants casse/crochets pliés, tags vides/unsafe écartés). Absent quand
+   * l'appel n'a pas passé de tags, pour garder la forme historique du payload.
+   */
+  tags?: string[];
+  /**
    * #3782 (WARNING NanoClaw #1242) — merge-only : aucun historique d'archive
    * lisible sur cet hôte alors que les vues sources amènent des messages
    * absents de la cible. Ces entrées n'ont PAS été vérifiées contre les
@@ -5483,6 +5588,12 @@ async function handleAppend(
   }
 
   const nowDate = new Date();
+  // #4003 — normaliser UNE fois : les variantes de casse/crochets des tags
+  // canoniques sont pliées (‘[done]’ → ‘DONE’), les tags vides ou
+  // impossibles à persister sont écartés. L'ensemble normalisé alimente la
+  // persistance ([tags: …]), la détection de cycle scheduler (#1442) et la
+  // réponse de l'outil.
+  const normalizedTags = args.tags ? normalizeDashboardTags(args.tags) : [];
   const newMessages: IntercomMessage[] = contentParts.map((partContent, idx) => ({
     // First part inherits the caller-provided messageId (so consumers that
     // referenced it via `messageId` still resolve). Subsequent parts get fresh
@@ -5496,7 +5607,10 @@ async function handleAppend(
     author,
     content: partContent,
     // #1853: Team pipeline stage tracking
-    teamStage: (args as any).teamStage
+    teamStage: (args as any).teamStage,
+    // #4003: tags normalisés, portés par chaque partie (le découpage est un
+    // artefact de taille, pas un changement de cycle).
+    ...(normalizedTags.length > 0 ? { tags: [...normalizedTags] } : {})
   }));
 
   // Use the FIRST part as the "primary" message for mention/crossPost wiring —
@@ -5699,13 +5813,18 @@ async function handleAppend(
     });
   }
 
-  // #1442: Record scheduler cycle outcome when a worker posts [DONE]/[IDLE]/[BLOCKED]
-  if (args.tags && args.tags.length > 0) {
-    const tagStr = args.tags.join(' ').toUpperCase();
-    const isSchedulerCycle = tagStr.includes('DONE') || tagStr.includes('IDLE') || tagStr.includes('BLOCKED');
+  // #1442: Record scheduler cycle outcome when a worker posts DONE/IDLE/BLOCKED.
+  // #4003 — correspondance EXACTE sur l'ensemble normalisé : l'ancienne sonde
+  // par sous-chaîne (`tagStr.includes('DONE')`) se déclenchait sur tout tag
+  // contenant le mot (‘UNDONE’, ‘TASK-DONE’…) — après normalizeDashboardTags
+  // les tags sont en forme canonique, l'égalité est à la fois suffisante et
+  // précise.
+  if (message.tags && message.tags.length > 0) {
+    const upperTags = new Set(message.tags.map(t => t.toUpperCase()));
+    const isSchedulerCycle = upperTags.has('DONE') || upperTags.has('IDLE') || upperTags.has('BLOCKED');
     if (isSchedulerCycle) {
-      const success = tagStr.includes('DONE');
-      const idle = tagStr.includes('IDLE');
+      const success = upperTags.has('DONE');
+      const idle = upperTags.has('IDLE');
       import('./heartbeat-activity.js').then(({ recordSchedulerRunAsync }) => {
         recordSchedulerRunAsync(
           author.machineId,
@@ -5919,6 +6038,8 @@ async function handleAppend(
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
+    // #4003 — écho de la forme normalisée effectivement persistée.
+    tags: normalizedTags.length > 0 ? normalizedTags : undefined,
     warning: guardAWarning,
     writeVerification: writeVerify.forkSuspected ? writeVerify : undefined,
     durationBreakdown: {
@@ -7080,6 +7201,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         const [, timestamp, machineId, workspace, , afterHeader] = headerMatch;
         let persistedId: string | undefined;
         let replyTo: string | undefined;
+        let persistedTags: string[] | undefined;
         let remaining = afterHeader;
 
         const msgMatch = remaining.match(/^\[msg: ([^\]]+)\]\n([\s\S]*)/);
@@ -7087,6 +7209,13 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         const replyMatch = remaining.match(/^\[reply-to: ([^\]]+)\]\n([\s\S]*)/);
         if (replyMatch) { replyTo = replyMatch[1]; remaining = replyMatch[2]; }
         // Skip [ack:] for archive reading — not needed
+        // #4003 — [tags:] remonté pour la relecture a posteriori des archives
+        const tagsMatch = remaining.match(/^\[tags: ([^\]]+)\]\n([\s\S]*)/);
+        if (tagsMatch) {
+          const parsedTags = tagsMatch[1].split(',').map((t: string) => t.trim()).filter((t: string) => t !== '');
+          if (parsedTags.length > 0) persistedTags = parsedTags;
+          remaining = tagsMatch[2];
+        }
 
         const content = remaining.replace(/^\n/, '').trim();
         const msg: IntercomMessage = {
@@ -7096,6 +7225,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
           content
         };
         if (replyTo) msg.reply_to = replyTo;
+        if (persistedTags) msg.tags = persistedTags;
         messages.push(msg);
       }
     }

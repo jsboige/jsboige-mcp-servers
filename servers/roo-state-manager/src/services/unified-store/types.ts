@@ -225,7 +225,7 @@ export interface RooSyncDashboardMessageRow {
   author_machine: string;
   author_workspace: string;
   content: string;
-  /** Unused since tags were removed from the message format (2026-04) — kept []. */
+  /** Message tags in normalized form (#4003) — canonical action tags + free-form audience tags. Empty for pre-#4003 rows. */
   tags: string[];
   team_stage: string | null;
   reply_to: string | null;

@@ -232,6 +232,19 @@ describe('Dashboard ↔ rows mapping (full-fidelity round-trip)', () => {
     expect(messages[1].reply_to).toBeNull();
   });
 
+  test('#4003: message tags survive the row round-trip (absent tags stay absent)', () => {
+    const withTags = sampleDashboard();
+    withTags.intercom.messages[0].tags = ['DONE', 'claude-interactive'];
+    const { row, messages } = mapDashboardToRows(withTags);
+    expect(messages[0].tags).toEqual(['DONE', 'claude-interactive']);
+    expect(messages[1].tags).toEqual([]);
+
+    const reconstructed = mapRowsToDashboard(row, messages);
+    expect(reconstructed.intercom.messages[0].tags).toEqual(['DONE', 'claude-interactive']);
+    // A no-tags row must NOT surface an empty array on the message (absent stays absent).
+    expect(reconstructed.intercom.messages[1].tags).toBeUndefined();
+  });
+
   test('optional fields are omitted, not undefined-polluted (jsonb round-trip)', () => {
     const { row, messages } = mapDashboardToRows({
       type: 'global',

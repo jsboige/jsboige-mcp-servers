@@ -97,10 +97,11 @@ export function parseDashboardMarkdown(content: string, key: string): Dashboard 
         const mid = machineId.trim();
         const ws = workspace.trim();
 
-        // Parse metadata lines ([msg:], [reply-to:], [ack:]) then content
+        // Parse metadata lines ([msg:], [reply-to:], [ack:], [tags:]) then content
         let persistedId: string | undefined;
         let replyTo: string | undefined;
         let ackRaw: string | undefined;
+        let persistedTags: string[] | undefined;
         let remaining = afterHeader;
 
         // [msg: <id>]
@@ -120,6 +121,14 @@ export function parseDashboardMarkdown(content: string, key: string): Dashboard 
         if (ackMatch) {
           ackRaw = ackMatch[1];
           remaining = ackMatch[2];
+        }
+        // [tags: A, B] (#4003) — persisted tags, read back so a full rewrite
+        // (condensation, status update) does not strip them from the file.
+        const tagsMatch = remaining.match(/^\[tags: ([^\]]+)\]\n([\s\S]*)/);
+        if (tagsMatch) {
+          const parsedTags = tagsMatch[1].split(',').map((t: string) => t.trim()).filter((t: string) => t !== '');
+          if (parsedTags.length > 0) persistedTags = parsedTags;
+          remaining = tagsMatch[2];
         }
 
         // Content starts after optional blank line
@@ -146,6 +155,7 @@ export function parseDashboardMarkdown(content: string, key: string): Dashboard 
         if (acknowledged_at && Object.keys(acknowledged_at).length > 0) {
           msg.acknowledged_at = acknowledged_at;
         }
+        if (persistedTags) msg.tags = persistedTags;
         messages.push(msg);
       }
     }
