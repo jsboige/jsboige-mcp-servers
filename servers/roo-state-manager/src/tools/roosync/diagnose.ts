@@ -32,8 +32,8 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 // ====================================================================
 
 export const DiagnoseArgsSchema = z.object({
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'])
-    .describe('Operation: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'recovery', 'analyze', 'best-practices', 'reload'])
+    .describe('Operation: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state #1320), recovery (recovery-before-escalation decision #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Vérifier l\'espace disque (action: env)'),
@@ -69,7 +69,17 @@ export const DiagnoseArgsSchema = z.object({
   machineId: z.string().optional()
     .describe('Machine ID (action: lifecycle, default: hostname)'),
   reason: z.string().optional()
-    .describe('Reason for lifecycle transition (action: lifecycle)')
+    .describe('Reason for lifecycle transition (action: lifecycle)'),
+
+  // #1320: Paramètres pour action: 'recovery' (Recovery-Before-Escalation)
+  errorMessage: z.string().optional()
+    .describe('Error message to classify (action: recovery — returns matched auto-heal action or no_match)'),
+  success: z.boolean().optional()
+    .describe('Outcome of the executed recovery action (action: recovery, with outcomeAction)'),
+  outcomeAction: z.enum(['rebuild_mcp', 'rebase_git', 'reset_submodule', 'retry_once']).optional()
+    .describe('Executed recovery action to record the outcome of (action: recovery)'),
+  limit: z.number().int().positive().optional()
+    .describe('Max recovery history entries (action: recovery, no errorMessage/outcomeAction)')
 }).refine(data => !(data.action === 'lifecycle' && !data.state), {
   message: 'state is required when action is "lifecycle"',
   path: ['state'],
@@ -80,7 +90,7 @@ export type DiagnoseArgs = z.infer<typeof DiagnoseArgsSchema>;
 export const DiagnoseResultSchema = z.object({
   success: z.boolean()
     .describe('Indique si l\'opération a réussi'),
-  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'analyze', 'best-practices', 'reload'])
+  action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'recovery', 'analyze', 'best-practices', 'reload'])
     .describe('Type d\'opération effectuée'),
   timestamp: z.string()
     .describe('Timestamp de l\'opération (ISO 8601)'),
@@ -139,6 +149,33 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
             ? `Lifecycle: ${lcResult.fromState} → ${lcResult.toState}`
             : `Lifecycle transition failed: ${lcResult.error}`,
           data: lcResult,
+        };
+      }
+
+      // #1320: Recovery-Before-Escalation decision endpoint (mirrors lifecycle wiring)
+      case 'recovery': {
+        const m = await import('./recovery.js');
+        const rResult = await m.reportRecovery({
+          errorMessage: args.errorMessage,
+          outcomeAction: args.outcomeAction,
+          success: args.success,
+          machineId: args.machineId,
+          limit: args.limit,
+        });
+        return {
+          success: rResult.success,
+          action: 'recovery',
+          timestamp,
+          message: rResult.error
+            ? `Recovery failed: ${rResult.error}`
+            : rResult.mode === 'matched'
+              ? `Recovery matched: ${rResult.matchedAction} — ${rResult.description}`
+              : rResult.mode === 'no_match'
+                ? 'No recovery pattern matched — escalate'
+                : rResult.mode === 'outcome_recorded'
+                  ? `Recovery outcome recorded: ${rResult.matchedAction} → ${rResult.description}`
+                  : 'Recovery history',
+          data: rResult,
         };
       }
 
