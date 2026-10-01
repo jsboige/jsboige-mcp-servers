@@ -136,13 +136,17 @@ const mockExecutionContext: any = {
 
 // Import après les mocks
 // Fix #636 timeout: Use static import instead of dynamic imports
-import { inventoryTool } from '../inventory.js';
+import { inventoryTool, resetLocalInventoryCacheForTest } from '../inventory.js';
 import { InventoryService } from '../../../services/roosync/InventoryService.js';
 
 describe('inventoryTool', () => {
   beforeEach(() => {
     // Reset mocks avant chaque test
     vi.clearAllMocks();
+    // #4004: le cache TTL est un état module-level — chaque test repart d'un
+    // collecte fraîche (sinon un test d'erreur peut être servi par le cache du
+    // test précédent et ne jamais atteindre le service).
+    resetLocalInventoryCacheForTest();
   });
 
   afterEach(() => {
@@ -368,6 +372,113 @@ describe('inventoryTool', () => {
       expect(result.data.summary).toContain('**Machine:** test-hostname');
       expect(result.data.summary).toContain('- MCPs: 2 servers');
       expect(result.data.summary).toContain('- Roo modes: 3');
+    });
+  });
+
+  // ============================================================
+  // #4004 — cache TTL local, forceRefresh, warning resetCache, codes typés
+  // ============================================================
+
+  describe('#4004: cache TTL + forceRefresh + resetCache + codes typés', () => {
+    let svc: { getMachineInventory: ReturnType<typeof vi.fn> };
+    let getInstanceMock: { mockRestore: () => void };
+
+    beforeEach(() => {
+      // Instance STABLE sur le test : compter les appels service suppose que
+      // deux executes voient le même mock.
+      svc = {
+        getMachineInventory: vi.fn((machineId?: string) => ({
+          machineId: machineId || 'test-hostname',
+          timestamp: new Date().toISOString(),
+          inventory: {
+            systemInfo: { hostname: machineId || 'test-hostname', os: 'test-os' },
+            mcpServers: [],
+            rooModes: []
+          }
+        }))
+      };
+      getInstanceMock = vi.mocked(InventoryService.getInstance).mockReturnValue(svc as any);
+    });
+
+    afterEach(() => {
+      getInstanceMock.mockRestore();
+    });
+
+    test('local: le service n\'est appelé qu\'une fois pendant le TTL (cache hit)', async () => {
+      const r1 = await inventoryTool.execute({ type: 'machine' }, mockExecutionContext);
+      const r2 = await inventoryTool.execute({ type: 'machine' }, mockExecutionContext);
+
+      expect(r1.success).toBe(true);
+      expect(r2.success).toBe(true);
+      expect(svc.getMachineInventory).toHaveBeenCalledTimes(1);
+      expect(r2.data.machineInventory).toBe(r1.data.machineInventory);
+    });
+
+    test('machineId distant: pas de cache — le service est appelé à chaque fois', async () => {
+      await inventoryTool.execute({ type: 'machine', machineId: 'remote-box' }, mockExecutionContext);
+      await inventoryTool.execute({ type: 'machine', machineId: 'remote-box' }, mockExecutionContext);
+
+      expect(svc.getMachineInventory).toHaveBeenCalledTimes(2);
+    });
+
+    test('forceRefresh: true bypass le cache local', async () => {
+      await inventoryTool.execute({ type: 'machine' }, mockExecutionContext);
+      await inventoryTool.execute({ type: 'machine', forceRefresh: true }, mockExecutionContext);
+
+      expect(svc.getMachineInventory).toHaveBeenCalledTimes(2);
+    });
+
+    test('le cache local expire après 30 s', async () => {
+      vi.useFakeTimers();
+      try {
+        await inventoryTool.execute({ type: 'machine' }, mockExecutionContext);
+        vi.advanceTimersByTime(30_001);
+        await inventoryTool.execute({ type: 'machine' }, mockExecutionContext);
+
+        expect(svc.getMachineInventory).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('resetCache hors status produit un warning au lieu d\'un silence', async () => {
+      const r = await inventoryTool.execute({ type: 'machine', resetCache: true }, mockExecutionContext);
+
+      expect(r.success).toBe(true);
+      expect(r.data.warnings).toBeDefined();
+      expect(r.data.warnings[0]).toContain('resetCache=true ignoré');
+      expect(r.data.warnings[0]).toContain('type="status"');
+
+      const r2 = await inventoryTool.execute({ type: 'machine' }, mockExecutionContext);
+      expect(r2.data.warnings).toBeUndefined();
+    });
+
+    test('resetCache=true avec summary=true: la ligne warning est dans le résumé', async () => {
+      const r = await inventoryTool.execute(
+        { type: 'machine', summary: true, resetCache: true },
+        mockExecutionContext
+      );
+
+      expect(r.data.summary).toContain('resetCache=true ignoré');
+    });
+
+    test('propage le code typé de l\'erreur au lieu d\'aplatir en INVENTORY_COLLECTION_FAILED', async () => {
+      const typed = Object.assign(new Error('no such machine'), { code: 'REMOTE_MACHINE_NOT_FOUND' });
+      svc.getMachineInventory.mockRejectedValueOnce(typed);
+
+      const r = await inventoryTool.execute({ type: 'machine', machineId: 'ghost' }, mockExecutionContext);
+
+      expect(r.success).toBe(false);
+      expect(r.error?.code).toBe('REMOTE_MACHINE_NOT_FOUND');
+    });
+
+    test('garde INVENTORY_COLLECTION_FAILED pour une erreur sans code', async () => {
+      svc.getMachineInventory.mockRejectedValueOnce(new Error('boom'));
+
+      const r = await inventoryTool.execute({ type: 'machine', machineId: 'ghost2' }, mockExecutionContext);
+
+      expect(r.success).toBe(false);
+      expect(r.error?.code).toBe('INVENTORY_COLLECTION_FAILED');
     });
   });
 });

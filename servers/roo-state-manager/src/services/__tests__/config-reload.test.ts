@@ -169,6 +169,62 @@ describe('reloadConfig — client invalidation follows the keys that changed', (
   });
 });
 
+describe('reloadConfig — #4004: hostOnlyCount when .env is absent', () => {
+  const savedReloadable: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    // Deterministic count: the runner env may carry real reloadable keys.
+    for (const k of RELOADABLE_ENV_KEYS) savedReloadable[k] = process.env[k];
+    for (const k of RELOADABLE_ENV_KEYS) delete process.env[k];
+    delete process.env.RSM_HOST_ENV_KEYS;
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedReloadable)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('counts the reloadable keys the host set (snapshot mode)', () => {
+    process.env.QDRANT_API_KEY = 'host-a';
+    process.env.OPENAI_API_KEY = 'host-b';
+    captureHostEnvKeys(); // no RSM_HOST_ENV_KEYS → snapshot: the whole env is host-set
+
+    const report = reloadConfig(path.join(tmpDir, 'absent.env'));
+
+    expect(report.envFileFound).toBe(false);
+    expect(report.hostOnlyCount).toBe(2);
+  });
+
+  it('under the wrapper (RSM_HOST_ENV_KEYS), counts only the handed-over keys', () => {
+    process.env.QDRANT_API_KEY = 'handed';
+    process.env.OPENAI_API_KEY = 'not-handed';
+    process.env.RSM_HOST_ENV_KEYS = 'QDRANT_API_KEY';
+    captureHostEnvKeys();
+
+    const report = reloadConfig(path.join(tmpDir, 'absent.env'));
+
+    expect(report.hostOnlyCount).toBe(1);
+  });
+
+  it('is 0 when no reloadable key is set (no snapshot either — fallback path)', () => {
+    resetHostEnvKeysForTest(); // hostKeys = null → fall back to counting present keys
+
+    const report = reloadConfig(path.join(tmpDir, 'absent.env'));
+
+    expect(report.hostOnlyCount).toBe(0);
+  });
+
+  it('stays undefined when .env exists', () => {
+    writeEnv('QDRANT_API_KEY=x\n');
+
+    const report = reloadConfig(envPath);
+
+    expect(report.hostOnlyCount).toBeUndefined();
+  });
+});
+
 describe('fingerprint — masks the VALUE, never the NAME', () => {
   it('never emits the secret, and still distinguishes two different secrets', () => {
     // Deliberately NOT shaped like a key. A bare 32-hex literal would be a

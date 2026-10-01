@@ -9,10 +9,11 @@
  * Pour un snapshot cross-machine fiable, utiliser type="status".
  *
  * @module tools/roosync/inventory
- * @version 4.0.0 (#2318: cross-machine sunset annotations)
- * @see #2318, ADR 008 Phase 4
+ * @version 4.1.0 (#4004: local TTL cache 30 s + forceRefresh, resetCache warning hors status, codes d'erreur typés propagés)
+ * @see #2318, ADR 008 Phase 4, #4004
  */
 
+import * as os from 'os';
 import { z } from 'zod';
 import { UnifiedToolContract, ToolCategory, ProcessingLevel, ToolResult } from '../../interfaces/UnifiedToolInterface.js';
 import { InventoryService } from '../../services/roosync/InventoryService.js';
@@ -40,7 +41,10 @@ export const InventoryArgsSchema = z.object({
   detail: z.enum(['compact', 'full']).optional()
     .describe('Niveau de détail pour type="status". "full" ajoute claims + pipeline stages'),
   resetCache: z.boolean().optional()
-    .describe('Forcer la réinitialisation du cache (type="status" uniquement)'),
+    .describe('Forcer la réinitialisation du cache (type="status" uniquement — ignoré ailleurs avec un warning #4004)'),
+  // #4004: opt-out of the local-inventory TTL cache
+  forceRefresh: z.boolean().optional()
+    .describe('Re-collecte fraîche de l\'inventaire LOCAL (type="machine"/"all") — ignore le cache TTL 30 s (#4004)'),
   // #2224: health view params (fused from roosync_health_view standalone)
   format: z.enum(['json', 'markdown']).optional()
     .describe('Output format for type="health". Default: json'),
@@ -53,6 +57,31 @@ export const InventoryArgsSchema = z.object({
 });
 
 export type InventoryArgs = z.infer<typeof InventoryArgsSchema>;
+
+/**
+ * #4004: TTL cache for the LOCAL machine inventory, at the TOOL layer.
+ *
+ * The service (`InventoryService.getMachineInventory`) always collects fresh and
+ * writes the result to `.shared-state/inventories/` — correct for internal
+ * callers (compare_config, drift detection) but a GDrive write storm when an
+ * agent loops `type="machine"`/`"all"`: every tick re-collected and re-wrote.
+ * The cache sits here, not in the service, so internal consumers keep always-
+ * fresh data. Remote machineIds bypass it (a GDrive read, no write, and
+ * freshness matters for drift checks).
+ */
+const LOCAL_INVENTORY_TTL_MS = 30_000;
+let localInventoryCache: { inventory: any; at: number } | null = null;
+
+/** Same locality rule as InventoryService.getMachineInventory (case-insensitive). */
+function isLocalMachine(machineId: string | undefined): boolean {
+  if (!machineId) return true;
+  return machineId.toLowerCase() === os.hostname().toLowerCase();
+}
+
+/** Test-only: forget the TTL cache so suites exercise the collect path. */
+export function resetLocalInventoryCacheForTest(): void {
+  localInventoryCache = null;
+}
 
 /**
  * Données de heartbeat d'une machine
@@ -142,13 +171,21 @@ export const inventoryTool: UnifiedToolContract = {
   description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système.',
   category: ToolCategory.UTILITY,
   processingLevel: ProcessingLevel.IMMEDIATE,
-  version: '4.0.0',
+  version: '4.1.0',
   inputSchema: InventoryArgsSchema,
   execute: async (input: z.infer<typeof InventoryArgsSchema>, context: any): Promise<ToolResult<any>> => {
     const startTime = Date.now();
     try {
       const { type, machineId, includeHeartbeats = true, summary = false } = input;
       const retrievedAt = new Date().toISOString();
+
+      // #4004: resetCache is honored ONLY by type="status" (below). Everywhere
+      // else it was silently ignored — surface it instead of swallowing it.
+      // (Only resetCache=true: an explicit false is a no-op, not a mistake.)
+      const resetCacheWarnings =
+        input.resetCache === true && type !== 'status'
+          ? [`resetCache=true ignoré pour type="${type}" — ce flag n'est honoré que pour type="status"`]
+          : undefined;
 
       // #1935 Cluster E: type="status" — fused from roosync_get_status
       if (type === 'status') {
@@ -183,7 +220,11 @@ export const inventoryTool: UnifiedToolContract = {
         if (input.format === 'markdown') {
           return {
             success: true,
-            data: { markdownContent: formatMarkdown(healthResult), retrievedAt },
+            data: {
+              markdownContent: formatMarkdown(healthResult),
+              retrievedAt,
+              ...(resetCacheWarnings ? { warnings: resetCacheWarnings } : {})
+            },
             metrics: {
               executionTime: Date.now() - startTime,
               processingLevel: ProcessingLevel.IMMEDIATE
@@ -192,7 +233,7 @@ export const inventoryTool: UnifiedToolContract = {
         }
         return {
           success: true,
-          data: healthResult,
+          data: resetCacheWarnings ? { ...healthResult, warnings: resetCacheWarnings } : healthResult,
           metrics: {
             executionTime: Date.now() - startTime,
             processingLevel: ProcessingLevel.IMMEDIATE
@@ -202,7 +243,8 @@ export const inventoryTool: UnifiedToolContract = {
 
       const result: any = {
         success: true,
-        retrievedAt
+        retrievedAt,
+        ...(resetCacheWarnings ? { warnings: resetCacheWarnings } : {})
       };
 
       // Collect data
@@ -213,7 +255,20 @@ export const inventoryTool: UnifiedToolContract = {
       // Récupérer l'inventaire machine si demandé
       if (type === 'machine' || type === 'all') {
         const inventoryService = InventoryService.getInstance();
-        machineInventory = await inventoryService.getMachineInventory(machineId);
+        // #4004: serve the LOCAL inventory from the TTL cache when fresh — a
+        // looping agent must not re-collect + rewrite GDrive on every tick.
+        const local = isLocalMachine(machineId);
+        if (
+          local && !input.forceRefresh && localInventoryCache !== null &&
+          Date.now() - localInventoryCache.at < LOCAL_INVENTORY_TTL_MS
+        ) {
+          machineInventory = localInventoryCache.inventory;
+        } else {
+          machineInventory = await inventoryService.getMachineInventory(machineId);
+          if (local) {
+            localInventoryCache = { inventory: machineInventory, at: Date.now() };
+          }
+        }
         if (!summary) {
           result.machineInventory = machineInventory;
         }
@@ -326,6 +381,10 @@ export const inventoryTool: UnifiedToolContract = {
           lines.push('');
         }
 
+        if (resetCacheWarnings) {
+          lines.push(`⚠️ ${resetCacheWarnings[0]}`);
+        }
+
         return {
           success: true,
           data: { summary: lines.join('\n'), retrievedAt },
@@ -348,7 +407,10 @@ export const inventoryTool: UnifiedToolContract = {
       return {
         success: false,
         error: {
-          code: 'INVENTORY_COLLECTION_FAILED',
+          // #4004: propagate the typed code (REMOTE_MACHINE_NOT_FOUND,
+          // INVENTORY_PARSE_FAILED, HeartbeatServiceError codes, ...) instead of
+          // flattening every failure into INVENTORY_COLLECTION_FAILED.
+          code: typeof error?.code === 'string' && error.code ? error.code : 'INVENTORY_COLLECTION_FAILED',
           message: error.message
         },
         metrics: {

@@ -211,7 +211,9 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
         const m = await import('../../services/config-reload.js');
         const r = m.reloadConfig();
         const message = !r.envFileFound
-          ? `Aucun .env lisible en ${r.envPath} — rien rechargé, aucun client réinitialisé.`
+          ? (r.hostOnlyCount ?? 0) > 0
+            ? `Aucun .env lisible en ${r.envPath} — rien rechargé. ${r.hostOnlyCount} clé(s) rechargeable(s) servie(s) par l'hôte (état nominal sous mcp-wrapper.cjs) : une rotation de ces clés est INVISIBLE pour ce reload — elle exige un re-spawn du process.`
+            : `Aucun .env lisible en ${r.envPath} — rien rechargé, aucun client réinitialisé.`
           : r.changed.length === 0
             ? `.env relu (${r.unchangedCount} clé(s) rechargeable(s) identiques) — aucun changement, aucun client réinitialisé.`
             : `${r.changed.length} clé(s) changée(s) → ${r.clientsReset.length} client(s) réinitialisé(s).`;

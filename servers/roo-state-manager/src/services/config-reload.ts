@@ -110,6 +110,14 @@ export interface ConfigReloadReport {
    * left untouched, because a restart would keep the host value too.
    */
   hostOwnedKeys: string[];
+  /**
+   * #4004: set ONLY on the no-`.env` path (the nominal state under
+   * mcp-wrapper.cjs, where the host serves the keys via RSM_HOST_ENV_KEYS):
+   * how many reloadable keys this process holds that a reload can never touch.
+   * Distinguishes "nothing to rotate" from "a rotation is invisible to reload
+   * (host-owned) — it needs a process re-spawn".
+   */
+  hostOnlyCount?: number;
   clientsReset: string[];
 }
 
@@ -163,8 +171,15 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
     report.envFileFound = true;
     report.envFileMtime = fs.statSync(envPath).mtime.toISOString();
   } catch {
-    // No .env (env supplied by the parent process): nothing to reload, and no
-    // client is dropped — dropping them would be a pure regression.
+    // No .env (env supplied by the parent process — nominal under
+    // mcp-wrapper.cjs): nothing to reload, and no client is dropped — dropping
+    // them would be a pure regression. #4004: still count the reloadable keys
+    // the process holds from the host, so "no rotation to do" and "rotation
+    // invisible to reload" stop reading identically.
+    const hostKeys = getHostEnvKeys();
+    report.hostOnlyCount = RELOADABLE_ENV_KEYS.filter(
+      (k) => process.env[k] !== undefined && (hostKeys === null || hostKeys.has(k))
+    ).length;
     return report;
   }
 

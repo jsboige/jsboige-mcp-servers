@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { inventoryTool } from '../../../../src/tools/roosync/inventory.js';
+import { inventoryTool, resetLocalInventoryCacheForTest } from '../../../../src/tools/roosync/inventory.js';
 
 // Mock InventoryService
 const mockGetMachineInventory = vi.fn();
@@ -55,12 +55,16 @@ vi.mock('../../../../src/services/lazy-roosync.js', () => ({
 describe('roosync_inventory tool', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        // #4004: le cache TTL local est un état module-level — reset pour que
+        // chaque test exerce le service (sinon les tests d'erreur sont servis
+        // par le cache du test précédent).
+        resetLocalInventoryCacheForTest();
         mockGetMachineInventory.mockResolvedValue({ machines: [{ id: 'ai-01', status: 'online' }] });
     });
 
     it('has correct tool metadata', () => {
         expect(inventoryTool.name).toBe('roosync_inventory');
-        expect(inventoryTool.version).toBe('4.0.0');
+        expect(inventoryTool.version).toBe('4.1.0');
     });
 
     describe('type=machine', () => {
