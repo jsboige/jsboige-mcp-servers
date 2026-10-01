@@ -250,6 +250,8 @@ export interface MachineCampaignStatus {
   /** Alignment vs canon au moment de l'évaluation (live local / snapshot distant). */
   alignment: 'aligned' | 'drifted' | 'missing' | 'unreadable' | 'no-snapshot' | 'snapshot-stale';
   alignmentDetail?: string;
+  /** #4010 : snapshot réellement lu pour l'alignment distant (traçabilité du choix). */
+  snapshotPath?: string;
   /** État disjoint courant (autoritaire pour le close gating). */
   state: MachineState;
   reminderCount: number;
@@ -1247,6 +1249,7 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
     // Alignment : live pour la machine locale, snapshot publié pour les autres.
     let alignment: MachineCampaignStatus['alignment'] = 'no-snapshot';
     let alignmentDetail: string | undefined;
+    let snapshotPath: string | undefined; // #4010
     const exceptions = record.exceptions[machine] || [];
 
     if (machine === this.deps.machineId) {
@@ -1263,6 +1266,7 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
     } else {
       const snap = await findLatestClaudeSettingsSnapshot(this.deps.sharedStatePath, machine);
       if (snap.found && snap.snapshot) {
+        snapshotPath = snap.path; // #4010 : quel fichier a servi à l'alignment
         const restricted: Record<string, unknown> = {};
         for (const p of Object.keys(record.canon.keys)) {
           if (exceptions.includes(p)) continue;
@@ -1300,6 +1304,7 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
       lastFailedAttempt: lastFailed,
       alignment,
       alignmentDetail,
+      snapshotPath,
       state,
       reminderCount: reminders.length,
       lastReminderAt: reminders[reminders.length - 1]?.at,

@@ -754,7 +754,11 @@ export interface PublishedSnapshotLookup {
  * Trouve le snapshot claude-settings le plus récent publié par une machine,
  * dans {shared}/configs/{machineId}/ :
  *   1. claude-settings/claude-settings.json (standalone)
- *   2. paquets versionnés — vXYZ/claude-settings/claude-settings.json (tri lexical décroissant)
+ *   2. latest.json → .path (pointeur posé par publishConfig — source de vérité)
+ *   3. paquets versionnés — max par collectedAt du snapshot (JAMAIS par nom de
+ *      dossier : #4010 — un dossier `vv…` ou `v2026.…` gagne lexicalement sur
+ *      tous les `v1.1.1-…` publiés après lui, et la garde semver du publish
+ *      n'est pas rétroactive sur les dossiers existants)
  *
  * Retourne found:false (pas d'exception) si rien — l'appelant décide si
  * « pas de snapshot » = non couvert (compare) ou inconnu (drift distant).
@@ -786,20 +790,45 @@ export async function findLatestClaudeSettingsSnapshot(
     if (snap) return { found: true, snapshot: snap, path: standalone, collectedAt: snap.collectedAt };
   }
 
-  // 2. Paquets versionnés (v{version}-{timestamp}, tri lexical ≈ chronologique)
+  // 2. latest.json (pointeur explicite posé à chaque publish — prioritaire)
+  try {
+    const latestPath = join(configsDir, 'latest.json');
+    if (existsSync(latestPath)) {
+      const latest = JSON.parse(await readFileWithoutBOM(latestPath));
+      if (latest && typeof latest.path === 'string' && latest.path) {
+        const p = join(latest.path, 'claude-settings', 'claude-settings.json');
+        if (existsSync(p)) {
+          const snap = await tryRead(p);
+          if (snap) return { found: true, snapshot: snap, path: p, collectedAt: snap.collectedAt };
+        }
+      }
+    }
+  } catch { /* latest.json absent/corrompu => fallback ci-dessous */ }
+
+  // 3. Paquets versionnés — max par collectedAt (date de collecte réelle),
+  //    tie-break lexical inverse (comportement historique pour les égalités).
   try {
     const entries = await fs.readdir(configsDir, { withFileTypes: true });
-    const versionDirs = entries
-      .filter(e => e.isDirectory() && e.name.startsWith('v'))
-      .map(e => e.name)
-      .sort()
-      .reverse();
-    for (const dir of versionDirs) {
-      const p = join(configsDir, dir, 'claude-settings', 'claude-settings.json');
-      if (existsSync(p)) {
-        const snap = await tryRead(p);
-        if (snap) return { found: true, snapshot: snap, path: p, collectedAt: snap.collectedAt };
-      }
+    const candidates: Array<{ dir: string; snap: ClaudeSettingsSnapshot }> = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || !e.name.startsWith('v')) continue;
+      const p = join(configsDir, e.name, 'claude-settings', 'claude-settings.json');
+      if (!existsSync(p)) continue;
+      const snap = await tryRead(p);
+      if (snap) candidates.push({ dir: e.name, snap });
+    }
+    candidates.sort((a, b) => {
+      const ta = Date.parse(a.snap.collectedAt);
+      const tb = Date.parse(b.snap.collectedAt);
+      const na = Number.isNaN(ta) ? -Infinity : ta;
+      const nb = Number.isNaN(tb) ? -Infinity : tb;
+      if (na !== nb) return nb - na; // plus récent d'abord
+      return b.dir.localeCompare(a.dir);
+    });
+    const winner = candidates[0];
+    if (winner) {
+      const p = join(configsDir, winner.dir, 'claude-settings', 'claude-settings.json');
+      return { found: true, snapshot: winner.snap, path: p, collectedAt: winner.snap.collectedAt };
     }
   } catch { /* répertoire illisible => pas de snapshot */ }
 

@@ -4,7 +4,7 @@ import { IConfigService, IInventoryCollector } from '../../types/baseline';
 import { ConfigNormalizationService } from '../ConfigNormalizationService';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { tmpdir } from 'os';
 
 // Mock ConfigNormalizationService
@@ -573,6 +573,24 @@ describe('ConfigSharingService', () => {
       const latest = JSON.parse(await fs.readFile(join(machineDir, 'latest.json'), 'utf-8'));
       expect(latest.version).toBe('1');
       expect(latest.manifest.author).toBe('test-machine-42');
+    });
+
+    it('#4010 strips a leading "v" from version — no "vv…" dir, manifest/latest carry the bare version', async () => {
+      process.env.ROOSYNC_MACHINE_ID = 'test-machine-42';
+      const result = await service.publishConfig({
+        packagePath: pkgDir,
+        version: 'v1.1.1',
+        description: 'unit-test-vprefix'
+      } as any);
+
+      expect(result.success).toBe(true);
+      expect(result.version).toBe('1.1.1');
+      expect(basename(result.path)).toMatch(/^v1\.1\.1-/); // pas de double préfixe vv…
+      const manifest = JSON.parse(await fs.readFile(join(result.path, 'manifest.json'), 'utf-8'));
+      expect(manifest.version).toBe('1.1.1');
+      const machineDir = join(realSharedState, 'configs', 'test-machine-42');
+      const latest = JSON.parse(await fs.readFile(join(machineDir, 'latest.json'), 'utf-8'));
+      expect(latest.version).toBe('1.1.1');
     });
 
     it('falls back to "unknown" machineId when no env var is set', async () => {

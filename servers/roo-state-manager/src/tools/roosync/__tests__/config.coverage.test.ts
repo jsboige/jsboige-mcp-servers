@@ -105,6 +105,47 @@ afterEach(() => {
 });
 
 // ============================================================
+// publish: claude-settings semver guard (#4010)
+// ============================================================
+describe('publish: claude-settings semver guard (#4010)', () => {
+  test('rejects calendar/free-text version for the claude-settings target', async () => {
+    // NB: '2026.10.01-po2027' est un semver LÉGITIME (major 4 chiffres + prerelease)
+    // — la garde l'accepte ; les fixtures ci-dessous sont réellement hors canon.
+    for (const bad of ['october-snapshot', '1.1', 'v']) {
+      mockCollectConfig.mockReset();
+      await expect(
+        roosyncConfig({
+          action: 'publish',
+          targets: ['claude-settings'],
+          version: bad,
+          description: 'poison attempt',
+        }),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('canon semver uniquement'),
+      });
+    }
+    // La garde doit court-circuiter AVANT tout collect/publish (#4010 fail-fast).
+    expect(mockCollectConfig).not.toHaveBeenCalled();
+    expect(mockPublishConfig).not.toHaveBeenCalled();
+  });
+
+  test('accepts semver with a leading v (normalization lives in publishConfig)', async () => {
+    mockCollectConfig.mockResolvedValue({ packagePath: '/tmp/pkg-x' });
+    mockPublishConfig.mockResolvedValue({ success: true, version: '1.1.1', path: '/shared/configs/m/v1.1.1-t', machineId: 'm' });
+
+    const result = await roosyncConfig({
+      action: 'publish',
+      targets: ['claude-settings'],
+      version: 'v1.1.1',
+      description: 'ok',
+    });
+
+    expect(result.status).toBe('success');
+    expect(mockPublishConfig).toHaveBeenCalled();
+  });
+});
+
+// ============================================================
 // env: rotation short-circuit (#2410, L177-237) — publish + apply + collect
 // ============================================================
 describe('env: rotation short-circuit (#2410, L177-237)', () => {
