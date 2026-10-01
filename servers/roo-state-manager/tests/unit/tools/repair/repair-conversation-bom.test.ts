@@ -218,7 +218,7 @@ describe('repair_conversation_bom', () => {
         expect(text).toContain('Fichiers corrompus (BOM):** 0');
     });
 
-    it('should default dry_run to false when not specified', async () => {
+    it('should default dry_run to true (simulation) when not specified (#3984)', async () => {
         mockDetectStorageLocations.mockResolvedValue(['/mock/storage']);
         mockReaddir.mockResolvedValue([
             { name: 'conv-001', isDirectory: () => true }
@@ -229,7 +229,7 @@ describe('repair_conversation_bom', () => {
         const result = await handler({});
         const text = (result.content[0] as any).text;
 
-        expect(text).toContain('Réparation réelle');
-        expect(text).not.toContain('Simulation (dry-run)');
+        expect(text).toContain('Simulation (dry-run)');
+        expect(text).not.toContain('Réparation réelle');
     });
 });

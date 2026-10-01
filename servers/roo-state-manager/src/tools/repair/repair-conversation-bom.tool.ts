@@ -22,15 +22,17 @@ export const repairConversationBomTool: Tool<RepairConversationBomArgs> = {
             properties: {
                 dry_run: {
                     type: 'boolean',
-                    description: 'Si true, simule la réparation sans modifier les fichiers.',
-                    default: false
+                    description: 'Si true (défaut), simule la réparation sans modifier les fichiers. Passer explicitement dry_run=false pour réparer réellement (#3984).',
+                    default: true
                 },
             },
             required: [],
         }
     },
     handler: async (args: RepairConversationBomArgs): Promise<CallToolResult> => {
-        const { dry_run = false } = args;
+        // #3984: défaut inversé — la simulation est le comportement par défaut,
+        // la réparation réelle exige dry_run=false explicite.
+        const { dry_run = true } = args;
 
         const locations = await RooStorageDetector.detectStorageLocations();
         if (locations.length === 0) {

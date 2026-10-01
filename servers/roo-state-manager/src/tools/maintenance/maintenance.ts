@@ -43,7 +43,7 @@ export interface MaintenanceArgs {
     // BOM-specific options
     /** Si true, répare automatiquement les fichiers trouvés (action=diagnose_bom) */
     fix_found?: boolean;
-    /** Si true, simule la réparation sans modifier les fichiers (action=repair_bom, rebuild_index) */
+    /** Si true (défaut), simule sans modifier les fichiers (action=repair_bom, rebuild_index, cache_rebuild) */
     dry_run?: boolean;
 
     // Rebuild-index-specific options
@@ -86,8 +86,8 @@ export const maintenanceToolDefinition = {
             },
             dry_run: {
                 type: 'boolean',
-                description: 'Simuler la réparation sans modifier les fichiers (action=repair_bom, rebuild_index).',
-                default: false
+                description: 'Simuler sans modifier (action=repair_bom, rebuild_index, cache_rebuild). Défaut: true — passer dry_run=false pour exécuter réellement (#3984).',
+                default: true
             },
             max_tasks: {
                 type: 'number',
@@ -114,6 +114,26 @@ export async function handleMaintenance(
 
     switch (action) {
         case 'cache_rebuild':
+            // #3984: dry_run=true (défaut) — rapporte ce que la passe ferait sans
+            // vider le cache ni écrire sur disque. La réécriture réelle (force_rebuild)
+            // part avec un backup .skeletons.bak (voir handleBuildSkeletonCache).
+            if (args.dry_run !== false) {
+                const mode = args.force_rebuild ? 'FORCE_REBUILD' : 'SMART_REBUILD';
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'cache_rebuild',
+                            mode: 'dry_run',
+                            planned_mode: mode,
+                            workspace_filter: args.workspace_filter ?? null,
+                            task_ids: args.task_ids ?? null,
+                            in_memory_skeletons: conversationCache.size,
+                            note: `Simulation — rien n'a été écrit. La passe réelle (${mode})${args.force_rebuild ? ' réécrit TOUS les fichiers .skeletons après backup .bak' : ' ne reconstruit que les squelettes obsolètes/manquants'}. Relancer avec dry_run=false pour exécuter.`
+                        }, null, 2)
+                    }]
+                };
+            }
             return handleBuildSkeletonCache(
                 {
                     force_rebuild: args.force_rebuild,

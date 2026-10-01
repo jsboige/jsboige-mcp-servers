@@ -27,6 +27,7 @@ const {
     mockDetectStorageLocations,
     mockFindConversationById,
     mockCleanupOldVectors,
+    mockResetIndexingState,
     mockHomedir,
     sharedStatePathHolder,
 } = vi.hoisted(() => ({
@@ -37,6 +38,7 @@ const {
     mockDetectStorageLocations: vi.fn().mockReturnValue([]),
     mockFindConversationById: vi.fn(),
     mockCleanupOldVectors: vi.fn(),
+    mockResetIndexingState: vi.fn(),
     mockHomedir: { value: '' as string },
     sharedStatePathHolder: { value: '' as string },
 }));
@@ -59,6 +61,13 @@ vi.mock('../../../services/task-indexer.js', () => ({
 
 vi.mock('../../../services/task-indexer/VectorIndexer.js', () => ({
     cleanupOldVectors: mockCleanupOldVectors,
+}));
+
+// #3984 — cleanup_failed auth guard tests need the lazily-imported decision service.
+vi.mock('../../../services/indexing-decision.js', () => ({
+    IndexingDecisionService: vi.fn().mockImplementation(() => ({
+        resetIndexingState: mockResetIndexingState,
+    })),
 }));
 
 vi.mock('../../../utils/roo-storage-detector.js', () => ({
@@ -469,5 +478,101 @@ describe('roosync_indexing action=cleanup — max_age_days validation (#3983)', 
         );
         expect(result.isError).toBe(false);
         expect(mockCleanupOldVectors).toHaveBeenCalledWith(90, false, undefined);
+    });
+});
+
+// =====================================================================
+// #3984 — destructive defaults flipped (garbage_scan remove_* opt-in,
+// cleanup_failed auth_failed confirm guard)
+// =====================================================================
+
+describe('#3984 garbage_scan cleanup phase defaults', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockScanForGarbage.mockResolvedValue({
+            total_scanned: 5,
+            flagged: [{ task_id: 't-1', category: 'low_value', score: 0.9, details: { total_size: 100, message_count: 20, assistant_ratio: 0.05, error_ratio: 0.5, death_spiral_count: 0 } }],
+            by_category: { death_spiral: 0, duplicate: 0, low_value: 1 },
+            total_size_flagged: 100,
+            estimated_vectors_flagged: 3,
+        });
+        mockCleanupGarbage.mockResolvedValue({
+            skeletons_removed: 0, vectors_deleted: 0, space_freed_bytes: 0, errors: [],
+        });
+    });
+
+    test('dry_run=false with remove flags OMITTED deletes nothing (#3984 — old default deleted both)', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'garbage_scan', dry_run: false } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+
+        expect(result.isError).toBe(false);
+        // La phase cleanup tourne (flagged > 0, dry_run=false) mais SANS les opt-in,
+        // remove_skeletons/remove_vectors doivent être FALSE — plus de suppression par défaut.
+        expect(mockCleanupGarbage).toHaveBeenCalledWith(ctx.cache, expect.anything(), expect.objectContaining({
+            dry_run: false,
+            remove_skeletons: false,
+            remove_vectors: false,
+        }));
+    });
+
+    test('dry_run=false with explicit remove_skeletons=true/remove_vectors=true opts in to deletion', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'garbage_scan', dry_run: false, remove_skeletons: true, remove_vectors: true } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+
+        expect(result.isError).toBe(false);
+        expect(mockCleanupGarbage).toHaveBeenCalledWith(ctx.cache, expect.anything(), expect.objectContaining({
+            remove_skeletons: true,
+            remove_vectors: true,
+        }));
+    });
+});
+
+describe('#3984 cleanup_failed auth_failed confirm guard', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    test('dry_run=false + error_class=auth_failed WITHOUT confirm is refused (isError)', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup_failed', dry_run: false, error_class: 'auth_failed' } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('confirm_auth_failed_reset');
+        expect(result.content[0].text).toContain('#1767');
+    });
+
+    test('dry_run default (true) + error_class=auth_failed does NOT hit the guard', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup_failed', error_class: 'auth_failed' } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+
+        expect(result.isError).toBeFalsy();
+        const parsed = JSON.parse(result.content[0].text);
+        expect(parsed.mode).toBe('dry_run');
+    });
+
+    test('dry_run=false + auth_failed + confirm_auth_failed_reset=true passes the guard', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup_failed', dry_run: false, error_class: 'auth_failed', confirm_auth_failed_reset: true } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+
+        expect(result.isError).toBeFalsy();
+        const parsed = JSON.parse(result.content[0].text);
+        expect(parsed.mode).toBe('executed');
+        // cache vide → aucun reset effectif, mais la garde est passée
+        expect(mockResetIndexingState).not.toHaveBeenCalled();
     });
 });

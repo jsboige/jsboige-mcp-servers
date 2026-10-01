@@ -1650,8 +1650,19 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 			})],
 		]);
 
-		const result: any = await handleRooSyncIndexing(
+		// #3984: la garde est désormais ENFORCÉE — sans confirm_auth_failed_reset,
+		// la passe destructive est refusée.
+		const refused: any = await handleRooSyncIndexing(
 			{ action: 'cleanup_failed', error_class: 'auth_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(refused.isError).toBe(true);
+		expect(refused.content[0].text).toContain('confirm_auth_failed_reset');
+
+		// Avec le confirm (opérateur atteste la rotation de clé), la passe tourne
+		// ET émet le note opérateur historique.
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', error_class: 'auth_failed', dry_run: false, confirm_auth_failed_reset: true } as any,
 			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
 		);
 		const parsed = JSON.parse(result.content[0].text);

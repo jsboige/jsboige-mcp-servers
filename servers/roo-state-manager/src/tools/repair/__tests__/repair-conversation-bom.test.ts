@@ -139,7 +139,7 @@ describe('repair_conversation_bom', () => {
 			mockReadFile.mockResolvedValue(createBomBuffer(validJson));
 			mockWriteFile.mockResolvedValue(undefined);
 
-			const result = await handler({});
+			const result = await handler({ dry_run: false });
 			const text = getText(result);
 
 			expect(text).toContain('Réparation réelle');
@@ -152,6 +152,23 @@ describe('repair_conversation_bom', () => {
 			);
 		});
 
+		test('dry_run omitted defaults to simulation — no write (#3984)', async () => {
+			mockDetectStorageLocations.mockResolvedValue(['/mock/storage']);
+			mockReaddir.mockResolvedValue([
+				{ name: 'conv-001', isDirectory: () => true }
+			]);
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(createBomBuffer('[]'));
+			mockWriteFile.mockResolvedValue(undefined);
+
+			const result = await handler({});
+			const text = getText(result);
+
+			expect(text).toContain('Simulation (dry-run)');
+			expect(text).toContain('1 fichier(s) seraient réparés');
+			expect(mockWriteFile).not.toHaveBeenCalled();
+		});
+
 		test('reports success count correctly', async () => {
 			mockDetectStorageLocations.mockResolvedValue(['/mock/storage']);
 			mockReaddir.mockResolvedValue([
@@ -162,7 +179,7 @@ describe('repair_conversation_bom', () => {
 			mockReadFile.mockResolvedValue(createBomBuffer('[]'));
 			mockWriteFile.mockResolvedValue(undefined);
 
-			const result = await handler({});
+			const result = await handler({ dry_run: false });
 			const text = getText(result);
 
 			expect(text).toContain('Fichiers réparés:** 2');
@@ -177,7 +194,7 @@ describe('repair_conversation_bom', () => {
 			mockAccess.mockResolvedValue(undefined);
 			mockReadFile.mockResolvedValue(createBomBuffer('not valid json{{{'));
 
-			const result = await handler({});
+			const result = await handler({ dry_run: false });
 			const text = getText(result);
 
 			expect(text).toContain('Fichiers corrompus (BOM):** 1');
@@ -195,7 +212,7 @@ describe('repair_conversation_bom', () => {
 			mockReadFile.mockResolvedValue(createBomBuffer('[]'));
 			mockWriteFile.mockRejectedValue(new Error('EPERM'));
 
-			const result = await handler({});
+			const result = await handler({ dry_run: false });
 			const text = getText(result);
 
 			expect(text).toContain('Erreur: EPERM');
@@ -309,7 +326,7 @@ describe('repair_conversation_bom', () => {
 			});
 			mockWriteFile.mockResolvedValue(undefined);
 
-			const result = await handler({});
+			const result = await handler({ dry_run: false });
 			const text = getText(result);
 
 			expect(text).toContain('Fichiers analysés:** 2');

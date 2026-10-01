@@ -209,20 +209,21 @@ export const roosyncIndexingDefinition = {
             garbage_category: { type: 'string', enum: ['death_spiral', 'duplicate', 'low_value', 'all'], description: 'For garbage_scan. Default: all' },
             min_messages: { type: 'number', description: 'For garbage_scan. Min messages threshold (default: 10).', default: 10 },
             max_results: { type: 'number', description: 'For garbage_scan. Max results (default: 100).', default: 100 },
-            remove_skeletons: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete skeletons.', default: true },
-            remove_vectors: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete Qdrant vectors.', default: true },
+            remove_skeletons: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete skeletons. Default: false — opt in explicitly (#3984).', default: false },
+            remove_vectors: { type: 'boolean', description: 'For garbage_scan with dry_run=false. Delete Qdrant vectors. Default: false — opt in explicitly (#3984).', default: false },
             confirm_orphan_cleanup: { type: 'boolean', description: 'For cleanup_orphans with dry_run=false. Required confirmation.', default: false },
             max_repair_tasks: { type: 'number', description: 'For repair_gaps. Max tasks per call (default: 50).', default: 50 },
             max_scan_points: { type: 'number', description: 'For repair_workspace. Max points to scan per call (default: 20000).', default: 20000 },
             max_repair_points: { type: 'number', description: 'For repair_workspace. Max points to repair per call (default: 5000).', default: 5000 },
             error_class: { type: 'string', enum: ['all', 'claude_session_not_found', 'file_not_found', 'access_denied', 'permission_denied', 'invalid_format', 'corrupted_data', 'quota_exceeded', 'auth_failed', 'network_timeout', 'service_503', 'rate_limit', 'connection_reset', 'dns_failure', 'embedding_timeout', 'unknown'], description: 'For cleanup_failed. Filter by error class (default: all).' },
             max_cleanup_tasks: { type: 'number', description: 'For cleanup_failed. Cap on skeletons to reset per call (default: 100).', default: 100 },
+            confirm_auth_failed_reset: { type: 'boolean', description: 'For cleanup_failed with error_class=auth_failed and dry_run=false. Required confirmation that the API key was fixed/rotated (anti-self-helix #1767, enforced #3984).', default: false },
             start_date: { type: 'string', description: 'For tool_usage_stats. Start date (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago.' },
             end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now. Inclusive: the whole end day is counted (day-key comparison, #753).' },
             fleet: { type: 'boolean', description: 'For action=trend_report. Fleet-wide aggregate: per-machine cycle-over-cycle table PLUS a merged fleet view (only machines with ≥2 snapshots contribute to deltas). Default: false (single-machine comparison).', default: false }
         },
         required: ['action'],
-        additionalProperties: false // #4005 item 3 — key parity with handler verified (30/30 args.*)
+        additionalProperties: false // #4005 item 3 — key parity with handler verified (31/31 args.* incl. confirm_auth_failed_reset #3984)
     }
 };
 
@@ -598,11 +599,11 @@ export const roosyncStorageManagementDefinition = {
             action: { type: 'string', enum: ['storage', 'maintenance'] },
             storageAction: { type: 'string', enum: ['detect', 'stats'] },
             maintenanceAction: { type: 'string', enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom', 'rebuild_index'], description: 'rebuild_index: reconstruit l\'index SQLite des tâches VS Code (dry_run défaut)' },
-            force_rebuild: { type: 'boolean' },
+            force_rebuild: { type: 'boolean', description: 'For maintenanceAction=cache_rebuild. Destructive: rebuilds ALL skeleton files (slow, backup .bak taken first). Default: false (smart rebuild, missing/stale only).', default: false },
             workspace_filter: { type: 'string' },
             task_ids: { type: 'array', items: { type: 'string' } },
             fix_found: { type: 'boolean' },
-            dry_run: { type: 'boolean' },
+            dry_run: { type: 'boolean', description: 'For maintenance (repair_bom, cache_rebuild, rebuild_index). Default: true — simulation; pass dry_run=false to execute (#3984).', default: true },
             max_tasks: { type: 'number', description: 'Max tâches à traiter, 0 = toutes (maintenanceAction: rebuild_index)' }
         },
         required: ['action'],
