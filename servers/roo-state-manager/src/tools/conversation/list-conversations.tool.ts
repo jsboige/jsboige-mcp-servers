@@ -239,8 +239,12 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     }
 
     // #1244 Couche 3.2 — Tier indicator. Only emitted when 'archive' (default 'local' is noise).
+    // #1747 D — archiveToSkeleton porte 'archive', archiveToStub (#3661) porte
+    // 'gdrive-archive' : les deux valeurs marquent une entrée froide Tier 3,
+    // une seule ne doit pas masquer l'autre (le champ tier n'était jamais émis
+    // pour les stubs — mesuré sur ai-01 le 30/09).
     const dataSource = node.metadata?.dataSource;
-    if (dataSource === 'archive') {
+    if (dataSource === 'archive' || dataSource === 'gdrive-archive') {
         summary.tier = 'archive';
     }
 
@@ -494,7 +498,7 @@ export const listConversationsTool = {
                 },
                 includeArchives: {
                     type: 'boolean',
-                    description: '#1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. Les archives sont chargees depuis ROOSYNC_SHARED_PATH/task-archive/.'
+                    description: '#1752 Bug #3 — Inclure les archives cross-machine depuis GDrive (Tier 3). Default: false. Archives lues depuis task-archive/ (sibling de .shared-state, jsboige-mcp-servers#608 / roo-extensions#3562) ; cold start amorti par un snapshot local de stubs (#1747 E).'
                 },
                 waitForArchives: {
                     type: 'boolean',
@@ -617,7 +621,11 @@ export const listConversationsTool = {
                     // l'index (toutes machines) — plus d'hydratation prealable par
                     // machine ici. Les corps se chargent au cas par cas via
                     // ensureConversationHydrated / lecture bornee contentPattern.
-                    const scsCache = await scsInstance.getCache();
+                    // #1747 E — lecture IMMEDIATE (pas de getCache(), qui attendrait
+                    // la fin du load complet) : on n'arrive ici qu'après un probe
+                    // awaitFreshnessWithBudget réussi (cache frais OU semé depuis
+                    // le snapshot local pendant que le scan GDrive rattrape).
+                    const scsCache = scsInstance.getCacheImmediate();
                     const archiveSkeletons: ConversationSkeleton[] = [];
 
                     for (const [taskId, skeleton] of scsCache.entries()) {

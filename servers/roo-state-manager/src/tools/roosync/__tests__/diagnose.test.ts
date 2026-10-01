@@ -300,6 +300,7 @@ describe('roosync_diagnose', () => {
         config: { enableClaudeTier: true, enableArchiveTier: true },
         cacheAgeMs: 5000,
         stale: false,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
@@ -321,6 +322,32 @@ describe('roosync_diagnose', () => {
       expect(result.data.envConfig.SKELETON_CLAUDE_TIER).toBe(true);
     });
 
+    // #1747 E — le health-check expose l'état du snapshot Tier 3 (seed boot).
+    it('#1747 E: surfaces tier3 snapshot seed state when seeded', async () => {
+      const mockStats = {
+        tier1_roo: 10,
+        tier2_claude: 5,
+        tier3_archives: 4500,
+        total: 4515,
+        config: { enableClaudeTier: true, enableArchiveTier: true },
+        cacheAgeMs: null,
+        stale: true,
+        tier3_snapshot: { seeded: true, savedAt: 123456, ageMs: 7200000, entries: 4500 },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
+      } as any);
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('Tier3 snapshot: seeded 4500');
+      expect(result.message).toContain('7200s ago');
+      expect(result.data.tiers.tier3_archives.snapshot).toEqual({
+        seeded: true, savedAt: 123456, ageMs: 7200000, entries: 4500,
+      });
+    });
+
     it('should show OFF for disabled tiers', async () => {
       const mockStats = {
         tier1_roo: 100,
@@ -330,6 +357,7 @@ describe('roosync_diagnose', () => {
         config: { enableClaudeTier: false, enableArchiveTier: false },
         cacheAgeMs: 5000,
         stale: false,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
@@ -349,6 +377,7 @@ describe('roosync_diagnose', () => {
         tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
         config: { enableClaudeTier: false, enableArchiveTier: false },
         cacheAgeMs: 5000, stale: false,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
@@ -366,6 +395,7 @@ describe('roosync_diagnose', () => {
         config: { enableClaudeTier: false, enableArchiveTier: false },
         cacheAgeMs: null,  // SkeletonCacheService.getCacheTierStats returns null when lastRefreshTime===0
         stale: true,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
       };
       vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
         getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),

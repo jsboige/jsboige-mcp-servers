@@ -71,6 +71,7 @@ vi.mock('../../../services/skeleton-cache.service.js', () => ({
 	SkeletonCacheService: {
 		getInstance: vi.fn(() => ({
 			getCache: vi.fn(() => Promise.resolve(new Map())),
+			getCacheImmediate: vi.fn(() => new Map()),
 			awaitFreshnessWithBudget: vi.fn(() => Promise.resolve(true)),
 			getCacheAgeMs: vi.fn(() => 1234),
 			isLoadInProgress: vi.fn(() => false),

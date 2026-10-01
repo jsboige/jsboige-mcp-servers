@@ -78,8 +78,11 @@ vi.mock('../../../services/task-archiver/index.js', () => ({
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
 // #1747 D: isLoadInProgress defaults to true — an elapsed budget with a load
 // running stays 'loading'; tests opt into false to pin the 'failed' arm.
-const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress, mockTier3KnowsMachine } = vi.hoisted(() => {
+const { mockGetCache, mockImmediateCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress, mockTier3KnowsMachine } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
+	// #1747 E — le Tier 3 lit le cache en IMMÉDIAT (sync) après le probe de
+	// fraîcheur ; les tests configurent la même Map sur les deux accès.
+	const immediateFn = vi.fn(() => new Map());
 	const awaitFn = vi.fn(() => Promise.resolve(true));
 	const ageFn = vi.fn(() => 1234);
 	const loadInProgressFn = vi.fn(() => true);
@@ -87,11 +90,12 @@ const { mockGetCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mock
 	const knowsMachineFn = vi.fn(() => true);
 	return {
 		mockGetCache: cacheFn,
+		mockImmediateCache: immediateFn,
 		mockAwaitFreshness: awaitFn,
 		mockGetCacheAge: ageFn,
 		mockIsLoadInProgress: loadInProgressFn,
 		mockTier3KnowsMachine: knowsMachineFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn }))
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, getCacheImmediate: immediateFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn }))
 	};
 });
 
@@ -558,9 +562,10 @@ describe('list-conversations', () => {
     beforeEach(() => {
       // Re-wire after vi.restoreAllMocks() in afterEach may have cleared implementations.
       mockGetCache.mockResolvedValue(new Map());
+      mockImmediateCache.mockReturnValue(new Map());
       mockAwaitFreshness.mockResolvedValue(true);
       mockIsLoadInProgress.mockReturnValue(true);
-      mockGetInstance.mockReturnValue({ getCache: mockGetCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress, tier3KnowsMachine: mockTier3KnowsMachine });
+      mockGetInstance.mockReturnValue({ getCache: mockGetCache, getCacheImmediate: mockImmediateCache, awaitFreshnessWithBudget: mockAwaitFreshness, getCacheAgeMs: mockGetCacheAge, isLoadInProgress: mockIsLoadInProgress, tier3KnowsMachine: mockTier3KnowsMachine });
     });
 
     it('should not load archives when includeArchives is false (default)', async () => {
@@ -623,10 +628,12 @@ describe('list-conversations', () => {
         taskId: 'arch-stub-miss',
         metadata: { ...hitStub.metadata, title: 'Archive stub miss', archiveFilePath: '/mock/archive/myia-web1/arch-stub-miss.json.gz' },
       };
-      mockGetCache.mockResolvedValue(new Map([
+      const stubCache = new Map([
         ['arch-stub-hit', hitStub],
         ['arch-stub-miss', missStub],
-      ]));
+      ]);
+      mockGetCache.mockResolvedValue(stubCache);
+      mockImmediateCache.mockReturnValue(stubCache);
       mockReadArchivedTaskFromPath.mockImplementation(async (filePath: string) => {
         if (filePath.includes('arch-stub-hit')) {
           return {
@@ -680,7 +687,9 @@ describe('list-conversations', () => {
         }
       };
 
-      mockGetCache.mockResolvedValue(new Map([['archive-task-1', archiveSkeleton]]));
+      const archiveCache1 = new Map([['archive-task-1', archiveSkeleton]]);
+      mockGetCache.mockResolvedValue(archiveCache1);
+      mockImmediateCache.mockReturnValue(archiveCache1);
 
       const result = await listConversationsTool.handler(
         { includeArchives: true },
@@ -719,7 +728,9 @@ describe('list-conversations', () => {
         }
       };
 
-      mockGetCache.mockResolvedValue(new Map([['shared-task', archiveSkeleton]]));
+      const sharedCache = new Map([['shared-task', archiveSkeleton]]);
+      mockGetCache.mockResolvedValue(sharedCache);
+      mockImmediateCache.mockReturnValue(sharedCache);
 
       const localCache = new Map([['shared-task', localSkeleton]]);
       const result = await listConversationsTool.handler({ includeArchives: true }, localCache);
@@ -745,7 +756,9 @@ describe('list-conversations', () => {
         }
       };
 
-      mockGetCache.mockResolvedValue(new Map([['local-tier-task', localTierSkeleton]]));
+      const localTierCache = new Map([['local-tier-task', localTierSkeleton]]);
+      mockGetCache.mockResolvedValue(localTierCache);
+      mockImmediateCache.mockReturnValue(localTierCache);
 
       const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
       const _response = JSON.parse(result.content[0].text as string);
@@ -906,7 +919,9 @@ describe('list-conversations', () => {
           }
         };
         mockAwaitFreshness.mockResolvedValue(true);
-        mockGetCache.mockResolvedValue(new Map([['ready-archive-task', archiveSkeleton]]));
+        const readyCache = new Map([['ready-archive-task', archiveSkeleton]]);
+        mockGetCache.mockResolvedValue(readyCache);
+        mockImmediateCache.mockReturnValue(readyCache);
         mockGetCacheAge.mockReturnValue(4321);
 
         const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
