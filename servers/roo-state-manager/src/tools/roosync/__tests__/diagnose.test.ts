@@ -14,6 +14,14 @@ import * as fs from 'fs/promises';
 // Mock du module fs
 vi.mock('fs/promises');
 
+// #4004: mock du hot-reload — l'action 'reload' ne doit dépendre ni d'un .env
+// réel ni du graphe openai/qdrant que config-reload tire.
+vi.mock('../../../services/config-reload.js', () => ({
+  reloadConfig: vi.fn()
+}));
+
+import { reloadConfig } from '../../../services/config-reload.js';
+
 // Mock du module os
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -621,6 +629,57 @@ describe('roosync_diagnose', () => {
       expect(result).toHaveProperty('message');
       expect(result).toHaveProperty('data');
       expect(result.action).toBe('test');
+    });
+  });
+
+  // ============================================================
+  // Tests action: 'reload' (#4004 — host-owned muet)
+  // ============================================================
+
+  describe('action: reload', () => {
+    const baseReport = {
+      envPath: '/pkg/.env',
+      envFileFound: false,
+      changed: [],
+      unchangedCount: 0,
+      skippedKeys: [],
+      hostOwnedKeys: [],
+      clientsReset: []
+    };
+
+    it('.env absent + clés host-owned → le message dit que la rotation est invisible au reload', async () => {
+      vi.mocked(reloadConfig).mockReturnValueOnce({ ...baseReport, hostOnlyCount: 3 } as any);
+
+      const result: DiagnoseResult = await roosyncDiagnose({ action: 'reload' });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('rien rechargé');
+      expect(result.message).toContain('INVISIBLE');
+      expect(result.message).toContain('3 clé(s)');
+      expect(result.message).toContain('re-spawn');
+    });
+
+    it('.env absent sans clé host-owned → message sobre, pas de fausse alerte', async () => {
+      vi.mocked(reloadConfig).mockReturnValueOnce({ ...baseReport, hostOnlyCount: 0 } as any);
+
+      const result: DiagnoseResult = await roosyncDiagnose({ action: 'reload' });
+
+      expect(result.message).toContain('rien rechargé');
+      expect(result.message).not.toContain('INVISIBLE');
+    });
+
+    it('.env présent avec changement → message de rotation inchangé (non-régression)', async () => {
+      vi.mocked(reloadConfig).mockReturnValueOnce({
+        ...baseReport,
+        envFileFound: true,
+        changed: [{ key: 'QDRANT_API_KEY', before: 'len=1 fp=aaaaaaaa', after: 'len=2 fp=bbbbbbbb' }],
+        clientsReset: ['qdrantClient']
+      } as any);
+
+      const result: DiagnoseResult = await roosyncDiagnose({ action: 'reload' });
+
+      expect(result.message).toContain('1 clé(s) changée(s)');
+      expect(result.message).not.toContain('INVISIBLE');
     });
   });
 });
