@@ -456,6 +456,58 @@ describe('roosyncConfig', { testTimeout: 30000 }, () => {
 
       expect(result.status).toBe('success');
     });
+
+    // #4002 — malformed version strings (e.g. 'v2', 'NaN.x.x') must be rejected
+    // BEFORE parseInt so the caller never sees a 'vNaN.x.x' suggestion.
+    test('rejects version with leading "v" prefix (#4002)', async () => {
+      mockGetConfigVersion.mockResolvedValue('1.0.0');
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: ['modes.json'],
+        backupPath: null,
+        errors: []
+      });
+      const args: ConfigArgs = { action: 'apply', version: 'v2' };
+      await expect(roosyncConfig(args)).rejects.toThrow(/Format de version invalide/);
+    });
+
+    test('rejects NaN-shaped version string (#4002)', async () => {
+      mockGetConfigVersion.mockResolvedValue('1.0.0');
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: ['modes.json'],
+        backupPath: null,
+        errors: []
+      });
+      const args: ConfigArgs = { action: 'apply', version: 'NaN.x.x' };
+      await expect(roosyncConfig(args)).rejects.toThrow(/Format de version invalide/);
+    });
+
+    test('accepts bare integer version like "2" (#4002)', async () => {
+      mockGetConfigVersion.mockResolvedValue('2.0.0');
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: ['modes.json'],
+        backupPath: null,
+        errors: []
+      });
+      const args: ConfigArgs = { action: 'apply', version: '2' };
+      const result = await roosyncConfig(args);
+      expect(result.status).toBe('success');
+    });
+
+    test('accepts "latest" sentinel without semver check (#4002)', async () => {
+      mockGetConfigVersion.mockResolvedValue('2.0.0');
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: ['modes.json'],
+        backupPath: null,
+        errors: []
+      });
+      const args: ConfigArgs = { action: 'apply', version: 'latest' };
+      const result = await roosyncConfig(args);
+      expect(result.status).toBe('success');
+    });
   });
 
   describe('error handling', () => {

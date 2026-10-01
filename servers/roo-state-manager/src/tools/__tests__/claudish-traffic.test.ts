@@ -330,6 +330,42 @@ describe('validateClaudishArgs', () => {
         expect(validateClaudishArgs({ docker_context: { cmd: 'evil' } })).toContain('Invalid');
         expect(validateClaudishArgs({ docker_context: true })).toContain('Invalid');
     });
+
+    // #4002 — bucket_minutes / max_output_length numeric bounds.
+    it('rejects NaN bucket_minutes with isError (#4002)', async () => {
+        const res = await claudishTraffic.handler({ bucket_minutes: Number.NaN });
+        expect(res.isError).toBe(true);
+        expect(res.content[0].text).toMatch(/bucket_minutes/);
+    });
+
+    it('rejects 0 bucket_minutes with isError (#4002)', async () => {
+        const res = await claudishTraffic.handler({ bucket_minutes: 0 });
+        expect(res.isError).toBe(true);
+        expect(res.content[0].text).toMatch(/bucket_minutes must be in/);
+    });
+
+    it('rejects float bucket_minutes like 5.5 with isError (#4002)', async () => {
+        const res = await claudishTraffic.handler({ bucket_minutes: 5.5 });
+        expect(res.isError).toBe(true);
+        expect(res.content[0].text).toMatch(/integer/);
+    });
+
+    it('rejects bucket_minutes above 1440 with isError (#4002)', async () => {
+        const res = await claudishTraffic.handler({ bucket_minutes: 2000 });
+        expect(res.isError).toBe(true);
+    });
+
+    it('rejects max_output_length below 500 (#4002)', async () => {
+        // The schema clamps, but the runtime guard catches NaN/0/negative bypass.
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, max_output_length: 100 });
+        expect(res.isError).toBe(true);
+        expect(res.content[0].text).toMatch(/max_output_length must be in/);
+    });
+
+    it('rejects NaN max_output_length with isError (#4002)', async () => {
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, max_output_length: Number.NaN });
+        expect(res.isError).toBe(true);
+    });
 });
 
 // ── Handler (exec mocked — never throws, distinguishes failures) ───────────

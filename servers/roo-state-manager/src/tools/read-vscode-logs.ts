@@ -2,6 +2,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import { Dirent } from 'fs';
 import * as path from 'path';
+import { sanitizeInt } from '../utils/int-validator.js';
 
 // Helper to recursively find files matching a filename
 async function findLogFilesRecursive(dir: string): Promise<string[]> {
@@ -55,9 +56,19 @@ export const readVscodeLogs = {
     },
     async handler(args: { lines?: number; filter?: string; maxSessions?: number }): Promise<CallToolResult> {
         const safeArgs = args || {};
-        const lineCount = safeArgs.lines ?? 100;
+        // #4002 — schema bounds lines/maxSessions, runtime guard catches NaN/float
+        // routed around the schema layer (slice(-NaN) used to silently return []).
+        const linesCheck = sanitizeInt('lines', safeArgs.lines, { min: 1, max: 10000, fallback: 100 });
+        if (!linesCheck.ok) {
+            return { isError: true, content: [{ type: 'text' as const, text: `read_vscode_logs: ${linesCheck.error}` }] };
+        }
+        const sessionsCheck = sanitizeInt('maxSessions', safeArgs.maxSessions, { min: 1, max: 100, fallback: 1 });
+        if (!sessionsCheck.ok) {
+            return { isError: true, content: [{ type: 'text' as const, text: `read_vscode_logs: ${sessionsCheck.error}` }] };
+        }
+        const lineCount = linesCheck.value;
         const { filter } = safeArgs;
-        const maxSessions = safeArgs.maxSessions ?? 1;
+        const maxSessions = sessionsCheck.value;
         const rootLogsPath = path.join(process.env.APPDATA || '', 'Code', 'logs');
         const debugLog: string[] = [`[DEBUG] Smart Log Search starting in: ${rootLogsPath}`];
 

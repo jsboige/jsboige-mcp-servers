@@ -12,6 +12,7 @@ import * as path from 'path';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { loadPgConversationSkeleton } from '../services/unified-store/conversation-list-store.js';
+import { sanitizeInt } from '../utils/int-validator.js';
 
 /**
  * Tronque un message en gardant le début et la fin
@@ -754,8 +755,18 @@ function handleViewConversationTreeExecution(
     let isPaged = false;
 
     if (hasPagingArgs) {
-        effectiveMessageStart = Math.max(0, args.messageStart ?? 0);
-        effectiveMessageEnd = Math.min(totalMessages, args.messageEnd ?? totalMessages);
+        // #4002 — defence in depth: schema bounds messageStart/messageEnd, the runtime
+        // guard rejects NaN/float/negative that the schema bypass could pass through.
+        const startCheck2 = sanitizeInt('messageStart', args.messageStart, { min: 0, max: 1_000_000, fallback: 0 });
+        if (!startCheck2.ok) {
+            throw new GenericError(startCheck2.error, GenericErrorCode.INVALID_ARGUMENT, { field: 'messageStart' });
+        }
+        const endCheck2 = sanitizeInt('messageEnd', args.messageEnd, { min: 0, max: 1_000_000, fallback: totalMessages });
+        if (!endCheck2.ok) {
+            throw new GenericError(endCheck2.error, GenericErrorCode.INVALID_ARGUMENT, { field: 'messageEnd' });
+        }
+        effectiveMessageStart = Math.max(0, startCheck2.value);
+        effectiveMessageEnd = Math.min(totalMessages, endCheck2.value);
         if (effectiveMessageStart > effectiveMessageEnd) {
             effectiveMessageStart = effectiveMessageEnd;
         }
