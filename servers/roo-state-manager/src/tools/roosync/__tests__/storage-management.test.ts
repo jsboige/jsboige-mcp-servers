@@ -366,6 +366,50 @@ describe('roosyncStorageManagement', () => {
     });
 
     // ============================================================
+    // Tests pour action: 'maintenance' - maintenanceAction: 'rebuild_index' (#3985)
+    // ============================================================
+
+    describe('action: maintenance - maintenanceAction: rebuild_index (#3985)', () => {
+        test('should delegate rebuild_index with max_tasks and dry_run passthrough', async () => {
+            const mockRebuildResult = {
+                rebuilt: 12,
+                dryRun: true
+            };
+
+            vi.mocked(maintenanceModule.handleMaintenance).mockResolvedValue({
+                content: [{ type: 'text', text: JSON.stringify(mockRebuildResult) }]
+            });
+
+            const conversationCache = new Map();
+
+            const result = await roosyncStorageManagement(
+                {
+                    action: 'maintenance',
+                    maintenanceAction: 'rebuild_index',
+                    workspace_filter: 'd--Dev-roo-extensions',
+                    max_tasks: 12,
+                    dry_run: true
+                },
+                conversationCache
+            );
+
+            expect(result.success).toBe(true);
+            expect(result.subAction).toBe('rebuild_index');
+            expect(result.data.rebuilt).toBe(12);
+            expect(vi.mocked(maintenanceModule.handleMaintenance)).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    action: 'rebuild_index',
+                    workspace_filter: 'd--Dev-roo-extensions',
+                    max_tasks: 12,
+                    dry_run: true
+                }),
+                conversationCache,
+                undefined
+            );
+        });
+    });
+
+    // ============================================================
     // Tests pour action: 'maintenance' - validation
     // ============================================================
 
