@@ -424,7 +424,10 @@ describe('tool-definitions.ts — Schema Validation', () => {
             // #1609: roosyncHeartbeatDefinition removed
             // #1863: roosyncMachinesDefinition removed
             roosyncMcpManagementDefinition, roosyncStorageManagementDefinition,
-            roosyncDiagnoseDefinition
+            roosyncDiagnoseDefinition,
+            // #4005 item 3 — search-side strictness, drift-guarded here (a typo'd param
+            // like `workspaces` on codebase_search is wire-rejected instead of silently dropped)
+            roosyncIndexingDefinition, codebaseSearchDefinition
             // [REMOVED #291] roosyncRefreshDashboardDefinition, roosyncUpdateDashboardDefinition
         ];
 
