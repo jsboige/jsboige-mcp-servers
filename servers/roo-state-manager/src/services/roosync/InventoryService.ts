@@ -11,7 +11,10 @@ import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../type
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 
-const execAsync = promisify(exec);
+// #3975: promisify paresseux — des tests mockent child_process avec execSync seul
+// (export exec absent) ; un promisify(exec) top-level y explose au chargement module.
+type ExecAsyncFn = (cmd: string, opts: any) => Promise<{ stdout: string; stderr: string }>;
+let execAsyncFn: ExecAsyncFn | null = null;
 
 export class InventoryService {
   private static instance: InventoryService;
@@ -280,6 +283,10 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
     if (process.platform !== 'win32') {
       return undefined;
     }
+    // Garde tests (pattern mcp-management.ts) — pas de spawn PowerShell sous vitest
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+      return undefined;
+    }
     const cached = this.bootResilienceCache;
     if (cached && Date.now() - cached.at < InventoryService.BOOT_RESILIENCE_TTL_MS) {
       return cached.data;
@@ -311,8 +318,11 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
     ].join('; ');
 
     try {
+      if (!execAsyncFn) {
+        execAsyncFn = promisify(exec) as unknown as ExecAsyncFn;
+      }
       // exec async (pas execSync) — la sonde ne doit pas bloquer l'event loop du serveur MCP
-      const { stdout } = await execAsync(
+      const { stdout } = await execAsyncFn!(
         `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${probe.replace(/"/g, '\\"')}"`,
         { timeout: 15000, encoding: 'utf-8' }
       );
