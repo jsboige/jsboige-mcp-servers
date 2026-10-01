@@ -94,10 +94,49 @@ async function scrollUniqueTaskIds(): Promise<Set<string>> {
 }
 
 /**
- * Check if a Claude Code session file exists on disk for a given task_id.
- * Scans ~/.claude/projects/ for JSONL files matching the task_id.
+ * Single-pass basename index of Claude Code session JSONLs across the project
+ * subdirectories of ~/.claude/projects (#3986). One readdir per project dir,
+ * then O(1) lookups for every cache-miss task_id of the same run.
+ *
+ * Built ONCE per detectAndCleanupOrphans call — NEVER memoized across runs: a
+ * session created after a previous run must not be mis-read as an orphan.
+ * Degrades to the empty set (legacy behavior) on any readdir failure — a broken
+ * index must not produce false orphans.
  */
-async function claudeSessionExists(taskId: string): Promise<boolean> {
+async function buildClaudeSessionIndex(claudeProjectsPath: string): Promise<Set<string>> {
+    const basenames = new Set<string>();
+    let projectDirs: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+    try {
+        projectDirs = (await fs.readdir(claudeProjectsPath, { withFileTypes: true })) as typeof projectDirs;
+    } catch {
+        return basenames; // unreadable root — degrade to legacy behavior
+    }
+    if (!Array.isArray(projectDirs)) return basenames; // defensive (mocked/partial fs)
+
+    for (const dir of projectDirs) {
+        if (!dir.isDirectory()) continue;
+        let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+        try {
+            entries = (await fs.readdir(path.join(claudeProjectsPath, dir.name), { withFileTypes: true })) as typeof entries;
+        } catch {
+            continue; // unreadable project dir — skip it, never blocks the cleanup
+        }
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+            if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+                basenames.add(entry.name);
+            }
+        }
+    }
+    return basenames;
+}
+
+/**
+ * Check if a Claude Code session file exists on disk for a given task_id.
+ * Scans ~/.claude/projects/ for JSONL files matching the task_id — both the
+ * legacy root layout and the per-project subdirectory layout (#3986).
+ */
+async function claudeSessionExists(taskId: string, sessionBasenames?: Set<string>): Promise<boolean> {
     const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
     try {
         await fs.access(claudeProjectsPath);
@@ -105,7 +144,7 @@ async function claudeSessionExists(taskId: string): Promise<boolean> {
         return false;
     }
 
-    // Look for the JSONL file with this task_id as filename
+    // Look for the JSONL file with this task_id as filename (legacy root layout)
     const expectedPath = path.join(claudeProjectsPath, `${taskId}.jsonl`);
     try {
         await fs.access(expectedPath);
@@ -114,10 +153,12 @@ async function claudeSessionExists(taskId: string): Promise<boolean> {
         // Not a direct match — could be in a subdirectory
     }
 
-    // Check in subdirectory structure (project dirs contain UUID.jsonl files)
-    // This is expensive so we only do it for cache misses
-    // For now, we rely on the in-memory cache for Claude sessions
-    return false;
+    // #3986: the real layout is ~/.claude/projects/<project-hash>/<uuid>.jsonl. The old
+    // `return false` here mis-classified every subdirectory session as an orphan
+    // (mass false-negatives → systematic FLEET-SAFETY aborts, or live vectors deleted).
+    // The index is built once per run by the caller; standalone calls build it on demand.
+    const basenames = sessionBasenames ?? await buildClaudeSessionIndex(claudeProjectsPath);
+    return basenames.has(`${taskId}.jsonl`);
 }
 
 /**
@@ -169,6 +210,9 @@ export async function detectAndCleanupOrphans(
 
     // Phase 3: For cache misses, check disk
     const orphans: string[] = [];
+    // #3986: one-pass basename index of Claude sessions (~/.claude/projects/<proj>/<uuid>.jsonl),
+    // built lazily on the first cache-miss that needs it, reused for the whole run.
+    let claudeBasenames: Set<string> | null = null;
 
     for (const taskId of notInCache) {
         try {
@@ -180,7 +224,10 @@ export async function detectAndCleanupOrphans(
             }
 
             // Check Claude Code sessions
-            const claudeExists = await claudeSessionExists(taskId);
+            if (claudeBasenames === null) {
+                claudeBasenames = await buildClaudeSessionIndex(path.join(os.homedir(), '.claude', 'projects'));
+            }
+            const claudeExists = await claudeSessionExists(taskId, claudeBasenames);
             if (claudeExists) {
                 result.on_disk++;
                 continue;
