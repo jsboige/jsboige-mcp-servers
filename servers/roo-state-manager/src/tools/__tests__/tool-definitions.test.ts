@@ -52,6 +52,8 @@ import {
 } from '../tool-definitions.js';
 // #3254 drift-guard: the zod schema is the handler contract; the static definition is the wire contract
 import { MessagesArgsSchema } from '../roosync/messages.js';
+// #3985 drift-guard: idem pour roosync_storage_management (maintenanceAction handler-orphelin)
+import { StorageManagementArgsSchema } from '../roosync/storage-management.js';
 import { conversationBrowserTool } from '../conversation/conversation-browser.js';
 
 const EXPECTED_TOOL_COUNT = 17; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17)
@@ -348,6 +350,25 @@ describe('tool-definitions.ts — Schema Validation', () => {
             const actions = (roosyncStorageManagementDefinition.inputSchema.properties.action as Record<string, unknown>).enum as string[];
             expect(actions).toContain('storage');
             expect(actions).toContain('maintenance');
+        });
+
+        // #3985 drift-guard — même classe que #3254 : le handler supporte 'rebuild_index'
+        // (maintenance.ts MaintenanceAction) ; le schéma statique servi doit l'exposer, sinon
+        // aucun client conforme ne peut atteindre la capacité.
+        it('roosync_storage_management must expose handler-supported maintenanceAction values (#3985)', () => {
+            const actions = (roosyncStorageManagementDefinition.inputSchema.properties.maintenanceAction as Record<string, unknown>).enum as string[];
+            expect(actions).toEqual(expect.arrayContaining(['cache_rebuild', 'diagnose_bom', 'repair_bom', 'rebuild_index']));
+            // Parité fonctionnelle : le zod (contrat handler) doit parser ce que le statique expose
+            expect(StorageManagementArgsSchema.safeParse({
+                action: 'maintenance',
+                maintenanceAction: 'rebuild_index',
+                max_tasks: 10,
+                dry_run: true
+            }).success).toBe(true);
+            // Parité de clés statique ↔ zod (une clé zod absente du statique = rejet wire silencieux)
+            const staticKeys = Object.keys(roosyncStorageManagementDefinition.inputSchema.properties).sort();
+            const zodKeys = Object.keys(StorageManagementArgsSchema.shape).sort();
+            expect(zodKeys).toEqual(staticKeys);
         });
 
         it('roosync_compare_config should support full granularity', () => {

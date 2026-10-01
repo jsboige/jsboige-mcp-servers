@@ -591,18 +591,19 @@ export const roosyncMcpManagementDefinition = {
 
 export const roosyncStorageManagementDefinition = {
     name: 'roosync_storage_management',
-    description: 'Storage inspection and maintenance. Actions: storage (detect/stats), maintenance (cache_rebuild/diagnose_bom/repair_bom). Gotcha: BOM repair via maintenance→repair_bom for corrupted JSONL files.',
+    description: 'Storage inspection and maintenance. Actions: storage (detect/stats), maintenance (cache_rebuild/diagnose_bom/repair_bom/rebuild_index). Gotcha: BOM repair via maintenance→repair_bom for corrupted JSONL files.',
     inputSchema: {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['storage', 'maintenance'] },
             storageAction: { type: 'string', enum: ['detect', 'stats'] },
-            maintenanceAction: { type: 'string', enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom'] },
+            maintenanceAction: { type: 'string', enum: ['cache_rebuild', 'diagnose_bom', 'repair_bom', 'rebuild_index'], description: 'rebuild_index: reconstruit l\'index SQLite des tâches VS Code (dry_run défaut)' },
             force_rebuild: { type: 'boolean' },
             workspace_filter: { type: 'string' },
             task_ids: { type: 'array', items: { type: 'string' } },
             fix_found: { type: 'boolean' },
-            dry_run: { type: 'boolean' }
+            dry_run: { type: 'boolean' },
+            max_tasks: { type: 'number', description: 'Max tâches à traiter, 0 = toutes (maintenanceAction: rebuild_index)' }
         },
         required: ['action'],
         additionalProperties: false

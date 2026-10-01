@@ -27,8 +27,9 @@ export const StorageManagementArgsSchema = z.object({
         .describe('Sous-action pour storage: detect (localiser), stats (statistiques)'),
 
     // Paramètres pour action: 'maintenance'
-    maintenanceAction: z.enum(['cache_rebuild', 'diagnose_bom', 'repair_bom']).optional()
-        .describe('Sous-action pour maintenance: cache_rebuild, diagnose_bom, repair_bom'),
+    // #3985: 'rebuild_index' est supporté par le handler (maintenance.ts) — l'enum doit l'exposer.
+    maintenanceAction: z.enum(['cache_rebuild', 'diagnose_bom', 'repair_bom', 'rebuild_index']).optional()
+        .describe('Sous-action pour maintenance: cache_rebuild, diagnose_bom, repair_bom, rebuild_index (reconstruit l\'index SQLite des tâches VS Code)'),
 
     // Options pour cache_rebuild
     force_rebuild: z.boolean().optional()
@@ -42,7 +43,11 @@ export const StorageManagementArgsSchema = z.object({
     fix_found: z.boolean().optional()
         .describe('Réparer automatiquement les fichiers corrompus (maintenance: diagnose_bom)'),
     dry_run: z.boolean().optional()
-        .describe('Simuler la réparation sans modifier (maintenance: repair_bom)')
+        .describe('Simuler la réparation sans modifier (maintenance: repair_bom, rebuild_index)'),
+
+    // Options pour rebuild_index (#3985)
+    max_tasks: z.number().optional()
+        .describe('Nombre maximum de tâches à traiter, 0 = toutes (maintenance: rebuild_index)')
 });
 
 export type StorageManagementArgs = z.infer<typeof StorageManagementArgsSchema>;
@@ -180,7 +185,8 @@ async function handleMaintenanceAction(
         workspace_filter: args.workspace_filter,
         task_ids: args.task_ids,
         fix_found: args.fix_found,
-        dry_run: args.dry_run
+        dry_run: args.dry_run,
+        max_tasks: args.max_tasks
     };
 
     const result = await handleMaintenance(maintenanceArgs, conversationCache, state);
