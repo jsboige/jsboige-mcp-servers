@@ -11,6 +11,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'path';
+import os from 'os';
 
 const { mockDetectStorageLocations } = vi.hoisted(() => ({
 	mockDetectStorageLocations: vi.fn()
@@ -78,7 +80,10 @@ vi.mock('../task-archiver/index.js', () => ({
 import { SkeletonCacheService } from '../skeleton-cache.service.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 
-const SNAPSHOT_PATH = 'C:/fake/home/.roo-state-manager/tier3-stub-snapshot.json';
+// Absolu sur l'OS courant : le service n'honore l'override que s'il passe
+// `path.isAbsolute` — un 'C:/...' littéral est relatif sous POSIX (runner CI Linux).
+// fs est entièrement mocké : aucun accès disque réel.
+const SNAPSHOT_PATH = path.join(os.tmpdir(), 'fake-home', '.roo-state-manager', 'tier3-stub-snapshot.json');
 
 function makeStub(taskId: string, machineId: string): ConversationSkeleton {
 	return {
@@ -235,8 +240,17 @@ describe('SkeletonCacheService — Tier 3 stub snapshot (#1747 E)', () => {
 		mockReadArchivedTaskFromPath.mockClear();
 		expect(await instance.ensureConversationHydrated('task-a')).toBe(true);
 		expect(instance.getCacheImmediate().get('task-a')?.sequence?.length).toBeGreaterThan(0);
-		// ...puis persister : le snapshot ne doit PAS emporter le corps.
-		await (instance as unknown as { persistTier3Snapshot(): Promise<void> }).persistTier3Snapshot();
+		// ...puis persister : le snapshot ne doit PAS emporter le corps. Le stub
+		// sanitisé est identique à celui déjà écrit au warm → aucune réécriture.
+		const internals = instance as unknown as {
+			persistTier3Snapshot(): Promise<void>;
+			tier3SnapshotSignature: string | null;
+		};
+		await internals.persistTier3Snapshot();
+		expect(mockWriteFile).not.toHaveBeenCalled();
+		// Forcer l'écriture pour inspecter ce qui serait persisté.
+		internals.tier3SnapshotSignature = null;
+		await internals.persistTier3Snapshot();
 		expect(mockWriteFile).toHaveBeenCalledTimes(1);
 		const payload = JSON.parse(mockWriteFile.mock.calls[0][1] as string);
 		const persisted = payload.stubs.find((s: any) => s.taskId === 'task-a');
@@ -323,5 +337,32 @@ describe('SkeletonCacheService — Tier 3 stub snapshot (#1747 E)', () => {
 		expect(instance.getCacheImmediate().size).toBe(1);
 		// Aucun persist : un GDrive indisponible ne doit pas réécrire le snapshot.
 		expect(mockWriteFile).not.toHaveBeenCalled();
+	});
+
+	test('scan sans nouveauté : pas de réécriture ; nouvelle archive : réécriture', async () => {
+		configureBareHost();
+		const stubs = [makeStub('task-a', 'myia-po-2025'), makeStub('task-b', 'myia-po-2024')];
+		mockReadFile.mockImplementation(async (p: string) => {
+			if (p === SNAPSHOT_PATH) return snapshotPayload(stubs);
+			throw new Error(`unexpected read: ${p}`);
+		});
+		// Le scan GDrive ne trouve rien de plus que le snapshot.
+		mockListArchivedTaskFiles.mockResolvedValue([
+			{ taskId: 'task-a', filePath: 'G:/fake/task-archive/myia-po-2025/task-a.json.gz', machineId: 'myia-po-2025' },
+			{ taskId: 'task-b', filePath: 'G:/fake/task-archive/myia-po-2024/task-b.json.gz', machineId: 'myia-po-2024' },
+		]);
+
+		const instance = SkeletonCacheService.getInstance();
+		await instance.warmCache();
+		expect(instance.getCacheImmediate().size).toBe(2);
+		expect(mockWriteFile).not.toHaveBeenCalled();
+
+		// Une archive apparaît : le contenu change, le snapshot est réécrit.
+		instance.getCacheImmediate().set('task-c', makeStub('task-c', 'myia-po-2023'));
+		await (instance as unknown as { persistTier3Snapshot(): Promise<void> }).persistTier3Snapshot();
+		expect(mockWriteFile).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(mockWriteFile.mock.calls[0][1] as string);
+		expect(payload.stubs.map((s: any) => s.taskId)).toEqual(['task-a', 'task-b', 'task-c']);
+		expect(mockRename).toHaveBeenCalledWith(mockWriteFile.mock.calls[0][0], SNAPSHOT_PATH);
 	});
 });

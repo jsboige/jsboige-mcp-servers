@@ -21,6 +21,7 @@ import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import path from 'path';
 import os from 'os';
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -97,6 +98,12 @@ export class SkeletonCacheService {
     private tier3SnapshotSeededAt: number | null = null;
     /** #1747 E — nombre de stubs réellement semés depuis le snapshot (observabilité). */
     private tier3SnapshotSeededCount = 0;
+    /**
+     * #1747 E — empreinte des stubs du dernier snapshot lu (seed) ou écrit.
+     * Un scan GDrive qui ne change rien ne réécrit pas les ~14 Mo du fichier
+     * (≈ 26 hôtes RSM, même chemin) : la persistance se court-circuite.
+     */
+    private tier3SnapshotSignature: string | null = null;
 
     private constructor() {
         // Constructor privé pour pattern singleton
@@ -798,7 +805,7 @@ export class SkeletonCacheService {
                 console.warn('[SkeletonCacheService] Tier 3 (snapshot): format inconnu, ignore');
                 return 0;
             }
-            let seeded = 0;
+            const seededStubs: ConversationSkeleton[] = [];
             for (const stub of parsed.stubs) {
                 const taskId = stub?.taskId;
                 const filePath = (stub as any)?.metadata?.archiveFilePath;
@@ -815,11 +822,13 @@ export class SkeletonCacheService {
                     filePath,
                     machineId: stub.metadata?.machineId ?? '',
                 });
-                seeded++;
+                seededStubs.push(stub);
             }
+            const seeded = seededStubs.length;
             if (seeded > 0) {
                 this.tier3SnapshotSeededAt = typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now();
                 this.tier3SnapshotSeededCount = seeded;
+                this.tier3SnapshotSignature = this.tier3StubsSignature(seededStubs).signature;
             }
             return seeded;
         } catch {
@@ -853,19 +862,29 @@ export class SkeletonCacheService {
                 }
             }
             if (stubs.length === 0) return;
-            const payload = JSON.stringify({
-                version: TIER3_SNAPSHOT_VERSION,
-                savedAt: Date.now(),
-                stubs,
-            });
+            const { body, signature } = this.tier3StubsSignature(stubs);
+            // Rien de neuf depuis le dernier seed/écriture : pas de réécriture.
+            if (signature === this.tier3SnapshotSignature) return;
+            const payload = `{"version":${TIER3_SNAPSHOT_VERSION},"savedAt":${Date.now()},"stubs":${body}}`;
             const dir = path.dirname(snapshotPath);
             await fs.mkdir(dir, { recursive: true });
             const tmpPath = `${snapshotPath}.tmp-${process.pid}`;
             await fs.writeFile(tmpPath, payload, 'utf-8');
             await fs.rename(tmpPath, snapshotPath);
+            this.tier3SnapshotSignature = signature;
         } catch (error) {
             console.warn('[SkeletonCacheService] Tier 3 (snapshot): ecriture non-bloquante a echoue:', error);
         }
+    }
+
+    /**
+     * #1747 E — Sérialisation canonique des stubs (triés par taskId, l'ordre
+     * d'insertion du cache varie entre seed et scan) et son empreinte sha256.
+     */
+    private tier3StubsSignature(stubs: ConversationSkeleton[]): { body: string; signature: string } {
+        const sorted = [...stubs].sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0));
+        const body = JSON.stringify(sorted);
+        return { body, signature: createHash('sha256').update(body).digest('hex') };
     }
 
     /**
