@@ -466,7 +466,8 @@ export const claudishTraffic = {
             }
             const bucketMinutes = args.bucket_minutes ?? 30;
             if (!Number.isInteger(bucketMinutes) || bucketMinutes < 1 || bucketMinutes > 24 * 60) {
-                return { content: [{ type: 'text' as const, text: `claudish_traffic: bucket_minutes must be an integer of minutes in [1, 1440], got ${args.bucket_minutes}` }] };
+                // #4005 item 1 — a validation refusal read as a success by the LLM client otherwise.
+                return { isError: true, content: [{ type: 'text' as const, text: `claudish_traffic: bucket_minutes must be an integer of minutes in [1, 1440], got ${args.bucket_minutes}` }] };
             }
             const since = args.since ?? DEFAULT_SINCE;
             let container = args.container ?? DEFAULT_CONTAINER;

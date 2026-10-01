@@ -401,6 +401,8 @@ describe('claudishTraffic.handler', () => {
         const res = await claudishTraffic.handler({ bucket_minutes: 2.5 });
         const text = (res.content as any)[0].text as string;
         expect(text).toContain('bucket_minutes must be an integer');
+        // #4005 item 1 — the refusal must be flagged isError, or the LLM client reads it as a success
+        expect((res as any).isError).toBe(true);
         expect(exec).not.toHaveBeenCalled();
     });
 

@@ -221,7 +221,8 @@ export const roosyncIndexingDefinition = {
             end_date: { type: 'string', description: 'For tool_usage_stats. End date (ISO 8601 or YYYY-MM-DD). Default: now. Inclusive: the whole end day is counted (day-key comparison, #753).' },
             fleet: { type: 'boolean', description: 'For action=trend_report. Fleet-wide aggregate: per-machine cycle-over-cycle table PLUS a merged fleet view (only machines with ≥2 snapshots contribute to deltas). Default: false (single-machine comparison).', default: false }
         },
-        required: ['action']
+        required: ['action'],
+        additionalProperties: false // #4005 item 3 — key parity with handler verified (30/30 args.*)
     }
 };
 
@@ -240,7 +241,8 @@ export const codebaseSearchDefinition = {
             limit: { type: 'number', description: 'Max results (default: 15, max: 50)' },
             min_score: { type: 'number', description: 'Min similarity 0-1 (default: 0.5)' }
         },
-        required: ['query']
+        required: ['query'],
+        additionalProperties: false // #4005 item 3 — CodebaseSearchArgs parity verified (5/5 keys)
     }
 };
 
