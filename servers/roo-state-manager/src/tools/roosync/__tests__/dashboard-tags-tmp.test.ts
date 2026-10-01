@@ -226,6 +226,43 @@ describe('dashboard #4003 — tags normalization + persistence', () => {
       tags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'],
     })).rejects.toThrow(/Invalid arguments/);
   });
+
+  it('read_archive strips [ack:] before [tags:] — acknowledged tagged messages do not leak meta lines (#1280 review)', async () => {
+    // Emit order is [msg:]→[reply-to:]→[ack:]→[tags:]. The archive parser
+    // used to skip [ack:] in a comment only: on an acknowledged message the
+    // [tags:] anchor missed and BOTH meta lines leaked into the content.
+    const archiveDir = path.join(tmpDir, 'dashboards', 'archive');
+    await mkdir(archiveDir, { recursive: true });
+    const key = 'workspace-test-workspace';
+    const archiveFile = `${key}-20261001T0000.md`;
+    await writeFile(path.join(archiveDir, archiveFile), [
+      '---',
+      'type: workspace',
+      `originalKey: ${key}`,
+      'archivedAt: 2026-10-01T00:00:00.000Z',
+      'messageCount: 1',
+      '---',
+      '',
+      '### [2026-10-01T00:00:00.000Z] test-machine|test-workspace',
+      '[msg: test-machine:test-workspace:ic-1]',
+      '[reply-to: myia-ai-01:roo-extensions:ic-0]',
+      '[ack: myia-ai-01:2026-10-01T01:00:00.000Z]',
+      '[tags: ASK, claude-interactive]',
+      '',
+      'contenu réel du message archivé',
+      '',
+    ].join('\n'), 'utf8');
+
+    const res = await roosyncDashboard({ action: 'read_archive', type: 'workspace', archiveFile });
+    expect(res.success).toBe(true);
+    const msgs = (res as any).archiveData.messages as Array<{ content: string; tags?: string[]; reply_to?: string }>;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].tags).toEqual(['ASK', 'claude-interactive']);
+    expect(msgs[0].reply_to).toBe('myia-ai-01:roo-extensions:ic-0');
+    expect(msgs[0].content).toBe('contenu réel du message archivé');
+    expect(msgs[0].content).not.toContain('[ack:');
+    expect(msgs[0].content).not.toContain('[tags:');
+  });
 });
 
 describe('dashboard #4003 — scheduler-cycle detection is exact-match (#1442)', () => {

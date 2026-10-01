@@ -7208,7 +7208,12 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         if (msgMatch) { persistedId = msgMatch[1]; remaining = msgMatch[2]; }
         const replyMatch = remaining.match(/^\[reply-to: ([^\]]+)\]\n([\s\S]*)/);
         if (replyMatch) { replyTo = replyMatch[1]; remaining = replyMatch[2]; }
-        // Skip [ack:] for archive reading — not needed
+        // Skip [ack:] for archive reading — not needed, but it MUST be stripped
+        // (emit order [msg:]→[reply-to:]→[ack:]→[tags:]): without this, the
+        // [tags:] anchor below misses and both meta lines leak into content.
+        // Mirrors the main parser (dashboard-markdown.ts #1956).
+        const ackMatch = remaining.match(/^\[ack: ([^\]]+)\]\n([\s\S]*)/);
+        if (ackMatch) { remaining = ackMatch[2]; }
         // #4003 — [tags:] remonté pour la relecture a posteriori des archives
         const tagsMatch = remaining.match(/^\[tags: ([^\]]+)\]\n([\s\S]*)/);
         if (tagsMatch) {

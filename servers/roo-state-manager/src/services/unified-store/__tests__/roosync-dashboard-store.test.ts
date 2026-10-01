@@ -426,6 +426,23 @@ describe('PgUnifiedStoreWriter.syncRooSyncDashboard SQL shape', () => {
     expect(idsParam[0]).toBe('myia-po-2025:roo-extensions:ic-20260821T0900-a1b2');
   });
 
+  test('#1280 — journal batch binds tags ($6) from the rows, not a constant []', async () => {
+    await writer.syncRooSyncDashboard(sampleDashboardRow(), [
+      sampleMessageRow({ tags: ['CLAIMED', 'claude-interactive'] }),
+      sampleMessageRow({ id: 2, message_id: 'myia-po-2026:roo-extensions:ic-20260821T0930-e5f6', tags: [] }),
+    ]);
+    const journalCall = mockQuery.mock.calls.find(c =>
+      String(c[0]).includes('INSERT INTO roosync_dashboard_messages')
+    );
+    expect(journalCall).toBeDefined();
+    // $6::jsonb[] — one JSON array per row, threaded from the mapper's tags
+    // (the pre-#1280 writer bound a constant '[]' here).
+    const tagsParam = journalCall![1][5] as string[];
+    expect(tagsParam).toEqual(['["CLAIMED","claude-interactive"]', '[]']);
+    // Non-backfill DO UPDATE must refresh the column on re-sync.
+    expect(String(journalCall![0])).toContain('tags = EXCLUDED.tags');
+  });
+
   test('backfill mode: DO NOTHING everywhere, NO archive stamp', async () => {
     await writer.syncRooSyncDashboard(sampleDashboardRow(), [sampleMessageRow()], { backfill: true });
     const sql = queries().join('\n---\n');
