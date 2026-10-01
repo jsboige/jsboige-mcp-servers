@@ -612,4 +612,124 @@ describe('export_data - CONS-10', () => {
             expect(props.showMetadata).toBeDefined();
         });
     });
+
+    // ============================================================
+    // #4005 fixes: UTF-8 BOM on CSV file writes, shared path validation,
+    // unified inline stats wrapper.
+    // ============================================================
+    describe('#4005: BOM, inline wrapper, shared path validation', () => {
+        test('CSV file write is prefixed with UTF-8 BOM (Excel Windows auto-detect)', async () => {
+            const fs = await import('fs/promises');
+            // The mock is `default: { mkdir, writeFile }` per the file-level mock.
+            const writeFileMock = (fs as any).default?.writeFile ?? (fs as any).writeFile;
+
+            const args: ExportDataArgs = {
+                target: 'conversation',
+                format: 'csv',
+                taskId: 'task-123',
+                csvVariant: 'messages',
+                filePath: 'out.csv'
+            };
+
+            await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            expect(writeFileMock).toHaveBeenCalled();
+            const lastCall = writeFileMock.mock.calls[writeFileMock.mock.calls.length - 1];
+            const writtenBuffer = lastCall[1];
+            const writtenString = Buffer.isBuffer(writtenBuffer) ? writtenBuffer.toString('utf8') : writtenBuffer;
+            expect(writtenString.charCodeAt(0)).toBe(0xFEFF); // U+FEFF = UTF-8 BOM
+        });
+
+        test('CSV inline return is wrapped with stats header comment', async () => {
+            const args: ExportDataArgs = {
+                target: 'conversation',
+                format: 'csv',
+                taskId: 'task-123',
+                csvVariant: 'messages'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            const text = (result.content[0] as any).text;
+            expect(text.startsWith('<!-- export_data inline | format=csv')).toBe(true);
+            expect(text).toContain('task-123');
+        });
+
+        test('XML inline return is wrapped with stats header comment', async () => {
+            // Stub: a real XML is needed for the xmlExporterService.generateTaskXml call
+            mockXmlExporterService.generateTaskXml.mockReturnValue('<task>hello</task>');
+
+            const args: ExportDataArgs = {
+                target: 'task',
+                format: 'xml',
+                taskId: 'task-123'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            const text = (result.content[0] as any).text;
+            expect(text).toMatch(/^<!-- export_data inline \| format=xml target=task \| task 'task-123' \| /);
+            expect(text).toContain('<task>hello</task>');
+        });
+
+        test('JSON inline return is wrapped with stats header comment', async () => {
+            const args: ExportDataArgs = {
+                target: 'conversation',
+                format: 'json',
+                taskId: 'task-123',
+                jsonVariant: 'light'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            const text = (result.content[0] as any).text;
+            expect(text.startsWith('<!-- export_data inline | format=json')).toBe(true);
+            expect(text).toContain('task-123');
+        });
+
+        test('unsafe filePath returns isError PATH_TRAVERSAL_DETECTED (#4005 shared validator)', async () => {
+            const args: ExportDataArgs = {
+                target: 'conversation',
+                format: 'json',
+                taskId: 'task-123',
+                jsonVariant: 'light',
+                filePath: '../escape.json'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            expect(result.isError).toBe(true);
+            expect((result.content[0] as any).text).toMatch(/Unsafe file path|PATH_TRAVERSAL_DETECTED/);
+        });
+    });
 });

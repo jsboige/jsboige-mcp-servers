@@ -312,8 +312,10 @@ export async function handleRooSyncSearch(
 
         case 'diagnose': {
             // Déléguer au handler sémantique en mode diagnostic
+            // #4005: Use a query representative of the diagnose action (index health check).
+            // Previous hardcoded 'diagnose' string was meaningless for semantic measurement.
             const diagnoseArgs: SearchTasksByContentArgs = {
-                search_query: 'diagnose',
+                search_query: args.search_query || '_index_diagnostic_probe_',
                 diagnose_index: true,
                 // #2634: Forward circuit-breaker reset (action: "diagnose" path)
                 reset_circuit_breaker: args.reset_circuit_breaker,

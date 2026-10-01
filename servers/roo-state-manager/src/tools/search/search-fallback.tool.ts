@@ -60,6 +60,7 @@ export async function searchFallbackTool(
 
     if (!query || query.trim().length === 0) {
       return {
+        isError: true,
         content: [{
           type: 'text',
           text: JSON.stringify({
@@ -251,6 +252,7 @@ export async function searchFallbackTool(
 
   } catch (error) {
     return {
+      isError: true,
       content: [{
         type: 'text',
         text: JSON.stringify({
