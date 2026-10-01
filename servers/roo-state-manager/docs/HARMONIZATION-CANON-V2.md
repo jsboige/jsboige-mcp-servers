@@ -46,12 +46,18 @@ roosync_harmonization(action: "create", target_file: "claude-settings", fleet: [
     "disableClaudeAiConnectors": true,
     "disableRemoteControl": true,
     "outputStyle": "Proactive",
-    "model": "sonnet[1m]"
+    "model": "sonnet"
   }
 })
 ```
 
 Ajustements attendus avant create (arbitrage coordinateur) :
+- `model` : **alias nu uniquement** (`"sonnet"`, jamais `sonnet[1m]`) — le
+  suffixe `[1m]` n'est lu que sur les clés env `ANTHROPIC_DEFAULT_*_MODEL` ;
+  sur la clé `model` de settings c'est un id inconnu qui casse le picker et le
+  slider d'effort dès qu'un `ANTHROPIC_DEFAULT_SONNET_MODEL` est posé (incident
+  B, 01/10 — arbitrage jsboige/claudish#291 c.5927642834 ; fix gabarit parent
+  #3977). La forme fautive avait été collée ici depuis le canon v1.
 - `model` : ai-01 a refusé les 12 SET de son dry-run (conflit fenêtre /
   context-window.md — sa machine garde un choix local ; utiliser
   `exceptions` par machine plutôt que d'amputer le canon).
