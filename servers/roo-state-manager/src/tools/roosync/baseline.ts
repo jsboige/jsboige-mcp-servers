@@ -4,7 +4,7 @@
  * Gestion des baselines RooSync (update, version, restore, export).
  *
  * @module tools/roosync/baseline
- * @version 2.3.0
+ * @version 2.4.0
  */
 
 import { z } from 'zod';
@@ -86,11 +86,19 @@ export const BaselineArgsSchema = z.object({
   pushTags: z.boolean().optional()
     .describe('[version] Pousser les tags vers le dépôt distant (défaut: true)'),
   createChangelog: z.boolean().optional()
-    .describe('[version] Mettre à jour le CHANGELOG-baseline.md (défaut: true)'),
+    .describe('[version] Mettre à jour le CHANGELOG-baseline.md (défaut: true). Entrée datée YYYY-MM-DD en heure locale de la machine (#4001)'),
 
   // Paramètres pour action: restore
-  source: z.string().optional()
-    .describe('[restore] Source de la restauration (chemin de sauvegarde sync-config.ref.backup.*, requis pour restore)'),
+  // #4001 : rejet homogène du préfixe baseline-v au niveau du schéma (le handler
+  // throwait déjà TAG_RESTORE_UNSUPPORTED #2983, mais la validation d'entrée
+  // laissait passer la valeur — l'erreur était découverte au prix d'un appel).
+  source: z.string()
+    .regex(
+      /^(?!baseline-v)/,
+      'Source baseline-v* (tag Git) rejetée : restore-from-tag non supporté (#2983) — le contenu baseline vit sur GDrive (sharedState), pas dans les tags Git. Utilisez un chemin de sauvegarde sync-config.ref.backup.* sous .rollback/.'
+    )
+    .optional()
+    .describe('[restore] Chemin de sauvegarde sync-config.ref.backup.* sous .rollback/ (requis pour restore). Les sources baseline-v* (tags Git) sont rejetées : restore-from-tag non supporté (#2983, #4001)'),
   targetVersion: z.string().optional()
     .describe('[restore] Version cible pour la restauration (optionnel)'),
   restoredBy: z.string().optional()
@@ -503,7 +511,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
       }
 
       const versionEntry = `
-## [${args.version}] - ${new Date().toISOString().split('T')[0]}
+## [${args.version}] - ${formatLocalISODate()}
 
 ### Machine Baseline
 - **Machine**: ${currentBaseline.machineId}
@@ -641,6 +649,9 @@ async function handleRestoreAction(args: BaselineArgs, timestamp: string): Promi
   let restoredBaseline: BaselineConfig;
 
   if (args.source.startsWith('baseline-v')) {
+    // Backstop #4001 : le rejet est désormais aussi au niveau du schéma
+    // (BaselineArgsSchema + inputSchema servi) ; ce throw couvre les appelants
+    // directs qui bypassent la validation (registry dispatch `args as any`).
     // Restore-from-tag was removed (#2983): baseline content lives on GDrive
     // (sharedState), NOT in git tags. The version action creates a tag that only
     // marks the repo STATE at baseline-cut time — it never commits the baseline JSON
@@ -1075,6 +1086,20 @@ function generateBaselineVersion(): string {
   const minutes = String(now.getMinutes()).padStart(2, '0');
 
   return `${year}.${month}.${day}-${hours}${minutes}`;
+}
+
+/**
+ * Date YYYY-MM-DD en heure LOCALE de la machine (#4001).
+ * `toISOString().split('T')[0]` donnait la date UTC : une baseline coupée
+ * après 22:00 UTC (minuit local en été français) portait la date du jour
+ * suivant/precedent selon la TZ. Cohérent avec generateBaselineVersion()
+ * qui date déjà la version en composants locaux.
+ */
+export function formatLocalISODate(now: Date = new Date()): string {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**

@@ -149,7 +149,7 @@ vi.mock('../../../services/DiffDetector.js', () => ({
 }));
 
 // Import après les mocks
-import { roosync_baseline, BaselineArgs } from '../baseline.js';
+import { roosync_baseline, BaselineArgs, BaselineArgsSchema, formatLocalISODate } from '../baseline.js';
 
 describe('roosync_baseline', () => {
   beforeEach(async () => {
@@ -391,6 +391,88 @@ describe('roosync_baseline', () => {
       });
 
       expect(result.backupCreated).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // #4001 — rejet homogène du préfixe baseline-v (schéma = runtime)
+  // + date changelog en heure locale
+  // ============================================================
+
+  describe('#4001 — source prefix rejected at schema level (homogeneous with runtime)', () => {
+    test('BaselineArgsSchema rejects a baseline-v* source (restore-from-tag unsupported)', () => {
+      const parsed = BaselineArgsSchema.safeParse({
+        action: 'restore',
+        source: 'baseline-v1.2.3'
+      });
+
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        const message = JSON.stringify(parsed.error.issues);
+        expect(message).toContain('restore-from-tag');
+        expect(message).toContain('sync-config.ref.backup');
+      }
+    });
+
+    test('BaselineArgsSchema still accepts a backup path source', () => {
+      const parsed = BaselineArgsSchema.safeParse({
+        action: 'restore',
+        source: 'C:/store/.rollback/sync-config.ref.backup.2026-01-01T00-00-00-000Z.json'
+      });
+
+      expect(parsed.success).toBe(true);
+    });
+
+    test('runtime backstop still throws TAG_RESTORE_UNSUPPORTED for direct callers bypassing the schema', async () => {
+      // Le schéma rejette désormais, mais le handler reste la garde pour les
+      // appels directs (registry dispatch `args as any`).
+      await expect(
+        roosync_baseline({
+          action: 'restore',
+          source: 'baseline-v0.9.0',
+          createBackup: false
+        })
+      ).rejects.toThrow('Restore-from-tag n\'est pas supporté');
+    });
+  });
+
+  describe('#4001 — changelog entry dated in machine local time', () => {
+    test('formatLocalISODate reads local calendar components, not UTC', () => {
+      // Constructed in LOCAL time: 2026-07-16 00:30 local (UTC+2 runner →
+      // 2026-07-15T22:30Z). A UTC-based implementation would return 2026-07-15.
+      expect(formatLocalISODate(new Date(2026, 6, 16, 0, 30))).toBe('2026-07-16');
+      // Local 2026-07-15 23:30 west of UTC (UTC-5 runner → 2026-07-16T04:30Z).
+      // A UTC-based implementation would return 2026-07-16.
+      expect(formatLocalISODate(new Date(2026, 6, 15, 23, 30))).toBe('2026-07-15');
+    });
+
+    test('version action writes the LOCAL date into the changelog header', async () => {
+      // Freeze an instant where UTC and local calendar days diverge (east of UTC):
+      // 2026-07-15T23:30:00Z = 2026-07-16 01:30 in French summer (UTC+2).
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
+      try {
+        await roosync_baseline({
+          action: 'version',
+          version: '3.1.4',
+          pushTags: false
+        });
+
+        const changelog = readFileSync(
+          join(testSharedStatePath, 'CHANGELOG-baseline.md'),
+          'utf-8'
+        );
+        expect(changelog).toContain(`## [3.1.4] - ${formatLocalISODate(new Date())}`);
+
+        // Discriminating on any runner east of UTC (fleet = UTC+1/+2): the UTC
+        // date (2026-07-15) must NOT be the written one.
+        const eastOfUTC = new Date('2026-07-15T23:30:00Z').getTimezoneOffset() <= 0;
+        if (eastOfUTC) {
+          expect(changelog).toContain('## [3.1.4] - 2026-07-16');
+        }
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

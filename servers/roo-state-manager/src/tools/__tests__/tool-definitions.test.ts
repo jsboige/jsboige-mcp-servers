@@ -365,6 +365,21 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(actions).toContain('export');
         });
 
+        // #4001 — schema/runtime homogeneity: the runtime has thrown
+        // TAG_RESTORE_UNSUPPORTED on baseline-v* sources since #2983, but the
+        // served schema accepted them. The wire schema must reject the prefix
+        // too (JSON Schema `pattern` is unanchored; `^` pins it to position 0).
+        it('roosync_baseline source must reject baseline-v* tags on the wire (#4001)', () => {
+            const source = roosyncBaselineDefinition.inputSchema.properties.source as Record<string, unknown>;
+            expect(source.pattern).toBe('^(?!baseline-v)');
+            const pattern = new RegExp(source.pattern as string);
+            expect(pattern.test('baseline-v1.0.0')).toBe(false);
+            expect(pattern.test('baseline-v2.0.0-beta1')).toBe(false);
+            // Backup paths (the only supported source since #2983) stay valid.
+            expect(pattern.test('C:/store/.rollback/sync-config.ref.backup.2026-01-01.json')).toBe(true);
+            expect(pattern.test('/mnt/g/.rollback/sync-config.ref.backup.2026-01-01.json')).toBe(true);
+        });
+
         // [REMOVED CONS-8 #603] roosync_decision schema test — dead tool removed from tools/list
 
         it('roosync_attachments should require action', () => {
