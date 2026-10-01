@@ -614,8 +614,9 @@ export const roosyncIndexingTool: Tool = {
             },
             max_age_days: {
                 type: 'number',
-                description: 'For cleanup. Max age in days of vectors to keep (default: 90).',
-                default: 90
+                description: 'For cleanup. Max age in days of vectors to keep (default: 90, minimum: 1).',
+                default: 90,
+                minimum: 1
             },
             workspace_name_filter: {
                 type: 'string',
@@ -1088,8 +1089,19 @@ export async function handleRooSyncIndexing(
         }
 
         case 'cleanup': {
+            // #3983: `|| 90` laissait passer un max_age_days négatif (truthy) — le cutoff
+            // basculait dans le futur et le filtre {lt: futur} matchait TOUS les vecteurs.
+            const maxAgeDays = args.max_age_days ?? 90;
+            if (!Number.isFinite(maxAgeDays) || maxAgeDays < 1) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `max_age_days invalide: ${args.max_age_days} — doit être un nombre >= 1 (jours). Une valeur négative produirait un cutoff futur et une purge totale (#3983).`
+                    }]
+                };
+            }
             const { cleanupOldVectors } = await import('../../services/task-indexer/VectorIndexer.js');
-            const maxAgeDays = args.max_age_days || 90;
             const isDryRun = args.dry_run ?? false;
 
             try {

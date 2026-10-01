@@ -26,6 +26,7 @@ const {
     mockIndexTask,
     mockDetectStorageLocations,
     mockFindConversationById,
+    mockCleanupOldVectors,
     mockHomedir,
     sharedStatePathHolder,
 } = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ const {
     mockIndexTask: vi.fn(),
     mockDetectStorageLocations: vi.fn().mockReturnValue([]),
     mockFindConversationById: vi.fn(),
+    mockCleanupOldVectors: vi.fn(),
     mockHomedir: { value: '' as string },
     sharedStatePathHolder: { value: '' as string },
 }));
@@ -53,6 +55,10 @@ vi.mock('../../../services/qdrant.js', () => ({
 
 vi.mock('../../../services/task-indexer.js', () => ({
     indexTask: mockIndexTask,
+}));
+
+vi.mock('../../../services/task-indexer/VectorIndexer.js', () => ({
+    cleanupOldVectors: mockCleanupOldVectors,
 }));
 
 vi.mock('../../../utils/roo-storage-detector.js', () => ({
@@ -401,5 +407,67 @@ describe('roosync_indexing repair_gaps action', () => {
         expect(result.isError).toBe(true);
         expect(result.content[0].text).toContain('Error during repair_gaps');
         expect(result.content[0].text).toContain('qdrant url not configured');
+    });
+});
+
+// #3983 — cleanup max_age_days: un négatif/NaN était truthy-falsy sous `|| 90`,
+// le cutoff basculait dans le futur et {lt: futur} matchait TOUS les vecteurs.
+// La garde doit refuser l'entrée AVANT tout appel à cleanupOldVectors.
+describe('roosync_indexing action=cleanup — max_age_days validation (#3983)', () => {
+    beforeEach(() => {
+        mockCleanupOldVectors.mockReset();
+        mockCleanupOldVectors.mockResolvedValue({ deletedCount: 0, cutoffDate: '2026-07-03T00:00:00.000Z' });
+    });
+
+    test('negative max_age_days → isError, cleanupOldVectors NOT called', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup', max_age_days: -30 } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('#3983');
+        expect(mockCleanupOldVectors).not.toHaveBeenCalled();
+    });
+
+    test('NaN max_age_days → isError, cleanupOldVectors NOT called', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup', max_age_days: NaN } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+        expect(result.isError).toBe(true);
+        expect(mockCleanupOldVectors).not.toHaveBeenCalled();
+    });
+
+    test('zero max_age_days → isError (0 était silencieusement réinterprété en 90, et signifie en réalité « tout purger »)', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup', max_age_days: 0 } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+        expect(result.isError).toBe(true);
+        expect(mockCleanupOldVectors).not.toHaveBeenCalled();
+    });
+
+    test('valid max_age_days passes through to cleanupOldVectors', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup', max_age_days: 180, dry_run: true } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+        expect(result.isError).toBe(false);
+        expect(mockCleanupOldVectors).toHaveBeenCalledTimes(1);
+        expect(mockCleanupOldVectors).toHaveBeenCalledWith(180, true, undefined);
+    });
+
+    test('omitted max_age_days defaults to 90', async () => {
+        const ctx = newCtx();
+        const result: any = await handleRooSyncIndexing(
+            { action: 'cleanup' } as any,
+            ctx.cache, ctx.ensureFresh, ctx.saveSkeleton, new Set(), ctx.setEnabled, ctx.rebuildHandler
+        );
+        expect(result.isError).toBe(false);
+        expect(mockCleanupOldVectors).toHaveBeenCalledWith(90, false, undefined);
     });
 });

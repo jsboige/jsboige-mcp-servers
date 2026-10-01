@@ -201,7 +201,7 @@ export const roosyncIndexingDefinition = {
             claude_code_sessions: { type: 'boolean', description: 'For action=archive. Archive Claude Code JSONL sessions to GDrive as cloud copies (#1747, RX46 24/09: sanctuary = access, not confinement). Sessions that grew since their last archive are re-archived. Never touches the source files.', default: false },
             max_sessions: { type: 'number', description: 'For action=archive with claude_code_sessions=true. Max sessions to process (0 = all).', default: 0 },
             source: { type: 'string', enum: ['roo', 'claude-code'], description: "For action=index. Default: 'roo'" },
-            max_age_days: { type: 'number', description: 'For cleanup. Max age in days (default: 90).', default: 90 },
+            max_age_days: { type: 'number', description: 'For cleanup. Max age in days (default: 90, minimum: 1).', default: 90, minimum: 1 },
             workspace_name_filter: { type: 'string', description: 'For cleanup. Optional workspace_name filter.' },
             deep: { type: 'boolean', description: 'For diagnose. Enable deep diagnostic.', default: false },
             sample_size: { type: 'number', description: 'For diagnose with deep=true. Scroll sample size (default 1000, max 5000).', default: 1000 },
