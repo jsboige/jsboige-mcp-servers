@@ -464,11 +464,13 @@ describe('roosync_baseline', () => {
         );
         expect(changelog).toContain(`## [3.1.4] - ${formatLocalISODate(new Date())}`);
 
-        // Discriminating on any runner east of UTC (fleet = UTC+1/+2): the UTC
-        // date (2026-07-15) must NOT be the written one.
-        const eastOfUTC = new Date('2026-07-15T23:30:00Z').getTimezoneOffset() <= 0;
-        if (eastOfUTC) {
+        // Discriminating only where the local calendar day differs from the UTC day
+        // at this instant (fleet = UTC+1/+2 → 2026-07-16). A UTC runner (GitHub CI)
+        // has offset 0 and the same day, so the branch is skipped there.
+        const frozen = new Date('2026-07-15T23:30:00Z');
+        if (frozen.getDate() !== frozen.getUTCDate()) {
           expect(changelog).toContain('## [3.1.4] - 2026-07-16');
+          expect(changelog).not.toContain('## [3.1.4] - 2026-07-15');
         }
       } finally {
         vi.useRealTimers();
