@@ -407,7 +407,10 @@ export class JsonCsvExporter {
 
     private escapeCsv(value: any): string {
         const str = String(value || '');
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        // #3991 — \r must quote too: a bare-CR cell stays unquoted otherwise,
+        // and a lax parser (Excel) merges it with the next cell, executing any
+        // `=cmd|…\r` formula payload at open (CSV injection).
+        if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
             return `"${str.replace(/"/g, '""')}"`;
         }
         return str;

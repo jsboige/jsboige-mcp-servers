@@ -16,7 +16,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleExportData, exportDataTool, ExportDataArgs } from '../export-data.js';
+import { handleExportData, exportDataTool, ExportDataArgs, INLINE_EXPORT_MAX_CHARS } from '../export-data.js';
 import { ConversationSkeleton } from '../../../types/conversation.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -709,6 +709,36 @@ describe('export_data - CONS-10', () => {
             const text = (result.content[0] as any).text;
             expect(text.startsWith('<!-- export_data inline | format=json')).toBe(true);
             expect(text).toContain('task-123');
+        });
+
+        test('inline return is hard-capped when the payload exceeds INLINE_EXPORT_MAX_CHARS (#3991)', async () => {
+            mockGenerateSummary.mockResolvedValue({
+                success: true,
+                content: 'x'.repeat(INLINE_EXPORT_MAX_CHARS + 150_000)
+            });
+
+            const args: ExportDataArgs = {
+                target: 'conversation',
+                format: 'json',
+                taskId: 'task-123',
+                jsonVariant: 'full'
+            };
+
+            const result = await handleExportData(
+                args,
+                mockCache,
+                mockXmlExporterService as any,
+                mockEnsureCache,
+                mockGetSkeleton
+            );
+
+            const text = (result.content[0] as any).text;
+            // Visible truncation notice, full generated size still reported.
+            expect(text).toContain('TRUNCATED (#3991)');
+            expect(text).toContain('re-run with filePath');
+            // Header lines + exactly the capped payload — not the full 1.15 MB.
+            expect(text.length).toBeGreaterThan(INLINE_EXPORT_MAX_CHARS);
+            expect(text.length).toBeLessThanOrEqual(INLINE_EXPORT_MAX_CHARS + 500);
         });
 
         test('unsafe filePath returns isError PATH_TRAVERSAL_DETECTED (#4005 shared validator)', async () => {

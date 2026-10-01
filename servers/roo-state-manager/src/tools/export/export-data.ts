@@ -59,6 +59,15 @@ function getMaxProjectExportBytes(): number {
 const CSV_UTF8_BOM = '﻿';
 
 /**
+ * #3991 fix: hard cap on the inline return. Without filePath the whole payload
+ * lands in the caller's context window — a `jsonVariant: 'full'` on a large
+ * conversation could return 5-50 MB and force a compaction/timeout. Beyond the
+ * cap the payload is truncated with a visible notice pointing at filePath for
+ * the full export.
+ */
+export const INLINE_EXPORT_MAX_CHARS = 1_000_000;
+
+/**
  * #4005 fix: Build the inline return for an export when no filePath was provided.
  *
  * All formats (XML/JSON/CSV) now wrap the raw payload with a short stats header
@@ -78,7 +87,13 @@ function buildInlineExportResult(
         : meta?.projectPath ? `project '${meta.projectPath}'`
         : `(no subject)`;
     const records = meta?.recordCount !== undefined ? `${meta.recordCount} record(s), ` : '';
-    const header = `<!-- export_data inline | format=${format} target=${target} | ${subject} | ${records}${sizeKb} KB -->\n`;
+    let header = `<!-- export_data inline | format=${format} target=${target} | ${subject} | ${records}${sizeKb} KB -->\n`;
+    if (content.length > INLINE_EXPORT_MAX_CHARS) {
+        // sizeKb reports the FULL size on purpose — the caller must see what
+        // was actually generated, not what survived the cap.
+        header += `<!-- export_data inline TRUNCATED (#3991): payload ${sizeKb} KB exceeds the ${Math.round(INLINE_EXPORT_MAX_CHARS / 1024)} KB inline cap — re-run with filePath to persist the full export -->\n`;
+        content = content.slice(0, INLINE_EXPORT_MAX_CHARS);
+    }
     return { content: [{ type: 'text', text: header + content }] };
 }
 

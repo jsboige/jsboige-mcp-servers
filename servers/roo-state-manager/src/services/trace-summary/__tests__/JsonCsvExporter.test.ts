@@ -490,6 +490,16 @@ describe('escapeCsv', () => {
         expect(result.content).toContain('Line1');
         expect(result.content).toContain('Line2');
     });
+
+    it('quotes a cell containing a bare \\r — CSV injection vector (#3991)', async () => {
+        const conv = makeSkeleton([makeMessage('user', "=cmd|' /C calc'!A0\rNEXTCELL")]);
+        conv.metadata.workspace = 'ws';
+        const result = await exporter.generateCsvSummary(conv, { ...baseOptions, csvVariant: 'conversations' }, defaultCsvHelpers);
+
+        // A bare CR must force quoting: unquoted, a lax parser (Excel) merges
+        // the cell with the next one and executes the formula payload at open.
+        expect(result.content).toContain("\"" + "=cmd|' /C calc'!A0\rNEXTCELL" + "\"");
+    });
 });
 
 // ===========================================================================
