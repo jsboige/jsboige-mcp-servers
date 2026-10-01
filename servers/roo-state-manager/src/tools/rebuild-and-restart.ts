@@ -84,6 +84,19 @@ export const rebuildAndRestart = {
                 throw new GenericError(`Could not determine working directory for MCP "${mcp_name}". Please add a "cwd" property to its configuration.`, GenericErrorCode.INVALID_ARGUMENT);
             }
 
+            // #4006: refuse to build outside a package root — the dirname×2
+            // heuristic can resolve to a filesystem root where `npm run build`
+            // would fail obscurely or hit the wrong project (same guard as
+            // roosync_mcp_management rebuild).
+            try {
+                await fs.access(path.join(mcpPath, 'package.json'));
+            } catch {
+                throw new GenericError(
+                    `Resolved path "${mcpPath}" for MCP "${mcp_name}" has no package.json — the args[0] heuristic is probably wrong. Please add a "cwd" property pointing at the server root.`,
+                    GenericErrorCode.INVALID_ARGUMENT
+                );
+            }
+
             let warningMessage = '';
             if (!mcpConfig.watchPaths || mcpConfig.watchPaths.length === 0) {
                 warningMessage = `\n\n[WARNING] MCP "${mcp_name}" has no 'watchPaths' configured. The restart is triggered globally, which is less reliable. For best results, add a 'watchPaths' property to its configuration pointing to the build output file.`;

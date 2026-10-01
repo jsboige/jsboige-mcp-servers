@@ -125,6 +125,20 @@ describe('parseSinceToEpoch', () => {
     it('parses absolute ISO timestamps', () => {
         expect(parseSinceToEpoch('2026-09-02T13:52:23Z')).toBe(Date.parse('2026-09-02T13:52:23Z'));
     });
+    it('parses absolute ISO timestamps with explicit offset', () => {
+        expect(parseSinceToEpoch('2026-09-02T13:52:23+02:00')).toBe(Date.parse('2026-09-02T13:52:23+02:00'));
+    });
+    it('parses date-only forms (UTC by spec)', () => {
+        expect(parseSinceToEpoch('2026-09-02')).toBe(Date.parse('2026-09-02'));
+    });
+    // #4006: un datetime sans Z/offset serait lu en heure LOCALE du serveur —
+    // null (non parsable) plutôt qu'une fenêtre silencieusement fausse
+    it('returns null on TZ-naive datetime (would be read in server local time)', () => {
+        expect(parseSinceToEpoch('2026-09-02T13:52:23')).toBeNull();
+    });
+    it('returns null on TZ-naive datetime without seconds', () => {
+        expect(parseSinceToEpoch('2026-09-02T13:52')).toBeNull();
+    });
     it('returns null on garbage (no false window)', () => {
         expect(parseSinceToEpoch('forever')).toBeNull();
     });
@@ -281,6 +295,19 @@ describe('validateClaudishArgs', () => {
     });
     it('accepts legitimate values', () => {
         expect(validateClaudishArgs({ since: '1h30m', container: 'claudish-proxy', docker_context: 'hub-po-2023' })).toBeNull();
+    });
+    // #4006: un datetime sans Z/offset serait interprété en heure LOCALE du
+    // serveur par Date.parse — rejet avec message explicite.
+    it('rejects TZ-naive absolute since with a clear message (#4006)', () => {
+        const err = validateClaudishArgs({ since: '2026-09-02T13:52:23' });
+        expect(err).toContain('timezone');
+        expect(err).toContain('2026-09-02T13:52:23'); // la valeur fautive est echoée
+    });
+    it('accepts absolute since with Z or explicit offset (#4006)', () => {
+        expect(validateClaudishArgs({ since: '2026-09-02T13:52:23Z' })).toBeNull();
+        expect(validateClaudishArgs({ since: '2026-09-02T13:52:23+02:00' })).toBeNull();
+        expect(validateClaudishArgs({ since: '2026-09-02' })).toBeNull(); // date-only = UTC
+        expect(validateClaudishArgs({ since: '30m' })).toBeNull();
     });
     it('treats empty/null docker_context as the local default context (#1169)', () => {
         // Causal: before #1169, '' failed NAME_RE and returned "Invalid 'docker_context'".

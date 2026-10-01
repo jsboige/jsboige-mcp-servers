@@ -128,6 +128,16 @@ function toIso(ts: number): string {
     return new Date(ts).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/**
+ * True when `since` carries a time-of-day but no timezone designator ('Z' or
+ * ±HH:MM offset): Date.parse would read it in the SERVER's local timezone,
+ * not UTC (#4006). Date-only forms are UTC by spec and are not naive.
+ */
+function isTzNaiveDatetime(since: string): boolean {
+    const trimmed = since.trim();
+    return /\d{2}:\d{2}/.test(trimmed) && !/(z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+}
+
 /** Relative (`1h30m`, `45s`, `2d`) or absolute ISO `--since` → epoch ms. Null if unparseable. */
 export function parseSinceToEpoch(since: string, now: number = Date.now()): number | null {
     const trimmed = since.trim();
@@ -141,7 +151,10 @@ export function parseSinceToEpoch(since: string, now: number = Date.now()): numb
         return now - ms;
     }
     const abs = Date.parse(trimmed);
-    return Number.isNaN(abs) ? null : abs;
+    if (Number.isNaN(abs)) return null;
+    // #4006: TZ-naive datetimes resolve in local time — treat as unparseable.
+    if (isTzNaiveDatetime(trimmed)) return null;
+    return abs;
 }
 
 // ── Argument validation (shell-injection guard — exec runs through a shell) ─
@@ -156,6 +169,12 @@ export function validateClaudishArgs(args: {
 }): string | null {
     if (args.since !== undefined && (typeof args.since !== 'string' || !SINCE_RE.test(args.since))) {
         return `Invalid 'since' (shell metacharacters rejected): ${JSON.stringify(args.since)}`;
+    }
+    // #4006: absolute datetimes without 'Z' or an explicit ±HH:MM offset are
+    // parsed in the server's local timezone (Date.parse) — reject with a clear
+    // message instead of silently reading the wrong window.
+    if (typeof args.since === 'string' && isTzNaiveDatetime(args.since)) {
+        return `Invalid 'since': absolute timestamps must carry a timezone ('2026-10-01T12:00:00Z' or '+02:00' offset) — ${JSON.stringify(args.since)} would be read in the server's local timezone. Relative windows ('30m', '1h30m') need none.`;
     }
     if (args.container !== undefined && (typeof args.container !== 'string' || !NAME_RE.test(args.container))) {
         return `Invalid 'container' (shell metacharacters rejected): ${JSON.stringify(args.container)}`;
@@ -424,7 +443,7 @@ export const claudishTraffic = {
         type: 'object',
         properties: {
             bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes, integer (e.g. 5, 30). Buckets are rendered up to the current time.' },
-            since: { type: 'string', description: 'docker logs --since window: "30m", "2h", "1h30m", or absolute ISO timestamp. Default "2h". Hub emits 5-6k lines/h.' },
+            since: { type: 'string', description: 'docker logs --since window: "30m", "2h", "1h30m", or absolute ISO timestamp WITH timezone ("2026-10-01T12:00:00Z" — a datetime without Z/offset is rejected, it would be read in the server local time). Default "2h". Hub emits 5-6k lines/h.' },
             container: { type: 'string', description: 'Container name. Default "claudish-proxy"; if the default is absent and exactly one other claudish* container runs here, it is auto-selected (with a visible note). An explicitly-passed name is never substituted — candidates are listed instead.' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine header value).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine. Empty string or null selects the local default context (no --context flag), like machine:""' },

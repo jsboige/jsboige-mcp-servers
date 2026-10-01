@@ -13,6 +13,10 @@ const { mockReadFile } = vi.hoisted(() => ({
 	mockReadFile: vi.fn()
 }));
 
+const { mockAccess } = vi.hoisted(() => ({
+	mockAccess: vi.fn()
+}));
+
 vi.mock('child_process', () => ({
 	exec: (...args: any[]) => {
 		// Handle both exec(cmd, opts, cb) and exec(cmd, cb) signatures
@@ -22,8 +26,9 @@ vi.mock('child_process', () => ({
 }));
 
 vi.mock('fs/promises', () => ({
-	default: { readFile: mockReadFile },
-	readFile: mockReadFile
+	default: { readFile: mockReadFile, access: mockAccess },
+	readFile: mockReadFile,
+	access: mockAccess
 }));
 
 vi.mock('../../types/errors.js', () => ({
@@ -44,6 +49,10 @@ describe('rebuild-and-restart', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// #4006: rebuild now requires package.json at the resolved path — default
+		// to present so legacy cwd tests keep their semantics; the refusal test
+		// overrides per-call.
+		mockAccess.mockResolvedValue(undefined);
 		// Use a path recognized by getMcpSettingsPath() safety guard
 		process.env.APPDATA = 'C:\\Users\\Test\\AppData\\Roaming';
 	});
@@ -187,6 +196,30 @@ describe('rebuild-and-restart', () => {
 		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
 
 		expect(result.content[0].text).toContain('successful');
+	});
+
+	test('refuses to build when resolved path has no package.json (#4006)', async () => {
+		// dirname(dirname('D:/build/index.js')) = 'D:/' — filesystem root, no package.json
+		mockReadFile.mockResolvedValue(JSON.stringify({
+			mcpServers: {
+				'test-mcp': {
+					command: 'node',
+					args: ['D:/build/index.js']
+				}
+			}
+		}));
+
+		mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+			cb(null, 'Build OK', '');
+		});
+
+		const { rebuildAndRestart } = await import('../rebuild-and-restart.js');
+		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+
+		expect(result.content[0].text).toContain('package.json');
+		expect(mockExec).not.toHaveBeenCalledWith(expect.stringContaining('npm run build'), expect.anything(), expect.anything());
 	});
 
 	test('handles settings file read error', async () => {

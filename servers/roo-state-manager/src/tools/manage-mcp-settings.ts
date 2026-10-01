@@ -1,4 +1,5 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -268,7 +269,9 @@ async function writeMcpSettings(settings: McpSettings, backup: boolean): Promise
 
 async function backupMcpSettings(): Promise<CallToolResult> {
     try {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        // #4006: PID + random suffix — deux backups concurrents dans la même
+        // milliseconde s'écrasaient mutuellement (perte d'historique de rollback).
+        const timestamp = `${new Date().toISOString().replace(/[:.]/g, '-')}_${process.pid}-${randomBytes(4).toString('hex')}`;
         const backupPath = getMcpSettingsPath().replace('.json', `_backup_${timestamp}.json`);
         
         const content = await fs.readFile(getMcpSettingsPath(), 'utf-8');

@@ -166,6 +166,29 @@ describe('Chemin public — cycle de vie complet (create → apply → confirm �
     expect(closed.status).toBe('success');
   });
 
+  test('confirm écho claimedHashReceived (#4006) — null sans claimed_hash, écho avec', async () => {
+    const created = await roosyncHarmonization(args({
+      action: 'create', target_file: 'claude-settings', canon, fleet: [LOCAL],
+    }));
+    const campaignId = (created as any).campaign.id;
+    const canonHash = (created as any).campaign.canon.hash as string;
+
+    await roosyncHarmonization(args({ action: 'apply', campaign_id: campaignId }));
+
+    // sans claimed_hash : écho null
+    const c1 = await roosyncHarmonization(args({ action: 'confirm', campaign_id: campaignId }));
+    expect(c1.status).toBe('confirmed');
+    expect((c1 as any).claimedHashReceived).toBeNull();
+
+    // avec claimed_hash conforme : l'appelant peut vérifier que SON hash a été évalué
+    const c2 = await roosyncHarmonization(args({
+      action: 'confirm', campaign_id: campaignId, claimed_hash: canonHash,
+    }));
+    expect(c2.status).toBe('confirmed');
+    expect((c2 as any).claimedHashReceived).toBe(canonHash);
+    expect((c2 as any).observedHash).toBe(canonHash);
+  });
+
   test('canon avec secret rejeté au create (fail fast)', async () => {
     const bad = await roosyncHarmonization(args({
       action: 'create',

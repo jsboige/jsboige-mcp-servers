@@ -223,6 +223,22 @@ describe('roosyncMcpManagement', () => {
             expect(result.details?.backupPath).toBeDefined();
             expect(result.details?.backupPath).toContain('_backup_');
         });
+
+        // #4006: suffixe PID+random — deux backups consécutifs (même milliseconde)
+        // ne doivent pas s'écraser
+        test('should produce distinct backup paths on consecutive calls (#4006)', async () => {
+            const mockSettings = { mcpServers: { 'test': { command: 'node' } } };
+
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.writeFile).mockResolvedValue();
+
+            const r1 = await roosyncMcpManagement({ action: 'manage', subAction: 'backup' });
+            const r2 = await roosyncMcpManagement({ action: 'manage', subAction: 'backup' });
+
+            expect(r1.details?.backupPath).not.toBe(r2.details?.backupPath);
+            expect(r1.details?.backupPath).toContain(`_${process.pid}-`);
+            expect(r2.details?.backupPath).toContain(`_${process.pid}-`);
+        });
     });
 
     // ============================================================
@@ -492,6 +508,69 @@ describe('roosyncMcpManagement', () => {
                 action: 'rebuild',
                 mcp_name: 'test-mcp'
             })).rejects.toThrow('Build failed');
+        });
+
+        // #4006: le chemin résolu doit être une racine de package — l'heuristique
+        // dirname×2 (args[0]) peut résoudre vers une racine de disque.
+        test('should refuse rebuild when resolved path has no package.json (INVALID_MCP_PATH)', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-mcp': {
+                        command: 'node',
+                        // dirname(dirname('D:/build/index.js')) = 'D:/'
+                        args: ['D:/build/index.js']
+                    }
+                }
+            };
+
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.access).mockRejectedValue(new Error('ENOENT'));
+
+            await expect(roosyncMcpManagement({
+                action: 'rebuild',
+                mcp_name: 'test-mcp'
+            })).rejects.toMatchObject({
+                code: 'INVALID_MCP_PATH',
+                message: expect.stringContaining('package.json')
+            });
+
+            // le build ne doit JAMAIS être lancé hors racine de package
+            expect(exec).not.toHaveBeenCalled();
+
+            // clearAllMocks ne reset pas les implementations — rendre access
+            // permissive pour les tests suivants
+            vi.mocked(fs.access).mockReset();
+        });
+
+        test('should accept args[0] heuristic path when package.json exists', async () => {
+            const mockSettings = {
+                mcpServers: {
+                    'test-mcp': {
+                        command: 'node',
+                        args: ['/srv/mcp/build/index.js'],
+                        watchPaths: ['/srv/mcp/build/index.js']
+                    }
+                }
+            };
+
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.access).mockResolvedValue(undefined);
+
+            vi.mocked(exec).mockImplementation(((cmd: string, optionsOrCallback: any, maybeCallback?: any) => {
+                const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
+                if (callback) {
+                    setImmediate(() => callback(null, 'Build successful', ''));
+                }
+                return {} as any;
+            }) as any);
+
+            const result = await roosyncMcpManagement({
+                action: 'rebuild',
+                mcp_name: 'test-mcp'
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.details?.mcpPath).toBe('/srv/mcp');
         });
     });
 
