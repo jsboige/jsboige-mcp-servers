@@ -142,6 +142,27 @@ describe('handleRooSyncSummarize', () => {
         handleRooSyncSummarize({ type: 'trace', taskId: 'task-001', source: 'roo' })
       ).rejects.toThrow('getConversationSkeleton est requis');
     });
+
+    // #4006: la plage doit être validée à l'entrée unifiée, pas seulement
+    // par le delegate (ContentClassifier).
+    test('startIndex > endIndex → VALIDATION_FAILED (#4006)', async () => {
+      await expect(
+        handleRooSyncSummarize(
+          { type: 'trace', taskId: 'task-001', startIndex: 10, endIndex: 5 },
+          mockGetConversationSkeleton
+        )
+      ).rejects.toThrow('startIndex (10) doit être <= endIndex (5)');
+    });
+
+    test('startIndex <= endIndex accepté (plage valide)', async () => {
+      mockHandleGenerateTraceSummary.mockResolvedValue('# ok');
+      await expect(
+        handleRooSyncSummarize(
+          { type: 'trace', taskId: 'task-001', startIndex: 5, endIndex: 10 },
+          mockGetConversationSkeleton
+        )
+      ).resolves.toBe('# ok');
+    });
   });
 
   // ============================================================

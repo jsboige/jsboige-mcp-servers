@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { exec } from 'child_process';
+import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -529,6 +530,18 @@ async function handleRebuildAction(args: McpManagementArgs): Promise<McpManageme
         );
     }
 
+    // #4006: refuser de builder hors d'une racine de package — l'heuristique
+    // dirname×2 peut résoudre vers une racine de disque (D:/build/index.js → D:/)
+    // où `npm run build` échouerait de façon obscure ou toucherait le mauvais projet.
+    try {
+        await fs.access(path.join(mcpPath, 'package.json'));
+    } catch {
+        throw new HeartbeatServiceError(
+            `Chemin résolu "${mcpPath}" pour MCP "${mcp_name}" sans package.json — heuristique args[0] probablement fausse. Ajoutez une propriété "cwd" pointant vers la racine du serveur.`,
+            'INVALID_MCP_PATH'
+        );
+    }
+
     // Construire le build
     const buildResult = await runNpmBuild(mcpPath);
 
@@ -594,7 +607,9 @@ async function handleTouchAction(args: McpManagementArgs): Promise<McpManagement
 // ====================================================================
 
 async function backupMcpSettings(targetExtension?: 'roo' | 'zoo'): Promise<string> {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    // #4006: PID + random suffix — deux backups concurrents dans la même
+    // milliseconde s'écrasaient mutuellement (perte d'historique de rollback).
+    const timestamp = `${new Date().toISOString().replace(/[:.]/g, '-')}_${process.pid}-${randomBytes(4).toString('hex')}`;
     const settingsPath = getMcpSettingsPath(targetExtension);
     const backupPath = settingsPath.replace('.json', `_backup_${timestamp}.json`);
 

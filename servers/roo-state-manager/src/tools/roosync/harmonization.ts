@@ -174,6 +174,10 @@ export async function roosyncHarmonization(args: HarmonizationArgs): Promise<Rec
           status: result.status,
           message: `Confirmation ${args.campaign_id} [${result.status}]: ${result.detail}`,
           observedHash: result.observedHash,
+          // #4006: écho du hash reçu — l'appelant peut vérifier que c'est bien
+          // le sien qui a été évalué (un claimedHash n'est jamais compté comme
+          // confirmation, cf. service.confirm).
+          claimedHashReceived: args.claimed_hash ?? null,
         };
       }
       case 'status': {

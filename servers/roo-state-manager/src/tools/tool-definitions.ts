@@ -269,7 +269,7 @@ export const claudishTrafficDefinition = {
         type: 'object',
         properties: {
             bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes.' },
-            since: { type: 'string', description: 'docker logs --since window. Default "2h".', default: '2h' },
+            since: { type: 'string', description: 'docker logs --since window. Default "2h". Absolute datetimes must carry a timezone (Z or ±HH:MM offset) — TZ-naive values are rejected (#4006).', default: '2h' },
             container: { type: 'string', description: 'Container name. Default "claudish-proxy".', default: 'claudish-proxy' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL: docker --context to query a remote hub. Empty/null = local default context (#1169).' },

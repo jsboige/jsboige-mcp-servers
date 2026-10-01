@@ -14,8 +14,10 @@ vi.mock('child_process', () => {
 // Mock fs/promises
 vi.mock('fs/promises', () => {
     const mockReadFile = vi.fn();
+    const mockAccess = vi.fn();
     return {
         readFile: mockReadFile,
+        access: mockAccess,
     };
 });
 
@@ -31,6 +33,7 @@ vi.mock('path', async () => {
 describe('rebuild_and_restart_mcp Tool', () => {
     let mockExec: any;
     let mockReadFile: any;
+    let mockAccess: any;
     let mockJoin: any;
 
     beforeEach(async () => {
@@ -38,12 +41,17 @@ describe('rebuild_and_restart_mcp Tool', () => {
         const childProcess = await vi.importMock('child_process');
         const fsPromises = await vi.importMock('fs/promises');
         const pathModule = await vi.importMock('path');
-        
+
         mockExec = childProcess.exec;
         mockReadFile = fsPromises.readFile;
+        mockAccess = fsPromises.access;
         mockJoin = pathModule.join;
-        
+
         vi.clearAllMocks();
+
+        // #4006: rebuild exige un package.json au chemin résolu — présent par
+        // défaut pour garder la sémantique des tests legacy.
+        mockAccess.mockResolvedValue(undefined);
         
         // Mock par défaut pour readFile
         mockReadFile.mockResolvedValue(JSON.stringify({

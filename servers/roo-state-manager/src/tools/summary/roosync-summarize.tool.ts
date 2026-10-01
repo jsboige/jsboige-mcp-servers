@@ -356,6 +356,22 @@ export async function handleRooSyncSummarize(
             );
         }
 
+        // #4006: cross-check de la plage à l'entrée unifiée — le delegate
+        // (ContentClassifier) rejette aussi les plages inversées, mais la
+        // validation ne doit pas dépendre de la sémantique du delegate.
+        if (
+            args.startIndex !== undefined &&
+            args.endIndex !== undefined &&
+            args.startIndex > args.endIndex
+        ) {
+            throw new StateManagerError(
+                `startIndex (${args.startIndex}) doit être <= endIndex (${args.endIndex})`,
+                'VALIDATION_FAILED',
+                'RooSyncSummarizeTool',
+                { startIndex: args.startIndex, endIndex: args.endIndex }
+            );
+        }
+
         // Déterminer la source (défaut: roo)
         const source = args.source || 'roo';
 
