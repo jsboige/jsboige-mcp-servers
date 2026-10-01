@@ -290,7 +290,9 @@ describe('InventoryCollector — coverage complement (#833 C3)', () => {
       return false;
     });
     h.execImpl = (_c, _o, cb) => cb(null, { stdout: 'log line\nC:/tmp/inv-out.json', stderr: '' }); // last line = abs path (has ':')
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(rawNestedFull(LOCAL)) as any);
+    const execRaw = rawNestedFull(LOCAL);
+    execRaw.inventory.bootResilience = { collectedAt: '2026-10-01T08:29:59Z', dockerService: { name: 'com.docker.service', status: 'Stopped', startType: 'Manual' } };
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(execRaw) as any);
 
     const inv = await collector.collectInventory(LOCAL, true) as MachineInventory; // forceRefresh -> still tries shared first (L284) then exec
 
@@ -300,6 +302,7 @@ describe('InventoryCollector — coverage complement (#833 C3)', () => {
     expect(inv.software.powershell).toBe('7.4');   // L398 LEFT
     expect(inv.roo.mcpServers[0].name).toBe('roo-state-manager'); // L403-404
     expect((inv as any).listeningPorts[0].protocol).toBe('TCP');  // L438
+    expect((inv as any).bootResilience?.dockerService?.startType).toBe('Manual'); // #3975 exec-path mapping
     expect(vi.mocked(fsp.writeFile)).toHaveBeenCalled(); // saveToSharedState wrote the file (L709)
   });
 
@@ -365,5 +368,32 @@ describe('InventoryCollector — coverage complement (#833 C3)', () => {
 
     collector.clearCache();                            // L723
     expect(collector.getCacheStats().size).toBe(0);
+  });
+
+  // ---- #3975: bootResilience passthrough (raw nested format, loadInventoryFile mapping) ----
+  it('maps inventory.bootResilience through the raw format (#3975)', async () => {
+    const bootResilience = {
+      collectedAt: '2026-10-01T08:29:59.1535956Z',
+      dockerService: { name: 'com.docker.service', status: 'Stopped', startType: 'Manual' },
+      scheduledTasks: [{ name: 'ClaudishDockerEvents', state: 'Ready', lastRunTime: '2026-10-01T08:22:01Z', lastTaskResult: 0 }],
+      dockerDesktopAutoStart: { enabled: true },
+      autoLogon: { enabled: false },
+      windowsUpdate: { policyKeyPresent: true, noAutoRebootWithLoggedOnUsers: 1 },
+    };
+    const raw = rawNestedFull(LOCAL);
+    raw.inventory.bootResilience = bootResilience;
+
+    vi.mocked(existsSync).mockImplementation((p: any) => String(p).includes('inventories') || String(p).includes(`${LOCAL}.json`));
+    vi.mocked(fsp.readFile).mockResolvedValue(JSON.stringify(raw) as any);
+
+    const inv = await collector.collectInventory(LOCAL) as MachineInventory;
+    expect(inv.bootResilience).toEqual(bootResilience);
+
+    // Absence → undefined, jamais de crash (machines sans sonde #3975)
+    const rawWithout = rawNestedFull(LOCAL);
+    vi.mocked(fsp.readFile).mockResolvedValue(JSON.stringify(rawWithout) as any);
+    collector.clearCache();
+    const inv2 = await collector.collectInventory(LOCAL) as MachineInventory;
+    expect(inv2.bootResilience).toBeUndefined();
   });
 });

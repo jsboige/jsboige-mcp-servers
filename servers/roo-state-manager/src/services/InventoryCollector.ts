@@ -18,6 +18,7 @@ import os from 'os';
 import { createLogger, Logger } from '../utils/logger.js';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
+import type { BootResilienceInfo } from '../types/inventory.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -209,6 +210,11 @@ export interface MachineInventory {
     processName: string;
     processId: number;
   }>;
+  /**
+   * #3975: Résilience au redémarrage (non sensible)
+   * Docker autostart, tâches planifiées, autologon, politique Windows Update
+   */
+  bootResilience?: BootResilienceInfo;
 }
 
 /**
@@ -435,7 +441,8 @@ export class InventoryCollector {
         pythonEnvs: rawInventory.inventory?.pythonEnvs,
         windowsServices: rawInventory.inventory?.windowsServices || [],
         gpuDetails: rawInventory.inventory?.gpuDetails || [],
-        listeningPorts: rawInventory.inventory?.listeningPorts || []
+        listeningPorts: rawInventory.inventory?.listeningPorts || [],
+        bootResilience: rawInventory.inventory?.bootResilience // #3975
       };
 
       this.logger.info(`✅ Inventaire structuré pour ${inventory.machineId}`);
@@ -658,7 +665,8 @@ export class InventoryCollector {
           pythonEnvs: raw.inventory?.pythonEnvs,
           windowsServices: raw.inventory?.windowsServices || [],
           gpuDetails: raw.inventory?.gpuDetails || [],
-          listeningPorts: raw.inventory?.listeningPorts || []
+          listeningPorts: raw.inventory?.listeningPorts || [],
+          bootResilience: raw.inventory?.bootResilience // #3975
         };
       } else if (raw.machineId && raw.timestamp && raw.paths) {
         // Format "baseline" direct

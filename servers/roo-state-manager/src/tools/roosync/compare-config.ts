@@ -284,6 +284,12 @@ const EXPECTED_MACHINE_FIELDS: RegExp[] = [
   /(^|\.)listeningPorts/,      // listeningPorts[i] — each machine has its own ports
   /(^|\.)windowsServices/,     // windowsServices.* — docker/wsl/NvContainer per machine
   /(^|\.)paths(\.|$)/,         // paths.* — local install paths (workspace, etc.)
+  // #3975: bootResilience — le runtime est du bruit par machine (statut courant,
+  // tâches diff positionnellement) ; les champs de CONFIG (startType, enabled,
+  // politique WU) restent signal et ne figurent PAS ici. Vue propre par tâche :
+  // granularity 'boot-resilience'.
+  /\.bootResilience\.dockerService\.status$/,  // runtime : Running/Stopped à l'instant T
+  /(^|\.)bootResilience\.scheduledTasks(\.|$)/, // arrays positionnels — bruit en mode full
 ];
 
 /**
@@ -348,8 +354,8 @@ export const CompareConfigArgsSchema = z.object({
     .describe('ID de la machine cible (optionnel, défaut: remote_machine)'),
   force_refresh: z.boolean().optional()
     .describe('Forcer la collecte d\'inventaire même si cache valide (défaut: false)'),
-  granularity: z.enum(['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'full']).optional()
-    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude-settings (~/.claude/settings.json picker CC, #3545 — snapshot publié vs live, secrets masqués, exemptés de campagne honorés), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), full (comparaison complète GranularDiffDetector)'),
+  granularity: z.enum(['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'boot-resilience', 'full']).optional()
+    .describe('Niveau de granularité: mcp (MCPs uniquement), mode (modes Roo), settings (Roo settings state.vscdb), claude-settings (~/.claude/settings.json picker CC, #3545 — snapshot publié vs live, secrets masqués, exemptés de campagne honorés), claude (config Claude Code ~/.claude.json), modes-yaml (custom_modes.yaml global), boot-resilience (#3975 — Docker autostart/tâches planifiées/autologon/politique WU, détecte une machine qui ne survivra pas à son prochain reboot), full (comparaison complète GranularDiffDetector)'),
   filter: z.string().optional()
     .describe('Filtre optionnel sur les paths (ex: "jupyter" pour filtrer un MCP spécifique)'),
   detail: z.enum(['values', 'paths']).optional()
@@ -506,6 +512,24 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       const detail = args.detail ?? 'values';
       const claudeSettingsResult = await compareClaudeSettings(sourceMachineId, targetMachineId, service, args.filter, detail);
       return withRosterCheck(claudeSettingsResult, config, service);
+    }
+
+    // #3975 — bootResilience : drift de résilience au redémarrage. Comparateur
+    // dédié (tâches clé par nom, runtime vs config) — GranularDiffDetector sur
+    // des arrays positionnels produirait du bruit et noierait le signal.
+    if (args.granularity === 'boot-resilience') {
+      const detail = args.detail ?? 'values';
+      const sourceInventory = await service.getInventory(sourceMachineId, args.force_refresh || false);
+      const targetInventory = await service.getInventory(targetMachineId, args.force_refresh || false);
+      const bootResult = compareBootResilience(
+        sourceMachineId,
+        targetMachineId,
+        sourceInventory,
+        targetInventory,
+        config.machineId,
+        detail
+      );
+      return withRosterCheck(bootResult, config, service);
     }
 
     // Si granularity est fourni, utiliser GranularDiffDetector
@@ -749,9 +773,234 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
 }
 
 /**
- * Settings categories for severity classification
+ * #3975 — Extraction du bloc bootResilience, quel que soit le format d'inventaire
+ * (FullInventory: inventory.bootResilience ; MachineCollector: bootResilience).
  */
-const SETTINGS_CATEGORIES: Record<string, { severity: string; label: string }> = {
+function getBootResilience(inv: any): any | undefined {
+  return inv?.bootResilience || inv?.inventory?.bootResilience || undefined;
+}
+
+function hasBootResilienceData(b: any): boolean {
+  return Boolean(
+    b && (
+      b.dockerService ||
+      (Array.isArray(b.scheduledTasks) && b.scheduledTasks.length > 0) ||
+      b.dockerDesktopAutoStart ||
+      b.autoLogon ||
+      b.windowsUpdate
+    )
+  );
+}
+
+/**
+ * #3975 — Comparateur bootResilience : détecte une machine qui ne survivra
+ * pas à son prochain reboot (Docker autostart, tâches planifiées Docker,
+ * autologon, politique Windows Update).
+ *
+ * Modèle de sévérité :
+ * - config divergente (startType, enabled, politique WU, état de tâche) = drift réel
+ * - runtime (dockerService.status, lastRunTime, lastTaskResult) = INFO, bruit attendu
+ * - bloc absent d'un côté = garde de couverture (pattern #3545), pas de diffs fantômes
+ * - collectedAt > 48h = WARNING fraîcheur — c'est ainsi que l'incident po-2025
+ *   (01/10, hub .50:3000 mort 5h30 après reboot WU) est resté invisible.
+ */
+function compareBootResilience(
+  sourceMachineId: string,
+  targetMachineId: string,
+  sourceInventory: any,
+  targetInventory: any,
+  hostId: string,
+  detail: 'values' | 'paths' = 'values'
+): CompareConfigResult {
+  const src = getBootResilience(sourceInventory);
+  const tgt = getBootResilience(targetInventory);
+  const srcCovered = hasBootResilienceData(src);
+  const tgtCovered = hasBootResilienceData(tgt);
+
+  if (!srcCovered || !tgtCovered) {
+    const missing = [
+      !srcCovered ? sourceMachineId : null,
+      !tgtCovered ? targetMachineId : null,
+    ].filter(Boolean);
+    return {
+      source: sourceMachineId,
+      target: targetMachineId,
+      granularity: 'boot-resilience',
+      host_id: hostId,
+      differences: [{
+        category: 'boot_resilience',
+        severity: 'WARNING',
+        path: 'inventory.bootResilience.coverage',
+        description: `Bloc bootResilience absent ou vide côté ${missing.join(', ')} — inventaire non rafraîchi (machine sans sonde #3975, ou sonde PowerShell échouée). Un diff serait un artefact de collecte, pas un drift réel.`,
+        action: `Rafraîchir l'inventaire de ${missing.join(' et ')} (roosync_inventory type="all" sur la machine, ou déployer le build ≥ #3975) puis relancer la comparaison.`
+      }],
+      summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
+    };
+  }
+
+  const diffs: VibeSyncDiff[] = [];
+  const pushDiff = (
+    path: string,
+    severity: string,
+    description: string,
+    source_value?: any,
+    target_value?: any,
+    action?: string
+  ) => {
+    diffs.push({
+      category: 'boot_resilience',
+      severity,
+      path,
+      description,
+      action,
+      ...(detail === 'values'
+        ? {
+            source_value: formatValue(source_value, path),
+            target_value: formatValue(target_value, path),
+          }
+        : {}),
+    });
+  };
+
+  // --- dockerService ---
+  if (src.dockerService || tgt.dockerService) {
+    if (!src.dockerService || !tgt.dockerService) {
+      pushDiff(
+        'inventory.bootResilience.dockerService',
+        'WARNING',
+        `Service Docker présent seulement côté ${src.dockerService ? targetMachineId : sourceMachineId} — l'autre machine n'a pas com.docker.service installé (ou non détecté).`,
+        src.dockerService, tgt.dockerService
+      );
+    } else {
+      if (src.dockerService.startType !== tgt.dockerService.startType) {
+        pushDiff(
+          'inventory.bootResilience.dockerService.startType',
+          'IMPORTANT',
+          `StartType du service Docker divergent — une machine ne relancera pas Docker au reboot sans intervention (${src.dockerService.startType} vs ${tgt.dockerService.startType}). C'est le paramètre du postmortem 04/05 (Auto attendu sur les hôtes hub).`,
+          src.dockerService.startType, tgt.dockerService.startType,
+          'Aligner le StartType (sc config com.docker.service start=auto) sur la machine déviante.'
+        );
+      }
+      if (src.dockerService.status !== tgt.dockerService.status) {
+        pushDiff(
+          'inventory.bootResilience.dockerService.status',
+          'INFO',
+          `[RUNTIME] Statut courant du service Docker divergent (${src.dockerService.status} vs ${tgt.dockerService.status}) — état instantané, pas un drift de config.`,
+          src.dockerService.status, tgt.dockerService.status
+        );
+      }
+    }
+  }
+
+  // --- scalaires de config ---
+  const scalarChecks: Array<{
+    path: string;
+    get: (b: any) => any;
+    describe: string;
+  }> = [
+    {
+      path: 'inventory.bootResilience.dockerDesktopAutoStart.enabled',
+      get: (b) => b?.dockerDesktopAutoStart?.enabled,
+      describe: 'Réglage Docker Desktop « start when you sign in » divergent — sans lui, Docker n\'attend pas la session ouverte pour (ne pas) démarrer.',
+    },
+    {
+      path: 'inventory.bootResilience.autoLogon.enabled',
+      get: (b) => b?.autoLogon?.enabled,
+      describe: 'Autologon divergent — sans session auto-ouverte, les autostarts HKCU (Docker Desktop inclus) ne se déclenchent jamais.',
+    },
+    {
+      path: 'inventory.bootResilience.windowsUpdate.noAutoRebootWithLoggedOnUsers',
+      get: (b) => b?.windowsUpdate?.noAutoRebootWithLoggedOnUsers,
+      describe: 'Politique Windows Update NoAutoRebootWithLoggedOnUsers divergente — une machine peut rebooter automatiquement pendant une session ouverte.',
+    },
+  ];
+  for (const check of scalarChecks) {
+    const sv = check.get(src);
+    const tv = check.get(tgt);
+    if (sv !== tv) {
+      pushDiff(check.path, 'WARNING', check.describe, sv, tv);
+    }
+  }
+
+  // --- scheduledTasks, clé par nom ---
+  const srcTasks = new Map<string, any>(
+    (Array.isArray(src.scheduledTasks) ? src.scheduledTasks : []).map((t: any) => [t.name, t])
+  );
+  const tgtTasks = new Map<string, any>(
+    (Array.isArray(tgt.scheduledTasks) ? tgt.scheduledTasks : []).map((t: any) => [t.name, t])
+  );
+  const allTaskNames = new Set([...srcTasks.keys(), ...tgtTasks.keys()]);
+  for (const name of allTaskNames) {
+    const st = srcTasks.get(name);
+    const tt = tgtTasks.get(name);
+    if (!st || !tt) {
+      pushDiff(
+        `inventory.bootResilience.scheduledTasks["${name}"]`,
+        'WARNING',
+        `Tâche planifiée Docker "${name}" présente seulement côté ${st ? sourceMachineId : targetMachineId} — mécanisme de relance Docker asymétrique dans la flotte.`,
+        st, tt
+      );
+      continue;
+    }
+    if (st.state !== tt.state) {
+      pushDiff(
+        `inventory.bootResilience.scheduledTasks["${name}"].state`,
+        'WARNING',
+        `État de la tâche "${name}" divergent (${st.state} vs ${tt.state}) — une tâche Disabled n'assure aucune relance post-reboot.`,
+        st.state, tt.state
+      );
+    }
+    if ((st.lastTaskResult ?? null) !== (tt.lastTaskResult ?? null)) {
+      pushDiff(
+        `inventory.bootResilience.scheduledTasks["${name}"].lastTaskResult`,
+        'INFO',
+        `[RUNTIME] LastTaskResult de "${name}" divergent (${st.lastTaskResult ?? 'null'} vs ${tt.lastTaskResult ?? 'null'}) — 267011 (0x41303) = jamais exécutée, 0 = succès.`,
+        st.lastTaskResult ?? null, tt.lastTaskResult ?? null
+      );
+    }
+  }
+
+  // --- fraîcheur du bloc ---
+  const STALE_MS = 48 * 60 * 60 * 1000;
+  for (const [mid, block] of [[sourceMachineId, src], [targetMachineId, tgt]] as Array<[string, any]>) {
+    const at = block?.collectedAt ? new Date(block.collectedAt).getTime() : NaN;
+    if (!isNaN(at) && Date.now() - at > STALE_MS) {
+      pushDiff(
+        'inventory.bootResilience.collectedAt',
+        'WARNING',
+        `Bloc bootResilience périmé côté ${mid} (collecté le ${block.collectedAt}) — l'état de résilience observé peut ne plus être celui de la machine.`,
+        undefined, undefined,
+        `Rafraîchir l'inventaire de ${mid} (roosync_inventory type="all").`
+      );
+    }
+  }
+
+  const summary = {
+    total: diffs.length,
+    critical: diffs.filter(d => d.severity === 'CRITICAL').length,
+    important: diffs.filter(d => d.severity === 'IMPORTANT').length,
+    warning: diffs.filter(d => d.severity === 'WARNING').length,
+    info: diffs.filter(d => d.severity === 'INFO').length,
+  };
+
+  const result: CompareConfigResult = {
+    source: sourceMachineId,
+    target: targetMachineId,
+    granularity: 'boot-resilience',
+    host_id: hostId,
+    differences: diffs,
+    summary,
+  };
+
+  if (detail === 'values') {
+    result.harmonization_candidates = buildHarmonizationCandidates(diffs);
+  }
+  return result;
+}
+
+/**
+ * Settings categories for severity classification
+ */const SETTINGS_CATEGORIES: Record<string, { severity: string; label: string }> = {
   // Model & API - CRITICAL (affects which model is used)
   apiProvider: { severity: 'CRITICAL', label: 'Model Configuration' },
   openAiBaseUrl: { severity: 'CRITICAL', label: 'Model Configuration' },

@@ -178,6 +178,8 @@ export interface MachineInventory {
       processName: string;
       processId: number;
     }>;
+    /** #3975: Boot resilience (non sensible) — import depuis types/inventory */
+    bootResilience?: import('./inventory.js').BootResilienceInfo;
   };
   metadata?: {
     lastSeen?: string;
