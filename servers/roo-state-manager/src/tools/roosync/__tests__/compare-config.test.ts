@@ -59,7 +59,8 @@ vi.mock('../../../services/RooSettingsService.js', () => ({
 		'currentApiConfigName', 'listApiConfigMeta', 'apiProvider',
 		'autoCondenseContext', 'autoCondenseContextPercent',
 		'autoApprovalEnabled', 'alwaysAllowReadOnly',
-		'openAiBaseUrl', 'openAiModelId'
+		'openAiBaseUrl', 'openAiModelId',
+		'openAiHeaders', 'customCondensingPrompt'
 	])
 }));
 
@@ -797,6 +798,158 @@ describe('compare-config', () => {
 			expect(result.differences[0].description).toContain('manquant ou inaccessible');
 			expect(result.summary.critical).toBe(1);
 		});
+
+		// ============================================================
+		// #4000 — faux drifts : key-order, ENOENT code-first, troncature milieu
+		// ============================================================
+
+		test('#4000 ENOENT détecté par err.code même avec message non reconnu (pas de string-match)', async () => {
+			// Pré-fix : détection par includes('ENOENT') — un message localisé ou
+			// reformulé tombait dans la branche générique "Erreur d'initialisation".
+			mockGetConfig.mockImplementationOnce(() => {
+				const err = new Error('le fichier de configuration partagé est introuvable') as NodeJS.ErrnoException;
+				err.code = 'ENOENT';
+				throw err;
+			});
+
+			const result = await roosyncCompareConfig({ target: 'po-2023' });
+
+			expect(result.differences.length).toBe(1);
+			expect(result.differences[0].severity).toBe('CRITICAL');
+			expect(result.differences[0].description).toContain('manquant ou inaccessible');
+		});
+
+		test('#4000 erreur EACCES (permission) ne passe PAS pour ENOENT', async () => {
+			// Pré-fix : « rate les erreurs de permission déguisées » — un message
+			// contenant "no such file" par coïncidence + code EACCES devait
+			// rester distingué. Le code fait foi.
+			mockGetConfig.mockImplementationOnce(() => {
+				const err = new Error('EACCES: no such file or directory, open \'/etc/shadow\'') as NodeJS.ErrnoException;
+				err.code = 'EACCES';
+				throw err;
+			});
+
+			const result = await roosyncCompareConfig({ target: 'po-2023' });
+
+			expect(result.differences.length).toBe(1);
+			expect(result.differences[0].severity).toBe('CRITICAL');
+			expect(result.differences[0].description).not.toContain('manquant ou inaccessible');
+			expect(result.differences[0].description).toContain('EACCES');
+		});
+
+		test('#4000 settings granularity : valeurs object égales à ordre de clés près ne sont PAS un drift', async () => {
+			// Pré-fix : JSON.stringify dépend de l'ordre d'insertion → faux CRITICAL.
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				mockExtractSettings.mockResolvedValue({
+					settings: {
+						currentApiConfigName: 'GLM-5',
+						openAiHeaders: { 'X-First': 'a', 'X-Second': 'b' }
+					},
+					metadata: { machine: 'ai-01', keysCount: 2, totalKeys: 2, mode: 'safe' }
+				});
+				// Ordre de clés INVERSÉ, valeurs identiques
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: {
+						openAiHeaders: { 'X-Second': 'b', 'X-First': 'a' },
+						currentApiConfigName: 'GLM-5'
+					}
+				}));
+				mockGetConfig.mockReturnValue({ machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path' });
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+
+				const headerDiff = result.differences.find(d => d.path === 'settings.openAiHeaders');
+				expect(headerDiff).toBeUndefined();
+				const profileDiff = result.differences.find(d => d.path === 'settings.currentApiConfigName');
+				expect(profileDiff).toBeUndefined();
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
+		test('#4000 settings granularity : objets réellement différents restent un drift (garde anti-regression)', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				mockExtractSettings.mockResolvedValue({
+					settings: {
+						currentApiConfigName: 'GLM-5',
+						openAiHeaders: { 'X-First': 'a', 'X-Second': 'b' }
+					},
+					metadata: { machine: 'ai-01', keysCount: 2, totalKeys: 2, mode: 'safe' }
+				});
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: {
+						openAiHeaders: { 'X-First': 'a', 'X-Second': 'c' },
+						currentApiConfigName: 'GLM-5'
+					}
+				}));
+				mockGetConfig.mockReturnValue({ machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path' });
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+
+				const headerDiff = result.differences.find(d => d.path === 'settings.openAiHeaders');
+				expect(headerDiff).toBeDefined();
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
+		test('#4000 truncation milieu : deux valeurs qui ne diffèrent qu\'en fin affichent des résumés distincts', async () => {
+			// Pré-fix : head-only coupait aux 47 premiers caractères — deux valeurs
+			// longues partageant le même préfixe affichaient le même résumé tronqué.
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				mockExtractSettings.mockResolvedValue({
+					settings: {
+						currentApiConfigName: 'GLM-5',
+						customCondensingPrompt: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/path-one.md'
+					},
+					metadata: { machine: 'ai-01', keysCount: 2, totalKeys: 2, mode: 'safe' }
+				});
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: {
+						currentApiConfigName: 'GLM-5',
+						customCondensingPrompt: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/path-two.md'
+					}
+				}));
+				mockGetConfig.mockReturnValue({ machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path' });
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+
+				const promptDiff = result.differences.find(d => d.path === 'settings.customCondensingPrompt');
+				expect(promptDiff).toBeDefined();
+				// Le résumé tronqué doit laisser le discriminant visible (fin conservée)
+				expect(promptDiff!.description).toContain('path-one');
+				expect(promptDiff!.description).toContain('path-two');
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
 	});
 
 	// ============================================================
@@ -1124,6 +1277,25 @@ describe('compare-config', () => {
 			expect(hashDiff!.description).toContain('formatage');
 			// CRITICAL modeApiConfigs diff must NOT also fire.
 			expect(diffs.find(d => d.path === 'roo.modelProfile.modeApiConfigs')).toBeUndefined();
+		});
+
+		test('#4000 hash differ + modeApiConfigs égaux à ordre de clés près → IMPORTANT, pas de CRITICAL', () => {
+			// Pré-fix : JSON.stringify(modeApiConfigs) dépend de l'ordre d'insertion
+			// des clés → CRITICAL « Configuration des modes différente » sur des
+			// configs en réalité égales (le faux drift patrouille I4 de l'issue).
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'aaa', modeApiConfigs: { code: { model: 'a', temp: 0.7 } }, profiles: [] } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'bbb', modeApiConfigs: { code: { temp: 0.7, model: 'a' } }, profiles: [] } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+
+			expect(diffs.find(d => d.path === 'roo.modelProfile.modeApiConfigs')).toBeUndefined();
+			const hashDiff = diffs.find(d => d.path === 'roo.modelProfile.hash');
+			expect(hashDiff).toBeDefined();
+			expect(hashDiff!.severity).toBe('IMPORTANT');
 		});
 
 		test('identical hashes + identical profiles + identical thresholds → no diff', () => {
