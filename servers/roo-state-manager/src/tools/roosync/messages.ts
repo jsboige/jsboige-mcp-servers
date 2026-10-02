@@ -148,7 +148,7 @@ export const MessagesArgsSchema = z.object({
   // --- Attachments params ---
   uuid: z.string().optional().describe('UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu'),
   filename: z.string().optional().describe('#3256 — alternative a uuid pour attachments_get : nom du fichier, resolu via les refs du message_id fourni'),
-  targetPath: z.string().optional().describe('Chemin destination pour attachments_get — #1105 : omettez-le pour recevoir le contenu en base64 dans le résultat MCP (client distant), fournissez-le pour une copie SIDE-SERVEUR (chemin de l hôte RooSync, pas du client)'),
+  targetPath: z.string().optional().describe('Chemin destination pour attachments_get — #1105 : omettez-le pour recevoir le contenu en base64 dans le résultat MCP (client distant ; plafond inline 1 MB, #3997 : au-delà la lecture inline est refusée et exige targetPath), fournissez-le pour une copie SIDE-SERVEUR (chemin de l hôte RooSync, pas du client)'),
 
   // --- Caller identity (#3591) ---
   as: z.string().optional().describe('#3591 Caller identity assertion for gateway seats (chaîne mcp-remote/myia-mcp-proxy résout l appelant côté serveur comme l hôte proxy). Format "machine" ou "machine:workspace". Honoré uniquement si la machine est listée dans l env serveur ROOSYNC_TRUSTED_CALLER_IDS — sinon rejet bruyant. S applique à send/reply/amend (expéditeur), message/mark_read/archive (garde d accès), inbox/bulk/cleanup/stats (machine par défaut). Aucun effet (rejeté) sur attachments_*.'),

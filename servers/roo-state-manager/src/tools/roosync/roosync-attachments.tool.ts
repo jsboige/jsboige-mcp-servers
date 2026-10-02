@@ -17,6 +17,14 @@ import { createLogger } from '../../utils/logger.js';
 const logger = createLogger('RooSyncAttachmentTools');
 
 /**
+ * #3997 — plafond du mode inline de roosync_get_attachment. Au-delà, le base64
+ * (~1,37x la taille binaire) ne doit pas transiter dans le résultat MCP : une
+ * pièce de 50 MB y deviendrait ~67 MB de texte dans le contexte de l'appelant.
+ * Refus avec redirection vers `targetPath` (copie fichier côté hôte).
+ */
+const INLINE_ATTACHMENT_MAX_BYTES = 1024 * 1024; // 1 MB
+
+/**
  * #3256 — Résout les refs d'attachments d'un message SANS parcourir le store.
  *
  * `getMessage` cherche en O(1) (PG si gate + caller fourni, sinon inbox → sent
@@ -164,6 +172,26 @@ export async function roosyncGetAttachment(
     // lieu d'un ENOENT déguisé en échec de source.
     if (!args.targetPath) {
       const { content, meta } = await manager.readAttachment(uuid);
+      // #3997 — refus au-delà du plafond : le blob ne doit pas gonfler le
+      // contexte de l'appelant. La sortie reste un succès de lecture serveur,
+      // mais SANS le contenu — la copie fichier est le chemin prévu.
+      if (content.length > INLINE_ATTACHMENT_MAX_BYTES) {
+        const b64Size = Math.ceil((content.length * 4) / 3);
+        const text = `❌ **Pièce jointe trop volumineuse pour le mode inline (#3997)**
+
+| Champ | Valeur |
+|-------|--------|
+| **UUID** | \`${meta.uuid}\` |
+| **Fichier** | ${meta.originalName} |
+| **Taille** | ${formatSize(content.length)} |
+| **Plafond inline** | ${formatSize(INLINE_ATTACHMENT_MAX_BYTES)} |
+
+Le contenu base64 (~${formatSize(b64Size)}) ne transite pas dans ce résultat MCP — une pièce de cette taille gonflerait votre contexte au lieu de le servir.
+
+💡 **Relancez avec \`targetPath\`** pour une copie fichier côté hôte :
+\`roosync_messages\` → \`action: "attachments_get"\`, \`uuid: ${meta.uuid}\`, \`targetPath: <chemin sur l'hôte RooSync>\` (chemin serveur, pas un chemin de votre client distant).`;
+        return { content: [{ type: 'text', text }] };
+      }
       const b64 = content.toString('base64');
       const text = `✅ **Pièce jointe récupérée (inline)**
 
