@@ -1766,7 +1766,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// higher-scored window, freeing their slot(s) for a distinct file.
 			...(overlappingChunksMerged > 0 ? { overlapping_chunks_merged: overlappingChunksMerged } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
-			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (run roosync_indexing cleanup_orphans to reclaim orphan budget)` } : {}),
+			// #2609: the repair hint must match the store it names — dead-path vectors live in
+			// THIS ws-* code collection, which cleanup_orphans never touches (it only covers
+			// the conversation collection roo_tasks_semantic_index). The old hint pointed at
+			// cleanup_orphans, an action that fixes nothing here.
+			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (repair: re-index this workspace to replace dead-path vectors)` } : {}),
 			results: results
 		};
 

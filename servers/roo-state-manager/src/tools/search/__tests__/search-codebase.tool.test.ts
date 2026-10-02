@@ -524,6 +524,11 @@ describe('search-codebase.tool', () => {
 				expect(parsed.results[0].file_path).toBe('src/live-doc.ts');
 				expect(parsed.dead_paths_filtered).toBe(1);
 				expect(parsed.warning).toMatch(/dead-path filter reduced recall/);
+				// #2609: the repair hint must not point at cleanup_orphans — that action
+				// only covers the conversation collection (roo_tasks_semantic_index),
+				// never ws-* code collections. The honest repair is a re-index.
+				expect(parsed.warning).not.toMatch(/cleanup_orphans/);
+				expect(parsed.warning).toMatch(/re-index this workspace/);
 			});
 
 			test('does NOT warn when dead paths exist but recall did not shrink below limit', async () => {
