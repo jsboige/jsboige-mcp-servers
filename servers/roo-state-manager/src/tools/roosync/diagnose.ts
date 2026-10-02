@@ -36,7 +36,7 @@ export const DiagnoseArgsSchema = z.object({
     .describe('Operation: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state #1320), recovery (recovery-before-escalation decision #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
-    .describe('Vérifier l\'espace disque (action: env)'),
+    .describe('Inclure espace disque libre/total par répertoire critique (fs.statfs, action: env — #3993)'),
 
   // Paramètres pour action: 'debug'
   verbose: z.boolean().optional()
@@ -431,26 +431,51 @@ async function handleEnvAction(
   const sharedPath = tryGetSharedStatePath();
   const sharedBase = sharedPath ? path.dirname(sharedPath) : null;
 
-  const criticalDirs: Array<{ name: string; base: string | null }> = [
-    { name: '.', base: process.cwd() },
-    { name: '.', base: sharedPath }, // sharedPath already points to .shared-state directory
-    { name: 'roo-config', base: sharedBase },
-    { name: 'mcps', base: process.cwd() },
-    { name: 'logs', base: sharedBase },
+  // #3993: `key` = rapport, `segment` = chemin résolu contre `base`. Avant, deux
+  // entrées `name: '.'` (cwd + sharedPath) écrasaient la même clé directories['.']
+  // — le check de process.cwd() n'apparaissait jamais dans le rapport.
+  const criticalDirs: Array<{ key: string; segment: string; base: string | null }> = [
+    { key: 'cwd', segment: '.', base: process.cwd() },
+    { key: 'sharedState', segment: '.', base: sharedPath }, // sharedPath already points to .shared-state directory
+    { key: 'roo-config', segment: 'roo-config', base: sharedBase },
+    { key: 'mcps', segment: 'mcps', base: process.cwd() },
+    { key: 'logs', segment: 'logs', base: sharedBase },
   ];
 
-  for (const { name, base } of criticalDirs) {
+  // #3993: checkDiskSpace n'était lu nulle part (paramètre fantôme) — un agent
+  // diagnostiquant un ENOSPC obtenait un rapport sans aucune donnée disque.
+  const { checkDiskSpace = false } = args;
+
+  for (const { key, segment, base } of criticalDirs) {
     if (!base) {
-      report.directories[name] = { exists: false, error: 'ENOENT', note: 'sharedPath not configured' };
+      report.directories[key] = { exists: false, error: 'ENOENT', note: 'sharedPath not configured' };
       report.status = 'WARNING';
       continue;
     }
-    const fullPath = path.resolve(base, name);
+    const fullPath = path.resolve(base, segment);
     try {
       await fs.access(fullPath, fs.constants.R_OK | fs.constants.W_OK);
-      report.directories[name] = { exists: true, writable: true, resolvedPath: fullPath };
+      const entry: any = { exists: true, writable: true, resolvedPath: fullPath };
+      if (checkDiskSpace) {
+        // fs.statfs (fs/promises, Node ≥ 19.6) : bsize/blocks/bavail par volume
+        // du chemin — cross-platform (Windows incluse). Échec non fatal : certains
+        // volumes réseau/DriveFS ne l'exposent pas.
+        try {
+          const st = await fs.statfs(fullPath);
+          const freeBytes = st.bavail * st.bsize;
+          const totalBytes = st.blocks * st.bsize;
+          entry.disk = {
+            freeBytes,
+            totalBytes,
+            freePct: totalBytes > 0 ? Math.round((freeBytes / totalBytes) * 1000) / 10 : null
+          };
+        } catch {
+          entry.disk = { error: 'STATFS_UNAVAILABLE', note: 'volume n’expose pas statfs' };
+        }
+      }
+      report.directories[key] = entry;
     } catch (err: any) {
-      report.directories[name] = { exists: false, error: err.code, resolvedPath: fullPath };
+      report.directories[key] = { exists: false, error: err.code, resolvedPath: fullPath };
       report.status = 'WARNING';
     }
   }

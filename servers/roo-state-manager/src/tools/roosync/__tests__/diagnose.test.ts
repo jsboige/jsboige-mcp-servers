@@ -111,7 +111,12 @@ describe('roosync_diagnose', () => {
       expect(result.action).toBe('env');
       expect(result.message).toContain('WARNING');
       expect(result.data.status).toBe('WARNING');
-      expect(result.data.directories['.']).toEqual(
+      // #3993: clés renommées — plus de collision directories['.'] entre cwd et
+      // sharedState ; les DEUX entrées sont désormais visibles dans le rapport.
+      expect(result.data.directories['cwd']).toEqual(
+        expect.objectContaining({ exists: false, error: 'ENOENT' })
+      );
+      expect(result.data.directories['sharedState']).toEqual(
         expect.objectContaining({ exists: false, error: 'ENOENT' })
       );
     });
@@ -138,6 +143,10 @@ describe('roosync_diagnose', () => {
 
     it('should check disk space when checkDiskSpace is true', async () => {
       vi.mocked(fs.access).mockResolvedValue(undefined);
+      // #3993: statfs mocké — bsize 4096, 1000 blocs dont 400 disponibles
+      vi.mocked(fs.statfs).mockResolvedValue({
+        bsize: 4096, blocks: 1000, bfree: 500, bavail: 400, files: 0, ffree: 0
+      } as any);
 
       const args: DiagnoseArgs = {
         action: 'env',
@@ -148,8 +157,37 @@ describe('roosync_diagnose', () => {
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('env');
-      // Note: checkDiskSpace parameter is currently a placeholder
-      // Real implementation would require additional logic
+      // freeBytes = bavail*bsize = 400*4096 ; totalBytes = blocks*bsize = 1000*4096
+      expect(result.data.directories['cwd'].disk).toEqual({
+        freeBytes: 400 * 4096,
+        totalBytes: 1000 * 4096,
+        freePct: 40
+      });
+      expect(fs.statfs).toHaveBeenCalled();
+    });
+
+    it('should NOT call statfs when checkDiskSpace is omitted (#3993 opt-in)', async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.statfs).mockResolvedValue({
+        bsize: 4096, blocks: 1000, bfree: 500, bavail: 400, files: 0, ffree: 0
+      } as any);
+
+      await roosyncDiagnose({ action: 'env' });
+
+      expect(fs.statfs).not.toHaveBeenCalled();
+    });
+
+    it('should survive a statfs failure with STATFS_UNAVAILABLE, not an error (#3993)', async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.statfs).mockRejectedValue(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+      const result: DiagnoseResult = await roosyncDiagnose({ action: 'env', checkDiskSpace: true });
+
+      expect(result.success).toBe(true);
+      expect(result.data.status).toBe('OK');
+      expect(result.data.directories['cwd'].disk).toEqual(
+        expect.objectContaining({ error: 'STATFS_UNAVAILABLE' })
+      );
     });
   });
 
