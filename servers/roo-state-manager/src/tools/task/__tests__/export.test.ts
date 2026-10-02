@@ -145,7 +145,7 @@ describe('task_export - CONS-9', () => {
                 mockEnsureCache,
                 mockCache
             );
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
             expect(getTextContent(result)).toContain('Exported markdown for conv-123');
         });
 
@@ -191,7 +191,9 @@ describe('task_export - CONS-9', () => {
 
             const result = await handleTaskExport(args, mockCache, mockEnsureCache);
 
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
+            // Sans filePath, le contenu est retourné : le conversation_id doit avoir été transmis au handler
+            expect(getTextContent(result)).toBe('Exported markdown for conv-no-file');
         });
     });
 
@@ -213,7 +215,7 @@ describe('task_export - CONS-9', () => {
             expect(handleDebugTaskParsing).toHaveBeenCalledWith({
                 task_id: 'task-to-debug'
             });
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
             expect(getTextContent(result)).toContain('Debug info for task-to-debug');
         });
 
@@ -245,8 +247,10 @@ describe('task_export - CONS-9', () => {
             const { taskExportTool } = await import('../export.js');
 
             expect(taskExportTool.name).toBe('task_export');
-            expect(taskExportTool.inputSchema.properties.action).toBeDefined();
-            expect(taskExportTool.inputSchema.properties.action.enum).toEqual(['markdown', 'debug']);
+            expect(taskExportTool.inputSchema.properties.action).toMatchObject({
+                type: 'string',
+                enum: ['markdown', 'debug']
+            });
             expect(taskExportTool.inputSchema.required).toContain('action');
         });
 
@@ -254,21 +258,24 @@ describe('task_export - CONS-9', () => {
             const { taskExportTool } = await import('../export.js');
             const props = taskExportTool.inputSchema.properties;
 
-            expect(props.conversation_id).toBeDefined();
-            expect(props.filePath).toBeDefined();
-            expect(props.max_depth).toBeDefined();
-            expect(props.include_siblings).toBeDefined();
-            expect(props.output_format).toBeDefined();
-            expect(props.current_task_id).toBeDefined();
-            expect(props.truncate_instruction).toBeDefined();
-            expect(props.show_metadata).toBeDefined();
+            expect(props.conversation_id).toMatchObject({ type: 'string' });
+            expect(props.filePath).toMatchObject({ type: 'string' });
+            expect(props.max_depth).toMatchObject({ type: 'number' });
+            expect(props.include_siblings).toMatchObject({ type: 'boolean', default: true });
+            expect(props.output_format).toMatchObject({
+                type: 'string',
+                enum: ['ascii-tree', 'markdown', 'hierarchical', 'json']
+            });
+            expect(props.current_task_id).toMatchObject({ type: 'string' });
+            expect(props.truncate_instruction).toMatchObject({ type: 'number', default: 80 });
+            expect(props.show_metadata).toMatchObject({ type: 'boolean', default: false });
         });
 
         test('schema should include task_id parameter for debug', async () => {
             const { taskExportTool } = await import('../export.js');
             const props = taskExportTool.inputSchema.properties;
 
-            expect(props.task_id).toBeDefined();
+            expect(props.task_id).toMatchObject({ type: 'string' });
         });
     });
 });
