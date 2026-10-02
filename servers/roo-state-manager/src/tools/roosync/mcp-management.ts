@@ -12,7 +12,6 @@ import { exec } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as os from 'os';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 // #3987: manage.read masks mcpServers[*].env with the #3044 digest format —
 // canonical definition in compare-config, imported (never copied).
@@ -21,6 +20,10 @@ import { maskSecretValue } from './compare-config.js';
 // extension (Roo vs Zoo-Code), so the tool finds the config on Zoo-only hosts
 // instead of ENOENTing on the hardcoded roo-cline default.
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
+// #3989 review (PR #1300 point 1): the read→write seal keys on the CALLER SEAT,
+// resolved through the #3591 single choke point — not on os.hostname(), which is
+// constant for the host process and could never tell two seats sharing it apart.
+import { resolveCallerIdentity } from '../../utils/message-helpers.js';
 
 // Types pour les serveurs MCP
 interface McpServer {
@@ -101,26 +104,28 @@ export function getMcpSettingsPath(targetExtension?: 'roo' | 'zoo'): string {
 // ====================================================================
 
 interface ReadAuthorization {
-    machineId: string;
+    seat: string;
     timestamp: number;
 }
 
-function getAuthorizationMachineId(): string {
-    // #3989: identité du siège appelant. os.hostname() (même identité que
-    // TaskArchiver.getMachineId) — read-only, aucune écriture de config.
-    // Défensif : un hôte/mock sans hostname rend '' (comportement pré-fix,
-    // jamais un crash de l'opération).
-    try {
-        return ((os as any).hostname?.() ?? '').toString().toLowerCase();
-    } catch {
-        return '';
-    }
+function getAuthorizationSeatId(as?: string): string {
+    // #3989 review (PR #1300 point 1): the seal key is the caller SEAT.
+    // os.hostname() is constant for the whole host process — two seats sharing
+    // it always carried the same machineId, so the mismatch branch was
+    // unreachable in production (the pre-review tests reached it only by
+    // flipping a hostname mock). resolveCallerIdentity (#3591) is the single
+    // choke point: an asserted `as` is canonicalized and trust-gated against
+    // ROOSYNC_TRUSTED_CALLER_IDS (an untrusted assertion throws, so a rejected
+    // seat can never fall back to the local identity); without `as` the
+    // identity is exactly the local resolution — zero behavior change for
+    // seats that don't assert.
+    return resolveCallerIdentity(as).fullId.toLowerCase();
 }
 
 let lastReadAuthorization: ReadAuthorization | null = null;
 const WRITE_AUTHORIZATION_TIMEOUT = 300000; // 5 minutes (fix #496: operations with file reads need more time)
 
-function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
+function checkWriteAuthorization(as?: string): { isAuthorized: boolean; message: string } {
     if (lastReadAuthorization === null) {
         return {
             isAuthorized: false,
@@ -140,28 +145,30 @@ function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
         };
     }
 
-    // #3989: scellement machineId — l'autorisation est liée au lecteur
-    // d'origine. Sur le même process hôte, un tiers ne peut plus écrire sur
-    // le read d'un autre siège. Le refus est explicite : le tiers refait son
-    // propre read (la garde l'oblige à lire d'abord lui-même, elle ne
-    // l'empêche pas d'écrire après).
-    if (lastReadAuthorization.machineId !== getAuthorizationMachineId()) {
+    // #3989: scellement par siège — l'autorisation est liée au lecteur
+    // d'origine, y compris quand deux sièges partagent le même process hôte :
+    // chacun asserte son identité réelle via `as` (#3591), et l'autorisation
+    // ouverte par l'un ne couvre plus l'écriture de l'autre. Le refus est
+    // explicite : le tiers refait son propre read avec SON `as` (la garde
+    // l'oblige à lire d'abord lui-même, elle ne l'empêche pas d'écrire après).
+    const writerSeat = getAuthorizationSeatId(as);
+    if (lastReadAuthorization.seat !== writerSeat) {
         return {
             isAuthorized: false,
-            message: `🚨 SÉCURITÉ (#3989): l'autorisation d'écriture a été ouverte par un autre siège (${lastReadAuthorization.machineId || 'inconnu'}). Relancez d\'abord une action "manage" avec subAction "read" depuis CE siège.`
+            message: `🚨 SÉCURITÉ (#3989): l'autorisation d'écriture a été ouverte par un autre siège (${lastReadAuthorization.seat || 'inconnu'}), pas par ${writerSeat || 'inconnu'}. Relancez d\'abord une action "manage" avec subAction "read" depuis CE siège (même \`as\` pour le read et le write).`
         };
     }
 
     const remainingMinutes = Math.ceil(remainingTime / 60000);
     return {
         isAuthorized: true,
-        message: `✅ Écriture autorisée (autorisation valable encore ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`
+        message: `✅ Écriture autorisée (siège ${writerSeat}, autorisation valable encore ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`
     };
 }
 
-function recordSuccessfulRead(): void {
+function recordSuccessfulRead(as?: string): void {
     lastReadAuthorization = {
-        machineId: getAuthorizationMachineId(),
+        seat: getAuthorizationSeatId(as),
         timestamp: Date.now()
     };
 }
@@ -181,7 +188,7 @@ function getAuthorizationStatus(): string {
     }
 
     const remainingMinutes = Math.ceil(remainingTime / 60000);
-    return `🟢 Autorisation active (expire dans ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`;
+    return `🟢 Autorisation active pour le siège ${lastReadAuthorization.seat || 'inconnu'} (expire dans ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''})`;
 }
 
 // ====================================================================
@@ -214,7 +221,13 @@ export const McpManagementArgsSchema = z.object({
     // filesystem probe in getActiveMcpSettingsPath. Fixes dual-install machines
     // where the probe picks Roo but the caller needs the Zoo config.
     targetExtension: z.enum(['roo', 'zoo']).optional()
-        .describe('Target extension for path resolution (read AND write). "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. When omitted, auto-detects via filesystem probe (#2766 S2).')
+        .describe('Target extension for path resolution (read AND write). "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. When omitted, auto-detects via filesystem probe (#2766 S2).'),
+
+    // #3989 (PR #1300 review point 1): asserted caller seat for the read→write
+    // seal. Gateway seats sharing one RSM host process MUST pass the same `as`
+    // for the opening read and the write — the seal compares seats, not hosts.
+    as: z.string().optional()
+        .describe('#3591 caller identity assertion (gateway seats), format "machine" or "machine:workspace". Trust-gated against ROOSYNC_TRUSTED_CALLER_IDS. #3989: the read→write authorization is sealed per seat — pass the SAME `as` on the opening "read" and on the write, or the write is refused.')
 });
 
 export type McpManagementArgs = z.infer<typeof McpManagementArgsSchema>;
@@ -269,7 +282,7 @@ function maskEnvSecrets(settings: McpSettings): McpSettings {
 }
 
 async function handleManageAction(args: McpManagementArgs): Promise<McpManagementResult> {
-    const { subAction, server_name, server_config, settings, backup = true, targetExtension } = args;
+    const { subAction, server_name, server_config, settings, backup = true, targetExtension, as: callerSeat } = args;
 
     if (!subAction) {
         throw new HeartbeatServiceError(
@@ -285,7 +298,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             const settingsPath = getMcpSettingsPath(targetExtension);
             const content = await fs.readFile(settingsPath, 'utf-8');
             const mcpSettings = JSON.parse(content) as McpSettings;
-            recordSuccessfulRead();
+            recordSuccessfulRead(callerSeat);
 
             // #3987: env blocks carry API keys/tokens — echo them as digests, never
             // cleartext. The read→write authorization does NOT need real values back:
@@ -305,7 +318,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 throw new HeartbeatServiceError('settings requis pour subAction "write"', 'MISSING_SETTINGS');
             }
 
-            const authCheck = checkWriteAuthorization();
+            const authCheck = checkWriteAuthorization(callerSeat);
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
                     `ÉCRITURE REFUSÉE: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
@@ -357,7 +370,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const authCheck = checkWriteAuthorization();
+            const authCheck = checkWriteAuthorization(callerSeat);
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
                     `MISE À JOUR SERVEUR REFUSÉE: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
@@ -396,7 +409,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 );
             }
 
-            const authCheck4 = checkWriteAuthorization();
+            const authCheck4 = checkWriteAuthorization(callerSeat);
             if (!authCheck4.isAuthorized) {
                 throw new HeartbeatServiceError(
                     `MISE À JOUR CHAMP REFUSÉE: ${authCheck4.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
@@ -445,7 +458,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 throw new HeartbeatServiceError('server_name requis pour subAction "toggle_server"', 'MISSING_SERVER_NAME');
             }
 
-            const authCheck = checkWriteAuthorization();
+            const authCheck = checkWriteAuthorization(callerSeat);
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
                     `BASCULEMENT SERVEUR REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,
@@ -486,7 +499,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 throw new HeartbeatServiceError('server_name requis pour subAction "sync_always_allow"', 'MISSING_SERVER_NAME');
             }
 
-            const authCheck = checkWriteAuthorization();
+            const authCheck = checkWriteAuthorization(callerSeat);
             if (!authCheck.isAuthorized) {
                 throw new HeartbeatServiceError(
                     `SYNC AUTO-APPROVE REFUSÉ: ${authCheck.message}\n\n📋 État actuel: ${getAuthorizationStatus()}`,

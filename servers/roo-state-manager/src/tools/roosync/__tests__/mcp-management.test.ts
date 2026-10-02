@@ -979,24 +979,38 @@ describe('roosyncMcpManagement', () => {
     });
 
     // ============================================================
-    // #3989: scellement machineId de l'autorisation read→write
+    // #3989: scellement par SIÈGE de l'autorisation read→write
+    // (review PR #1300 point 1 : la clef est l'identité assertée `as`
+    // #3591, PAS os.hostname() — constant pour le process, donc muet
+    // pour deux sièges partageant l'hôte)
     // ============================================================
-    describe('#3989 machineId-sealed write authorization', () => {
-        test('a read by seat A does NOT authorize a write by seat B (cross-seat refusal)', async () => {
+    describe('#3989 seat-sealed write authorization (as #3591)', () => {
+        const TRUSTED = 'myia-po-2023';
+
+        beforeEach(() => {
+            process.env.ROOSYNC_TRUSTED_CALLER_IDS = TRUSTED;
+        });
+
+        afterEach(() => {
+            delete process.env.ROOSYNC_TRUSTED_CALLER_IDS;
+        });
+
+        test('a read by seat A does NOT authorize a write by seat B sharing the same host process', async () => {
             vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
                 mcpServers: { 's': { command: 'node', args: ['a.js'] } }
             }));
 
-            // Seat A reads → authorization opened for seat-a
-            mockHostname.mockReturnValue('seat-a');
-            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            // Seat A reads, asserting its real seat → authorization sealed for A.
+            // The hostname mock is IDENTICAL for both calls: same host process.
+            mockHostname.mockReturnValue('same-host');
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read', as: `${TRUSTED}:roo-extensions` });
 
-            // Seat B (same host process) tries to write on A's read
-            mockHostname.mockReturnValue('seat-b');
+            // Seat B (same host process, different asserted seat) writes → refused
             await expect(roosyncMcpManagement({
                 action: 'manage',
                 subAction: 'write',
                 backup: false,
+                as: `${TRUSTED}:CoursIA`,
                 settings: { mcpServers: { 's': { command: 'node' } } }
             } as McpManagementArgs)).rejects.toMatchObject({
                 code: 'WRITE_NOT_AUTHORIZED'
@@ -1006,22 +1020,48 @@ describe('roosyncMcpManagement', () => {
             expect(vi.mocked(fs.copyFile)).not.toHaveBeenCalled();
         });
 
-        test('a refused seat recovers by doing its own read (read → write same seat)', async () => {
+        test('a refused seat recovers by doing its own read with its own `as`', async () => {
             vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
                 mcpServers: { 's': { command: 'node', args: ['a.js'] } }
             }));
 
-            mockHostname.mockReturnValue('seat-b');
-            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            mockHostname.mockReturnValue('same-host');
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read', as: `${TRUSTED}:CoursIA` });
             await roosyncMcpManagement({
                 action: 'manage',
                 subAction: 'write',
                 backup: false,
+                as: `${TRUSTED}:CoursIA`,
                 settings: { mcpServers: { 's': { command: 'node' } } }
             } as McpManagementArgs);
 
             // write went through the staged path
             expect(vi.mocked(fs.copyFile)).toHaveBeenCalled();
+        });
+
+        test('an UNTRUSTED `as` assertion never opens the seal (gate #3591 rejects it)', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
+                mcpServers: { 's': { command: 'node', args: ['a.js'] } }
+            }));
+
+            mockHostname.mockReturnValue('same-host');
+            // the gate (#3591) rejects the untrusted assertion — the tool's outer
+            // catch wraps it (MCP_MANAGE_FAILED), so we pin the gate's own message
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'read',
+                as: 'unlisted-machine:evil'
+            } as McpManagementArgs)).rejects.toThrow(/Paramètre "as" refusé/);
+
+            // and the failed read authorized nothing
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'write',
+                backup: false,
+                settings: { mcpServers: { 's': { command: 'node' } } }
+            } as McpManagementArgs)).rejects.toMatchObject({
+                code: 'WRITE_NOT_AUTHORIZED'
+            });
         });
     });
 });
