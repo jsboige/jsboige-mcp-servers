@@ -32,12 +32,18 @@ const {
   mockAccess,
   mockUtimes,
   mockExec,
+  mockCopyFile,
+  mockUnlink,
 } = vi.hoisted(() => ({
   mockReadFile: vi.fn(),
   mockWriteFile: vi.fn(),
   mockAccess: vi.fn(),
   mockUtimes: vi.fn(),
   mockExec: vi.fn(),
+  // #3988: writeMcpSettingsAtomic stage (copyFile) puis cleanup (unlink) —
+  // implementations posées à la factory : clearAllMocks ne les retire pas.
+  mockCopyFile: vi.fn().mockResolvedValue(undefined),
+  mockUnlink: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -45,6 +51,8 @@ vi.mock('fs/promises', () => ({
   writeFile: mockWriteFile,
   access: mockAccess,
   utimes: mockUtimes,
+  copyFile: mockCopyFile,
+  unlink: mockUnlink,
 }));
 
 vi.mock('child_process', () => ({
