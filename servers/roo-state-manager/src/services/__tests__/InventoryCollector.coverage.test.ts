@@ -374,7 +374,7 @@ describe('InventoryCollector — coverage complement (#833 C3)', () => {
   // ---- #3975: bootResilience passthrough (raw nested format, loadInventoryFile mapping) ----
   it('maps inventory.bootResilience through the raw format (#3975)', async () => {
     const bootResilience = {
-      collectedAt: new Date(Date.now() - 5 * 60_000).toISOString() // #3673: relative, not an absolute ISO literal,
+      collectedAt: new Date(Date.now() - 5 * 60_000).toISOString(), // #3673: relative, not an absolute ISO literal
       dockerService: { name: 'com.docker.service', status: 'Stopped', startType: 'Manual' },
       scheduledTasks: [{ name: 'ClaudishDockerEvents', state: 'Ready', lastRunTime: '2026-10-01T08:22:01Z', lastTaskResult: 0 }],
       dockerDesktopAutoStart: { enabled: true },
