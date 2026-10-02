@@ -501,6 +501,32 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     args.messageId ? { messageId: args.messageId } : undefined
   );
 
+  // #3995 — les attachments sur reply étaient droppées en silence par le
+  // dispatcher de roosync_messages (le schéma les accepte pour toute action,
+  // le handler ne les transmettait pas). Même pipeline que sendNewMessage :
+  // upload non-fatal (logger.warn), puis persistance des refs via
+  // updateMessageAttachments — source de vérité de attachments_list (#3256).
+  let attachmentRefs: Array<{ uuid: string; filename: string; sizeBytes: number }> = [];
+  let refsPersisted = true;
+  if (args.attachments && args.attachments.length > 0) {
+    const sharedStatePath = getSharedStatePath();
+    const attachmentManager = new AttachmentManager(sharedStatePath);
+    for (const att of args.attachments) {
+      try {
+        const ref = await attachmentManager.uploadAttachment(att.path, replyFrom, att.filename, replyMessageObj.id);
+        attachmentRefs.push(ref);
+        logger.info('📎 Attachment uploaded for reply', { uuid: ref.uuid, filename: ref.filename, messageId: replyMessageObj.id });
+      } catch (err) {
+        logger.warn('⚠️ Failed to upload attachment (non-fatal)', { path: att.path, error: String(err) });
+      }
+    }
+    if (attachmentRefs.length > 0) {
+      replyMessageObj.attachments = attachmentRefs;
+      // Re-sauvegarder le message avec les attachments (cf. #3270)
+      refsPersisted = await messageManager.updateMessageAttachments(replyMessageObj.id, attachmentRefs);
+    }
+  }
+
   // Icônes pour le formatage
   const originalPriorityIcon = getPriorityIcon(originalMessage.priority);
   const replyPriorityIcon = getPriorityIcon(priority);
@@ -552,6 +578,17 @@ ${truncateBodyPreview(args.body!)}
 - 📋 **Voir la réponse** : Utilisez \`roosync_messages\` avec \`action: "message"\` et \`message_id: ${replyMessageObj.id}\`
 - 🔗 **Voir le thread** : Filtrez par thread_id \`${threadId}\` dans \`roosync_messages\` avec \`action: "inbox"\`
 - 📦 **Archiver l'original** : Utilisez \`roosync_messages\` avec \`action: "archive"\` et \`message_id: ${originalMessage.id}\``;
+
+  // #3995 — rapport des attachments, miroir du send : visibles au caller,
+  // échec de persistance des refs annoncé (jamais un succès muet).
+  const attachmentDetail = attachmentRefs
+    .map(a => `  - \`${a.uuid}\` → ${a.filename} (${a.sizeBytes} octets)`)
+    .join('\n');
+  if (attachmentRefs.length > 0) {
+    result += refsPersisted
+      ? `\n**📎 Pièces jointes :** ${attachmentRefs.length} fichier(s) attaché(s)\n${attachmentDetail}\n`
+      : `\n**⚠️ Pièces jointes :** ${attachmentRefs.length} fichier(s) uploadé(s), mais la persistance des RÉFÉRENCES a échoué — le destinataire ne pourra PAS les retrouver (la liste des pièces jointes sera vide pour ce message). Renvoyez le message avec ses pièces jointes.\n${attachmentDetail}\n`;
+  }
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
   // Fire-and-forget heartbeat update: sending a reply proves the machine is active
@@ -694,6 +731,21 @@ export async function roosyncSend(
         `Retirez "messageId" de l'appel.`,
         MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
         { rejectedParams: ['messageId'], action: 'amend', issue: '#1170' }
+      );
+    }
+
+    // #3995 — même décision EXPLICITE pour amend + attachments : le schéma
+    // de roosync_messages les accepte pour toute action, mais amend mute un
+    // message existant — il n'a pas de sémantique d'attachement (ajouter une
+    // PJ à un message déjà lu/archivé n'est pas défini). Avant ce garde, les
+    // attachments fournies sur amend étaient droppées en silence par le
+    // dispatcher : accepté-then-dropped est le pire des deux mondes (#3177).
+    if (args.action === 'amend' && args.attachments && args.attachments.length > 0) {
+      throw new MessageManagerError(
+        `Paramètre "attachments" non supporté sur action="amend" : amend mute le contenu d'un message existant et ne peut pas y attacher de fichiers. ` +
+        `Pour joindre un fichier en restant dans un thread, utilisez action="send" avec "reply_to" (l'ID du message) et "thread_id".`,
+        MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+        { rejectedParams: ['attachments'], action: 'amend', issue: '#3995' }
       );
     }
 
