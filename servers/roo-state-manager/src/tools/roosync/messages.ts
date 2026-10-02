@@ -136,7 +136,12 @@ export const MessagesArgsSchema = z.object({
 
   // --- Manage bulk params (from/subject_contains also honored on inbox, #3351) ---
   from: z.string().optional().describe('Filtrer par expediteur — substring insensible a la casse (inbox + bulk)'),
-  before_date: z.string().optional().describe('Filtrer avant date ISO-8601 (bulk uniquement — rejeté sur inbox, #3351)'),
+  // #3996 — contrainte ISO-8601-Z : un datetime sans offset était parsé en TZ
+  // LOCALE du serveur à la comparaison → la fenêtre glissait selon le siège.
+  before_date: z.string().regex(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/,
+    'before_date doit être un timestamp ISO-8601 UTC avec suffixe Z, ex. "2026-10-01T00:00:00Z" — un datetime sans offset est parsé selon la TZ locale du serveur, la fenêtre de filtre glisserait selon la machine qui exécute (#3996)'
+  ).optional().describe('Filtrer avant date — timestamp ISO-8601 UTC, suffixe Z obligatoire (#3996) ; bulk uniquement — rejeté sur inbox (#3351)'),
   subject_contains: z.string().optional().describe('Filtrer par sujet — substring insensible a la casse (inbox + bulk)'),
   tag: z.string().optional().describe('Filtrer par tag (bulk uniquement — rejeté sur inbox, #3351)'),
 

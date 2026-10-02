@@ -1671,6 +1671,29 @@ describe('MessageManager', () => {
       expect(result.processed).toBe(1);
       expect(result.failed_ids).toHaveLength(0);
     });
+
+    test('before_date without offset is interpreted as UTC, not server-local TZ (#3996)', async () => {
+      // Message stamped 2026-10-01T02:00:00Z. before_date "2026-10-01T03:00:00"
+      // (no offset) previously parsed as LOCAL time — on a UTC+2 seat that is
+      // 01:00Z, and this 02:00Z message was EXCLUDED (the window slid by the
+      // server's TZ). Normalized to UTC, 02:00Z < 03:00Z → must be INCLUDED.
+      const msg = await messageManager.sendMessage(
+        'sender', 'machine-a', 'TZ window', 'Body', 'LOW'
+      );
+      // sendMessage stamps "now" — rewrite the stored timestamp to a fixed one.
+      const inboxFile = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
+      const raw = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+      raw.timestamp = '2026-10-01T02:00:00.000Z';
+      await fs.writeFile(inboxFile, JSON.stringify(raw, null, 2), 'utf-8');
+
+      const result = await messageManager.bulkOperation(
+        'machine-a', 'mark_read',
+        { status: 'unread', before_date: '2026-10-01T03:00:00' },
+        'ws-1'
+      );
+      expect(result.matched).toBe(1);
+      expect(result.processed).toBe(1);
+    });
   });
 
   describe('phantom message fix (#2307 Phase 4)', () => {

@@ -104,6 +104,26 @@ describe('roosync_messages dispatcher', () => {
       expect(result.success).toBe(true);
     });
 
+    // #3996: before_date TZ-sensible — un datetime sans offset était parsé en
+    // TZ locale du serveur à la comparaison (fenêtre glissante selon le siège).
+    test('#3996 before_date accepts ISO-8601 UTC with Z suffix', () => {
+      for (const ok of ['2026-10-01T00:00:00Z', '2026-10-01T00:00:00.000Z', '2026-04-01T23:59:59.999Z']) {
+        const result = MessagesArgsSchema.safeParse({ action: 'bulk_mark_read', before_date: ok });
+        expect(result.success, `before_date "${ok}" should be valid`).toBe(true);
+      }
+    });
+
+    test('#3996 before_date rejects offset-less and non-Z datetimes with an actionable error', () => {
+      for (const bad of ['2026-10-01', '2026-10-01T00:00:00', '2026-10-01T00:00:00+02:00']) {
+        const result = MessagesArgsSchema.safeParse({ action: 'bulk_mark_read', before_date: bad });
+        expect(result.success, `before_date "${bad}" should be rejected`).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues[0].message).toContain('#3996');
+          expect(result.error.issues[0].message).toContain('Z');
+        }
+      }
+    });
+
     test('should strip unknown params', () => {
       const result = MessagesArgsSchema.safeParse({
         action: 'inbox',
@@ -209,7 +229,7 @@ describe('roosync_messages dispatcher', () => {
         roosyncMessages({ action: 'inbox', tag: 'INFO' } as any)
       ).rejects.toThrow(/bulk-only.*tag/);
       await expect(
-        roosyncMessages({ action: 'inbox', before_date: '2026-08-01' } as any)
+        roosyncMessages({ action: 'inbox', before_date: '2026-08-01T00:00:00Z' } as any)
       ).rejects.toThrow(/bulk-only.*before_date/);
       expect(mockRead).not.toHaveBeenCalled();
     });
@@ -314,9 +334,9 @@ describe('roosync_messages dispatcher', () => {
     });
 
     test('bulk_archive routes to roosyncManage', async () => {
-      await roosyncMessages({ action: 'bulk_archive', before_date: '2026-01-01' });
+      await roosyncMessages({ action: 'bulk_archive', before_date: '2026-01-01T00:00:00Z' });
       expect(mockManage).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'bulk_archive', before_date: '2026-01-01' })
+        expect.objectContaining({ action: 'bulk_archive', before_date: '2026-01-01T00:00:00Z' })
       );
     });
 
