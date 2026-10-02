@@ -86,12 +86,28 @@ export interface SchtasksApplyResult {
   skipped: number;
   /** Number of tasks created (didn't exist) */
   created: number;
+  /**
+   * #2406 P1-a — names of tasks ABSENT from the machine. Creation from scratch
+   * is P1-b (installers); an apply that hits any of these is NOT a success.
+   */
+  missing: string[];
+  /**
+   * #2406 P1-a — false when any task is missing or errored. No silent success:
+   * the caller (ConfigSharingService → roosync_config) fails loudly on false.
+   */
+  success: boolean;
+  /**
+   * #2406 P1-a — true when produced by a dry-run. In that case the counters
+   * describe what WOULD happen (modified = would-update, skipped = would-skip),
+   * computed against the real machine state.
+   */
+  dryRun: boolean;
   /** Errors encountered */
   errors: string[];
   /** Detailed changes */
   changes: Array<{
     taskName: string;
-    action: 'created' | 'updated' | 'skipped';
+    action: 'created' | 'updated' | 'skipped' | 'missing' | 'error';
     details?: string;
   }>;
 }
@@ -106,7 +122,8 @@ param(
     [string]$Execute,
     [string]$Arguments,
     [string]$WorkingDirectory,
-    [string]$State
+    [string]$State,
+    [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
 
@@ -114,7 +131,9 @@ try {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
     if ($null -eq $existing) {
-        # Task doesn't exist — cannot create from scratch (requires full definition)
+        # Task doesn't exist — cannot create from scratch (requires full definition).
+        # #2406 P1-a: 'missing' is emitted identically in dry-run and real apply —
+        # the machine state is READ either way; the caller turns it into a failure.
         @{ action = 'missing'; taskName = $TaskName; error = 'Task not found. Creation from scratch not supported yet.' } | ConvertTo-Json -Compress
         exit 0
     }
@@ -141,21 +160,39 @@ try {
         $changes += "workingDirectory updated"
     }
 
+    $stateChange = $null
+    if ($State -eq 'Disabled' -and $existing.State -ne 'Disabled') {
+        $stateChange = 'state: disabled'
+    } elseif ($State -eq 'Ready' -and $existing.State -eq 'Disabled') {
+        $stateChange = 'state: enabled'
+    }
+
+    # #2406 P1-a — dry-run is a PURE READ: the same comparison runs, the mutations
+    # (Set-/Enable-/Disable-ScheduledTask) are skipped, the planned action is emitted.
+    if ($DryRun) {
+        if ($needsUpdate -or $null -ne $stateChange) {
+            $planned = @($changes)
+            if ($null -ne $stateChange) { $planned += $stateChange }
+            @{ action = 'would-update'; taskName = $TaskName; changes = $planned } | ConvertTo-Json -Compress
+        } else {
+            @{ action = 'would-skip'; taskName = $TaskName } | ConvertTo-Json -Compress
+        }
+        exit 0
+    }
+
     if ($needsUpdate) {
         $action = New-ScheduledTaskAction -Execute $Execute -Argument $Arguments -WorkingDirectory $WorkingDirectory
         Set-ScheduledTask -TaskName $TaskName -Action $action
         @{ action = 'updated'; taskName = $TaskName; changes = $changes } | ConvertTo-Json -Compress
-    } else {
-        # Check state change
-        if ($State -eq 'Disabled' -and $existing.State -ne 'Disabled') {
+    } elseif ($null -ne $stateChange) {
+        if ($stateChange -eq 'state: disabled') {
             Disable-ScheduledTask -TaskName $TaskName
-            @{ action = 'updated'; taskName = $TaskName; changes = @('state: disabled') } | ConvertTo-Json -Compress
-        } elseif ($State -eq 'Ready' -and $existing.State -eq 'Disabled') {
-            Enable-ScheduledTask -TaskName $TaskName
-            @{ action = 'updated'; taskName = $TaskName; changes = @('state: enabled') } | ConvertTo-Json -Compress
         } else {
-            @{ action = 'skipped'; taskName = $TaskName } | ConvertTo-Json -Compress
+            Enable-ScheduledTask -TaskName $TaskName
         }
+        @{ action = 'updated'; taskName = $TaskName; changes = @($stateChange) } | ConvertTo-Json -Compress
+    } else {
+        @{ action = 'skipped'; taskName = $TaskName } | ConvertTo-Json -Compress
     }
 } catch {
     @{ action = 'error'; taskName = $TaskName; error = $_.Exception.Message } | ConvertTo-Json -Compress
@@ -220,8 +257,12 @@ foreach ($task in $allTasks) {
 if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json -Depth 5 -Compress }
 `;
 
-    const tempDir = path.join(os.tmpdir(), `schtasks-collect-${Date.now()}`);
-    fs.mkdirSync(tempDir, { recursive: true });
+    // #2406 P1-a — mkdtempSync, pas Date.now() : un horodatage ms n'est pas
+    // unique sous concurrence (deux workers de test — ou deux process RSM sur
+    // une machine — tombant sur la même ms partagent le dossier, et le rmSync
+    // du finally de l'un supprime le script de l'autre en plein spawn :
+    // « n'est pas reconnu comme nom d'un fichier de script »).
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schtasks-collect-'));
     const scriptPath = path.join(tempDir, 'collect-schtasks.ps1');
     fs.writeFileSync(scriptPath, scriptContent, 'utf-8');
 
@@ -283,6 +324,11 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
       modified: 0,
       skipped: 0,
       created: 0,
+      // #2406 P1-a — an apply that hits missing or errored tasks is NOT a
+      // success; `missing` names each absent task for the caller's report.
+      missing: [],
+      success: true,
+      dryRun: !!dryRun,
       errors: [],
       changes: [],
     };
@@ -290,22 +336,14 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
     for (const task of tasks) {
       result.processed++;
 
-      if (dryRun) {
-        // In dry-run, just report what would happen
-        result.changes.push({
-          taskName: task.taskName,
-          action: 'updated' as const,
-          details: `Would set execute=${task.execute}, arguments=${task.arguments?.substring(0, 50)}...`,
-        });
-        result.modified++;
-        continue;
-      }
-
       try {
-        const applyResult = await this.applySingleTask(task);
+        // #2406 P1-a — dry-run goes through the SAME read path as the real apply
+        // (APPLY_SCRIPT -DryRun): real machine state, real diff, zero mutation.
+        // No more blanket "would set ..." that ignored the machine entirely.
+        const applyResult = await this.applySingleTask(task, dryRun);
         result.changes.push({
           taskName: applyResult.taskName,
-          action: applyResult.action as 'created' | 'updated' | 'skipped',
+          action: applyResult.action,
           details: applyResult.details,
         });
 
@@ -314,9 +352,17 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
             result.modified++;
             break;
           case 'skipped':
-          case 'missing':
-            // Task doesn't exist — count as skipped for now (creation not supported)
             result.skipped++;
+            break;
+          case 'missing':
+            // #2406 P1-a — a missing task is a FAILURE, not a skip: name it,
+            // don't bury it in the skipped counter (creation = P1-b installers).
+            result.missing.push(applyResult.taskName);
+            break;
+          case 'error':
+            // #2406 P1-a — executor-level errors previously fell through the
+            // switch and were silently dropped (processed but never counted).
+            result.errors.push(`Error applying ${applyResult.taskName}: ${applyResult.details ?? 'unknown error'}`);
             break;
         }
       } catch (error) {
@@ -326,23 +372,31 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
       }
     }
 
-    this.logger.info(`Apply complete: ${result.modified} modified, ${result.skipped} skipped, ${result.errors.length} errors`);
+    result.success = result.errors.length === 0 && result.missing.length === 0;
+    this.logger.info(
+      `Apply complete${dryRun ? ' (dry-run)' : ''}: ${result.modified} modified, ${result.skipped} skipped, ${result.missing.length} missing, ${result.errors.length} errors`,
+    );
     return result;
   }
 
   /**
    * Apply a single task configuration
+   *
+   * #2406 P1-a — `dryRun` runs the SAME script with -DryRun: the machine state
+   * is read and diffed, no Set-/Enable-/Disable-ScheduledTask is ever invoked.
    */
-  private async applySingleTask(task: SchtaskConfig): Promise<{ taskName: string; action: 'updated' | 'skipped' | 'missing' | 'error'; details?: string }> {
+  private async applySingleTask(task: SchtaskConfig, dryRun?: boolean): Promise<{ taskName: string; action: 'updated' | 'skipped' | 'missing' | 'error'; details?: string }> {
     // #2406 P1-c — développe les placeholders vers les chemins LOCAUX avant
     // l'exécution : le package est portable, la commande ne l'est pas.
     const localExecute = this.normalizer.denormalizeEmbeddedPaths(task.execute || '');
     const localArguments = this.normalizer.denormalizeEmbeddedPaths(task.arguments || '');
     const localWorkingDirectory = this.normalizer.denormalizeEmbeddedPaths(task.workingDirectory || '');
 
-    // Write apply script to temp file
-    const tempDir = path.join(os.tmpdir(), `schtasks-apply-${Date.now()}`);
-    fs.mkdirSync(tempDir, { recursive: true });
+    // Write apply script to temp file.
+    // #2406 P1-a — mkdtempSync, pas Date.now() : voir collect() — un dossier
+    // horodaté à la ms n'est pas unique sous concurrence ; le rmSync du finally
+    // d'un voisin de même milliseconde supprime ce script avant le spawn pwsh.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schtasks-apply-'));
     const scriptPath = path.join(tempDir, 'apply-schtasks.ps1');
     fs.writeFileSync(scriptPath, APPLY_SCRIPT, 'utf-8');
 
@@ -354,6 +408,9 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
         '-WorkingDirectory', localWorkingDirectory,
         '-State', task.state || 'Ready',
       ];
+      if (dryRun) {
+        args.push('-DryRun');
+      }
 
       const result = await this.executor.executeScript(scriptPath, args, { timeout: 15000 });
 
@@ -367,12 +424,17 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
 
       try {
         const parsed = PowerShellExecutor.parseJsonOutput<{ action: string; taskName: string; changes?: string[]; error?: string }>(result.stdout);
-        // Map action to a known set of values
+        // Map action to a known set of values.
+        // #2406 P1-a — dry-run emissions ('would-update'/'would-skip') map onto
+        // the same counters (modified/skipped); the result carries dryRun=true so
+        // consumers read them as WOULD-modify/WOULD-skip.
         const actionMap: Record<string, 'updated' | 'skipped' | 'missing' | 'error'> = {
           updated: 'updated',
           skipped: 'skipped',
           missing: 'missing',
           error: 'error',
+          'would-update': 'updated',
+          'would-skip': 'skipped',
         };
         const mappedAction = actionMap[parsed.action] ?? 'updated';
         return {

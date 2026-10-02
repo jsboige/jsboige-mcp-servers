@@ -134,7 +134,18 @@ describe('SchtasksConfigService', () => {
   });
 
   describe('apply', () => {
-    it('should report dry-run without executing', async () => {
+    // #2406 P1-a — dry-run is no longer a blanket "updated" that ignores the
+    // machine: it runs the SAME APPLY_SCRIPT with -DryRun (pure read) and maps
+    // the real diff onto the result counters, with dryRun=true on the result.
+    it('dry-run reads the real machine state via APPLY_SCRIPT -DryRun and reports would-skip', async () => {
+      mockExecutor.executeScript.mockResolvedValue({
+        success: true,
+        stdout: JSON.stringify({ action: 'would-skip', taskName: 'Claude-Worker' }),
+        stderr: '',
+        exitCode: 0,
+        executionTime: 50,
+      });
+
       const tasks: SchtaskConfig[] = [
         {
           taskName: 'Claude-Worker',
@@ -146,9 +157,68 @@ describe('SchtasksConfigService', () => {
       ];
 
       const result = await service.apply(tasks, true);
+      expect(result.dryRun).toBe(true);
+      // Guard the guard: a temp-script fs failure lands here as an apply-level
+      // error with skipped=0 — surface it verbatim instead of a bare 0-vs-1.
+      expect(result.errors, JSON.stringify(result.errors)).toEqual([]);
+      expect(result.skipped).toBe(1);
+      expect(result.modified).toBe(0);
+      expect(result.success).toBe(true);
+      // The real script was invoked, with the -DryRun switch.
+      expect(mockExecutor.executeScript).toHaveBeenCalledTimes(1);
+      const psArgs: string[] = mockExecutor.executeScript.mock.calls[0][1];
+      expect(psArgs).toContain('-DryRun');
+    });
+
+    it('dry-run reports would-update with the real diff', async () => {
+      mockExecutor.executeScript.mockResolvedValue({
+        success: true,
+        stdout: JSON.stringify({
+          action: 'would-update',
+          taskName: 'Claude-Worker',
+          changes: ['arguments updated', 'state: disabled'],
+        }),
+        stderr: '',
+        exitCode: 0,
+        executionTime: 50,
+      });
+
+      const result = await service.apply(
+        [
+          {
+            taskName: 'Claude-Worker',
+            taskPath: '\\',
+            execute: 'pwsh.exe',
+            arguments: '-File other.ps1',
+            state: 'Disabled',
+          },
+        ],
+        true,
+      );
+      expect(result.dryRun).toBe(true);
       expect(result.modified).toBe(1);
-      expect(result.processed).toBe(1);
-      expect(mockExecutor.executeScript).not.toHaveBeenCalled();
+      expect(result.skipped).toBe(0);
+      expect(result.changes[0].action).toBe('updated');
+      expect(result.changes[0].details).toContain('arguments updated');
+      expect(result.changes[0].details).toContain('state: disabled');
+    });
+
+    it('dry-run reports a missing task as a failure (not a skip)', async () => {
+      mockExecutor.executeScript.mockResolvedValue({
+        success: true,
+        stdout: JSON.stringify({ action: 'missing', taskName: 'NonExistent-Task' }),
+        stderr: '',
+        exitCode: 0,
+        executionTime: 50,
+      });
+
+      const result = await service.apply(
+        [{ taskName: 'NonExistent-Task', taskPath: '\\', execute: 'pwsh.exe', arguments: '', state: 'Ready' }],
+        true,
+      );
+      expect(result.dryRun).toBe(true);
+      expect(result.missing).toEqual(['NonExistent-Task']);
+      expect(result.success).toBe(false);
     });
 
     it('should handle skipped tasks', async () => {
@@ -203,7 +273,9 @@ describe('SchtasksConfigService', () => {
       expect(result.changes[0].action).toBe('updated');
     });
 
-    it('should handle missing tasks gracefully', async () => {
+    // #2406 P1-a — a missing task is a FAILURE that names the task, not a skip
+    // buried in the skipped counter (creation from scratch = P1-b installers).
+    it('marks an apply hitting a missing task as FAILURE and names it', async () => {
       mockExecutor.executeScript.mockResolvedValue({
         success: true,
         stdout: JSON.stringify({
@@ -227,7 +299,29 @@ describe('SchtasksConfigService', () => {
       ];
 
       const result = await service.apply(tasks);
-      expect(result.skipped).toBe(1);
+      expect(result.missing).toEqual(['NonExistent-Task']);
+      expect(result.skipped).toBe(0);
+      expect(result.success).toBe(false);
+      expect(result.errors).toHaveLength(0); // missing is not an executor error
+    });
+
+    it('is a success when every task is skipped (already matching)', async () => {
+      mockExecutor.executeScript.mockResolvedValue({
+        success: true,
+        stdout: JSON.stringify({ action: 'skipped', taskName: 'Claude-Worker' }),
+        stderr: '',
+        exitCode: 0,
+        executionTime: 50,
+      });
+
+      const result = await service.apply([
+        { taskName: 'Claude-Worker', taskPath: '\\', execute: 'pwsh.exe', arguments: '', state: 'Ready' },
+        { taskName: 'Roo-Scheduler', taskPath: '\\', execute: 'pwsh.exe', arguments: '', state: 'Ready' },
+      ]);
+      expect(result.skipped).toBe(2);
+      expect(result.success).toBe(true);
+      expect(result.missing).toEqual([]);
+      expect(result.errors).toEqual([]);
     });
 
     it('should handle PowerShell execution errors', async () => {
@@ -251,6 +345,12 @@ describe('SchtasksConfigService', () => {
 
       const result = await service.apply(tasks);
       expect(result.changes[0].action).toBe('error');
+      // #2406 P1-a — executor-level errors used to fall through apply()'s
+      // switch and vanish; they now land in errors[] and fail the apply.
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('Access is denied');
+      expect(result.errors[0]).toContain('Claude-Worker');
+      expect(result.success).toBe(false);
     });
   });
 

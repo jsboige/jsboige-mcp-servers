@@ -90,8 +90,8 @@ vi.mock('../ServicesConfigService', () => {
   return { ServicesConfigService };
 });
 
-// ── SchtasksConfigService (collectSchtasks) ────────────────────────────────
-const schtasksMock = vi.hoisted(() => ({ collect: vi.fn() }));
+// ── SchtasksConfigService (collectSchtasks + applyConfig schtasks target) ──
+const schtasksMock = vi.hoisted(() => ({ collect: vi.fn(), apply: vi.fn() }));
 vi.mock('../SchtasksConfigService', () => ({
   SchtasksConfigService: vi.fn(() => schtasksMock),
 }));
@@ -545,6 +545,67 @@ describe('ConfigSharingService — #833 C3 coverage complement', () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // applyConfig — schtasks target (#2406 P1-a: no silent success on missing)
+  // The service-level contract (missing[] + success:false) is covered unmocked in
+  // SchtasksConfigService.p1a-real.test.ts; this asserts the PROPAGATION: an
+  // applyConfig whose schtasks apply hits missing tasks must fail the whole
+  // config apply and NAME the tasks (L453-455).
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('applyConfig — schtasks target (#2406 P1-a)', () => {
+    it('fails the config apply and names each task the machine is missing', async () => {
+      // Locate a package: machine configs dir + latest.json point to /mock/cfg.
+      fsMock.existsSync.mockImplementation((p: string) =>
+        p.includes('configs') || p.includes('latest.json') || p.includes('manifest.json') || p.includes('schtasks-inventory.json'),
+      );
+      fsMock.readFile.mockImplementation(async (p: string) => {
+        if (p.includes('latest.json')) return JSON.stringify({ path: '/mock/cfg' });
+        if (p.includes('manifest.json')) return JSON.stringify({ version: '1.0.0', description: 'd', author: 'a', files: [] });
+        if (p.includes('schtasks-inventory.json')) {
+          return JSON.stringify({ tasks: [{ taskName: 'Claude-Worker', taskPath: '\\', execute: 'pwsh.exe', arguments: '', state: 'Ready' }] });
+        }
+        return Buffer.from('{}');
+      });
+      inventoryMock.getMachineInventory.mockResolvedValue({ paths: { rooExtensions: '/roo-ext', mcpSettings: '/mock/mcp.json' } });
+      schtasksMock.apply.mockResolvedValue({
+        processed: 1, modified: 0, skipped: 0, created: 0,
+        missing: ['Claude-Worker'], success: false, dryRun: false, errors: [], changes: [],
+      });
+
+      const result = await (service as any).applyConfig({ version: 'latest', targets: ['schtasks'] });
+
+      expect(schtasksMock.apply).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      const joined = result.errors.join(' | ');
+      expect(joined).toContain('Claude-Worker');
+      expect(joined).toContain('P1-b');
+    });
+
+    it('succeeds when the schtasks apply is fully skipped (nothing missing, no errors)', async () => {
+      fsMock.existsSync.mockImplementation((p: string) =>
+        p.includes('configs') || p.includes('latest.json') || p.includes('manifest.json') || p.includes('schtasks-inventory.json'),
+      );
+      fsMock.readFile.mockImplementation(async (p: string) => {
+        if (p.includes('latest.json')) return JSON.stringify({ path: '/mock/cfg' });
+        if (p.includes('manifest.json')) return JSON.stringify({ version: '1.0.0', description: 'd', author: 'a', files: [] });
+        if (p.includes('schtasks-inventory.json')) {
+          return JSON.stringify({ tasks: [{ taskName: 'Claude-Worker', taskPath: '\\', execute: 'pwsh.exe', arguments: '', state: 'Ready' }] });
+        }
+        return Buffer.from('{}');
+      });
+      inventoryMock.getMachineInventory.mockResolvedValue({ paths: { rooExtensions: '/roo-ext', mcpSettings: '/mock/mcp.json' } });
+      schtasksMock.apply.mockResolvedValue({
+        processed: 1, modified: 0, skipped: 1, created: 0,
+        missing: [], success: true, dryRun: false, errors: [], changes: [],
+      });
+
+      const result = await (service as any).applyConfig({ version: 'latest', targets: ['schtasks'] });
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toEqual([]);
     });
   });
 });

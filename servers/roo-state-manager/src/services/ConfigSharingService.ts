@@ -443,9 +443,15 @@ export class ConfigSharingService implements IConfigSharingService {
             if (inventory.tasks && Array.isArray(inventory.tasks) && inventory.tasks.length > 0) {
               const applyResult = await schtasksService.apply(inventory.tasks, options.dryRun);
               filesApplied += applyResult.modified + applyResult.created;
-              this.logger.info(`Schtasks applied: ${applyResult.modified} modified, ${applyResult.created} created, ${applyResult.skipped} skipped`);
+              this.logger.info(`Schtasks applied: ${applyResult.modified} modified, ${applyResult.created} created, ${applyResult.skipped} skipped, ${applyResult.missing.length} missing`);
               if (applyResult.errors.length > 0) {
                 errors.push(...applyResult.errors);
+              }
+              // #2406 P1-a — no silent success: tasks absent from this machine
+              // are named and fail the apply (creation from scratch = P1-b
+              // installers). Applies to dry-run too — the real apply would fail.
+              if (applyResult.missing.length > 0) {
+                errors.push(`Schtasks: ${applyResult.missing.length} task(s) missing on this machine, creation not supported yet (P1-b): ${applyResult.missing.join(', ')}`);
               }
             } else {
               this.logger.info('Schtasks inventory empty, nothing to apply');
