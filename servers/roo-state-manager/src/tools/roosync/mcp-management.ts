@@ -14,6 +14,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
+// #3987: manage.read masks mcpServers[*].env with the #3044 digest format —
+// canonical definition in compare-config, imported (never copied).
+import { maskSecretValue } from './compare-config.js';
 // #2766 S2: getActiveMcpSettingsPath probes the filesystem for the installed
 // extension (Roo vs Zoo-Code), so the tool finds the config on Zoo-only hosts
 // instead of ENOENTing on the hardcoded roo-cline default.
@@ -205,6 +208,34 @@ export type McpManagementResult = z.infer<typeof McpManagementResultSchema>;
 // IMPLÉMENTATION DES ACTIONS
 // ====================================================================
 
+/**
+ * #3987: copy of settings where every mcpServers[*].env value is replaced by
+ * its #3044 digest (`<set:len=N:sha256=hash8>`). The manage.read response
+ * crosses agent/transcript boundaries and must never carry cleartext
+ * credentials; digests keep the same/different arbitration signal.
+ *
+ * Blanket-mask env rather than pattern-match keys: env is credential-by-default
+ * in MCP configs, a pattern gap would leak, and len+hash preserve drift checks.
+ */
+function maskEnvSecrets(settings: McpSettings): McpSettings {
+    if (!settings || !settings.mcpServers || typeof settings.mcpServers !== 'object') {
+        return settings;
+    }
+    const out: McpSettings = { mcpServers: {} };
+    for (const [name, server] of Object.entries(settings.mcpServers)) {
+        if (server && typeof server === 'object' && server.env && typeof server.env === 'object') {
+            const env: Record<string, string> = {};
+            for (const [k, v] of Object.entries(server.env)) {
+                env[k] = maskSecretValue(v);
+            }
+            out.mcpServers[name] = { ...server, env };
+        } else {
+            out.mcpServers[name] = server;
+        }
+    }
+    return out;
+}
+
 async function handleManageAction(args: McpManagementArgs): Promise<McpManagementResult> {
     const { subAction, server_name, server_config, settings, backup = true, targetExtension } = args;
 
@@ -224,13 +255,16 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             const mcpSettings = JSON.parse(content) as McpSettings;
             recordSuccessfulRead();
 
+            // #3987: env blocks carry API keys/tokens — echo them as digests, never
+            // cleartext. The read→write authorization does NOT need real values back:
+            // writes replace or merge whole fields, they never re-submit the env read.
             return {
                 success: true,
                 action: 'manage',
                 subAction: 'read',
                 timestamp,
-                message: `✅ Configuration MCP lue depuis ${settingsPath}\n\n🔒 **AUTORISATION D'ÉCRITURE ACCORDÉE** (valable 5 minutes)`,
-                details: mcpSettings
+                message: `✅ Configuration MCP lue depuis ${settingsPath}\n\n🔒 **AUTORISATION D'ÉCRITURE ACCORDÉE** (valable 5 minutes)\n\n🔐 #3987: valeurs \`env\` masquées en empreintes (same/different arbitrable, jamais le clair)`,
+                details: maskEnvSecrets(mcpSettings)
             };
         }
 

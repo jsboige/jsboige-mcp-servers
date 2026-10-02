@@ -62,8 +62,12 @@ function isSensitivePath(path: string): boolean {
  * Produce a secret-safe digest: `<set:len=N:sha256=hash8>` or `<unset>` / `<empty>`.
  * The hash lets the caller decide "same secret on both sides?" without ever
  * seeing the cleartext — that's the arbitration signal VibeSync needs.
+ *
+ * #3987: exported for reuse by mcp_management manage.read, which masks
+ * mcpServers[*].env values with the same digest format so cross-tool payloads
+ * stay comparable. Canonical definition lives HERE — import, never copy.
  */
-function maskSecretValue(value: unknown): string {
+export function maskSecretValue(value: unknown): string {
   if (value === null || value === undefined) return '<unset>';
   const str = typeof value === 'string' ? value : JSON.stringify(value);
   if (str === undefined) return '<unset>';
