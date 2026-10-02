@@ -16,6 +16,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { networkMetrics } from '../../services/task-indexer/QdrantHealthMonitor.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { TaskArchiver } from '../../services/task-archiver/index.js';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -131,10 +132,13 @@ async function buildClaudeSessionIndex(claudeProjectsPath: string): Promise<Set<
     return basenames;
 }
 
+/** UUID v4 shape (Claude Code session file names). Hex 8-4-4-4-12, case-insensitive. */
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Check if a Claude Code session file exists on disk for a given task_id.
- * Scans ~/.claude/projects/ for JSONL files matching the task_id — both the
- * legacy root layout and the per-project subdirectory layout (#3986).
+ * Scans ~/.claude/projects/ for JSONL files matching the task_id — the legacy
+ * root layout and the per-project subdirectory layout (#3986).
  */
 async function claudeSessionExists(taskId: string, sessionBasenames?: Set<string>): Promise<boolean> {
     const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
@@ -158,7 +162,36 @@ async function claudeSessionExists(taskId: string, sessionBasenames?: Set<string
     // (mass false-negatives → systematic FLEET-SAFETY aborts, or live vectors deleted).
     // The index is built once per run by the caller; standalone calls build it on demand.
     const basenames = sessionBasenames ?? await buildClaudeSessionIndex(claudeProjectsPath);
-    return basenames.has(`${taskId}.jsonl`);
+    if (basenames.has(`${taskId}.jsonl`)) {
+        return true;
+    }
+
+    // #2609: Qdrant stores per-session claude-code task_ids as `claude-{project}--{uuid}`,
+    // but the JSONL on disk is named by the BARE uuid (any project dir may host it —
+    // sessions opened from a worktree live under the worktree's project dir, not the
+    // one encoded in the task_id). Look up the suffix after the last `--`: a uuid never
+    // contains a double dash, and project names that do (drive-letter encodings like
+    // `d--Dev-...`) simply miss here and fall through to the per-project path below.
+    const lastSep = taskId.lastIndexOf('--');
+    if (lastSep !== -1) {
+        const sessionFile = `${taskId.slice(lastSep + 2)}.jsonl`;
+        if (basenames.has(sessionFile)) {
+            return true;
+        }
+        // Per-session id with a uuid suffix: the one-pass basename index covers every
+        // project dir, so a miss here is authoritative — do NOT fall through to the
+        // detector, whose per-project aggregate would mis-read a dead session as live.
+        if (SESSION_UUID_RE.test(taskId.slice(lastSep + 2))) {
+            return false;
+        }
+    }
+
+    // Per-project legacy ids (`claude-{project}`, no session uuid) name no file —
+    // delegate to the detector, which resolves the project dir itself.
+    if (taskId.startsWith('claude-')) {
+        return (await ClaudeStorageDetector.findConversationById(taskId)) !== null;
+    }
+    return false;
 }
 
 /**

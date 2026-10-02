@@ -27,6 +27,13 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 	}
 }));
 
+// Mock ClaudeStorageDetector — #2609: per-project fallback in claudeSessionExists
+vi.mock('../../../utils/claude-storage-detector.js', () => ({
+	ClaudeStorageDetector: {
+		findConversationById: vi.fn(),
+	}
+}));
+
 // Mock fs/promises — #3986: readdir added for the Claude session basename index
 vi.mock('fs/promises', () => ({
 	access: vi.fn(),
@@ -58,9 +65,11 @@ import { detectAndCleanupOrphans } from '../cleanup-orphans.js';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
+import { ClaudeStorageDetector } from '../../../utils/claude-storage-detector.js';
 import { TaskArchiver } from '../../../services/task-archiver/index.js';
 
 const mockFindConversationById = vi.mocked(RooStorageDetector.findConversationById);
+const mockClaudeFindConversationById = vi.mocked(ClaudeStorageDetector.findConversationById);
 const mockListArchivedTasks = vi.mocked(TaskArchiver.listArchivedTasks);
 
 function makeSkeleton(taskId: string): ConversationSkeleton {
@@ -91,6 +100,7 @@ describe('cleanup-orphans', () => {
 		vi.mocked(os.homedir).mockReturnValue('/home/testuser');
 		// #698: default to empty archive set (existing tests assert no archive reclassification)
 		mockListArchivedTasks.mockResolvedValue([]);
+		mockClaudeFindConversationById.mockResolvedValue(null);
 	});
 
 	describe('detectAndCleanupOrphans — dry run', () => {
@@ -543,6 +553,116 @@ describe('cleanup-orphans', () => {
 			expect(result.orphans).toEqual(['t1', 't2']);
 			expect(result.errors).toEqual([]);
 			expect(result.fleet_safety_abort).toBeUndefined();
+		});
+	});
+
+	// ─── #2609: per-session prefixed task ids (`claude-{project}--{uuid}`) ───
+	// Live incident (ai-01, 2026-10-02): 561 orphans detected, among them
+	// claude-d--roo-extensions--12895d13-… whose JSONL was alive on disk under the
+	// worktree project dir — the basename lookup used the FULL prefixed id, which
+	// never names a file. A confirmed cleanup would have deleted live vectors.
+	describe('detectAndCleanupOrphans — per-session prefixed task ids (#2609)', () => {
+		function dirEntry(name: string) { return { name, isDirectory: () => true, isFile: () => false }; }
+		function fileEntry(name: string) { return { name, isDirectory: () => false, isFile: () => true }; }
+
+		const projectsRoot = '/home/testuser/.claude/projects';
+		const norm = (p: any) => String(p).replaceAll('\\', '/');
+
+		function mockAccessRootOnly() {
+			vi.mocked(fs.access).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return undefined;
+				throw new Error('not found');
+			}) as any);
+		}
+
+		/** Session files hosted under a DIFFERENT project dir than the task_id encodes
+		 *  (session opened from a worktree — the incident case). */
+		function mockWorktreeHostedSession(sessionUuid: string) {
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('d--roo-extensions'), dirEntry('D--roo-extensions--claude-worktrees-pointer-bundle-1116-1136-1137')];
+				if (norm(p) === `${projectsRoot}/d--roo-extensions`) return [];
+				if (norm(p) === `${projectsRoot}/D--roo-extensions--claude-worktrees-pointer-bundle-1116-1136-1137`) return [fileEntry(`${sessionUuid}.jsonl`)];
+				return [];
+			}) as any);
+		}
+
+		test('a live session whose uuid basename lives in ANOTHER project dir is NOT an orphan (regression: live vectors deleted)', async () => {
+			const liveUuid = '12895d13-73eb-42f4-ade2-391c25d452e6';
+			const prefixedId = `claude-d--roo-extensions--${liveUuid}`;
+			mockScroll.mockResolvedValueOnce(mockScrollResponse([prefixedId, 'keep-1']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			mockWorktreeHostedSession(liveUuid);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.on_disk).toBe(1);
+			expect(result.orphans).toEqual([]);
+			expect(mockDelete).not.toHaveBeenCalled();
+		});
+
+		test('a per-session id whose uuid basename is absent everywhere stays an orphan — detector NOT consulted (uuid gate)', async () => {
+			const deadUuid = 'deadbeef-0000-0000-0000-000000000000';
+			const prefixedId = `claude-d--roo-extensions--${deadUuid}`;
+			mockScroll.mockResolvedValueOnce(mockScrollResponse([prefixedId, 'keep-1']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('d--roo-extensions')];
+				return [];
+			}) as any);
+			// If the uuid gate were missing, the detector's per-project aggregate would
+			// mis-read this dead session as live (project dir exists) — pin that it is NOT called.
+			mockClaudeFindConversationById.mockClear();
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.on_disk).toBe(0);
+			expect(result.orphans).toEqual([prefixedId]);
+			expect(mockClaudeFindConversationById).not.toHaveBeenCalled();
+		});
+
+		test('per-project ids (`claude-{project}`, no uuid) delegate to ClaudeStorageDetector', async () => {
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['claude-d--Dev-roo-extensions', 'claude-d--Dev-claudish']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('d--Dev-roo-extensions')];
+				return [];
+			}) as any);
+			mockClaudeFindConversationById.mockImplementation((async (id: string) =>
+				id === 'claude-d--Dev-roo-extensions' ? { taskId: id } : null) as any);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.on_disk).toBe(1);
+			expect(result.orphans).toEqual(['claude-d--Dev-claudish']);
+			expect(mockClaudeFindConversationById).toHaveBeenCalledTimes(2);
+		});
+
+		test('suffixed but non-uuid segment (drive-letter project like `d--Dev-…`) misses the basename index harmlessly and reaches the detector', async () => {
+			// `claude-d--Dev-roo-extensions`: suffix after last `--` is `Dev-roo-extensions`
+			// — not a uuid, not a file name; must fall through to the detector, not orphan.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['claude-d--Dev-roo-extensions', 'keep-1']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('d--Dev-roo-extensions')];
+				return [];
+			}) as any);
+			mockClaudeFindConversationById.mockResolvedValueOnce({ taskId: 'claude-d--Dev-roo-extensions' } as any);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.on_disk).toBe(1);
+			expect(result.orphans).toEqual([]);
 		});
 	});
 });
