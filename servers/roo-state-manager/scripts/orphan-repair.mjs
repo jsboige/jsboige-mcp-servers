@@ -1,7 +1,13 @@
 // #2427 — Targeted orphan-conversation repair (Zoo tasks, DB-driven).
 //
 // Repairs conversations that carry msg_count > 0 but have NO messages rows
-// (ai-01's anti-join predicate). For each orphan task_id:
+// (ai-01's anti-join predicate), restricted to the ACTIONABLE class of the
+// two-count predicate (scripts/lib/orphan-balance.mjs — the single source):
+// rows marked metadata.unrecoverable or metadata.legacy_aggregate are
+// tombstones (arbitration issuecomment-5933447265), counted in the BEFORE
+// breakdown but never selected for repair — re-writing a legacy_aggregate
+// row would resurrect the pre-#2734 project aggregate the store removed.
+// For each actionable orphan task_id:
 //   skeleton = RooStorageDetector.analyzeConversation(taskId, taskPath)  // full re-read
 //   await dualWriteConversationToStore(taskId, skeleton)                 // upsert conv + messages
 //
@@ -16,13 +22,16 @@
 //   node scripts/orphan-repair.mjs --machine myia-web1 --live --limit 5    # LIVE pilot lot
 //   node scripts/orphan-repair.mjs --machine myia-web1 --live              # LIVE full repair
 //   node scripts/orphan-repair.mjs --machine myia-web1 --live --task-ids id1,id2  # replay/rollback
+//   node scripts/orphan-repair.mjs --machine myia-web1 --include-tombstoned # override the class filter
 //
 // LIVE is opt-in (--live) and additionally gated by UNIFIED_STORE_DUAL_WRITE +
 // UNIFIED_STORE_PG_URL in the server .env (same gate as the backfill scripts);
 // if --live is asked while the gates are absent, exit 2. Without --live the
 // gates are stripped (NullUnifiedStoreWriter, zero rows persisted).
 // --task-ids bypasses the anti-join selection: replay the write on known ids
-// (idempotence verification) or target a rollback lot.
+// (idempotence verification) or target a rollback lot. A tombstoned id in
+// that list exits 2 unless --include-tombstoned is given — the floor stays
+// visible and is never written over by accident.
 // Any malformed or repeated argument, or a machine-id mismatch, exits 2 — this
 // script is replayed as-is on other hosts against the shared production store,
 // so its guards fail closed. Tasks with no local source files are SKIPPED, not
@@ -35,6 +44,7 @@ import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { BALANCE_SQL, ACTIONABLE_SELECTION_SQL, classifyOrphanMetadata } from './lib/orphan-balance.mjs';
 
 const RSM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -57,7 +67,7 @@ loadEnv(path.join(RSM_ROOT, '.env'));
 
 const args = process.argv.slice(2);
 const VALUE_FLAGS = new Set(['--machine', '--limit', '--task-ids']);
-const BOOL_FLAGS = new Set(['--dry-run', '--live']);
+const BOOL_FLAGS = new Set(['--dry-run', '--live', '--include-tombstoned']);
 const flag = (name) => {
   const i = args.indexOf(name);
   return i !== -1 ? args[i + 1] : undefined;
@@ -166,23 +176,54 @@ function readEnvKey(k) {
 const client = new Client({ connectionString: PG_URL });
 await client.connect();
 
+const INCLUDE_TOMBSTONED = args.includes('--include-tombstoned');
+
 let orphans;
 if (TASK_IDS) {
   orphans = TASK_IDS;
-  console.log(`Explicit task ids: ${orphans.length} (--task-ids — anti-join predicate bypassed)`);
+  // Classify the explicit ids against the two-count predicate: a tombstoned
+  // id here means "replay over a tombstone" — refuse unless overridden.
+  const meta = (await client.query(
+    'select task_id, metadata from conversations where task_id = any($1::text[])',
+    [TASK_IDS]
+  )).rows;
+  const metaById = new Map(meta.map((r) => [r.task_id, r.metadata]));
+  const tombstoned = TASK_IDS
+    .filter((id) => classifyOrphanMetadata(metaById.get(id)) !== 'actionable')
+    .map((id) => `${id} [${classifyOrphanMetadata(metaById.get(id))}]`);
+  console.log(`Explicit task ids: ${orphans.length} (--task-ids — anti-join selection bypassed)`);
+  if (tombstoned.length > 0) {
+    if (!INCLUDE_TOMBSTONED) {
+      console.error(`Refused: ${tombstoned.length} id(s) are tombstoned (unrecoverable/legacy_aggregate) — pass --include-tombstoned to override:`);
+      for (const t of tombstoned) console.error(`  ${t}`);
+      await client.end();
+      process.exit(2);
+    }
+    console.log(`⚠️  including ${tombstoned.length} tombstoned id(s) (--include-tombstoned):`);
+    for (const t of tombstoned) console.log(`  ${t}`);
+  }
 } else {
-  const PREDICATE = `
+  // Two-count breakdown FIRST (never one number), then select the actionable
+  // class only — tombstones stay counted here, invisible nowhere.
+  const balance = (await client.query(BALANCE_SQL, [MACHINE, 'zoo'])).rows[0];
+  if (balance) {
+    console.log(`Orphans BEFORE (${MACHINE}/zoo, two-count): total=${balance.anti_join_total}`
+      + ` actionable=${balance.actionable} unrecoverable=${balance.unrecoverable}`
+      + ` legacy_aggregate=${balance.legacy_aggregate} partial_trace=${balance.partial_trace}`);
+  } else {
+    console.log(`Orphans BEFORE (${MACHINE}/zoo, two-count): 0`);
+  }
+  const PREDICATE = INCLUDE_TOMBSTONED ? `
     select c.task_id
     from conversations c
     where c.msg_count > 0
       and c.machine_id = $1
-      and c.harness = 'zoo'
+      and c.harness = $2
       and not exists (select 1 from messages m where m.task_id = c.task_id)
     order by c.last_ts desc
-  `;
-  const beforeCount = (await client.query(`select count(*)::int n from (${PREDICATE}) o`, [MACHINE])).rows[0].n;
-  orphans = (await client.query(PREDICATE, [MACHINE])).rows.map((r) => r.task_id);
-  console.log(`Orphans BEFORE (${MACHINE}/zoo, anti-join): ${beforeCount}`);
+  ` : ACTIONABLE_SELECTION_SQL;
+  orphans = (await client.query(PREDICATE, [MACHINE, 'zoo'])).rows.map((r) => r.task_id);
+  console.log(`Selected for repair: ${orphans.length} (${INCLUDE_TOMBSTONED ? 'anti-join, tombstones included by --include-tombstoned' : 'actionable class only'})`);
 }
 await client.end();
 
