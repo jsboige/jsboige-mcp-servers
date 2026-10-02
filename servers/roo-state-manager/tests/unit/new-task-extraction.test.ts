@@ -67,15 +67,10 @@ describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleto
             true // useProductionHierarchy
         );
 
-        // ASSERT
-        expect(skeleton).not.toBeNull();
-        expect(skeleton.childTaskInstructionPrefixes).toBeDefined();
+        // ASSERT — 🎯 VALIDATION CRITIQUE: Les 6 newTask doivent être extraits
+        expect(skeleton?.childTaskInstructionPrefixes).toHaveLength(6);
 
-        // 🎯 VALIDATION CRITIQUE: Les 6 newTask doivent être extraits
-        const instructionCount = skeleton.childTaskInstructionPrefixes?.length || 0;
-        expect(instructionCount).toBe(6);
-
-        console.log(`✅ Test validé: ${instructionCount} instructions newTask extraites`);
+        console.log(`✅ Test validé: ${skeleton!.childTaskInstructionPrefixes!.length} instructions newTask extraites`);
     });
 
     it('doit extraire des préfixes normalisés non-vides', async () => {
@@ -87,12 +82,11 @@ describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleto
         );
 
         // ASSERT
-        expect(skeleton.childTaskInstructionPrefixes).toBeDefined();
+        expect(skeleton!.childTaskInstructionPrefixes).toHaveLength(6);
 
         for (const prefix of skeleton.childTaskInstructionPrefixes!) {
-            expect(prefix).toBeDefined();
-            expect(prefix.length).toBeGreaterThan(10); // Préfixes significatifs
             expect(typeof prefix).toBe('string');
+            expect(prefix.length).toBeGreaterThan(10); // Préfixes significatifs
         }
 
         console.log(`✅ Test validé: Tous les préfixes sont valides et normalisés`);
@@ -115,7 +109,6 @@ describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleto
         const modes = instructions.map((inst: any) => inst.mode);
 
         for (const mode of modes) {
-            expect(mode).toBeDefined();
             expect(typeof mode).toBe('string');
             // Les modes ne doivent pas contenir d'emojis après nettoyage
             expect(mode).not.toMatch(/[🎯🪲💻🏗️🪃❓👨💼]/);
@@ -134,7 +127,7 @@ describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleto
 
         // ASSERT
         for (const instruction of instructions) {
-            expect(instruction.message).toBeDefined();
+            expect(typeof instruction.message).toBe('string');
             expect(instruction.message.length).toBeGreaterThan(20);
             expect(instruction.message.length).toBeLessThan(10000); // Sanity check
         }
@@ -177,7 +170,17 @@ describe('NewTask Extraction - Régression', () => {
         );
 
         // ASSERT
+        // Plancher d'abord : sans lui, un childTaskInstructionPrefixes undefined
+        // rendait 0 === 0 et le test passait à vide.
+        // Mesuré sur ce fixture (03/10/2026) : 7 préfixes distincts = les 6 newTask
+        // réels + 1 bloc racine <task> (mode='task') capturé par le pattern XML de
+        // l'extraction. L'extraction brute rend même 10 instructions (3 échos
+        // doublonnés avec mode mal parsé — « debug mode »), dédupliqués par le Set
+        // du skeleton. Le comportement d'extraction est épinglé par les suites
+        // dédiées (message-extraction-coordinator, extraction-contamination) :
+        // y toucher est un grain distinct, pas une correction de test.
         const prefixes = skeleton.childTaskInstructionPrefixes || [];
+        expect(prefixes.length).toBeGreaterThanOrEqual(6);
         const uniquePrefixes = [...new Set(prefixes)];
 
         expect(prefixes.length).toBe(uniquePrefixes.length);

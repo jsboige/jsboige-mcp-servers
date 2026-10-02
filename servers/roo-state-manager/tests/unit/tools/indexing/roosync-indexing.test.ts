@@ -10,22 +10,28 @@
  */
 
 import { roosyncIndexingTool, handleRooSyncIndexing } from '../../../../src/tools/indexing/roosync-indexing.tool.js';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../../../src/types/conversation.js';
 
-// Mock des services d'indexation
+// Mock des services d'indexation.
+// NB: la config vitest pose `mockReset: true` — les implémentations posées via
+// .mockResolvedValue() sur les mocks de factory sont RESETTÉES avant chaque test,
+// celles passées inline à vi.fn(impl) survivent. Les mocks ci-dessous doivent
+// donc rester en impl inline (mesuré: findConversationById en .mockResolvedValue
+// rendait undefined et le test index passait silencieusement par la branche
+// « Task directory not found »).
 vi.mock('../../../../src/services/task-indexer.js', () => ({
     TaskIndexer: class {
         resetCollection = vi.fn().mockResolvedValue(undefined);
     },
     getHostIdentifier: vi.fn(() => 'test-host-os'),
-    indexTask: vi.fn().mockResolvedValue([{ id: 'point-1' }])
+    indexTask: vi.fn(async () => [{ id: 'point-1' }])
 }));
 
 vi.mock('../../../../src/utils/roo-storage-detector.js', () => ({
     RooStorageDetector: {
-        findConversationById: vi.fn().mockResolvedValue({ path: '/fake/path/task-123' })
+        findConversationById: vi.fn(async () => ({ path: '/fake/path/task-123' }))
     }
 }));
 
@@ -64,7 +70,16 @@ describe('roosync_indexing - CONS-11', () => {
             content: [{ type: 'text', text: '# Rebuild completed\n\nTasks processed: 10' }]
         });
 
+        // L'action=index ne traverse le garde EMBEDDING_API_KEY que si la clé
+        // existe : sans stub, le test suivrait la branche erreur selon la machine.
+        vi.stubEnv('EMBEDDING_API_KEY', 'test-key');
+        vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+
         vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        vi.unstubAllEnvs();
     });
 
     // ============================================================
@@ -85,13 +100,13 @@ describe('roosync_indexing - CONS-11', () => {
             expect((roosyncIndexingTool.inputSchema as any).required).toContain('action');
         });
 
-        it('should include all parameters', () => {
+        it('should include all parameters with their declared types and defaults', () => {
             const props = (roosyncIndexingTool.inputSchema as any).properties;
-            expect(props.task_id).toBeDefined();
-            expect(props.confirm).toBeDefined();
-            expect(props.workspace_filter).toBeDefined();
-            expect(props.max_tasks).toBeDefined();
-            expect(props.dry_run).toBeDefined();
+            expect(props.task_id).toMatchObject({ type: 'string' });
+            expect(props.confirm).toMatchObject({ type: 'boolean', default: false });
+            expect(props.workspace_filter).toMatchObject({ type: 'string' });
+            expect(props.max_tasks).toMatchObject({ type: 'number', default: 0 });
+            expect(props.dry_run).toMatchObject({ type: 'boolean', default: false });
         });
     });
 
@@ -167,8 +182,15 @@ describe('roosync_indexing - CONS-11', () => {
             );
 
             expect(ensureCacheFreshCallback).toHaveBeenCalled();
-            // Le résultat dépend de l'indexation réelle, on vérifie juste qu'il n'est pas une erreur de validation
-            expect((result.content[0] as any).text).toBeDefined();
+            // Le mock indexTask rend [{ id: 'point-1' }] → 1 chunk. Le texte de
+            // succès prouve que le dispatch a atteint indexTaskSemanticTool.handler
+            // ET traversé ses gardes (kill-switch, clé d'embedding, cache).
+            expect(result.isError).toBeUndefined();
+            const text = (result.content[0] as any).text;
+            expect(text).toContain('# Indexation sémantique terminée');
+            expect(text).toContain('**Tâche:** task-123');
+            expect(text).toContain('**Chunks indexés:** 1');
+            expect(rebuildHandler).not.toHaveBeenCalled();
         });
     });
 
@@ -188,8 +210,17 @@ describe('roosync_indexing - CONS-11', () => {
                 rebuildHandler
             );
 
-            // Le reset appelle TaskIndexer.resetCollection() en interne
-            expect((result.content[0] as any).text).toBeDefined();
+            // Le mock TaskIndexer.resetCollection résout → resetCollection() a été
+            // franchi sans lever (sinon success:false dans le catch du handler).
+            expect(result.isError).toBeUndefined();
+            expect(setQdrantIndexingEnabled).toHaveBeenCalledWith(true);
+            // Cache vide → 0 squelettes reset, 0 tâches en queue
+            expect(JSON.parse((result.content[0] as any).text)).toEqual({
+                success: true,
+                message: 'Collection Qdrant réinitialisée avec succès',
+                skeletonsReset: 0,
+                queuedForReindexing: 0
+            });
         });
     });
 
@@ -238,7 +269,8 @@ describe('roosync_indexing - CONS-11', () => {
                 max_tasks: undefined,
                 dry_run: undefined
             });
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
+            expect((result.content[0] as any).text).toContain('Rebuild completed');
         });
     });
 
@@ -258,8 +290,22 @@ describe('roosync_indexing - CONS-11', () => {
                 rebuildHandler
             );
 
-            // Le diagnostic retourne toujours un résultat structuré
-            expect((result.content[0] as any).text).toBeDefined();
+            // Le mock Qdrant rend getCollections → liste SANS la collection cible :
+            // statut déterministe missing_collection (pas healthy par accident).
+            const diagnostics = JSON.parse((result.content[0] as any).text);
+            expect(diagnostics).toMatchObject({
+                status: 'missing_collection',
+                collection_name: 'roo_tasks_semantic_index',
+                details: {
+                    qdrant_connection: 'success',
+                    collection_exists: false
+                }
+            });
+            expect(diagnostics.errors).toEqual(
+                expect.arrayContaining([
+                    expect.stringContaining("n'existe pas dans Qdrant")
+                ])
+            );
             // Ne devrait pas avoir appelé le rebuildHandler
             expect(rebuildHandler).not.toHaveBeenCalled();
         });
@@ -270,7 +316,7 @@ describe('roosync_indexing - CONS-11', () => {
     // ============================================================
 
     describe('action: cleanup_orphans', () => {
-        it('should return error without confirm in dry-run mode by default', async () => {
+        it('should default to dry-run scan mode and report a structured payload', async () => {
             const result = await handleRooSyncIndexing(
                 { action: 'cleanup_orphans' },
                 conversationCache,
@@ -281,7 +327,16 @@ describe('roosync_indexing - CONS-11', () => {
                 rebuildHandler
             );
 
-            expect((result.content[0] as any).text).toBeDefined();
+            // Le mock Qdrant n'expose pas scroll → 0 task_ids côté serveur :
+            // le scan rend toujours un JSON structuré (erreurs absorbées dans
+            // result.errors, jamais un throw).
+            // Le tool pose explicitement isError:false (pas undefined)
+            expect(result.isError).toBe(false);
+            expect(JSON.parse((result.content[0] as any).text)).toMatchObject({
+                action: 'cleanup_orphans',
+                mode: 'dry_run',
+                scan: { orphans_detected: 0 }
+            });
             expect(rebuildHandler).not.toHaveBeenCalled();
         });
 
