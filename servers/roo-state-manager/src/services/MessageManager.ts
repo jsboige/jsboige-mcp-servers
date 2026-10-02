@@ -2249,6 +2249,16 @@ export class MessageManager {
     let errors = 0;
     const failedIds: string[] = [];
 
+    // #3996 — TZ-déterminisme du filtre before_date : sans offset explicite,
+    // new Date() parsait selon la TZ LOCALE du serveur — la fenêtre glissait
+    // de quelques heures selon le siège qui exécute (timestamps stockés ISO-Z).
+    // Normalisation : pas d'offset = UTC. Parse une seule fois hors boucle
+    // (était re-parsé à chaque message). NaN (absent/valeur ininterprétable)
+    // désactive le filtre, comme avant.
+    const beforeDateMs = filters.before_date
+      ? Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(filters.before_date) ? filters.before_date : `${filters.before_date}Z`)
+      : NaN;
+
     for (const item of items) {
       const message = full.get(item.id);
       if (!message) continue;
@@ -2265,7 +2275,7 @@ export class MessageManager {
       if (filters.priority && message.priority !== filters.priority) {
         continue;
       }
-      if (filters.before_date && new Date(message.timestamp) >= new Date(filters.before_date)) {
+      if (filters.before_date && !Number.isNaN(beforeDateMs) && new Date(message.timestamp).getTime() >= beforeDateMs) {
         continue;
       }
       if (filters.subject_contains && !message.subject.toLowerCase().includes(filters.subject_contains.toLowerCase())) {
