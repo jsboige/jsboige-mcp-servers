@@ -1,5 +1,6 @@
 import { homedir } from 'os';
 import { join, sep, isAbsolute, normalize } from 'path';
+import { findRooExtensionsRoot } from '../utils/repo-root.js';
 
 export type ConfigType = 'mcp_config' | 'mode_definition' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config';
 
@@ -46,9 +47,53 @@ export class ConfigNormalizationService implements INormalizationService {
     return {
       os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'darwin' : 'linux',
       homeDir: homedir(),
-      rooRoot: process.cwd(), // Supposé être la racine de l'extension ou du workspace
+      // #2406 P1-c — process.cwd() est le dossier du SERVEUR, pas la racine du
+      // dépôt : %ROO_ROOT% templatisait un chemin interne (src/...), invérifiable
+      // sur une autre machine. La racine réelle (walk-up CLAUDE.md / ROO_EXTENSIONS_PATH)
+      // était déjà calculée côté inventaire — c'est elle qui fait foi.
+      rooRoot: findRooExtensionsRoot(),
       envVars: process.env as Record<string, string>
     };
+  }
+
+  /**
+   * #2406 P1-c — chemins embarqués dans des chaînes mixtes (arguments de schtasks
+   * qui mélangent flags et chemins, etc.) : remplace au niveau SUBSTRING les
+   * occurrences du repo root et du home dir par leurs placeholders. Contrairement
+   * à normalizePath (valeur entière qui doit ressembler à un chemin), seul le
+   * fragment path est remplacé — le reste de la chaîne est préservé tel quel
+   * (backslashes compris) pour ne pas corrompre flags, regex ou séparateurs.
+   */
+  public normalizeEmbeddedPaths(value: string): string {
+    if (typeof value !== 'string' || value.length === 0) return value;
+    const ctx = this.contextOverride || this.getCurrentContext();
+    let out = value;
+    // Le plus long d'abord : un rooRoot niché sous homeDir doit être remplacé
+    // avant que homeDir ne morde le même fragment.
+    const pairs = ([
+      [ctx.rooRoot, this.ROOT_PLACEHOLDER],
+      [ctx.homeDir, this.HOME_PLACEHOLDER],
+    ] as Array<[string, string]>).sort((a, b) => b[0].length - a[0].length);
+    for (const [localPath, placeholder] of pairs) {
+      if (!localPath) continue;
+      // Motif insensible au style de séparateur (`/` ou `\`) et, sur Windows, à la casse
+      const pattern = this.escapeRegExp(localPath.replace(/\\/g, '/')).replace(/\//g, '[/\\\\]');
+      out = out.replace(new RegExp(pattern, ctx.os === 'windows' ? 'gi' : 'g'), placeholder);
+    }
+    return out;
+  }
+
+  /**
+   * #2406 P1-c — inverse de normalizeEmbeddedPaths : développe %ROO_ROOT% et
+   * %USERPROFILE% vers les chemins LOCAUX de la machine qui applique (un package
+   * collecté sur D:\ s'applique avec les chemins C:\ du checkout local).
+   */
+  public denormalizeEmbeddedPaths(value: string): string {
+    if (typeof value !== 'string' || value.length === 0) return value;
+    const ctx = this.contextOverride || this.getCurrentContext();
+    return value
+      .split(this.ROOT_PLACEHOLDER).join(ctx.rooRoot)
+      .split(this.HOME_PLACEHOLDER).join(ctx.homeDir);
   }
 
   private processObject(obj: any, context: MachineContext, mode: 'normalize' | 'denormalize'): any {

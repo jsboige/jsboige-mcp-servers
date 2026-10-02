@@ -1,7 +1,6 @@
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { existsSync } from 'fs';
 import { execSync, exec } from 'child_process';
 import { promisify } from 'util';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo, BootResilienceInfo } from '../../types/inventory';
@@ -10,6 +9,7 @@ import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
+import { findRooExtensionsRoot as findRepoRoot } from '../../utils/repo-root.js';
 
 // #3975: promisify paresseux — des tests mockent child_process avec execSync seul
 // (export exec absent) ; un promisify(exec) top-level y explose au chargement module.
@@ -31,28 +31,10 @@ export class InventoryService {
   /**
    * Détecte la racine roo-extensions en remontant l'arborescence depuis process.cwd()
    * Recherche un répertoire contenant CLAUDE.md (fichier caractéristique de roo-extensions)
+   * #2406 P1-c — délègue à l'util partagé (aussi consommé par ConfigNormalizationService)
    */
   private static findRooExtensionsRoot(): string {
-    // Si la variable d'environnement est définie, l'utiliser
-    if (process.env.ROO_EXTENSIONS_PATH) {
-      return process.env.ROO_EXTENSIONS_PATH;
-    }
-
-    let currentPath = process.cwd();
-
-    // Remonter jusqu'à 10 niveaux pour trouver la racine
-    for (let i = 0; i < 10; i++) {
-      // Vérifier si on est à la racine roo-extensions (présence de CLAUDE.md)
-      if (existsSync(path.join(currentPath, 'CLAUDE.md'))) {
-        return currentPath;
-      }
-      const parentPath = path.dirname(currentPath);
-      if (parentPath === currentPath) break; // Atteint la racine du système
-      currentPath = parentPath;
-    }
-
-    // Fallback au cwd si CLAUDE.md non trouvé
-    return process.cwd();
+    return findRepoRoot();
   }
 
   private constructor() {
