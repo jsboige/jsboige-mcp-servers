@@ -368,14 +368,19 @@ describe('roosync_send', () => {
             expect(result.content[0].text).toContain('att-3270');
         });
 
-        it('reports no attachment section when the upload itself failed', async () => {
+        it('reports the failed upload section instead of a silent success (#3997)', async () => {
             setupSendWithAttachment();
             mockUploadAttachment.mockRejectedValue(new Error('upload failed'));
             const result = await roosyncSend({
                 action: 'send', to: 'myia-ai-01', subject: 'Secrets', body: 'Body',
                 attachments: [{ path: '/tmp/secret.env' }],
             });
-            expect(result.content[0].text).not.toContain('Pièces jointes');
+            // #3997 — l'échec d'upload n'est plus muet : le message part, mais
+            // le résultat liste le fichier NON joint (ancien comportement : rien).
+            expect(result.content[0].text).toContain('Pièces jointes en échec');
+            expect(result.content[0].text).toContain('/tmp/secret.env');
+            expect(result.content[0].text).toContain('upload failed');
+            expect(result.content[0].text).not.toContain('fichier(s) attaché(s)');
             expect(mockUpdateMessageAttachments).not.toHaveBeenCalled();
         });
     });

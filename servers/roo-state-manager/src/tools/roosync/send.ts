@@ -287,6 +287,12 @@ async function sendNewMessage(
   // Traiter les pièces jointes (#674)
   let attachmentRefs: Array<{ uuid: string; filename: string; sizeBytes: number }> = [];
   let refsPersisted = true;
+  // #3997 — les échecs d'upload restent non-fatals (le message part), mais ne
+  // sont plus muets : chaque fichier NON joint est collecté ici pour figurer
+  // dans le résultat. Sans cela, le caller lit « Message envoyé avec succès »
+  // et croit la pièce livrée (incident po-2027 30/09 : clé servie « en PJ »,
+  // upload échoué, aucune trace côté appelant).
+  const failedAttachments: Array<{ path: string; error: string }> = [];
   if (args.attachments && args.attachments.length > 0) {
     const sharedStatePath = getSharedStatePath();
     const attachmentManager = new AttachmentManager(sharedStatePath);
@@ -298,6 +304,7 @@ async function sendNewMessage(
         attachmentRefs.push(ref);
         logger.info('📎 Attachment uploaded for message', { uuid: ref.uuid, filename: ref.filename, messageId: message.id });
       } catch (err) {
+        failedAttachments.push({ path: att.path, error: err instanceof Error ? err.message : String(err) });
         logger.warn('⚠️ Failed to upload attachment (non-fatal)', { path: att.path, error: String(err) });
       }
     }
@@ -326,6 +333,14 @@ async function sendNewMessage(
       ? `\n**📎 Pièces jointes :** ${attachmentRefs.length} fichier(s) attaché(s)\n${attachmentDetail}`
       : `\n**⚠️ Pièces jointes :** ${attachmentRefs.length} fichier(s) uploadé(s), mais la persistance des RÉFÉRENCES a échoué — le destinataire ne pourra PAS les retrouver (la liste des pièces jointes sera vide pour ce message). Vérifiez la disponibilité du store principal puis renvoyez le message avec ses pièces jointes.\n${attachmentDetail}`)
     : '';
+  // #3997 — rapport d'échec d'upload : jamais un succès muet sur un fichier
+  // manquant. Le message est bien parti — ce qui a échoué est la pièce jointe.
+  const failedDetail = failedAttachments
+    .map(f => `  - \`${f.path}\` — ${f.error}`)
+    .join('\n');
+  const failedAttachmentInfo = failedAttachments.length > 0
+    ? `\n**⚠️ Pièces jointes en échec :** ${failedAttachments.length}/${args.attachments!.length} fichier(s) NON joint(s) — le message ci-dessus est parti **sans** ces fichiers.\n${failedDetail}\nVérifiez que le chemin existe côté serveur puis renvoyez les fichiers (envoi séparé ou nouvel envoi).\n`
+    : '';
   const result = `✅ **Message envoyé avec succès**
 
 **ID :** ${message.id}
@@ -334,7 +349,7 @@ async function sendNewMessage(
 **Sujet :** ${message.subject}
 **Priorité :** ${getPriorityIcon(message.priority)} ${message.priority}
 **Timestamp :** ${formatDate(message.timestamp)}
-${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}${autoDestructInfo}${attachmentInfo}
+${args.tags && args.tags.length > 0 ? `**Tags :** ${args.tags.join(', ')}\n` : ''}${args.thread_id ? `**Thread :** ${args.thread_id}\n` : ''}${args.reply_to ? `**En réponse à :** ${args.reply_to}\n` : ''}${autoDestructInfo}${attachmentInfo}${failedAttachmentInfo}
 Le message a été livré dans l'inbox de **${args.to}**.
 ${writeMs > 1000 ? `\n⏱️ **Durée réelle du write côté serveur (#3654) :** ${writeMs} ms — c'est ce que la persistance GDrive+PG a pris ; un timeout client >cette valeur mais <quelques minutes peut quand même laisser le write atterrir (cf. po-2025 14/09 : writeMs≈63s, timeout client 120s, messageId absorbé au retry).` : ''}
 

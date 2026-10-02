@@ -129,6 +129,36 @@ describe('roosync_get_attachment', () => {
     expect(text).toContain(Buffer.from('hello').toString('base64'));
   });
 
+  // #3997 — plafond du mode inline : au-delà de 1 MB binaire, le base64
+  // (~1,37x) ne doit PAS transiter dans le résultat MCP.
+  test('refuses inline content above the 1 MB cap and redirects to targetPath (#3997)', async () => {
+    const mockMeta = {
+      uuid: 'uuid-big', originalName: 'backup.zip', sizeBytes: 5 * 1024 * 1024,
+      mimeType: 'application/zip', uploadedAt: '2026-03-13T09:00:00Z', uploaderMachineId: 'myia-po-2025', messageId: 'msg-1'
+    };
+    mockReadAttachment.mockResolvedValue({ content: Buffer.alloc(5 * 1024 * 1024, 7), meta: mockMeta });
+    const result = await roosyncGetAttachment({ uuid: 'uuid-big' });
+    const text = result.content[0].text;
+    expect(text).toContain('trop volumineuse');
+    expect(text).toContain('uuid-big');
+    expect(text).toContain('targetPath');
+    // No base64 payload must leak into the refusal.
+    expect(text).not.toContain('Contenu (base64)');
+  });
+
+  test('inline still allowed at exactly the 1 MB cap (#3997)', async () => {
+    const mockMeta = {
+      uuid: 'uuid-edge', originalName: 'edge.bin', sizeBytes: 1024 * 1024,
+      mimeType: 'application/octet-stream', uploadedAt: '2026-03-13T09:00:00Z', uploaderMachineId: 'myia-po-2025', messageId: 'msg-1'
+    };
+    mockReadAttachment.mockResolvedValue({ content: Buffer.alloc(1024 * 1024, 1), meta: mockMeta });
+    const result = await roosyncGetAttachment({ uuid: 'uuid-edge' });
+    const text = result.content[0].text;
+    expect(text).toContain('✅');
+    expect(text).toContain('inline');
+    expect(text).not.toContain('trop volumineuse');
+  });
+
   test('copy mode still uses getAttachment when targetPath is provided', async () => {
     const mockMeta = {
       uuid: 'uuid-copy', originalName: 'data.txt', sizeBytes: 5,

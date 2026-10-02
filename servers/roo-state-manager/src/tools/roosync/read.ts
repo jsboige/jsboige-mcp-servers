@@ -22,7 +22,7 @@ import {
   resolveCallerIdentity
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
-import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
+import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 
 // Logger instance for read tool
 const logger: Logger = createLogger('RooSyncReadTool');
@@ -537,7 +537,7 @@ Le message n'a pas été trouvé dans :
  * @param args Arguments validés pour le mode attachments
  * @returns Contenu formaté des pièces jointes
  */
-async function readAttachmentsMode(args: RooSyncReadArgs): Promise<string> {
+async function readAttachmentsMode(args: RooSyncReadArgs, messageManager: MessageManager): Promise<string> {
   const messageId = args.message_id!;
 
   logger.info('📎 Reading attachments for message', { messageId });
@@ -546,8 +546,19 @@ async function readAttachmentsMode(args: RooSyncReadArgs): Promise<string> {
   const sharedStatePath = getSharedStatePath();
   const attachmentManager = new AttachmentManager(sharedStatePath);
 
-  // Lister les attachments pour ce message
-  const attachments = await attachmentManager.listAttachments(messageId);
+  // #3997 — chemin ciblé #3256 : un message connu répond depuis SES refs en
+  // O(k) (getMessage O(1) + metadata par uuid), au lieu du scan `listAttachments`
+  // dont le coût croît avec la taille du pool. Seul un message introuvable
+  // retombe sur le scan historique filtré par messageId (dernier recours pour
+  // un id inconnu des index). Miroir exact de roosync_list_attachments.
+  const stats: AttachmentListStats = { missingMetadata: 0, readTimeout: 0, parseError: 0 };
+  const message = await messageManager.getMessage(messageId);
+  const attachments = message
+    ? await attachmentManager.listAttachmentsByRefs(
+        (message.attachments ?? []).map((r) => r.uuid),
+        stats,
+      )
+    : await attachmentManager.listAttachments(messageId, stats);
 
   // Cas : aucun attachment
   if (attachments.length === 0) {
@@ -574,6 +585,13 @@ Aucune pièce jointe pour ce message.
       ? `${(att.sizeBytes / 1024).toFixed(1)} KB`
       : `${(att.sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
     result += `| \`${att.uuid}\` | ${att.originalName} | ${sizeKB} | ${att.mimeType} | ${att.uploaderMachineId} | ${formatDate(att.uploadedAt)} |\n`;
+  }
+
+  // #3013 — une liste partielle doit se déclarer comme telle, jamais se faire
+  // passer pour complète (les entrées omises nourrissent `stats` par cause).
+  const totalSkipped = stats.readTimeout + stats.missingMetadata + stats.parseError;
+  if (totalSkipped > 0) {
+    result += `\n⚠️ **${totalSkipped} entrée(s) omise(s)** — timeout ${stats.readTimeout} · metadata absente ${stats.missingMetadata} · parse ${stats.parseError}\n`;
   }
 
   result += `\n---\n\n`;
@@ -638,7 +656,7 @@ export async function roosyncRead(
     } else if (args.mode === 'message') {
       result = await readMessage(args, messageManager);
     } else {
-      result = await readAttachmentsMode(args);
+      result = await readAttachmentsMode(args, messageManager);
     }
 
     logger.info('✅ roosync_read operation completed', { mode: args.mode });
