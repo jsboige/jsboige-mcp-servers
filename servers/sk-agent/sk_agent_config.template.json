@@ -135,7 +135,7 @@
 
   "mcps": [
     {
-      "_comment": "Tool risk class + allowed capabilities (issue #3408). ``exec`` is default-deny unless the agent advertises ``shell``; ``browser`` requires ``browser``; ``stateful`` requires ``memory``/``repl``; ``read`` is the no-capability default.",
+      "_comment": "Tool risk class + allowed capabilities (issue #3408). ``exec`` is default-deny unless the agent advertises ``shell``; ``browser`` requires ``browser``; ``stateful`` requires ``memory``/``repl``; ``write_shared`` (fleet-shared state an agent can mutate) requires ``coordination``; ``read`` is the no-capability default.",
       "id": "searxng",
       "description": "Web search via SearXNG",
       "command": "npx",
@@ -182,6 +182,15 @@
       "args": [],
       "risk_class": "read",
       "allowed_capabilities": ["document_text", "document_visual"]
+    },
+    {
+      "_comment": "LOT E (vllm#63, dossier PR #62 §4): RooSync fleet coordination broker — sibling-relative path (same convention as open_terminal). The server loads its own .env (GDrive/PG/Qdrant credentials) from its directory — no secrets here. ``write_shared`` default-deny: gated by the explicit ``coordination`` capability (an agent appends to a seven-machine channel only under an explicit grant).",
+      "id": "roo_state_manager",
+      "description": "RooSync fleet coordination: dashboards read/append, messages inbox/send, conversation search",
+      "command": "node",
+      "args": ["../roo-state-manager/build/index.js"],
+      "risk_class": "write_shared",
+      "allowed_capabilities": ["coordination"]
     }
   ],
 
@@ -524,6 +533,25 @@
         "github_tools": true,
         "github_default_repo": "jsboige/roo-extensions"
       }
+    },
+    {
+      "_comment": "=== LOT E showcase presets (vllm#63, dossier PR #62 §4) === Adaptations from the dossier: desktop_commander -> open_terminal (desktop-commander RETIRED fleet-wide 2026-09, #3423); per-agent ``sampling`` NOT a config field (callers calibrate via agent_spec.sampling — coding profile per dossier §5: temperature 0.6, presence_penalty 0.0).",
+      "id": "terminal-analyst",
+      "description": "Local analyst with terminal+repo access: log analysis, config drift, read-only gh queries. Evidence-cited, output French (vllm dossier §6 skeleton).",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "You are a local terminal analyst with shell access and web search. Rules: (1) You never conclude without executed evidence — every quantitative claim goes through a tool (shell command or web search) whose command and result you cite. (2) One tool per step; wait for the result before the next step. (3) Always respond in French; numbers and claims carry their source; 'not verified' is a valid answer. (4) Stay inside the requested scope; if an action would be destructive or out of scope, stop and report instead of acting. (5) Final format: findings (with evidence), then diagnosis, then recommendation. Concise. Typical tasks: log analysis, config drift detection, read-only git/gh inspection.",
+      "mcps": ["open_terminal", "searxng"],
+      "capabilities": ["shell", "repo_read", "web"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "coordination-agent",
+      "description": "Local agent that reads/posts RooSync dashboards (7-machine fleet) and drafts lane reports. Sampling per dossier §5 (thinking profile): calibrate via agent_spec.sampling {temperature: 0.7, presence_penalty: 1.5, max_tokens: 2048}.",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "You are a local coordination agent on a 7-machine fleet, reading and posting on shared RooSync dashboards. Rules: (1) Every reported fact comes from a tool call made this turn — cite the dashboard read or inbox query behind each line. (2) One tool per step; wait for the result before the next step. (3) Always respond in French; every number carries its source; 'not verified' is a valid answer. (4) Never mark work as done without a verifiable artefact (commit SHA, PR URL); appends are concise and structured. (5) Stay inside the requested scope; asked to mutate anything beyond reading and posting reports, stop and report. Final format: findings (with evidence), then recommendation.",
+      "mcps": ["roo_state_manager", "searxng"],
+      "capabilities": ["coordination", "web"],
+      "memory": { "enabled": false }
     }
   ],
 

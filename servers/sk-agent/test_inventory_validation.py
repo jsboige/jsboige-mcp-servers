@@ -76,11 +76,14 @@ def test_template_counts_match_expected_baseline():
     purged (omnicoder-9b, owui-glm-4.7-flash-*, owui-omnicoder-9b).
     32->35 agents: #2002 added the cheap-task lane (summarizer-local,
     classifier-local, formatter-local) on qwen3.6-35b-no-thinking.
+    5->6 mcps / 35->37 agents: LOT E (vllm#63) added the roo_state_manager
+    coordination broker + the terminal-analyst/coordination-agent showcase
+    presets.
     """
     cfg = load_config(str(TEMPLATE_PATH))
     assert len(cfg.models) == 8, f"models: {len(cfg.models)}"
-    assert len(cfg.agents) == 35, f"agents: {len(cfg.agents)}"
-    assert len(cfg.mcps) == 5, f"mcps: {len(cfg.mcps)}"
+    assert len(cfg.agents) == 37, f"agents: {len(cfg.agents)}"
+    assert len(cfg.mcps) == 6, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
 
     inline_total = sum(len(c.inline_agents) for c in cfg.conversations)
@@ -91,6 +94,34 @@ def test_template_counts_match_expected_baseline():
 
     mem_agents = sum(1 for a in cfg.agents if a.memory.enabled)
     assert mem_agents == 5, f"memory-enabled agents: {mem_agents}"
+
+
+def test_template_lot_e_entries():
+    """LOT E (vllm#63): RSM broker in mcps[] + the two showcase presets.
+
+    Locks the acceptance surface so a later template edit cannot silently
+    drop the coordination grant or the write_shared gating.
+    """
+    cfg = load_config(str(TEMPLATE_PATH))
+
+    rsm = next((m for m in cfg.mcps if m.id == "roo_state_manager"), None)
+    assert rsm is not None, "roo_state_manager missing from mcps[]"
+    assert rsm.risk_class == "write_shared"
+    assert rsm.allowed_capabilities == ["coordination"]
+
+    ta = next((a for a in cfg.agents if a.id == "terminal-analyst"), None)
+    assert ta is not None, "terminal-analyst preset missing"
+    assert ta.mcps == ["open_terminal", "searxng"]
+    assert set(ta.capabilities) == {"shell", "repo_read", "web"}
+
+    ca = next((a for a in cfg.agents if a.id == "coordination-agent"), None)
+    assert ca is not None, "coordination-agent preset missing"
+    assert ca.mcps == ["roo_state_manager", "searxng"]
+    assert set(ca.capabilities) == {"coordination", "web"}
+    # Both presets run the local fleet model, memory off (vllm dossier §4).
+    for preset in (ta, ca):
+        assert preset.model == "qwen3.6-35b-a3b"
+        assert preset.memory.enabled is False
 
 
 def test_template_all_agent_model_refs_resolve():
@@ -238,14 +269,14 @@ def test_deployment_doc_check_detects_drift():
         "# Deployment\n\n"
         "| Metric | Count | Notes |\n|---|---|---|\n"
         "| **Models** | 8 | notes |\n"
-        "| **Top-level agents** | 35 | notes |\n"
+        "| **Top-level agents** | 37 | notes |\n"
         "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
         "| **Memory-enabled agents** | 5 | notes |\n"
-        "| **MCP plugins** | 5 | notes |\n"
+        "| **MCP plugins** | 6 | notes |\n"
         "| **Conversations** | 11 | notes |\n"
     )
     bad = good.replace(
-        "| **Top-level agents** | 35 |", "| **Top-level agents** | 13 |"
+        "| **Top-level agents** | 37 |", "| **Top-level agents** | 13 |"
     )
     with tempfile.TemporaryDirectory() as td:
         inv = Path(td) / "AGENT_INVENTORY.md"

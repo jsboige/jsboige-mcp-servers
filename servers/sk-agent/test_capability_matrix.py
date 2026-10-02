@@ -157,7 +157,7 @@ class TestCatalogSurface:
     def test_risk_class_required_capabilities_is_total(self):
         # Every risk class maps to a (possibly empty) capability set so
         # the matrix validator has a single source of truth.
-        for cls in ("read", "browser", "stateful", "exec"):
+        for cls in ("read", "browser", "stateful", "exec", "write_shared"):
             assert cls in RISK_CLASS_REQUIRED_CAPABILITIES
             assert isinstance(
                 RISK_CLASS_REQUIRED_CAPABILITIES[cls], frozenset
@@ -166,7 +166,67 @@ class TestCatalogSurface:
     def test_risk_class_alias_typed(self):
         # ToolRiskClass is a closed Literal — invalid values surface as
         # readable ValidationErrors, not silent downgrades.
-        assert ToolRiskClass.__args__ == ("read", "browser", "stateful", "exec")
+        assert ToolRiskClass.__args__ == (
+            "read", "browser", "stateful", "exec", "write_shared",
+        )
+
+
+# ---------------------------------------------------------------------------
+# LOT E (vllm#63) — write_shared gating: fleet coordination tools are
+# default-deny without an explicit ``coordination`` grant
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSharedGating:
+    """An agent without ``coordination`` cannot list a ``write_shared`` tool."""
+
+    @pytest.fixture
+    def rsm_tool(self) -> dict:
+        # Fleet-shared write surface: RooSync dashboards/inbox broker.
+        return _tool_payload(
+            "roo_state_manager",
+            risk_class="write_shared",
+            allowed_capabilities=["coordination"],
+        )
+
+    def test_write_shared_rejected_without_coordination(self, rsm_tool):
+        with pytest.raises(ValidationError) as excinfo:
+            SKAgentConfig.model_validate(
+                {
+                    "models": [_model_payload()],
+                    "tools": [rsm_tool],
+                    "agents": [
+                        _agent_payload(
+                            "a", mcps=["roo_state_manager"], capabilities=["web"]
+                        )
+                    ],
+                }
+            )
+        # The cross-validator names the missing capability so the caller
+        # can fix the grant, not just the class.
+        assert "coordination" in str(excinfo.value)
+
+    def test_write_shared_accepted_with_coordination(self, rsm_tool):
+        SKAgentConfig.model_validate(
+            {
+                "models": [_model_payload()],
+                "tools": [rsm_tool],
+                "agents": [
+                    _agent_payload(
+                        "a",
+                        mcps=["roo_state_manager"],
+                        capabilities=["coordination", "web"],
+                    )
+                ],
+            }
+        )
+
+    def test_write_shared_maps_to_coordination_only(self):
+        # The risk-class gate admits exactly the ``coordination`` grant —
+        # ``memory`` or ``shell`` must NOT unlock a fleet write surface.
+        assert RISK_CLASS_REQUIRED_CAPABILITIES["write_shared"] == frozenset(
+            {"coordination"}
+        )
 
 
 # ---------------------------------------------------------------------------
