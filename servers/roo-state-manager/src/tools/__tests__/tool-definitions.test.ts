@@ -515,6 +515,17 @@ describe('tool-definitions.ts — Schema Validation', () => {
             // priority — which inbox correctly rejects as bulk-only.
             expect(props.priority?.enum).toContain('');
         });
+
+        // #3996 suite 02/10 : le pattern ISO-8601-Z ajouté par #3996 interdisait
+        // '' sur le fil — ces mêmes clients ne pouvaient plus appeler inbox du tout.
+        it('before_date wire pattern must admit the empty sentinel and still reject offset-less datetimes', () => {
+            const props = roosyncMessagesDefinition.inputSchema.properties as Record<string, { pattern?: string; description?: string }>;
+            const re = new RegExp(props.before_date!.pattern!);
+            expect(re.test('')).toBe(true);
+            expect(re.test('2026-10-01T00:00:00Z')).toBe(true);
+            expect(re.test('2026-10-01T00:00:00')).toBe(false);
+            expect(props.before_date?.description).toMatch(/requires every field/i);
+        });
     });
 
     // #3255 drift-guard — same class as #3254: the served schema is the STATIC

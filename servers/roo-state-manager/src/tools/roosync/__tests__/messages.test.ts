@@ -293,6 +293,15 @@ describe('roosync_messages dispatcher', () => {
       );
     });
 
+    // #3996 suite 02/10 (po-2025 CoursIA-2) : le même binding sérialise aussi
+    // messageId:'' — sa regex {1,128} le rejetait avant toute garde.
+    test('#3996 inbox tolerates binding-serialized empty messageId', async () => {
+      await roosyncMessages({ action: 'inbox', status: 'unread', messageId: '', before_date: '' } as any);
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'inbox' })
+      );
+    });
+
     test('message routes to roosyncRead with mode=message', async () => {
       await roosyncMessages({ action: 'message', message_id: 'msg-1' });
       expect(mockRead).toHaveBeenCalledWith(
