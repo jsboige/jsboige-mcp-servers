@@ -291,7 +291,8 @@ describe('InventoryCollector — coverage complement (#833 C3)', () => {
     });
     h.execImpl = (_c, _o, cb) => cb(null, { stdout: 'log line\nC:/tmp/inv-out.json', stderr: '' }); // last line = abs path (has ':')
     const execRaw = rawNestedFull(LOCAL);
-    execRaw.inventory.bootResilience = { collectedAt: '2026-10-01T08:29:59Z', dockerService: { name: 'com.docker.service', status: 'Stopped', startType: 'Manual' } };
+    execRaw.inventory.bootResilience = { collectedAt: new Date(Date.now() - 5 * 60_000).toISOString(), // #3673 relative, not absolute
+      dockerService: { name: 'com.docker.service', status: 'Stopped', startType: 'Manual' } };
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(execRaw) as any);
 
     const inv = await collector.collectInventory(LOCAL, true) as MachineInventory; // forceRefresh -> still tries shared first (L284) then exec
@@ -373,7 +374,7 @@ describe('InventoryCollector — coverage complement (#833 C3)', () => {
   // ---- #3975: bootResilience passthrough (raw nested format, loadInventoryFile mapping) ----
   it('maps inventory.bootResilience through the raw format (#3975)', async () => {
     const bootResilience = {
-      collectedAt: '2026-10-01T08:29:59.1535956Z',
+      collectedAt: new Date(Date.now() - 5 * 60_000).toISOString() // #3673: relative, not an absolute ISO literal,
       dockerService: { name: 'com.docker.service', status: 'Stopped', startType: 'Manual' },
       scheduledTasks: [{ name: 'ClaudishDockerEvents', state: 'Ready', lastRunTime: '2026-10-01T08:22:01Z', lastTaskResult: 0 }],
       dockerDesktopAutoStart: { enabled: true },
