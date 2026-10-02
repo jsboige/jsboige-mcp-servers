@@ -413,3 +413,32 @@ describe('Défaut review — modelMap couvert par la comparaison (défaut #6)', 
     expect(result.differences.find(d => d.path === 'claude-settings.modelMap.sonnet')).toBeUndefined();
   });
 });
+
+describe('#4000 — faux drifts harmonization : key-order + valeur réellement différente', () => {
+  test('modelMap.opus objet égal à ordre de clés près => PAS de drift', async () => {
+    // Pré-fix : JSON.stringify(src) === JSON.stringify(tgt) dépend de l'ordre
+    // d'insertion → faux drift sur des snapshots publiés par des chemins
+    // d'écriture différents (le scénario patrouille I4 de l'issue).
+    writeLocalSettings({
+      modelMap: { opus: { tier: 'opus', model: 'claude-opus-5[1m]' }, sonnet: 'claude-sonnet-5[1m]' },
+    });
+    publishRemoteSnapshot({
+      'modelMap.opus': { model: 'claude-opus-5[1m]', tier: 'opus' },
+      'modelMap.sonnet': 'claude-sonnet-5[1m]',
+    });
+    const result = await roosyncCompareConfig({ granularity: 'claude-settings', target: REMOTE });
+    expect(result.differences.find(d => d.path === 'claude-settings.modelMap.opus')).toBeUndefined();
+  });
+
+  test('modelMap.opus objet réellement divergent => drift conservé (garde)', async () => {
+    writeLocalSettings({
+      modelMap: { opus: { tier: 'opus', model: 'claude-opus-5[1m]' } },
+    });
+    publishRemoteSnapshot({
+      'modelMap.opus': { tier: 'opus', model: 'claude-opus-4[1m]' },
+    });
+    const result = await roosyncCompareConfig({ granularity: 'claude-settings', target: REMOTE });
+    const opusDiff = result.differences.find(d => d.path === 'claude-settings.modelMap.opus');
+    expect(opusDiff).toBeDefined();
+  });
+});
