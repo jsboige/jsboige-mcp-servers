@@ -76,8 +76,12 @@ export class ConfigNormalizationService implements INormalizationService {
     ] as Array<[string, string]>).sort((a, b) => b[0].length - a[0].length);
     for (const [localPath, placeholder] of pairs) {
       if (!localPath) continue;
-      // Motif insensible au style de séparateur (`/` ou `\`) et, sur Windows, à la casse
-      const pattern = this.escapeRegExp(localPath.replace(/\\/g, '/')).replace(/\//g, '[/\\\\]');
+      // Motif insensible au style de séparateur (`/` ou `\`) et, sur Windows, à la casse.
+      // #2406 P1-a2 — lookahead de fin de chemin : le motif ne doit mordre que si le
+      // chemin se TERMINE là (séparateur suivant ou fin de chaîne). Sans lui,
+      // `D:\roo-extensions-old` est réécrit en `%ROO_ROOT%-old` (préfixe-frère).
+      const pattern =
+        this.escapeRegExp(localPath.replace(/\\/g, '/')).replace(/\//g, '[/\\\\]') + '(?=[/\\\\]|$)';
       out = out.replace(new RegExp(pattern, ctx.os === 'windows' ? 'gi' : 'g'), placeholder);
     }
     return out;

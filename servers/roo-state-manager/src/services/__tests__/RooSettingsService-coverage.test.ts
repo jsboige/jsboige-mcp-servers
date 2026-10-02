@@ -35,6 +35,10 @@ vi.mock('sqlite3', () => {
 const mockExistsSync = vi.fn().mockReturnValue(true);
 const mockCopyFileSync = vi.fn();
 const mockUnlink = vi.fn().mockResolvedValue(undefined);
+// #2406 P1-a2 — le read passe par un dossier mkdtemp unique, cleanup par rm(recursive).
+// Impl DANS vi.fn(...) pour survivre à mockReset:true ; rm reste sans impl par défaut.
+const mockMkdtempSync = vi.fn((prefix: string) => `${prefix}test-`);
+const mockRm = vi.fn();
 
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -42,9 +46,11 @@ vi.mock('fs', async () => {
     ...actual,
     existsSync: mockExistsSync,
     copyFileSync: mockCopyFileSync,
+    mkdtempSync: mockMkdtempSync,
     promises: {
       ...actual.promises,
       unlink: mockUnlink,
+      rm: mockRm,
     },
   };
 });
@@ -351,8 +357,8 @@ describe('RooSettingsService', () => {
       await expect(service.extractSettings()).rejects.toThrow('close error');
     });
 
-    it('should handle unlink error silently during cleanup', async () => {
-      mockUnlink.mockRejectedValue(new Error('unlink failed'));
+    it('should handle temp-dir cleanup error silently (#2406 P1-a2)', async () => {
+      mockRm.mockRejectedValue(new Error('rm failed'));
 
       const service = new RooSettingsService();
       // Should NOT throw — cleanup errors are silently ignored

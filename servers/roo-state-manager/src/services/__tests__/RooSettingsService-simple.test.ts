@@ -42,20 +42,26 @@ vi.mock('sqlite3', () => ({
 }));
 
 // Mock fs
+// #2406 P1-a2 — mkdtempSync mocké (déterministe, zéro création réelle) et rm
+// mocké : le cleanup passe de unlink(fichier) à rm(dossier, recursive). Les impls
+// vivent DANS les vi.fn(...) du factory (hoisted : aucune réf externe, TDZ) et
+// survivent à mockReset:true. Le test récupère le mock via l'import de 'fs'.
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
     existsSync: vi.fn().mockReturnValue(true),
     copyFileSync: vi.fn(),
+    mkdtempSync: vi.fn((prefix: string) => `${prefix}test-`),
     promises: {
       ...actual.promises,
       unlink: vi.fn().mockResolvedValue(undefined),
+      rm: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
 
-import { existsSync, copyFileSync, promises as fsp } from 'fs';
+import { existsSync, copyFileSync, mkdtempSync, promises as fsp } from 'fs';
 import { DEFAULT_VSCDB_KEY, ZOO_CODE_VSCDB_KEY } from '../../utils/extension-paths.js';
 
 const VSCDB_RELATIVE_PATH = join(
@@ -206,7 +212,16 @@ describe('RooSettingsService — behavioural contracts', () => {
       const [, params] = mockDbGet.mock.calls[0] as [string, string[], unknown];
       expect([DEFAULT_VSCDB_KEY, ZOO_CODE_VSCDB_KEY]).toContain(params[0]);
 
-      expect(vi.mocked(fsp.unlink)).toHaveBeenCalledWith(copiedTo);
+      // #2406 P1-a2 — la copie vit dans un dossier mkdtemp unique, et le cleanup
+      // retire TOUT le dossier (rm recursive), pas seulement le fichier.
+      const tempDir = (vi.mocked(mkdtempSync).mock.results[0] as { value: string } | undefined)?.value;
+      expect(tempDir).toBeDefined();
+      expect(copiedTo.startsWith(String(tempDir))).toBe(true);
+      expect(copiedTo.endsWith('state.vscdb')).toBe(true);
+      expect(vi.mocked(fsp.rm)).toHaveBeenCalledWith(String(tempDir), {
+        recursive: true,
+        force: true,
+      });
     });
   });
 

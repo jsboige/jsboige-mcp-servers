@@ -4,6 +4,8 @@ const {
 	mockExistsSync,
 	mockCopyFileSync,
 	mockFsUnlink,
+	mockFsRm,
+	mockMkdtempSync,
 	mockSqlite3Database,
 } = vi.hoisted(() => {
 	const dbMock = {
@@ -15,6 +17,9 @@ const {
 		mockExistsSync: vi.fn(),
 		mockCopyFileSync: vi.fn(),
 		mockFsUnlink: vi.fn().mockResolvedValue(undefined),
+		// #2406 P1-a2 — le read passe par un dossier mkdtemp unique, cleanup rm(recursive)
+		mockFsRm: vi.fn().mockResolvedValue(undefined),
+		mockMkdtempSync: vi.fn((prefix: string) => `${prefix}mock-`),
 		mockSqlite3Database: dbMock,
 	};
 });
@@ -22,8 +27,10 @@ const {
 vi.mock('fs', () => ({
 	existsSync: mockExistsSync,
 	copyFileSync: mockCopyFileSync,
+	mkdtempSync: mockMkdtempSync,
 	promises: {
 		unlink: mockFsUnlink,
+		rm: mockFsRm,
 	},
 }));
 
