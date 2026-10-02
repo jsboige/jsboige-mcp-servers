@@ -431,7 +431,20 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
     if (match) {
       const timestampStr = match[1];
       logger.debug(`Timestamp extrait de ${filename}: ${timestampStr}`);
-      return new Date(timestampStr);
+      // Le format des noms de fichiers utilise des tirets dans la partie horaire
+      // (T11-36-21-070Z), que `new Date` ne sait pas parser : il rend Invalid Date,
+      // le comparateur rend NaN et le tri devient silencieusement inopérant (le premier
+      // fichier du readdir l'emporte, quel que soit son âge). On rétablit l'ISO 8601.
+      const isoStr = timestampStr.replace(
+        /T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/,
+        'T$1:$2:$3.$4Z'
+      );
+      const parsed = new Date(isoStr);
+      if (Number.isNaN(parsed.getTime())) {
+        logger.debug(`Timestamp non parsable dans ${filename}: ${timestampStr}`);
+        return new Date(0);
+      }
+      return parsed;
     }
 
     // Fallback : utiliser la date de modification du fichier
