@@ -14,12 +14,17 @@ const {
     mockAccess,
     mockUtimes,
     mockExec,
+    mockCopyFile,
+    mockUnlink,
 } = vi.hoisted(() => ({
     mockReadFile: vi.fn(),
     mockWriteFile: vi.fn(),
     mockAccess: vi.fn(),
     mockUtimes: vi.fn(),
     mockExec: vi.fn(),
+    // #3988: staged write (writeMcpSettingsAtomic) — copyFile stage + unlink cleanup
+    mockCopyFile: vi.fn(),
+    mockUnlink: vi.fn(),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -27,6 +32,8 @@ vi.mock('fs/promises', () => ({
     writeFile: mockWriteFile,
     access: mockAccess,
     utimes: mockUtimes,
+    copyFile: mockCopyFile,
+    unlink: mockUnlink,
 }));
 
 vi.mock('child_process', () => ({
@@ -69,6 +76,9 @@ function setupFs() {
     mockWriteFile.mockResolvedValue(undefined);
     mockAccess.mockResolvedValue(undefined);
     mockUtimes.mockResolvedValue(undefined);
+    // #3988: ré-armés après clearAllMocks — le cleanup `.catch` exige une Promise
+    mockCopyFile.mockResolvedValue(undefined);
+    mockUnlink.mockResolvedValue(undefined);
 }
 
 describe('roosync_mcp_management', () => {

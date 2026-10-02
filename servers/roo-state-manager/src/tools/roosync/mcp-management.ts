@@ -292,7 +292,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             // #552: Clean up empty autoApprove arrays before writing
             cleanupEmptyAutoApprove(settings);
             const writePath = getMcpSettingsPath(targetExtension);
-            await fs.writeFile(writePath, JSON.stringify(settings, null, 2), 'utf-8');
+            await writeMcpSettingsAtomic(writePath, settings);
 
             return {
                 success: true,
@@ -341,7 +341,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             }
 
             mcpSettings.mcpServers[server_name] = server_config as McpServer;
-            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings, null, 2), 'utf-8');
+            await writeMcpSettingsAtomic(getMcpSettingsPath(targetExtension), mcpSettings);
 
             return {
                 success: true,
@@ -391,7 +391,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             const updatedFields = Object.keys(server_config);
             mcpSettings4.mcpServers[server_name] = { ...existingConfig, ...server_config } as McpServer;
 
-            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings4, null, 2), 'utf-8');
+            await writeMcpSettingsAtomic(getMcpSettingsPath(targetExtension), mcpSettings4);
 
             return {
                 success: true,
@@ -435,7 +435,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
             const currentState = mcpSettings.mcpServers[server_name].disabled === true;
             mcpSettings.mcpServers[server_name].disabled = !currentState;
 
-            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings, null, 2), 'utf-8');
+            await writeMcpSettingsAtomic(getMcpSettingsPath(targetExtension), mcpSettings);
 
             const newState = mcpSettings.mcpServers[server_name].disabled ? 'désactivé' : 'activé';
 
@@ -504,7 +504,7 @@ async function handleManageAction(args: McpManagementArgs): Promise<McpManagemen
                 }
             }
 
-            await fs.writeFile(getMcpSettingsPath(targetExtension), JSON.stringify(mcpSettings, null, 2), 'utf-8');
+            await writeMcpSettingsAtomic(getMcpSettingsPath(targetExtension), mcpSettings);
 
             return {
                 success: true,
@@ -651,6 +651,27 @@ async function backupMcpSettings(targetExtension?: 'roo' | 'zoo'): Promise<strin
     await fs.writeFile(backupPath, content, 'utf-8');
 
     return backupPath;
+}
+
+/**
+ * #3988: staged write pour mcp_settings.json — tmp PID-suffixé puis copy-in-place,
+ * même pattern que dashboard.ts #3782/#4003. Un crash/kill pendant l'écriture ne
+ * doit jamais laisser un JSON tronqué à la place du fichier vivant : l'extension
+ * ne s'en remettrait pas seule (parse error au démarrage → MCP down machine-wide).
+ * copyFile (pas rename) pour l'homogénéité avec le writer dashboard ; le unlink du
+ * staging est best-effort en finally — son échec ne masque pas celui de la copie.
+ */
+async function writeMcpSettingsAtomic(settingsPath: string, settings: McpSettings | Record<string, any>): Promise<void> {
+    const tmpPath = `${settingsPath}.${process.pid}.tmp`;
+    try {
+        await fs.writeFile(tmpPath, JSON.stringify(settings, null, 2), 'utf-8');
+        await fs.copyFile(tmpPath, settingsPath);
+    } finally {
+        // best-effort (cf. #4003) — un staging orphelin est balayable, un fichier
+        // vivant tronqué ne l'est pas. Promise.resolve wrappe un éventuel retour
+        // non-Promise : le cleanup ne doit jamais lever là où il protège.
+        await Promise.resolve(fs.unlink(tmpPath)).catch(() => {});
+    }
 }
 
 async function runNpmBuild(mcpPath: string, retries = 3): Promise<string> {

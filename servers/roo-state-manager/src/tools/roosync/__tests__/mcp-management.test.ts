@@ -39,6 +39,10 @@ describe('roosyncMcpManagement', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         process.env.APPDATA = 'C:\\Users\\Test\\AppData\\Roaming';
+        // #3988: les écritures passent par writeMcpSettingsAtomic (tmp + copyFile +
+        // unlink best-effort) — defaults fonctionnels pour tous les chemins d'écriture.
+        vi.mocked(fs.copyFile).mockResolvedValue(undefined);
+        vi.mocked(fs.unlink).mockResolvedValue(undefined);
         // Note: authorization state is module-level, cannot be reset between tests
         // Tests that rely on "no authorization" must run in isolation or before read tests
     });
@@ -888,6 +892,80 @@ describe('roosyncMcpManagement', () => {
             expect(result.details).toBeDefined();
             expect(result.details?.path).toBeDefined();
             expect(result.details?.touchedAt).toBeDefined();
+        });
+    });
+
+    // ============================================================
+    // #3988: écritures atomiques (staging tmp PID + copyFile, pattern #3782)
+    // ============================================================
+    describe('#3988 staged atomic writes', () => {
+        const tmpSuffixRe = new RegExp(`\\.${process.pid}\\.tmp$`);
+
+        test('write never targets the live file directly — tmp staging then copyFile, staging cleaned', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
+                mcpServers: { 's': { command: 'node', args: ['a.js'] } }
+            }));
+
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'write',
+                backup: false,
+                settings: { mcpServers: { 's': { command: 'node', args: ['b.js'] } } }
+            } as McpManagementArgs);
+
+            // writeFile ne touche QUE le staging PID-suffixé — jamais le fichier vivant
+            const writeFileTargets = vi.mocked(fs.writeFile).mock.calls.map(c => String(c[0]));
+            expect(writeFileTargets.length).toBeGreaterThan(0);
+            expect(writeFileTargets.every(p => tmpSuffixRe.test(p))).toBe(true);
+
+            // copyFile: staging → fichier vivant
+            expect(vi.mocked(fs.copyFile)).toHaveBeenCalledWith(
+                expect.stringMatching(tmpSuffixRe),
+                expect.stringMatching(/mcp_settings\.json$/)
+            );
+
+            // staging nettoyé en finally
+            expect(vi.mocked(fs.unlink).mock.calls.length).toBeGreaterThan(0);
+            expect(tmpSuffixRe.test(String(vi.mocked(fs.unlink).mock.calls[0][0]))).toBe(true);
+        });
+
+        test('copyFile failure rejects the operation but still attempts staging cleanup (finally)', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
+                mcpServers: { 's': { command: 'node' } }
+            }));
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            vi.mocked(fs.copyFile).mockRejectedValueOnce(new Error('EACCES disk full'));
+
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'write',
+                backup: false,
+                settings: { mcpServers: { 's': { command: 'node' } } }
+            } as McpManagementArgs)).rejects.toThrow(HeartbeatServiceError);
+
+            // le finally a quand même tenté le nettoyage du staging
+            expect(vi.mocked(fs.unlink).mock.calls.length).toBeGreaterThan(0);
+        });
+
+        test('update_server routes through the staged write as well (all 5 write sites)', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
+                mcpServers: { 'existing': { command: 'node', args: ['a.js'] } }
+            }));
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'update_server',
+                backup: false,
+                server_name: 'existing',
+                server_config: { command: 'node', args: ['b.js'] }
+            } as McpManagementArgs);
+
+            const writeFileTargets = vi.mocked(fs.writeFile).mock.calls.map(c => String(c[0]));
+            expect(writeFileTargets.length).toBeGreaterThan(0);
+            expect(writeFileTargets.every(p => tmpSuffixRe.test(p))).toBe(true);
+            expect(vi.mocked(fs.copyFile)).toHaveBeenCalled();
         });
     });
 });
