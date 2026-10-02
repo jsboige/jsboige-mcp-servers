@@ -709,6 +709,54 @@ describe('#433 - Config Sharing New Targets I/O Tests', () => {
       const backups = files.filter(f => f.includes('.backup_'));
       expect(backups.length).toBe(0);
     });
+
+    it('#3998 dryRun + validate returns a real validation of the planned content', async () => {
+      const machineId = 'test-machine';
+      const configVersion = 'v1.0.0-3998';
+      const machineConfigDir = join(sharedStateDir, 'configs', machineId, configVersion);
+      await mkdir(machineConfigDir, { recursive: true });
+
+      const sourceRoomodes = { customModes: [{ slug: 'val', name: 'Val', roleDefinition: 'Validated dry-run', groups: ['read'] }] };
+      await mkdir(join(machineConfigDir, 'roomodes'), { recursive: true });
+      await writeFile(join(machineConfigDir, 'roomodes', '.roomodes'), JSON.stringify(sourceRoomodes, null, 2));
+
+      const manifest = {
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        author: machineId,
+        description: 'Test dryRun validate',
+        files: [{ path: 'roomodes/.roomodes', hash: 'stu', type: 'roomodes_config', size: 70 }]
+      };
+      await writeFile(join(machineConfigDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+      await writeFile(
+        join(sharedStateDir, 'configs', machineId, 'latest.json'),
+        JSON.stringify({ path: machineConfigDir })
+      );
+
+      // Pre-existing .roomodes
+      await writeFile(join(rooExtensionsDir, '.roomodes'), JSON.stringify({ customModes: [{ slug: 'original' }] }));
+
+      // Act: dryRun + validate — avant #3998, le early-return dryRun court-circuitait
+      // la validation : la réponse ne portait AUCUN champ `validation`.
+      const result = await service.applyConfig({
+        version: 'latest',
+        machineId,
+        targets: ['roomodes'],
+        dryRun: true,
+        validate: true
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.filesApplied).toBe(0);
+      expect(result.validation).toBeDefined();
+      expect(result.validation!.performed).toBe(true);
+      expect(result.validation!.success).toBe(true);
+      expect(result.validation!.targetValidations.length).toBe(1);
+      expect(result.validation!.targetValidations[0].target).toContain('.roomodes');
+      // La validation en dryRun reste read-only : rien écrit
+      const afterContent = await readFile(join(rooExtensionsDir, '.roomodes'), 'utf-8');
+      expect(JSON.parse(afterContent).customModes[0].slug).toBe('original');
+    });
   });
 
   // =====================================================

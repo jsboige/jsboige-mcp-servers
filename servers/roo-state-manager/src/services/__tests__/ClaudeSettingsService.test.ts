@@ -364,6 +364,58 @@ describe('applyCanonToFile', () => {
     expect(res.verification?.success).toBe(true);
   });
 
+  test('#3998 verification échoue + backup:false → rollback depuis le snapshot mémoire', async () => {
+    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://pre-state.example', KEEP: 'yes' } });
+    // Corrompre le write de l'apply (tmp) : le re-read post-write voit un JSON
+    // invalide → hash mismatch → rollback. backup:false = aucun backupPath —
+    // avant #3998, l'état corrompu restait sur disque.
+    const fsMod = await import('fs');
+    const originalWriteFile = fsMod.promises.writeFile;
+    let corrupted = false;
+    (fsMod.promises as any).writeFile = async function patched(pathP: any, data: any, opts: any) {
+      if (!corrupted && String(pathP).includes('.tmp-')) {
+        corrupted = true;
+        return originalWriteFile.call(fsMod.promises, pathP, '{"corrupted-not-json', 'utf-8');
+      }
+      return originalWriteFile.call(fsMod.promises, pathP, data, opts);
+    };
+    try {
+      await expect(
+        applyCanonToFile(settingsPath, { ...canon, mode: 'enforce-value' }, { now: () => '2026-09-08T10:00:00Z', backup: false })
+      ).rejects.toThrow(/restauré/);
+    } finally {
+      (fsMod.promises as any).writeFile = originalWriteFile;
+    }
+    // L'état pré-apply doit être restauré, pas laissé corrompu
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://pre-state.example');
+    expect(after.env.KEEP).toBe('yes');
+  });
+
+  test("#3998 verification échoue + fichier absent avant apply → rollback restaure l'absence", async () => {
+    // Pas de writeSettings : le fichier n'existe pas avant l'apply. Le rollback
+    // doit supprimer le fichier créé (état pré-apply = absent), pas y laisser
+    // du contenu non vérifié.
+    const fsMod = await import('fs');
+    const originalWriteFile = fsMod.promises.writeFile;
+    let corrupted = false;
+    (fsMod.promises as any).writeFile = async function patched(pathP: any, data: any, opts: any) {
+      if (!corrupted && String(pathP).includes('.tmp-')) {
+        corrupted = true;
+        return originalWriteFile.call(fsMod.promises, pathP, '{"corrupted-not-json', 'utf-8');
+      }
+      return originalWriteFile.call(fsMod.promises, pathP, data, opts);
+    };
+    try {
+      await expect(
+        applyCanonToFile(settingsPath, { ...canon, mode: 'enforce-value' }, { now: () => '2026-09-08T10:00:00Z', backup: false })
+      ).rejects.toThrow(/restauré/);
+    } finally {
+      (fsMod.promises as any).writeFile = originalWriteFile;
+    }
+    expect(existsSync(settingsPath)).toBe(false);
+  });
+
   test('concurrent edit détecté : fichier modifié entre lecture et write => abort', async () => {
     writeSettings({ env: {} });
     // Course déterministe : le backup (copyFile) s'exécute ENTRE la lecture initiale

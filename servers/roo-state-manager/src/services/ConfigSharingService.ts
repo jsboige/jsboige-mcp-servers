@@ -270,6 +270,11 @@ export class ConfigSharingService implements IConfigSharingService {
     const details: any[] = []; // Pour stocker les détails des changements
     const rollback = new RollbackManager(this.logger);
     const appliedFilePaths: Array<{ path: string; type: string }> = []; // For post-apply health check
+    // #3998 — dryRun+validate : validations du contenu PRÉVU (en mémoire). Le disque
+    // porte l'état courant, pas l'état prévu : une validation disque en dryRun
+    // échouerait à tort sur un create (fichier absent). On round-trip le contenu
+    // qui SERAIT écrit — check de santé du package avant l'apply réel.
+    const plannedValidations: Array<{ target: string; success: boolean; details?: any }> = [];
 
     try {
       // 1. Localiser la version source
@@ -706,6 +711,10 @@ export class ConfigSharingService implements IConfigSharingService {
               action,
               size: rawContent.length
             });
+            // #3998 — fichier texte (rules) : pas de check JSON, miroir du skip de validateConfigApplication
+            if (options.dryRun && options.validate) {
+              plannedValidations.push({ target: destPath, success: true, details: { skipped: 'text file' } });
+            }
 
             if (!options.dryRun) {
               await fs.mkdir(dirname(destPath), { recursive: true });
@@ -776,6 +785,20 @@ export class ConfigSharingService implements IConfigSharingService {
             action,
             size: JSON.stringify(finalContent).length
           });
+          // #3998 — dryRun+validate : round-trip du contenu prévu (catch les
+          // packages dont la fusion/denormalisation produit du JSON non sérialisable).
+          if (options.dryRun && options.validate) {
+            try {
+              JSON.parse(JSON.stringify(finalContent));
+              plannedValidations.push({ target: destPath, success: true });
+            } catch (planErr: any) {
+              plannedValidations.push({
+                target: destPath,
+                success: false,
+                details: { error: planErr instanceof Error ? planErr.message : String(planErr) }
+              });
+            }
+          }
 
           // Écriture ou simulation
           if (!options.dryRun) {
@@ -866,11 +889,27 @@ export class ConfigSharingService implements IConfigSharingService {
 
     if (options.dryRun) {
         this.logger.info('DryRun terminé', { details });
+        // #3998 — la validation ne doit plus être court-circuitée par le dryRun :
+        // apply(dryRun=true, validate=true) répond désormais avec un champ
+        // `validation` réel (contenu prévu, en mémoire), au lieu d'un succès
+        // silencieux sans vérification.
+        let dryRunValidation: ApplyConfigResult['validation'] = undefined;
+        if (options.validate && plannedValidations.length > 0 && errors.length === 0) {
+            dryRunValidation = {
+                performed: true,
+                success: plannedValidations.every((pv) => pv.success),
+                targetValidations: plannedValidations
+            };
+            if (!dryRunValidation.success) {
+                this.logger.warn('Validation dryRun: contenu prévu invalide (package à corriger avant apply réel)');
+            }
+        }
         return {
             success: errors.length === 0,
             filesApplied: 0, // 0 car rien n'a été écrit
             errors,
-            dryRunDetails: details // Champ hypothétique ajouté au résultat pour le rapport
+            dryRunDetails: details, // Champ hypothétique ajouté au résultat pour le rapport
+            validation: dryRunValidation
         } as any;
     }
 
