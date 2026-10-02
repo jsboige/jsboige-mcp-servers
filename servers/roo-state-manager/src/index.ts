@@ -356,6 +356,14 @@ class RooStateManagerServer {
         } catch (e) {
             logger.warn(`[ColdStart] RooSync preload failed (non-fatal, will retry lazily via #2017 backoff): ${e instanceof Error ? e.message : String(e)}`);
         }
+
+        // #4003: one-shot sweep of the orphan `*.md.<pid>.tmp` staging files
+        // (writers killed between copyFile and unlink — no later run recognizes
+        // them, DriveFS accumulation). Un-awaited and non-fatal: the sweep must
+        // never gate the init path nor the first tool call.
+        void import('./tools/roosync/dashboard.js')
+            .then(({ sweepOrphanDashboardTmpFiles }) => sweepOrphanDashboardTmpFiles())
+            .catch((e) => logger.warn('[TmpSweep #4003] sweep failed (non-fatal)', { error: e instanceof Error ? e.message : String(e) }));
     }
 
     /**

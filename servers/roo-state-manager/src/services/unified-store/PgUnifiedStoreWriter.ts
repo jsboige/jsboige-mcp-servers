@@ -588,6 +588,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
                ? 'ON CONFLICT (dashboard_key, message_id) DO NOTHING'
                : `ON CONFLICT (dashboard_key, message_id) DO UPDATE SET
                content = EXCLUDED.content,
+               tags = EXCLUDED.tags,
                team_stage = EXCLUDED.team_stage,
                reply_to = EXCLUDED.reply_to,
                acknowledged_at = EXCLUDED.acknowledged_at`}`,
@@ -597,7 +598,9 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
               syncable.map(m => m.author_machine),
               syncable.map(m => m.author_workspace),
               syncable.map(m => m.content),
-              syncable.map(() => '[]'),
+              // #4003/#1280 — tags threaded to the live path (was a constant
+              // '[]' bind: every row stored empty regardless of the mapper).
+              syncable.map(m => JSON.stringify(m.tags ?? [])),
               syncable.map(m => m.team_stage),
               syncable.map(m => m.reply_to),
               syncable.map(m => (m.acknowledged_at ? JSON.stringify(m.acknowledged_at) : null)),

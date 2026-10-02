@@ -232,6 +232,19 @@ describe('Dashboard ↔ rows mapping (full-fidelity round-trip)', () => {
     expect(messages[1].reply_to).toBeNull();
   });
 
+  test('#4003: message tags survive the row round-trip (absent tags stay absent)', () => {
+    const withTags = sampleDashboard();
+    withTags.intercom.messages[0].tags = ['DONE', 'claude-interactive'];
+    const { row, messages } = mapDashboardToRows(withTags);
+    expect(messages[0].tags).toEqual(['DONE', 'claude-interactive']);
+    expect(messages[1].tags).toEqual([]);
+
+    const reconstructed = mapRowsToDashboard(row, messages);
+    expect(reconstructed.intercom.messages[0].tags).toEqual(['DONE', 'claude-interactive']);
+    // A no-tags row must NOT surface an empty array on the message (absent stays absent).
+    expect(reconstructed.intercom.messages[1].tags).toBeUndefined();
+  });
+
   test('optional fields are omitted, not undefined-polluted (jsonb round-trip)', () => {
     const { row, messages } = mapDashboardToRows({
       type: 'global',
@@ -411,6 +424,23 @@ describe('PgUnifiedStoreWriter.syncRooSyncDashboard SQL shape', () => {
     const idsParam = journalCall![1][1] as string[];
     expect(idsParam).toHaveLength(1);
     expect(idsParam[0]).toBe('myia-po-2025:roo-extensions:ic-20260821T0900-a1b2');
+  });
+
+  test('#1280 — journal batch binds tags ($6) from the rows, not a constant []', async () => {
+    await writer.syncRooSyncDashboard(sampleDashboardRow(), [
+      sampleMessageRow({ tags: ['CLAIMED', 'claude-interactive'] }),
+      sampleMessageRow({ id: 2, message_id: 'myia-po-2026:roo-extensions:ic-20260821T0930-e5f6', tags: [] }),
+    ]);
+    const journalCall = mockQuery.mock.calls.find(c =>
+      String(c[0]).includes('INSERT INTO roosync_dashboard_messages')
+    );
+    expect(journalCall).toBeDefined();
+    // $6::jsonb[] — one JSON array per row, threaded from the mapper's tags
+    // (the pre-#1280 writer bound a constant '[]' here).
+    const tagsParam = journalCall![1][5] as string[];
+    expect(tagsParam).toEqual(['["CLAIMED","claude-interactive"]', '[]']);
+    // Non-backfill DO UPDATE must refresh the column on re-sync.
+    expect(String(journalCall![0])).toContain('tags = EXCLUDED.tags');
   });
 
   test('backfill mode: DO NOTHING everywhere, NO archive stamp', async () => {
