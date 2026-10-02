@@ -1301,4 +1301,132 @@ describe('compare-config', () => {
 			});
 		}
 	});
+
+	// ============================================================
+	// #4000 — false drifts: key-order sensitivity, typed ENOENT, blind truncation
+	// ============================================================
+	describe('#4000 — structural equality, typed ENOENT, middle truncation', () => {
+		// Fix 1: settings comparison must be key-order insensitive.
+		test('settings granularity: object values with permuted keys are NOT drift', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				// Same content, different key insertion order — JSON.stringify produced
+				// different strings, so the old compare flagged a false drift whose
+				// "correction" (re-publishing) changed nothing.
+				mockExtractSettings.mockResolvedValue({
+					settings: {
+						currentApiConfigName: 'Production',
+						listApiConfigMeta: { zeta: { name: 'zeta' }, alpha: { name: 'alpha' } }
+					},
+					metadata: { machine: 'ai-01', keysCount: 2, totalKeys: 2, mode: 'safe' }
+				});
+				mockGetConfig.mockReturnValue({
+					machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path'
+				});
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: {
+						currentApiConfigName: 'Production',
+						listApiConfigMeta: { alpha: { name: 'alpha' }, zeta: { name: 'zeta' } }
+					}
+				}));
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+
+				// Permuted-key object must NOT be flagged.
+				expect(result.differences.find(d => d.path === 'settings.listApiConfigMeta')).toBeUndefined();
+				// Control: identical scalars were already fine.
+				expect(result.differences.find(d => d.path === 'settings.currentApiConfigName')).toBeUndefined();
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+
+		// Fix 2: model-profile comparison must be key-order insensitive.
+		test('compareModelProfiles: hash differ + permuted-key modeApiConfigs → IMPORTANT (formatting), not CRITICAL', () => {
+			// Structurally identical modes, different insertion order. The old
+			// JSON.stringify compare produced different strings → false CRITICAL
+			// "Configuration des modes différente" prescribing a pointless sync.
+			const sourceInventory = {
+				roo: { modelProfile: { hash: 'aaa', modeApiConfigs: { code: { model: 'a' }, debug: { model: 'b' } }, profiles: [] } }
+			};
+			const targetInventory = {
+				roo: { modelProfile: { hash: 'bbb', modeApiConfigs: { debug: { model: 'b' }, code: { model: 'a' } }, profiles: [] } }
+			};
+
+			const diffs = compareModelProfiles(sourceInventory, targetInventory);
+
+			// No CRITICAL modeApiConfigs drift — the configs are structurally identical.
+			expect(diffs.find(d => d.path === 'roo.modelProfile.modeApiConfigs')).toBeUndefined();
+			const hashDiff = diffs.find(d => d.path === 'roo.modelProfile.hash');
+			expect(hashDiff).toBeDefined();
+			expect(hashDiff!.severity).toBe('IMPORTANT');
+			expect(hashDiff!.description).toContain('formatage');
+		});
+
+		// Fix 3: typed ENOENT check — localized messages carry no English substring.
+		test('initialization failure: err.code === "ENOENT" with localized message → missing-shared-state wording', async () => {
+			// Only err.code identifies this as a missing file; the French message has
+			// no "ENOENT"/"no such file" substring, so the old string-only match fell
+			// through to the generic "Erreur d'initialisation" branch.
+			const err = new Error("Le fichier d'état partagé est introuvable sur ce volume");
+			(err as NodeJS.ErrnoException).code = 'ENOENT';
+			mockGetConfig.mockImplementationOnce(() => { throw err; });
+
+			const result = await roosyncCompareConfig({ target: 'po-2023' });
+
+			expect(result.differences).toHaveLength(1);
+			expect(result.differences[0].severity).toBe('CRITICAL');
+			expect(result.differences[0].description).toContain('manquant ou inaccessible');
+		});
+
+		// Fix 4: middle truncation — long values differing only at the end must
+		// surface the actual difference.
+		test('settings granularity: long strings differing only at the end show BOTH tails', async () => {
+			const origEnv = process.env.ROOSYNC_SHARED_PATH;
+			delete process.env.ROOSYNC_SHARED_PATH;
+			try {
+				mockIsAvailable.mockReturnValue(true);
+				const base = 'https://models.example.com/v1/endpoint/';
+				const sourceUrl = base + 'x'.repeat(20) + 'SRC-TAIL-99'; // base 39 + 20 + 11 = 70 > 50
+				const targetUrl = base + 'x'.repeat(20) + 'TGT-TAIL-99';
+				mockExtractSettings.mockResolvedValue({
+					settings: { openAiBaseUrl: sourceUrl },
+					metadata: { machine: 'ai-01', keysCount: 1, totalKeys: 1, mode: 'safe' }
+				});
+				mockGetConfig.mockReturnValue({
+					machineId: 'ai-01', sharedPath: '/shared/path', sharedStatePath: '/shared/path'
+				});
+				mockExistsSync.mockImplementation((p: string) => {
+					const norm = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+					if (norm.includes('configs/po-2023')) return true;
+					if (norm.includes('roo-settings-safe.json')) return true;
+					return false;
+				});
+				mockReadFile.mockResolvedValue(JSON.stringify({
+					settings: { openAiBaseUrl: targetUrl }
+				}));
+
+				const result = await roosyncCompareConfig({ target: 'po-2023', granularity: 'settings' });
+
+				const urlDiff = result.differences.find(d => d.path === 'settings.openAiBaseUrl');
+				expect(urlDiff).toBeDefined();
+				// Old head-only truncation rendered both sides as the same 47-char
+				// prefix, hiding the actual difference. Middle truncation surfaces
+				// both tails + the length.
+				expect(urlDiff!.description).toContain('SRC-TAIL-99');
+				expect(urlDiff!.description).toContain('TGT-TAIL-99');
+				expect(urlDiff!.description).toContain('(len 70)');
+			} finally {
+				if (origEnv !== undefined) process.env.ROOSYNC_SHARED_PATH = origEnv;
+			}
+		});
+	});
 });

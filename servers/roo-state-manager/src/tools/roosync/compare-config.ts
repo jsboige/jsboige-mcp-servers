@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { createHash } from 'crypto';
+import { isDeepStrictEqual } from 'util';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { GranularDiffDetector } from '../../services/GranularDiffDetector.js';
 import type { GranularDiffReport, GranularDiffResult } from '../../services/GranularDiffDetector.js';
@@ -442,7 +443,11 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
           // Le service ne peut pas être initialisé (répertoire manquant, config invalide, etc.)
           // Retourner un résultat CRITICAL cohérent avec le comportement attendu
           const errorMsg = initError instanceof Error ? initError.message : String(initError);
-          const isEnoent = errorMsg.includes('ENOENT') || errorMsg.includes('no such file');
+          // #4000: check typé d'abord (err.code === 'ENOENT') — le string-match
+          // rate les variantes de message/localisation. Fallback string conservé
+          // pour les erreurs wrapées qui perdent le code.
+          const isEnoent = (initError as NodeJS.ErrnoException)?.code === 'ENOENT' ||
+              errorMsg.includes('ENOENT') || errorMsg.includes('no such file');
 
           return {
               source: args.source || 'local-machine',
@@ -930,10 +935,11 @@ async function compareSettings(
 
     const sourceVal = sourceSettings[key];
     const targetVal = targetSettings[key];
-    const sourceJson = JSON.stringify(sourceVal);
-    const targetJson = JSON.stringify(targetVal);
 
-    if (sourceJson === targetJson) continue;
+    // #4000: comparaison structurelle ordre-insensible — JSON.stringify dépend de
+    // l'ordre d'insertion : deux valeurs égales à permutation de clés près étaient
+    // flagrées drift (faux positifs chroniques, la « correction » ne changeait rien).
+    if (isDeepStrictEqual(sourceVal, targetVal)) continue;
 
     const catInfo = SETTINGS_CATEGORIES[key] || { severity: 'INFO', label: 'Other' };
     const path = `settings.${key}`;
@@ -1435,7 +1441,13 @@ function truncateValue(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value === 'boolean' || typeof value === 'number') return String(value);
   if (typeof value === 'string') {
-    return value.length > 50 ? `"${value.substring(0, 47)}..."` : `"${value}"`;
+    // #4000: troncature milieu (head...tail) + longueur — deux valeurs qui ne
+    // diffèrent qu'en fin étaient coupées au même préfixe : le diff affiché ne
+    // montrait pas la différence réelle.
+    if (value.length <= 50) return `"${value}"`;
+    const head = value.substring(0, 24);
+    const tail = value.substring(value.length - 21);
+    return `"${head}...${tail}" (len ${value.length})`;
   }
   if (Array.isArray(value)) {
     return `[${value.length} items]`;
@@ -1836,11 +1848,10 @@ export function compareModelProfiles(
 
   // Comparer les hashes
   if (sourceProfile.hash !== targetProfile.hash) {
-    // Vérifier si les modeApiConfigs diffèrent
-    const sourceModes = JSON.stringify(sourceProfile.modeApiConfigs || {});
-    const targetModes = JSON.stringify(targetProfile.modeApiConfigs || {});
-
-    if (sourceModes !== targetModes) {
+    // Vérifier si les modeApiConfigs diffèrent (#4000: ordre-insensible —
+    // un hash calcule sur un stringify ordre-sensible diverge sur des configs
+    // structurellement identiques)
+    if (!isDeepStrictEqual(sourceProfile.modeApiConfigs || {}, targetProfile.modeApiConfigs || {})) {
       diffs.push({
         category: 'roo_config',
         severity: 'CRITICAL',
