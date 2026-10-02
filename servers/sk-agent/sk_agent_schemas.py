@@ -175,6 +175,8 @@ CAPABILITY_CATALOG: tuple[str, ...] = (
     "repl",             # Long-lived interpreter (jupyter, ...)
     "memory",           # Vector memory write/read
     "recursive_agents", # Spawn child sk-agent invocations
+    "coordination",     # Read/write fleet-shared coordination state (RooSync
+                        # dashboards append, messages inbox — LOT E, vllm#63)
 )
 
 #: Type alias for the catalog — used as the ``Literal`` basis for
@@ -192,28 +194,35 @@ CapabilityName = Literal[
     "repl",
     "memory",
     "recursive_agents",
+    "coordination",
 ]
 
 
-#: Tool risk classes (issue #3408, scope §2). Default-deny for ``exec``
-#: and ``stateful`` — an agent must explicitly grant the matching
-#: capability (``shell``, ``repl``, ...) before such a tool is allowed.
-ToolRiskClass = Literal["read", "browser", "stateful", "exec"]
+#: Tool risk classes (issue #3408, scope §2). Default-deny for ``exec``,
+#: ``stateful`` and ``write_shared`` — an agent must explicitly grant the
+#: matching capability (``shell``, ``repl``, ``coordination``, ...) before
+#: such a tool is allowed.
+ToolRiskClass = Literal["read", "browser", "stateful", "exec", "write_shared"]
 
 #: Mapping ``risk_class`` → minimum capability that must appear in
 #: ``AgentPreset.capabilities`` for the tool to be admitted.
 #:
-#: - ``read``     → no capability required (web, repo_read, ...).
-#: - ``browser``  → ``browser`` capability.
-#: - ``stateful`` → ``memory`` or ``repl`` capability (e.g. self-inclusion
-#:                 plugin carries conversation state).
-#: - ``exec``     → ``shell`` or ``repl`` capability (default-deny on
-#:                 non-shell agents per issue scope §3).
+#: - ``read``          → no capability required (web, repo_read, ...).
+#: - ``browser``       → ``browser`` capability.
+#: - ``stateful``      → ``memory`` or ``repl`` capability (e.g. self-inclusion
+#:                      plugin carries conversation state).
+#: - ``exec``          → ``shell`` or ``repl`` capability (default-deny on
+#:                      non-shell agents per issue scope §3).
+#: - ``write_shared``  → ``coordination`` capability (fleet-shared state a
+#:                      lane can mutate — RooSync dashboards/inbox; default-
+#:                      deny so an agent never appends to a seven-machine
+#:                      channel without an explicit grant — LOT E, vllm#63).
 RISK_CLASS_REQUIRED_CAPABILITIES: dict[str, frozenset[str]] = {
     "read": frozenset(),
     "browser": frozenset({"browser"}),
     "stateful": frozenset({"memory", "repl"}),
     "exec": frozenset({"shell", "repl"}),
+    "write_shared": frozenset({"coordination"}),
 }
 
 
@@ -357,11 +366,13 @@ class ToolSpec(_StrictModel):
     -------------------------------
     Every tool carries two security-relevant fields:
 
-    - ``risk_class`` (``"read" | "browser" | "stateful" | "exec"``): the
-      threat surface this tool exposes. ``exec`` is default-deny: the
-      schema rejects an agent that lists this tool in its ``mcps`` unless
-      the agent advertises a capability in
-      ``RISK_CLASS_REQUIRED_CAPABILITIES["exec"]`` (``shell`` or ``repl``).
+    - ``risk_class`` (``"read" | "browser" | "stateful" | "exec" |
+      "write_shared"``): the threat surface this tool exposes. ``exec``
+      and ``write_shared`` are default-deny: the schema rejects an agent
+      that lists such a tool in its ``mcps`` unless the agent advertises a
+      capability in the matching ``RISK_CLASS_REQUIRED_CAPABILITIES`` entry
+      (``shell``/``repl`` for ``exec``, ``coordination`` for
+      ``write_shared``).
     - ``allowed_capabilities``: the subset of ``CAPABILITY_CATALOG`` this
       tool needs to function (e.g. ``playwright`` declares
       ``["browser", "web"]``; ``open_terminal`` declares ``["shell"]``).
