@@ -629,12 +629,18 @@ class SKAgentManager:
                     SK_AGENT_DEPTH + 1,
                 )
 
+            # Relative args (``../open-terminal-mcp/...``, ``../roo-state-manager/...``)
+            # are written against the config file's directory. Without an
+            # explicit cwd the child inherits ours: under Claude Code that is
+            # the session workspace, where those paths do not exist and the
+            # plugin silently drops out of every preset that needs it (vllm#63).
             plugin = MCPStdioPlugin(
                 name=mcp_cfg.id,
                 description=mcp_cfg.description,
                 command=mcp_cfg.command,
                 args=mcp_cfg.args,
                 env=env,
+                cwd=str(Path(CONFIG_PATH).resolve().parent),
             )
             timeout_s = (
                 mcp_cfg.connect_timeout_s
