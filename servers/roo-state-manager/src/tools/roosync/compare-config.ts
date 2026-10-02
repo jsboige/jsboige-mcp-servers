@@ -1244,7 +1244,8 @@ async function compareClaudeSettings(
   for (const path of allPaths) {
     const srcVal = source.harmonization[path];
     const tgtVal = target.harmonization[path];
-    if (JSON.stringify(srcVal) === JSON.stringify(tgtVal)) continue;
+    // #4000 — deep-equal ordre-insensible (même défaut que la comparaison settings)
+    if (isDeepStrictEqual(srcVal, tgtVal)) continue;
 
     const severity = KEY_PATH_SEVERITY[path] || 'INFO';
     if (filter) {
