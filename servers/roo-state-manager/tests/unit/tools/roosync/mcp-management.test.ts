@@ -93,6 +93,64 @@ describe('roosync_mcp_management', () => {
         });
     });
 
+    describe('action=manage subAction=read — #3987 env masking', () => {
+        const SECRET = 'sk-live-web2-test-secret-0123456789';
+        const settingsWithEnv = {
+            mcpServers: {
+                'test-server': {
+                    command: 'node', args: ['server.js'],
+                    env: { API_KEY: SECRET, AUTH_PASSWORD: 'hunter2', EMPTY_VALUE: '' },
+                },
+                'mirror-server': {
+                    command: 'node',
+                    env: { API_KEY: SECRET, OTHER_KEY: 'a-different-value' },
+                },
+                'no-env-server': { command: 'python' },
+            },
+        };
+
+        beforeEach(() => {
+            mockReadFile.mockResolvedValue(JSON.stringify(settingsWithEnv));
+        });
+
+        it('never echoes env cleartext in the response payload', async () => {
+            const result = await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            const serialized = JSON.stringify(result);
+            expect(serialized).not.toContain(SECRET);
+            expect(serialized).not.toContain('hunter2');
+            expect(serialized).not.toContain('a-different-value');
+        });
+
+        it('masks env values as #3044 digests and leaves non-env fields intact', async () => {
+            const result = await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            const details = result.details as typeof settingsWithEnv;
+            const digestRe = /^<set:len=\d+:sha256=[0-9a-f]{8}>$/;
+            expect(details.mcpServers['test-server'].env!.API_KEY).toMatch(digestRe);
+            expect(details.mcpServers['test-server'].env!.AUTH_PASSWORD).toMatch(digestRe);
+            expect(details.mcpServers['test-server'].env!.EMPTY_VALUE).toBe('<empty>');
+            expect(details.mcpServers['test-server'].command).toBe('node');
+            expect(details.mcpServers['test-server'].args).toEqual(['server.js']);
+            expect(details.mcpServers['no-env-server']).toEqual({ command: 'python' });
+        });
+
+        it('keeps the same/different arbitration signal (digest equality)', async () => {
+            const result = await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            const details = result.details as typeof settingsWithEnv;
+            // same secret on both servers → identical digest
+            expect(details.mcpServers['mirror-server'].env!.API_KEY)
+                .toBe(details.mcpServers['test-server'].env!.API_KEY);
+            // different values → different digests (drift still detectable)
+            expect(details.mcpServers['test-server'].env!.AUTH_PASSWORD)
+                .not.toBe(details.mcpServers['mirror-server'].env!.OTHER_KEY);
+        });
+
+        it('mentions env masking in the message', async () => {
+            const result = await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            expect(result.message).toContain('#3987');
+            expect(result.message).toContain('masqu');
+        });
+    });
+
     describe('action=manage subAction=write', () => {
         it('writes settings after read authorization', async () => {
             // First read to authorize
