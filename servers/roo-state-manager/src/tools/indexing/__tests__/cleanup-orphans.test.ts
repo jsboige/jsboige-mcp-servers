@@ -27,9 +27,10 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 	}
 }));
 
-// Mock fs/promises
+// Mock fs/promises — #3986: readdir added for the Claude session basename index
 vi.mock('fs/promises', () => ({
 	access: vi.fn(),
+	readdir: vi.fn(),
 }));
 
 // Mock os
@@ -447,6 +448,101 @@ describe('cleanup-orphans', () => {
 			// and the #694 safety guard is independent (did not fire at the 50% boundary).
 			expect(result.fleet_safety_abort).toBeUndefined();
 			expect(result.errors).toEqual([]);
+		});
+	});
+
+	// ─── #3986 Claude sessions in project subdirectories (real layout) ───
+	describe('detectAndCleanupOrphans — Claude session basename index (#3986)', () => {
+		function dirEntry(name: string) { return { name, isDirectory: () => true, isFile: () => false }; }
+		function fileEntry(name: string) { return { name, isDirectory: () => false, isFile: () => true }; }
+
+		const projectsRoot = '/home/testuser/.claude/projects';
+		// path.join on win32 produces backslashes — normalize before comparing.
+		const norm = (p: any) => String(p).replaceAll('\\', '/');
+
+		/** access: projects root resolves, everything else rejects (no root-level session files). */
+		function mockAccessRootOnly() {
+			vi.mocked(fs.access).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return undefined;
+				throw new Error('not found');
+			}) as any);
+		}
+
+		test('recognizes a session stored as ~/.claude/projects/<proj>/<uuid>.jsonl (old code returned false)', async () => {
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['sess-1', 'orphan-1']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('proj-a'), fileEntry('loose.jsonl')];
+				if (norm(p) === `${projectsRoot}/proj-a`) return [fileEntry('sess-1.jsonl'), fileEntry('notes.txt')];
+				return [];
+			}) as any);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			// sess-1 lives in proj-a — must NOT be an orphan anymore (#3986)
+			expect(result.on_disk).toBe(1);
+			expect(result.orphans).toEqual(['orphan-1']);
+			expect(mockDelete).not.toHaveBeenCalled();
+		});
+
+		test('builds the subdirectory index once per run regardless of cache-miss count', async () => {
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['sess-1', 'sess-2', 'orphan-1']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('proj-a')];
+				if (norm(p) === `${projectsRoot}/proj-a`) return [fileEntry('sess-1.jsonl'), fileEntry('sess-2.jsonl')];
+				return [];
+			}) as any);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			expect(result.on_disk).toBe(2);
+			expect(result.orphans).toEqual(['orphan-1']);
+			// 3 cache misses but the index is scanned ONCE: root + proj-a = 2 readdir calls, not 3×2.
+			expect(vi.mocked(fs.readdir)).toHaveBeenCalledTimes(2);
+		});
+
+		test('unreadable project subdir is skipped without blocking (no crash, honest miss)', async () => {
+			// keep-1 in cache keeps orphans at 50% so the #694 fleet-safety guard stays silent.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['sess-1', 'keep-1']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockImplementation((async (p: any) => {
+				if (norm(p) === projectsRoot) return [dirEntry('proj-a')];
+				throw new Error('EACCES'); // proj-a unreadable
+			}) as any);
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			// Subdir unreadable → cannot prove existence → classified orphan (dry-run safe),
+			// and the failure is NOT pushed to errors (index building is best-effort).
+			expect(result.orphans).toEqual(['sess-1']);
+			expect(result.errors).toEqual([]);
+			expect(result.fleet_safety_abort).toBeUndefined();
+		});
+
+		test('readdir root failure degrades to legacy behavior (empty index, no crash)', async () => {
+			// 2 keeps in cache → t1/t2 orphans = exactly 50% (not > 50%) → no #694 abort.
+			mockScroll.mockResolvedValueOnce(mockScrollResponse(['t1', 't2', 'keep-1', 'keep-2']));
+			mockFindConversationById.mockResolvedValue(null);
+			mockAccessRootOnly();
+			vi.mocked(fs.readdir).mockRejectedValue(new Error('EPERM'));
+
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('keep-1', makeSkeleton('keep-1'));
+			cache.set('keep-2', makeSkeleton('keep-2'));
+			const result = await detectAndCleanupOrphans(cache, true);
+
+			// Identical to pre-#3986 behavior when the index cannot be built.
+			expect(result.orphans).toEqual(['t1', 't2']);
+			expect(result.errors).toEqual([]);
+			expect(result.fleet_safety_abort).toBeUndefined();
 		});
 	});
 });
