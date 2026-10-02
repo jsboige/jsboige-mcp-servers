@@ -229,6 +229,23 @@ describe('roosync_dashboard', () => {
     expect(result.data?.status).toBeUndefined();
   });
 
+  // === Test 7b: #3994 — legacy sections rejected loudly on read ===
+  it('#3994 — rejects legacy sections on read with guidance, not a silent all-remap', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Legacy Sections' });
+
+    for (const legacy of ['machine', 'global', 'decisions', 'metrics']) {
+      const result = await roosyncDashboard({ action: 'read', type: 'global', section: legacy });
+
+      // Pre-fix, each of these silently served the FULL dashboard (remap onto
+      // 'all', ~x10 context cost) and fired an unrequested auto-ACK — with no
+      // signal that the requested section no longer exists in the v3 store.
+      expect(result.success).toBe(false);
+      expect(result.message).toContain(legacy);
+      expect(result.message).toContain(`section='status'|'intercom'|'all'`);
+      expect(result.data).toBeUndefined();
+    }
+  });
+
   // === Test 8: Write remplace status.markdown ===
   it('write replaces status markdown', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: 'Old content' });

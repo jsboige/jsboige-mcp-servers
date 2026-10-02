@@ -5078,8 +5078,26 @@ async function handleRead(
   }
 
   const section = args.section ?? 'all';
-  // #1935: section now includes update-specific values — narrow to read-safe values
-  const readSection = (section === 'status' || section === 'intercom' || section === 'all') ? section : 'all';
+  // #3994: the schema enum carries update-specific legacy values (#1935) —
+  // a read asking for one must fail loudly with guidance, mirroring
+  // handleUpdate's rejection. The old silent remap onto 'all' served the
+  // FULL dashboard (~x10 context cost) and fired an unrequested auto-ACK,
+  // with no signal that the requested section does not exist in the v3 store.
+  if (section !== 'status' && section !== 'intercom' && section !== 'all') {
+    return {
+      success: false,
+      action: 'read',
+      key,
+      type: args.type!,
+      request: requestEcho,
+      message:
+        `action=read ne sert que les sections v3 (section='status'|'intercom'|'all', défaut 'all'). ` +
+        `La section '${section}' n'existe pas dans le store v3 : machine/global/decisions/metrics ` +
+        `étaient des titres du DASHBOARD.md monolithique legacy, retiré. ` +
+        `Utiliser type=global|machine|workspace pour choisir le dashboard, section pour choisir la partie servie.`
+    };
+  }
+  const readSection = section;
 
   // #1956: Auto-ACK — when reading intercom, mark replies to our messages as
   // acknowledged. #3205 résiduel write-side : la marque s'applique sous le
