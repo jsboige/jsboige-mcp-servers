@@ -1322,6 +1322,44 @@ describe('roosync_indexing cleanup action', () => {
 		expect(parsed.mode).toBe('dry_run');
 		expect(mockCleanupOldVectors).toHaveBeenCalledWith(90, true, undefined);
 	});
+
+	// #4002 — runtime guard refuses NaN/0/negative/max_age_days that the schema
+	// bypass could pass through. 0 used to silently default to 90; now it fails
+	// (issue-dedicated guard already refuses 0 as wipe-total — schema and runtime
+	// guards both refuse it now, defense in depth).
+	test('rejects max_age_days=0 with isError (#4002)', async () => {
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup', max_age_days: 0 } as any,
+			new Map(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/max_age_days must be in \[1, 3650\]/);
+	});
+
+	test('rejects NaN max_age_days with isError (#4002)', async () => {
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup', max_age_days: Number.NaN } as any,
+			new Map(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(result.isError).toBe(true);
+	});
+
+	test('rejects negative max_age_days with isError (#4002)', async () => {
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup', max_age_days: -10 } as any,
+			new Map(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(result.isError).toBe(true);
+	});
+
+	test('rejects float max_age_days like 7.5 with isError (#4002)', async () => {
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup', max_age_days: 7.5 } as any,
+			new Map(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/integer/);
+	});
 });
 
 describe('roosync_indexing cleanup_orphans needs_confirm path', () => {

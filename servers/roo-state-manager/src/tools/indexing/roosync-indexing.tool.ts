@@ -22,6 +22,7 @@ import { createHash } from 'crypto';
 // layer (registry.ts owns that wiring).
 import { classifyIndexingError, readLeaderLockInfo } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
+import { sanitizeInt } from '../../utils/int-validator.js';
 
 // Import des handlers existants
 import { indexTaskSemanticTool } from './index-task.tool.js';
@@ -1097,19 +1098,17 @@ export async function handleRooSyncIndexing(
         }
 
         case 'cleanup': {
+            const { cleanupOldVectors } = await import('../../services/task-indexer/VectorIndexer.js');
             // #3983: `|| 90` laissait passer un max_age_days négatif (truthy) — le cutoff
             // basculait dans le futur et le filtre {lt: futur} matchait TOUS les vecteurs.
-            const maxAgeDays = args.max_age_days ?? 90;
-            if (!Number.isFinite(maxAgeDays) || maxAgeDays < 1) {
-                return {
-                    isError: true,
-                    content: [{
-                        type: 'text',
-                        text: `max_age_days invalide: ${args.max_age_days} — doit être un nombre >= 1 (jours). Une valeur négative produirait un cutoff futur et une purge totale (#3983).`
-                    }]
-                };
+            // #4002 — schema bounds max_age_days to [1, 3650]. Runtime guard
+            // also rejects NaN/0/negative/float that the schema bypass could
+            // pass through. Default stays 90 days.
+            const ageCheck = sanitizeInt('max_age_days', args.max_age_days, { min: 1, max: 3650, fallback: 90 });
+            if (!ageCheck.ok) {
+                return { isError: true, content: [{ type: 'text', text: `roosync_indexing: ${ageCheck.error} (#3983)` }] };
             }
-            const { cleanupOldVectors } = await import('../../services/task-indexer/VectorIndexer.js');
+            const maxAgeDays = ageCheck.value;
             const isDryRun = args.dry_run ?? false;
 
             try {

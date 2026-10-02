@@ -195,4 +195,39 @@ describe('read-vscode-logs', () => {
 		// Ordre numérique, pas lexicographique : bloc window2 avant bloc window10
 		expect(text.indexOf('--- LOG: window2/renderer ---')).toBeLessThan(text.indexOf('--- LOG: window10/renderer ---'));
 	});
+
+	// #4002 — runtime guard rejects NaN/float/0/negative that the schema bypass
+	// could pass through, returning isError:true with a named message.
+	test('rejects NaN lines with isError (#4002)', async () => {
+		const { readVscodeLogs } = await import('../read-vscode-logs.js');
+		const result = await readVscodeLogs.handler({ lines: Number.NaN });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/lines must be a finite number/);
+	});
+
+	test('rejects 0 lines with isError (#4002)', async () => {
+		const { readVscodeLogs } = await import('../read-vscode-logs.js');
+		const result = await readVscodeLogs.handler({ lines: 0 });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/lines must be in \[1, 10000\]/);
+	});
+
+	test('rejects negative lines (#4002)', async () => {
+		const { readVscodeLogs } = await import('../read-vscode-logs.js');
+		const result = await readVscodeLogs.handler({ lines: -5 });
+		expect(result.isError).toBe(true);
+	});
+
+	test('rejects float lines like 1.5 (#4002)', async () => {
+		const { readVscodeLogs } = await import('../read-vscode-logs.js');
+		const result = await readVscodeLogs.handler({ lines: 1.5 });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/integer/);
+	});
+
+	test('rejects 0 maxSessions (#4002)', async () => {
+		const { readVscodeLogs } = await import('../read-vscode-logs.js');
+		const result = await readVscodeLogs.handler({ maxSessions: 0 });
+		expect(result.isError).toBe(true);
+	});
 });

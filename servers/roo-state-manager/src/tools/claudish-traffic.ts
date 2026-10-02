@@ -43,6 +43,7 @@
  */
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { exec } from 'child_process';
+import { sanitizeInt } from '../utils/int-validator.js';
 
 // #3391: docker logs maxBuffer. Node default is 1 MB; the hub emits 5-6k
 // lines/h (~14 MB for --since 12h). 128 MB keeps --since 12h+ safe.
@@ -447,7 +448,7 @@ export const claudishTraffic = {
             container: { type: 'string', description: 'Container name. Default "claudish-proxy"; if the default is absent and exactly one other claudish* container runs here, it is auto-selected (with a visible note). An explicitly-passed name is never substituted — candidates are listed instead.' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine header value).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine. Empty string or null selects the local default context (no --context flag), like machine:""' },
-            max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are clamped up to 500).' },
+            max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are rejected).' },
         },
         required: ['bucket_minutes'],
     },
@@ -464,15 +465,23 @@ export const claudishTraffic = {
             if (invalid) {
                 return { content: [{ type: 'text' as const, text: `claudish_traffic: ${invalid}` }] };
             }
-            const bucketMinutes = args.bucket_minutes ?? 30;
-            if (!Number.isInteger(bucketMinutes) || bucketMinutes < 1 || bucketMinutes > 24 * 60) {
-                // #4005 item 1 — a validation refusal read as a success by the LLM client otherwise.
-                return { isError: true, content: [{ type: 'text' as const, text: `claudish_traffic: bucket_minutes must be an integer of minutes in [1, 1440], got ${args.bucket_minutes}` }] };
+            // #4002 — schema now bounds bucket_minutes + max_output_length; runtime
+            // guard catches NaN/float that the schema bypass could pass through
+            // and the older plain-text error path lacked `isError: true`.
+            const bucketCheck = sanitizeInt('bucket_minutes', args.bucket_minutes, { min: 1, max: 24 * 60, fallback: 30 });
+            if (!bucketCheck.ok) {
+                return { isError: true, content: [{ type: 'text' as const, text: `claudish_traffic: ${bucketCheck.error}` }] };
             }
+            const maxLenCheck = sanitizeInt('max_output_length', args.max_output_length, { min: 500, max: 1_000_000, fallback: DEFAULT_MAX_OUTPUT_LENGTH });
+            if (!maxLenCheck.ok) {
+                return { isError: true, content: [{ type: 'text' as const, text: `claudish_traffic: ${maxLenCheck.error}` }] };
+            }
+            const bucketMinutes = bucketCheck.value;
             const since = args.since ?? DEFAULT_SINCE;
             let container = args.container ?? DEFAULT_CONTAINER;
-            // Values below 500 cannot fit the metadata header — clamped up (documented in the schema).
-            const maxOutputLength = Math.max(500, args.max_output_length ?? DEFAULT_MAX_OUTPUT_LENGTH);
+            // Values below 500 cannot fit the metadata header — rejected (#4002,
+            // documented in the schema; the old silent clamp-up is gone).
+            const maxOutputLength = maxLenCheck.value;
             const contextArg = args.docker_context ? `--context ${args.docker_context} ` : '';
             const logsCommand = (name: string) => `docker ${contextArg}logs --timestamps --since ${since} ${name}`;
             // Rotation probe: `--tail` is the ONLY mode that reads the CURRENT json-file

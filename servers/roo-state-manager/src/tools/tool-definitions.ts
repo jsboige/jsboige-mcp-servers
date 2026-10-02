@@ -60,9 +60,9 @@ export const conversationBrowserDefinition = {
             action: { type: 'string', enum: ['list', 'tree', 'current', 'view', 'summarize', 'rebuild'], description: 'Start with "list" to discover task IDs.' },
             ...nullableConversationProperties({
                 // --- list ---
-            limit: { type: 'number', description: '[list] Max conversations to return.' },
-            page: { type: 'number', description: '[list] Page number (1-based). Default: 1.' },
-            per_page: { type: 'number', description: '[list] Results per page (10-100). Default: 10.' },
+            limit: { type: 'number', minimum: 1, maximum: 10000, description: '[list] Max conversations to return.' },
+            page: { type: 'number', minimum: 1, maximum: 1000000, description: '[list] Page number (1-based). Default: 1.' },
+            per_page: { type: 'number', minimum: 1, maximum: 100, description: '[list] Results per page (1-100; integers 1-9 are floored to 10 at runtime, #1245). Default: 10. #4002: bounded — NaN/0/floats rejected loudly at runtime.' },
             sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },
             sortOrder: { type: 'string', enum: ['asc', 'desc'] },
             pendingSubtaskOnly: { type: 'boolean' },
@@ -91,8 +91,8 @@ export const conversationBrowserDefinition = {
             max_output_length: { type: 'number' },
             smart_truncation: { type: 'boolean' },
             smart_truncation_config: { type: 'object', properties: { gradientStrength: { type: 'number' }, minPreservationRate: { type: 'number' }, maxTruncationRate: { type: 'number' } } },
-            messageStart: { type: 'number', description: '[view] 0-based start index (inclusive).' },
-            messageEnd: { type: 'number', description: '[view] 0-based end index (exclusive).' },
+            messageStart: { type: 'number', minimum: 0, maximum: 1000000, description: '[view] 0-based start index (inclusive). #4002: bounded — NaN no longer bypasses the start > end guard.' },
+            messageEnd: { type: 'number', minimum: 0, maximum: 1000000, description: '[view] 0-based end index (exclusive). #4002: bounded — NaN no longer bypasses the start > end guard.' },
             output_file: { type: 'string' },
             // --- summarize ---
             summarize_type: { type: 'string', enum: ['trace', 'cluster'], description: 'trace=stats/timeline, cluster=parent-child. Note: synthesis disabled (#788).' },
@@ -201,7 +201,7 @@ export const roosyncIndexingDefinition = {
             claude_code_sessions: { type: 'boolean', description: 'For action=archive. Archive Claude Code JSONL sessions to GDrive as cloud copies (#1747, RX46 24/09: sanctuary = access, not confinement). Sessions that grew since their last archive are re-archived. Never touches the source files.', default: false },
             max_sessions: { type: 'number', description: 'For action=archive with claude_code_sessions=true. Max sessions to process (0 = all).', default: 0 },
             source: { type: 'string', enum: ['roo', 'claude-code'], description: "For action=index. Default: 'roo'" },
-            max_age_days: { type: 'number', description: 'For cleanup. Max age in days (default: 90, minimum: 1).', default: 90, minimum: 1 },
+            max_age_days: { type: 'number', minimum: 1, maximum: 3650, description: 'For cleanup. Max age in days (default: 90, 1-3650). #4002: bounded — issue-dedicated guard separately refused 0 as wipe-total; schema now also refuses 0.', default: 90 },
             workspace_name_filter: { type: 'string', description: 'For cleanup. Optional workspace_name filter.' },
             deep: { type: 'boolean', description: 'For diagnose. Enable deep diagnostic.', default: false },
             sample_size: { type: 'number', description: 'For diagnose with deep=true. Scroll sample size (default 1000, max 5000).', default: 1000 },
@@ -256,9 +256,9 @@ export const readVscodeLogsDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            lines: { type: 'number', default: 100 },
+            lines: { type: 'number', minimum: 1, maximum: 10000, default: 100, description: '#4002: bounded — slice(-NaN) and unbounded loops are rejected.' },
             filter: { type: 'string', description: 'Keyword or regex' },
-            maxSessions: { type: 'number', description: 'Use 3-5 for MCP startup errors.', default: 1 }
+            maxSessions: { type: 'number', minimum: 1, maximum: 100, description: 'Use 3-5 for MCP startup errors. #4002: bounded.', default: 1 }
         }
     }
 };
@@ -272,12 +272,12 @@ export const claudishTrafficDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
-            bucket_minutes: { type: 'number', description: 'REQUIRED. Histogram bucket size in minutes.' },
+            bucket_minutes: { type: 'number', minimum: 1, maximum: 1440, description: 'REQUIRED. Histogram bucket size in minutes (1-1440). #4002: bounded at the schema AND validated at runtime (defence in depth).' },
             since: { type: 'string', description: 'docker logs --since window. Default "2h". Absolute datetimes must carry a timezone (Z or ±HH:MM offset) — TZ-naive values are rejected (#4006).', default: '2h' },
             container: { type: 'string', description: 'Container name. Default "claudish-proxy".', default: 'claudish-proxy' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL: docker --context to query a remote hub. Empty/null = local default context (#1169).' },
-            max_output_length: { type: 'number', description: 'Hard bound on rendered output chars (default 20000).', default: 20000 }
+            max_output_length: { type: 'number', minimum: 500, maximum: 1000000, description: 'Hard bound on rendered output chars (default 20000; values below 500 are rejected). #4002: bounded.', default: 20000 }
         },
         required: ['bucket_minutes']
     }
