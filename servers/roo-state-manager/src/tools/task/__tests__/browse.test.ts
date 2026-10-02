@@ -138,7 +138,7 @@ describe('task_browse - CONS-9', () => {
                 mockCache,
                 mockEnsureCache
             );
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
             expect(getTextContent(result)).toContain('Tree for conv-123');
         });
 
@@ -195,7 +195,12 @@ describe('task_browse - CONS-9', () => {
                 undefined,  // contextWorkspace
                 mockEnsureCache
             );
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
+            // Le workspace doit traverser le wrapper jusqu'au handler
+            expect(JSON.parse(getTextContent(result))).toEqual({
+                task_id: 'current-task-123',
+                workspace_path: '/path/to/workspace'
+            });
         });
 
         test('should work without workspace (auto-detection)', async () => {
@@ -213,7 +218,12 @@ describe('task_browse - CONS-9', () => {
                 undefined,
                 mockEnsureCache
             );
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
+            // Sans workspace, la détection auto s'applique côté handler (repli '/default')
+            expect(JSON.parse(getTextContent(result))).toMatchObject({
+                task_id: 'current-task-123',
+                workspace_path: '/default'
+            });
         });
 
         test('should pass contextWorkspace when provided', async () => {
@@ -243,8 +253,10 @@ describe('task_browse - CONS-9', () => {
             const { taskBrowseTool } = await import('../browse.js');
 
             expect(taskBrowseTool.name).toBe('task_browse');
-            expect(taskBrowseTool.inputSchema.properties.action).toBeDefined();
-            expect(taskBrowseTool.inputSchema.properties.action.enum).toEqual(['tree', 'current']);
+            expect(taskBrowseTool.inputSchema.properties.action).toMatchObject({
+                type: 'string',
+                enum: ['tree', 'current']
+            });
             expect(taskBrowseTool.inputSchema.required).toContain('action');
         });
 
@@ -252,20 +264,24 @@ describe('task_browse - CONS-9', () => {
             const { taskBrowseTool } = await import('../browse.js');
             const props = taskBrowseTool.inputSchema.properties;
 
-            expect(props.conversation_id).toBeDefined();
-            expect(props.max_depth).toBeDefined();
-            expect(props.include_siblings).toBeDefined();
-            expect(props.output_format).toBeDefined();
-            expect(props.current_task_id).toBeDefined();
-            expect(props.truncate_instruction).toBeDefined();
-            expect(props.show_metadata).toBeDefined();
+            expect(props.conversation_id).toMatchObject({ type: 'string' });
+            expect(props.max_depth).toMatchObject({ type: 'number' });
+            expect(props.include_siblings).toMatchObject({ type: 'boolean', default: true });
+            expect(props.output_format).toMatchObject({
+                type: 'string',
+                enum: ['json', 'markdown', 'ascii-tree', 'hierarchical'],
+                default: 'json'
+            });
+            expect(props.current_task_id).toMatchObject({ type: 'string' });
+            expect(props.truncate_instruction).toMatchObject({ type: 'number', default: 80 });
+            expect(props.show_metadata).toMatchObject({ type: 'boolean', default: false });
         });
 
         test('schema should include workspace parameter for current', async () => {
             const { taskBrowseTool } = await import('../browse.js');
             const props = taskBrowseTool.inputSchema.properties;
 
-            expect(props.workspace).toBeDefined();
+            expect(props.workspace).toMatchObject({ type: 'string' });
         });
     });
 });

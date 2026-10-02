@@ -83,12 +83,10 @@ describe('InventoryCollectorWrapper', () => {
       const mockInventory = {
         machineId,
         timestamp: '2025-10-02T12:00:00Z',
-        config: {
-          roo: { modes: ['code'], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: ['code'], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       vi.mocked(existsSync).mockReturnValue(true);
@@ -98,8 +96,9 @@ describe('InventoryCollectorWrapper', () => {
       const result = await wrapper.collectInventory(machineId);
 
       // Assert
-      expect(result).not.toBeNull();
       expect(result?.machineId).toBe(machineId);
+      expect(result?.timestamp).toBe('2025-10-02T12:00:00Z');
+      expect(result?.config.hardware.cpu.cores).toBe(8);
     });
 
     it('should handle case-insensitive file matching', async () => {
@@ -108,12 +107,10 @@ describe('InventoryCollectorWrapper', () => {
       const mockInventory = {
         machineId: 'myia-ai-01',
         timestamp: '2025-10-02T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       vi.mocked(existsSync).mockImplementation((path) => {
@@ -126,8 +123,8 @@ describe('InventoryCollectorWrapper', () => {
       const result = await wrapper.collectInventory(machineId);
 
       // Assert
-      expect(result).not.toBeNull();
       expect(result?.machineId).toBe('myia-ai-01');
+      expect(result?.config.roo.modes).toEqual([]);
     });
 
     it('should strip BOM from JSON content', async () => {
@@ -136,12 +133,10 @@ describe('InventoryCollectorWrapper', () => {
       const mockInventory = {
         machineId,
         timestamp: '2025-10-02T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       // BOM UTF-8 = 0xFEFF
@@ -153,8 +148,8 @@ describe('InventoryCollectorWrapper', () => {
       // Act
       const result = await wrapper.collectInventory(machineId);
 
-      // Assert
-      expect(result).not.toBeNull();
+      // Assert — un JSON.parse brut sur '﻿{...}' échoue : atteindre le contenu prouve le strip
+      expect(result?.config.system.os).toBe('Windows 11');
       expect(result?.machineId).toBe(machineId);
     });
 
@@ -164,12 +159,10 @@ describe('InventoryCollectorWrapper', () => {
       const mockInventory = {
         machineId,
         timestamp: '2025-10-02T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       vi.mocked(existsSync).mockReturnValue(false);
@@ -183,8 +176,9 @@ describe('InventoryCollectorWrapper', () => {
       const result = await wrapper.collectInventory(machineId);
 
       // Assert
-      expect(result).not.toBeNull();
       expect(result?.machineId).toBe(machineId);
+      expect(result?.timestamp).toBe('2025-10-02T12:00:00Z');
+      expect(result?.config.hardware.memory.total).toBe(16000000000);
     });
 
     it('should prioritize -fixed files over regular files', async () => {
@@ -193,12 +187,10 @@ describe('InventoryCollectorWrapper', () => {
       const fixedInventory = {
         machineId,
         timestamp: '2025-10-18T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       vi.mocked(existsSync).mockReturnValue(false);
@@ -213,8 +205,8 @@ describe('InventoryCollectorWrapper', () => {
       // Act
       const result = await wrapper.collectInventory(machineId);
 
-      // Assert
-      expect(result).not.toBeNull();
+      // Assert — la priorité se prouve sur le CHEMIN lu (readFile est mocké au même contenu pour tous)
+      expect(fs.readFile).toHaveBeenCalledWith(expect.stringContaining('-fixed.json'), 'utf-8');
       expect(result?.machineId).toBe(machineId);
     });
 
@@ -267,8 +259,8 @@ describe('InventoryCollectorWrapper', () => {
       const result = await wrapper.collectInventory(machineId);
 
       // Assert
-      expect(result).not.toBeNull();
       expect(result?.machineId).toBe(machineId);
+      expect(result?.metadata.source).toBe('local');
       expect(mockCollector.collectInventory).toHaveBeenCalledWith(machineId, false);
     });
 
@@ -344,12 +336,10 @@ describe('InventoryCollectorWrapper', () => {
       const recentInventory = {
         machineId,
         timestamp: '2025-10-18T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       vi.mocked(existsSync).mockReturnValue(false);
@@ -362,9 +352,12 @@ describe('InventoryCollectorWrapper', () => {
       // Act
       const result = await wrapper.collectInventory(machineId);
 
-      // Assert
-      expect(result).not.toBeNull();
-      expect(fs.readdir).toHaveBeenCalled();
+      // Assert — le fichier le plus récent doit être celui effectivement lu
+      expect(fs.readFile).toHaveBeenCalledWith(
+        expect.stringContaining('2025-10-18T15-30-00-000Z.json'),
+        'utf-8'
+      );
+      expect(result?.machineId).toBe(machineId);
     });
 
     it('should handle files without timestamp using fallback', async () => {
@@ -373,12 +366,10 @@ describe('InventoryCollectorWrapper', () => {
       const inventory = {
         machineId,
         timestamp: '2025-10-18T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        }
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 16000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' }
       };
 
       vi.mocked(existsSync).mockReturnValue(false);
@@ -390,8 +381,9 @@ describe('InventoryCollectorWrapper', () => {
       // Act
       const result = await wrapper.collectInventory(machineId);
 
-      // Assert
-      expect(result).not.toBeNull();
+      // Assert — le repli doit produire un inventaire exploitable, pas seulement non-null
+      expect(result?.machineId).toBe(machineId);
+      expect(result?.config.system.os).toBe('Windows 11');
     });
   });
 
@@ -423,7 +415,6 @@ describe('InventoryCollectorWrapper', () => {
       const result = await wrapper.collectInventory(machineId);
 
       // Assert
-      expect(result).not.toBeNull();
       expect(result?.config.roo.modes).toEqual(['code', 'debug']);
       expect(result?.config.hardware.cpu.cores).toBe(8);
       expect(result?.config.software.powershell).toBe('5.1');
@@ -436,12 +427,10 @@ describe('InventoryCollectorWrapper', () => {
       const inventoryWithPaths = {
         machineId,
         timestamp: '2025-10-02T12:00:00Z',
-        config: {
-          roo: { modes: [], mcpServers: {} },
-          hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
-          software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
-          system: { os: 'Windows 11', architecture: 'x64' }
-        },
+        roo: { modes: [], mcpServers: {} },
+        hardware: { cpu: { cores: 8, threads: 16 }, memory: { total: 32000000000 }, disks: [], gpu: 'None' },
+        software: { powershell: '5.1', node: '20.0.0', python: '3.11' },
+        system: { os: 'Windows 11', architecture: 'x64' },
         paths: {
           rooExtensions: '/path/to/extensions',
           mcpSettings: '/path/to/mcp',
@@ -456,9 +445,13 @@ describe('InventoryCollectorWrapper', () => {
       // Act
       const result = await wrapper.collectInventory(machineId);
 
-      // Assert
-      expect(result).not.toBeNull();
-      expect(result?.paths).toBeDefined();
+      // Assert — les 4 chemins sont conservés tels quels, pas seulement présents
+      expect(result?.paths).toEqual({
+        rooExtensions: '/path/to/extensions',
+        mcpSettings: '/path/to/mcp',
+        rooConfig: '/path/to/config',
+        scripts: '/path/to/scripts'
+      });
       expect(result?.paths?.rooExtensions).toBe('/path/to/extensions');
     });
   });
