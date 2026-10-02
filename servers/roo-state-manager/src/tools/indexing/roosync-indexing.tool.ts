@@ -508,10 +508,10 @@ export interface RooSyncIndexingArgs {
     /** #1786: Nombre max de résultats (pour action=garbage_scan). Défaut: 100 */
     max_results?: number;
 
-    /** #1786: Supprimer les skeletons (pour action=garbage_scan avec dry_run=false). Défaut: true */
+    /** #1786: Supprimer les skeletons (pour action=garbage_scan avec dry_run=false). Défaut: false — opt-in explicite (#3984) */
     remove_skeletons?: boolean;
 
-    /** #1786: Supprimer les vecteurs Qdrant (pour action=garbage_scan avec dry_run=false). Défaut: true */
+    /** #1786: Supprimer les vecteurs Qdrant (pour action=garbage_scan avec dry_run=false). Défaut: false — opt-in explicite (#3984) */
     remove_vectors?: boolean;
 
     /** #1821: Confirmation pour suppression orphelins (requis pour action=cleanup_orphans avec dry_run=false). Défaut: false */
@@ -538,6 +538,9 @@ export interface RooSyncIndexingArgs {
 
     /** #2766 S2+ P1 follow-up — `cleanup_failed` action: cap on skeletons to reset per call (defensive against huge backlogs). Défaut: 100 */
     max_cleanup_tasks?: number;
+
+    /** #3984: Confirmation requise pour cleanup_failed error_class=auth_failed avec dry_run=false — atteste que la clé API a été corrigée/rotatée (garde anti-self-helix #1767). Défaut: false */
+    confirm_auth_failed_reset?: boolean;
 
     /** #2336 D1: Start date for tool_usage_stats (ISO 8601 or YYYY-MM-DD). Default: 4 weeks ago */
     start_date?: string;
@@ -654,17 +657,22 @@ export const roosyncIndexingTool: Tool = {
             },
             remove_skeletons: {
                 type: 'boolean',
-                description: 'For garbage_scan with dry_run=false. Delete garbage skeleton files. Default: true.',
-                default: true
+                description: 'For garbage_scan with dry_run=false. Delete garbage skeleton files. Default: false — opt in explicitly (#3984).',
+                default: false
             },
             remove_vectors: {
                 type: 'boolean',
-                description: 'For garbage_scan with dry_run=false. Delete garbage Qdrant vectors. Default: true.',
-                default: true
+                description: 'For garbage_scan with dry_run=false. Delete garbage Qdrant vectors. Default: false — opt in explicitly (#3984).',
+                default: false
             },
             confirm_orphan_cleanup: {
                 type: 'boolean',
                 description: 'For cleanup_orphans with dry_run=false. Required confirmation. Default: false.',
+                default: false
+            },
+            confirm_auth_failed_reset: {
+                type: 'boolean',
+                description: 'For cleanup_failed with error_class=auth_failed and dry_run=false. Required confirmation that the API key was fixed/rotated (anti-self-helix #1767, enforced #3984). Default: false.',
                 default: false
             },
             max_repair_tasks: {
@@ -1154,8 +1162,10 @@ export async function handleRooSyncIndexing(
                 if (!isDryRun && scanResult.flagged.length > 0) {
                     cleanupResult = await cleanupGarbage(conversationCache, scanResult.flagged, {
                         dry_run: false,
-                        remove_skeletons: args.remove_skeletons !== false,
-                        remove_vectors: args.remove_vectors !== false,
+                        // #3984: défauts inversés — sans opt-in explicite, dry_run=false
+                        // scan+rapporte mais ne supprime NI skeletons NI vecteurs.
+                        remove_skeletons: args.remove_skeletons === true,
+                        remove_vectors: args.remove_vectors === true,
                         category: args.garbage_category || 'all',
                         min_messages: args.min_messages,
                         max_results: args.max_results
@@ -1460,6 +1470,20 @@ export async function handleRooSyncIndexing(
             const errorClassFilter = args.error_class ?? 'all';
             const isDryRun = args.dry_run !== false; // default true for safety
             const maxCleanup = args.max_cleanup_tasks ?? 100;
+
+            // #3984: enforcement de la garde anti-self-helix (#1767). L'outil ne peut
+            // pas observer la rotation de clé — l'opérateur l'affirme explicitement
+            // via confirm_auth_failed_reset=true. Sans elle : refus (isError) avec
+            // la guidance, au lieu du simple `note` post-hoc.
+            if (!isDryRun && errorClassFilter === 'auth_failed' && args.confirm_auth_failed_reset !== true) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: `cleanup_failed error_class=auth_failed refusé sans confirm_auth_failed_reset=true (#3984, garde #1767). Resettter des squelettes auth_failed sans avoir corrigé/rotaté la clé API les fait re-échouer en boucle. 1) Corriger la clé (rotation + roosync_diagnose action=reload si clés lazily-read). 2) Relancer avec confirm_auth_failed_reset=true. Le mode dry_run (défaut) reste libre pour l'inspection.`
+                    }]
+                };
+            }
 
             try {
                 const { IndexingDecisionService } = await import('../../services/indexing-decision.js');

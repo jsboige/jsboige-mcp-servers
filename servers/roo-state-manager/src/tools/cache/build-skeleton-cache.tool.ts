@@ -251,6 +251,26 @@ export async function handleBuildSkeletonCache(
         let hierarchyRelationsFound = 0;
         const mode = force_rebuild ? "FORCE_REBUILD" : "SMART_REBUILD";
 
+        // #3984: backup .bak avant force_rebuild complet — la passe FORCE réécrit
+        // tous les fichiers .skeletons ; le .bak donne un rollback avant regénération.
+        // Échec de backup = WARNING, pas bloquant (les squelettes sont des données
+        // dérivées, regénérables depuis les conversations sources).
+        const backupPaths: string[] = [];
+        const backupWarnings: string[] = [];
+        if (force_rebuild && !(task_ids && task_ids.length > 0)) {
+            for (const location of locations) {
+                const skeletonsDir = path.join(location, 'tasks', SKELETON_CACHE_DIR_NAME);
+                const backupDir = `${skeletonsDir}.bak`;
+                try {
+                    await fs.rm(backupDir, { recursive: true, force: true });
+                    await fs.cp(skeletonsDir, backupDir, { recursive: true });
+                    backupPaths.push(backupDir);
+                } catch (backupError) {
+                    backupWarnings.push(`${skeletonsDir}: ${backupError instanceof Error ? backupError.message : String(backupError)}`);
+                }
+            }
+        }
+
         // 🎯 Déterminer le mode de filtrage
         let filterMode: string;
         if (task_ids && task_ids.length > 0) {
@@ -962,6 +982,13 @@ export async function handleBuildSkeletonCache(
         // 🔍 Inclure les logs de debug dans la réponse
         // Format historique conserve pour backward compat des tests + assertions externes
         let response = `Skeleton cache build complete (${mode}). Built: ${skeletonsBuilt}, Skipped: ${skeletonsSkipped}, Cache size: ${conversationCache.size}, Hierarchy relations found: ${hierarchyRelationsFound}`;
+        // #3984 — backup .bak tracé dans la réponse (présent = rollback possible)
+        if (backupPaths.length > 0) {
+            response += ` | backup: ${backupPaths.join(', ')}`;
+        }
+        if (backupWarnings.length > 0) {
+            response += ` | backup WARNINGS: ${backupWarnings.join('; ')}`;
+        }
         // #1244 Couche 1.4 — Per-tier stats appendues (n'apparaissent que si Tier 2 ou Tier 3 actif)
         if (sources.includes('claude') || sources.includes('archive')) {
             const tier2Label = sources.includes('claude')

@@ -86,9 +86,24 @@ describe('maintenance tool (CONS-13)', () => {
     });
 
     describe('action=cache_rebuild', () => {
-        test('should delegate to handleBuildSkeletonCache', async () => {
+        // #3984: dry_run=true par défaut — les tests de délégation passent
+        // dry_run=false explicite (la délégation ne survient qu'en exécution réelle).
+        test('dry_run default (omitted) simulates without delegating (#3984)', async () => {
             const result = await handleMaintenance(
                 { action: 'cache_rebuild' },
+                mockConversationCache
+            );
+
+            expect(mockHandleBuildSkeletonCache).not.toHaveBeenCalled();
+            const text = (result.content[0] as any).text;
+            expect(text).toContain('dry_run');
+            expect(text).toContain('planned_mode');
+            expect(text).toContain('rien n\'a été écrit');
+        });
+
+        test('should delegate to handleBuildSkeletonCache', async () => {
+            const result = await handleMaintenance(
+                { action: 'cache_rebuild', dry_run: false },
                 mockConversationCache
             );
 
@@ -103,7 +118,7 @@ describe('maintenance tool (CONS-13)', () => {
 
         test('should pass force_rebuild option', async () => {
             await handleMaintenance(
-                { action: 'cache_rebuild', force_rebuild: true },
+                { action: 'cache_rebuild', force_rebuild: true, dry_run: false },
                 mockConversationCache
             );
 
@@ -116,7 +131,7 @@ describe('maintenance tool (CONS-13)', () => {
 
         test('should pass workspace_filter option', async () => {
             await handleMaintenance(
-                { action: 'cache_rebuild', workspace_filter: '/test/workspace' },
+                { action: 'cache_rebuild', workspace_filter: '/test/workspace', dry_run: false },
                 mockConversationCache
             );
 
@@ -129,7 +144,7 @@ describe('maintenance tool (CONS-13)', () => {
 
         test('should pass task_ids option', async () => {
             await handleMaintenance(
-                { action: 'cache_rebuild', task_ids: ['task1', 'task2'] },
+                { action: 'cache_rebuild', task_ids: ['task1', 'task2'], dry_run: false },
                 mockConversationCache
             );
 
