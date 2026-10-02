@@ -110,6 +110,7 @@ from sk_agent_config import (
     DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_REQUEST_TIMEOUT_S,
     can_spawn_recursive_agent,
+    expand_env_placeholders,
     is_self_referential_mcp,
 )
 from sk_context_condensation import (
@@ -204,6 +205,117 @@ _MCP_CLOSE_TIMEOUT_S = 10.0
 # budget, short enough that an operator fix (installing the binary) is
 # picked up without a host restart.
 _MCP_FAILURE_TTL_S = 300.0
+
+# JSON-schema keywords whose value holds sub-schemas (by shape).
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+)
+_SCHEMA_LIST_KEYWORDS = frozenset({"items", "prefixItems", "anyOf", "oneOf", "allOf"})
+_SCHEMA_SINGLE_KEYWORDS = frozenset(
+    {
+        "items",
+        "additionalProperties",
+        "additionalItems",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    }
+)
+
+
+def _is_nullable_union(schema: Any) -> bool:
+    return (
+        isinstance(schema, dict)
+        and isinstance(schema.get("type"), list)
+        and "null" in schema["type"]
+    )
+
+
+def normalize_tool_schema(schema: Any) -> Any:
+    """Return a copy of a JSON schema where every ``type`` is a single string.
+
+    Semantic Kernel (verified 1.39.4 and 1.44.1) copies each MCP tool
+    property's ``type`` verbatim into ``KernelParameterMetadata.type_``, a
+    ``str`` field, so a union such as roo-state-manager's deliberate
+    ``["number", "null"]`` (#3174/#1141, for flat-signature clients) fails
+    the whole ChatCompletionAgent construction (vllm#63 defect E).
+
+    - ``[X, "null"]`` -> ``X``; ``None`` is dropped from ``enum``, and the
+      property is dropped from its parent's ``required`` so that omitting it
+      keeps expressing "not applicable".
+    - several non-null types -> ``anyOf`` of single-typed branches (no
+      ``type`` key), which keeps the tool and its accepted values.
+    - recurses into every sub-schema keyword; the input is never mutated.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            out[key] = {name: normalize_tool_schema(sub) for name, sub in value.items()}
+        elif key in _SCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            out[key] = [normalize_tool_schema(sub) for sub in value]
+        elif key in _SCHEMA_SINGLE_KEYWORDS and isinstance(value, dict):
+            out[key] = normalize_tool_schema(value)
+        else:
+            out[key] = value
+
+    types = out.get("type")
+    if isinstance(types, list):
+        non_null = [t for t in types if t != "null"]
+        if non_null and len(non_null) < len(types) and isinstance(out.get("enum"), list):
+            out["enum"] = [v for v in out["enum"] if v is not None]
+        if len(non_null) == 1:
+            out["type"] = non_null[0]
+        elif non_null:
+            del out["type"]
+            branches = [{"type": t} for t in non_null]
+            if "anyOf" in out:
+                out["allOf"] = [*out.get("allOf", []), {"anyOf": branches}]
+            else:
+                out["anyOf"] = branches
+        elif types:
+            out["type"] = "null"
+        else:
+            del out["type"]
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and isinstance(out.get("required"), list):
+        nullable = {name for name, sub in properties.items() if _is_nullable_union(sub)}
+        out["required"] = [name for name in out["required"] if name not in nullable]
+    return out
+
+
+class SchemaNormalizingMCPStdioPlugin(MCPStdioPlugin):
+    """MCPStdioPlugin whose tool parameter schemas Semantic Kernel accepts.
+
+    Post-processes the parameter dicts SK attaches to each tool function
+    (``__kernel_function_parameters__``) after its own ``load_tools`` — also
+    re-run on ``tools/list_changed`` — instead of re-implementing it, so the
+    SK-version-specific registration logic is kept as is.
+    """
+
+    async def load_tools(self):
+        await super().load_tools()
+        for func in list(vars(self).values()):
+            if getattr(func, "__kernel_function__", False) is not True:
+                continue
+            params = getattr(func, "__kernel_function_parameters__", None)
+            for param in params if isinstance(params, list) else []:
+                raw = param.get("schema_data") if isinstance(param, dict) else None
+                if not isinstance(raw, dict):
+                    continue
+                param["schema_data"] = normalize_tool_schema(raw)
+                if isinstance(raw.get("type"), list):
+                    param["type"] = param["schema_data"].get("type")
+                if _is_nullable_union(raw):
+                    param["is_required"] = False
+
 
 # File extension -> content type mapping
 _IMAGE_EXTENSIONS = {
@@ -594,7 +706,10 @@ class SKAgentManager:
 
         self._loading_mcps.add(mcp_id)
         try:
-            env = {**os.environ, **mcp_cfg.env}
+            # Config still wins per key; only ``${VAR[:-default]}`` placeholders
+            # in its values are resolved against our own environment, so the
+            # shared config can name a host-specific value (vllm#63).
+            env = {**os.environ, **expand_env_placeholders(mcp_cfg.env)}
 
             # Detect self-inclusion. #3415: the predicate is centralized in
             # sk_agent_config so the module launch form (`-m sk_agent`), which
@@ -634,7 +749,7 @@ class SKAgentManager:
             # explicit cwd the child inherits ours: under Claude Code that is
             # the session workspace, where those paths do not exist and the
             # plugin silently drops out of every preset that needs it (vllm#63).
-            plugin = MCPStdioPlugin(
+            plugin = SchemaNormalizingMCPStdioPlugin(
                 name=mcp_cfg.id,
                 description=mcp_cfg.description,
                 command=mcp_cfg.command,

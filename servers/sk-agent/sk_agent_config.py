@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -136,6 +138,60 @@ def is_self_referential_mcp(mcp_id: str, args: list[str]) -> bool:
         if token.split(".")[-1] == "sk_agent":
             return True
     return False
+
+
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env_placeholders(
+    env: Mapping[str, Any],
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` in MCP ``env`` values (vllm#63).
+
+    One config file is read both by the sk-agent container and by the stdio
+    sk-agent launched on the host, so a literal value cannot fit both: e.g.
+    ``OPEN_TERMINAL_URL`` names a Docker-network host that the host cannot
+    resolve. A placeholder lets each process supply its own value from its
+    environment while the config entry keeps winning over ``os.environ`` for
+    its key (precedence unchanged).
+
+    Shell semantics: ``${VAR:-default}`` takes ``default`` when VAR is unset
+    or empty; ``${VAR}`` takes VAR's value. An unset VAR without default is
+    kept literally and logged (names only), never an error. Non-string values
+    and text without placeholders pass through unchanged.
+
+    Args:
+        env: The MCP entry's ``env`` mapping (not modified).
+        environ: Source environment; defaults to ``os.environ``.
+
+    Returns:
+        A new dict with placeholders expanded.
+    """
+    source = os.environ if environ is None else environ
+    expanded: dict[str, Any] = {}
+    for key, value in env.items():
+        if not isinstance(value, str) or "${" not in value:
+            expanded[key] = value
+            continue
+
+        def _resolve(match: re.Match[str], key: str = key) -> str:
+            name, default = match.group(1), match.group(2)
+            current = source.get(name)
+            if default is not None:
+                return current if current else default
+            if current is not None:
+                return current
+            log.warning(
+                "MCP env %s: ${%s} is unset and has no default; "
+                "passing the placeholder through literally",
+                key,
+                name,
+            )
+            return match.group(0)
+
+        expanded[key] = _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+    return expanded
 
 
 # ---------------------------------------------------------------------------
