@@ -523,6 +523,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // updateMessageAttachments — source de vérité de attachments_list (#3256).
   let attachmentRefs: Array<{ uuid: string; filename: string; sizeBytes: number }> = [];
   let refsPersisted = true;
+  // #3995 follow-up : même collecte que sendNewMessage (#1290) — un upload en
+  // échec ne reste pas un logger.warn muet, il est listé au caller.
+  const failedAttachments: Array<{ path: string; error: string }> = [];
   if (args.attachments && args.attachments.length > 0) {
     const sharedStatePath = getSharedStatePath();
     const attachmentManager = new AttachmentManager(sharedStatePath);
@@ -532,6 +535,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
         attachmentRefs.push(ref);
         logger.info('📎 Attachment uploaded for reply', { uuid: ref.uuid, filename: ref.filename, messageId: replyMessageObj.id });
       } catch (err) {
+        failedAttachments.push({ path: att.path, error: err instanceof Error ? err.message : String(err) });
         logger.warn('⚠️ Failed to upload attachment (non-fatal)', { path: att.path, error: String(err) });
       }
     }
@@ -603,6 +607,15 @@ ${truncateBodyPreview(args.body!)}
     result += refsPersisted
       ? `\n**📎 Pièces jointes :** ${attachmentRefs.length} fichier(s) attaché(s)\n${attachmentDetail}\n`
       : `\n**⚠️ Pièces jointes :** ${attachmentRefs.length} fichier(s) uploadé(s), mais la persistance des RÉFÉRENCES a échoué — le destinataire ne pourra PAS les retrouver (la liste des pièces jointes sera vide pour ce message). Renvoyez le message avec ses pièces jointes.\n${attachmentDetail}\n`;
+  }
+  // #3995 follow-up — alignement sur le send (#1290/#3997) : un upload en échec
+  // est listé au caller, pas seulement logger.warn. La réponse est bien partie —
+  // ce qui a échoué est la pièce jointe.
+  const failedDetail = failedAttachments
+    .map(f => `  - \`${f.path}\` — ${f.error}`)
+    .join('\n');
+  if (failedAttachments.length > 0) {
+    result += `\n**⚠️ Pièces jointes en échec :** ${failedAttachments.length}/${args.attachments!.length} fichier(s) NON joint(s) — la réponse ci-dessus est partie **sans** ces fichiers.\n${failedDetail}\nVérifiez que le chemin existe côté serveur puis renvoyez les fichiers (envoi séparé ou nouvel envoi).\n`;
   }
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
