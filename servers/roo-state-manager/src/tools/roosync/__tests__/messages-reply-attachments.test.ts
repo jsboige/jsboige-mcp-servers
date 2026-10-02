@@ -271,4 +271,107 @@ describe('roosync_messages attachments sur reply/amend (#3995)', () => {
         expect(mockAmendMessage).not.toHaveBeenCalled();
         expect(mockUploadAttachment).not.toHaveBeenCalled();
     });
+
+    // ============================================================
+    // #3995 suite (dispatch ai-01 09:09Z) — auto-destruction sur reply :
+    // le schéma accepte auto_destruct/destruct_after/destruct_after_read_by
+    // pour toute action, mais replyToMessage ne les transmettait pas à
+    // sendMessage (même classe de drop silencieux que les attachments).
+    // ============================================================
+    describe('auto-destruction sur reply (#3995 suite)', () => {
+        it('transmet auto_destruct + TTL + read_by à sendMessage (miroir du send)', async () => {
+            const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
+            await roosyncMessages({
+                action: 'reply',
+                message_id: ORIGINAL.id,
+                body: 'Réponse éphémère',
+                auto_destruct: true,
+                destruct_after: '2h',
+                destruct_after_read_by: ['myia-po-2027:roo-extensions'],
+            } as any);
+
+            expect(mockSendMessage).toHaveBeenCalledTimes(1);
+            // 9e argument = options — les trois champs auto-destruct y voyagent.
+            const options = mockSendMessage.mock.calls[0][8];
+            expect(options).toEqual({
+                auto_destruct: true,
+                destruct_after: '2h',
+                destruct_after_read_by: ['myia-po-2027:roo-extensions'],
+            });
+        });
+
+        it('fusionne auto_destruct avec la clé idempotence messageId (#1170)', async () => {
+            const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
+            await roosyncMessages({
+                action: 'reply',
+                message_id: ORIGINAL.id,
+                body: 'Réponse éphémère idempotente',
+                auto_destruct: true,
+                destruct_after: '30m',
+                messageId: 'reply-destruct-dedup-1',
+            } as any);
+
+            const options = mockSendMessage.mock.calls[0][8];
+            expect(options).toEqual({
+                auto_destruct: true,
+                destruct_after: '30m',
+                destruct_after_read_by: undefined,
+                messageId: 'reply-destruct-dedup-1',
+            });
+        });
+
+        it("n'envoie PAS d'options auto-destruct quand auto_destruct est absent", async () => {
+            const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
+            await roosyncMessages({
+                action: 'reply',
+                message_id: ORIGINAL.id,
+                body: 'Réponse normale',
+            } as any);
+
+            const options = mockSendMessage.mock.calls[0][8];
+            expect(options).toBeUndefined();
+        });
+
+        it('affiche la ligne 🔥 Auto-destruction dans le résultat (parité send)', async () => {
+            mockSendMessage.mockResolvedValue({
+                id: 'reply-destruct-render',
+                from: 'myia-web1:roo-extensions',
+                to: 'myia-po-2027:roo-extensions',
+                subject: `Re: ${ORIGINAL.subject}`,
+                body: 'Réponse éphémère',
+                priority: 'HIGH',
+                timestamp: '2026-10-02T01:00:00.000Z',
+                status: 'unread',
+                auto_destruct: true,
+                destruct_after: '2h',
+                expires_at: '2026-10-02T03:00:00.000Z',
+            });
+
+            const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
+            const result = await roosyncMessages({
+                action: 'reply',
+                message_id: ORIGINAL.id,
+                body: 'Réponse éphémère',
+                auto_destruct: true,
+                destruct_after: '2h',
+            } as any);
+
+            const text = result.content[0].text;
+            expect(text).toContain('Auto-destruction :** Activée');
+            expect(text).toContain('TTL: 2h');
+            expect(text).toContain('Expire');
+        });
+
+        it('ne montre PAS la ligne auto-destruction sur un reply normal', async () => {
+            const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
+            const result = await roosyncMessages({
+                action: 'reply',
+                message_id: ORIGINAL.id,
+                body: 'Réponse normale',
+            } as any);
+
+            const text = result.content[0].text;
+            expect(text).not.toContain('Auto-destruction');
+        });
+    });
 });

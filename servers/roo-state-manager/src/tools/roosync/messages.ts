@@ -314,6 +314,10 @@ export async function roosyncMessages(args: MessagesArgs) {
       // #1170: messageId (clé d'idempotence) passe au même titre que sur send.
       // #3995: attachments passe AUSSI — le schéma les documente pour toute
       // action ; les dropper ici envoyait un reply sans PJ sous un succès muet.
+      // #3995 suite (dispatch ai-01 09:09Z): idem auto_destruct/destruct_after/
+      // destruct_after_read_by — acceptés par le schéma pour toute action, ils
+      // étaient droppés ici : la réponse partait durable alors que l'appelant
+      // avait demandé une éphémère.
       return roosyncSend({
         action: 'reply',
         message_id: args.message_id ?? args.reply_to,
@@ -321,6 +325,9 @@ export async function roosyncMessages(args: MessagesArgs) {
         priority: args.priority,
         tags: args.tags,
         messageId: args.messageId,
+        auto_destruct: args.auto_destruct,
+        destruct_after_read_by: args.destruct_after_read_by,
+        destruct_after: args.destruct_after,
         attachments: args.attachments,
         as: callerAs
       });
