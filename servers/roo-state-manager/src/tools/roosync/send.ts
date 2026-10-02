@@ -502,6 +502,16 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
   // Envoyer la réponse
   logger.info('📤 Sending reply message');
+  // #3995 (suite, dispatch ai-01 09:09Z) — auto-destruction sur reply : le
+  // schéma accepte auto_destruct/destruct_after/destruct_after_read_by pour
+  // toutes les actions, mais le reply ne les transmettait pas — même classe
+  // de drop silencieux que les attachments (accepté-puis-perdu sous succès
+  // exit 0). Miroir exact de sendNewMessage (#629).
+  const autoDestructOpts = args.auto_destruct ? {
+    auto_destruct: true,
+    destruct_after_read_by: args.destruct_after_read_by,
+    destruct_after: args.destruct_after
+  } : undefined;
   // #1170 — la clé d'idempotence VOYAGE jusqu'à la persistance (leçon review
   // #1157 : consultée seule, elle ne pouvait jamais absorber un retry).
   const replyMessageObj = await messageManager.sendMessage(
@@ -513,7 +523,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
     replyTags,
     threadId,
     args.message_id,  // reply_to pointe vers l'original
-    args.messageId ? { messageId: args.messageId } : undefined
+    args.messageId
+      ? { ...(autoDestructOpts ?? {}), messageId: args.messageId }
+      : autoDestructOpts
   );
 
   // #3995 — les attachments sur reply étaient droppées en silence par le
@@ -551,6 +563,12 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   const replyPriorityIcon = getPriorityIcon(priority);
 
   // Formater le résultat
+  // #3995 (suite) — ligne auto-destruction, parité avec le path send : le
+  // caller doit voir que sa réponse est éphémère (sinon il cherche plus tard
+  // un message déjà détruit).
+  const autoDestructInfo = replyMessageObj.auto_destruct
+    ? `\n**🔥 Auto-destruction :** Activée${replyMessageObj.destruct_after ? ` (TTL: ${replyMessageObj.destruct_after})` : ''}${replyMessageObj.destruct_after_read_by ? ` (après lecture par: ${replyMessageObj.destruct_after_read_by.join(', ')})` : ' (après lecture par destinataire)'}${replyMessageObj.expires_at ? `\n**⏰ Expire :** ${formatDateFull(replyMessageObj.expires_at)}` : ''}`
+    : '';
   let result = `✅ **Réponse envoyée avec succès**
 
 ---
@@ -582,7 +600,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 **Priorité :** ${replyPriorityIcon} ${priority}
 **Tags :** ${replyTags.map(t => `\`${t}\``).join(', ')}
 **Thread ID :** \`${threadId}\`
-**En réponse à :** \`${args.message_id}\`
+**En réponse à :** \`${args.message_id}\`${autoDestructInfo}
 
 ---
 

@@ -1694,6 +1694,58 @@ describe('MessageManager', () => {
       expect(result.matched).toBe(1);
       expect(result.processed).toBe(1);
     });
+
+    test('before_date offset-less discrimination under FORCED non-UTC TZ (#3996)', async () => {
+      // Le test frère ci-dessus ne discrimine qu'hors UTC : sur un runner UTC,
+      // parser "03:00:00" en heure locale == le parser en UTC — il passe donc
+      // même SANS le correctif (dispatch ai-01 09:09Z). On force ici une TZ
+      // non-UTC (Etc/GMT-2 = UTC+2, convention POSIX inversée) pour que la
+      // fenêtre glisse à nouveau si le parse redevient local : sur la CI POSIX
+      // (runner ubuntu en UTC), le forçage prend effet et une régression du
+      // parse local exclut le message → matched=0 → échec visible.
+      //
+      // Honnêteté du contrôle : sur un hôte où le forçage TZ à chaud ne prend
+      // PAS (Windows sans prise en charge ICU runtime), le test retombe sur
+      // l'assertion du comportement corrigé — vert avec le fix, mais NON
+      // discriminant localement ; la discrimination est portée par la CI.
+      // Mesure publiée (dénominateur) : forcingActive dit si CE run discrimine.
+      const savedTz = process.env.TZ;
+      let forcingActive = false;
+      try {
+        process.env.TZ = 'Etc/GMT-2';
+        // Le forçage est actif ssi parser sans offset diffère du parse Z.
+        forcingActive =
+          new Date('2026-10-01T03:00:00').getTime() !==
+          Date.parse('2026-10-01T03:00:00Z');
+
+        const msg = await messageManager.sendMessage(
+          'sender', 'machine-a', 'TZ forced window', 'Body', 'LOW'
+        );
+        const inboxFile = join(testSharedStatePath, 'messages/inbox', `${msg.id}.json`);
+        const raw = JSON.parse(await fs.readFile(inboxFile, 'utf-8'));
+        raw.timestamp = '2026-10-01T02:00:00.000Z';
+        await fs.writeFile(inboxFile, JSON.stringify(raw, null, 2), 'utf-8');
+
+        // Parse corrigé (UTC) : 02:00Z < 03:00Z → INCLUS partout. Un parse
+        // local revenant (UTC+2 → 01:00Z) EXCLURAIT ce message : matched=0.
+        const result = await messageManager.bulkOperation(
+          'machine-a', 'mark_read',
+          { status: 'unread', before_date: '2026-10-01T03:00:00' },
+          'ws-1'
+        );
+        expect(result.matched).toBe(1);
+        expect(result.processed).toBe(1);
+      } finally {
+        if (savedTz === undefined) delete process.env.TZ;
+        else process.env.TZ = savedTz;
+      }
+      // Le dénominateur : quand le forçage est inactif, CE run ne prouve pas
+      // la discrimination (il reste une garde du comportement corrigé).
+      if (!forcingActive) {
+        // eslint-disable-next-line no-console
+        console.warn('[#3996] TZ forcing inert on this host — test non-discriminating here, discriminating on POSIX CI');
+      }
+    });
   });
 
   describe('phantom message fix (#2307 Phase 4)', () => {
