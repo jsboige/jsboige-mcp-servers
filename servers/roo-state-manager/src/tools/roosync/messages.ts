@@ -307,6 +307,8 @@ export async function roosyncMessages(args: MessagesArgs) {
       // #3029: Alias reply_to → message_id pour rétro-compatibilité (agent passes reply_to expecting "the message to reply to").
       // L'alias est ignoré si message_id est déjà fourni.
       // #1170: messageId (clé d'idempotence) passe au même titre que sur send.
+      // #3995: attachments passe AUSSI — le schéma les documente pour toute
+      // action ; les dropper ici envoyait un reply sans PJ sous un succès muet.
       return roosyncSend({
         action: 'reply',
         message_id: args.message_id ?? args.reply_to,
@@ -314,6 +316,7 @@ export async function roosyncMessages(args: MessagesArgs) {
         priority: args.priority,
         tags: args.tags,
         messageId: args.messageId,
+        attachments: args.attachments,
         as: callerAs
       });
 
@@ -321,12 +324,14 @@ export async function roosyncMessages(args: MessagesArgs) {
       // #3029: Idem — alias reply_to accepté pour amend (consistance avec reply).
       // #1170: messageId est forwardé pour être REJETÉ bruyamment par le
       // routeur send.ts (exclusion documentée) — jamais droppé en silence (#3177).
+      // #3995: attachments suit la même voie — rejet explicite au routeur.
       return roosyncSend({
         action: 'amend',
         message_id: args.message_id ?? args.reply_to,
         new_content: args.new_content,
         reason: args.reason,
         messageId: args.messageId,
+        attachments: args.attachments,
         as: callerAs
       });
 

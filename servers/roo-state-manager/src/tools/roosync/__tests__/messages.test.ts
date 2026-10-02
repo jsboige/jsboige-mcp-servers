@@ -177,6 +177,38 @@ describe('roosync_messages dispatcher', () => {
       expect(callArg).not.toHaveProperty('reply_to');
     });
 
+    // #3995: attachments était accepté par le schéma pour reply/amend mais
+    // droppé par le dispatcher — le reply partait sans PJ sous un succès muet.
+    test('#3995 reply forwards attachments to roosyncSend', async () => {
+      await roosyncMessages({
+        action: 'reply',
+        message_id: 'msg-1',
+        body: 'Reply with file',
+        attachments: [{ path: '/tmp/key.txt', filename: 'key.txt' }],
+      });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'reply',
+          attachments: [{ path: '/tmp/key.txt', filename: 'key.txt' }],
+        })
+      );
+    });
+
+    test('#3995 amend forwards attachments so the router can reject them loudly', async () => {
+      await roosyncMessages({
+        action: 'amend',
+        message_id: 'msg-1',
+        new_content: 'Updated',
+        attachments: [{ path: '/tmp/fix.txt', filename: 'fix.txt' }],
+      });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'amend',
+          attachments: [{ path: '/tmp/fix.txt', filename: 'fix.txt' }],
+        })
+      );
+    });
+
     test('inbox routes to roosyncRead with mode=inbox', async () => {
       await roosyncMessages({ action: 'inbox' });
       expect(mockRead).toHaveBeenCalledWith(
