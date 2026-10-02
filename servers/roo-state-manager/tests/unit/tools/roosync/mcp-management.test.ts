@@ -41,9 +41,10 @@ vi.mock('child_process', () => ({
 }));
 
 vi.mock('os', () => ({
-    default: { homedir: () => '/home/test', tmpdir: () => '/tmp' },
+    default: { homedir: () => '/home/test', tmpdir: () => '/tmp', hostname: () => 'seat-a' },
     homedir: () => '/home/test',
     tmpdir: () => '/tmp',
+    hostname: () => 'seat-a',
 }));
 
 vi.mock('../../../../src/services/roosync/HeartbeatService.js', () => ({
