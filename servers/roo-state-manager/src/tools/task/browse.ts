@@ -126,7 +126,12 @@ function validateArgs(args: TaskBrowseArgs): void {
         );
     }
 
-    if (args.action === 'tree' && !args.conversation_id) {
+    // #3992 — trim: a present-but-empty (or whitespace-only) conversation_id
+    // used to pass this gate, then `taskId.startsWith('')` matched EVERY
+    // skeleton downstream → AMBIGUOUS_TASK_ID or an arbitrary tree. The
+    // sentinel-side normalization lives in conversation-browser
+    // (normalizeWireArgs); the legacy redirect needs the same guard here.
+    if (args.action === 'tree' && !args.conversation_id?.trim()) {
         throw new StateManagerError(
             'Le paramètre "conversation_id" est requis pour l\'action "tree".',
             'VALIDATION_FAILED',

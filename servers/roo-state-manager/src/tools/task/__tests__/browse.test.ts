@@ -94,6 +94,20 @@ describe('task_browse - CONS-9', () => {
             expect(getTextContent(result)).toContain('conversation_id');
             expect(getTextContent(result)).toContain('requis');
         });
+
+        test('#3992 — empty or whitespace-only conversation_id is rejected, not prefix-matched', async () => {
+            for (const bad of ['', '   ']) {
+                const args: TaskBrowseArgs = { action: 'tree', conversation_id: bad };
+
+                const result = await handleTaskBrowse(args, mockCache, mockEnsureCache);
+
+                // Pre-fix, '' slipped past the gate and reached handleGetTaskTree,
+                // whose prefix resolution (`taskId.startsWith('')`) matches all.
+                expect(result.isError).toBe(true);
+                expect(getTextContent(result)).toContain('conversation_id');
+                expect(getTextContent(result)).toContain('requis');
+            }
+        });
     });
 
     // ============================================================
