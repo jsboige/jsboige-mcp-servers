@@ -195,7 +195,7 @@ export const DashboardArgsSchema = z.object({
 
   // Pour read/update — section semantics depend on action
   section: z.enum(['status', 'intercom', 'all', 'machine', 'global', 'decisions', 'metrics']).optional()
-    .describe('Section to read (status/intercom/all) or update (v3: status only — create-or-replace on the same keys as write; legacy machine/global/decisions/metrics sections of the monolithic DASHBOARD.md no longer exist). Default for update: status.'),
+    .describe('Section to read (status/intercom/all) or update (v3: status only — create-or-replace on the same keys as write; legacy machine/global/decisions/metrics sections of the monolithic DASHBOARD.md no longer exist — rejected with guidance on both read (#3994) and update). Default for update: status.'),
   intercomLimit: z.number().optional()
     .describe('Max messages to return (default: all)'),
   mentionsOnly: z.boolean().optional()

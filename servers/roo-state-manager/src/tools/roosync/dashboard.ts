@@ -5050,6 +5050,22 @@ async function handleRead(
   resolvedWorkspace: string,
   requestEcho: DashboardRequestEcho
 ): Promise<DashboardResult> {
+  // #3994: validation d'argument AVANT tout IO store. Les sections legacy du
+  // DASHBOARD.md monolithique ne se rabattent plus silencieusement sur 'all'
+  // (coût contexte x10 + auto-ACK #1956 involontaire) : rejet guidé, miroir du
+  // handler update (#3549). #1935: l'enum partagé inclut des valeurs
+  // update-spécifiques — read n'accepte que les 3 valeurs read-valides.
+  const section = args.section ?? 'all';
+  if (section !== 'status' && section !== 'intercom' && section !== 'all') {
+    throw new Error(
+      `action=read ne lit que les sections v3 ('status' | 'intercom' | 'all'). ` +
+      `La section '${section}' n'existe pas dans le store v3 : machine/global/decisions/metrics ` +
+      `étaient des titres du DASHBOARD.md monolithique legacy, retiré. ` +
+      `Le scope machine/global se choisit via type=, pas section= — ` +
+      `utiliser section='all' ou 'intercom' pour lire.`
+    );
+  }
+
   // #3459: fail-closed. When the shared store root is unreachable, an agent must
   // be STOPPED, not reassured with "dashboard not found — use createIfNotExists".
   try {
@@ -5077,9 +5093,7 @@ async function handleRead(
     };
   }
 
-  const section = args.section ?? 'all';
-  // #1935: section now includes update-specific values — narrow to read-safe values
-  const readSection = (section === 'status' || section === 'intercom' || section === 'all') ? section : 'all';
+  const readSection = section; // #3994: validé en tête de handler ∈ {status, intercom, all}
 
   // #1956: Auto-ACK — when reading intercom, mark replies to our messages as
   // acknowledged. #3205 résiduel write-side : la marque s'applique sous le

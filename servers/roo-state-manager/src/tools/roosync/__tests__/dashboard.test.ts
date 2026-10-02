@@ -229,6 +229,44 @@ describe('roosync_dashboard', () => {
     expect(result.data?.status).toBeUndefined();
   });
 
+  // === #3994 : sections legacy rejetées bruyamment sur read (fin du remap silencieux 'all') ===
+
+  it.each(['machine', 'global', 'decisions', 'metrics'] as const)(
+    'read section legacy %s rejette avec guidage v3 — plus de remap silencieux sur all',
+    async (section) => {
+      // Le dashboard global EXISTE (créé ci-dessous) : le rejet ne doit rien servir,
+      // en particulier pas le contenu complet qu'un remap 'all' aurait renvoyé.
+      await roosyncDashboard({ action: 'write', type: 'global', content: '# Status 3994' });
+      const err = await roosyncDashboard({
+        action: 'read',
+        type: 'global',
+        section,
+      }).then(
+        () => { throw new Error('read legacy section devrait rejeter'); },
+        (e: Error) => e
+      );
+      expect(err.message).toMatch(/store v3/);
+      // guidage : les valeurs read-valides et le bon paramètre de scope
+      expect(err.message).toMatch(/section='all'/);
+      expect(err.message).toMatch(/type=/);
+      expect(err.message).not.toMatch(/roosync_init/);
+    }
+  );
+
+  it('#3994 la validation section précède tout IO store : rejet même sans dashboard existant', async () => {
+    const err = await roosyncDashboard({
+      action: 'read',
+      type: 'workspace',
+      workspace: 'nonexistent-3994',
+      section: 'decisions',
+    }).then(
+      () => { throw new Error('devrait rejeter avant tout IO store'); },
+      (e: Error) => e
+    );
+    expect(err.message).toMatch(/store v3/);
+  });
+
+
   // === Test 8: Write remplace status.markdown ===
   it('write replaces status markdown', async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: 'Old content' });
