@@ -100,11 +100,28 @@ export function getMcpSettingsPath(targetExtension?: 'roo' | 'zoo'): string {
 // 🔒 MÉCANISME DE SÉCURISATION - Protection contre l'écriture sans lecture préalable
 // ====================================================================
 
-let lastReadTimestamp: number | null = null;
+interface ReadAuthorization {
+    machineId: string;
+    timestamp: number;
+}
+
+function getAuthorizationMachineId(): string {
+    // #3989: identité du siège appelant. os.hostname() (même identité que
+    // TaskArchiver.getMachineId) — read-only, aucune écriture de config.
+    // Défensif : un hôte/mock sans hostname rend '' (comportement pré-fix,
+    // jamais un crash de l'opération).
+    try {
+        return ((os as any).hostname?.() ?? '').toString().toLowerCase();
+    } catch {
+        return '';
+    }
+}
+
+let lastReadAuthorization: ReadAuthorization | null = null;
 const WRITE_AUTHORIZATION_TIMEOUT = 300000; // 5 minutes (fix #496: operations with file reads need more time)
 
 function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
-    if (lastReadTimestamp === null) {
+    if (lastReadAuthorization === null) {
         return {
             isAuthorized: false,
             message: '🚨 SÉCURITÉ: Lecture préalable requise avant toute écriture. Utilisez d\'abord l\'action "manage" avec subAction "read".'
@@ -112,7 +129,7 @@ function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
     }
 
     const now = Date.now();
-    const timeSinceRead = now - lastReadTimestamp;
+    const timeSinceRead = now - lastReadAuthorization.timestamp;
     const remainingTime = WRITE_AUTHORIZATION_TIMEOUT - timeSinceRead;
 
     if (timeSinceRead > WRITE_AUTHORIZATION_TIMEOUT) {
@@ -120,6 +137,18 @@ function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
         return {
             isAuthorized: false,
             message: `🚨 SÉCURITÉ: Autorisation d'écriture expirée (lecture effectuée il y a ${minutesExpired} minute${minutesExpired > 1 ? 's' : ''}). Relancez d\'abord une action "manage" avec subAction "read".`
+        };
+    }
+
+    // #3989: scellement machineId — l'autorisation est liée au lecteur
+    // d'origine. Sur le même process hôte, un tiers ne peut plus écrire sur
+    // le read d'un autre siège. Le refus est explicite : le tiers refait son
+    // propre read (la garde l'oblige à lire d'abord lui-même, elle ne
+    // l'empêche pas d'écrire après).
+    if (lastReadAuthorization.machineId !== getAuthorizationMachineId()) {
+        return {
+            isAuthorized: false,
+            message: `🚨 SÉCURITÉ (#3989): l'autorisation d'écriture a été ouverte par un autre siège (${lastReadAuthorization.machineId || 'inconnu'}). Relancez d\'abord une action "manage" avec subAction "read" depuis CE siège.`
         };
     }
 
@@ -131,16 +160,19 @@ function checkWriteAuthorization(): { isAuthorized: boolean; message: string } {
 }
 
 function recordSuccessfulRead(): void {
-    lastReadTimestamp = Date.now();
+    lastReadAuthorization = {
+        machineId: getAuthorizationMachineId(),
+        timestamp: Date.now()
+    };
 }
 
 function getAuthorizationStatus(): string {
-    if (lastReadTimestamp === null) {
+    if (lastReadAuthorization === null) {
         return '🔒 Aucune lecture effectuée - Écriture non autorisée';
     }
 
     const now = Date.now();
-    const timeSinceRead = now - lastReadTimestamp;
+    const timeSinceRead = now - lastReadAuthorization.timestamp;
     const remainingTime = WRITE_AUTHORIZATION_TIMEOUT - timeSinceRead;
 
     if (timeSinceRead > WRITE_AUTHORIZATION_TIMEOUT) {

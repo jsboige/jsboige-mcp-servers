@@ -23,13 +23,20 @@ import { exec } from 'child_process';
 // Mock des modules
 vi.mock('fs/promises');
 vi.mock('child_process');
+const { mockHostname } = vi.hoisted(() => ({
+    // #3989: hostname flippable par test — le scellement machineId doit être
+    // discriminable sans changer de process (mockReturnValue ré-armé au beforeEach).
+    mockHostname: vi.fn().mockReturnValue('seat-a')
+}));
 vi.mock('os', () => ({
     default: {
         homedir: () => '/home/test',
-        tmpdir: () => '/tmp'
+        tmpdir: () => '/tmp',
+        hostname: mockHostname
     },
     homedir: () => '/home/test',
-    tmpdir: () => '/tmp'
+    tmpdir: () => '/tmp',
+    hostname: mockHostname
 }));
 
 // Stub pour process.env.APPDATA
@@ -43,6 +50,8 @@ describe('roosyncMcpManagement', () => {
         // unlink best-effort) — defaults fonctionnels pour tous les chemins d'écriture.
         vi.mocked(fs.copyFile).mockResolvedValue(undefined);
         vi.mocked(fs.unlink).mockResolvedValue(undefined);
+        // #3989: siège par défaut pour tous les tests (record et check identiques)
+        mockHostname.mockReturnValue('seat-a');
         // Note: authorization state is module-level, cannot be reset between tests
         // Tests that rely on "no authorization" must run in isolation or before read tests
     });
@@ -965,6 +974,53 @@ describe('roosyncMcpManagement', () => {
             const writeFileTargets = vi.mocked(fs.writeFile).mock.calls.map(c => String(c[0]));
             expect(writeFileTargets.length).toBeGreaterThan(0);
             expect(writeFileTargets.every(p => tmpSuffixRe.test(p))).toBe(true);
+            expect(vi.mocked(fs.copyFile)).toHaveBeenCalled();
+        });
+    });
+
+    // ============================================================
+    // #3989: scellement machineId de l'autorisation read→write
+    // ============================================================
+    describe('#3989 machineId-sealed write authorization', () => {
+        test('a read by seat A does NOT authorize a write by seat B (cross-seat refusal)', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
+                mcpServers: { 's': { command: 'node', args: ['a.js'] } }
+            }));
+
+            // Seat A reads → authorization opened for seat-a
+            mockHostname.mockReturnValue('seat-a');
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+
+            // Seat B (same host process) tries to write on A's read
+            mockHostname.mockReturnValue('seat-b');
+            await expect(roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'write',
+                backup: false,
+                settings: { mcpServers: { 's': { command: 'node' } } }
+            } as McpManagementArgs)).rejects.toMatchObject({
+                code: 'WRITE_NOT_AUTHORIZED'
+            });
+
+            // no write attempt ever happened (backup=false, no writeFile beyond staging)
+            expect(vi.mocked(fs.copyFile)).not.toHaveBeenCalled();
+        });
+
+        test('a refused seat recovers by doing its own read (read → write same seat)', async () => {
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({
+                mcpServers: { 's': { command: 'node', args: ['a.js'] } }
+            }));
+
+            mockHostname.mockReturnValue('seat-b');
+            await roosyncMcpManagement({ action: 'manage', subAction: 'read' });
+            await roosyncMcpManagement({
+                action: 'manage',
+                subAction: 'write',
+                backup: false,
+                settings: { mcpServers: { 's': { command: 'node' } } }
+            } as McpManagementArgs);
+
+            // write went through the staged path
             expect(vi.mocked(fs.copyFile)).toHaveBeenCalled();
         });
     });
