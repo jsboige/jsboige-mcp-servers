@@ -1,6 +1,6 @@
 # Recensement des exclusions CI — `vitest.config.ci.ts`
 
-**Dernier audit :** 2026-09-09 (#3549)
+**Dernier audit :** 2026-10-03 (#2639 réactivation)
 **Mesure canonique :** `node scripts/count-ci-exclusions.mjs` (script, jamais à la main)
 **Drift-guard :** `tests/unit/ci-exclusion-drift-guard.test.ts` — échoue si le header du config dérive ou si une entrée ghost apparaît
 
@@ -8,9 +8,9 @@
 
 ## Mesures canoniques
 
-| Mesure | Valeur (2026-09-09) | Méthode |
+| Mesure | Valeur (2026-10-03) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **30** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **29** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
 | Fichiers effectivement non collectés en CI (vs run local) | **22** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
@@ -33,11 +33,13 @@ demande via `--collect`.
 
 Alignement #3322 : toutes les sources citent désormais **« 31 fichiers de tests déclarés »** (unité :
 entrées de fichiers déclarées dans le config CI). **#3549 (2026-09-09) :** `update-dashboard.integration.test.ts`
-retiré avec son module (update v3-native, couvert en CI) → **30 entrées**.
+retiré avec son module (update v3-native, couvert en CI) → **30 entrées**. **#2639 (2026-10-03) :**
+`get-status.smoke.test.ts` réactivé (réécriture #2639 : chaque scénario tourne sur un tmpdir
+`ROOSYNC_SHARED_PATH` créé par le test — plus de dépendance GDrive réelle) → **29 entrées**.
 
 ---
 
-## Les 30 entrées fichiers de test
+## Les 29 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -52,14 +54,16 @@ CI tourne sur `ubuntu-22.04` ; ces tests requièrent Windows PowerShell / APPDAT
 | `tests/unit/services/InventoryCollectorWrapper.test.ts` | 3 | non |
 | `src/tools/roosync/__tests__/inventory.integration.test.ts` | 13 | non |
 
-### SMOKE — 5 entrées, toutes effectives (14 tests)
+### SMOKE — 4 entrées, toutes effectives (12 tests)
 
 Dépendent de l'état réel GDrive/RooSync partagé (production), pas de mocks.
+
+*(`get-status.smoke.test.ts` réactivé en CI le 2026-10-03 (#2639) : la réécriture tourne chaque
+scénario sur un tmpdir `ROOSYNC_SHARED_PATH` créé par le test — 11/11 vérifiés sous config CI.)*
 
 | Entrée | Tests | Datée |
 |---|---|---|
 | `src/tools/roosync/__tests__/send.smoke.test.ts` | 3 | non |
-| `src/tools/roosync/__tests__/get-status.smoke.test.ts` | 2 | non |
 | `src/tools/roosync/__tests__/storage-management.smoke.test.ts` | 3 | non |
 | `src/tools/roosync/__tests__/machines.smoke.test.ts` | 3 | non |
 | `src/tools/roosync/__tests__/list-diffs.smoke.test.ts` | 3 | non |
@@ -118,7 +122,7 @@ collecte 0 test sans la variable, l'exclusion est déclarative mais sans effet s
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+5+8+7+1+1+1+1 = 30 · effectif : dernière mesure 2026-08-31 — 22 fichiers / 404 tests, à re-mesurer via `--collect` après #3549 (retrait d'un fichier effectif, 27 tests)**
+**Total déclaré : 6+4+8+7+1+1+1+1 = 29 · effectif : dernière mesure 2026-08-31 — 22 fichiers / 404 tests, à re-mesurer via `--collect` après #2639 (réactivation d'un fichier effectif)**
 
 ---
 
@@ -150,9 +154,9 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
 
 1. **POWERSHELL (6)** — plateforme légitime (CI = ubuntu), mais rien n'empêcherait un job matrix
    Windows de les exécuter. Candidat « job dédié », pas réactivation simple.
-2. **SMOKE + APPDATA/GDRIVE (13 effectives)** — dépendance état réel GDrive : réactivation seulement
+2. **SMOKE + APPDATA/GDRIVE (12 restantes)** — dépendance état réel GDrive : réactivation seulement
    derrière un flag d'env type `GDRIVE_INTEGRATION=1` (pattern déjà utilisé par
-   `LLM_LIVE_INTEGRATION=1`).
+   `LLM_LIVE_INTEGRATION=1`). (`get-status.smoke` a quitté cette liste le 2026-10-03, #2639.)
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
    skeleton-cache-reconstruction, workspace-filtering-diagnosis) : soit documenter la raison au niveau
    du config unit, soit rouvrir — en l'état elles sont invisibles pour la CI comme pour le run local.

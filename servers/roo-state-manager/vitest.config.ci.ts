@@ -13,11 +13,11 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 30 test-file entries + 4 tests-directory globs
+ * Exclusion census: 29 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
- * Last audit: 2026-09-09 (#3549) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
+ * Last audit: 2026-10-03 (#2639) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import unitConfig from './vitest.config.unit.js';
@@ -76,7 +76,12 @@ export default mergeConfig(unitConfig, defineConfig({
 
       // ===== CI-excluded: SMOKE (depends on real GDrive/RooSync state) =====
       'src/tools/roosync/__tests__/send.smoke.test.ts',
-      'src/tools/roosync/__tests__/get-status.smoke.test.ts',
+      // 2026-10-03 (#2639): get-status.smoke.test.ts RE-ENABLED in CI. The #2639
+      //   rewrite runs every scenario against a tmpdir ROOSYNC_SHARED_PATH created
+      //   by the test itself (env set in beforeEach, restored in afterEach) — no
+      //   real GDrive/RooSync state involved. Verified firsthand: 11/11 pass under
+      //   the CI config with the exclusion lifted, full suite green.
+      // 'src/tools/roosync/__tests__/get-status.smoke.test.ts',
       'src/tools/roosync/__tests__/storage-management.smoke.test.ts',
       'src/tools/roosync/__tests__/machines.smoke.test.ts',
       'src/tools/roosync/__tests__/list-diffs.smoke.test.ts',
