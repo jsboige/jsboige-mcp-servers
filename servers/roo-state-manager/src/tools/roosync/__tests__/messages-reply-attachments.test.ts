@@ -226,7 +226,7 @@ describe('roosync_messages attachments sur reply/amend (#3995)', () => {
         expect(text).toContain('Renvoyez le message');
     });
 
-    it("n'interrompt pas le reply quand l'upload échoue (non-fatal, #3997 pour le rapport)", async () => {
+    it("n'interrompt pas le reply quand l'upload échoue et le rapporte (aligné #3997/#1290)", async () => {
         mockUploadAttachment.mockRejectedValue(new Error('store indisponible'));
 
         const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
@@ -240,9 +240,14 @@ describe('roosync_messages attachments sur reply/amend (#3995)', () => {
         // Le message part quand même, aucune ref persistée.
         expect(mockSendMessage).toHaveBeenCalledTimes(1);
         expect(mockUpdateMessageAttachments).not.toHaveBeenCalled();
-        expect(result.content[0].text).toContain('Réponse envoyée avec succès');
-        // NB : le succès sans section PJ reste le comportement sur échec
-        // d'upload — le rapport de l'échec est le périmètre #3997 item 2.
+        const text = result.content[0].text;
+        expect(text).toContain('Réponse envoyée avec succès');
+        // Follow-up #3995 : l'échec d'upload est listé au caller (miroir du
+        // send) — plus de succès muet sur une PJ manquante.
+        expect(text).toContain('Pièces jointes en échec :** 1/1');
+        expect(text).toContain('/tmp/key.txt');
+        expect(text).toContain('store indisponible');
+        expect(text).toContain('partie **sans** ces fichiers');
     });
 
     it('rejette bruyamment attachments sur amend (jamais droppé en silence)', async () => {
