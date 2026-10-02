@@ -138,8 +138,10 @@ describe('roosyncDiagnose (integration)', () => {
 
       expect(result.data?.directories).toBeDefined();
       // directories[x] returns { exists: bool, writable: bool } objects, NOT plain booleans
-      expect(result.data?.directories['.']).toBeDefined();
-      expect(result.data?.directories['.'].exists).toBeDefined();
+      // #3993: clés renommées cwd/sharedState — plus de collision sur '.'
+      expect(result.data?.directories['cwd']).toBeDefined();
+      expect(result.data?.directories['cwd'].exists).toBeDefined();
+      expect(result.data?.directories['sharedState']).toBeDefined();
     });
 
     test('should report missing directories with WARNING status', async () => {
