@@ -439,6 +439,50 @@ describe('findLatestClaudeSettingsSnapshot', () => {
     expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://new');
   });
 
+  // #4010 : un dossier lexiquement supérieur (vv…, v2026.…) mais PLUS ANCIEN ne
+  // doit plus masquer un v1.1.1 publié après lui.
+  test('#4010 dossier empoisonné lexicalement supérieur mais plus ancien est ignoré', async () => {
+    const base = join(fakeDir, 'configs', 'machine-poison');
+    const cases = [
+      { dir: 'vv1.1.0-window-restored-2026-09-30T19-42-18-036Z', at: '2026-09-30T19:42:18Z', url: 'https://poison-old' },
+      { dir: 'v2026.10.01-po2027-2026-09-30T22-51-09-773Z', at: '2026-09-30T22:51:09Z', url: 'https://poison-dated' },
+      { dir: 'v1.1.1-2026-10-01T15-12-35-624Z', at: '2026-10-01T15:12:35Z', url: 'https://fresh-semver' },
+    ];
+    for (const c of cases) {
+      const dir = join(base, c.dir, 'claude-settings');
+      mkdirSync(dir, { recursive: true });
+      const read = await readClaudeSettingsFileFrom(settingsPath, { env: { ANTHROPIC_BASE_URL: c.url } });
+      writeFileSync(join(dir, 'claude-settings.json'), JSON.stringify(buildSnapshot(read, 'machine-poison', c.at)), 'utf-8');
+    }
+    const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, 'machine-poison');
+    expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://fresh-semver');
+    expect(lookup.path).toContain('v1.1.1-2026-10-01T15-12-35-624Z');
+  });
+
+  // #4010 : latest.json est le pointeur prioritaire posé par publishConfig.
+  test('#4010 latest.json prime sur le tri par collectedAt', async () => {
+    const base = join(fakeDir, 'configs', 'machine-latest');
+    const cases = [
+      { dir: 'v1.0.0-2026-10-01T10-00-00-000Z', at: '2026-10-01T10:00:00Z', url: 'https://latest-pointer' },
+      { dir: 'v1.1.1-2026-10-01T12-00-00-000Z', at: '2026-10-01T12:00:00Z', url: 'https://collected-newer' },
+    ];
+    for (const c of cases) {
+      const dir = join(base, c.dir, 'claude-settings');
+      mkdirSync(dir, { recursive: true });
+      const read = await readClaudeSettingsFileFrom(settingsPath, { env: { ANTHROPIC_BASE_URL: c.url } });
+      writeFileSync(join(dir, 'claude-settings.json'), JSON.stringify(buildSnapshot(read, 'machine-latest', c.at)), 'utf-8');
+    }
+    // latest.json pointe le PLUS ANCIEN : c'est lui qui fait foi
+    writeFileSync(join(base, 'latest.json'), JSON.stringify({ version: '1.0.0', path: join(base, cases[0].dir) }), 'utf-8');
+    const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, 'machine-latest');
+    expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://latest-pointer');
+    expect(lookup.path).toContain('v1.0.0');
+    // Sans latest.json lisible, le max par collectedAt reprend la main
+    writeFileSync(join(base, 'latest.json'), 'corrompu', 'utf-8');
+    const fallback = await findLatestClaudeSettingsSnapshot(fakeDir, 'machine-latest');
+    expect(fallback.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://collected-newer');
+  });
+
   test('snapshot corrompu (non JSON) => trouvé mais ignoré, found:false', async () => {
     const dir = join(fakeDir, 'configs', 'machine-z', 'claude-settings');
     mkdirSync(dir, { recursive: true });

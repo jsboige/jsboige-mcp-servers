@@ -389,6 +389,19 @@ export async function roosyncConfig(args: ConfigArgs) {
         // Action publish: Publie vers le stockage partagé
         const { version, description, packagePath, targets } = args;
 
+        // #4010 : claude-settings vit sous canon semver — une version date ou
+        // texte libre crée un dossier qui déclasse les lectures de snapshot.
+        if (targets && (targets as string[]).includes('claude-settings')) {
+          const bare = (version ?? '').replace(/^v+/, '');
+          if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.+-]+)?$/.test(bare)) {
+            throw new ConfigSharingServiceError(
+              `version "${version}" invalide pour claude-settings : canon semver uniquement (ex. "1.1.1") — les dates/texte libre empoisonnent la résolution de snapshot (#4010)`,
+              ConfigSharingServiceErrorCode.PUBLISH_FAILED,
+              { args }
+            );
+          }
+        }
+
         // Workflow atomique collect+publish si targets fourni sans packagePath
         let finalPackagePath = packagePath;
         let autoCollected = false;

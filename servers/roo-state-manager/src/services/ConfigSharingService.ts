@@ -192,16 +192,21 @@ export class ConfigSharingService implements IConfigSharingService {
     const machineId = options.machineId || process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown';
     const machineConfigDir = join(configsDir, machineId);
 
+    // #4010 : un `version` préfixée par « v » produisait un dossier « vv… » qui
+    // déclassait lexicalement tous les paquets semver suivants. Le préfixe est
+    // ajouté ICI — la version fournie doit être nue.
+    const version = options.version.replace(/^v+/, '');
+
     // Créer un sous-répertoire versionné pour l'historique
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const versionDir = join(machineConfigDir, `v${options.version}-${timestamp}`);
+    const versionDir = join(machineConfigDir, `v${version}-${timestamp}`);
 
     if (existsSync(versionDir)) {
-      this.logger.warn(`La version ${options.version} existe déjà pour ${machineId}, elle sera écrasée.`);
+      this.logger.warn(`La version ${version} existe déjà pour ${machineId}, elle sera écrasée.`);
     }
 
     // #3459 (b): création sous la racine du store via le helper sanctionné
-    ensureStoreSubdir(sharedStatePath, 'configs', machineId, `v${options.version}-${timestamp}`);
+    ensureStoreSubdir(sharedStatePath, 'configs', machineId, `v${version}-${timestamp}`);
 
     // Copie des fichiers depuis le package temporaire
     await this.copyRecursive(options.packagePath, versionDir);
@@ -211,7 +216,7 @@ export class ConfigSharingService implements IConfigSharingService {
     const manifestContent = await fs.readFile(manifestPath, 'utf-8');
     const manifest: ConfigManifest = JSON.parse(manifestContent);
 
-    manifest.version = options.version;
+    manifest.version = version;
     manifest.description = options.description;
     manifest.author = machineId; // CORRECTION SDDD : Utiliser machineId explicite
 
@@ -220,13 +225,13 @@ export class ConfigSharingService implements IConfigSharingService {
     // CORRECTION SDDD : Créer un lien symbolique ou fichier latest pour accès facile
     const latestPath = join(machineConfigDir, 'latest.json');
     await fs.writeFile(latestPath, JSON.stringify({
-      version: options.version,
+      version,
       timestamp,
       path: versionDir,
       manifest
     }, null, 2));
 
-    this.logger.info('Publication terminée', { machineId, version: options.version, path: versionDir });
+    this.logger.info('Publication terminée', { machineId, version, path: versionDir });
 
     // #2121: Cap versioned snapshots to 3 most recent per machine
     try {
@@ -247,7 +252,7 @@ export class ConfigSharingService implements IConfigSharingService {
 
     return {
       success: true,
-      version: options.version,
+      version,
       path: versionDir,
       machineId // CORRECTION SDDD : Retourner le machineId utilisé
     };
