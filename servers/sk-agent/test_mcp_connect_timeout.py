@@ -135,6 +135,39 @@ def test_negative_cache_short_circuits_retry():
     assert mgr._mcp_failed_until["missing-binary"] <= time.monotonic() + _MCP_FAILURE_TTL_S
 
 
+def test_relative_args_resolve_against_config_dir(tmp_path, monkeypatch):
+    """Sibling-relative plugin paths load even when our cwd is elsewhere.
+
+    Under Claude Code the sk-agent process runs from the session workspace,
+    so ``../open-terminal-mcp/...`` used to resolve outside the servers tree
+    and the plugin dropped out of its preset (vllm#63, ai-01 03/10).
+    """
+    cfg_dir = tmp_path / "servers" / "sk-agent"
+    srv_dir = tmp_path / "servers" / "echo-sibling-srv"
+    cfg_dir.mkdir(parents=True)
+    srv_dir.mkdir(parents=True)
+    (srv_dir / "echo_server.py").write_text(
+        "from mcp.server.fastmcp import FastMCP\nFastMCP('echo').run()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sk_agent, "CONFIG_PATH", str(cfg_dir / "sk_agent_config.json"))
+    # From here, the relative arg points at a directory that does not exist.
+    monkeypatch.chdir(tmp_path)
+    assert not Path("../echo-sibling-srv/echo_server.py").exists()
+
+    mgr = _manager_with([
+        McpConfig(
+            id="sibling-echo",
+            command=sys.executable,
+            args=["../echo-sibling-srv/echo_server.py"],
+            connect_timeout_s=15.0,
+        )
+    ])
+    ok = asyncio.run(mgr._ensure_mcp_loaded("sibling-echo"))
+    assert ok is True, "relative args must resolve against the config directory"
+    assert "sibling-echo" in mgr._mcp_plugins
+
+
 def test_diagnostics_lists_unavailable_plugins(monkeypatch):
     mgr = _manager_with([HANGING_MCP, ECHO_MCP])
 
