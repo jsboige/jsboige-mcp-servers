@@ -2075,6 +2075,49 @@ describe('search-codebase.tool', () => {
 			expect(JSON.parse(second.content[0].text).circuit_breaker.open).toBe(true);
 		});
 
+		test('rejects query over 2000 chars before any embedding call (#3999)', async () => {
+			const longQuery = 'x'.repeat(2001);
+			const result = await handleCodebaseSearch({ query: longQuery, workspace: '/ws' });
+			expect((result as any).isError).toBe(true);
+			expect(result.content[0].text).toContain('2000');
+			expect(mockEmbeddingCreate).not.toHaveBeenCalled();
+			expect(mockQdrant.query).not.toHaveBeenCalled();
+		});
+
+		test('falls back to text on malformed embedding response — no vector key (#3999)', async () => {
+			// Réponse API malformée : data[0] sans embedding → validation #3999 jette
+			// dans le try → même chemin que provider failure (breaker + text fallback),
+			// au lieu d'un vecteur undefined qui échoue dans Qdrant loin de la cause.
+			mockEmbeddingCreate.mockResolvedValue({ data: [{}] });
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(false);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.fallback_used).toBe(true);
+			expect(parsed.fallback_reason).toBe('embedding_unreachable');
+		});
+
+		test('falls back to text on malformed embedding response — empty data array (#3999)', async () => {
+			mockEmbeddingCreate.mockResolvedValue({ data: [] });
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			expect((result as any).isError).toBe(false);
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.fallback_used).toBe(true);
+			expect(parsed.fallback_reason).toBe('embedding_unreachable');
+		});
+
+		test('falls back to text on malformed embedding response — non-finite values (#3999)', async () => {
+			mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: [0.1, NaN, 0.3] }] });
+			mockQdrant.scroll.mockResolvedValue({ points: [] });
+
+			const result = await handleCodebaseSearch({ query: 'test', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.fallback_used).toBe(true);
+		});
+
 		test('returns auth_failed on API key error', async () => {
 			mockEmbeddingCreate.mockRejectedValue(new Error('API key not valid'));
 
