@@ -15,6 +15,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { PowerShellExecutor } from './PowerShellExecutor.js';
+import { ConfigNormalizationService } from './ConfigNormalizationService.js';
 import { createLogger, type Logger } from '../utils/logger.js';
 
 /**
@@ -169,10 +170,15 @@ const DEFAULT_FILTER_PATTERNS = ['Claude-*', 'Roo-*', 'RooSync-*'];
 export class SchtasksConfigService {
   private logger: Logger;
   private executor: PowerShellExecutor;
+  private normalizer: ConfigNormalizationService;
 
-  constructor(executor?: PowerShellExecutor) {
+  constructor(executor?: PowerShellExecutor, normalizer?: ConfigNormalizationService) {
     this.logger = createLogger('SchtasksConfigService');
     this.executor = executor ?? new PowerShellExecutor();
+    // #2406 P1-c — portabilité : collect templatise les chemins (→ %ROO_ROOT% /
+    // %USERPROFILE%), apply les développe vers les chemins de la machine locale.
+    // Injectable pour tester un contexte D:\ → C:\ sans dépendre du poste.
+    this.normalizer = normalizer ?? new ConfigNormalizationService();
   }
 
   /**
@@ -227,12 +233,27 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
       }
 
       const tasks = this.parseTasksOutput(result.stdout);
+      // #2406 P1-c — templatise les chemins pour le partage : un package collecté
+      // sur D:\dev\roo-extensions doit s'appliquer sur un checkout C:\ n'importe
+      // où. Execute/arguments/workingDirectory portent les chemins absolus de la
+      // machine source ; les placeholders sont résolus à l'apply (voir applySingleTask).
+      // Entrées non-objets (sentinels de parse) : passthrough intact.
+      const portableTasks = tasks.map((t) =>
+        t && typeof t === 'object'
+          ? {
+              ...t,
+              execute: this.normalizer.normalizeEmbeddedPaths(t.execute ?? ''),
+              arguments: this.normalizer.normalizeEmbeddedPaths(t.arguments ?? ''),
+              workingDirectory: this.normalizer.normalizeEmbeddedPaths(t.workingDirectory ?? ''),
+            }
+          : t
+      );
       const collectResult: SchtasksCollectResult = {
         machineId: process.env.ROOSYNC_MACHINE_ID || process.env.COMPUTERNAME || 'unknown',
         timestamp: new Date().toISOString(),
-        tasks,
+        tasks: portableTasks,
         filterPattern: patterns.join(','),
-        count: tasks.length,
+        count: portableTasks.length,
       };
 
       this.logger.info(`Collected ${tasks.length} scheduled tasks`);
@@ -313,6 +334,12 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
    * Apply a single task configuration
    */
   private async applySingleTask(task: SchtaskConfig): Promise<{ taskName: string; action: 'updated' | 'skipped' | 'missing' | 'error'; details?: string }> {
+    // #2406 P1-c — développe les placeholders vers les chemins LOCAUX avant
+    // l'exécution : le package est portable, la commande ne l'est pas.
+    const localExecute = this.normalizer.denormalizeEmbeddedPaths(task.execute || '');
+    const localArguments = this.normalizer.denormalizeEmbeddedPaths(task.arguments || '');
+    const localWorkingDirectory = this.normalizer.denormalizeEmbeddedPaths(task.workingDirectory || '');
+
     // Write apply script to temp file
     const tempDir = path.join(os.tmpdir(), `schtasks-apply-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
@@ -322,9 +349,9 @@ if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json
     try {
       const args = [
         '-TaskName', task.taskName,
-        '-Execute', task.execute || '',
-        '-Arguments', task.arguments || '',
-        '-WorkingDirectory', task.workingDirectory || '',
+        '-Execute', localExecute,
+        '-Arguments', localArguments,
+        '-WorkingDirectory', localWorkingDirectory,
         '-State', task.state || 'Ready',
       ];
 
