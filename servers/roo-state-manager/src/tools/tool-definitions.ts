@@ -164,7 +164,7 @@ export const roosyncSearchDefinition = {
             search_query: { type: 'string', description: 'Required for semantic/text' },
             conversation_id: { type: 'string' },
             max_results: { type: 'number' },
-            workspace: { type: 'string', description: 'Workspace name. Defaults to MCP server workspace — use "*" or "all" for cross-workspace search.' },
+            workspace: { type: 'string', description: 'Workspace name filter. NO default is applied (#3999) — omitting it searches across ALL workspaces; use "*" or "all" for explicit cross-workspace search.' },
             source: { type: 'string', enum: ['roo', 'claude-code'] },
             chunk_type: { type: 'string', enum: ['message_exchange', 'tool_interaction'] },
             role: { type: 'string', enum: ['user', 'assistant'] },
@@ -241,7 +241,7 @@ export const codebaseSearchDefinition = {
             limit: { type: 'number', description: 'Max results (default: 15, max: 50)' },
             min_score: { type: 'number', description: 'Min similarity 0-1 (default: 0.5)' }
         },
-        required: ['query'],
+        required: ['query', 'workspace'], // #3999: le contrat annoncé par la description workspace (« REQUIRED, always pass explicitly ») devient effectif — l'auto-détection (#1861) pointe vers le répertoire du serveur MCP
         additionalProperties: false // #4005 item 3 — CodebaseSearchArgs parity verified (5/5 keys)
     }
 };

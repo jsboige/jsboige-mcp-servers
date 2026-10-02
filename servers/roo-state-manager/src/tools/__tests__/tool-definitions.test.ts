@@ -260,6 +260,9 @@ describe('tool-definitions.ts — Schema Validation', () => {
 
         it('codebase_search should require query', () => {
             expect(codebaseSearchDefinition.inputSchema.required).toContain('query');
+            // #3999: le contrat annoncé (« REQUIRED, always pass explicitly ») est
+            // effectif au niveau schéma — l'auto-détection pointe vers le serveur MCP.
+            expect(codebaseSearchDefinition.inputSchema.required).toContain('workspace');
         });
 
         it('view_task_details should require task_id', () => {

@@ -1129,6 +1129,16 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		};
 	}
 
+	// #3999: borner la query envoyée à l'API d'embedding — une requête non bornée
+	// part intégralement chez le provider pour un concept qui tient en une phrase.
+	const MAX_EMBEDDING_QUERY_CHARS = 2000;
+	if (query.length > MAX_EMBEDDING_QUERY_CHARS) {
+		return {
+			isError: true,
+			content: [{ type: 'text', text: `Le paramètre "query" dépasse ${MAX_EMBEDDING_QUERY_CHARS} caractères (${query.length}) — une requête sémantique par concept n'a pas besoin d'être plus longue (#3999).` }]
+		};
+	}
+
 	// #1861: Auto-detect workspace when not provided
 	let workspace: string;
 	let workspaceSource: string;
@@ -1358,7 +1368,16 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				model: embeddingModel,
 				input: query
 			});
-			queryVector = embeddingResponse.data[0].embedding;
+			// #3999: valider la réponse AVANT de la pousser dans Qdrant — une
+			// réponse vide/malformée (quota, erreur partielle) donnait un vecteur
+			// undefined qui échouait en aval, loin de la cause. Pas de pin de
+			// dimension ici : la collection peut différer de EMBEDDING_DIMENSIONS
+			// (pipeline skeleton) — un mismatch de dimension Qdrant reste explicite.
+			const rawVector = embeddingResponse.data?.[0]?.embedding;
+			if (!Array.isArray(rawVector) || rawVector.length === 0 || !rawVector.every(Number.isFinite)) {
+				throw new Error(`Réponse embedding invalide du modèle ${embeddingModel} (vide ou malformée) — #3999`);
+			}
+			queryVector = rawVector;
 			// #3279: success — close the breaker if it was previously open
 			recordCodebaseEmbeddingSuccess();
 		} catch (embeddingError) {
