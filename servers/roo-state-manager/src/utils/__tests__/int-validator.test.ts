@@ -4,11 +4,11 @@
  * Coverage:
  *  - sanitizeInt: NaN, Infinity, float, negative, zero (when min > 0),
  *    out-of-range, valid in-range, undefined + fallback, undefined without fallback.
- *  - isValidSemver: 'v2' rejected, 'NaN.x.x' rejected, '1.2.3' accepted, '1' accepted.
+ *  - isValidDottedVersion: 'v2' rejected, 'NaN.x.x' rejected, '1.2.3' accepted, '1' accepted.
  */
 
 import { describe, it, expect } from 'vitest';
-import { sanitizeInt, isValidSemver } from '../int-validator.js';
+import { sanitizeInt, isValidDottedVersion } from '../int-validator.js';
 
 describe('sanitizeInt', () => {
     it('accepts a valid integer within range', () => {
@@ -91,42 +91,42 @@ describe('sanitizeInt', () => {
     });
 });
 
-describe('isValidSemver', () => {
+describe('isValidDottedVersion', () => {
     it('accepts bare integer', () => {
-        expect(isValidSemver('2')).toBe(true);
+        expect(isValidDottedVersion('2')).toBe(true);
     });
 
     it('accepts dotted versions', () => {
-        expect(isValidSemver('1.2.3')).toBe(true);
-        expect(isValidSemver('1.0')).toBe(true);
-        expect(isValidSemver('10.20.30')).toBe(true);
+        expect(isValidDottedVersion('1.2.3')).toBe(true);
+        expect(isValidDottedVersion('1.0')).toBe(true);
+        expect(isValidDottedVersion('10.20.30')).toBe(true);
     });
 
     it('rejects leading v (the original bug)', () => {
-        expect(isValidSemver('v2')).toBe(false);
-        expect(isValidSemver('V1.2.3')).toBe(false);
+        expect(isValidDottedVersion('v2')).toBe(false);
+        expect(isValidDottedVersion('V1.2.3')).toBe(false);
     });
 
     it('rejects NaN-shaped strings', () => {
-        expect(isValidSemver('NaN.x.x')).toBe(false);
-        expect(isValidSemver('NaN')).toBe(false);
+        expect(isValidDottedVersion('NaN.x.x')).toBe(false);
+        expect(isValidDottedVersion('NaN')).toBe(false);
     });
 
     it('rejects empty and whitespace', () => {
-        expect(isValidSemver('')).toBe(false);
-        expect(isValidSemver('  ')).toBe(false);
+        expect(isValidDottedVersion('')).toBe(false);
+        expect(isValidDottedVersion('  ')).toBe(false);
     });
 
     it('rejects trailing junk', () => {
-        expect(isValidSemver('1.2.3-beta')).toBe(false);
-        expect(isValidSemver('1.x')).toBe(false);
+        expect(isValidDottedVersion('1.2.3-beta')).toBe(false);
+        expect(isValidDottedVersion('1.x')).toBe(false);
     });
 
     it('rejects trailing dot', () => {
-        expect(isValidSemver('1.2.')).toBe(false);
+        expect(isValidDottedVersion('1.2.')).toBe(false);
     });
 
     it('rejects leading dot', () => {
-        expect(isValidSemver('.1.2')).toBe(false);
+        expect(isValidDottedVersion('.1.2')).toBe(false);
     });
 });

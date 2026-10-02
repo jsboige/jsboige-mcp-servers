@@ -86,12 +86,14 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * Validate a semver-shaped version string: digits separated by dots, with no
- * leading 'v' or trailing junk. Used by roosync_config apply to refuse inputs
- * like 'v2' or 'NaN.x.x' before parseInt.
+ * Validate a dotted-integer version string (NOT full semver): dot-separated
+ * digits with no leading 'v' or trailing junk. Deliberately rejects semver
+ * prerelease/build suffixes ('1.2.3-beta') — no real profile uses them.
+ * Used by roosync_config apply to refuse inputs like 'v2' or 'NaN.x.x'
+ * before parseInt.
  */
-const SEMVER_RE = /^[0-9]+(\.[0-9]+)*$/;
+const DOTTED_VERSION_RE = /^[0-9]+(\.[0-9]+)*$/;
 
-export function isValidSemver(version: string): boolean {
-    return SEMVER_RE.test(version);
+export function isValidDottedVersion(version: string): boolean {
+    return DOTTED_VERSION_RE.test(version);
 }

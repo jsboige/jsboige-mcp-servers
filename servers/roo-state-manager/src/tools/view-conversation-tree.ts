@@ -599,8 +599,20 @@ async function handleViewConversationTreeExecutionAsync(
     let isPaged = false;
 
     if (hasPagingArgs) {
-        effectiveMessageStart = Math.max(0, args.messageStart ?? 0);
-        effectiveMessageEnd = Math.min(totalMessages, args.messageEnd ?? totalMessages);
+        // #4002 — defence in depth: schema bounds messageStart/messageEnd, the runtime
+        // guard rejects NaN/float/negative that the schema bypass could pass through.
+        // Mirrors the synchronous pagination block below (Math.max(0, NaN) is NaN,
+        // slice(NaN, NaN) silently returned [] — the #4002 symptom).
+        const startCheck = sanitizeInt('messageStart', args.messageStart, { min: 0, max: 1_000_000, fallback: 0 });
+        if (!startCheck.ok) {
+            throw new GenericError(startCheck.error, GenericErrorCode.INVALID_ARGUMENT, { field: 'messageStart' });
+        }
+        const endCheck = sanitizeInt('messageEnd', args.messageEnd, { min: 0, max: 1_000_000, fallback: totalMessages });
+        if (!endCheck.ok) {
+            throw new GenericError(endCheck.error, GenericErrorCode.INVALID_ARGUMENT, { field: 'messageEnd' });
+        }
+        effectiveMessageStart = startCheck.value;
+        effectiveMessageEnd = Math.min(totalMessages, endCheck.value);
         if (effectiveMessageStart > effectiveMessageEnd) {
             effectiveMessageStart = effectiveMessageEnd;
         }

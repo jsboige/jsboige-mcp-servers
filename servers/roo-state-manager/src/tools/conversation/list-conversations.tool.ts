@@ -15,6 +15,7 @@ import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { stripXmlTags, truncateAtBoundary } from '../../utils/text-preview.js';
 import { matchesWorkspace } from '../../utils/workspace-match.js';
 import { applyUnifiedHeaderFiltersAndSort } from './unified-header-pipeline.js';
+import { sanitizeInt } from '../../utils/int-validator.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -1007,6 +1008,16 @@ export const listConversationsTool = {
         //   The floor of 10 does NOT apply to `limit` — the caller explicitly asked for fewer.
         const hasExplicitPerPage = args.per_page !== undefined && args.per_page !== null;
         const hasLimit = args.limit !== undefined && args.limit !== null;
+        // #4002 — runtime guard: the schema layer is bypassable, and a NaN per_page
+        // passed Math.max(NaN, 10) = NaN → totalPages NaN → silent empty list, the
+        // exact #4002 symptom. Integers 1-9 stay legal here: the #1245 floor below
+        // still raises them to 10 silently (user-approved behaviour, unchanged).
+        if (hasExplicitPerPage) {
+            const perPageCheck = sanitizeInt('per_page', args.per_page, { min: 1, max: 100 });
+            if (!perPageCheck.ok) {
+                return { isError: true, content: [{ type: 'text', text: `list_conversations: ${perPageCheck.error}` }] };
+            }
+        }
         const rawPerPage = (hasExplicitPerPage ? args.per_page : (args.limit || 10)) as number;
         const perPage = hasExplicitPerPage
             ? Math.min(Math.max(rawPerPage, 10), 100)

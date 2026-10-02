@@ -5,7 +5,7 @@ import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
 import { promises as fs } from 'fs';
 import { basename, join } from 'path';
-import { isValidSemver } from '../../utils/int-validator.js';
+import { isValidDottedVersion } from '../../utils/int-validator.js';
 
 /**
  * Claude Code scope pour les configurations MCP
@@ -468,7 +468,7 @@ export async function roosyncConfig(args: ConfigArgs) {
             // #4002 — refuse malformed version strings ('v2', 'NaN.x.x', etc.) BEFORE
             // parseInt. Without this, parseInt('v2')=NaN, NaN!==NaN triggers a
             // bogus "Incompatibilité" error and a 'vNaN.x.x' suggestion.
-            if (!isValidSemver(version)) {
+            if (!isValidDottedVersion(version)) {
               throw new ConfigSharingServiceError(
                 `Format de version invalide: '${version}' doit etre de la forme 'MAJOR[.MINOR[.PATCH]]' (chiffres separes par des points, sans prefixe 'v').`,
                 ConfigSharingServiceErrorCode.COLLECTION_FAILED,

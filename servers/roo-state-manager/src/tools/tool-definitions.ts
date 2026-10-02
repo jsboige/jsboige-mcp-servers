@@ -62,7 +62,7 @@ export const conversationBrowserDefinition = {
                 // --- list ---
             limit: { type: 'number', minimum: 1, maximum: 10000, description: '[list] Max conversations to return.' },
             page: { type: 'number', minimum: 1, maximum: 1000000, description: '[list] Page number (1-based). Default: 1.' },
-            per_page: { type: 'number', minimum: 1, maximum: 100, description: '[list] Results per page (1-100). Default: 10. #4002: bounded — NaN/0/floats rejected at the schema level.' },
+            per_page: { type: 'number', minimum: 1, maximum: 100, description: '[list] Results per page (1-100; integers 1-9 are floored to 10 at runtime, #1245). Default: 10. #4002: bounded — NaN/0/floats rejected loudly at runtime.' },
             sortBy: { type: 'string', enum: ['lastActivity', 'messageCount', 'totalSize'] },
             sortOrder: { type: 'string', enum: ['asc', 'desc'] },
             pendingSubtaskOnly: { type: 'boolean' },
@@ -277,7 +277,7 @@ export const claudishTrafficDefinition = {
             container: { type: 'string', description: 'Container name. Default "claudish-proxy".', default: 'claudish-proxy' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL: docker --context to query a remote hub. Empty/null = local default context (#1169).' },
-            max_output_length: { type: 'number', minimum: 500, maximum: 1000000, description: 'Hard bound on rendered output chars (default 20000, clamped up to 500 minimum). #4002: bounded.', default: 20000 }
+            max_output_length: { type: 'number', minimum: 500, maximum: 1000000, description: 'Hard bound on rendered output chars (default 20000; values below 500 are rejected). #4002: bounded.', default: 20000 }
         },
         required: ['bucket_minutes']
     }

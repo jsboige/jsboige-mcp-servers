@@ -448,7 +448,7 @@ export const claudishTraffic = {
             container: { type: 'string', description: 'Container name. Default "claudish-proxy"; if the default is absent and exactly one other claudish* container runs here, it is auto-selected (with a visible note). An explicitly-passed name is never substituted — candidates are listed instead.' },
             machine: { type: 'string', description: 'Filter to a single machine tag (x-claudish-machine header value).' },
             docker_context: { type: 'string', description: 'EXPERIMENTAL (#3391, not yet fleet-validated): docker --context to query a remote hub from another machine. Empty string or null selects the local default context (no --context flag), like machine:""' },
-            max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are clamped up to 500).' },
+            max_output_length: { type: 'number', description: 'Hard bound on rendered output characters (default 20000; values below 500 are rejected).' },
         },
         required: ['bucket_minutes'],
     },
@@ -479,7 +479,8 @@ export const claudishTraffic = {
             const bucketMinutes = bucketCheck.value;
             const since = args.since ?? DEFAULT_SINCE;
             let container = args.container ?? DEFAULT_CONTAINER;
-            // Values below 500 cannot fit the metadata header — clamped up (documented in the schema).
+            // Values below 500 cannot fit the metadata header — rejected (#4002,
+            // documented in the schema; the old silent clamp-up is gone).
             const maxOutputLength = maxLenCheck.value;
             const contextArg = args.docker_context ? `--context ${args.docker_context} ` : '';
             const logsCommand = (name: string) => `docker ${contextArg}logs --timestamps --since ${since} ${name}`;
