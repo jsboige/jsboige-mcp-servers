@@ -793,7 +793,7 @@ export const roosyncMessagesDefinition = {
             workspace: { type: 'string' },
             to_machine: { type: 'string' },
             from: { type: 'string', description: 'Filter by sender — case-insensitive substring (inbox #3351 + bulk)' },
-            before_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$', description: 'Bulk only (bulk_mark_read/bulk_archive) — rejected on inbox (#3351). ISO-8601 UTC timestamp, Z suffix required — offset-less datetimes parse in the server local TZ and the filter window would slide per machine (#3996)' },
+            before_date: { type: 'string', pattern: '^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z)?$', description: 'Bulk only (bulk_mark_read/bulk_archive) — rejected on inbox (#3351). ISO-8601 UTC timestamp, Z suffix required — offset-less datetimes parse in the server local TZ and the filter window would slide per machine (#3996). On other actions, omit it, or send "" when your binding requires every field' },
             subject_contains: { type: 'string', description: 'Filter by subject — case-insensitive substring (inbox #3351 + bulk)' },
             tag: { type: 'string', description: 'Bulk only (bulk_mark_read/bulk_archive) — rejected on inbox (#3351)' },
             uuid: { type: 'string', description: 'UUID piece jointe (requis pour attachments_get/delete). Pour attachments_get, alternative #3256 : message_id + filename si l UUID est inconnu' },

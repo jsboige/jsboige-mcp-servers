@@ -235,7 +235,9 @@ export async function roosyncMessages(args: MessagesArgs) {
   // La garde inbox (plus bas) tolère déjà '', mais zod rejette '' sur l'enum
   // AVANT elle (invalid_enum_value) : la tolérance documentée était inatteignable.
   // On strip '' des champs filtres connus AVANT le parse pour la rendre effective.
-  for (const k of ['priority', 'before_date', 'tag', 'from', 'subject_contains'] as const) {
+  // messageId inclus (#3996 suite 02/10) : sa regex {1,128} rejetait '' avant
+  // toute garde, laissant l'inbox illisible pour ces bindings (po-2025 CoursIA-2).
+  for (const k of ['priority', 'before_date', 'tag', 'from', 'subject_contains', 'messageId'] as const) {
     if (args[k] === '') delete (args as Record<string, unknown>)[k];
   }
 
