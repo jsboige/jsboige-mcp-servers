@@ -176,8 +176,14 @@ export class PowerShellExecutor {
     const cwd = options?.cwd ?? this.roosyncBasePath;
     
     return new Promise((resolve, reject) => {
-      // Construire le chemin complet du script
-      const fullScriptPath = path.join(this.roosyncBasePath, scriptPath);
+      // Construire le chemin complet du script.
+      // #2406 P1-a — un chemin ABSOLU (scripts temporaires écrits par les services
+      // dans os.tmpdir(), ex. schtasks collect/apply) doit être utilisé tel quel :
+      // path.join(base, absolu) produisait "<base>\C:\..." inexistant — la branche
+      // réelle du schtasks apply/collect était morte à l'arrivée, seule invisible
+      // aux tests qui moquent l'exécuteur. Les chemins relatifs continuent de
+      // rejoindre la base RooSync (comportement inchangé pour eux).
+      const fullScriptPath = path.isAbsolute(scriptPath) ? scriptPath : path.join(this.roosyncBasePath, scriptPath);
       
       // Vérifier si le script existe avant de l'exécuter
       if (!fs.existsSync(fullScriptPath)) {
