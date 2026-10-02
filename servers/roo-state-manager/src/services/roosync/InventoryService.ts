@@ -2,13 +2,19 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
-import { execSync } from 'child_process';
-import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo } from '../../types/inventory';
+import { execSync, exec } from 'child_process';
+import { promisify } from 'util';
+import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo, BootResilienceInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
+
+// #3975: promisify paresseux — des tests mockent child_process avec execSync seul
+// (export exec absent) ; un promisify(exec) top-level y explose au chargement module.
+type ExecAsyncFn = (cmd: string, opts: any) => Promise<{ stdout: string; stderr: string }>;
+let execAsyncFn: ExecAsyncFn | null = null;
 
 export class InventoryService {
   private static instance: InventoryService;
@@ -18,6 +24,9 @@ export class InventoryService {
   private readonly CLAUDE_JSON_PATH: string; // #489: Ajout chemin vers ~/.claude.json
   private readonly PROJECT_MCP_JSON_PATH: string; // #601: Ajout chemin vers .mcp.json (project scope)
   private readonly CLAUDE_SETTINGS_PATH: string; // #601: Ajout chemin vers ~/.claude/settings.json (settings scope)
+  // #3975: cache de la sonde bootResilience — un spawn PowerShell par heure de process max
+  private static readonly BOOT_RESILIENCE_TTL_MS = 60 * 60 * 1000;
+  private bootResilienceCache?: { data: BootResilienceInfo; at: number };
 
   /**
    * Détecte la racine roo-extensions en remontant l'arborescence depuis process.cwd()
@@ -117,7 +126,8 @@ export class InventoryService {
       username: os.userInfo().username,
       powershellVersion: await this.getPowershellVersion()
     },
-    claudeConfig: await this.collectClaudeConfig() // #489: Ajout collecte ~/.claude.json
+    claudeConfig: await this.collectClaudeConfig(), // #489: Ajout collecte ~/.claude.json
+    bootResilience: await this.collectBootResilience() // #3975
   };
 
   const inventory: FullInventory = {
@@ -260,6 +270,71 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
               return 'Unknown';
           }
       }
+  }
+
+  /**
+   * #3975: Collecte le bloc bootResilience (non sensible) via une sonde PowerShell unique.
+   * Docker service StartType/Status, tâches planifiées Docker, autostart Docker Desktop,
+   * autologon (flag seul), politique Windows Update de reboot automatique.
+   * Cache TTL 1h en mémoire — l'inventaire local est collecté à chaque appel outil,
+   * la sonde ne doit pas ajouter un spawn PowerShell à chacun d'eux.
+   */
+  private async collectBootResilience(): Promise<BootResilienceInfo | undefined> {
+    if (process.platform !== 'win32') {
+      return undefined;
+    }
+    // Garde tests (pattern mcp-management.ts) — pas de spawn PowerShell sous vitest
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+      return undefined;
+    }
+    const cached = this.bootResilienceCache;
+    if (cached && Date.now() - cached.at < InventoryService.BOOT_RESILIENCE_TTL_MS) {
+      return cached.data;
+    }
+
+    // PS 5.1 compatible — pas de ternaire, pas d'opérateur de coalescence
+    const probe = [
+      "$r = @{ collectedAt = (Get-Date).ToUniversalTime().ToString('o'); scheduledTasks = @() }",
+      "$svc = Get-CimInstance Win32_Service -Filter \"Name='com.docker.service'\" -ErrorAction SilentlyContinue",
+      "if ($svc) { $r.dockerService = @{ name = 'com.docker.service'; status = [string]$svc.State; startType = [string]$svc.StartMode } }",
+      "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like '*Docker*' } | ForEach-Object {",
+      "  $i = $_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue",
+      "  $t = @{ name = [string]$_.TaskName; state = [string]$_.State }",
+      "  if ($i) {",
+      "    if ($i.LastRunTime -and $i.LastRunTime.Year -ge 2000) { $t.lastRunTime = $i.LastRunTime.ToUniversalTime().ToString('o') } else { $t.lastRunTime = $null }",
+      "    $t.lastTaskResult = [int]$i.LastTaskResult",
+      "  }",
+      "  $r.scheduledTasks += $t",
+      "}",
+      "$run = Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -ErrorAction SilentlyContinue",
+      "if ($run -and $run.PSObject.Properties['Docker Desktop']) { $r.dockerDesktopAutoStart = @{ enabled = $true } } else { $r.dockerDesktopAutoStart = @{ enabled = $false } }",
+      "$wl = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -ErrorAction SilentlyContinue",
+      "if ($wl -and $wl.AutoAdminLogon -eq '1') { $r.autoLogon = @{ enabled = $true } } else { $r.autoLogon = @{ enabled = $false } }",
+      "$au = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' -ErrorAction SilentlyContinue",
+      "$w = @{ policyKeyPresent = [bool]$au }",
+      "if ($au -and $null -ne $au.NoAutoRebootWithLoggedOnUsers) { $w.noAutoRebootWithLoggedOnUsers = [int]$au.NoAutoRebootWithLoggedOnUsers } else { $w.noAutoRebootWithLoggedOnUsers = $null }",
+      "$r.windowsUpdate = $w",
+      "$r | ConvertTo-Json -Depth 4 -Compress"
+    ].join('; ');
+
+    try {
+      if (!execAsyncFn) {
+        execAsyncFn = promisify(exec) as unknown as ExecAsyncFn;
+      }
+      // exec async (pas execSync) — la sonde ne doit pas bloquer l'event loop du serveur MCP
+      const { stdout } = await execAsyncFn!(
+        `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${probe.replace(/"/g, '\\"')}"`,
+        { timeout: 15000, encoding: 'utf-8' }
+      );
+      const output = stdout.trim();
+      const parsed = JSON.parse(output) as BootResilienceInfo;
+      this.bootResilienceCache = { data: parsed, at: Date.now() };
+      return parsed;
+    } catch (error: any) {
+      // Non-bloquant : inventaire sans bloc bootResilience plutôt qu'échec complet
+      console.warn(`[InventoryService] ⚠️ Sonde bootResilience échouée: ${error.message}`);
+      return undefined;
+    }
   }
 
   private async fileExists(filePath: string): Promise<boolean> {

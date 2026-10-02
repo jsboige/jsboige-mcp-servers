@@ -16,7 +16,13 @@
 
 const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
+// #3975: rafraîchissement quotidien de l'inventaire local (bootResilience inclus)
+// piggybacké sur le heartbeat — même pattern side-effect d'appel outil qu'ADR 008,
+// PAS un interval de fond. Un spawn PowerShell max par jour et par process.
+const BOOT_RESILIENCE_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+
 let lastHeartbeatAt: number = 0;
+let lastBootResilienceRefreshAt: number = 0;
 let isInitialized = false;
 
 /**
@@ -28,7 +34,33 @@ export function initAutoHeartbeat(): void {
     // (Date.now() - 0 > HEARTBEAT_INTERVAL_MS is always true).
     // Previously Date.now() caused the first call to silently skip.
     lastHeartbeatAt = 0;
+    lastBootResilienceRefreshAt = 0;
     isInitialized = true;
+}
+
+/**
+ * #3975: Daily-gated local inventory refresh (fire-and-forget, never blocks
+ * the tool call). Keeps .shared-state/inventories/{machineId}.json fresh so
+ * cross-machine reads (audit tick, compare_config boot-resilience) see the
+ * current boot resilience state — the po-2025 outage stayed invisible because
+ * the fleet inventory was 8 days stale.
+ */
+async function refreshBootResilienceInventory(): Promise<void> {
+    if (Date.now() - lastBootResilienceRefreshAt < BOOT_RESILIENCE_REFRESH_INTERVAL_MS) {
+        return;
+    }
+    lastBootResilienceRefreshAt = Date.now(); // set first: one spawn/day even on failure
+    // Garde tests (pattern mcp-management.ts) — pas d'I/O réelle sous vitest
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+        return;
+    }
+    try {
+        const { InventoryService } = await import('../services/roosync/InventoryService.js');
+        await InventoryService.getInstance().getMachineInventory();
+    } catch (error) {
+        // Non-blocking: freshness is best-effort
+        console.warn(`[AutoHeartbeat] bootResilience inventory refresh failed: ${(error as Error).message}`);
+    }
 }
 
 /**
@@ -52,6 +84,8 @@ export async function autoHeartbeat(toolName: string): Promise<boolean> {
         const service = await getRooSyncService();
         await service.registerHeartbeat({ triggeredBy: toolName });
         lastHeartbeatAt = Date.now();
+        // #3975: daily-gated, fire-and-forget — jamais dans la latence de l'appel
+        void refreshBootResilienceInventory();
         return true;
     } catch (error) {
         // Non-blocking: heartbeat failure should not break tool execution
@@ -63,6 +97,6 @@ export async function autoHeartbeat(toolName: string): Promise<boolean> {
 /**
  * Get the current state of the auto-heartbeat module (for testing/debugging).
  */
-export function getAutoHeartbeatState(): { lastHeartbeatAt: number; isInitialized: boolean } {
-    return { lastHeartbeatAt, isInitialized };
+export function getAutoHeartbeatState(): { lastHeartbeatAt: number; lastBootResilienceRefreshAt: number; isInitialized: boolean } {
+    return { lastHeartbeatAt, lastBootResilienceRefreshAt, isInitialized };
 }

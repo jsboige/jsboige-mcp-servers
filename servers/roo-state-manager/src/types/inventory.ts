@@ -107,6 +107,36 @@ export interface ClaudeConfigInfo {
   migrationsComplete?: string[];
 }
 
+// #3975: Résilience au redémarrage (non sensible — aucun nom d'utilisateur, aucun secret).
+// Permet au tick d'audit de détecter une machine qui ne survivra pas à son prochain reboot
+// (Docker autostart, tâches planifiées, autologon, politique Windows Update).
+export interface BootResilienceScheduledTaskInfo {
+  name: string;
+  state: string;              // Ready / Running / Disabled...
+  lastRunTime?: string | null; // ISO 8601, null = jamais exécutée (LastRun 1999)
+  lastTaskResult?: number | null; // 0 = succès, 267011 (0x41303) = jamais exécutée
+}
+
+export interface BootResilienceInfo {
+  collectedAt: string; // ISO 8601 — fraîcheur du bloc lui-même
+  dockerService?: {
+    name: string;      // 'com.docker.service'
+    status: string;    // runtime: Running / Stopped...
+    startType: string; // config: Auto / Manual / Disabled
+  };
+  scheduledTasks?: BootResilienceScheduledTaskInfo[]; // tâches liées à Docker
+  dockerDesktopAutoStart?: {
+    enabled: boolean;  // HKCU Run key 'Docker Desktop' (start when you sign in)
+  };
+  autoLogon?: {
+    enabled: boolean;  // AutoAdminLogon=1 — flag seul, jamais le username (non-nominatif)
+  };
+  windowsUpdate?: {
+    policyKeyPresent: boolean;        // clé Policies\WindowsUpdate\AU existe
+    noAutoRebootWithLoggedOnUsers?: number | null; // 1 = pas de reboot auto avec session ouverte
+  };
+}
+
 export interface InventoryData {
   mcpServers: McpServerInfo[];
   slashCommands: any[];
@@ -123,6 +153,7 @@ export interface InventoryData {
   tools: any;
   systemInfo: SystemInfo;
   claudeConfig?: ClaudeConfigInfo; // #489: Ajout configuration Claude Code globale
+  bootResilience?: BootResilienceInfo; // #3975
 }
 
 export interface FullInventory {

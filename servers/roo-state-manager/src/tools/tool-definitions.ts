@@ -400,14 +400,14 @@ export const roosyncInitDefinition = {
 
 export const roosyncCompareConfigDefinition = {
     name: 'roosync_compare_config',
-    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration. #3545: granularity "claude-settings" compares ~/.claude/settings.json (picker CC) live-vs-published with coverage statuses (missing/empty/invalid/stale → "non couvert", never phantom diffs) and campaign exemptions honored.',
+    description: 'Compare configs between machines. Levels: Config (CRITICAL), Environment (CRITICAL/WARNING), Hardware (IMPORTANT), Software (WARNING), System (INFO). #3044: default detail=values surfaces source_value/target_value per diff (secrets masked, ~200 chars truncated) plus harmonization_candidates grouping present/absent vs divergent values for direct arbitration. #3545: granularity "claude-settings" compares ~/.claude/settings.json (picker CC) live-vs-published with coverage statuses (missing/empty/invalid/stale → "non couvert", never phantom diffs) and campaign exemptions honored. #3975: granularity "boot-resilience" compares Docker autostart (service StartType, Desktop sign-in, scheduled tasks with LastRunTime/LastTaskResult), autologon and Windows Update reboot policy — detects a machine that will not survive its next reboot.',
     inputSchema: {
         type: 'object',
         properties: {
             source: { type: 'string', description: 'Default: local machineId (alias "local-machine"). Remote machines: real machineId, e.g. "myia-ai-01"' },
             target: { type: 'string', description: 'Default: first other machine in roster (sorted). "local-machine" or real machineId — NOT "remote"' },
             force_refresh: { type: 'boolean' },
-            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'full'] },
+            granularity: { type: 'string', enum: ['mcp', 'mode', 'settings', 'claude-settings', 'claude', 'modes-yaml', 'boot-resilience', 'full'] },
             filter: { type: 'string', description: 'Path filter e.g. "jupyter"' },
             detail: { type: 'string', enum: ['values', 'paths'], description: 'Default: values. values = each diff carries source_value/target_value (masked, truncated) + harmonization_candidates section. paths = historical lightweight render (paths + description only).' }
         },
