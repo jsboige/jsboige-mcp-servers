@@ -695,13 +695,28 @@ export async function applyCanonToFile(
     expectedHash,
   };
   if (!verification.success) {
-    // Restaure le backup si disponible — ne laisse pas un état non vérifié.
+    // #3998: rollback INCONDITIONNEL — ne laisse jamais un état non vérifié sur
+    // disque. Le backup de fichier n'est qu'une des deux voies de restauration :
+    // sans backupPath (backup:false, ou fichier absent avant l'apply), l'état
+    // pré-write vit en mémoire (`read`), garanti inchangé par la garde
+    // concurrent-edit de l'étape 3.
     if (backupPath && existsSync(backupPath)) {
       await fs.copyFile(backupPath, settingsPath);
       logger.warn(`Vérification post-apply échouée — backup restauré: ${backupPath}`);
+    } else if (read.state !== 'missing') {
+      // Fichier présent et valide avant l'apply (ok/empty) : snapshot mémoire.
+      const restore = JSON.stringify(read.settings, null, 2) + '\n';
+      const restoreTmp = `${settingsPath}.tmp-rollback-${process.pid}-${Date.now()}`;
+      await fs.writeFile(restoreTmp, restore, 'utf-8');
+      await fs.rename(restoreTmp, settingsPath);
+      logger.warn('Vérification post-apply échouée — état pré-write restauré depuis le snapshot mémoire (#3998)');
+    } else {
+      // Fichier absent avant l'apply (state 'missing') : restaurer l'absence.
+      await fs.rm(settingsPath, { force: true });
+      logger.warn('Vérification post-apply échouée — fichier créé par l\'apply supprimé (état pré-apply = absent, #3998)');
     }
     throw new Error(
-      `Vérification post-apply échouée (attendu ${expectedHash}, observé ${observedHash}) — backup restauré si disponible`
+      `Vérification post-apply échouée (attendu ${expectedHash}, observé ${observedHash}) — état pré-apply restauré`
     );
   }
 
