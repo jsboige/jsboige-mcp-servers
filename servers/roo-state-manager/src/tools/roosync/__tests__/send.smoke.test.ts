@@ -4,6 +4,13 @@
  * Purpose: Validate that roosync_send writes fresh data to filesystem
  * Pattern: Issue #564 Phase 2 - Prevent silent bugs from cache staleness (issue #562)
  *
+ * #2639: RE-ENABLED in CI (2026-10-04). The test was already fully isolated
+ *   (tmpdir `.test-messages` under os.tmpdir(), messages/sent|inbox|archive
+ *   created in beforeEach and removed in afterEach, MessageManager routed to
+ *   ROOSYNC_SHARED_PATH via mock) — the blanket smoke exclusion from its
+ *   introduction (e514937d) predated that isolation and was stale. An
+ *   isolation-contract test now pins the tmpdir guarantee explicitly.
+ *
  * @see docs/testing/issue-564-phase1-audit-report.md (lines 162-176)
  */
 
@@ -57,6 +64,24 @@ describe('SMOKE: roosync_send', () => {
     if (fs.existsSync(testMessagesPath)) {
       fs.rmSync(testMessagesPath, { recursive: true, force: true });
     }
+  });
+
+  it('runs against the tmpdir shared state it creates (isolation contract, #2639)', async () => {
+    // The message store must live under ROOSYNC_SHARED_PATH (the tmpdir this
+    // test created in beforeEach), never under a real GDrive/RooSync location.
+    expect(process.env.ROOSYNC_SHARED_PATH).toBe(testMessagesPath);
+    expect(testMessagesPath.startsWith(os.tmpdir())).toBe(true);
+
+    await roosyncSend({
+      action: 'send',
+      to: 'test-machine-iso',
+      subject: 'Isolation contract',
+      body: 'must land under the tmpdir shared state',
+      priority: 'LOW'
+    });
+
+    const sentFiles = fs.readdirSync(testSentPath);
+    expect(sentFiles).toHaveLength(1);
   });
 
   it('should write fresh messages to filesystem (action: send)', async () => {
