@@ -8,8 +8,10 @@ import {
   ACTIONABLE_SELECTION_SQL,
   BALANCE_SQL,
   PROBE_SQL,
+  PROBE_THRESHOLDS,
   TOMBSTONE_KEYS,
   classifyOrphanMetadata,
+  classifyProbeRow,
   partialTraceOf,
 } from '../../../scripts/lib/orphan-balance.mjs';
 
@@ -111,5 +113,65 @@ describe('PROBE_SQL (coherence probe)', () => {
     expect(PROBE_SQL).toContain('max(ingested_at)');
     expect(PROBE_SQL).toContain('group by machine_id, harness');
     expect(PROBE_SQL).toContain('max(last_ts)');
+  });
+});
+
+describe('classifyProbeRow (probe verdict — lag, not age)', () => {
+  const H = 3_600_000;
+  const asOf = Date.UTC(2026, 9, 3, 14, 31, 0); // 2026-10-03T14:31Z — pinned, not now()
+  const row = (lagH, { lastTsAgeDays = 0, dropIngested = false, dropLast = false } = {}) => {
+    const last = new Date(asOf - lastTsAgeDays * 24 * H).toISOString();
+    const ingested = new Date(asOf - lastTsAgeDays * 24 * H - lagH * H).toISOString();
+    return {
+      machine_id: 'myia-x', harness: 'claude', conversations: 1,
+      max_ingested_at: dropIngested ? null : ingested,
+      max_last_ts: dropLast ? null : last,
+      as_of: new Date(asOf).toISOString(),
+    };
+  };
+
+  it('lag = max_last_ts - max_ingested_at, rounded to 0.1 h', () => {
+    expect(classifyProbeRow(row(1.55)).lag_h).toBe(1.6);
+    expect(classifyProbeRow(row(-0.44)).lag_h).toBe(-0.4);
+  });
+
+  it('BACKLOG when the lag exceeds the committed ceiling (default 1 h)', () => {
+    expect(classifyProbeRow(row(1.0)).verdict).toBe('CAUGHT_UP'); // boundary is NOT a backlog
+    expect(classifyProbeRow(row(1.1)).verdict).toBe('BACKLOG');
+    expect(classifyProbeRow(row(16)).verdict).toBe('BACKLOG'); // measured 03/10: po-2023/claude
+  });
+
+  it('negative lag (ingest ran past the newest activity) is CAUGHT_UP', () => {
+    expect(classifyProbeRow(row(-2)).verdict).toBe('CAUGHT_UP');
+  });
+
+  it('DORMANT wins over BACKLOG — a corpus with no recent activity cannot backlog', () => {
+    // ai-01 zoo measured 03/10: last activity ~66 d old, huge staleness, nothing to ingest.
+    expect(classifyProbeRow(row(400, { lastTsAgeDays: 66 })).verdict).toBe('DORMANT');
+    // boundary: exactly dormantDays old is still LIVE (dormancy is strictly older)
+    expect(classifyProbeRow(row(400, { lastTsAgeDays: PROBE_THRESHOLDS.dormantDays })).verdict).toBe('BACKLOG');
+    expect(classifyProbeRow(row(400, { lastTsAgeDays: PROBE_THRESHOLDS.dormantDays + 0.5 })).verdict).toBe('DORMANT');
+    expect(classifyProbeRow(row(400, { lastTsAgeDays: PROBE_THRESHOLDS.dormantDays - 1 })).verdict).toBe('BACKLOG');
+  });
+
+  it('age alone never verdicts: a stale ingest on a dormant corpus is CAUGHT_UP-or-DORMANT, not BACKLOG', () => {
+    // po-2025 roo measured 03/10: age 221 h but lag +0.2 h — nothing to ingest.
+    expect(classifyProbeRow(row(0.2, { lastTsAgeDays: 9 })).verdict).toBe('CAUGHT_UP');
+  });
+
+  it('UNKNOWN on any missing timestamp — never guess', () => {
+    expect(classifyProbeRow(row(1, { dropIngested: true }))).toEqual({ lag_h: null, verdict: 'UNKNOWN' });
+    expect(classifyProbeRow(row(1, { dropLast: true }))).toEqual({ lag_h: null, verdict: 'UNKNOWN' });
+    expect(classifyProbeRow(null)).toEqual({ lag_h: null, verdict: 'UNKNOWN' });
+  });
+
+  it('thresholds are overridable and validated by the caller, not here', () => {
+    expect(classifyProbeRow(row(1.5), { backlogLagH: 2, dormantDays: 30 }).verdict).toBe('CAUGHT_UP');
+    expect(classifyProbeRow(row(400, { lastTsAgeDays: 40 }), { backlogLagH: 1, dormantDays: 60 }).verdict).toBe('BACKLOG');
+  });
+
+  it('PROBE_THRESHOLDS defaults are the committed ceiling (1 h lag / 30 d dormant)', () => {
+    expect(PROBE_THRESHOLDS.backlogLagH).toBe(1);
+    expect(PROBE_THRESHOLDS.dormantDays).toBe(30);
   });
 });

@@ -9,6 +9,7 @@
 //   node scripts/unified-store-balance.mjs --machine myia-web1
 //   node scripts/unified-store-balance.mjs --harness zoo
 //   node scripts/unified-store-balance.mjs --probe             # coherence probe instead of the balance
+//   node scripts/unified-store-balance.mjs --probe --backlog-h 2 --dormant-days 60   # other thresholds
 //   node scripts/unified-store-balance.mjs --json              # machine-readable rows + totals
 //
 // The balance table never folds the anti-join into one number
@@ -20,7 +21,7 @@ import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { BALANCE_SQL, PROBE_SQL } from './lib/orphan-balance.mjs';
+import { BALANCE_SQL, PROBE_SQL, PROBE_THRESHOLDS, classifyProbeRow } from './lib/orphan-balance.mjs';
 
 const RSM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -42,7 +43,7 @@ function loadEnv(file) {
 loadEnv(path.join(RSM_ROOT, '.env'));
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(['--machine', '--harness']);
+const VALUE_FLAGS = new Set(['--machine', '--harness', '--backlog-h', '--dormant-days']);
 const BOOL_FLAGS = new Set(['--probe', '--json']);
 const flag = (name) => {
   const i = args.indexOf(name);
@@ -74,6 +75,23 @@ const HARNESS = flag('--harness') ?? null;
 const PROBE = args.includes('--probe');
 const JSON_OUT = args.includes('--json');
 
+// Probe verdict thresholds (see lib/orphan-balance.mjs). Overridable for
+// experiments; defaults are the committed ceiling — fail closed on garbage.
+function numericFlag(name, fallback) {
+  const raw = flag(name);
+  if (raw === undefined) return fallback;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v <= 0) {
+    console.error(`${name} requires a positive number (got: ${raw}).`);
+    process.exit(2);
+  }
+  return v;
+}
+const THRESHOLDS = {
+  backlogLagH: numericFlag('--backlog-h', PROBE_THRESHOLDS.backlogLagH),
+  dormantDays: numericFlag('--dormant-days', PROBE_THRESHOLDS.dormantDays),
+};
+
 const PG_URL = process.env.UNIFIED_STORE_PG_URL
   ?? readEnvKey('UNIFIED_STORE_PG_URL');
 if (!PG_URL) {
@@ -103,30 +121,49 @@ const rows = PROBE
   : (await client.query(BALANCE_SQL, [MACHINE, HARNESS])).rows;
 await client.end();
 
+// as_of pins the classifier clock to the run, not the render — a row read at
+// T and classified at T+epsilon must keep the same verdict.
+const asOf = generatedAt;
+const probeRows = PROBE
+  ? rows.map((r) => {
+    const { lag_h, verdict } = classifyProbeRow({ ...r, as_of: asOf }, THRESHOLDS);
+    return { ...r, lag_h, verdict };
+  })
+  : rows;
+
 if (JSON_OUT) {
   console.log(JSON.stringify({
     mode: PROBE ? 'coherence-probe' : 'fleet-balance',
     machine: MACHINE,
     harness: HARNESS,
     generated_at: generatedAt,
-    rows,
+    ...(PROBE ? { thresholds: THRESHOLDS } : {}),
+    rows: probeRows,
   }, null, 2));
 } else if (PROBE) {
   console.log(`=== Coherence probe: ingestion freshness (#2427, generated ${generatedAt}) ===`);
-  console.log('max_ingested_at age is the staleness signal: compare it to the NEWEST local');
-  console.log('source file for the same (machine, harness) on the host that owns the corpus.');
+  console.log(`Verdict per (machine, harness) — thresholds: lag > ${THRESHOLDS.backlogLagH} h = BACKLOG,`);
+  console.log(`last activity older than ${THRESHOLDS.dormantDays} d = DORMANT, else CAUGHT_UP (see lib).`);
+  console.log('lag_h = max_last_ts - max_ingested_at: the un-ingested backlog window (age_h alone');
+  console.log('conflates dormant corpora with real backlogs). Compare to the NEWEST local source file');
+  console.log('for the same (machine, harness) on the host that owns the corpus.');
   console.log('');
-  console.log('machine_id        harness  conversations  max_ingested_at          age_h  max_last_ts');
-  const now = Date.now();
-  for (const r of rows) {
+  console.log('machine_id        harness  conversations  max_ingested_at          age_h  max_last_ts               lag_h  verdict');
+  const now = new Date(asOf).getTime();
+  for (const r of probeRows) {
     const ing = r.max_ingested_at ? new Date(r.max_ingested_at) : null;
     const ageH = ing ? ((now - ing.getTime()) / 3_600_000).toFixed(1) : 'n/a';
     console.log(
       `${String(r.machine_id).padEnd(17)} ${String(r.harness).padEnd(8)} ${String(r.conversations).padStart(13)}  `
       + `${(ing ? ing.toISOString() : 'n/a').padEnd(24)} ${String(ageH).padStart(5)}  `
-      + `${r.max_last_ts ? new Date(r.max_last_ts).toISOString() : 'n/a'}`
+      + `${(r.max_last_ts ? new Date(r.max_last_ts).toISOString() : 'n/a').padEnd(24)} `
+      + `${String(r.lag_h ?? 'n/a').padStart(5)}  ${r.verdict}`
     );
   }
+  const counts = {};
+  for (const r of probeRows) counts[r.verdict] = (counts[r.verdict] ?? 0) + 1;
+  console.log('-'.repeat(118));
+  console.log(`verdicts: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(' · ') || '(no rows)'}`);
 } else {
   console.log(`=== Fleet orphan balance, two-count predicate (#2427, generated ${generatedAt}) ===`);
   console.log('Classes are disjoint and sum to anti_join_total; partial_trace overlaps unrecoverable.');
