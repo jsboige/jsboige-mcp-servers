@@ -67,12 +67,12 @@ describe('TraceSummaryService - Main Methods', () => {
 
       const result = await service.generateSummary(mockConversation, options);
 
-      // Vérifier que la structure du résultat est correcte
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
-      expect(result).toHaveProperty('content');
+      // Contrat de succès (TraceSummaryService.ts:221-230) : success true,
+      // contenu non vide, pas de champ erreur sur le chemin nominal.
+      expect(result.success).toBe(true);
+      expect(result.content.length).toBeGreaterThan(0);
+      expect(result.error).toBeUndefined();
       expect(result).toHaveProperty('statistics');
-      expect(typeof result.success).toBe('boolean');
       expect(typeof result.content).toBe('string');
       expect(typeof result.statistics).toBe('object');
     });
@@ -91,10 +91,12 @@ describe('TraceSummaryService - Main Methods', () => {
 
       const result = await service.generateSummary(invalidConversation, options);
 
-      // Devrait retourner un résultat avec success: false
+      // Contrat d'échec (TraceSummaryService.ts:133-138) : success false,
+      // contenu vidé, statistics vides ET message d'erreur non vide.
       expect(result.success).toBe(false);
       expect(result.content).toBe('');
-      expect(result.statistics).toBeDefined();
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
     });
 
     it('should accept different output formats', async () => {
@@ -124,9 +126,11 @@ describe('TraceSummaryService - Main Methods', () => {
       };
 
       const jsonResult = await service.generateSummary(mockConversation, jsonOptions);
-      expect(jsonResult).toBeDefined();
-      expect(jsonResult).toHaveProperty('success');
-      expect(jsonResult).toHaveProperty('content');
+      // Contrat JSON (TraceSummaryService.ts:221-230) : le contenu est du
+      // JSON qui se parse et rend un objet non vide — pas une chaîne libre.
+      expect(jsonResult.success).toBe(true);
+      const parsedJson = JSON.parse(jsonResult.content) as Record<string, unknown>;
+      expect(Object.keys(parsedJson).length).toBeGreaterThan(0);
 
       // Test CSV format
       const csvOptions = {
@@ -136,13 +140,22 @@ describe('TraceSummaryService - Main Methods', () => {
       };
 
       const csvResult = await service.generateSummary(mockConversation, csvOptions);
-      expect(csvResult).toBeDefined();
-      expect(csvResult).toHaveProperty('success');
-      expect(csvResult).toHaveProperty('content');
+      // Contrat CSV variant conversations (TraceSummaryService.ts:426-430) :
+      // en-tête à 9 colonnes connues + une ligne de données par conversation.
+      expect(csvResult.success).toBe(true);
+      const csvLines = csvResult.content.trim().split('\n');
+      expect(csvLines[0]).toContain('taskId');
+      expect(csvLines[0]).toContain('firstUserMessage');
+      expect(csvLines).toHaveLength(2);
+      expect(csvLines[1]).toContain('test-task-formats');
     });
 
-    it('should include error information when generation fails', async () => {
-      // Créer une conversation qui va causer une erreur (ex: taskId vide)
+    it('should degrade gracefully on malformed metadata (nominal result, no error)', async () => {
+      // Conversation aux métadonnées malformées (taskId vide, dates invalides,
+      // compteurs négatifs) : la génération ne lève PAS — TraceSummaryService
+      // ne valide que la présence de la conversation (catch : TraceSummaryService.ts:133-138,
+      // uniquement sur null/undefined). Le markdown est rendu avec des valeurs
+      // dégradées. Contrat mesuré par sonde (2026-10-03) : succès nominal.
       const problematicConversation: ConversationSkeleton = {
         taskId: '',
         parentTaskId: null,
@@ -168,12 +181,11 @@ describe('TraceSummaryService - Main Methods', () => {
 
       const result = await service.generateSummary(problematicConversation, options);
 
-      // Le résultat devrait exister mais potentiellement avec success: false
-      expect(result).toBeDefined();
-      if (!result.success) {
-        expect(result).toHaveProperty('error');
-        expect(result.error).toBeDefined();
-      }
+      // Dégradation gracieuse : contenu rendu, pas de champ erreur. Le contrat
+      // d'échec (success:false + error) est couvert par le test null-input.
+      expect(result.success).toBe(true);
+      expect(result.content.length).toBeGreaterThan(0);
+      expect(result.error).toBeUndefined();
     });
   });
 
@@ -223,7 +235,6 @@ describe('TraceSummaryService - Main Methods', () => {
       );
 
       // Vérifier que la structure du résultat est correcte
-      expect(result).toBeDefined();
       expect(result).toHaveProperty('success');
       expect(result).toHaveProperty('content');
       expect(result).toHaveProperty('statistics');
@@ -262,9 +273,10 @@ describe('TraceSummaryService - Main Methods', () => {
         options
       );
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
-      expect(result).toHaveProperty('statistics');
+      // Contrat mesuré : children vide → succès nominal, la grappe se
+      // réduit au root (totalTasks 1).
+      expect(result.success).toBe(true);
+      expect(result.statistics.totalTasks).toBe(1);
     });
 
     it('should handle invalid root task gracefully', async () => {
@@ -297,13 +309,12 @@ describe('TraceSummaryService - Main Methods', () => {
         options
       );
 
-      // Le résultat devrait exister
-      expect(result).toBeDefined();
-
-      // Si la validation échoue, success devrait être false
-      if (result.statistics.totalTasks === 0) {
-        expect(result.success).toBe(false);
-      }
+      // Contrat d'échec mesuré (ClusterSummaryService.ts:89-95, sonde
+      // 2026-10-03) : root sans taskId → success false, statistics vides
+      // (totalTasks 0) ET message d'erreur nominatif.
+      expect(result.success).toBe(false);
+      expect(result.statistics.totalTasks).toBe(0);
+      expect(result.error).toBe('Root task is required and must have a taskId');
     });
 
     it('should accept different sort options', { timeout: 30000 }, async () => {
@@ -351,8 +362,10 @@ describe('TraceSummaryService - Main Methods', () => {
         sizeOptions
       );
 
-      expect(sizeResult).toBeDefined();
-      expect(sizeResult).toHaveProperty('success');
+      // Contrat nominal mesuré : tri par taille sur root + enfant →
+      // succès, les 2 tâches comptées.
+      expect(sizeResult.success).toBe(true);
+      expect(sizeResult.statistics.totalTasks).toBe(2);
 
       // Test sortBy: 'alphabetical'
       const alphaOptions = {
@@ -366,8 +379,8 @@ describe('TraceSummaryService - Main Methods', () => {
         alphaOptions
       );
 
-      expect(alphaResult).toBeDefined();
-      expect(alphaResult).toHaveProperty('success');
+      expect(alphaResult.success).toBe(true);
+      expect(alphaResult.statistics.totalTasks).toBe(2);
     });
 
     it('should include cluster statistics in result', async () => {
@@ -414,11 +427,9 @@ describe('TraceSummaryService - Main Methods', () => {
         options
       );
 
-      expect(result).toBeDefined();
-      expect(result.statistics).toBeDefined();
-      // Cluster statistics a des propriétés différentes de SummaryStatistics
-      expect(result.statistics).toHaveProperty('totalTasks');
-      // Les autres propriétés peuvent varier selon l'implémentation
+      // Cluster statistics a des propriétés différentes de SummaryStatistics.
+      // Contrat mesuré : root + 1 enfant → totalTasks 2.
+      expect(result.statistics.totalTasks).toBe(2);
       expect(Object.keys(result.statistics).length).toBeGreaterThan(0);
     });
   });
@@ -427,9 +438,11 @@ describe('TraceSummaryService - Main Methods', () => {
     it('should handle null input gracefully', async () => {
       const result = await service.generateSummary(null as any, {});
 
-      expect(result).toBeDefined();
       expect(result.success).toBe(false);
-      expect(result).toHaveProperty('error');
+      // Contrat d'échec (TraceSummaryService.ts:133-138) : message d'erreur
+      // non vide, pas seulement présent.
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
     });
 
     it('should handle missing options parameter', async () => {
@@ -450,10 +463,9 @@ describe('TraceSummaryService - Main Methods', () => {
       // Ne pas passer d'options - devrait utiliser les défauts
       const result = await service.generateSummary(mockConversation);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
-      expect(result).toHaveProperty('content');
-      expect(result).toHaveProperty('statistics');
+      // Contrat mesuré : les défauts rendent le summary nominal.
+      expect(result.success).toBe(true);
+      expect(result.content.length).toBeGreaterThan(0);
     });
 
     it('should handle very large content sizes', async () => {
@@ -490,9 +502,10 @@ describe('TraceSummaryService - Main Methods', () => {
 
       const result = await service.generateSummary(mockConversation, options);
 
-      expect(result).toBeDefined();
-      // Le résultat devrait exister, même si le contenu est tronqué
-      expect(result).toHaveProperty('success');
+      // Contrat de troncation mesuré : le summary d'un message de 10 MB
+      // rend un contenu compact (~581 chars), jamais la charge entière.
+      expect(result.success).toBe(true);
+      expect(result.content.length).toBeLessThan(100_000);
     });
   });
 });

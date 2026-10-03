@@ -110,7 +110,12 @@ describe('mock parity harness (#1320)', () => {
 
       // Vacuity guards: both sides empty would "pass" trivially.
       expect(Object.keys(real.tree).length).toBeGreaterThanOrEqual(2);
-      expect(real.tree).toBeTruthy();
+      // Le snapshot d'arbre mappe chemin relatif -> contenu fichier : chaque
+      // valeur doit être une chaîne non vide (un contenu vide ou non-chaîne
+      // serait un snapshot menteur, pas une absence).
+      expect(
+        Object.values(real.tree).every((c) => typeof c === 'string' && c.length > 0)
+      ).toBe(true);
 
       expect(memory.tree).toEqual(real.tree);
       expect(memory.outcomes).toBe(real.outcomes);
@@ -123,13 +128,15 @@ describe('mock parity harness (#1320)', () => {
     const real = await runOnce('real');
     const parsed = real.rawOutcomes;
 
+    // Chaque scénario produit exactement 2 résultats (scenarios.ts:79-94,
+    // 96-109) — l'indexation results[1] ci-dessous l'exige, on l'asserte.
     const dedup = parsed.find((o) => o.name === 'dashboard_append_idempotent_same_messageId');
-    expect(dedup).toBeDefined();
+    expect(dedup?.results).toHaveLength(2);
     const second = dedup!.results[1] as { deduplicated?: boolean };
     expect(second.deduplicated).toBe(true);
 
     const roundtrip = parsed.find((o) => o.name === 'messages_send_then_inbox_roundtrip');
-    expect(roundtrip).toBeDefined();
+    expect(roundtrip?.results).toHaveLength(2);
     const inbox = roundtrip!.results[1] as { content?: Array<{ type: string; text: string }> };
     const text = inbox.content?.find((c) => c.type === 'text')?.text ?? '';
     const inboxJson = JSON.parse(text) as { messages?: Array<{ id: string }> };
