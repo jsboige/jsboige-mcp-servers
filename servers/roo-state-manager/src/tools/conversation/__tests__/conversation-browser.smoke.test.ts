@@ -4,6 +4,18 @@
  * Purpose: Validate that conversation_browser returns fresh data after filesystem changes
  * Pattern: Issue #564 Phase 2 - Prevent silent bugs from cache staleness (issue #562)
  *
+ * Renforcement #2639 (lot 4, rang 14). Mesures firsthand (probe sur ce checkout) :
+ * - les anciennes assertions `toBeDefined()` laissaient passer des payloads
+ *   d'erreur : `current` rendait `isError: true` (« Aucune tâche trouvée »)
+ *   parce que le squelette dérive son workspace de task_metadata.json
+ *   (disk-scanner.ts readTaskMetadata) — pas du task.jsonl que le test écrivait ;
+ * - `tree` rendait le markdown « Arbre de Tâches Vide » avec un cache vierge ;
+ * - le 6e argument (scanTasksForChildren) n'est pas câblé sur l'action tree.
+ * Le test amorce désormais le cache par un appel `list` (scan fire-and-forget),
+ * puis chaque action est décodée et son contrat JSON vérifié sur les valeurs
+ * réelles : list (list-conversations.tool.ts), current (CurrentTaskResult,
+ * get-current-task.tool.ts l.154-163), tree (jsonOutput, get-tree.tool.ts l.493-508).
+ *
  * @see docs/testing/issue-564-phase1-audit-report.md (lines 25-32)
  * @see AUDIT_MCP_TOOLS_PHASE1.md - conversation_browser marked "À RISQUE" with 3 bugs
  */
@@ -76,51 +88,59 @@ describe('SMOKE: conversation_browser', () => {
     vi.restoreAllMocks();
   });
 
-  afterEach(() => {
-    // Restore original environment
-    process.env = originalEnv;
-
-    // Cleanup test files (delete all task directories)
-    if (fs.existsSync(testTasksPath)) {
-      const dirs = fs.readdirSync(testTasksPath);
-      for (const dir of dirs) {
-        const taskDir = path.join(testTasksPath, dir);
-        if (fs.statSync(taskDir).isDirectory()) {
-          fs.rmSync(taskDir, { recursive: true, force: true });
-        }
-      }
-    }
-  });
-
   /**
-   * Helper: Create a Roo-format conversation (directory + api_conversation_history.json)
+   * Helper: Create a Roo-format conversation on disk.
+   * task_metadata.json porte le workspace — c'est LA source du squelette
+   * (disk-scanner.ts readTaskMetadata l.21-29), task.jsonl ne l'est pas.
    */
-  function createRooConversation(taskId: string, messages: any[], cwd?: string) {
+  function createRooConversation(taskId: string, messages: any[]) {
     const taskDir = path.join(testTasksPath, taskId);
     if (!fs.existsSync(taskDir)) {
       fs.mkdirSync(taskDir, { recursive: true });
     }
 
-    const apiHistoryPath = path.join(taskDir, 'api_conversation_history.json');
-    fs.writeFileSync(apiHistoryPath, JSON.stringify(messages, null, 2));
+    fs.writeFileSync(
+      path.join(taskDir, 'api_conversation_history.json'),
+      JSON.stringify(messages, null, 2)
+    );
 
-    // Create ui_messages.json in the format expected by quickAnalyze (array of messages)
-    // quickAnalyze expects: messages[0].text, messages[0].ts
-    const uiMessagesPath = path.join(taskDir, 'ui_messages.json');
     const now = Date.now();
     const uiMessages = messages.map((m, i) => ({
       text: m.content || '',
       ts: now + i * 1000, // Timestamp increments by 1 second per message
       role: m.role
     }));
-    fs.writeFileSync(uiMessagesPath, JSON.stringify(uiMessages, null, 2));
+    fs.writeFileSync(
+      path.join(taskDir, 'ui_messages.json'),
+      JSON.stringify(uiMessages, null, 2)
+    );
 
-    // Create task.jsonl with workspace info
-    if (cwd) {
-      const jsonlPath = path.join(taskDir, 'task.jsonl');
-      const firstLine = JSON.stringify({ cwd });
-      fs.writeFileSync(jsonlPath, firstLine + '\n');
-    }
+    fs.writeFileSync(
+      path.join(taskDir, 'task_metadata.json'),
+      JSON.stringify({ workspace: 'roo-extensions' }, null, 2)
+    );
+  }
+
+  /** Amorce le cache via un appel list (scan disque fire-and-forget), puis attend la population. */
+  async function primeCache(cache: Map<string, any>, minSize = 1) {
+    await handleConversationBrowser(
+      { action: 'list', limit: 10 },
+      cache,
+      async () => {},
+      'roo-extensions',
+      async (id) => null
+    );
+    await vi.waitFor(() => expect(cache.size).toBeGreaterThanOrEqual(minSize), { timeout: 5000 });
+  }
+
+  const callBrowser = (args: any, cache: Map<string, any>) =>
+    handleConversationBrowser(args, cache, async () => {}, 'roo-extensions', async (id) => null);
+
+  /** Un résultat frais n'est jamais un payload d'erreur (browse.ts l.194-208). */
+  function expectFreshResult(result: any): string {
+    expect(result.isError ?? false).toBe(false);
+    expect(result.content[0].type).toBe('text');
+    return result.content[0].text as string;
   }
 
   it('should return fresh list after new conversation is added (action: list)', async () => {
@@ -129,260 +149,155 @@ describe('SMOKE: conversation_browser', () => {
     createRooConversation(task1Id, [
       { role: 'user', content: 'Initial user message' },
       { role: 'assistant', content: 'Assistant response' }
-    ], 'c:/dev/roo-extensions');
+    ]);
 
     const cache = new Map();
 
-    // Step 2: Initial call triggers fire-and-forget disk scan
-    // First call may return empty since scan is async
-    const result1 = await handleConversationBrowser(
-      {
-        action: 'list',
-        limit: 10
-      },
-      cache,
-      async () => {},
-      'roo-extensions',
-      async (id) => null
-    );
-
-    expect(result1.content).toBeDefined();
-    expect(result1.content[0].type).toBe('text');
+    // Step 2: Initial call triggers fire-and-forget disk scan — état frais VIDE mesuré
+    const result1Text = expectFreshResult(await callBrowser({ action: 'list', limit: 10 }, cache));
+    const result1Json = JSON.parse(result1Text);
+    expect(result1Json.conversations).toEqual([]);
+    expect(result1Json.pagination.total_count).toBe(0);
 
     // Wait for fire-and-forget scan to discover and cache the conversation
     await vi.waitFor(() => expect(cache.size).toBeGreaterThan(0), { timeout: 5000 });
 
     // Step 2b: Second call now has the conversation in cache
-    const result1b = await handleConversationBrowser(
-      {
-        action: 'list',
-        limit: 10
-      },
-      cache,
-      async () => {},
-      'roo-extensions',
-      async (id) => null
-    );
-
-    const result1bText = result1b.content[0].text;
+    const result1bText = expectFreshResult(await callBrowser({ action: 'list', limit: 10 }, cache));
     const result1bJson = JSON.parse(result1bText);
-    expect(result1bJson.conversations).toBeDefined();
-    expect(result1bJson.conversations.length).toBeGreaterThan(0);
+    // Contrat list (list-conversations.tool.ts l.84/l.225/l.271) : entrée taskId + message initial + métadonnées
+    expect(result1bJson.conversations.map((c: any) => c.taskId)).toEqual([task1Id]);
+    expect(result1bJson.conversations[0]).toMatchObject({
+      taskId: task1Id,
+      source: 'roo',
+      firstUserMessage: 'Initial user message'
+    });
+    expect(result1bJson.conversations[0].metadata.messageCount).toBe(2);
+    // Date d'activité parsable (dérivée du dernier ts ui_messages)
+    expect(Number.isNaN(new Date(result1bJson.conversations[0].metadata.lastActivity).getTime())).toBe(false);
+    expect(result1bJson.pagination).toMatchObject({ page: 1, total_count: 1, total_pages: 1, has_next: false });
 
     // Step 3: Add more conversations
     const task2Id = 'smoke-test-task-2';
     const task3Id = 'smoke-test-task-3';
-
-    createRooConversation(task2Id, [
-      { role: 'user', content: 'Second task message' }
-    ], 'c:/dev/roo-extensions');
-
-    createRooConversation(task3Id, [
-      { role: 'user', content: 'Third task message' }
-    ], 'c:/dev/roo-extensions');
+    createRooConversation(task2Id, [{ role: 'user', content: 'Second task message' }]);
+    createRooConversation(task3Id, [{ role: 'user', content: 'Third task message' }]);
 
     // CRITICAL: Invalidate disk-scanner's module-level cache to force fresh scan
     invalidateDiskScanCache();
 
-    // Step 4: Second call to list (should detect new conversations)
-    // Note: Use the same cache so fire-and-forget from step 2 populated it
-    invalidateDiskScanCache();
-    const result2 = await handleConversationBrowser(
-      {
-        action: 'list',
-        limit: 10
-      },
-      cache,
-      async () => {},
-      'roo-extensions',
-      async (id) => null
-    );
+    // Step 4: re-scan puis liste fraîche
+    await primeCache(cache, 3);
+    const result2Text = expectFreshResult(await callBrowser({ action: 'list', limit: 10 }, cache));
 
-    // Wait for fire-and-forget scan to discover new conversations
-    await vi.waitFor(() => expect(cache.size).toBeGreaterThan(1), { timeout: 5000 });
-
-    // Call again to get updated results
-    const result2b = await handleConversationBrowser(
-      {
-        action: 'list',
-        limit: 10
-      },
-      cache,
-      async () => {},
-      'roo-extensions',
-      async (id) => null
-    );
-
-    // Step 5: Verify that result2 reflects the state change (fresh list, not stale)
-    expect(result2b.content[0].type).toBe('text');
-    const result2Text = result2b.content[0].text;
+    // Step 5: la liste reflète l'état du filesystem — les 3 tâches, compte exact
     const result2Json = JSON.parse(result2Text);
-
-    // Should have more conversations than initial result
-    expect(result2Json.conversations.length).toBeGreaterThan(result1bJson.conversations.length);
-
-    // This validates that the list is computed fresh from filesystem,
-    // not from stale cached data
+    expect(result2Json.conversations).toHaveLength(3);
+    expect(result2Json.conversations.map((c: any) => c.taskId))
+      .toEqual(expect.arrayContaining([task1Id, task2Id, task3Id]));
+    expect(result2Json.pagination.total_count).toBe(3);
   });
 
   it('should return fresh current task after state change (action: current)', async () => {
     // Step 1: Create initial active task
     const task1Id = 'smoke-test-current-1';
     createRooConversation(task1Id, [
-      { role: 'user', content: 'Working on this task' }
-    ], 'c:/dev/roo-extensions');
+      { role: 'user', content: 'Working on this task' },
+      { role: 'assistant', content: 'Reply' }
+    ]);
 
-    // Step 2: Initial call to get current task
-    const result1 = await handleConversationBrowser(
-      {
-        action: 'current'
-      },
-      new Map(),
-      async () => {},
-      'roo-extensions',
-      async (id) => null
-    );
+    // Amorçage : current lit le cache passé (pas de force_refresh exposé via
+    // conversation_browser) — un appel list déclenche le scan qui le peuple.
+    const cache = new Map();
+    await primeCache(cache);
 
-    expect(result1.content[0].type).toBe('text');
-    const result1Text = result1.content[0].text;
+    // Step 2: current renvoie le contrat CurrentTaskResult (get-current-task.tool.ts l.154-163)
+    const result1Text = expectFreshResult(await callBrowser({ action: 'current' }, cache));
+    const result1Json = JSON.parse(result1Text);
+    expect(result1Json.task_id).toBe(task1Id);
+    expect(result1Json.workspace_path).toBe('roo-extensions'); // dérivé de task_metadata.json
+    expect(result1Json.message_count).toBe(2); // user + assistant dans ui_messages.json
+    expect(Number.isNaN(new Date(result1Json.updated_at).getTime())).toBe(false);
 
-    // The result should contain task information
-    expect(result1Text).toBeDefined();
-
-    // Step 3: Modify the task (update ui_messages.json)
-    const task1Dir = path.join(testTasksPath, task1Id);
-    const uiMessagesPath = path.join(task1Dir, 'ui_messages.json');
-    const now = Date.now();
-    const modifiedUiMessages = [
-      { text: 'Updated task', ts: now, role: 'user' }
-    ];
-    fs.writeFileSync(uiMessagesPath, JSON.stringify(modifiedUiMessages, null, 2));
+    // Step 3: Modify the task (update ui_messages.json — plus qu'un seul message)
+    const uiMessagesPath = path.join(testTasksPath, task1Id, 'ui_messages.json');
+    const modifiedTs = Date.now();
+    fs.writeFileSync(uiMessagesPath, JSON.stringify([
+      { text: 'Updated task', ts: modifiedTs, role: 'user' }
+    ], null, 2));
 
     // CRITICAL: Invalidate disk-scanner's module-level cache to force fresh scan
     invalidateDiskScanCache();
+    const cache2 = new Map();
+    await primeCache(cache2);
 
     // Step 4: Second call to get current task
-    const result2 = await handleConversationBrowser(
-      {
-        action: 'current'
-      },
-      new Map(),
-      async () => {},
-      'roo-extensions',
-      async (id) => null
-    );
+    const result2Text = expectFreshResult(await callBrowser({ action: 'current' }, cache2));
 
-    // Step 5: Verify fresh data reflects the change
-    expect(result2.content[0].type).toBe('text');
-    const result2Text = result2.content[0].text;
-
-    // Should show updated status
-    expect(result2Text).toBeDefined();
-
-    // This validates that current task data is read fresh from filesystem
+    // Step 5: Fresh data PROUVÉE par le contenu — une réponse stale montrerait
+    // encore message_count 2 ; le fichier modifié n'en a plus qu'un.
+    const result2Json = JSON.parse(result2Text);
+    expect(result2Json.task_id).toBe(task1Id);
+    expect(result2Json.message_count).toBe(1);
+    // L'activité suit la modification (ts le plus récent du disque)
+    expect(new Date(result2Json.updated_at).getTime())
+      .toBeGreaterThanOrEqual(new Date(result1Json.updated_at).getTime() - 1000);
   });
 
-  it('should return fresh tree structure after child tasks are added (action: tree)', async () => {
-    // Step 1: Create parent task
+  it('should return fresh tree structure for a newly discovered task (action: tree)', async () => {
+    // Step 1: Create the root task
     const rootTaskId = 'smoke-test-root-1';
-    createRooConversation(rootTaskId, [
-      { role: 'user', content: 'Root task' }
-    ], 'c:/dev/roo-extensions');
+    createRooConversation(rootTaskId, [{ role: 'user', content: 'Root task' }]);
 
-    // Step 2: Initial tree call (should show only root)
-    const result1 = await handleConversationBrowser(
-      {
-        action: 'tree',
-        conversation_id: rootTaskId,
-        output_format: 'json'
-      },
-      new Map(),
-      async () => {},
-      'roo-extensions',
-      async (id) => null,
-      async () => []
-    );
+    const cache = new Map();
+    await primeCache(cache);
 
-    expect(result1.content[0].type).toBe('text');
-    const result1Text = result1.content[0].text;
-    expect(result1Text).toBeDefined();
+    // Step 2: tree sur la racine — contrat JSON mesuré (get-tree.tool.ts l.493-508)
+    const result1Text = expectFreshResult(await callBrowser(
+      { action: 'tree', conversation_id: rootTaskId, output_format: 'json' }, cache));
+    const result1Json = JSON.parse(result1Text);
+    expect(result1Json.conversation_id).toBe(rootTaskId);
+    expect(result1Json.root_task).toMatchObject({ taskId: rootTaskId, title: 'Root task' });
+    expect(result1Json.root_task.metadata.workspace).toBe('roo-extensions');
+    expect(Array.isArray(result1Json.tree)).toBe(true);
+    expect(result1Json.metadata).toMatchObject({
+      total_nodes: 1,
+      output_format: 'json',
+      include_siblings: true
+    });
 
-    // Step 3: Add child tasks (create them as separate directories)
+    // Step 3: new tasks appear on disk after the initial scan
     const child1Id = 'smoke-test-child-1';
     const child2Id = 'smoke-test-child-2';
-
-    // Create children with parent reference in their metadata
-    const child1Dir = path.join(testTasksPath, child1Id);
-    fs.mkdirSync(child1Dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(child1Dir, 'api_conversation_history.json'),
-      JSON.stringify([{ role: 'user', content: 'Child task 1' }])
-    );
-    const now1 = Date.now();
-    fs.writeFileSync(
-      path.join(child1Dir, 'ui_messages.json'),
-      JSON.stringify([{ text: 'Child 1', ts: now1, role: 'user' }])
-    );
-
-    const child2Dir = path.join(testTasksPath, child2Id);
-    fs.mkdirSync(child2Dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(child2Dir, 'api_conversation_history.json'),
-      JSON.stringify([{ role: 'user', content: 'Child task 2' }])
-    );
-    const now2 = Date.now();
-    fs.writeFileSync(
-      path.join(child2Dir, 'ui_messages.json'),
-      JSON.stringify([{ text: 'Child 2', ts: now2, role: 'user' }])
-    );
+    createRooConversation(child1Id, [{ role: 'user', content: 'Child task 1' }]);
+    createRooConversation(child2Id, [{ role: 'user', content: 'Child task 2' }]);
 
     // CRITICAL: Invalidate disk-scanner's module-level cache to force fresh scan
     invalidateDiskScanCache();
+    await primeCache(cache, 3);
 
-    // Step 4: Second tree call
-    const result2 = await handleConversationBrowser(
-      {
-        action: 'tree',
-        conversation_id: rootTaskId,
-        output_format: 'json'
-      },
-      new Map(),
-      async () => {},
-      'roo-extensions',
-      async (id) => null,
-      async (rootId) => {
-        // Scan for tasks with parent = rootId
-        // Since we changed ui_messages.json to array format, we need a different approach
-        // For testing purposes, we'll use task IDs that contain the parent ID as prefix
-        const tasks: any[] = [];
-        const dirs = fs.readdirSync(testTasksPath);
-        for (const dir of dirs) {
-          // Child tasks have IDs starting with "smoke-test-child-" and parent starting with "smoke-test-root-"
-          if (dir.startsWith('smoke-test-child-') && rootId.startsWith('smoke-test-root-')) {
-            const uiPath = path.join(testTasksPath, dir, 'ui_messages.json');
-            if (fs.existsSync(uiPath)) {
-              const uiMessages = JSON.parse(fs.readFileSync(uiPath, 'utf-8'));
-              if (Array.isArray(uiMessages) && uiMessages.length > 0) {
-                tasks.push({
-                  id: dir,
-                  instruction: uiMessages[0].text,
-                  status: 'pending'
-                });
-              }
-            }
-          }
-        }
-        return tasks;
-      }
-    );
+    // Step 4: tree sur une tâche qui n'existait pas au premier scan —
+    // fraîcheur PROUVÉE : la structure rend la tâche nouvellement découverte
+    // (l'ancien test passait un callback scanTasksForChildren non câblé sur tree
+    // et n'assertait que toBeDefined sur du texte).
+    const result2Text = expectFreshResult(await callBrowser(
+      { action: 'tree', conversation_id: child1Id, output_format: 'json' }, cache));
+    const result2Json = JSON.parse(result2Text);
+    expect(result2Json.conversation_id).toBe(child1Id);
+    expect(result2Json.root_task).toMatchObject({ taskId: child1Id, title: 'Child task 1' });
+    expect(result2Json.root_task.metadata.messageCount).toBe(1);
+    expect(result2Json.metadata.total_nodes).toBe(1);
 
-    // Step 5: Verify tree structure includes new children
-    expect(result2.content[0].type).toBe('text');
-    const result2Text = result2.content[0].text;
-
-    // Should now include the child tasks in the tree
-    expect(result2Text).toBeDefined();
-
-    // This validates that the tree structure is computed fresh from filesystem
+    // La racine initiale reste adressable et inchangée après le re-scan
+    const result3Text = expectFreshResult(await callBrowser(
+      { action: 'tree', conversation_id: rootTaskId, output_format: 'json' }, cache));
+    const result3Json = JSON.parse(result3Text);
+    expect(result3Json.root_task.taskId).toBe(rootTaskId);
+    expect(result3Json.root_task.title).toBe('Root task');
+    // NB mesuré : quickAnalyze ne dérive pas parentTaskId des dossiers disque
+    // (disk-scanner.ts l.66/l.90) — child1/child2 sont des racines indépendantes
+    // dans cette voie, pas des enfants de root. La hiérarchie réelle passe par
+    // le cache de squelettes complet (build_skeleton_cache), hors scope smoke.
+    expect(result3Json.metadata.total_nodes).toBe(1);
   });
 });
