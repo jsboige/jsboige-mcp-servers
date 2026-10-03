@@ -237,39 +237,56 @@ export function registerCallToolHandler(
                         const tier3 = await hydrateTier3SkeletonFromCache(id, cache);
                         if (tier3) return tier3;
                         // 3. Fallback: scan disk for Roo conversations
-                        try {
-                            const { RooStorageDetector } = await getRooStorageDetector();
-                           const locations = await RooStorageDetector.detectStorageLocations();
-                            for (const loc of locations) {
-                                // #1325: detectStorageLocations returns base paths, need 'tasks' segment
-                                const taskPath = path.join(loc, 'tasks', id);
-                                if (existsSync(taskPath)) {
-                                    const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
-                                    if (skeleton) {
-                                        cache.set(id, skeleton);
-                                        return skeleton;
+                        // #2191 fail-fast: un id claude-* ne peut JAMAIS vivre dans
+                        // tasks/ Roo (ids Roo = timestamps hex). Après un miss
+                        // Claude-local (étape 2) et un miss Tier 3 (étape 2b), ce
+                        // scan n'est que du travail impossible: detectStorageLocations()
+                        // globe globalStorage — des secondes à dizaines de secondes sur
+                        // un siège Roo chargé — pour un existsSync qui ne peut pas
+                        // matcher, tandis que le timeout dur #1262 (30 s) frappe avant
+                        // le CONVERSATION_NOT_FOUND net du summarize. Sauter rend
+                        // l'échec immédiat.
+                        if (!id.startsWith('claude-')) {
+                            try {
+                                const { RooStorageDetector } = await getRooStorageDetector();
+                               const locations = await RooStorageDetector.detectStorageLocations();
+                                for (const loc of locations) {
+                                    // #1325: detectStorageLocations returns base paths, need 'tasks' segment
+                                    const taskPath = path.join(loc, 'tasks', id);
+                                    if (existsSync(taskPath)) {
+                                        const skeleton = await RooStorageDetector.analyzeConversation(id, taskPath);
+                                        if (skeleton) {
+                                            cache.set(id, skeleton);
+                                            return skeleton;
+                                        }
                                     }
                                 }
-                            }
-                        } catch { /* disk fallback failed */ }
+                            } catch { /* disk fallback failed */ }
+                        }
                         return null;
                     },
                     async (rootId: string) => {
                         // Fonction findChildTasks pour le mode cluster
-                        try {
-                            const { RooStorageDetector } = await getRooStorageDetector();
-                           const locations = await RooStorageDetector.detectStorageLocations();
-                            for (const loc of locations) {
-                                // #1325: detectStorageLocations returns base paths, need 'tasks' segment
-                                const taskPath = path.join(loc, 'tasks', rootId);
-                                if (existsSync(taskPath)) {
-                                    const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
-                                    if (skeleton && !cache.has(rootId)) {
-                                        cache.set(rootId, skeleton);
+                        // #2191 fail-fast (même garde que getSkeleton): un rootId
+                        // claude-* ne peut pas être une tâche Roo locale — le scan
+                        // disque est du travail impossible, le cache RAM reste la
+                        // seule source d'enfants pour un root Claude.
+                        if (!rootId.startsWith('claude-')) {
+                            try {
+                                const { RooStorageDetector } = await getRooStorageDetector();
+                               const locations = await RooStorageDetector.detectStorageLocations();
+                                for (const loc of locations) {
+                                    // #1325: detectStorageLocations returns base paths, need 'tasks' segment
+                                    const taskPath = path.join(loc, 'tasks', rootId);
+                                    if (existsSync(taskPath)) {
+                                        const skeleton = await RooStorageDetector.analyzeConversation(rootId, taskPath);
+                                        if (skeleton && !cache.has(rootId)) {
+                                            cache.set(rootId, skeleton);
+                                        }
                                     }
                                 }
-                            }
-                        } catch { /* ignore disk errors */ }
+                            } catch { /* ignore disk errors */ }
+                        }
                         const allTasks = Array.from(cache.values());
                         return allTasks.filter(task => task.metadata?.parentTaskId === rootId);
                     },
