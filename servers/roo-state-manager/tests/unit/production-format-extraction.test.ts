@@ -47,39 +47,27 @@ describe('Production Format Extraction - PATTERN 5', () => {
         );
 
         // ACT & ASSERT
-        expect(instructions).toBeDefined();
         expect(Array.isArray(instructions)).toBe(true);
 
-        // 🎯 VALIDATION PATTERN 5: Doit trouver au moins 1 instruction api_req_started
+        // ÉTAT MESURÉ (re-sonde 2026-10-03, post-#1318 : rebase sur main
+        // b5b478d, fix extraction newTask fcae582d ancêtre de HEAD) : la
+        // fixture figée rend exactement 23 instructions via l'extracteur
+        // corrigé (38 pré-#1318), et AUCUNE ne porte un champ source non nul
+        // (sources mesurées = [null]) — le filtrage api_req_started reste donc
+        // vide. Ce pin est le ratchet du contrat extracteur fixé ; il ne
+        // change que si l'extracteur ou la fixture changent, avec mesure.
+        expect(instructions).toHaveLength(23);
+
         const apiInstructions = instructions.filter((inst: any) =>
             inst.source && inst.source.includes('api_req_started')
         );
-
-        // Logging pour diagnostiquer le problème "0 instructions extraites"
-        console.log(`📊 Instructions totales extraites: ${instructions.length}`);
-        console.log(`📊 Instructions api_req_started: ${apiInstructions.length}`);
-
-        if (instructions.length > 0) {
-            console.log(`📝 Premiers modes extraits:`, instructions.slice(0, 3).map((i: any) => i.mode));
-            console.log(`📝 Sources:`, [...new Set(instructions.map((i: any) => i.source || 'unknown'))]);
-        }
-
-        // Assertions progressives pour diagnostic
-        if (instructions.length === 0) {
-            throw new Error('🚨 PATTERN 5 ÉCHEC: Aucune instruction extraite - investigating...');
-        }
-
-        expect(instructions.length).toBeGreaterThan(0);
+        expect(apiInstructions).toHaveLength(0);
     });
 
     it('devrait parser correctement le JSON stringifié dans message.text', async () => {
         // ARRANGE
         const uiMessagesPath = path.join(testTaskPath, 'ui_messages.json');
-        console.log('DEBUG TEST: uiMessagesPath:', uiMessagesPath);
-        // Lire directement le fichier pour examiner la structure
         const content = fs.readFileSync(uiMessagesPath, 'utf-8');
-        console.log('DEBUG TEST: content length:', content.length);
-        console.log('DEBUG TEST: content start:', content.substring(0, 100));
         const messages = JSON.parse(content);
 
         // ACT: Trouver les messages api_req_started
@@ -87,30 +75,24 @@ describe('Production Format Extraction - PATTERN 5', () => {
             msg.type === 'say' && msg.say === 'api_req_started' && typeof msg.text === 'string'
         );
 
-        console.log(`📊 Messages api_req_started trouvés: ${apiMessages.length}`);
+        // ASSERT — état mesuré sur la fixture figée (sonde 2026-10-03) :
+        // 59 messages api_req_started, dont 13 portent le pattern PATTERN 5.
+        expect(apiMessages).toHaveLength(59);
 
-        // ASSERT
-        expect(apiMessages.length).toBeGreaterThan(0);
+        const pattern = /\[new_task in ([^:]+):\s*['"](.+?)['"]\]/gs;
+        let msgsWithPattern5 = 0;
 
-        // Tester le parsing JSON de chaque message
-        for (const msg of apiMessages.slice(0, 2)) { // Limite pour performance
-            try {
-                const apiData = JSON.parse(msg.text);
-                expect(apiData).toBeDefined();
-                expect(typeof apiData.request).toBe('string');
-
-                console.log(`📝 Request preview: ${apiData.request.substring(0, 200)}...`);
-
-                // Tester le pattern regex PATTERN 5
-                const pattern = /\[new_task in ([^:]+):\s*['"](.+?)['"]\]/gs;
-                const matches = [...apiData.request.matchAll(pattern)];
-
-                console.log(`📊 Matches PATTERN 5 dans ce message: ${matches.length}`);
-
-            } catch (e) {
-                console.warn(`⚠️ Failed to parse api_req_started message:`, e);
+        // Chaque api_req_started doit parser en objet avec request string —
+        // pas de try/catch : un parse en échec fait ROUGIR le test (c'est le
+        // contrat), il n'est pas avalé en console.warn.
+        for (const msg of apiMessages) {
+            const apiData = JSON.parse(msg.text);
+            expect(typeof apiData.request).toBe('string');
+            if ([...apiData.request.matchAll(pattern)].length > 0) {
+                msgsWithPattern5++;
             }
         }
+        expect(msgsWithPattern5).toBe(13);
     });
 
     it('devrait nettoyer correctement les modes avec emojis', async () => {
@@ -142,22 +124,10 @@ describe('Production Format Extraction - PATTERN 5', () => {
             true // useProductionHierarchy
         );
 
-        // ACT & ASSERT
-        expect(skeleton).toBeDefined();
-        expect(skeleton.metadata).toBeDefined();
-
-        console.log(`🏢 Workspace détecté: "${skeleton.metadata.workspace}"`);
-        console.log(`🎯 Workspace attendu: "d:/dev/roo-extensions"`);
-
-        const isWorkspaceMatch = skeleton.metadata.workspace === 'd:/dev/roo-extensions';
-        console.log(`🔍 Match workspace: ${isWorkspaceMatch}`);
-
-        // Identifier la cause du filtrage strict (ligne 862)
-        if (!isWorkspaceMatch) {
-            console.warn(`🚨 PROBLÈME IDENTIFIÉ: Workspace mismatch cause du 37/3870 filtering`);
-            console.warn(`   Détecté: "${skeleton.metadata.workspace}"`);
-            console.warn(`   Attendu: "d:/dev/roo-extensions"`);
-        }
+        // ACT & ASSERT — workspace détecté mesuré sur la fixture figée
+        // (sonde 2026-10-03) : la hiérarchie production résout le workspace
+        // nominal, pas un mismatch silencieux.
+        expect(skeleton.metadata.workspace).toBe('d:/dev/roo-extensions');
     });
 
     it('devrait valider la regex PATTERN 5 avec cas réels', async () => {
@@ -203,51 +173,10 @@ describe('Production Format Extraction - PATTERN 5', () => {
     });
 });
 
-describe('Production Format Extraction - Diagnostic Complet', () => {
-    it('devrait diagnostiquer pourquoi 0 instructions sur 37 tâches', async () => {
-        // ARRANGE: Analyser les statistiques du workspace
-        const workspacePath = 'd:/dev/roo-extensions';
-
-        console.log(`🔍 DIAGNOSTIC: Analyse du workspace ${workspacePath}`);
-
-        // Tenter une construction de skeleton cache avec diagnostic
-        try {
-            const skeletons = await RooStorageDetector.buildHierarchicalSkeletons(
-                workspacePath,
-                false // Test complet
-            );
-
-            // ACT: Analyser les résultats
-            const total = skeletons.length;
-            const withInstructions = skeletons.filter(s =>
-                s.childTaskInstructionPrefixes && s.childTaskInstructionPrefixes.length > 0
-            ).length;
-
-            console.log(`📊 RÉSULTATS DIAGNOSTIC:`);
-            console.log(`   Total skeletons: ${total}`);
-            console.log(`   Avec instructions: ${withInstructions}`);
-            console.log(`   Pourcentage: ${total > 0 ? (withInstructions/total*100).toFixed(1) : 0}%`);
-
-            if (total > 0 && withInstructions === 0) {
-                console.warn(`🚨 PROBLÈME CONFIRMÉ: 0% instructions extraites`);
-
-                // Examiner un échantillon pour diagnostiquer
-                const sample = skeletons.slice(0, 3);
-                for (let i = 0; i < sample.length; i++) {
-                    const s = sample[i];
-                    console.log(`📝 Échantillon ${i+1}:`);
-                    console.log(`   TaskId: ${s.taskId}`);
-                    console.log(`   Workspace: ${s.metadata.workspace}`);
-                    console.log(`   Instructions: ${s.childTaskInstructionPrefixes?.length || 0}`);
-                }
-            }
-
-            // ASSERT
-            expect(total).toBeGreaterThanOrEqual(0); // Au moins valide
-
-        } catch (error) {
-            console.error(`❌ ERREUR DIAGNOSTIC:`, error);
-            throw error;
-        }
-    });
-});
+// NOTE (lot 4 #2639) : le describe « Diagnostic Complet » d'origine a été
+// supprimé — script d'investigation ponctuel du problème du header (0
+// instructions / 37 tâches), il n'assertait que `expect(total) >= 0`,
+// trivialement vrai : mesuré (sonde 2026-10-03), buildHierarchicalSkeletons
+// avec useFullVolume=false rend [] en <10 ms sans toucher le disque, et la
+// forme utile (useFullVolume=true) est un scan machine de plusieurs minutes,
+// inadaptée à une suite. L'investigation vit dans #4037 / mcp-servers#1318.

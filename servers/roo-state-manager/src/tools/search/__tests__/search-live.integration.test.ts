@@ -67,33 +67,23 @@ describe('Live Qdrant Connectivity', () => {
 		const client = getQdrantClient();
 		const result = await client.getCollections();
 
-		expect(result).toBeDefined();
-		expect(result.collections).toBeDefined();
+		// Contrat getCollections (mesuré 2026-10-03 : 116 collections live) :
+		// liste non vide d'objets à name string.
 		expect(Array.isArray(result.collections)).toBe(true);
-		// We expect at least 1 collection (roo_tasks_semantic_index or ws-* collections)
 		expect(result.collections.length).toBeGreaterThan(0);
-
-		const collectionNames = result.collections.map((c: any) => c.name);
-		console.log(`Qdrant collections (${collectionNames.length}): ${collectionNames.slice(0, 5).join(', ')}...`);
+		expect(result.collections.every((c: any) => typeof c.name === 'string')).toBe(true);
 	});
 
 	test('should find the roo_tasks_semantic_index collection', async () => {
 		const client = getQdrantClient();
 		const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
-		try {
-			const info = await client.getCollection(collectionName);
-			expect(info).toBeDefined();
-			expect(info.points_count ?? info.vectors_count).toBeGreaterThanOrEqual(0);
-			console.log(`Collection "${collectionName}": ${info.points_count ?? info.vectors_count} vectors, status=${info.status}`);
-		} catch (e: any) {
-			// Collection may not exist on all machines — warn but don't fail
-			if (e.message?.includes('Not found')) {
-				console.warn(`Collection "${collectionName}" not found — skipping (machine may not have indexed yet)`);
-			} else {
-				throw e;
-			}
-		}
+		// Index fleet CENTRAL (qdrant.myia.io, mesuré 2026-10-03 : 2,47 M
+		// points, status green) — pas une collection optionnelle par machine :
+		// son absence est une panne à faire rougir, pas un cas à sauter.
+		const info = await client.getCollection(collectionName);
+		expect(info.status).toBe('green');
+		expect(info.points_count ?? info.vectors_count).toBeGreaterThan(0);
 	});
 });
 
@@ -111,8 +101,6 @@ describe('Live Embedding Service', () => {
 			input: 'RooSync multi-agent coordination system',
 		});
 
-		expect(response).toBeDefined();
-		expect(response.data).toBeDefined();
 		expect(response.data.length).toBe(1);
 
 		const vector = response.data[0].embedding;
@@ -148,14 +136,6 @@ describe('Live Semantic Search (end-to-end)', () => {
 		const model = getEmbeddingModel();
 		const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
-		// Check if collection exists
-		try {
-			await client.getCollection(collectionName);
-		} catch {
-			console.warn(`Collection "${collectionName}" not found — skipping semantic search test`);
-			return;
-		}
-
 		// Generate query embedding
 		const embResponse = await openai.embeddings.create({
 			model,
@@ -163,23 +143,20 @@ describe('Live Semantic Search (end-to-end)', () => {
 		});
 		const queryVector = embResponse.data[0].embedding;
 
-		// Search
+		// Search — l'index fleet central est peuplé (2,47 M points) : le
+		// contrat e2e rend des résultats, pas un vide à commenter.
 		const results = await client.search(collectionName, {
 			vector: queryVector,
 			limit: 5,
 			with_payload: true,
 		});
 
-		expect(results).toBeDefined();
+		// Contrat mesuré (2026-10-03 : 5/5, top 0.735) : résultats non vides,
+		// scores finis, payload portant un task_id string.
 		expect(Array.isArray(results)).toBe(true);
-		// We expect at least some results if the index is populated
-		if (results.length > 0) {
-			expect(results[0].score).toBeDefined();
-			expect(typeof results[0].score).toBe('number');
-			console.log(`Search returned ${results.length} results, top score: ${results[0].score.toFixed(4)}`);
-		} else {
-			console.warn('Search returned 0 results — collection may be empty');
-		}
+		expect(results.length).toBeGreaterThan(0);
+		expect(results.every((r: any) => Number.isFinite(r.score))).toBe(true);
+		expect(typeof results[0].payload?.task_id).toBe('string');
 	});
 
 	test('should find workspace collection for roo-extensions', async () => {
@@ -189,13 +166,12 @@ describe('Live Semantic Search (end-to-end)', () => {
 			.map((c: any) => c.name)
 			.filter((name: string) => name.startsWith('ws-'));
 
+		// Contrat (mesuré 2026-10-03 : 64 collections ws-*) : le préfixe
+		// workspace est peuplé, et getCollection rend un compte numérique.
 		expect(wsCollections.length).toBeGreaterThan(0);
-		console.log(`Workspace collections: ${wsCollections.length} (${wsCollections.slice(0, 5).join(', ')})`);
 
-		// Try to search the first ws- collection as a smoke test
 		const firstWs = wsCollections[0];
 		const info = await client.getCollection(firstWs);
-		expect(info.points_count ?? info.vectors_count).toBeGreaterThanOrEqual(0);
-		console.log(`Collection "${firstWs}": ${info.points_count ?? info.vectors_count} vectors`);
+		expect(typeof (info.points_count ?? info.vectors_count)).toBe('number');
 	});
 });
