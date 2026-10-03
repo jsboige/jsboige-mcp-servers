@@ -2506,8 +2506,9 @@ export interface LLMCallStats {
   timeoutCount: number;
   /** Truncated last error message (first 240 chars). Only set when final outcome is error/timeout. */
   lastError?: string;
-  /** Final outcome. */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback';
+  /** Final outcome. `guard-rejected` (#3962) : le garde « jamais pire que l'entrée » a rejeté
+   * un statut-artefact d'échec transporté en 200 (vide / `[Error:` / trop court). */
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected';
   // #2719: Cloud fallback fields
   /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
   fallbackUsed?: boolean;
@@ -3861,6 +3862,12 @@ ${fallbackSummary}
 
 ---
 
+## Statut avant condensation (#3962)
+
+${maskSecretText(dashboard.status.markdown)}
+
+---
+
 ${archiveMessages}
 `;
 
@@ -4063,6 +4070,65 @@ export function computeKeepCount(
 }
 
 /**
+ * #3962 / Maintenance#33 — garde « jamais pire que l'entrée » du statut de condensation.
+ *
+ * Incident fondateur (ai-01, 02/10 ~07:4xZ, `machine-myia-ai-01`) : la chaîne LLM a
+ * répondu HTTP 200 avec, pour contenu, un artefact d'échec —
+ * `[Error: The model returned an empty response (finish_reason: stop)…]` — que la
+ * condensation a accepté comme nouveau statut (tout texte non vide passait),
+ * remplaçant ~14,9 Ko de doctrine, non archivés (l'archive ne portait que l'intercom).
+ *
+ * Le prédicat ci-dessous traite trois formes comme un échec DU MODÈLE (pas un
+ * statut) : vide après trim, préfixe `[Error:` (artefact provider/proxy transporté
+ * en 200), et rétrécissement au-dessous du seuil de rétention mesuré sur les
+ * archives — une condensation a le droit de raccourcir, pas de vider.
+ */
+export type StatusGuardVerdict =
+  | { failed: false }
+  | { failed: true; reason: 'empty' | 'error-artifact' | 'too-short' };
+
+/**
+ * Rétention minimale du statut : le nouveau statut doit conserver au moins cette
+ * fraction de la longueur de l'ancien (l'ancien fait ≥ 200 car. — voir le garde).
+ *
+ * Seuil EMPIRIQUE (mesure c.575 web1 sur les notices « Statut mis à jour (X KB) »
+ * consécutives des 800 archives les plus récentes, fenêtre ~8 j : 1 146 paires
+ * consécutives, 441 rétrécissements) : le rétrécissement légitime EXPLIQUÉ ne
+ * descend jamais sous 0,27 — mais 3 événements isolés (0,02 · 0,05 · 0,08, clés
+ * distinctes, une fois chacune) vivent dans la bande exacte des artefacts
+ * d'incident (~0,01-0,03) et sont indiscernables d'eux par la seule taille.
+ *
+ * En présence de cette zone grise, le seuil est posé à 0,2 — SOUS le plancher
+ * légitime expliqué (0,27), DANS la zone grise — parce que les coûts sont
+ * asymétriques : un faux positif préserve le statut et poste un bandeau WARN
+ * (bénin, arbitral au prochain cycle) ; un faux négatif détruit la doctrine sans
+ * récupération (l'incident du 02/10). Le garde erre volontiers vers la
+ * préservation.
+ */
+export const STATUS_MIN_RETENTION_RATIO = 0.2;
+
+export function isModelFailureStatus(
+  candidate: string | null | undefined,
+  previousStatus: string,
+  minRetentionRatio: number = STATUS_MIN_RETENTION_RATIO,
+): StatusGuardVerdict {
+  const trimmed = (candidate ?? '').trim();
+  if (!trimmed) {
+    return { failed: true, reason: 'empty' };
+  }
+  if (trimmed.startsWith('[Error:')) {
+    return { failed: true, reason: 'error-artifact' };
+  }
+  const prev = previousStatus.trim();
+  // Première condensation (statut précédent vide ou trivial) : seul le garde
+  // empty/error-artifact s'applique — il n'y a rien à protéger par la longueur.
+  if (prev.length >= 200 && trimmed.length < Math.floor(prev.length * minRetentionRatio)) {
+    return { failed: true, reason: 'too-short' };
+  }
+  return { failed: false };
+}
+
+/**
  * Condense les messages intercom : archive les anciens, conserve les récents.
  * Met à jour le statut avec les informations des messages archivés (#858 Phase 2).
  * Si le statut ou le résumé dépasse les limites de taille, auto-condense via LLM.
@@ -4153,6 +4219,33 @@ async function condenseIntercom(
       statusOutcome: statusCall.stats.finalOutcome
     });
     // The breaker tracks the primary: a pass that never called it records nothing.
+    if (!primaryCircuitOpen) condenseCBRecordFailure();
+    return executeTruncationFallback(
+      key, dashboard, toArchive, toKeep, diagnostic, condensationStart,
+      { statusCall, summaryCall }
+    );
+  }
+
+  // #3962 / Maintenance#33 — garde « jamais pire que l'entrée » : un statut rendu par
+  // le modèle peut être un artefact d'échec transporté en HTTP 200 (l'incident ai-01
+  // du 02/10 : `[Error: The model returned an empty response…]` a remplacé ~14,9 Ko
+  // de doctrine). Vide après trim, préfixe `[Error:`, ou rétrécissement sous le seuil
+  // de rétention mesuré → échec DU MODÈLE → executeTruncationFallback, qui garde
+  // l'ancien statut (tronqué au plafond + marqueur de repli).
+  const statusGuard = isModelFailureStatus(newStatus, previousStatus);
+  if (statusGuard.failed) {
+    logger.warn('Status guard tripped — model returned a failure artifact as status (#3962)', {
+      key,
+      reason: statusGuard.reason,
+      newLength: newStatus!.length,
+      previousLength: previousStatus.length,
+      statusOutcome: statusCall.stats.finalOutcome,
+    });
+    // Le stat de l'appel doit dire la vérité au fallback : ce n'était pas un « ok »,
+    // c'est le garde qui a rejeté un artefact (le bandeau [WARN] et l'archive
+    // frontmatter lisent finalOutcome/lastError).
+    statusCall.stats.finalOutcome = 'guard-rejected';
+    statusCall.stats.lastError = `status ${statusGuard.reason} (new ${newStatus!.length} chars vs previous ${previousStatus.length})`;
     if (!primaryCircuitOpen) condenseCBRecordFailure();
     return executeTruncationFallback(
       key, dashboard, toArchive, toKeep, diagnostic, condensationStart,
@@ -4268,6 +4361,12 @@ ${archiveFrontmatter.trim()}
 
 Archivé le : ${new Date().toISOString()}
 Messages : ${toArchive.length}
+
+---
+
+## Statut avant condensation (#3962)
+
+${previousStatus}
 
 ---
 
