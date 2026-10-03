@@ -108,8 +108,10 @@ describe('TaskArchiver.archiveClaudeCodeSessions — real disk layout (#1747 C1+
         expect(archived!.metadata.messageCount).toBe(2);
     });
 
-    it('a second batch run over unchanged sources reports no failure (freshness guard)', async () => {
+    it('a second batch run over unchanged sources reports no failure and skips, not re-writes (freshness guard)', async () => {
         const result = await TaskArchiver.archiveClaudeCodeSessions(projectsBase);
         expect(result.failed).toBe(0);
+        expect(result.archived).toBe(0);
+        expect(result.skipped).toBe(2); // inchangées — rien de réécrit, comptées ignorées
     });
 });

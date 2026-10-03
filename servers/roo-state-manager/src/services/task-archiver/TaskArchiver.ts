@@ -57,7 +57,10 @@ interface ClaudeCodeJsonlLine {
     type?: string;
     message?: {
         role: 'user' | 'assistant' | 'system';
-        content: string;
+        // Format reel Claude Code : string pour les messages user, TABLEAU de
+        // blocks ({type:'text'|'thinking'|'tool_use'|'tool_result', ...}) pour
+        // les messages assistant et les tool_results user.
+        content: string | any[];
     };
     timestamp?: string;
     uuid?: string;
@@ -123,16 +126,54 @@ async function readJsonlFile(filePath: string): Promise<ClaudeCodeJsonlLine[]> {
 }
 
 /**
+ * Aplatit le contenu d'un message Claude Code (string ou tableau de blocks) en
+ * texte. Meme politique que ClaudeStorageDetector.extractContent (#2946) :
+ * tool_result en tete avec marqueur detectable par le classifieur, puis les
+ * blocks text ; thinking/tool_use/image non textuels sont exclus — la preservation
+ * brute integrale est le role des backups .7z (#3294), l'archive gzip est le
+ * miroir conversationnel servi par le Tier 3.
+ */
+function flattenClaudeContent(content: string | any[]): string {
+    if (typeof content === 'string') {
+        return content;
+    }
+    if (!Array.isArray(content)) {
+        return '';
+    }
+    const toolResultBlocks = content
+        .filter((block: any) => block?.type === 'tool_result')
+        .map((block: any) => {
+            const rc = typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                    ? block.content
+                        .map((b: any) => (b && typeof b.text === 'string') ? b.text : '')
+                        .join('')
+                    : '';
+            return `[tool_result] Result: ${rc}`;
+        });
+    const textBlocks = content
+        .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block: any) => block.text);
+    return [...toolResultBlocks, ...textBlocks].join('\n\n');
+}
+
+/**
  * Transforme les messages Claude Code JSONL en format standard ArchivedTaskMessage
+ *
+ * #1747 : le contenu assistant est un TABLEAU de blocks — `.trim()` sur un
+ * tableau throwait, le catch avalait la session entiere et le batch comptait
+ * quand meme "reussie" : zero fichier ecrit sur tout le corpus reel.
  */
 function transformClaudeCodeJsonl(jsonlLines: ClaudeCodeJsonlLine[]): ArchivedTaskMessage[] {
     return jsonlLines
-        .filter(line => line.message && line.message.content && line.message.content.trim().length > 0)
+        .filter(line => line.message?.role)
         .map(line => ({
             role: line.message!.role as 'user' | 'assistant',
-            content: line.message!.content,
+            content: flattenClaudeContent(line.message!.content ?? ''),
             timestamp: line.timestamp || new Date().toISOString(),
-        }));
+        }))
+        .filter(msg => msg.content.trim().length > 0);
 }
 
 /**
@@ -300,7 +341,7 @@ export class TaskArchiver {
         sessionId: string,
         jsonlPath: string,
         title?: string
-    ): Promise<void> {
+    ): Promise<'archived' | 'upgraded' | 'refreshed' | 'skipped-unchanged' | 'skipped-empty'> {
         const machineId = getMachineId();
         const archiveDir = path.join(getArchiveBasePath(), machineId);
         const safeSessionId = sanitizeClaudeSessionId(sessionId);
@@ -315,7 +356,7 @@ export class TaskArchiver {
                     fs.stat(jsonlPath),
                 ]);
                 if (sourceStat.mtimeMs <= archiveStat.mtimeMs) {
-                    return; // v2 et source inchangee — rien a faire
+                    return 'skipped-unchanged'; // v2 et source inchangee — rien a faire
                 }
                 // Source plus recente : re-archiver (fall through)
             } catch {
@@ -324,18 +365,13 @@ export class TaskArchiver {
             }
         }
 
-        // Lire le fichier JSONL
-        let messages: ArchivedTaskMessage[];
-        try {
-            const jsonlLines = await readJsonlFile(jsonlPath);
-            messages = transformClaudeCodeJsonl(jsonlLines);
-        } catch (err) {
-            console.warn(`[ARCHIVE] Failed to read JSONL file ${jsonlPath}: ${err}`);
-            return;
-        }
+        // Lire le fichier JSONL — une erreur de lecture remonte au batch (echec
+        // compté), plus de retour muet compté « réussie » (#1747)
+        const jsonlLines = await readJsonlFile(jsonlPath);
+        const messages = transformClaudeCodeJsonl(jsonlLines);
 
         if (messages.length === 0) {
-            return;
+            return 'skipped-empty';
         }
 
         // Deduire le titre du chemin si non fourni
@@ -364,6 +400,7 @@ export class TaskArchiver {
 
         const verb = existingVersion === 1 ? 'upgraded v1->v2' : existingVersion === 2 ? 'refreshed' : 'archived';
         console.log(`[ARCHIVE] Claude Code session ${sessionId} ${verb} (${messages.length} msgs, ${compressed.length} bytes gz)`);
+        return existingVersion === 1 ? 'upgraded' : existingVersion === 2 ? 'refreshed' : 'archived';
     }
 
     /**
@@ -373,8 +410,9 @@ export class TaskArchiver {
     static async archiveClaudeCodeSessions(
         projectsBasePath: string,
         maxSessions?: number
-    ): Promise<{ archived: number; failed: number }> {
+    ): Promise<{ archived: number; skipped: number; failed: number }> {
         let archivedCount = 0;
+        let skippedCount = 0;
         let failedCount = 0;
         let processedCount = 0;
 
@@ -400,8 +438,12 @@ export class TaskArchiver {
                             if (!sessionDir.endsWith('.jsonl')) continue;
                             try {
                                 const sessionId = `${project}/${sessionDir.replace(/\.jsonl$/, '')}`;
-                                await TaskArchiver.archiveClaudeCodeSession(sessionId, sessionPath);
-                                archivedCount++;
+                                const outcome = await TaskArchiver.archiveClaudeCodeSession(sessionId, sessionPath);
+                                if (outcome === 'skipped-unchanged' || outcome === 'skipped-empty') {
+                                    skippedCount++;
+                                } else {
+                                    archivedCount++;
+                                }
                             } catch (err) {
                                 console.error(`[ARCHIVE] Failed to archive ${sessionPath}: ${err}`);
                                 failedCount++;
@@ -409,7 +451,7 @@ export class TaskArchiver {
 
                             processedCount++;
                             if (maxSessions && processedCount >= maxSessions) {
-                                return { archived: archivedCount, failed: failedCount };
+                                return { archived: archivedCount, skipped: skippedCount, failed: failedCount };
                             }
                             continue;
                         }
@@ -420,8 +462,12 @@ export class TaskArchiver {
                         for (const jsonlFile of jsonlFiles) {
                             try {
                                 const sessionId = `${project}/${sessionDir}/${path.basename(jsonlFile, '.jsonl')}`;
-                                await TaskArchiver.archiveClaudeCodeSession(sessionId, jsonlFile);
-                                archivedCount++;
+                                const outcome = await TaskArchiver.archiveClaudeCodeSession(sessionId, jsonlFile);
+                                if (outcome === 'skipped-unchanged' || outcome === 'skipped-empty') {
+                                    skippedCount++;
+                                } else {
+                                    archivedCount++;
+                                }
                             } catch (err) {
                                 console.error(`[ARCHIVE] Failed to archive ${jsonlFile}: ${err}`);
                                 failedCount++;
@@ -429,7 +475,7 @@ export class TaskArchiver {
 
                             processedCount++;
                             if (maxSessions && processedCount >= maxSessions) {
-                                return { archived: archivedCount, failed: failedCount };
+                                return { archived: archivedCount, skipped: skippedCount, failed: failedCount };
                             }
                         }
                     }
@@ -441,7 +487,7 @@ export class TaskArchiver {
             console.error(`[ARCHIVE] Error reading projects directory: ${err}`);
         }
 
-        return { archived: archivedCount, failed: failedCount };
+        return { archived: archivedCount, skipped: skippedCount, failed: failedCount };
     }
 
     /**

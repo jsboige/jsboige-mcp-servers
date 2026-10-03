@@ -841,7 +841,7 @@ export async function handleRooSyncIndexing(
                     isError: false,
                     content: [{
                         type: 'text',
-                        text: `Sessions Claude Code archivées: ${result.archived} réussies, ${result.failed} échecs`
+                        text: `Sessions Claude Code archivées: ${result.archived} écrites, ${result.skipped} ignorées (inchangées/vides), ${result.failed} échecs`
                     }]
                 };
             }
