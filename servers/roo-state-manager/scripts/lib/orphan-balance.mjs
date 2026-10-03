@@ -115,3 +115,51 @@ export const PROBE_SQL = `
   where ($1::text is null or machine_id = $1)
   group by machine_id, harness
   order by machine_id, harness`;
+
+/**
+ * Probe verdict defaults. The acceptance target of #2427 is "latency bounded
+ * to a few minutes" — backlogLagH is the committed generous ceiling (1 h),
+ * not the target itself. dormantDays separates corpora with no recent local
+ * activity (staleness expected, not a defect) from live ones.
+ */
+export const PROBE_THRESHOLDS = Object.freeze({
+  backlogLagH: 1,
+  dormantDays: 30,
+});
+
+/**
+ * Verdict for one PROBE_SQL row. lag_h = max_last_ts - max_ingested_at:
+ * how far the newest local activity runs ahead of the newest ingestion —
+ * the un-ingested backlog window, NOT the age of the last ingest (a dormant
+ * corpus shows a huge age with nothing to ingest).
+ *
+ * Precedence: DORMANT > BACKLOG > CAUGHT_UP > UNKNOWN.
+ *   DORMANT   — max_last_ts older than dormantDays: no recent activity, so
+ *               staleness of the last ingest is expected, not a backlog.
+ *   BACKLOG   — lag_h > backlogLagH: no ingest EVENT in over an hour while
+ *               the corpus shows activity newer than that event. Caveat,
+ *               measured 03/10 on po-2024/claude: ingested_at marks ingest
+ *               events (sparse for claude corpora — creation-driven), while
+ *               last_ts can advance without re-ingest — a BACKLOG verdict
+ *               names where to look, the owner confirms against local
+ *               sources before calling it a writer failure.
+ *   CAUGHT_UP — ingestion within the window (lag may be negative: the last
+ *               ingest ran past the newest activity — healthy).
+ *   UNKNOWN   — a timestamp is missing: never guess, report it.
+ */
+export function classifyProbeRow(row, thresholds = PROBE_THRESHOLDS) {
+  const ing = row?.max_ingested_at != null ? new Date(row.max_ingested_at) : null;
+  const last = row?.max_last_ts != null ? new Date(row.max_last_ts) : null;
+  if (!ing || Number.isNaN(ing.getTime()) || !last || Number.isNaN(last.getTime())) {
+    return { lag_h: null, verdict: 'UNKNOWN' };
+  }
+  const lagH = (last.getTime() - ing.getTime()) / 3_600_000;
+  const lag = Math.round(lagH * 10) / 10;
+  const dormantMs = thresholds.dormantDays * 24 * 3_600_000;
+  // Reference clock for dormancy: the row's own activity, not now() — the
+  // classifier must stay stable between the SQL run and the render.
+  const asOf = row.as_of != null ? new Date(row.as_of).getTime() : Date.now();
+  if (Number.isNaN(asOf) || asOf - last.getTime() > dormantMs) return { lag_h: lag, verdict: 'DORMANT' };
+  if (lag > thresholds.backlogLagH) return { lag_h: lag, verdict: 'BACKLOG' };
+  return { lag_h: lag, verdict: 'CAUGHT_UP' };
+}
