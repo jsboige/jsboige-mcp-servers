@@ -13,11 +13,11 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 28 test-file entries + 4 tests-directory globs
+ * Exclusion census: 27 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
- * Last audit: 2026-10-03 (#2639) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
+ * Last audit: 2026-10-04 (#2639) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import unitConfig from './vitest.config.unit.js';
@@ -75,7 +75,14 @@ export default mergeConfig(unitConfig, defineConfig({
       'src/tools/roosync/__tests__/inventory.integration.test.ts',
 
       // ===== CI-excluded: SMOKE (depends on real GDrive/RooSync state) =====
-      'src/tools/roosync/__tests__/send.smoke.test.ts',
+      // 2026-10-04 (#2639): send.smoke.test.ts RE-ENABLED in CI. The test was
+      //   already fully isolated (tmpdir `.test-messages` under os.tmpdir(),
+      //   dir lifecycle owned by beforeEach/afterEach, MessageManager routed to
+      //   ROOSYNC_SHARED_PATH via mock) — the blanket smoke exclusion from its
+      //   introduction (e514937d) predated the isolation and was stale. Plus an
+      //   isolation-contract test pinning the tmpdir guarantee. Verified
+      //   firsthand: 4/4 pass under the CI config with the exclusion lifted.
+      // 'src/tools/roosync/__tests__/send.smoke.test.ts',
       // 2026-10-03 (#2639): get-status.smoke.test.ts RE-ENABLED in CI. The #2639
       //   rewrite runs every scenario against a tmpdir ROOSYNC_SHARED_PATH created
       //   by the test itself (env set in beforeEach, restored in afterEach) — no
