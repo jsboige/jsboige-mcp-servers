@@ -222,47 +222,6 @@ export function computeFallbackAttemptTimeoutMs(
   return Math.max(Math.round(timeoutMs), 1000);
 }
 
-// #2719 seconde borne (ai-01 GO 28/09, c.5866375743) — PRIMAIRE borné par la passe.
-// Mesure 21-28/09 (c.5865902488, po-2026): 9/348 jambes réelles > 165 s, concentrées
-// sur les fenêtres de dégradation; un primaire lent peut consumer 302 s alors que le
-// client append expire à 180 s → append expiré retenté à l'aveugle (doublon). Le clip
-// n'est actif QUE si le palier cloud est armé (condition bloquante du GO): sans lui,
-// couper un succès lent le transformerait en échec sans rien gagner.
-// Sous ce plancher, ne pas DÉMARRER une tentative locale: p50 réel ~13 s, p90 ~67 s —
-// sous 15 s l'attente est perdue, le budget part au fallback (mêmes sémantiques que
-// FB_DEADLINE_SKIP_FLOOR_MS, valeur propre car le primaire local est plus lent au départ).
-const PRIMARY_CLIP_SKIP_FLOOR_MS = 15000;
-
-/**
- * #2719 seconde borne: per-attempt PRIMARY timeout, clipped to
- * `remaining pass budget − fallback reserve` so the whole pass stays under the
- * append client timeout. The reserve is computed by the SAME function the fallback
- * will use for this prompt (computeFallbackAttemptTimeoutMs), so reserve and real
- * need can never drift apart. Returns null when the remaining budget cannot host a
- * local attempt (caller must refuse WITHOUT traffic and go straight to the cloud
- * tier). Returns the unclipped ceiling when no pass deadline is given (non-append
- * callers) or when the cloud tier is not armed (clip would have nothing to redirect to).
- */
-export function computePrimaryAttemptTimeoutMs(
-  promptBytes: number,
-  passDeadlineMs?: number,
-): number | null {
-  const ceilingMs = CONDENSE_LLM_TIMEOUT_MS;
-  // Blocking condition (ai-01 GO #1): no armed cloud tier → current behaviour.
-  // Read the key directly instead of calling getFallbackChatOpenAIClient(): the same
-  // predicate (that getter returns null when ZAI_API_KEY/FALLBACK_API_KEY is absent —
-  // see services/openai.ts), but WITHOUT instantiating the client on every check —
-  // which would also consume one-shot stubs in the benches.
-  const cloudArmed = !!(process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY);
-  if (!cloudArmed || !getFallbackLLMModelId()) return ceilingMs;
-  if (passDeadlineMs === undefined) return ceilingMs;
-  const remainingMs = passDeadlineMs - Date.now();
-  const reserveMs = computeFallbackAttemptTimeoutMs(promptBytes, undefined) ?? 0;
-  const clippedMs = Math.min(ceilingMs, remainingMs - reserveMs);
-  if (clippedMs < PRIMARY_CLIP_SKIP_FLOOR_MS) return null;
-  return Math.round(clippedMs);
-}
-
 // #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
 // generation is already bounded UNDER the ~600s IIS→vLLM gateway by
 // CONDENSE_LLM_MAX_TOKENS, so the only thing the old 1800s/900s ceilings ever
@@ -2556,10 +2515,6 @@ export interface LLMCallStats {
   fallbackModel?: string;
   /** Wall-clock time for the successful fallback attempt (ms). */
   fallbackElapsedMs?: number;
-  // #2719 seconde borne: set on every primary attempt that ran CLIPPED (budget =
-  // remaining pass − fallback reserve, below the 720s ceiling) so the next census
-  // can COUNT the slow successes redirected to the cloud instead of inferring them.
-  primaryClip?: { budgetMs: number; elapsedMs: number };
   // #2998: Cloud fallback diagnostic fields — distinguish "fallback unconfigured"
   // (fallbackAttempted absent) from "fallback attempted but rejected" (fallbackAttempted
   // true, fallbackError set) from "fallback succeeded" (fallbackUsed true).
@@ -2690,10 +2645,8 @@ export function describeLLMError(
 async function generateLLMSummary(messages: IntercomMessage[], opts?: { skipPrimary?: boolean; passDeadlineMs?: number }): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497). The 1800s ceiling only ever caught a TRUE
   // hang — CONDENSE_LLM_MAX_TOKENS already bounds a runaway under the ~600s gateway.
-  // #2719 seconde borne: the per-attempt budget is now resolved INSIDE the retry loop
-  // by computePrimaryAttemptTimeoutMs (fresh remaining on every attempt), replacing
-  // the flat `const timeoutMs = CONDENSE_LLM_TIMEOUT_MS` that let one slow attempt
-  // consume the whole pass.
+  // See CONDENSE_LLM_TIMEOUT_MS definition for the full rationale.
+  const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
 
   // Construire le prompt avec les messages
   const messagesContent = messages.map(msg => {
@@ -2739,7 +2692,6 @@ FORMAT :
 - Décisions prises, valeurs chiffrées, résultats mesurés`;
 
   const userPrompt = `${messages.length} messages retirés du dashboard à synthétiser :\n\n${messagesContent}\n\nRésume ces messages archivés. Ce résumé sera la seule trace visible dans le dashboard.`;
-  const promptBytes = Buffer.byteLength(systemPrompt, 'utf8') + Buffer.byteLength(userPrompt, 'utf8');
 
   logger.info('Calling LLM for intercom summary', { messageCount: messages.length });
 
@@ -2775,18 +2727,6 @@ FORMAT :
   // Retry with exponential backoff (error/empty only — size handled post-hoc)
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     stats.attempts = attempt;
-    // #2719 seconde borne: fresh clip per attempt — a retry with no budget left skips
-    // to the cloud tier instead of restarting a 720s wait.
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(promptBytes, opts?.passDeadlineMs);
-    if (attemptTimeoutMs === null) {
-      logger.warn('Primary clip: pass budget exhausted for summary — skipping local attempt (no traffic)');
-      stats.lastError = 'primary clip: pass budget exhausted before attempt (no traffic sent)';
-      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
-      if (fbBudget) return fbBudget;
-      stats.finalOutcome = 'timeout';
-      stats.elapsedMs = Date.now() - callStart;
-      return { content: null, stats };
-    }
     const startTime = Date.now();
     try {
       const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
@@ -2807,7 +2747,7 @@ FORMAT :
         // reliability — "moindre mal" while the cluster is in crisis.
         ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
-        timeout: attemptTimeoutMs
+        timeout: timeoutMs
       });
 
       const summary = response.choices[0]?.message?.content;
@@ -2832,9 +2772,6 @@ FORMAT :
       const sizeBytes = Buffer.byteLength(summary, 'utf8');
       const elapsed = Date.now() - startTime;
       logger.info('LLM summary generated', { attempt, elapsed: `${elapsed}ms`, summaryLength: summary.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
-      if (attemptTimeoutMs < CONDENSE_LLM_TIMEOUT_MS) {
-        stats.primaryClip = { budgetMs: attemptTimeoutMs, elapsedMs: elapsed };
-      }
       stats.finalOutcome = 'ok';
       stats.elapsedMs = Date.now() - callStart;
       return { content: summary, stats };
@@ -2843,16 +2780,13 @@ FORMAT :
       const elapsed = Date.now() - startTime;
       const errStr = safeErrorString(error);
       stats.errorCount += 1;
-      if (attemptTimeoutMs < CONDENSE_LLM_TIMEOUT_MS) {
-        stats.primaryClip = { budgetMs: attemptTimeoutMs, elapsedMs: elapsed };
-      }
       // #3012: use class-identity detection — see isLLMTimeoutError. The previous
       // `error.name === 'AbortError'` test never fired here because the SDK throws
       // APIConnectionTimeoutError (whose `.name` inherits "Error").
       const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
-        logger.warn('LLM summary timeout', { attempt, timeout: attemptTimeoutMs, elapsed: `${elapsed}ms` });
+        logger.warn('LLM summary timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
       } else {
         logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
@@ -2870,7 +2804,7 @@ FORMAT :
       }
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
-      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs: attemptTimeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
+      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
       const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
       if (fbErr) return fbErr;
@@ -2899,7 +2833,7 @@ async function generateStatusUpdate(
   opts?: { skipPrimary?: boolean; passDeadlineMs?: number }
 ): Promise<LLMCallResult> {
   // #2267 follow-up: was 1800s (#1497) — see generateLLMSummary / CONDENSE_LLM_TIMEOUT_MS.
-  // #2719 seconde borne: per-attempt budget resolved inside the retry loop (see summary).
+  const timeoutMs = CONDENSE_LLM_TIMEOUT_MS;
 
   // Format messages with archive/keep annotations
   const messagesContent = allMessages.map((msg, index) => {
@@ -3003,7 +2937,6 @@ ${previousStatus}
 ${messagesContent}
 
 Mets à jour le statut en intégrant les informations des messages [SERA ARCHIVÉ]. Date de référence : ${lastDate}.`;
-  const promptBytes = Buffer.byteLength(systemPrompt, 'utf8') + Buffer.byteLength(userPrompt, 'utf8');
 
   logger.info('Calling LLM for status update', {
     previousStatusLength: previousStatus.length,
@@ -3042,17 +2975,6 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
   // Retry with exponential backoff
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     stats.attempts = attempt;
-    // #2719 seconde borne: fresh clip per attempt (see generateLLMSummary).
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(promptBytes, opts?.passDeadlineMs);
-    if (attemptTimeoutMs === null) {
-      logger.warn('Primary clip: pass budget exhausted for status update — skipping local attempt (no traffic)');
-      stats.lastError = 'primary clip: pass budget exhausted before attempt (no traffic sent)';
-      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
-      if (fbBudget) return fbBudget;
-      stats.finalOutcome = 'timeout';
-      stats.elapsedMs = Date.now() - callStart;
-      return { content: null, stats };
-    }
     const startTime = Date.now();
     try {
       const thinkingCtrl = buildThinkingControl(isOpenAICompatVLlm());
@@ -3068,7 +2990,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
         ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
-        timeout: attemptTimeoutMs
+        timeout: timeoutMs
       });
 
       const newStatus = response.choices[0]?.message?.content;
@@ -3093,9 +3015,6 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       const sizeBytes = Buffer.byteLength(newStatus, 'utf8');
       const elapsed = Date.now() - startTime;
       logger.info('LLM status update generated', { attempt, elapsed: `${elapsed}ms`, newStatusLength: newStatus.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
-      if (attemptTimeoutMs < CONDENSE_LLM_TIMEOUT_MS) {
-        stats.primaryClip = { budgetMs: attemptTimeoutMs, elapsedMs: elapsed };
-      }
       stats.finalOutcome = 'ok';
       stats.elapsedMs = Date.now() - callStart;
       return { content: newStatus, stats };
@@ -3104,14 +3023,11 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       const elapsed = Date.now() - startTime;
       const errStr = safeErrorString(error);
       stats.errorCount += 1;
-      if (attemptTimeoutMs < CONDENSE_LLM_TIMEOUT_MS) {
-        stats.primaryClip = { budgetMs: attemptTimeoutMs, elapsedMs: elapsed };
-      }
       // #3012: use class-identity detection — see isLLMTimeoutError.
       const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
-        logger.warn('LLM status update timeout', { attempt, timeout: attemptTimeoutMs, elapsed: `${elapsed}ms` });
+        logger.warn('LLM status update timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
       } else {
         logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
@@ -3125,7 +3041,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       }
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
-      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs: attemptTimeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
+      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
       const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
       if (fbErr) return fbErr;
@@ -3177,15 +3093,6 @@ export async function condenseTextIfTooLarge(
   let bestSize = sizeBytes;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    // #2719 seconde borne (invariant adjacent, ai-01 GO): this path already RECEIVED
-    // passDeadlineMs but ignored it for the local attempts — clip them like the
-    // summary/status loop; when no budget remains, break straight to the cloud tier
-    // below instead of starting another 720s wait.
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(Buffer.byteLength(text, 'utf8'), passDeadlineMs);
-    if (attemptTimeoutMs === null) {
-      logger.warn(`#2719 primary clip: pass budget exhausted for ${label} — skipping local attempt, going straight to cloud`);
-      break;
-    }
     const targetKb = attempt === 1 ? capKb : Math.max(1, Math.floor((maxSizeBytes * 0.8) / 1024));
     const aggressiveNote = attempt === 1
       ? ''
@@ -3222,7 +3129,7 @@ RÈGLES :
         // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
         ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
-        timeout: attemptTimeoutMs  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000); #2719: clipped per pass deadline
+        timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
       });
 
       const condensed = response.choices[0]?.message?.content;
