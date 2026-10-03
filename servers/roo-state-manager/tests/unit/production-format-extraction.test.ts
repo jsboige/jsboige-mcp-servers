@@ -49,12 +49,14 @@ describe('Production Format Extraction - PATTERN 5', () => {
         // ACT & ASSERT
         expect(Array.isArray(instructions)).toBe(true);
 
-        // ÉTAT MESURÉ (sonde 2026-10-03, contrat pré-#4037) : la fixture figée
-        // rend exactement 38 instructions via les autres patterns, et AUCUNE
-        // n'est sourcée api_req_started — le PATTERN 5 ne remonte pas encore.
-        // Ces pins sont le ratchet du contrat actuel : à re-pinner à
-        // l'atterrissage de jsboige-mcp-servers#1318 (extraction newTask).
-        expect(instructions).toHaveLength(38);
+        // ÉTAT MESURÉ (re-sonde 2026-10-03, post-#1318 : rebase sur main
+        // b5b478d, fix extraction newTask fcae582d ancêtre de HEAD) : la
+        // fixture figée rend exactement 23 instructions via l'extracteur
+        // corrigé (38 pré-#1318), et AUCUNE ne porte un champ source non nul
+        // (sources mesurées = [null]) — le filtrage api_req_started reste donc
+        // vide. Ce pin est le ratchet du contrat extracteur fixé ; il ne
+        // change que si l'extracteur ou la fixture changent, avec mesure.
+        expect(instructions).toHaveLength(23);
 
         const apiInstructions = instructions.filter((inst: any) =>
             inst.source && inst.source.includes('api_req_started')
