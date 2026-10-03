@@ -5,13 +5,23 @@
  * Machines are registered via registerHeartbeat(), status is derived from
  * elapsed time: ONLINE (<30min), IDLE (30-120min), UNKNOWN (>120min).
  *
+ * #2639: RE-ENABLED in CI (2026-10-03). Same method as get-status.smoke: the
+ *   test runs against a tmpdir ROOSYNC_SHARED_PATH it creates itself in
+ *   beforeEach and removes in afterEach — no real GDrive/RooSync state is
+ *   involved. The previous hardcoded `/tmp/...` path was POSIX-only and the
+ *   directory lifecycle was implicit (left to the service); both are now
+ *   explicit and portable via os.tmpdir().
+ *
  * @module roosync/machines.smoke.test
- * @version 3.0.0 (ADR 008 Phase 2 — in-memory model)
+ * @version 3.1.0 (ADR 008 Phase 2 — in-memory model; #2639 CI re-enable)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { roosyncMachines } from '../machines.js';
 import { getRooSyncService } from '../../../services/lazy-roosync.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 vi.unmock('fs');
 vi.unmock('fs/promises');
@@ -20,14 +30,19 @@ vi.unmock('../../../services/RooSyncService.js');
 vi.unmock('../../../services/ConfigService.js');
 
 describe('SMOKE: roosync_machines', () => {
+  const testSharedStatePath = path.join(os.tmpdir(), '.shared-state-test-machines');
   let originalEnv: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     originalEnv = { ...process.env };
     process.env.NODE_ENV = 'test';
-    process.env.ROOSYNC_SHARED_PATH = '/tmp/.shared-state-test-machines';
+    process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
     process.env.ROOSYNC_MACHINE_ID = 'smoke-test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'smoke-test-ws';
+
+    if (!fs.existsSync(testSharedStatePath)) {
+      fs.mkdirSync(testSharedStatePath, { recursive: true });
+    }
   });
 
   afterEach(async () => {
@@ -35,6 +50,17 @@ describe('SMOKE: roosync_machines', () => {
     RooSyncService.resetInstance();
     await new Promise(resolve => setTimeout(resolve, 50));
     process.env = originalEnv;
+    if (fs.existsSync(testSharedStatePath)) {
+      fs.rmSync(testSharedStatePath, { recursive: true, force: true });
+    }
+  });
+
+  it('runs against the tmpdir shared state it creates (isolation contract, #2639)', async () => {
+    await registerMachineWithAge('test-machine-0', 5);
+    // The heartbeat store must live under ROOSYNC_SHARED_PATH (the tmpdir this
+    // test created), never under a real GDrive/RooSync location.
+    expect(process.env.ROOSYNC_SHARED_PATH).toBe(testSharedStatePath);
+    expect(fs.existsSync(testSharedStatePath)).toBe(true);
   });
 
   /**

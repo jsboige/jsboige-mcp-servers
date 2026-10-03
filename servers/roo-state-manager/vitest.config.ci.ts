@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 29 test-file entries + 4 tests-directory globs
+ * Exclusion census: 28 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -83,7 +83,14 @@ export default mergeConfig(unitConfig, defineConfig({
       //   the CI config with the exclusion lifted, full suite green.
       // 'src/tools/roosync/__tests__/get-status.smoke.test.ts',
       'src/tools/roosync/__tests__/storage-management.smoke.test.ts',
-      'src/tools/roosync/__tests__/machines.smoke.test.ts',
+      // 2026-10-03 (#2639): machines.smoke.test.ts RE-ENABLED in CI. Same
+      //   method as get-status.smoke: the test points ROOSYNC_SHARED_PATH at a
+      //   tmpdir it creates in beforeEach and removes in afterEach (portable
+      //   os.tmpdir() replacing the POSIX-only hardcoded /tmp path), plus an
+      //   isolation-contract test asserting the heartbeat store lives under
+      //   that tmpdir. Verified firsthand: 4/4 pass under the CI config with
+      //   the exclusion lifted.
+      // 'src/tools/roosync/__tests__/machines.smoke.test.ts',
       'src/tools/roosync/__tests__/list-diffs.smoke.test.ts',
 
       // ===== CI-excluded: APPDATA/GDRIVE (Windows paths + GDrive) =====
