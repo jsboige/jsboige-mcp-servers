@@ -611,6 +611,17 @@ export class RooStorageDetector {
                 }
             }
         }
+        // #4037: le <task> racine du parent ne doit JAMAIS figurer parmi les
+        // préfixes enfants — une capture résiduelle par n'importe quel chemin
+        // d'extraction ferait remonter le parent comme son propre enfant dans
+        // l'arbre des tâches Zoo. Filet de sécurité au niveau du consommateur.
+        if (truncatedInstruction && childTaskInstructionPrefixes.length > 0) {
+            const before = childTaskInstructionPrefixes.length;
+            childTaskInstructionPrefixes = childTaskInstructionPrefixes.filter(p => p !== truncatedInstruction);
+            if (childTaskInstructionPrefixes.length < before) {
+                console.log(`[analyzeConversation] 🧹 #4037 préfixe racine du parent retiré des enfants (${before} -> ${childTaskInstructionPrefixes.length}) pour ${taskId.substring(0, 8)}`);
+            }
+        }
         // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
         const timestamps: Date[] = [];
 

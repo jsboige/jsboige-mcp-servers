@@ -5,6 +5,7 @@
 
 import { PatternExtractor } from './message-pattern-extractors.js';
 import { NewTaskInstruction } from '../types/conversation.js';
+import { computeInstructionPrefix } from './task-instruction-index.js';
 
 // Import des extracteurs API
 import { ApiContentExtractor } from './extractors/api-message-extractor.js';
@@ -87,6 +88,25 @@ export class MessageExtractionCoordinator {
         this.processMessage(message, result, options);
         result.processedMessages++;
       }
+
+      // #4037: un même spawn laisse jusqu'à deux traces dans ui_messages.json
+      // (l'enregistrement ask/tool newTask ET l'écho de requête api_req_started
+      // `[new_task in <mode> mode: '...']`). Les deux portent le même message :
+      // dédupliquer sur le préfixe d'instruction pour compter chaque spawn
+      // une seule fois. Choke point unique — les deux appelants
+      // (RooStorageDetector.analyzeConversation et HierarchyPipeline) héritent.
+      const seen = new Set<string>();
+      const deduped: typeof result.instructions = [];
+      for (const inst of result.instructions) {
+        const prefix = computeInstructionPrefix(inst.message, 192);
+        if (seen.has(prefix)) continue;
+        seen.add(prefix);
+        deduped.push(inst);
+      }
+      if (deduped.length < result.instructions.length && this.debugEnabled) {
+        console.log(`[MessageExtractionCoordinator] 🧹 #4037 déduplication: ${result.instructions.length} -> ${deduped.length} instructions`);
+      }
+      result.instructions = deduped;
 
       this.logExtractionSummary(result);
     } catch (error) {

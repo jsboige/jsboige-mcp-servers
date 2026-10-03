@@ -255,6 +255,13 @@ export class UiXmlPatternExtractor implements PatternExtractor {
  */
 export class UiSimpleTaskExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
+    // #4037: les payloads de requête (api_req_started) et les échos MCP
+    // (mcp_server_response) transportent le <task> racine du PARENT — son
+    // propre contexte d'instruction, jamais l'enregistrement d'un spawn
+    // enfant (qui vit en ask/tool newTask ou en XML <new_task>).
+    if (message.type === 'say' && (message.say === 'api_req_started' || message.say === 'mcp_server_response')) {
+      return false;
+    }
     return (message.type === 'say' || message.role === 'user' || message.role === 'assistant') &&
            (typeof message.text === 'string' || typeof message.content === 'string' || Array.isArray(message.content));
   }

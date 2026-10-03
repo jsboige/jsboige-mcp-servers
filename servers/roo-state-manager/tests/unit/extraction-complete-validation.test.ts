@@ -42,8 +42,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
 
       console.log(`✅ extractNewTaskInstructionsFromUI returned ${instructions.length} instructions`);
       
-      // VALIDATION CRITIQUE : Exactement 10 instructions (6 JSON + 4 XML patterns détectés)
-      expect(instructions.length).toBe(10);
+      // #4037 : exactement les 6 spawns reels (6 JSON ask/tool). Avant #4037 :
+      // 10 brutes = 6 reels + <task> racine du parent + 3 echos de requete.
+      expect(instructions.length).toBe(6);
       
       // Vérifier que chaque instruction a les bons champs
       for (const instruction of instructions) {
@@ -125,8 +126,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
       const prefixCount = skeleton!.childTaskInstructionPrefixes?.length || 0;
       console.log(`✅ analyzeConversation generated ${prefixCount} childTaskInstructionPrefixes`);
       
-      // VALIDATION CRITIQUE : Exactement 7 prefixes (après dédoublonnage des 10 instructions)
-      expect(prefixCount).toBe(7);
+      // #4037 : exactement 6 prefixes — un par spawn reel (avant #4037 : 7,
+      // le surplus etant l'instruction racine du parent capturée comme enfant)
+      expect(prefixCount).toBe(6);
       
       // Vérifier que chaque prefix est valide
       for (const prefix of skeleton!.childTaskInstructionPrefixes!) {
@@ -153,8 +155,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
       const stats = globalTaskInstructionIndex.getStats();
       console.log(`✅ Index stats after analyzeConversation:`, stats);
       
-      // VALIDATION : L'index doit contenir les 7 instructions
-      expect(stats.totalInstructions).toBeGreaterThanOrEqual(7);
+      // #4037 : l'index porte les 6 spawns reels (avant #4037 le pin etait
+      // incoherent avec son propre titre : >= 7 pour un titre « 6 »)
+      expect(stats.totalInstructions).toBeGreaterThanOrEqual(6);
     });
   });
 
@@ -200,8 +203,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
         0
       );
       
-      // Si on avait extrait depuis api_history, on aurait > 10 instructions
-      expect(instructions.length).toBe(10);
+      // #4037 : extraction bornee aux 6 spawns reels du ui_messages.json ;
+      // puiser dans api_history en ajouterait d'autres
+      expect(instructions.length).toBe(6);
       console.log('✅ Confirmed: api_conversation_history.json was NOT used for extraction');
     });
   });
