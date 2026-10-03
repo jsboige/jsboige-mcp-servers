@@ -12,7 +12,7 @@
  */
 
 import { promises as fs } from 'fs';
-import { existsSync, copyFileSync } from 'fs';
+import { existsSync, copyFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import sqlite3 from 'sqlite3';
@@ -314,8 +314,12 @@ export class RooSettingsService {
    * Read Roo settings from state.vscdb using a temp copy to avoid locking
    */
   private async readFromVscdb(dbPath: string): Promise<Record<string, unknown>> {
-    // Copy to temp to avoid locking conflicts with VS Code
-    const tmpPath = join(tmpdir(), `state-vscdb-${Date.now()}.db`);
+    // Copy to temp to avoid locking conflicts with VS Code.
+    // #2406 P1-a2 — mkdtempSync (unique, atomique) : deux lectures tombant sur la
+    // même milliseconde partageaient le fichier et l'une supprimait la copie de
+    // l'autre en plein read (même classe que les dossiers temp de P1-a).
+    const tempDir = mkdtempSync(join(tmpdir(), 'state-vscdb-'));
+    const tmpPath = join(tempDir, 'state.vscdb');
 
     try {
       copyFileSync(dbPath, tmpPath);
@@ -337,9 +341,11 @@ export class RooSettingsService {
         await this.closeDatabase(db);
       }
     } finally {
-      // Clean up temp file
+      // Clean up temp dir (#2406 P1-a2 — tout le dossier, pas seulement le fichier)
       try {
-        await fs.unlink(tmpPath);
+        // maxRetries : handle sqlite libéré en retard sous Windows → EBUSY avalé par le
+        // catch → tout le dossier temp fuirait (review #1315).
+        await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       } catch {
         // Ignore cleanup errors
       }

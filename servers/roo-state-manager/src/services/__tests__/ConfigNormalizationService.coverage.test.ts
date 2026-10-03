@@ -235,4 +235,50 @@ describe('ConfigNormalizationService — branch coverage (#833 C3, source-ground
       expect(out.ref).toBe('../sibling/file.txt');
     });
   });
+
+  // ============================================================
+  // normalizeEmbeddedPaths — end-of-path boundary (#2406 P1-a2)
+  // ============================================================
+  describe('normalizeEmbeddedPaths — end-of-path boundary (#2406 P1-a2)', () => {
+    test('sibling prefix is NOT rewritten: roo-extensions-old stays intact', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      // Without the lookahead, `D:\Dev\roo-extensions-old` contains the rooRoot as a
+      // substring and becomes `%ROO_ROOT%-old` — a path that denormalizes WRONG.
+      const out = service.normalizeEmbeddedPaths('-File D:\\Dev\\roo-extensions-old\\scripts\\x.ps1');
+      expect(out).toBe('-File D:\\Dev\\roo-extensions-old\\scripts\\x.ps1');
+    });
+
+    test('path followed by a separator IS rewritten (boundary = separator)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('-File D:\\Dev\\roo-extensions\\scripts\\x.ps1 -Verb RunAs');
+      expect(out).toBe('-File %ROO_ROOT%\\scripts\\x.ps1 -Verb RunAs');
+    });
+
+    test('path at end of string IS rewritten (boundary = end)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('cd /d D:\\Dev\\roo-extensions');
+      expect(out).toBe('cd /d %ROO_ROOT%');
+    });
+
+    // Review #1315 — un lookahead séparateur-ou-fin seul laissait fuir un root suivi
+    // d'un délimiteur NON-séparateur (guillemet, espace, `;`), chemins sources embarqués
+    // tels quels dans le package collecté.
+    test('quoted root IS rewritten (boundary = closing quote)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('-WorkingDirectory "D:\\Dev\\roo-extensions"');
+      expect(out).toBe('-WorkingDirectory "%ROO_ROOT%"');
+    });
+
+    test('root followed by a space IS rewritten (boundary = space)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('-Root D:\\Dev\\roo-extensions -NoProfile');
+      expect(out).toBe('-Root %ROO_ROOT% -NoProfile');
+    });
+
+    test('root followed by a semicolon IS rewritten (boundary = ;)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('cd D:\\Dev\\roo-extensions; npm ci');
+      expect(out).toBe('cd %ROO_ROOT%; npm ci');
+    });
+  });
 });
