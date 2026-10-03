@@ -42,13 +42,23 @@ vi.mock('fs', () => ({
 	createReadStream: vi.fn(),
 }));
 
+// #1747 : lignes JSONL injectables pour tester le format reel (content tableau
+// de blocks) sans ecrire sur disque. Defaut = format historique string.
+const { mockJsonlLines } = vi.hoisted(() => ({
+	mockJsonlLines: [
+		'{"sessionId":"test-1","message":{"role":"user","content":"Hello"}}',
+		'{"sessionId":"test-1","message":{"role":"assistant","content":"Hi there"}}',
+	] as string[],
+}));
+
 vi.mock('readline', () => ({
 	createInterface: vi.fn(() => ({
 		on: vi.fn((event, callback) => {
 			if (event === 'line') {
 				// Simuler des lignes JSONL
-				callback('{"sessionId":"test-1","message":{"role":"user","content":"Hello"}}');
-				callback('{"sessionId":"test-1","message":{"role":"assistant","content":"Hi there"}}');
+				for (const line of [...mockJsonlLines]) {
+					callback(line);
+				}
 			}
 			if (event === 'close') {
 				callback();
@@ -91,7 +101,9 @@ vi.mock('zlib', () => ({
 
 vi.mock('util', () => ({
 	promisify: (fn: any) => {
-		if (fn === mockGzip) return async (buf: Buffer) => Buffer.from(JSON.stringify({ compressed: true }));
+		// #1747 : passer par mockGzip (et non un stub opaque) pour que le hook
+		// de capture du beforeEach voie reellement le payload JSON compresse.
+		if (fn === mockGzip) return mockGzip;
 		if (fn === mockGunzip) return async (buf: Buffer) => buf;
 		return fn;
 	},
@@ -108,6 +120,11 @@ describe('TaskArchiver - Additional Coverage Tests', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		capturedJsonData = null;
+		mockJsonlLines.length = 0;
+		mockJsonlLines.push(
+			'{"sessionId":"test-1","message":{"role":"user","content":"Hello"}}',
+			'{"sessionId":"test-1","message":{"role":"assistant","content":"Hi there"}}'
+		);
 
 		// Configuration par défaut des mocks
 		mockAccess.mockRejectedValue(new Error('ENOENT')); // archive n'existe pas
@@ -216,8 +233,9 @@ describe('TaskArchiver - Additional Coverage Tests', () => {
 			mockStat.mockResolvedValueOnce({ mtimeMs: 1000 }); // source
 			const jsonlPath = '/some/weird/path/conversations.jsonl';
 
-			await TaskArchiver.archiveClaudeCodeSession('session-123', jsonlPath, 'Custom Title');
+			const outcome = await TaskArchiver.archiveClaudeCodeSession('session-123', jsonlPath, 'Custom Title');
 
+			expect(outcome).toBe('skipped-unchanged');
 			// Ne devrait pas appeler gzip ni writeFile
 			expect(mockGzip).not.toHaveBeenCalled();
 			expect(mockWriteFile).not.toHaveBeenCalled();
@@ -229,7 +247,113 @@ describe('TaskArchiver - Additional Coverage Tests', () => {
 			const jsonlPath = '/some/weird/path/conversations.jsonl';
 
 			// Ne devrait pas throw
-			await expect(TaskArchiver.archiveClaudeCodeSession('session-123', jsonlPath)).resolves.toBeUndefined();
+			await expect(TaskArchiver.archiveClaudeCodeSession('session-123', jsonlPath)).resolves.toBe('archived');
+		});
+	});
+
+	// ============================================================
+	// #1747 — format reel Claude Code : content = tableau de blocks
+	// Regression : `.trim()` sur un tableau throwait, le catch avalait la
+	// session et le batch comptait quand meme « reussie » (0 fichier ecrit).
+	// ============================================================
+
+	describe('archiveClaudeCodeSession - real array-content format (#1747)', () => {
+		test('archives assistant messages with thinking+text block arrays', async () => {
+			mockJsonlLines.length = 0;
+			mockJsonlLines.push(
+				'{"type":"queue-operation","timestamp":"2026-10-03T04:00:00Z"}',
+				'{"type":"user","timestamp":"2026-10-03T04:00:01Z","message":{"role":"user","content":"Do the task"}}',
+				'{"type":"assistant","timestamp":"2026-10-03T04:00:02Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"internal reasoning"},{"type":"text","text":"Done, here is the result"}]}}'
+			);
+
+			const outcome = await TaskArchiver.archiveClaudeCodeSession('session-arr', '/p/s.jsonl');
+
+			expect(outcome).toBe('archived');
+			expect(mockWriteFile).toHaveBeenCalledTimes(1);
+			expect(capturedJsonData.messages).toHaveLength(2);
+			expect(capturedJsonData.messages[0]).toMatchObject({ role: 'user', content: 'Do the task' });
+			// thinking exclus, text preserve
+			expect(capturedJsonData.messages[1].content).toBe('Done, here is the result');
+			expect(capturedJsonData.messages[1].content).not.toContain('internal reasoning');
+		});
+
+		test('flattens tool_result blocks with classifier marker (#2946 policy)', async () => {
+			mockJsonlLines.length = 0;
+			mockJsonlLines.push(
+				'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"command output line"}]}]}}'
+			);
+
+			const outcome = await TaskArchiver.archiveClaudeCodeSession('session-tr', '/p/s.jsonl');
+
+			expect(outcome).toBe('archived');
+			expect(capturedJsonData.messages[0].content).toBe('[tool_result] Result: command output line');
+		});
+
+		test('session with only non-text blocks is skipped-empty, not counted archived', async () => {
+			mockJsonlLines.length = 0;
+			mockJsonlLines.push(
+				'{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"only reasoning"}]}}'
+			);
+
+			const outcome = await TaskArchiver.archiveClaudeCodeSession('session-think', '/p/s.jsonl');
+
+			expect(outcome).toBe('skipped-empty');
+			expect(mockGzip).not.toHaveBeenCalled();
+			expect(mockWriteFile).not.toHaveBeenCalled();
+		});
+
+		test('read failure throws and is counted failed by the batch, not archived', async () => {
+			// stream error : readline n'emmet jamais close → readJsonlFile rejette.
+			// On ne peut pas le simuler via mockJsonlLines : on mock l'erreur via
+			// un readJsonlFile defaillant en cassant createReadStream.
+			const { createReadStream } = await import('fs');
+			(createReadStream as any).mockImplementationOnce(() => {
+				throw new Error('ENOENT: no such file');
+			});
+
+			// Batch : un projet, un fichier .jsonl plat
+			mockReaddir.mockResolvedValueOnce(['proj-a']);
+			mockStat.mockResolvedValueOnce({ isDirectory: () => true } as any);
+			mockReaddir.mockResolvedValueOnce(['sess-1.jsonl']);
+			mockStat.mockResolvedValueOnce({ isDirectory: () => false, isFile: () => true } as any);
+
+			const result = await TaskArchiver.archiveClaudeCodeSessions('/projects');
+
+			expect(result.archived).toBe(0);
+			expect(result.failed).toBe(1);
+			expect(result.skipped).toBe(0);
+		});
+
+		test('batch tallies archived vs skipped separately', async () => {
+			// Batch 1 : projet avec une session a contenu textuel reel → archived
+			mockReaddir.mockResolvedValueOnce(['proj-a']);
+			mockStat.mockResolvedValueOnce({ isDirectory: () => true } as any);
+			mockReaddir.mockResolvedValueOnce(['sess-1.jsonl']);
+			mockStat.mockResolvedValueOnce({ isDirectory: () => false, isFile: () => true } as any);
+
+			mockJsonlLines.length = 0;
+			mockJsonlLines.push(
+				'{"type":"user","message":{"role":"user","content":"real"}}',
+				'{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}'
+			);
+
+			const result1 = await TaskArchiver.archiveClaudeCodeSessions('/projects');
+			expect(result1.archived).toBe(1);
+			expect(result1.skipped).toBe(0);
+			expect(mockWriteFile).toHaveBeenCalledTimes(1);
+
+			// Batch 2 : session sans aucun message textuel → skipped-empty, rien ecrit
+			mockReaddir.mockResolvedValueOnce(['proj-b']);
+			mockStat.mockResolvedValueOnce({ isDirectory: () => true } as any);
+			mockReaddir.mockResolvedValueOnce(['sess-x.jsonl']);
+			mockStat.mockResolvedValueOnce({ isDirectory: () => false, isFile: () => true } as any);
+			mockJsonlLines.length = 0;
+			mockJsonlLines.push('{"type":"queue-operation"}');
+
+			const result2 = await TaskArchiver.archiveClaudeCodeSessions('/projects');
+			expect(result2.archived).toBe(0);
+			expect(result2.skipped).toBe(1);
+			expect(mockWriteFile).toHaveBeenCalledTimes(1); // seul le batch 1 a ecrit
 		});
 	});
 
