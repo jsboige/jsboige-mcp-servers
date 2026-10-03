@@ -13,23 +13,22 @@ import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 
 /**
- * TEST NON RÉINTÉGRABLE - Problème ESM singleton
+ * TEST SKIPPÉ — motif ESM PÉRIMÉ (probe #2639 lot 3, 03/10/2026)
  *
- * Ce test est désactivé en raison d'un problème avec les singletons ESM qui cause
- * l'erreur "module is already linked" lors de l'exécution des tests.
+ * Historique : bloc désactivé pour "module is already linked" (singleton ESM
+ * task-instruction-index). Probe de réactivation (describe.skip → describe,
+ * vitest.config.ci.ts, tête e9995390) : le bloc S'EXÉCUTE — aucune erreur de
+ * liaison ESM. 2/6 passent ; les 4 échecs sont TOUS des assertions de compte
+ * `expected 10 to be 6` = la sur-capture d'instructions (#4037 : bloc racine
+ * `<task>` + échos doublonnés), PAS l'ESM.
  *
- * Problème identifié :
- * - Le module task-instruction-index.js utilise un singleton globalTaskInstructionIndex
- * - Lors de l'exécution multiple des tests, le module est déjà lié et ne peut pas être réinitialisé
- * - Les tentatives de nettoyage dans beforeEach ne suffisent pas
- *
- * Pour réintégrer ce test :
- * 1. Refactoriser task-instruction-index.js pour ne plus utiliser de singleton
- * 2. Utiliser l'injection de dépendances ou un pattern factory
- * 3. Permettre la création d'instances isolées pour chaque test
- * 4. Tester la refactorisation avec les tests unitaires existants
- *
- * Voir aussi : https://github.com/vitest-dev/vitest/issues/4043
+ * Le vrai bloqueur de réintégration est donc #4037 (fix PR submod #1318) :
+ * une fois la dédup/filtration mergée, dé-skipper ce bloc doit rendre les 6
+ * tests verts SANS refactor du singleton. Si un échec de liaison ESM
+ * réapparaissait à ce moment-là, restaurer le skip avec la note d'origine :
+ * - task-instruction-index.js utilise un singleton globalTaskInstructionIndex
+ * - déjà lié en cours de run → non réinitialisable, beforeEach insuffisant
+ * - Voir aussi : https://github.com/vitest-dev/vitest/issues/4043
  */
 describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleton issue)', () => {
     const fixturesPath = path.join(__dirname, '..', 'fixtures', 'real-tasks');
