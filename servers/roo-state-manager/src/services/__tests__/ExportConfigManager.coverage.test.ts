@@ -301,6 +301,38 @@ describe('ExportConfigManager — branch coverage (#833 C3, source-grounded)', (
   });
 
   // ============================================================
+  // #2191 follow-up — initializeConfigPath single-flight
+  // ============================================================
+  describe('#2191 follow-up — initializeConfigPath single-flight (concurrent first accesses)', () => {
+    test('two concurrent first accesses share ONE detectStorageLocations call', async () => {
+      // Detect is held open until BOTH getConfig() calls are in flight —
+      // pre-single-flight, each caller ran its own detect (2 scans).
+      let release!: (v: string[]) => void;
+      mockDetectStorageLocations.mockImplementation(
+        () => new Promise<string[]>(res => { release = res; })
+      );
+      const mgr = makeManager();
+
+      const p1 = mgr.getConfig();
+      const p2 = mgr.getConfig();
+      release([MOCK_STORAGE_PATH]);
+      await Promise.all([p1, p2]);
+
+      expect(mockDetectStorageLocations).toHaveBeenCalledTimes(1);
+    });
+
+    test('sequential access after no-storage still retries (retry semantics preserved)', async () => {
+      // No-storage is not memoized forever: the flight is released at the end,
+      // so a later access re-runs the detector exactly like before the fix.
+      mockDetectStorageLocations.mockResolvedValue([]);
+      const mgr = makeManager();
+      await mgr.getConfig();
+      await mgr.getConfig();
+      expect(mockDetectStorageLocations).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ============================================================
   // addTemplate / addFilter — writeFile invocation (L243, L267)
   // ============================================================
   describe('addTemplate / addFilter — persist via saveConfig (L243, L267)', () => {

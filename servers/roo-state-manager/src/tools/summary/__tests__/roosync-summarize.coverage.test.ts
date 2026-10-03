@@ -8,7 +8,9 @@
  *  - extractClaudeProjectName (L244 taskId sans prefix 'claude-', L248-250 sans '--')
  *  - createConversationGetter('claude') : L268 locations empty fallback,
  *    L270-279 loop + skeleton found/return + null→continue→return null
- *  - createChildTasksFinder('claude') : L299-327 (locations loop, analyzeConversation, filter)
+ *  - createChildTasksFinder('claude') : L299-327 — #2191 follow-up : la boucle
+ *    locations/projects morte a été retirée (contrat [] inchangé), le finder
+ *    n'appelle plus aucun détecteur
  *  - L371 maxContentLength synthesis=5000 vs trace/cluster=2000
  *  - L412 catch externe non-Error → 'Erreur inconnue'
  *
@@ -245,11 +247,13 @@ describe('handleRooSyncSummarize — coverage branches Claude source', () => {
   });
 
   // ============================================================
-  // createChildTasksFinder('claude') (L297-327)
+  // createChildTasksFinder('claude') — #2191 follow-up : contrat [] sans scan
+  // (l'ancienne boucle locations/projects L299-322 était du travail mort :
+  //  allTasks n'était jamais remplie — mesure c.573 — et a été retirée)
   // ============================================================
   describe('createChildTasksFinder claude (L299-322)', () => {
 
-    test('cluster source=claude → findChildTasks invoqué, boucle locations/projects', async () => {
+    test('cluster source=claude → findChildTasks invoqué, contrat [] SANS scan projet', async () => {
       mockHandleGenerateClusterSummary.mockImplementation(
         async (_args: any, _getter: any, finder: any) => {
           const children = await finder('claude-root--uuid');
@@ -258,7 +262,6 @@ describe('handleRooSyncSummarize — coverage branches Claude source', () => {
       );
       mockDetectStorageLocations.mockResolvedValue([{ path: '/c/base' }]);
       mockListProjects.mockResolvedValue(['proj1']);
-      // analyzeConversation('dummy', projectPath) → skeleton avec dataSource
       mockAnalyzeConversation.mockResolvedValue({ metadata: { dataSource: 'claude' } });
 
       const result = await handleRooSyncSummarize({
@@ -268,20 +271,23 @@ describe('handleRooSyncSummarize — coverage branches Claude source', () => {
       });
 
       const parsed = JSON.parse(result);
-      expect(parsed.count).toBe(0); // allTasks vide (impl simplifiée)
-      expect(mockListProjects).toHaveBeenCalledWith('/c/base');
+      expect(parsed.count).toBe(0); // contrat inchangé : enfants non implémentés pour claude
+      // #2191 : la boucle projet morte est retirée — aucun scan ne court.
+      expect(mockListProjects).not.toHaveBeenCalled();
+      expect(mockAnalyzeConversation).not.toHaveBeenCalled();
     });
 
-    test('cluster : analyzeConversation reject → catch interne (L316-318) swallowed', async () => {
+    test('cluster : le finder est immunisé aux rejets détecteur (plus de catch interne à exercer)', async () => {
       mockHandleGenerateClusterSummary.mockImplementation(
         async (_args: any, _getter: any, finder: any) => {
           const children = await finder('claude-root--uuid');
           return JSON.stringify({ count: children.length });
         }
       );
-      mockDetectStorageLocations.mockResolvedValue([{ path: '/c/base' }]);
-      mockListProjects.mockResolvedValue(['proj1']);
-      // analyzeConversation rejette → catch interne avale l'erreur, allTasks vide
+      // Avant #2191 follow-up, un analyzeConversation rejeté devait être avalé
+      // par le catch interne de la boucle morte (L316-318) ; la boucle n'existe
+      // plus, le rejet ne peut plus être atteint — le finder ne touche aucun
+      // détecteur. Le contrat [] reste.
       mockAnalyzeConversation.mockRejectedValue(new Error('parse failed'));
 
       const result = await handleRooSyncSummarize({
@@ -291,7 +297,8 @@ describe('handleRooSyncSummarize — coverage branches Claude source', () => {
       });
 
       const parsed = JSON.parse(result);
-      expect(parsed.count).toBe(0); // catch swallowed → pas de crash
+      expect(parsed.count).toBe(0); // contrat [] tenu, sans crash ni scan
+      expect(mockAnalyzeConversation).not.toHaveBeenCalled();
     });
   });
 
