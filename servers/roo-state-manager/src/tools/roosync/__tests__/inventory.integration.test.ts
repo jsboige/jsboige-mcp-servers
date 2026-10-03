@@ -39,11 +39,10 @@ describe('roosync_inventory (integration)', () => {
       for (const type of types) {
         const result = await inventoryTool.execute({ type }, null);
 
-        expect(result).toBeDefined();
-        expect(result).toHaveProperty('success');
+        expect(result).toMatchObject({ success: expect.any(Boolean) });
         // Only check data if success is true (error cases don't have data property)
         if (result.success) {
-          expect(result.data).toHaveProperty('retrievedAt');
+          expect(result.data.retrievedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
         }
       }
     }, 30000); // 30 second timeout - each inventory call takes ~8 seconds
@@ -52,8 +51,7 @@ describe('roosync_inventory (integration)', () => {
       // Sans machineId - utilise hostname par défaut
       const result1 = await inventoryTool.execute({ type: 'machine' }, null);
 
-      expect(result1).toBeDefined();
-      expect(result1).toHaveProperty('success');
+      expect(result1).toMatchObject({ success: expect.any(Boolean) });
 
       // Avec machineId explicite
       const result2 = await inventoryTool.execute({
@@ -61,8 +59,7 @@ describe('roosync_inventory (integration)', () => {
         machineId: 'test-machine-id'
       }, null);
 
-      expect(result2).toBeDefined();
-      expect(result2).toHaveProperty('success');
+      expect(result2).toMatchObject({ success: expect.any(Boolean) });
     });
 
     test('should accept optional includeHeartbeats parameter', async () => {
@@ -71,8 +68,7 @@ describe('roosync_inventory (integration)', () => {
         includeHeartbeats: true
       }, null);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
+      expect(result).toMatchObject({ success: expect.any(Boolean) });
     });
   });
 
@@ -82,49 +78,49 @@ describe('roosync_inventory (integration)', () => {
 
   describe('response format', () => {
     test('should have InventoryArgsSchema with proper structure', () => {
-      // Vérifier que le schema a la bonne structure
-      expect(InventoryArgsSchema).toBeDefined();
+      // Vérifier que le schema a la bonne structure : type requis,
+      // filtres optionnels (inventory.ts l.26-49)
       const shape = InventoryArgsSchema.shape;
-      expect(shape.type).toBeDefined();
-      expect(shape.machineId).toBeDefined();
-      expect(shape.includeHeartbeats).toBeDefined();
+      expect(shape.type.isOptional()).toBe(false);
+      expect(shape.machineId.isOptional()).toBe(true);
+      expect(shape.includeHeartbeats.isOptional()).toBe(true);
     });
 
     test('should have InventoryResultSchema with proper structure', () => {
-      // Vérifier que le schema de retour a la bonne structure
-      expect(InventoryResultSchema).toBeDefined();
+      // Contrat de retour (inventory.ts l.134-156) : success/retrievedAt requis,
+      // machineInventory (z.any) et heartbeatState optionnels selon le type
       const shape = InventoryResultSchema.shape;
-      expect(shape.success).toBeDefined();
-      expect(shape.machineInventory).toBeDefined();
-      expect(shape.heartbeatState).toBeDefined();
-      expect(shape.retrievedAt).toBeDefined();
+      expect(shape.success.isOptional()).toBe(false);
+      expect(shape.retrievedAt.isOptional()).toBe(false);
+      expect(shape.machineInventory.isOptional()).toBe(true);
+      expect(shape.heartbeatState.isOptional()).toBe(true);
     });
 
     test('should include type enum with correct values', () => {
-      // Vérifier que l'enum type contient les bonnes valeurs
+      // Enum type réel du handler (inventory.ts l.27) — 6 types, pas seulement
+      // machine/heartbeat/all : machines, status et health (#2224) existent aussi.
       const shape = InventoryArgsSchema.shape;
-      expect(shape.type).toBeDefined();
+      expect(shape.type.options).toEqual(['machine', 'heartbeat', 'all', 'machines', 'status', 'health']);
     });
 
     test('should have HeartbeatDataSchema with required fields', () => {
-      // Vérifier que le schema de heartbeat a les bons champs
-      expect(HeartbeatDataSchema).toBeDefined();
+      // Champs requis du heartbeat (inventory.ts l.89-109)
       const shape = HeartbeatDataSchema.shape;
-      expect(shape.machineId).toBeDefined();
-      expect(shape.lastHeartbeat).toBeDefined();
-      expect(shape.status).toBeDefined();
-      expect(shape.metadata).toBeDefined();
+      expect(shape.machineId.isOptional()).toBe(false);
+      expect(shape.lastHeartbeat.isOptional()).toBe(false);
+      expect(shape.status.isOptional()).toBe(false);
+      expect(shape.metadata.isOptional()).toBe(false);
+      expect(shape.status.options).toEqual(['online', 'idle', 'unknown']);
     });
 
     test('should have HeartbeatStatisticsSchema with required fields', () => {
-      // Vérifier que le schema de statistiques a les bons champs
-      expect(HeartbeatStatisticsSchema).toBeDefined();
+      // Champs requis des statistiques (inventory.ts l.116-127)
       const shape = HeartbeatStatisticsSchema.shape;
-      expect(shape.totalMachines).toBeDefined();
-      expect(shape.onlineCount).toBeDefined();
-      expect(shape.idleCount).toBeDefined(); // ADR 008: idle replaces offline
-      expect(shape.unknownCount).toBeDefined(); // ADR 008: unknown replaces warning
-      expect(shape.lastHeartbeatCheck).toBeDefined();
+      expect(shape.totalMachines.isOptional()).toBe(false);
+      expect(shape.onlineCount.isOptional()).toBe(false);
+      expect(shape.idleCount.isOptional()).toBe(false); // ADR 008: idle replaces offline
+      expect(shape.unknownCount.isOptional()).toBe(false); // ADR 008: unknown replaces warning
+      expect(shape.lastHeartbeatCheck.isOptional()).toBe(false);
     });
   });
 
@@ -136,12 +132,10 @@ describe('roosync_inventory (integration)', () => {
     test('should handle type=machine', async () => {
       const result = await inventoryTool.execute({ type: 'machine' }, null);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
+      expect(result).toMatchObject({ success: expect.any(Boolean) });
       // Only check data if success is true (error cases don't have data property)
       if (result.success) {
-        expect(result.data).toHaveProperty('retrievedAt');
-        expect(result.data).toHaveProperty('machineInventory');
+        expect(Object.keys(result.data)).toEqual(expect.arrayContaining(['retrievedAt', 'machineInventory']));
       }
     });
 
@@ -151,13 +145,14 @@ describe('roosync_inventory (integration)', () => {
         includeHeartbeats: true
       }, null);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
+      expect(result).toMatchObject({ success: expect.any(Boolean) });
       // Only check data if success is true (error cases don't have data property)
       if (result.success) {
-        expect(result.data).toHaveProperty('heartbeatState');
-        expect(result.data.heartbeatState).toHaveProperty('statistics');
-        expect(result.data.heartbeatState).toHaveProperty('retrievedAt');
+        // heartbeatState : listes par statut + statistiques + timestamp (InventoryResultSchema)
+        expect(result.data.heartbeatState).toMatchObject({
+          statistics: expect.any(Object),
+          retrievedAt: expect.any(String)
+        });
       }
     });
 
@@ -167,13 +162,11 @@ describe('roosync_inventory (integration)', () => {
         includeHeartbeats: true
       }, null);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
+      expect(result).toMatchObject({ success: expect.any(Boolean) });
       // Only check data if success is true (error cases don't have data property)
       if (result.success) {
         // type=all doit retourner les deux inventaires
-        expect(result.data).toHaveProperty('machineInventory');
-        expect(result.data).toHaveProperty('heartbeatState');
+        expect(Object.keys(result.data)).toEqual(expect.arrayContaining(['machineInventory', 'heartbeatState']));
       }
     });
   });
@@ -190,16 +183,16 @@ describe('roosync_inventory (integration)', () => {
         machineId: 'non-existent-machine-for-testing'
       }, null);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
+      expect(result).toMatchObject({ success: expect.any(Boolean) });
 
       // Si PowerShell n'est pas disponible, success peut être false
       if (!result.success) {
-        expect(result.error).toBeDefined();
-        expect(result.error).toHaveProperty('code');
-        expect(result.error).toHaveProperty('message');
+        expect(result.error).toMatchObject({
+          code: expect.any(String),
+          message: expect.any(String)
+        });
       } else {
-        expect(result.data).toHaveProperty('retrievedAt');
+        expect(result.data.retrievedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       }
     });
 
@@ -209,16 +202,16 @@ describe('roosync_inventory (integration)', () => {
         type: 'heartbeat'
       }, null);
 
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty('success');
+      expect(result).toMatchObject({ success: expect.any(Boolean) });
 
       // Si le service RooSync n'est pas disponible, success peut être false
       if (!result.success) {
-        expect(result.error).toBeDefined();
-        expect(result.error).toHaveProperty('code');
-        expect(result.error).toHaveProperty('message');
+        expect(result.error).toMatchObject({
+          code: expect.any(String),
+          message: expect.any(String)
+        });
       } else {
-        expect(result.data).toHaveProperty('retrievedAt');
+        expect(result.data.retrievedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       }
     });
   });

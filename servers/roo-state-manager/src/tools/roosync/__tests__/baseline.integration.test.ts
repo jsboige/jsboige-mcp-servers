@@ -128,38 +128,42 @@ describe('roosync_baseline (integration)', () => {
 
   describe('response format', () => {
     test('should have BaselineArgsSchema with proper structure', async () => {
-      // Vérifier que le schema a la bonne structure
-      expect(BaselineArgsSchema).toBeDefined();
+      // Vérifier que le schema a la bonne structure : action requise,
+      // paramètres d'entrée optionnels (baseline.ts l.57-118)
       const shape = BaselineArgsSchema.shape;
-      expect(shape.action).toBeDefined();
-      expect(shape.machineId).toBeDefined();
-      expect(shape.version).toBeDefined();
-      expect(shape.format).toBeDefined();
+      expect(shape.action.isOptional()).toBe(false);
+      expect(shape.machineId.isOptional()).toBe(true);
+      expect(shape.version.isOptional()).toBe(true);
+      expect(shape.format.isOptional()).toBe(true);
     });
 
     test('should have BaselineResultSchema with proper structure', async () => {
-      // Vérifier que le schema de retour a la bonne structure
-      expect(BaselineResultSchema).toBeDefined();
+      // Champs requis du contrat de retour (baseline.ts l.125-131)
       const shape = BaselineResultSchema.shape;
-      expect(shape.action).toBeDefined();
-      expect(shape.success).toBeDefined();
-      expect(shape.version).toBeDefined();
-      expect(shape.timestamp).toBeDefined();
-      expect(shape.machineId).toBeDefined();
+      expect(shape.action.isOptional()).toBe(false);
+      expect(shape.success.isOptional()).toBe(false);
+      expect(shape.version.isOptional()).toBe(false);
+      expect(shape.message.isOptional()).toBe(false);
+      expect(shape.timestamp.isOptional()).toBe(false);
+      expect(shape.machineId.isOptional()).toBe(false);
     });
 
     test('should include action enum with correct values', async () => {
-      // Vérifier que l'enum action contient les bonnes valeurs
+      // Enum action réel du handler (baseline.ts l.58) — le commentaire
+      // historique « update, version, restore, export » était périmé :
+      // list_versions et current_version existent aussi.
       const shape = BaselineArgsSchema.shape;
-      expect(shape.action).toBeDefined();
-      // Les valeurs valides sont: update, version, restore, export
+      expect(shape.action.options).toEqual([
+        'update', 'version', 'restore', 'export', 'list_versions', 'current_version'
+      ]);
     });
 
     test('should include format enum for export action', async () => {
-      // Vérifier que l'enum format contient les bonnes valeurs
+      // Enum format réel du handler (baseline.ts l.108) — champ optionnel :
+      // z.enum().optional() enveloppe le ZodEnum, les options vivent sous .unwrap()
       const shape = BaselineArgsSchema.shape;
-      expect(shape.format).toBeDefined();
-      // Les valeurs valides sont: json, yaml, csv
+      expect(shape.format.isOptional()).toBe(true);
+      expect(shape.format.unwrap().options).toEqual(['json', 'yaml', 'csv']);
     });
   });
 
@@ -183,10 +187,13 @@ describe('roosync_baseline (integration)', () => {
         format: 'json'
       });
 
-      // Le résultat doit être défini et contenir les informations d'export
-      expect(result).toBeDefined();
+      // Contrat de retour de l'export (BaselineResultSchema l.148-153)
       expect(result.success).toBe(true);
       expect(result.action).toBe('export');
+      expect(result.format).toBe('json');
+      expect(result.version).toEqual(expect.any(String));
+      expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      expect(result.machineId).toEqual(expect.any(String));
     });
   });
 

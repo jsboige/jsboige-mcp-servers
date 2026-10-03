@@ -67,11 +67,11 @@ describe('Task Tree Integration Tests', () => {
 
     const analysis = await WorkspaceAnalyzer.analyzeWorkspaces(conversations);
 
-    expect(analysis).toBeDefined();
     expect(analysis.totalConversations).toBe(3);
-    expect(analysis.workspaces).toBeDefined();
     expect(Array.isArray(analysis.workspaces)).toBe(true);
-    expect(analysis.analysisMetadata).toBeDefined();
+    // MIN_CONVERSATIONS_FOR_WORKSPACE = 3 (workspace-analyzer.ts) : project1 n'a
+    // que 2 conversations, project2 une seule — le seuil exclut les deux clusters.
+    expect(analysis.workspaces).toHaveLength(0);
     expect(analysis.analysisMetadata.analysisTime).toBeGreaterThanOrEqual(0);
   });
 
@@ -97,7 +97,6 @@ describe('Task Tree Integration Tests', () => {
 
     const relationships = await RelationshipAnalyzer.analyzeRelationships(conversations);
 
-    expect(relationships).toBeDefined();
     expect(Array.isArray(relationships)).toBe(true);
 
     // Devrait détecter des relations de dépendance de fichiers
@@ -130,23 +129,22 @@ describe('Task Tree Integration Tests', () => {
     const builder = new TaskTreeBuilder();
     const tree = await builder.buildCompleteTree(conversations);
 
-    expect(tree).toBeDefined();
-    expect(tree.root).toBeDefined();
-    expect(tree.metadata).toBeDefined();
-    expect(tree.relationships).toBeDefined();
-    expect(tree.index).toBeDefined();
+    // Contrat de structure de l'arbre (buildCompleteTree)
+    expect(Object.keys(tree)).toEqual(expect.arrayContaining(['root', 'metadata', 'relationships', 'index']));
 
     // Vérifications de la structure
     expect(tree.metadata.totalNodes).toBeGreaterThan(0);
     expect(tree.metadata.buildTime).toBeGreaterThanOrEqual(0);
     expect(tree.metadata.version).toBe('1.0.0');
 
-    // Vérifications de l'index
-    expect(tree.index.byId).toBeDefined();
-    expect(tree.index.byType).toBeDefined();
-    expect(tree.index.byPath).toBeDefined();
-    expect(tree.index.byTechnology).toBeDefined();
-    expect(tree.index.byTimeRange).toBeDefined();
+    // Index (buildTreeIndex) : byId/byType/byTimeRange reçoivent CHAQUE nœud ;
+    // byPath/byTechnology ne remplissent que les nœuds portant path/technologies —
+    // avec 0 workspace qualifié (MIN 3 conversations), ils peuvent être vides.
+    expect(tree.index.byId.size).toBeGreaterThan(0);
+    expect(tree.index.byType.size).toBeGreaterThan(0);
+    expect(tree.index.byTimeRange.size).toBeGreaterThan(0);
+    expect(tree.index.byPath).toBeInstanceOf(Map);
+    expect(tree.index.byTechnology).toBeInstanceOf(Map);
 
     console.log('Tree built successfully:');
     console.log(`- Total nodes: ${tree.metadata.totalNodes}`);
@@ -177,7 +175,6 @@ describe('Task Tree Integration Tests', () => {
 
     const totalTime = Date.now() - startTime;
 
-    expect(tree).toBeDefined();
     expect(totalTime).toBeLessThan(10000); // Moins de 10 secondes pour 50 conversations
     expect(tree.metadata.buildTime).toBeLessThan(10000);
 
@@ -189,7 +186,6 @@ describe('Task Tree Integration Tests', () => {
     let builder = new TaskTreeBuilder();
     let tree = await builder.buildCompleteTree([]);
 
-    expect(tree).toBeDefined();
     expect(tree.metadata.totalNodes).toBeGreaterThanOrEqual(1); // Au moins le nœud racine
 
     // Test avec des conversations sans fichiers
@@ -199,7 +195,6 @@ describe('Task Tree Integration Tests', () => {
     ];
 
     tree = await builder.buildCompleteTree(emptyConversations);
-    expect(tree).toBeDefined();
     expect(tree.metadata.totalNodes).toBeGreaterThanOrEqual(1);
   });
 
@@ -212,13 +207,13 @@ describe('Task Tree Integration Tests', () => {
     const builder = new TaskTreeBuilder();
     const tree = await builder.buildCompleteTree(conversations);
 
-    // Vérifications d'intégrité
-    expect(tree.root.id).toBeDefined();
-    expect(tree.root.name).toBeDefined();
-    expect(tree.root.type).toBeDefined();
-    expect(tree.root.metadata).toBeDefined();
-    expect(tree.root.createdAt).toBeDefined();
-    expect(tree.root.updatedAt).toBeDefined();
+    // Vérifications d'intégrité — nœud racine canonique (task-tree-builder.ts l.333-354)
+    expect(tree.root.id).toBe('root');
+    expect(tree.root.name).toBe('Roo State Manager');
+    expect(tree.root.type).toBe('workspace'); // TaskType.WORKSPACE (types/task-tree.ts)
+    expect(tree.root.metadata).toMatchObject({ description: expect.any(String) });
+    expect(tree.root.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(tree.root.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
 
     // Vérifications de cohérence des relations parent-enfant
     const traverseAndCheck = (node, parent = null) => {
