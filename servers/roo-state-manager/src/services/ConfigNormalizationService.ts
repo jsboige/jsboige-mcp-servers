@@ -77,11 +77,14 @@ export class ConfigNormalizationService implements INormalizationService {
     for (const [localPath, placeholder] of pairs) {
       if (!localPath) continue;
       // Motif insensible au style de séparateur (`/` ou `\`) et, sur Windows, à la casse.
-      // #2406 P1-a2 — lookahead de fin de chemin : le motif ne doit mordre que si le
-      // chemin se TERMINE là (séparateur suivant ou fin de chaîne). Sans lui,
-      // `D:\roo-extensions-old` est réécrit en `%ROO_ROOT%-old` (préfixe-frère).
+      // #2406 P1-a2 — borne de fin de chemin : le motif ne doit mordre que si le chemin
+      // se TERMINE là, c.-à-d. si le caractère suivant n'est PAS un caractère de segment
+      // (lettre, chiffre, `.`, `_`, `-`, `$`…). Sans borne, `D:\roo-extensions-old` est
+      // réécrit en `%ROO_ROOT%-old` (préfixe-frère) ; avec un lookahead séparateur-ou-fin
+      // seul, un root suivi d'un guillemet, d'une espace ou d'un `;` (arguments schtasks
+      // quotés) fuyait tel quel (review #1315).
       const pattern =
-        this.escapeRegExp(localPath.replace(/\\/g, '/')).replace(/\//g, '[/\\\\]') + '(?=[/\\\\]|$)';
+        this.escapeRegExp(localPath.replace(/\\/g, '/')).replace(/\//g, '[/\\\\]') + '(?![A-Za-z0-9._~$+-])';
       out = out.replace(new RegExp(pattern, ctx.os === 'windows' ? 'gi' : 'g'), placeholder);
     }
     return out;

@@ -34,7 +34,6 @@ vi.mock('sqlite3', () => {
 
 const mockExistsSync = vi.fn().mockReturnValue(true);
 const mockCopyFileSync = vi.fn();
-const mockUnlink = vi.fn().mockResolvedValue(undefined);
 // #2406 P1-a2 — le read passe par un dossier mkdtemp unique, cleanup par rm(recursive).
 // Impl DANS vi.fn(...) pour survivre à mockReset:true ; rm reste sans impl par défaut.
 const mockMkdtempSync = vi.fn((prefix: string) => `${prefix}test-`);
@@ -49,7 +48,6 @@ vi.mock('fs', async () => {
     mkdtempSync: mockMkdtempSync,
     promises: {
       ...actual.promises,
-      unlink: mockUnlink,
       rm: mockRm,
     },
   };

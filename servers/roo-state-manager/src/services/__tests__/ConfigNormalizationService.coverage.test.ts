@@ -259,5 +259,26 @@ describe('ConfigNormalizationService — branch coverage (#833 C3, source-ground
       const out = service.normalizeEmbeddedPaths('cd /d D:\\Dev\\roo-extensions');
       expect(out).toBe('cd /d %ROO_ROOT%');
     });
+
+    // Review #1315 — un lookahead séparateur-ou-fin seul laissait fuir un root suivi
+    // d'un délimiteur NON-séparateur (guillemet, espace, `;`), chemins sources embarqués
+    // tels quels dans le package collecté.
+    test('quoted root IS rewritten (boundary = closing quote)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('-WorkingDirectory "D:\\Dev\\roo-extensions"');
+      expect(out).toBe('-WorkingDirectory "%ROO_ROOT%"');
+    });
+
+    test('root followed by a space IS rewritten (boundary = space)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('-Root D:\\Dev\\roo-extensions -NoProfile');
+      expect(out).toBe('-Root %ROO_ROOT% -NoProfile');
+    });
+
+    test('root followed by a semicolon IS rewritten (boundary = ;)', () => {
+      const service = new ConfigNormalizationService(windowsContext);
+      const out = service.normalizeEmbeddedPaths('cd D:\\Dev\\roo-extensions; npm ci');
+      expect(out).toBe('cd %ROO_ROOT%; npm ci');
+    });
   });
 });

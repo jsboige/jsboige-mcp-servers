@@ -221,6 +221,8 @@ describe('RooSettingsService — behavioural contracts', () => {
       expect(vi.mocked(fsp.rm)).toHaveBeenCalledWith(String(tempDir), {
         recursive: true,
         force: true,
+        maxRetries: 3, // review #1315 — handle sqlite libéré en retard (EBUSY) sous Windows
+        retryDelay: 100,
       });
     });
   });

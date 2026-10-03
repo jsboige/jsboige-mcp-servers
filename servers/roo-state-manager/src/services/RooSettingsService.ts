@@ -343,7 +343,9 @@ export class RooSettingsService {
     } finally {
       // Clean up temp dir (#2406 P1-a2 — tout le dossier, pas seulement le fichier)
       try {
-        await fs.rm(tempDir, { recursive: true, force: true });
+        // maxRetries : handle sqlite libéré en retard sous Windows → EBUSY avalé par le
+        // catch → tout le dossier temp fuirait (review #1315).
+        await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       } catch {
         // Ignore cleanup errors
       }
