@@ -41,10 +41,13 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
 
       await heartbeatService.registerHeartbeat('test-machine');
 
+      // Contrat HeartbeatData (HeartbeatService.ts l.81-85 + registerHeartbeat l.210-212)
       const data = heartbeatService.getHeartbeatData('test-machine');
-      expect(data).toBeDefined();
-      expect(data?.status).toBe('online');
-      expect(data?.machineId).toBe('test-machine');
+      expect(data).toMatchObject({
+        machineId: 'test-machine',
+        status: 'online'
+      });
+      expect(data?.lastHeartbeat).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
 
     it('does not attempt disk I/O (ADR 008: no disk writes ever)', async () => {
@@ -53,8 +56,11 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       await heartbeatService.registerHeartbeat('no-disk-machine');
 
       // ADR 008: No disk writes, machine is in-memory regardless of degradation
-      expect(heartbeatService.getHeartbeatData('no-disk-machine')).toBeDefined();
-      expect(heartbeatService.getHeartbeatData('no-disk-machine')?.status).toBe('online');
+      expect(heartbeatService.getHeartbeatData('no-disk-machine')).toMatchObject({
+        machineId: 'no-disk-machine',
+        status: 'online',
+        lastHeartbeat: expect.any(String)
+      });
     });
 
     it('in-memory state preserved after recovery — no disk needed #1953 ADR 008', async () => {
@@ -70,8 +76,11 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       await heartbeatService.stopHeartbeatService();
 
       // Machine still in memory — never left
-      expect(heartbeatService.getHeartbeatData('recovery-machine')).toBeDefined();
-      expect(heartbeatService.getHeartbeatData('recovery-machine')?.status).toBe('online');
+      expect(heartbeatService.getHeartbeatData('recovery-machine')).toMatchObject({
+        machineId: 'recovery-machine',
+        status: 'online',
+        lastHeartbeat: expect.any(String)
+      });
     });
   });
 
@@ -87,10 +96,14 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       // reloadFromDisk is a no-op in ADR 008 — state preserved
       heartbeatService.reloadFromDisk();
 
-      const dataExisting = heartbeatService.getHeartbeatData('existing-machine');
-      const dataDegraded = heartbeatService.getHeartbeatData('degraded-machine');
-      expect(dataExisting).toBeDefined();
-      expect(dataDegraded).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('existing-machine')).toMatchObject({
+        machineId: 'existing-machine',
+        status: 'online'
+      });
+      expect(heartbeatService.getHeartbeatData('degraded-machine')).toMatchObject({
+        machineId: 'degraded-machine',
+        status: 'online'
+      });
     });
   });
 
@@ -104,7 +117,10 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       await heartbeatService.stopHeartbeatService();
 
       // Machine still in memory
-      expect(heartbeatService.getHeartbeatData('unsaved-machine')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('unsaved-machine')).toMatchObject({
+        machineId: 'unsaved-machine',
+        status: 'online'
+      });
     });
   });
 
@@ -117,7 +133,10 @@ describe('HeartbeatService - Graceful Degradation (#1918)', () => {
       caps.markDegraded('sharedPath', 'GDrive offline');
 
       await heartbeatService.registerHeartbeat('degraded-only-machine');
-      expect(heartbeatService.getHeartbeatData('degraded-only-machine')).toBeDefined();
+      expect(heartbeatService.getHeartbeatData('degraded-only-machine')).toMatchObject({
+        machineId: 'degraded-only-machine',
+        status: 'online'
+      });
 
       caps.recover('sharedPath');
 
