@@ -91,7 +91,11 @@ export class ApiTextExtractor implements PatternExtractor {
         const match = toolData.request.match(pattern);
         
         if (match) {
-          const mode = match[1].trim();
+          // #4037 : "[new_task in 🪲 Debug mode: '...']" — le suffixe « mode »
+          // fait partie de la phrase, pas du nom du mode. Le retirer pour que
+          // cleanMode() produise "debug" et non "debug mode".
+          const rawMode = match[1].trim();
+          const mode = rawMode.replace(/\s*\bmode\b\s*$/i, '').trim() || rawMode;
           const content = match[2].trim();
           
           const instruction = createInstruction(

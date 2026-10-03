@@ -183,6 +183,10 @@ describe('NewTask Extraction - Régression', () => {
         expect(prefixes.length).toBeGreaterThanOrEqual(6);
         const uniquePrefixes = [...new Set(prefixes)];
 
+        // #4037 : plancher — le contrat "pas de doublons" ne doit pas passer à vide :
+        // la fixture contient 6 appels newTask réels, un résultat vide ou appauvri
+        // serait une régression silencieuse.
+        expect(prefixes.length).toBe(6);
         expect(prefixes.length).toBe(uniquePrefixes.length);
         console.log(`✅ Test régression: Pas de doublons (${prefixes.length} préfixes uniques)`);
     });

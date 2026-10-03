@@ -88,6 +88,13 @@ export class MessageExtractionCoordinator {
         result.processedMessages++;
       }
 
+      // #4037 : une même délégation est enregistrée deux fois dans ui_messages.json —
+      // l'appel d'outil (ask/tool newTask, enregistrement faisant foi) puis l'écho
+      // `[new_task in X mode: '...']` dans la requête API suivante. Dédupe sur
+      // (mode, message) en gardant la PREMIÈRE occurrence : l'appel d'outil précède
+      // toujours son écho dans le fichier.
+      result.instructions = MessageExtractionCoordinator.dedupeInstructions(result.instructions);
+
       this.logExtractionSummary(result);
     } catch (error) {
       result.errors.push(`Global extraction error: ${error}`);
@@ -95,6 +102,25 @@ export class MessageExtractionCoordinator {
     }
 
     return result;
+  }
+
+  /**
+   * Dédupe les instructions par (mode, message) en conservant la première occurrence.
+   * Les deux occurrences d'une même délégation passent par createInstruction (même
+   * normalisation, même troncature), donc l'appel d'outil et son écho produisent des
+   * clés identiques — ce qui est exactement ce que le squelette dédupliquait déjà
+   * au niveau préfixe (childTaskInstructionPrefixes est un Set).
+   */
+  private static dedupeInstructions(instructions: NewTaskInstruction[]): NewTaskInstruction[] {
+    const seen = new Set<string>();
+    const deduped: NewTaskInstruction[] = [];
+    for (const instruction of instructions) {
+      const key = `${instruction.mode}\u0000${instruction.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(instruction);
+    }
+    return deduped;
   }
 
   /**
