@@ -237,10 +237,17 @@ vi.mock('os', () => {
 });
 
 // Mock du module uuid
-vi.mock('uuid', () => ({
-  v4: vi.fn(() => 'test-uuid-' + Math.random().toString(36).substr(2, 9)),
-  v1: vi.fn(() => 'test-uuid-v1-' + Math.random().toString(36).substr(2, 9))
-}));
+// #2639: v5 delegates to the real module (v5 is deterministic — nothing to mock).
+// Without it, computeChunkId (ChunkExtractor, uuidv5) throws and the per-line
+// try/catch silently skips every JSONL line as "malformed". v4/v1 stay mocked.
+vi.mock('uuid', async () => {
+  const actual = await vi.importActual('uuid');
+  return {
+    v4: vi.fn(() => 'test-uuid-' + Math.random().toString(36).substr(2, 9)),
+    v1: vi.fn(() => 'test-uuid-v1-' + Math.random().toString(36).substr(2, 9)),
+    v5: actual.v5
+  };
+});
 
 // Mock du logger winston
 vi.mock('winston', () => ({
