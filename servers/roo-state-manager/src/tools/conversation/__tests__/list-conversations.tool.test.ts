@@ -769,6 +769,92 @@ describe('list-conversations', () => {
       expect(found).toBeUndefined();
     });
 
+    // #1747 follow-up — `source` must filter Tier 3 archive skeletons the same
+    // way it filters Tiers 1/2. Pre-fix, every gdrive-archive skeleton was
+    // concatenated regardless of source: a source=claude sweep on another
+    // machine served that machine's whole Roo corpus as noise.
+    const mixedArchiveCache = () => {
+      const claudeArchive = {
+        taskId: 'claude-3f8a2c1e-archived',
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 5,
+          actionCount: 2,
+          totalSize: 500,
+          dataSource: 'gdrive-archive',
+          workspace: 'remote-machine:my-project'
+        }
+      };
+      const rooArchive = {
+        taskId: 'roo-hex-archive-task',
+        metadata: {
+          lastActivity: '2025-06-01T10:00:00.000Z',
+          createdAt: '2025-06-01T09:00:00.000Z',
+          messageCount: 5,
+          actionCount: 2,
+          totalSize: 500,
+          dataSource: 'gdrive-archive',
+          workspace: 'remote-machine:my-project'
+        }
+      };
+      return new Map([
+        [claudeArchive.taskId, claudeArchive],
+        [rooArchive.taskId, rooArchive]
+      ]);
+    };
+
+    it('source=claude serves only claude-* archive skeletons (not the Roo corpus as noise)', async () => {
+      const cache = mixedArchiveCache();
+      mockGetCache.mockResolvedValue(cache);
+      mockImmediateCache.mockReturnValue(cache);
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, source: 'claude' },
+        new Map()
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      const taskIds = parsed.map((c: any) => c.taskId);
+      expect(taskIds).toContain('claude-3f8a2c1e-archived');
+      expect(taskIds).not.toContain('roo-hex-archive-task');
+    });
+
+    it('source=roo (default) excludes claude-* archive skeletons', async () => {
+      const cache = mixedArchiveCache();
+      mockGetCache.mockResolvedValue(cache);
+      mockImmediateCache.mockReturnValue(cache);
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, source: 'roo' },
+        new Map()
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      const taskIds = parsed.map((c: any) => c.taskId);
+      expect(taskIds).toContain('roo-hex-archive-task');
+      expect(taskIds).not.toContain('claude-3f8a2c1e-archived');
+    });
+
+    it('source=all serves both claude and roo archive skeletons', async () => {
+      const cache = mixedArchiveCache();
+      mockGetCache.mockResolvedValue(cache);
+      mockImmediateCache.mockReturnValue(cache);
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, source: 'all' },
+        new Map()
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+      const parsed = _response.conversations ?? _response;
+
+      const taskIds = parsed.map((c: any) => c.taskId);
+      expect(taskIds).toContain('claude-3f8a2c1e-archived');
+      expect(taskIds).toContain('roo-hex-archive-task');
+    });
+
     it('should continue gracefully when SkeletonCacheService throws', async () => {
       mockGetCache.mockRejectedValue(new Error('GDrive unavailable'));
 
