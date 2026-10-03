@@ -13,24 +13,20 @@ import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 
 /**
- * TEST SKIPPÉ — motif ESM PÉRIMÉ (probe #2639 lot 3, 03/10/2026)
+ * RÉINTÉGRÉ 2026-10-03 (#2639 lot ESM, probe post-#1318, tête b5b478d4) :
+ * le motif ESM « module is already linked » ne se reproduit plus — le bloc s'exécute.
+ * Avant la dédup #4037 (fix #1318, fcae582d), 4/6 échouaient sur des assertions de
+ * compte (`expected 10 to be 6`) : sur-capture (bloc racine `<task>` + échos
+ * doublonnés), PAS un problème ESM. Avec fcae582d, les 6 passent sans refactor du
+ * singleton (globalTaskInstructionIndex reste nettoyé dans le beforeEach).
  *
- * Historique : bloc désactivé pour "module is already linked" (singleton ESM
- * task-instruction-index). Probe de réactivation (describe.skip → describe,
- * vitest.config.ci.ts, tête e9995390) : le bloc S'EXÉCUTE — aucune erreur de
- * liaison ESM. 2/6 passent ; les 4 échecs sont TOUS des assertions de compte
- * `expected 10 to be 6` = la sur-capture d'instructions (#4037 : bloc racine
- * `<task>` + échos doublonnés), PAS l'ESM.
- *
- * Le vrai bloqueur de réintégration est donc #4037 (fix PR submod #1318) :
- * une fois la dédup/filtration mergée, dé-skipper ce bloc doit rendre les 6
- * tests verts SANS refactor du singleton. Si un échec de liaison ESM
- * réapparaissait à ce moment-là, restaurer le skip avec la note d'origine :
+ * Historique du skip ESM d'origine (2026-04, jamais reproduit en probe — voir
+ * PR #1323 pour la traçabilité complète) :
  * - task-instruction-index.js utilise un singleton globalTaskInstructionIndex
- * - déjà lié en cours de run → non réinitialisable, beforeEach insuffisant
+ * - signalé « déjà lié en cours de run » → non réinitialisable, beforeEach insuffisant
  * - Voir aussi : https://github.com/vitest-dev/vitest/issues/4043
  */
-describe.skip('NewTask Extraction - Ligne Unique Géante (DISABLED: ESM singleton issue)', () => {
+describe('NewTask Extraction - Ligne Unique Géante', () => {
     const fixturesPath = path.join(__dirname, '..', 'fixtures', 'real-tasks');
     const testTaskId = 'bc93a6f7-cd2e-4686-a832-46e3cd14d338';
     const testTaskPath = path.join(fixturesPath, testTaskId);
