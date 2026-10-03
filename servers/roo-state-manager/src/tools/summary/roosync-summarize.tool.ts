@@ -15,7 +15,6 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
-import * as path from 'path';
 
 // Import des handlers existants
 import {
@@ -295,31 +294,17 @@ function createChildTasksFinder(
 ): (rootTaskId: string) => Promise<ConversationSkeleton[]> {
     return async (rootTaskId: string) => {
         if (source === 'claude') {
-            // Pour Claude, chercher les tâches avec le même parentTaskId
-            const locations = await ClaudeStorageDetector.detectStorageLocations();
-            const allTasks: ConversationSkeleton[] = [];
-
-            for (const location of locations) {
-                const projects = await ClaudeStorageDetector.listProjects(location.path);
-
-                for (const projectName of projects) {
-                    const projectPath = path.join(location.path, projectName);
-                    try {
-                        // Lire tous les fichiers JSONL et extraire les parentTaskIds
-                        const skeleton = await ClaudeStorageDetector.analyzeConversation('dummy', projectPath);
-                        if (skeleton?.metadata.dataSource) {
-                            // Extraire le vrai taskId depuis les fichiers
-                            const entries = await ClaudeStorageDetector.detectStorageLocations();
-                            // Note: Cette implémentation est simplifiée
-                            // Une version complète nécessiterait plus de logique
-                        }
-                    } catch {
-                        // Ignorer les erreurs
-                    }
-                }
-            }
-
-            return allTasks.filter(t => t.parentTaskId === rootTaskId);
+            // #2191 follow-up — la découverte d'enfants pour un root Claude n'est
+            // PAS implémentée (stub) : le corps précédent scannait CHAQUE projet
+            // (analyzeConversation('dummy') par projet + detectStorageLocations
+            // par projet « trouvé ») pour remplir une liste `allTasks` qui
+            // n'était JAMAIS remplie — mesure c.573 : cluster source=claude =
+            // detect×2 + listProjects×2 + analyze('dummy')×6 par requête, pour
+            // un retour [] garanti. Le contrat observable ([] toujours) est
+            // préservé tel quel ; seul le travail mort disparaît. Une
+            // implémentation réelle (fils par parentTaskId sur sessions
+            // Claude) se branchera ici le jour venu.
+            return [];
         } else {
             // Pour Roo, logique existante
             throw new Error('Roo source requires external cache injection');

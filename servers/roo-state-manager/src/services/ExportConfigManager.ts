@@ -43,6 +43,14 @@ export class ExportConfigManager {
     private static readonly CONFIG_FILE_NAME = 'xml_export_config.json';
     private configCache: ExportConfig | null = null;
     private configPath: string | null = null;
+    // #2191 follow-up — single-flight de l'initialisation : deux premiers
+    // accès concurrents à getConfigPath() lançaient chacun
+    // initializeConfigPath() (donc deux detectStorageLocations). Les appelants
+    // concurrents partagent désormais le même vol ; le vol est libéré à la
+    // fin pour préserver la sémantique de retry d'aujourd'hui quand aucun
+    // stockage n'est détecté (configPath reste null → accès suivant peut
+    // ré-essayer, comme avant).
+    private configPathInit: Promise<void> | null = null;
 
     constructor() {
         // #2191 follow-up — plus d'initialisation eager. Le constructeur
@@ -58,9 +66,21 @@ export class ExportConfigManager {
     }
 
     /**
-     * Initialise le chemin du fichier de configuration
+     * Initialise le chemin du fichier de configuration (single-flight)
      */
     private async initializeConfigPath(): Promise<void> {
+        if (!this.configPathInit) {
+            this.configPathInit = this.detectConfigPath().finally(() => {
+                this.configPathInit = null;
+            });
+        }
+        return this.configPathInit;
+    }
+
+    /**
+     * Résout le chemin de config depuis le stockage Roo détecté
+     */
+    private async detectConfigPath(): Promise<void> {
         try {
             const storageLocations = await RooStorageDetector.detectStorageLocations();
             if (storageLocations.length > 0) {
