@@ -45,7 +45,16 @@ export class ExportConfigManager {
     private configPath: string | null = null;
 
     constructor() {
-        this.initializeConfigPath();
+        // #2191 follow-up — plus d'initialisation eager. Le constructeur
+        // lançait initializeConfigPath() en fire-and-forget : un appel
+        // RooStorageDetector.detectStorageLocations() (glob globalStorage)
+        // pour CHAQUE `new ExportConfigManager()` — summarize cluster/trace,
+        // export-*, boot du StateManagerService — y compris quand aucune
+        // config d'export n'est jamais lue (le chemin cluster la ignore).
+        // getConfigPath() résout déjà le chemin à la demande avec la même
+        // logique et la même erreur NO_STORAGE_DETECTED au premier accès
+        // réel, donc rien n'est perdu : les chemins qui n'utilisent pas la
+        // config ne paient plus aucun scan disque.
     }
 
     /**

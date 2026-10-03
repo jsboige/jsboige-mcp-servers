@@ -124,6 +124,10 @@ describe('#2191 — resolver conversation_browser: pas de scan Roo pour claude-*
         handler = mockServer.setRequestHandler.mock.calls[0][1];
     });
 
+    // Timeout 60s : ce test charge le graphe réel roosync-summarize (import
+    // dynamique de ~1000 modules). ~2s à froid seul, >15s (timeout défaut)
+    // mesuré quand le fichier tombe dans la tempête de cold-transform du
+    // début de suite CI pleine (c.572) — borne haute, pas nouvelle attente.
     test('summarize sur id claude-* non résoluble: échec net, AUCUN scan Roo', async () => {
         const result = await handler(summarizeRequest(CLAUDE_ID));
 
@@ -139,7 +143,7 @@ describe('#2191 — resolver conversation_browser: pas de scan Roo pour claude-*
         // Les étapes légitimes du resolver ont bien couru avant l'échec.
         expect(mockFindConversationById).toHaveBeenCalledWith(CLAUDE_ID);
         expect(mockHydrateTier3).toHaveBeenCalledWith(CLAUDE_ID, mockState.conversationCache);
-    });
+    }, 60_000);
 
     test('non-régression: id Roo absent garde le fallback scan disque (#1325)', async () => {
         const result = await handler(summarizeRequest(ROO_ID));
@@ -149,15 +153,57 @@ describe('#2191 — resolver conversation_browser: pas de scan Roo pour claude-*
         // Pour un id Roo, le fallback disque DOIT vivre (résolution Tier 1).
         expect(mockDetectStorageLocations).toHaveBeenCalledTimes(1);
         expect(mockAnalyzeConversation).not.toHaveBeenCalled(); // locations=[] → aucun chemin à analyser
-        // Id Roo: jamais routé vers le détecteur Claude.
-        expect(mockFindConversationById).not.toHaveBeenCalled();
+        // Id Roo: jamais routé vers le détecteur Claude. Assertion scopée sur
+        // l'argument : si le test précédent dépasse son timeout, sa continuation
+        // zombie peut appeler le détecteur avec un id claude-* APRÈS le
+        // clearAllMocks de ce beforeEach — hors du périmètre de cette propriété
+        // (mesuré c.572 : échec fantôme sur ce test, cause = test 1 timed out).
+        expect(mockFindConversationById).not.toHaveBeenCalledWith(ROO_ID);
     });
 
-    // NOTE follow-up (découverte en écrivant ce test, hors périmètre du grain) :
-    // summarize_type='cluster' sur un root claude-* déclenche AUSSI un scan disque
-    // Roo via hierarchy-reconstruction-engine.ts:61 (buildHierarchicalSkeletonsLegacy
-    // → detectStorageLocations), consommateur distinct du resolver registry. La
-    // garde findChildTasks du registry couvre son propre bloc ; le moteur de
-    // hiérarchie mérite la même analyse mais dépasse le grain #2191 (échec net
-    // summarize) — consigné dans la PR, pas codé ici (chirurgical #1936).
+    test('#2191 follow-up: cluster sur racine claude-* — aucun scan disque (ExportConfigManager lazy)', async () => {
+        // Diagnostic stack complet (c.572) : le scan du chemin cluster venait du
+        // CONSTRUCTEUR d'ExportConfigManager (initializeConfigPath →
+        // detectStorageLocations, fire-and-forget) instancié par
+        // generate-cluster-summary.tool.ts:235 — pas de l'engine de hiérarchie
+        // (inférence initiale c.571, corrigée par la mesure). Le constructeur
+        // étant désormais vide, le chemin cluster d'une racine claude-* ne
+        // touche plus le disque Roo : le root est servi par le cache RAM, les
+        // enfants par le cache RAM (garde findChildTasks #1328).
+        const root: ConversationSkeleton = {
+            taskId: CLAUDE_ID,
+            sequence: [{ role: 'user', content: 'hello' } as any],
+            metadata: {
+                taskId: CLAUDE_ID,
+                title: 'root',
+                workspace: 'test',
+                dataSource: 'claude',
+                messageCount: 1,
+                totalSize: 10,
+                createdAt: new Date().toISOString(),
+                lastActivity: new Date().toISOString()
+            }
+        } as any;
+        mockState.conversationCache.set(CLAUDE_ID, root);
+
+        const request = {
+            params: {
+                name: 'conversation_browser',
+                arguments: {
+                    action: 'summarize',
+                    task_id: CLAUDE_ID,
+                    summarize_type: 'cluster'
+                }
+            }
+        };
+        const result = await handler(request);
+
+        // Le cluster a rendu (sortie ou erreur du service — sans I/O disque).
+        expect(result).toBeDefined();
+
+        // Zéro glob sur tout le chemin : resolver (garde #1328) ET
+        // ExportConfigManager (lazy, ce fix).
+        expect(mockDetectStorageLocations).not.toHaveBeenCalled();
+        expect(mockFindConversationById).not.toHaveBeenCalled();
+    }, 60_000);
 });
