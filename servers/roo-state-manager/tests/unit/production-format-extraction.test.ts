@@ -56,7 +56,11 @@ describe('Production Format Extraction - PATTERN 5', () => {
         // (sources mesurées = [null]) — le filtrage api_req_started reste donc
         // vide. Ce pin est le ratchet du contrat extracteur fixé ; il ne
         // change que si l'extracteur ou la fixture changent, avec mesure.
-        expect(instructions).toHaveLength(23);
+        // Re-pin 23 → 22 après #1325 (extracteurs UI : say:'mcp_server_response'
+        // exclu) : la fixture n'a qu'UNE réponse MCP portant un bloc <task>
+        // (message 156, ~100 Ko de sortie d'outil, pas une vraie sous-tâche) —
+        // c'est l'instruction retirée, exactement la classe de faux positifs #4037.
+        expect(instructions).toHaveLength(22);
 
         const apiInstructions = instructions.filter((inst: any) =>
             inst.source && inst.source.includes('api_req_started')
