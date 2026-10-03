@@ -9,7 +9,7 @@
  * Type: Intégration (DashboardService réel, opérations filesystem réelles)
  *
  * @module roosync/refresh-dashboard.integration.test
- * @version 1.0.0 (#564 Phase 2b)
+ * @version 1.1.0 (#564 Phase 2b, #2639 renforcement assertions)
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -87,11 +87,10 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
     test('should use default baseline (myia-ai-01) when not specified', async () => {
       const result = await roosyncRefreshDashboard({});
 
-      expect(result).toBeDefined();
       expect(result.success).toBe(true);
       expect(result.baseline).toBe('myia-ai-01');
-      expect(result.dashboardPath).toBeDefined();
-      expect(typeof result.dashboardPath).toBe('string');
+      // Issue #799: nom de fichier FIXE (plus de timestamp)
+      expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
     });
 
     test('should accept custom baseline machine', async () => {
@@ -99,10 +98,9 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
         baseline: 'myia-po-2023'
       });
 
-      expect(result).toBeDefined();
       expect(result.success).toBe(true);
       expect(result.baseline).toBe('myia-po-2023');
-      expect(result.dashboardPath).toBeDefined();
+      expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
     });
 
     test('should accept all valid machine IDs', async () => {
@@ -111,8 +109,8 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       for (const machine of machines) {
         const result = await roosyncRefreshDashboard({ baseline: machine });
 
-        expect(result).toBeDefined();
         expect(result.success).toBe(true);
+        expect(result.baseline).toBe(machine);
       }
     });
   });
@@ -125,8 +123,9 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
     test('should use default outputDir when not specified', async () => {
       const result = await roosyncRefreshDashboard({});
 
-      expect(result).toBeDefined();
       expect(result.success).toBe(true);
+      // Le défaut écrit sous $ROOSYNC_SHARED_PATH/dashboards (refresh-dashboard.ts l.98)
+      expect(result.dashboardPath).toContain(join(testSharedStatePath, 'dashboards'));
     });
 
     test('should accept custom outputDir', async () => {
@@ -136,8 +135,10 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
         outputDir: customOutputDir
       });
 
-      expect(result).toBeDefined();
       expect(result.success).toBe(true);
+      expect(result.dashboardPath).toContain(customOutputDir);
+      // Le script PS crée le répertoire (generate-mcp-dashboard.ps1 l.36-39)
+      expect(existsSync(customOutputDir)).toBe(true);
     });
 
     test('should create outputDir if it does not exist', async () => {
@@ -150,8 +151,10 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
         outputDir: nonExistentDir
       });
 
-      expect(result).toBeDefined();
-      // Directory should be created by the tool
+      expect(result.success).toBe(true);
+      // Directory created by the script (New-Item -Force, l.36-39)
+      expect(existsSync(nonExistentDir)).toBe(true);
+      expect(result.dashboardPath).toContain(nonExistentDir);
     });
   });
 
@@ -166,7 +169,6 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
         outputDir: join(testSharedStatePath, 'test-output')
       });
 
-      expect(result).toBeDefined();
       expect(result.success).toBe(true);
       expect(result.baseline).toBe('myia-po-2025');
     });
@@ -180,20 +182,35 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
     test('should return valid result object', async () => {
       const result = await roosyncRefreshDashboard({});
 
+      // Contrat RefreshDashboardResultSchema (refresh-dashboard.ts l.63-78)
       expect(result.success).toBe(true);
-      expect(result.dashboardPath).toBeDefined();
-      expect(result.timestamp).toBeDefined();
-      expect(result.baseline).toBeDefined();
+      expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
+      // Nom de fichier fixe (#799) => le fallback ISO est TOUJOURS pris (l.135-136)
+      expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      expect(result.baseline).toBe('myia-ai-01');
       expect(Array.isArray(result.machines)).toBe(true);
-      expect(result.metrics).toBeDefined();
+      expect(result.metrics).toEqual({
+        totalMachines: expect.any(Number),
+        machinesWithInventory: expect.any(Number),
+        machinesWithoutInventory: expect.any(Number)
+      });
+      // Cohérence métriques/parse (l.142-146) : totalMachines = machines.length
+      expect(result.metrics.totalMachines).toBe(result.machines.length);
     });
 
     test('should include dashboard path in response', async () => {
       const result = await roosyncRefreshDashboard({});
 
       expect(result.success).toBe(true);
-      expect(result.dashboardPath).toBeDefined();
-      expect(result.dashboardPath).toMatch(/\.md$/);
+      expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
+      // Chaque machine parsée porte les 3 champs du schéma {id, status, diffs}
+      for (const machine of result.machines) {
+        expect(machine).toEqual({
+          id: expect.any(String),
+          status: expect.any(String),
+          diffs: expect.any(String)
+        });
+      }
     });
   });
 
@@ -208,9 +225,10 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
 
       const result = await roosyncRefreshDashboard({});
 
-      expect(result).toBeDefined();
-      // Should throw an error or return success: false
-      expect(result.success).toBeDefined();
+      // L'outil ne retourne jamais success:false — il throw (l.159-162).
+      // Retour effectif = succès complet du contrat.
+      expect(result.success).toBe(true);
+      expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
     });
 
     test('should handle invalid machine ID gracefully', async () => {
@@ -218,9 +236,11 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
         baseline: 'non-existent-machine'
       });
 
-      expect(result).toBeDefined();
-      // Tool should handle gracefully - success might be true or false depending on implementation
-      expect(result.success).toBeDefined();
+      // baseline inconnue: le script s'exécute quand même et l'outil
+      // retourne le contrat complet avec la baseline demandée (l.92, l.155)
+      expect(result.success).toBe(true);
+      expect(result.baseline).toBe('non-existent-machine');
+      expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
     });
   });
 
@@ -233,12 +253,16 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       // First refresh
       const result1 = await roosyncRefreshDashboard({});
       expect(result1.success).toBe(true);
+      expect(result1.baseline).toBe('myia-ai-01');
 
       // Second refresh (should not conflict)
       const result2 = await roosyncRefreshDashboard({
         baseline: 'myia-po-2024'
       });
       expect(result2.success).toBe(true);
+      expect(result2.baseline).toBe('myia-po-2024');
+      // Fichier fixe (#799): les deux refresh écrivent le même chemin
+      expect(result2.dashboardPath).toBe(result1.dashboardPath);
     });
 
     test('should persist dashboard state across operations', async () => {
@@ -258,6 +282,7 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
         outputDir
       });
       expect(result2.success).toBe(true);
+      expect(result2.dashboardPath).toBe(result1.dashboardPath);
     });
   });
 });

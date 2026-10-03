@@ -162,13 +162,14 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         profiles
       );
 
-      // Assert
-      expect(baseline).toBeDefined();
-      expect(baseline.baselineId).toBeDefined();
+      // Assert — createBaseline génère baselineId 'baseline-<ts>-<rand>' (NonNominativeBaselineService.ts l.96)
+      expect(baseline.baselineId).toMatch(/^baseline-/);
       expect(baseline.name).toBe('Baseline de test');
       expect(baseline.description).toBe('Baseline créée pour les tests d\'intégration');
       expect(baseline.profiles).toHaveLength(1);
       expect(baseline.profiles[0].category).toBe('roo-core');
+      // Round-trip: le profil passé est restitué tel quel
+      expect(baseline.profiles[0].profileId).toBe(profiles[0].profileId);
       
       // Verify file exists
       const baselineFile = join(sharedPath, 'non-nominative-baseline.json');
@@ -277,10 +278,11 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
       );
 
       // Assert
-      expect(baseline).toBeDefined();
-      expect(baseline.baselineId).toBeDefined();
+      expect(baseline.baselineId).toMatch(/^baseline-/);
       expect(baseline.name).toBe('Baseline agrégée automatiquement');
       expect(baseline.profiles.length).toBeGreaterThan(0);
+      // Chaque profil agrégé porte une catégorie et une configuration
+      expect(baseline.profiles.every(p => typeof p.category === 'string' && p.configuration !== undefined)).toBe(true);
     });
   });
 
@@ -382,14 +384,20 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
           updateReason: 'Test migration'
         });
   
-        // Assert
+        // Assert — contrat migrateToNonNominative (BaselineManager.ts l.526-532)
         expect(result.success).toBe(true);
-        expect(result.newBaseline).toBeDefined();
-        expect(result.profilesCount).toBeGreaterThan(0);
-        
+        expect(result.oldBaseline).toBe('legacy-machine');
+        // newBaseline est l'ID (string), pas l'objet
+        expect(result.newBaseline).toMatch(/^baseline-/);
+        expect(result.migratedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+        // transformBaselineToProfiles (l.573-601): 1 (roo) + 3 (hardware) + 3 (software) + 2 (system) = 9
+        expect(result.profilesCount).toBe(9);
+
         // Verify non-nominative baseline exists
         const activeBaseline = await nonNominativeBaselineService.getActiveBaseline();
-        expect(activeBaseline).toBeDefined();
+        expect(activeBaseline).toMatchObject({
+          baselineId: result.newBaseline
+        });
         expect(activeBaseline?.name).toContain('migrée');
       });
   });
@@ -426,7 +434,7 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         }
       ];
 
-      await nonNominativeBaselineService.createBaseline(
+      const createdBaseline = await nonNominativeBaselineService.createBaseline(
         'Baseline de comparaison',
         'Baseline pour les tests de comparaison',
         profiles
@@ -437,11 +445,22 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         'test-machine-baseline'
       );
 
-      // Assert
-      expect(comparison).toBeDefined();
-      expect(comparison.reportId).toBeDefined();
-      expect(comparison.baselineId).toBeDefined();
-      expect(comparison.statistics).toBeDefined();
+      // Assert — contrat NonNominativeComparisonReport (NonNominativeBaselineService.ts l.763-780)
+      expect(comparison.reportId).toMatch(/^comparison-\d+$/);
+      expect(comparison.baselineId).toBe(createdBaseline.baselineId);
+      expect(comparison.machineHashes).toHaveLength(1);
+      expect(comparison.statistics).toMatchObject({
+        totalMachines: 1,
+        totalDifferences: expect.any(Number),
+        complianceRate: expect.any(Number)
+      });
+      expect(comparison.statistics.differencesBySeverity).toEqual({
+        CRITICAL: expect.any(Number),
+        IMPORTANT: expect.any(Number),
+        WARNING: expect.any(Number),
+        INFO: expect.any(Number)
+      });
+      expect(comparison.metadata.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
 
     it('devrait mapper une machine à la baseline et détecter les déviations', async () => {
@@ -520,12 +539,14 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         baseline.baselineId
       );
 
-      // Assert
-      expect(mapping).toBeDefined();
-      expect(mapping.mappingId).toBeDefined();
+      // Assert — contrat MachineConfigurationMapping (NonNominativeBaselineService.ts l.493-509)
+      expect(mapping.mappingId).toMatch(/^mapping-/);
       expect(mapping.baselineId).toBe(baseline.baselineId);
-      expect(mapping.appliedProfiles).toBeDefined();
-      expect(mapping.deviations).toBeDefined();
+      expect(Array.isArray(mapping.appliedProfiles)).toBe(true);
+      expect(Array.isArray(mapping.deviations)).toBe(true);
+      // calculateConfidence (l.691-695): 1.0 sans déviation, décroît avec
+      expect(mapping.metadata.confidence).toBeGreaterThanOrEqual(0);
+      expect(mapping.metadata.confidence).toBeLessThanOrEqual(1);
     });
   });
 
@@ -567,8 +588,7 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         profiles
       );
 
-      expect(baseline).toBeDefined();
-      expect(baseline.baselineId).toBeDefined();
+      expect(baseline.baselineId).toMatch(/^baseline-/);
 
       // Step 2: Map machine to baseline
       const machineInventory = {
@@ -609,7 +629,7 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         baseline.baselineId
       );
 
-      expect(mapping).toBeDefined();
+      expect(mapping.mappingId).toMatch(/^mapping-/);
       expect(mapping.baselineId).toBe(baseline.baselineId);
 
       // Step 3: Compare with baseline
@@ -617,7 +637,7 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         'test-machine-workflow'
       );
 
-      expect(comparison).toBeDefined();
+      expect(comparison.reportId).toMatch(/^comparison-\d+$/);
       expect(comparison.baselineId).toBe(baseline.baselineId);
     });
 
@@ -644,10 +664,12 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
         clearCacheCallback
       );
 
-      // Assert
+      // Assert — contrat restoreFromRollbackPoint (BaselineManager.ts l.851-863)
       expect(result.success).toBe(true);
-      expect(result.restoredFiles).toBeDefined();
-      expect(result.logs).toBeDefined();
+      expect(result.restoredFiles.length).toBeGreaterThanOrEqual(1);
+      expect(result.restoredFiles.every(f => typeof f === 'string')).toBe(true);
+      expect(Array.isArray(result.logs)).toBe(true);
+      expect(result.logs.some(l => l.includes('ROLLBACK'))).toBe(true);
       expect(clearCacheCallback).toHaveBeenCalled();
       
       // Verify files were restored
@@ -664,12 +686,15 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
       // Act
       const state = nonNominativeBaselineService.getState();
 
-      // Assert
-      expect(state).toBeDefined();
-      expect(state.statistics).toBeDefined();
-      expect(state.statistics.totalBaselines).toBeGreaterThanOrEqual(0);
-      expect(state.statistics.totalProfiles).toBeGreaterThanOrEqual(0);
-      expect(state.statistics.totalMachines).toBeGreaterThanOrEqual(0);
+      // Assert — état frais (constructeur l.51-61): compteurs à zéro, lastUpdated ISO
+      expect(state.statistics).toEqual({
+        totalBaselines: 0,
+        totalProfiles: 0,
+        totalMachines: 0,
+        averageCompliance: 0,
+        lastUpdated: expect.any(String)
+      });
+      expect(state.statistics.lastUpdated).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
 
     it('devrait retourner la baseline active', async () => {
@@ -710,7 +735,7 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
       const activeBaseline = nonNominativeBaselineService.getActiveBaseline();
 
       // Assert
-      expect(activeBaseline).toBeDefined();
+      expect(activeBaseline?.baselineId).toMatch(/^baseline-/);
       expect(activeBaseline?.name).toBe('Baseline active');
     });
 
@@ -790,9 +815,9 @@ describe('T3.13 - Baseline Workflow Integration Tests', () => {
       const mappings = nonNominativeBaselineService.getMachineMappings();
 
       // Assert
-      expect(mappings).toBeDefined();
       expect(mappings.length).toBeGreaterThan(0);
       expect(mappings[0].baselineId).toBe(baseline.baselineId);
+      expect(mappings[0].mappingId).toMatch(/^mapping-/);
     });
   });
 });
