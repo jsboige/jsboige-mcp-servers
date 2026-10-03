@@ -12,10 +12,15 @@ import { NewTaskInstruction } from '../../types/conversation.js';
  * pas du texte visible — scanner ce JSON pour des balises capture le bloc
  * <task> racine de la tâche elle-même, jamais une délégation enfant.
  * ApiTextExtractor possède ce format et parse le JSON correctement.
+ * #4037 suite : `say: mcp_server_response` transporte le même JSON brut
+ * (payload de réponse MCP qui embarque la requête) — même exclusion à la
+ * source (delta po-2027 sur #1318 : l'invariant coordinateur rattrapait
+ * ces échos, l'exclusion ici les supprime avant tout scan).
  */
 function isApiRequestEnvelope(message: any): boolean {
   return message.type === 'api_req_started' ||
-         (message.type === 'say' && message.say === 'api_req_started');
+         (message.type === 'say' &&
+          (message.say === 'api_req_started' || message.say === 'mcp_server_response'));
 }
 
 /**

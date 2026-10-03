@@ -204,6 +204,18 @@ describe('UiXmlPatternExtractor', () => {
 			const msg = { type: 'ask', text: 'something' };
 			expect(extractor.canHandle(msg)).toBe(false);
 		});
+
+		// #4037 : les enveloppes JSON (requête API et réponse MCP) ne sont pas
+		// du texte visible — leur scan capture le <task> racine du parent.
+		test('rejects api_req_started envelope (#4037)', () => {
+			const msg = { type: 'say', say: 'api_req_started', text: '{"request":"<task>root</task>"}' };
+			expect(extractor.canHandle(msg)).toBe(false);
+		});
+
+		test('rejects mcp_server_response envelope (#4037 suite)', () => {
+			const msg = { type: 'say', say: 'mcp_server_response', text: '{"response":"<task>root</task>"}' };
+			expect(extractor.canHandle(msg)).toBe(false);
+		});
 	});
 
 	describe('extract', () => {
@@ -286,6 +298,18 @@ describe('UiSimpleTaskExtractor', () => {
 
 		test('rejects tool_call type', () => {
 			const msg = { type: 'tool_call', text: '<task>x</task>' };
+			expect(extractor.canHandle(msg)).toBe(false);
+		});
+
+		// #4037 : les enveloppes JSON (requête API et réponse MCP) ne sont pas
+		// du texte visible — leur scan capture le <task> racine du parent.
+		test('rejects api_req_started envelope (#4037)', () => {
+			const msg = { type: 'say', say: 'api_req_started', text: '{"request":"<task>root</task>"}' };
+			expect(extractor.canHandle(msg)).toBe(false);
+		});
+
+		test('rejects mcp_server_response envelope (#4037 suite)', () => {
+			const msg = { type: 'say', say: 'mcp_server_response', text: '{"response":"<task>root</task>"}' };
 			expect(extractor.canHandle(msg)).toBe(false);
 		});
 	});
