@@ -7,6 +7,18 @@ import { PatternExtractor, createInstruction, extractTimestamp } from '../messag
 import { NewTaskInstruction } from '../../types/conversation.js';
 
 /**
+ * #4037 : true quand le message est une enveloppe JSON de requête API
+ * (`api_req_started`). Le champ text y est du JSON brut (`{"request": "..."}`),
+ * pas du texte visible — scanner ce JSON pour des balises capture le bloc
+ * <task> racine de la tâche elle-même, jamais une délégation enfant.
+ * ApiTextExtractor possède ce format et parse le JSON correctement.
+ */
+function isApiRequestEnvelope(message: any): boolean {
+  return message.type === 'api_req_started' ||
+         (message.type === 'say' && message.say === 'api_req_started');
+}
+
+/**
  * Helper pour extraire le texte d'un message (string ou array OpenAI)
  */
 function extractTextFromMessage(message: any): string | null {
@@ -168,6 +180,7 @@ export class UiXmlPatternExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
     // Supporte tool_result ET les messages textuels standards (say/user/assistant)
     if (message.type === 'tool_result' && typeof message.content === 'string') return true;
+    if (isApiRequestEnvelope(message)) return false; // #4037 : JSON brut, pas du texte
     if (message.type === 'say' || message.role === 'user' || message.role === 'assistant') {
       return typeof message.text === 'string' ||
              typeof message.content === 'string' ||
@@ -255,6 +268,7 @@ export class UiXmlPatternExtractor implements PatternExtractor {
  */
 export class UiSimpleTaskExtractor implements PatternExtractor {
   canHandle(message: any): boolean {
+    if (isApiRequestEnvelope(message)) return false; // #4037 : JSON brut, pas du texte
     return (message.type === 'say' || message.role === 'user' || message.role === 'assistant') &&
            (typeof message.text === 'string' || typeof message.content === 'string' || Array.isArray(message.content));
   }

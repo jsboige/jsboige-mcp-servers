@@ -31,9 +31,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
   });
 
   describe('1. Extraction via extractNewTaskInstructionsFromUI', () => {
-    it('should extract EXACTLY 10 instructions from ui_messages.json', async () => {
+    it('should extract EXACTLY 6 instructions from ui_messages.json', async () => {
       const uiMessagesPath = path.join(FIXTURE_TASK_PATH, 'ui_messages.json');
-      
+
       // Appeler la méthode privée via reflection (pour test uniquement)
       const instructions = await (RooStorageDetector as any).extractNewTaskInstructionsFromUI(
         uiMessagesPath,
@@ -41,9 +41,11 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
       );
 
       console.log(`✅ extractNewTaskInstructionsFromUI returned ${instructions.length} instructions`);
-      
-      // VALIDATION CRITIQUE : Exactement 10 instructions (6 JSON + 4 XML patterns détectés)
-      expect(instructions.length).toBe(10);
+
+      // VALIDATION CRITIQUE (#4037) : Exactement 6 instructions — les 6 appels
+      // newTask réels. L'ancien comportement (10) sur-capturait le bloc <task>
+      // racine du parent + 3 échos de la requête API suivante.
+      expect(instructions.length).toBe(6);
       
       // Vérifier que chaque instruction a les bons champs
       for (const instruction of instructions) {
@@ -110,9 +112,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
   });
 
   describe('3. Intégration avec analyzeConversation', () => {
-    it('should generate childTaskInstructionPrefixes with EXACTLY 7 entries', async () => {
+    it('should generate childTaskInstructionPrefixes with EXACTLY 6 entries', async () => {
       const taskId = 'bc93a6f7-cd2e-4686-a832-46e3cd14d338';
-      
+
       const skeleton = await RooStorageDetector.analyzeConversation(
         taskId,
         FIXTURE_TASK_PATH,
@@ -121,17 +123,26 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
 
       expect(skeleton).not.toBeNull();
       expect(skeleton!.childTaskInstructionPrefixes).toBeDefined();
-      
+
       const prefixCount = skeleton!.childTaskInstructionPrefixes?.length || 0;
       console.log(`✅ analyzeConversation generated ${prefixCount} childTaskInstructionPrefixes`);
-      
-      // VALIDATION CRITIQUE : Exactement 7 prefixes (après dédoublonnage des 10 instructions)
-      expect(prefixCount).toBe(7);
-      
+
+      // VALIDATION CRITIQUE (#4037) : Exactement 6 prefixes — un par appel newTask
+      // réel. L'ancien comportement (7) incluait le préfixe auto-référentiel
+      // (l'instruction racine du parent capturée comme un enfant).
+      expect(prefixCount).toBe(6);
+
       // Vérifier que chaque prefix est valide
       for (const prefix of skeleton!.childTaskInstructionPrefixes!) {
         expect(prefix.length).toBeGreaterThan(10);
         expect(prefix.length).toBeLessThanOrEqual(192);
+      }
+
+      // #4037 : aucun préfixe enfant ne doit être l'instruction propre de la tâche
+      // (sinon la tâche se rattacherait à elle-même dans l'arbre reconstruit)
+      const ownInstruction = skeleton!.truncatedInstruction;
+      if (ownInstruction) {
+        expect(skeleton!.childTaskInstructionPrefixes).not.toContain(ownInstruction);
       }
     });
 
@@ -152,9 +163,9 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
 
       const stats = globalTaskInstructionIndex.getStats();
       console.log(`✅ Index stats after analyzeConversation:`, stats);
-      
-      // VALIDATION : L'index doit contenir les 7 instructions
-      expect(stats.totalInstructions).toBeGreaterThanOrEqual(7);
+
+      // VALIDATION (#4037) : L'index doit contenir les 6 instructions réelles
+      expect(stats.totalInstructions).toBeGreaterThanOrEqual(6);
     });
   });
 
@@ -200,8 +211,8 @@ describe('Extraction complète et validation intégration (DISABLED: ESM singlet
         0
       );
       
-      // Si on avait extrait depuis api_history, on aurait > 10 instructions
-      expect(instructions.length).toBe(10);
+      // Si on avait extrait depuis api_history, on aurait bien plus de 6 instructions
+      expect(instructions.length).toBe(6);
       console.log('✅ Confirmed: api_conversation_history.json was NOT used for extraction');
     });
   });

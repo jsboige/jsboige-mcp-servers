@@ -611,6 +611,19 @@ export class RooStorageDetector {
                 }
             }
         }
+
+        // #4037 : l'instruction racine d'une tâche n'est JAMAIS un préfixe enfant —
+        // un préfixe égal à truncatedInstruction attacherait la tâche à elle-même
+        // lors de la reconstruction de l'arbre (conversation_browser tree).
+        if (truncatedInstruction) {
+            const before = childTaskInstructionPrefixes.length;
+            childTaskInstructionPrefixes = childTaskInstructionPrefixes.filter(
+                prefix => prefix !== truncatedInstruction
+            );
+            if (before !== childTaskInstructionPrefixes.length && process.env.ROO_DEBUG_INSTRUCTIONS === '1') {
+                console.log(`[analyzeConversation] 🛡️ ${taskId.substring(0, 8)}: préfixe auto-référentiel exclu (self-prefix)`);
+            }
+        }
         // Extraire les vrais timestamps des fichiers JSON au lieu d'utiliser mtime
         const timestamps: Date[] = [];
 
