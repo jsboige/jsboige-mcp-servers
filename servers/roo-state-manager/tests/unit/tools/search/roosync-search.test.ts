@@ -100,12 +100,12 @@ describe('roosync_search - CONS-11', () => {
             expect((roosyncSearchTool.inputSchema as any).required).toContain('action');
         });
 
-        it('should include all search parameters', () => {
+        it('should include all search parameters with their declared types', () => {
             const props = (roosyncSearchTool.inputSchema as any).properties;
-            expect(props.search_query).toBeDefined();
-            expect(props.conversation_id).toBeDefined();
-            expect(props.max_results).toBeDefined();
-            expect(props.workspace).toBeDefined();
+            expect(props.search_query).toMatchObject({ type: 'string' });
+            expect(props.conversation_id).toMatchObject({ type: 'string' });
+            expect(props.max_results).toMatchObject({ type: 'number' });
+            expect(props.workspace).toMatchObject({ type: 'string' });
         });
     });
 
@@ -176,7 +176,7 @@ describe('roosync_search - CONS-11', () => {
                 model: 'text-embedding-3-small',
                 input: 'test query'
             });
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBe(false);
             const content = JSON.parse((result.content[0] as any).text);
             expect(content.results).toHaveLength(1);
             expect(content.results[0].taskId).toBe('task-1');
@@ -195,15 +195,26 @@ describe('roosync_search - CONS-11', () => {
             expect(searchCall.filter.must).toContainEqual({ key: 'workspace_name', match: { value: 'my-workspace' } });
         });
 
-        it('#883: should auto-default workspace when missing for semantic', async () => {
+        it('#883: missing workspace → global semantic search, no workspace filter', async () => {
             const result = await handleRooSyncSearch(
                 { action: 'semantic', search_query: 'test query' },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
             );
-            // Should NOT error — workspace is auto-defaulted from CACHE_CONFIG.DEFAULT_WORKSPACE
-            expect(result.isError).toBeFalsy();
+            // Le nom d'origine (« auto-default workspace ») décrivait un comportement
+            // qui n'existe pas : #883 impose un workspace OPTIONNEL, sans défaut.
+            // Sans workspace, la recherche Qdrant est globale — aucune condition
+            // workspace/workspace_name dans le filtre (mesuré : filter === undefined).
+            expect(result.isError).toBe(false);
+            const searchCall = mockQdrantClient.search.mock.calls[0][1];
+            const conditions = searchCall.filter?.must ?? [];
+            expect(conditions).not.toContainEqual(
+                expect.objectContaining({ key: 'workspace_name' })
+            );
+            expect(conditions).not.toContainEqual(
+                expect.objectContaining({ key: 'workspace' })
+            );
         });
 
         it('#249: auto-fallback to text search when semantic fails, with degraded warning', async () => {
@@ -222,7 +233,7 @@ describe('roosync_search - CONS-11', () => {
             );
 
             // Should NOT error — auto-fallback provides text results
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
             const resultText = (result.content[0] as any).text;
             const parsed = JSON.parse(resultText);
             // Must include semantic_degraded flag so agents know results are from text fallback
@@ -252,7 +263,7 @@ describe('roosync_search - CONS-11', () => {
             );
 
             expect(ensureCacheFreshCallback).toHaveBeenCalled();
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
             const content = JSON.parse((result.content[0] as any).text);
             expect(content.success).toBe(true);
             expect(content.searchType).toBe('text');
@@ -312,7 +323,8 @@ describe('roosync_search - CONS-11', () => {
                 diagnoseHandler
             );
 
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBeUndefined();
+            expect(diagnoseHandler).toHaveBeenCalledTimes(1);
         });
     });
 
@@ -335,11 +347,9 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBe(false);
             // #883: Verify filter contains conversation_id and workspace
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
-            expect(searchCall.filter).toBeDefined();
-            expect(searchCall.filter.must).toBeDefined();
             // conversation_id filter
             expect(searchCall.filter.must).toContainEqual({ key: 'task_id', match: { value: 'conv-123' } });
             // workspace basename → workspace_name field
@@ -360,7 +370,7 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBe(false);
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
             // #3043 (SDDD #2766): diversify-by-task over-fetches by DIVERSIFY_OVERFETCH=3
             // Pre-fix limit was 100 (clamped from 500). New effectiveLimit = 100*3.
@@ -375,7 +385,7 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBe(false);
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
             // max_results=0 is falsy, falls back to default 10 then clamped
             // #3043: diversify-by-task over-fetches by 3 → effectiveLimit = 10*3
@@ -390,7 +400,7 @@ describe('roosync_search - CONS-11', () => {
                 fallbackHandler
             );
 
-            expect(result.isError).toBeFalsy();
+            expect(result.isError).toBe(false);
             const searchCall = mockQdrantClient.search.mock.calls[0][1];
             // #3043: diversify-by-task over-fetches by 3 → effectiveLimit = 50*3
             expect(searchCall.limit).toBe(50 * 3);
