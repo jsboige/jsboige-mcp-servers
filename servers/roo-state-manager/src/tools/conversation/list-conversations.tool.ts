@@ -631,9 +631,18 @@ export const listConversationsTool = {
 
                     for (const [taskId, skeleton] of scsCache.entries()) {
                         const dataSource = (skeleton as any).metadata?.dataSource;
-                        if (dataSource === 'gdrive-archive' && !conversationCache.has(taskId)) {
-                            archiveSkeletons.push(skeleton);
+                        if (dataSource !== 'gdrive-archive' || conversationCache.has(taskId)) {
+                            continue;
                         }
+                        // #1747 follow-up — Tier 3 must honor `source` like Tiers 1/2
+                        // (same derivation as the row builder's summary.source):
+                        // claude-* archives were served as noise on source=roo and
+                        // vice-versa, breaking SDDD sweeps that ask for isolation.
+                        const isClaudeArchive = taskId.startsWith('claude-');
+                        if (isClaudeArchive ? !includeClaude : !includeRoo) {
+                            continue;
+                        }
+                        archiveSkeletons.push(skeleton);
                     }
 
                     if (archiveSkeletons.length > 0) {
