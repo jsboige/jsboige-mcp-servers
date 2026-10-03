@@ -169,7 +169,7 @@
       "command": "python",
       "args": ["../open-terminal-mcp/open_terminal_mcp.py"],
       "env": {
-        "OPEN_TERMINAL_URL": "http://open-terminal-myia:8000",
+        "OPEN_TERMINAL_URL": "${OPEN_TERMINAL_URL:-http://open-terminal-myia:8000}",
         "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
       },
       "risk_class": "exec",

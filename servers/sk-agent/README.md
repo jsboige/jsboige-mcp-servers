@@ -320,6 +320,9 @@ Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-anal
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
 | `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) | - |
 | `EMBEDDINGS_API_KEY` | Embeddings endpoint key | - |
+| `OPEN_TERMINAL_URL` | Open Terminal API URL handed to the `open_terminal` MCP. Set it on the **host** launch of sk-agent (e.g. `http://localhost:8000`, the container's published port): the default is a Docker-network hostname that only resolves inside the `sk-agent` container | `http://open-terminal-myia:8000` |
+
+`mcps[].env` values may reference the sk-agent process environment as `${VAR}` or `${VAR:-default}` (default used when `VAR` is unset or empty). The config entry still wins over the inherited environment for its key; only the placeholder is resolved. An unset `VAR` without default is passed through literally and logged as a warning. This is how one config file serves both the container and the host (vllm#63).
 
 ## Requirements
 

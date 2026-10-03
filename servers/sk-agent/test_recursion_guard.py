@@ -189,9 +189,12 @@ def _run(coro):
 
 @pytest.fixture
 def spy_plugin(monkeypatch):
-    """Replace MCPStdioPlugin in sk_agent with a construction recorder."""
+    """Replace the plugin class _ensure_mcp_loaded constructs with a recorder.
+
+    That class is the schema-normalizing MCPStdioPlugin subclass (vllm#63).
+    """
     _SpyPlugin.constructed = []
-    monkeypatch.setattr(sk_agent, "MCPStdioPlugin", _SpyPlugin)
+    monkeypatch.setattr(sk_agent, "SchemaNormalizingMCPStdioPlugin", _SpyPlugin)
     return _SpyPlugin
 
 
