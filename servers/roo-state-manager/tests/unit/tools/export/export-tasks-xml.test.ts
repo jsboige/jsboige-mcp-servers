@@ -39,8 +39,11 @@ describe('export-tasks-xml.tool', () => {
       prettyPrint: mockPrettyPrint
     }, mockConversationCache, mockXmlExporterService, vi.fn().mockResolvedValue(undefined));
 
-    expect(result.content).toBeDefined();
-    expect(result.content[0].text).toContain('sauvegardé dans');
+    // Contrat exact du handler (export-tasks-xml.ts:86-91) : un seul bloc
+    // texte, message nominatif qui cite la tâche ET le chemin de sortie.
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).toBe("Export XML de la tâche 'test-task-id' sauvegardé dans 'test-tasks.xml'.");
     expect(mockXmlExporterService.generateTaskXml).toHaveBeenCalledWith(mockSkeleton, {
       includeContent: mockIncludeContent,
       prettyPrint: mockPrettyPrint
@@ -64,7 +67,10 @@ describe('export-tasks-xml.tool', () => {
       prettyPrint: true
     }, mockConversationCache, mockXmlExporterService, vi.fn().mockResolvedValue(undefined));
 
-    expect(result.content).toBeDefined();
-    expect(result.content[0].text).toContain('Service error');
+    // Contrat d'erreur (export-tasks-xml.ts:101-108) : un seul bloc texte,
+    // préfixe « Erreur lors de l'export XML : » + message de l'exception.
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).toBe('Erreur lors de l\'export XML : Service error');
   });
 });

@@ -31,31 +31,38 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
     test('should include ENOENT roo-state-manager pattern', () => {
       const service = new HeartbeatService();
       const actions = service.getRecoveryActions();
+      // Catalogue par défaut (HeartbeatService.ts:139) : rebuild_mcp cible
+      // le binaire du serveur — son regex doit nommer roo-state-manager.
       const enoent = actions.find(a => a.action === 'rebuild_mcp');
-      expect(enoent).toBeDefined();
-      expect(enoent!.pattern.source).toContain('roo-state-manager');
+      expect(enoent?.pattern.source).toContain('roo-state-manager');
     });
 
     test('should include phantom submodule pointer pattern', () => {
       const service = new HeartbeatService();
       const actions = service.getRecoveryActions();
+      // Catalogue par défaut (HeartbeatService.ts:140) : reset_submodule
+      // matche le refus upload-pack d'un pointeur fantôme.
       const submod = actions.find(a => a.action === 'reset_submodule');
-      expect(submod).toBeDefined();
-      expect(submod!.pattern.source).toContain('upload-pack');
+      expect(submod?.pattern.source).toContain('upload-pack');
     });
 
     test('should include merge conflict pattern', () => {
       const service = new HeartbeatService();
       const actions = service.getRecoveryActions();
+      // Catalogue par défaut (HeartbeatService.ts:141) : rebase_git matche
+      // un message de conflit git canonique.
       const conflict = actions.find(a => a.action === 'rebase_git');
-      expect(conflict).toBeDefined();
+      expect(conflict?.pattern.source).toContain('CONFLICT');
+      expect(conflict?.pattern.test('CONFLICT (content): Merge conflict in src/index.ts')).toBe(true);
     });
 
     test('should include EBUSY pattern', () => {
       const service = new HeartbeatService();
       const actions = service.getRecoveryActions();
+      // Premier retry_once du catalogue (HeartbeatService.ts:142) : verrou
+      // Windows sur un binaire .node — le regex doit matcher le message réel.
       const ebusy = actions.find(a => a.action === 'retry_once');
-      expect(ebusy).toBeDefined();
+      expect(ebusy?.pattern.test("EBUSY: resource busy or locked, open 'esbuild_WindowsX64.node'")).toBe(true);
     });
   });
 
@@ -63,7 +70,6 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
     test('should match ENOENT roo-state-manager error', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('m1', 'ENOENT: no such file, stat \'roo-state-manager/dist/index.js\'');
-      expect(result).not.toBeNull();
       expect(result!.matchedAction).toBe('rebuild_mcp');
       expect(result!.result).toBe('matched');
     });
@@ -71,35 +77,30 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
     test('should match phantom submodule pointer error', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('m1', 'fatal: remote error: upload-pack: not our ref abc123');
-      expect(result).not.toBeNull();
       expect(result!.matchedAction).toBe('reset_submodule');
     });
 
     test('should match merge conflict error', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('m1', 'CONFLICT (content): Merge conflict in src/index.ts');
-      expect(result).not.toBeNull();
       expect(result!.matchedAction).toBe('rebase_git');
     });
 
     test('should match EBUSY .node error', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('m1', 'EBUSY: resource busy or locked, open \'esbuild_WindowsX64.node\'');
-      expect(result).not.toBeNull();
       expect(result!.matchedAction).toBe('retry_once');
     });
 
     test('should match rate limit error', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('m1', 'HTTP 429: Too Many Requests - rate limit exceeded');
-      expect(result).not.toBeNull();
       expect(result!.matchedAction).toBe('retry_once');
     });
 
     test('should match network transient error', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('m1', 'ECONNRESET: connection reset by peer');
-      expect(result).not.toBeNull();
       expect(result!.matchedAction).toBe('retry_once');
     });
 
@@ -113,14 +114,14 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
       const service = new HeartbeatService();
       const longError = 'EBUSY: resource busy or locked, open \'esbuild_WindowsX64.node\' ' + 'x'.repeat(300);
       const result = service.attemptRecovery('m1', longError);
-      expect(result).not.toBeNull();
-      expect(result!.errorSignature.length).toBeLessThanOrEqual(200);
+      // Troncature exacte (HeartbeatService.ts:346) : errorSignature =
+      // errorMessage.slice(0, 200) — un message de 360+ chars rend 200 pile.
+      expect(result?.errorSignature).toHaveLength(200);
     });
 
     test('should be case-insensitive on machine ID', () => {
       const service = new HeartbeatService();
       const result = service.attemptRecovery('MYIA-PO-2023', 'ECONNREFUSED: connection refused');
-      expect(result).not.toBeNull();
       expect(result!.machineId).toBe('myia-po-2023');
     });
   });
@@ -211,11 +212,10 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
       service.addRecoveryAction(custom);
 
       const result = service.attemptRecovery('m1', 'CUSTOM_ERROR_42: something went wrong');
-      expect(result).not.toBeNull();
       expect(result!.description).toBe('Custom test error');
     });
 
-    test('should match custom action before default if registered first', () => {
+    test('should match custom action when no default pattern matches', () => {
       const service = new HeartbeatService();
       // Register a more specific pattern for a known error
       const specific: RecoveryAction = {
@@ -225,11 +225,13 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
       };
       service.addRecoveryAction(specific);
 
-      // This matches both the specific pattern and the generic ENOENT roo-state-manager
-      // But specific was added after defaults, so defaults are checked first
+      // Ce message ne matche AUCUN défaut : le rebuild_mcp par défaut exige
+      // « roo-state-manager » dans le message (HeartbeatService.ts:139).
+      // addRecoveryAction push en fin de liste (HeartbeatService.ts:390) —
+      // les défauts restent évalués en premier, aucun ne s'applique ici.
       const result = service.attemptRecovery('m1', 'ENOENT: no such file config.json');
-      expect(result).not.toBeNull();
-      // The default ENOENT pattern matches first since it's checked in order
+      expect(result?.matchedAction).toBe('retry_once');
+      expect(result?.description).toBe('Config file missing — retry once');
     });
 
     test('getRecoveryActions should return copy', () => {
@@ -251,7 +253,7 @@ describe('Recovery-Before-Escalation (#1320 Pattern 3)', () => {
 
       // Simulate an error
       const recovery = service.attemptRecovery('m1', 'ECONNRESET: connection lost');
-      expect(recovery).not.toBeNull();
+      expect(recovery?.matchedAction).toBe('retry_once');
 
       // Transition to ERROR state
       service.transitionLifecycle('m1', 'ERROR', 'Network failure');

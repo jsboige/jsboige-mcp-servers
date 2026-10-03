@@ -116,7 +116,9 @@ describe('roosyncManage (integration)', () => {
         message_id: msg.id
       });
 
-      expect(result).toBeDefined();
+      // Contrat handler : un seul bloc texte, message nominatif.
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
       const text = getText(result);
       expect(text).toContain('marqué comme lu');
       expect(text).toContain(msg.id);
@@ -142,7 +144,6 @@ describe('roosyncManage (integration)', () => {
         message_id: msg.id
       });
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('déjà');
       expect(text).toContain('lu');
@@ -154,7 +155,6 @@ describe('roosyncManage (integration)', () => {
         // message_id manquant - will be caught by error handler
       } as any);
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('Erreur');
       expect(text).toContain('message_id');
@@ -166,7 +166,6 @@ describe('roosyncManage (integration)', () => {
         message_id: 'msg-nonexistent'
       });
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('introuvable');
     });
@@ -187,7 +186,6 @@ describe('roosyncManage (integration)', () => {
         message_id: msg.id
       });
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('marqué comme lu');
     });
@@ -213,14 +211,15 @@ describe('roosyncManage (integration)', () => {
         message_id: msg.id
       });
 
-      expect(result).toBeDefined();
+      // Contrat handler : un seul bloc texte, message nominatif.
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
       const text = getText(result);
       expect(text).toContain('archivé');
       expect(text).toContain(msg.id);
 
       // Vérifier que le message est maintenant archivé (status changed)
       const archivedMsg = await messageManager.getMessage(msg.id);
-      expect(archivedMsg).toBeDefined();
       expect(archivedMsg?.status).toBe('archived');
     });
 
@@ -240,7 +239,6 @@ describe('roosyncManage (integration)', () => {
         message_id: msg.id
       });
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('déjà archivé');
     });
@@ -251,7 +249,6 @@ describe('roosyncManage (integration)', () => {
         // message_id manquant
       } as any);
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('Erreur');
       expect(text).toContain('message_id');
@@ -263,7 +260,6 @@ describe('roosyncManage (integration)', () => {
         message_id: 'msg-nonexistent'
       });
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('introuvable');
     });
@@ -282,7 +278,6 @@ describe('roosyncManage (integration)', () => {
         message_id: msg.id
       });
 
-      expect(result).toBeDefined();
       const text = getText(result);
       expect(text).toContain('archivé');
     });
@@ -321,7 +316,6 @@ describe('roosyncManage (integration)', () => {
       expect(getText(archiveResult)).toContain('archivé');
 
       const archivedMsg = await messageManager.getMessage(sentMsg.id);
-      expect(archivedMsg).toBeDefined();
       expect(archivedMsg?.status).toBe('archived');
     });
 
@@ -377,9 +371,10 @@ describe('roosyncManage (integration)', () => {
         message_id: 'some-id'
       });
 
-      expect(result).toBeDefined();
-      // Devrait retourner un message d'erreur ou un résultat gracieux
+      // Répertoire partagé absent : getMessage rend null, le handler répond
+      // par le bloc « Message introuvable » (manage.ts:85-87), pas un throw.
       expect(result.content).toHaveLength(1);
+      expect(getText(result)).toContain('introuvable');
     });
 
     test('should handle corrupted message files', async () => {
@@ -394,9 +389,10 @@ describe('roosyncManage (integration)', () => {
         message_id: corruptedId
       });
 
-      expect(result).toBeDefined();
-      // Devrait gérer le fichier corrompu gracieusement
+      // Fichier corrompu : la lecture/parse échoue silencieusement côté
+      // MessageManager, le handler répond « Message introuvable ».
       expect(result.content).toHaveLength(1);
+      expect(getText(result)).toContain('introuvable');
     });
   });
 });

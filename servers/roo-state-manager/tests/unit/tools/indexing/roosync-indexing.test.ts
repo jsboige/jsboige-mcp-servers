@@ -36,9 +36,14 @@ vi.mock('../../../../src/utils/roo-storage-detector.js', () => ({
 }));
 
 vi.mock('../../../../src/services/qdrant.js', () => ({
+    // NB: scroll en impl inline (pas .mockResolvedValue) pour survivre au
+    // mockReset:true — sans scroll, cleanup_orphans sort en early-return avec
+    // « Failed to scroll Qdrant » absorbé dans errors (cleanup-orphans.ts:225).
+    // points: [] arrête la boucle de scrollUniqueTaskIds (:72-75) → scan sain.
     getQdrantClient: vi.fn(() => ({
         getCollections: vi.fn().mockResolvedValue({ collections: [] }),
-        getCollection: vi.fn().mockRejectedValue(new Error('Collection not found'))
+        getCollection: vi.fn().mockRejectedValue(new Error('Collection not found')),
+        scroll: vi.fn(async () => ({ points: [] }))
     }))
 }));
 
@@ -332,11 +337,17 @@ describe('roosync_indexing - CONS-11', () => {
             // result.errors, jamais un throw).
             // Le tool pose explicitement isError:false (pas undefined)
             expect(result.isError).toBe(false);
-            expect(JSON.parse((result.content[0] as any).text)).toMatchObject({
+            const payload = JSON.parse((result.content[0] as any).text);
+            expect(payload).toMatchObject({
                 action: 'cleanup_orphans',
                 mode: 'dry_run',
                 scan: { orphans_detected: 0 }
             });
+            // Contrat de projection (roosync-indexing.tool.ts, case
+            // cleanup_orphans) : errors n'est projeté QUE non vide —
+            // undefined (clé absente du JSON) est le témoin d'un scan
+            // sans aucune erreur absorbée (scroll/check/delete).
+            expect(payload.errors).toBeUndefined();
             expect(rebuildHandler).not.toHaveBeenCalled();
         });
 
