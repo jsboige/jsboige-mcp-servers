@@ -527,6 +527,32 @@ async function cleanupStaleTempFiles(): Promise<void> {
 export const SKELETON_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 
 /**
+ * #2427: bring up the leader-only startup stack — auto-réparation then Worker B
+ * (`initializeQdrantIndexingService`: consistency pass + outdated-index scan + the
+ * #2352 per-tick indexing process). Runs EXACTLY ONCE per process, from whichever
+ * of its two call sites fires first: the boot leader branch, or the tick's
+ * `became-leader` transition (a mid-run leader refreshed skeletons but never
+ * indexed before #2427 — Worker B was boot-leader-only, so it died with the boot
+ * leader and nothing ever restarted it). The guard keeps a boot leader that steps
+ * down and re-becomes leader from re-paying the startup scans (the N× cost #3661
+ * removed). Worker B's own #2352 election dedupes across processes as before.
+ */
+function bringUpLeaderStackOnce(state: ServerState): void {
+    if (state.leaderStackStarted) return;
+    state.leaderStackStarted = true;
+
+    // Auto-réparation proactive: fire-and-forget with timeout
+    startProactiveMetadataRepair().catch((error: any) => {
+        console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
+    });
+
+    // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
+    initializeQdrantIndexingService(state).catch((error: any) => {
+        console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
+    });
+}
+
+/**
  * #883 Worker A: Periodic incremental skeleton refresh
  * Scans for tasks modified since last check and updates skeletons in cache.
  * When a skeleton is updated (lastActivity changes), queues it for Qdrant indexation.
@@ -552,6 +578,11 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
             const leadership = await ensureWorkerALeadershipForTick(state);
             if (leadership === 'became-leader') {
                 console.log(`🔑 [WorkerA-Lead] PID ${process.pid} became Worker A leader (mid-run election)`);
+                // #2427: a mid-run leader must run what a boot leader runs. This
+                // process was a follower at boot, so Worker B never started on it —
+                // without this it would refresh skeletons forever but never index.
+                // No-op for a process that already paid the stack (guard inside).
+                bringUpLeaderStackOnce(state);
             } else if (leadership === 'stepped-down') {
                 console.warn(`⚠️ [WorkerA-Lead] PID ${process.pid} lost leadership (lock stolen). Stepped down; retrying next tick.`);
             }
@@ -887,14 +918,66 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             state.lastClaudeRefreshAt = cursors.lastClaudeRefreshAt;
         }
 
+        // #3661: Worker A leader-election (skeleton refresh + startup scans).
+        // Distinct lock from #2352's Qdrant indexing — separate cycles so an indexing
+        // leader crash does not paralyse the refresh, and vice-versa. Without this,
+        // every MCP process on a high-multiplicity machine runs the SAME 2-min refresh
+        // + the SAME startup scans N times — paying N× disk I/O and N× queue contention.
+        //
+        // Fail-closed: if the lock acquisition fails for an unexpected reason, we treat
+        // this process as a follower and skip Worker A (coherent with #2352 convention).
+        // Followers observe state writes from the leader via the unified store; they
+        // do not run the leader-only startup scans. They DO arm the refresh interval
+        // (#2427 — see the arming branch below).
+        //
+        // #2427: the election runs BEFORE the background skeleton load attaches its
+        // .then: that callback stamps the cursor leader-only, so isWorkerALeader must
+        // already be final when it fires — otherwise a fast-resolving load could race
+        // the election's await and observe the default follower state.
+        try {
+            state.isWorkerALeader = await tryAcquireWorkerALeaderLock(state.machineId);
+            if (state.isWorkerALeader) {
+                console.log(`🔑 [WorkerA-Lead] PID ${process.pid} is Worker A leader — refresh + startup scans`);
+            } else {
+                console.log(`🔄 [WorkerA-Lead] PID ${process.pid} is Worker A follower — startup scans skipped (machine-local dedup)`);
+            }
+        } catch (error: any) {
+            console.warn(`⚠️ [WorkerA-Lead] Election failed for PID ${process.pid}: ${error?.message || error}. Treating as follower (fail-closed).`);
+            state.isWorkerALeader = false;
+        }
+
+        // #3661: Boot instrumentation for the Worker A election outcome.
+        if (process.env.ROO_INSTRUMENT_BOOT === '1' || process.env.ROO_INSTRUMENT_BOOT === 'true') {
+            try {
+                console.log(`[BOOT-INSTR] ${JSON.stringify({
+                    ts: new Date().toISOString(),
+                    event: 'worker-a-election',
+                    pid: process.pid,
+                    machineId: state.machineId,
+                    isWorkerALeader: state.isWorkerALeader,
+                })}`);
+            } catch {
+                /* non-critical */
+            }
+        }
+
         // Load skeleton index in background — first tool call that needs it
         // will find it already loaded (or will trigger lazy load via ensureSkeletonCacheLoaded)
         loadSkeletonsFromDisk(state.conversationCache).then(() => {
             // Mark refresh timestamp AFTER index is loaded, so the first worker tick
             // only picks up tasks modified AFTER this point — NOT all 7620 tasks.
             // Without this, lastSkeletonRefreshAt=0 causes the worker to re-analyze everything.
-            state.lastSkeletonRefreshAt = Date.now();
-            persistIndexerCursor(state.lastSkeletonRefreshAt);
+            //
+            // #2427: LEADER-ONLY, with the Claude cursor riding along. A follower
+            // writing here would (a) stamp a cursor AHEAD of the leader's real one —
+            // a later mid-run leader hydrating from the file would skip every task
+            // changed in between — and (b) send lastClaudeRefreshAt back to its
+            // boot-time value (the pre-defect-B erase, reborn at boot). The
+            // election ran before this load was attached, so isWorkerALeader is final.
+            if (state.isWorkerALeader) {
+                state.lastSkeletonRefreshAt = Date.now();
+                persistIndexerCursor(state.lastSkeletonRefreshAt, state.lastClaudeRefreshAt);
+            }
             // Once index is loaded, discover Claude sessions too
             // #3661 (grain Tier 2 N×) : la sweep Claude startup échappe à
             // l'élection Worker A ET au prewarm-off — chaque hôte paie un
@@ -943,72 +1026,39 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             // ne s'execute jamais si loadSkeletonsFromDisk rejette — le curseur restait a 0
             // et le worker re-analysait l'integralite des taches a chaque cycle de 2 min.
             // On n'ecrase pas une valeur hydratee plus ancienne (fenetre de rattrapage).
-            if (!state.lastSkeletonRefreshAt) {
+            // #2427: leader-only + both fields, for the same reasons as the success path.
+            if (state.isWorkerALeader && !state.lastSkeletonRefreshAt) {
                 state.lastSkeletonRefreshAt = Date.now();
-                persistIndexerCursor(state.lastSkeletonRefreshAt);
+                persistIndexerCursor(state.lastSkeletonRefreshAt, state.lastClaudeRefreshAt);
             }
         });
-
-        // #3661: Worker A leader-election (skeleton refresh + startup scans).
-        // Distinct lock from #2352's Qdrant indexing — separate cycles so an indexing
-        // leader crash does not paralyse the refresh, and vice-versa. Without this,
-        // every MCP process on a high-multiplicity machine runs the SAME 2-min refresh
-        // + the SAME startup scans N times — paying N× disk I/O and N× queue contention.
-        //
-        // Fail-closed: if the lock acquisition fails for an unexpected reason, we treat
-        // this process as a follower and skip Worker A (coherent with #2352 convention).
-        // Followers observe state writes from the leader via the unified store; they
-        // do not run independent refresh intervals or scans.
-        try {
-            state.isWorkerALeader = await tryAcquireWorkerALeaderLock(state.machineId);
-            if (state.isWorkerALeader) {
-                console.log(`🔑 [WorkerA-Lead] PID ${process.pid} is Worker A leader — refresh + startup scans`);
-            } else {
-                console.log(`🔄 [WorkerA-Lead] PID ${process.pid} is Worker A follower — refresh + scans skipped (machine-local dedup)`);
-            }
-        } catch (error: any) {
-            console.warn(`⚠️ [WorkerA-Lead] Election failed for PID ${process.pid}: ${error?.message || error}. Treating as follower (fail-closed).`);
-            state.isWorkerALeader = false;
-        }
-
-        // #3661: Boot instrumentation for the Worker A election outcome.
-        if (process.env.ROO_INSTRUMENT_BOOT === '1' || process.env.ROO_INSTRUMENT_BOOT === 'true') {
-            try {
-                console.log(`[BOOT-INSTR] ${JSON.stringify({
-                    ts: new Date().toISOString(),
-                    event: 'worker-a-election',
-                    pid: process.pid,
-                    machineId: state.machineId,
-                    isWorkerALeader: state.isWorkerALeader,
-                })}`);
-            } catch {
-                /* non-critical */
-            }
-        }
 
         // Fuite po-2025 : kill-switch dur. ROO_INDEXING_ENABLED=false coupe les DEUX
         // workers d'indexation (refresh squelettes = scan disque + re-analyse, Qdrant =
         // trafic embeddings) — pour les machines a connexion facturee. Defaut : ON.
         if (!state.isQdrantIndexingEnabled) {
             console.log('⛔ [Indexing] ROO_INDEXING_ENABLED=false — skeleton refresh + Qdrant indexing desactivés');
-        } else if (!state.isWorkerALeader) {
-            // #3661: Follower — skip the refresh worker AND the startup scans. The leader
-            // carries the work for the whole machine; followers serve lazy reads only.
-            console.log(`🔄 [WorkerA-Lead] Skipping Worker A + Qdrant startup (follower — leader carries work)`);
         } else {
-            // #3661: Leader — auto-réparation, then Worker A, then Qdrant.
-            // Auto-réparation proactive: fire-and-forget with timeout
-            startProactiveMetadataRepair().catch((error: any) => {
-                console.warn('[Auto-Repair] Background repair failed (non-blocking):', error?.message || error);
-            });
+            if (state.isWorkerALeader) {
+                // #3661/#2427: Leader — the startup stack (auto-réparation + Worker B),
+                // exactly once per process; the guard matters because a leader that
+                // steps down and re-becomes leader mid-run must not re-pay it.
+                bringUpLeaderStackOnce(state);
+            } else {
+                // #3661: Follower — the STARTUP SCANS stay leader-only (their N× cost
+                // is what #3661 removed); followers serve lazy reads only.
+                console.log(`🔄 [WorkerA-Lead] Startup scans skipped (follower — leader carries them)`);
+            }
 
-            // #883 Worker A: Start periodic skeleton refresh (incremental, non-blocking)
+            // #883/#2427 Worker A: EVERY process arms the 2-min refresh interval.
+            // Its first act is the per-tick election: a follower pays one lock read
+            // per tick and returns; on a machine whose boot leader died, a follower
+            // STEALS the stale lock and resumes refresh (+ Worker B, via the
+            // became-leader transition). Before #2427 this start lived in the
+            // leader-only branch, making the stale-steal path in worker-a-lock.ts
+            // dead code on every follower — measured live (#2427 c.5974617239):
+            // dead-pid lock never stolen, machine leaderless indefinitely.
             startSkeletonRefreshWorker(state);
-
-            // Niveau 2: Initialisation du service d'indexation Qdrant asynchrone (Worker B)
-            initializeQdrantIndexingService(state).catch((error: any) => {
-                console.warn('[Qdrant] Background indexing init failed (non-blocking):', error?.message || error);
-            });
         }
 
         // Heartbeat: ADR 008 passive model — no auto-start needed.

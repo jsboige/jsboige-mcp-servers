@@ -50,6 +50,13 @@ export interface ServerState {
     // (which gates the Qdrant embeddings) — see roosync-worker-a-leader-*.lock vs
     // roosync-indexer-leader-*.lock.
     isWorkerALeader: boolean;
+    /**
+     * #2427: the leader-only startup stack (auto-réparation + Worker B bootstrap)
+     * has been paid by this process — guards `bringUpLeaderStackOnce` so a leader
+     * that steps down and re-becomes leader mid-run never re-pays the startup
+     * scans (the N× cost #3661 removed).
+     */
+    leaderStackStarted: boolean;
     // #2352: Task-space partitioning — null = disabled (all machines index everything)
     fleetRoster: string[] | null;
     machineId: string;
@@ -160,6 +167,8 @@ export class StateManager {
             // machine runs the 2-min refresh worker; followers skip the loop and observe
             // state writes from the leader via the unified store.
             isWorkerALeader: false,
+            // #2427: startup stack not paid yet — set by `bringUpLeaderStackOnce`.
+            leaderStackStarted: false,
             fleetRoster: rooSyncCfg?.fleetRoster ?? null,
             machineId: rooSyncCfg?.machineId ?? (process.env.ROOSYNC_MACHINE_ID || 'local').toLowerCase(),
             qdrantIndexCache: new Map(),
