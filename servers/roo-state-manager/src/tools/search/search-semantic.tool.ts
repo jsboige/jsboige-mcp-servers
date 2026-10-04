@@ -179,6 +179,8 @@ export interface SearchTasksByContentArgs {
     conversation_id?: string;
     search_query: string;
     max_results?: number;
+    /** #936: Pagination cursor for broad queries — skip the first N ranked results. Clamped [0, 10000]. */
+    offset?: number;
     diagnose_index?: boolean;
     workspace?: string;
     source?: 'roo' | 'claude-code';
@@ -797,7 +799,7 @@ export const searchTasksByContentTool = {
         fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
-        const { conversation_id, search_query, max_results, diagnose_index = false, workspace, source,
+        const { conversation_id, search_query, max_results, offset, diagnose_index = false, workspace, source,
                 chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results, reset_circuit_breaker } = args;
 
         // #2634: Reset circuit breaker(s) on explicit request (runtime reset without VS Code restart).
@@ -1061,9 +1063,14 @@ export const searchTasksByContentTool = {
             // unique_tasks even when one task dominates the Qdrant ranking.
             const effectiveMaxResults = max_results || 10;
             const diversifyLimit = effectiveMaxResults * DIVERSIFY_OVERFETCH;
+            // #936: offset passthrough — pagination cursor for broad queries on the
+            // 14M+ vector collection. Sent only when strictly positive so the
+            // historical no-offset request shape (and its tests) stay unchanged.
+            const effectiveOffset = Math.min(Math.max(offset || 0, 0), 10000);
             const searchResults = await withRetry(() => qdrant.search(collectionName, {
                 vector: queryVector,
                 limit: diversifyLimit,
+                ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
                 filter: filter,
                 params: {
                     hnsw_ef: 128,
@@ -1244,6 +1251,8 @@ export const searchTasksByContentTool = {
                     query: search_query,
                     results_count: filteredResults.length,
                     unique_tasks: groupedResults.length,
+                    // #936: echo the effective offset so callers can chain pages
+                    ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
                     // #636 Phase 2 + #1244 Couche 1.3: temporal filter info
                     // Le filtre est pousse en amont dans Qdrant (range filter sur 'timestamp')
                     // ET applique en defense-in-depth client-side (cf. filteredResults plus haut).

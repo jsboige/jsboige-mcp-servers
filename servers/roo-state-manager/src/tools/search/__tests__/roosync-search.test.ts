@@ -493,6 +493,93 @@ describe('roosync_search', () => {
 	});
 
 	// ============================================================
+	// #936: Pagination cursor (offset) for broad queries
+	// ============================================================
+
+	describe('#936: offset pagination cursor', () => {
+		test('passes offset to semantic handler', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'broad query',
+					workspace: 'd:\\test-workspace',
+					max_results: 10,
+					offset: 10
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.offset).toBe(10);
+		});
+
+		test('clamps offset to [0, 10000]', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'broad query',
+					workspace: 'd:\\test-workspace',
+					offset: 50000
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.offset).toBe(10000);
+		});
+
+		test('negative offset clamps to 0', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'semantic',
+					search_query: 'broad query',
+					workspace: 'd:\\test-workspace',
+					offset: -5
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.offset).toBe(0);
+		});
+
+		test('offset defaults to 0 when not provided', async () => {
+			await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'test', workspace: 'd:\\test-workspace' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockSemanticHandler.mock.calls[0][0];
+			expect(callArgs.offset).toBe(0);
+		});
+
+		test('passes offset to text fallback args (action=text)', async () => {
+			await handleRooSyncSearch(
+				{
+					action: 'text',
+					search_query: 'broad query',
+					workspace: 'd:\\test-workspace',
+					offset: 20
+				},
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			const callArgs = mockFallbackHandler.mock.calls[0][0];
+			expect(callArgs.offset).toBe(20);
+		});
+	});
+
+	// ============================================================
 	// Optional parameter handling
 	// ============================================================
 
