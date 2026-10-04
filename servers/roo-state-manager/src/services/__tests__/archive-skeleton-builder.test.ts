@@ -366,6 +366,28 @@ describe('archive workspace origin — Claude archives (friction 04/10)', () => 
         expect(result.metadata.workspace).toBe('g:/Mon-Drive-Suzon');
     });
 
+    it('archiveToSkeleton: composite agent <slug>__<uuid>__agent-<id> — coupe au PREMIER __', () => {
+        // Forme DOMINANTE des sessions Claude agents (mesure 04/10 : 8 638/11 108
+        // ≈ 78 % du corpus) : le suffixe `__agent-<id>` suit l'uuid. La coupe au
+        // DERNIER `__` atterrit sur ce suffixe et pollue le slug avec l'uuid ;
+        // le PREMIER `__` est la frontière slug/uuid (c.5981499467).
+        const result = archiveToSkeleton({
+            ...claudeArchive,
+            taskId: 'd--Dev-CoursIA__a8c96915-e4ed-4a20-a4ec-1de5d8094f9a__agent-1a2b3c4d',
+        });
+        expect(result.metadata.workspace).toBe('d:/Dev-CoursIA');
+    });
+
+    it('archiveToSkeleton: forme live sans __ (claude-<slug>--<uuid>) — repli au dernier --', () => {
+        // Scan live / nom de fichier : aucun `__` → la coupe retombe sur le
+        // DERNIER `--` (celui qui précède l'uuid, pas le `--` du lecteur).
+        const result = archiveToSkeleton({
+            ...claudeArchive,
+            taskId: 'claude-d--Dev-CoursIA--a8c96915-e4ed-4a20-a4ec-1de5d8094f9a',
+        });
+        expect(result.metadata.workspace).toBe('d:/Dev-CoursIA');
+    });
+
     it('archiveToStub: dérive le workspace du taskId quand le champ est absent', () => {
         const result = archiveToStub(claudeArchive, 'G:/archive/claude-x.json');
         expect(result.metadata.workspace).toBe('d:/Dev-CoursIA');

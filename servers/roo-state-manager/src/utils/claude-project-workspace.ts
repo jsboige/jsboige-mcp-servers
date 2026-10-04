@@ -42,11 +42,14 @@ export function deriveWorkspaceFromClaudeProjectSlug(slug: string | undefined): 
  * - **scan live / nom de fichier d'archive** : `claude-<slug>--<uuid>`
  *   (`claude-d--Dev-CoursIA--<uuid>`, `TaskArchiver.ts:348`).
  *
- * Le préfixe `claude-` est donc OPTIONNEL, et la coupe se fait au DERNIER
- * `__` (archive) OU `--` (live) : l'uuid de session est toujours en fin d'id
- * et ne contient jamais de séparateur double, donc le dernier des deux est
- * celui qui précède l'uuid — même quand le slug porte son propre `--` de
- * lecteur (`g--Mon-Drive-Suzon`).
+ * Le préfixe `claude-` est donc OPTIONNEL. La coupe se fait au **PREMIER `__`**
+ * (convention archive), avec repli au **DERNIER `--`** si le corps n'en porte
+ * aucun (convention live, qui n'a pas de `__`) : les sessions d'agents sont des
+ * composites `<slug>__<uuid>__agent-<id>` — 78 % du corpus claude (8 638/11 108,
+ * mesure 04/10, c.5981499467) — où le DERNIER `__` atterrit sur le suffixe
+ * agent et pollue le slug avec l'uuid ; le PREMIER `__` est toujours la
+ * frontière slug/uuid, même quand le slug porte son propre `--` de lecteur
+ * (`g--Mon-Drive-Suzon`).
  *
  * Rend `undefined` quand rien n'est dérivable : les tâches roo/zoo (taskId
  * uuid-pur, sans slug de lecteur) ne matchent pas `DRIVE_SLUG_PATTERN` et
@@ -56,7 +59,10 @@ export function deriveWorkspaceFromClaudeTaskId(taskId: string | undefined): str
     const CLAUDE_PREFIX = 'claude-';
     if (!taskId) return undefined;
     const body = taskId.startsWith(CLAUDE_PREFIX) ? taskId.slice(CLAUDE_PREFIX.length) : taskId;
-    const separator = Math.max(body.lastIndexOf('__'), body.lastIndexOf('--'));
+    const firstDoubleUnderscore = body.indexOf('__');
+    const separator = firstDoubleUnderscore >= 0
+        ? firstDoubleUnderscore
+        : body.lastIndexOf('--');
     if (separator <= 0) return undefined;
     return deriveWorkspaceFromClaudeProjectSlug(body.slice(0, separator));
 }
