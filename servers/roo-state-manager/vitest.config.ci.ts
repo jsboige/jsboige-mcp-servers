@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 27 test-file entries + 4 tests-directory globs
+ * Exclusion census: 26 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -89,7 +89,16 @@ export default mergeConfig(unitConfig, defineConfig({
       //   real GDrive/RooSync state involved. Verified firsthand: 11/11 pass under
       //   the CI config with the exclusion lifted, full suite green.
       // 'src/tools/roosync/__tests__/get-status.smoke.test.ts',
-      'src/tools/roosync/__tests__/storage-management.smoke.test.ts',
+      // 2026-10-04 (#2639): storage-management.smoke.test.ts RE-ENABLED in CI,
+      //   MOCK-BASED isolation (deviation from the tmpdir method, documented):
+      //   the tool delegates to RooStorageDetector/ZooStorageDetector which scan
+      //   real machine paths through a 5-minute global cache and expose no env
+      //   routing — a tmpdir ROOSYNC_SHARED_PATH never reaches them. Detectors
+      //   and handleMaintenance are mocked (established CI pattern, baseline
+      //   .test.ts #2967); the #564 freshness pattern is preserved on mock state
+      //   changes. Verified firsthand: 4/4 pass under the CI config with the
+      //   exclusion lifted.
+      // 'src/tools/roosync/__tests__/storage-management.smoke.test.ts',
       // 2026-10-03 (#2639): machines.smoke.test.ts RE-ENABLED in CI. Same
       //   method as get-status.smoke: the test points ROOSYNC_SHARED_PATH at a
       //   tmpdir it creates in beforeEach and removes in afterEach (portable
