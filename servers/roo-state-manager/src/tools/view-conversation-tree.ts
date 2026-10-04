@@ -481,9 +481,11 @@ async function handleViewConversationTreeExecutionAsync(
             // #3721: Distinguish "session file gone (deleted)" from "file present but
             // unreadable (corruption)" before analyzing. Without this, a ghost cache
             // entry (JSONL deleted) fails with "may be corrupted or empty" — sending
-            // the agent on a corruption/repair hunt — or worse, since #2734 scoping
-            // falls through when the session file is absent, analyzeConversation
-            // aggregates the project's OTHER sessions under the ghost's taskId.
+            // the agent on a corruption/repair hunt. (Historically, before #2191 made
+            // analyzeConversation return null on this miss, #2734 scoping fell
+            // through and aggregated the project's OTHER sessions under the ghost's
+            // taskId; this guard still runs first to give the specific ghost error
+            // and the unified-store fallback rather than a bare analysis-empty.)
             // Legacy per-project ids have NO session suffix: the id IS 'claude-{projectDir}',
             // and that basename itself contains '--' (path encoding). The parse below would
             // split INSIDE the project name and misdiagnose a LIVE legacy session as deleted

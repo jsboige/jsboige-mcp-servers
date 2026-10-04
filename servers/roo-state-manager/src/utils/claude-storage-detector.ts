@@ -210,14 +210,35 @@ export class ClaudeStorageDetector {
             // loadClaudeCodeSessions → the `list` cache, and findConversationById → `view`)
             // but pass the project dir here, so every session inherited the project-level
             // cumulative `totalSize`/`messageCount` → byte-identical inflated metadata
-            // across distinct task_ids. Resolve the session file from the taskId suffix
-            // after the last `--`; scope analysis to it only when that file actually exists
-            // (per-project taskIds like `claude-{project}` fall through unchanged).
-            const sessionSepIndex = taskId.lastIndexOf('--');
-            if (sessionSepIndex !== -1) {
-                const sessionFile = `${taskId.substring(sessionSepIndex + 2)}.jsonl`;
+            // across distinct task_ids.
+            //
+            // #2191 (sound discriminator + honest miss): splitting the taskId on its
+            // LAST `--` is not a sound session discriminator — project names may
+            // themselves contain `--` (c--dev-x--worktree) and PROJECT_NAME_PATTERNS
+            // accepts bare-uuid project dirs, so a uuid-shaped suffix proves nothing
+            // (the ambiguity documented in #1345). The caller that resolved this
+            // taskId already matched the project directory, so the sound anchor is
+            // basename(projectPath) — the exact inverse of the discovery construction
+            // `claude-${basename}--${sessionUuid}`:
+            //   taskSuffix === basename                 → per-project: aggregate (legacy)
+            //   taskSuffix startsWith basename + '--'   → per-session: sessionPart is
+            //                                             everything after that anchor
+            //   anything else (cross-wired callers such → aggregate (legacy fallback,
+            //   as claude-task-extractor, foreign ids)    behavior unchanged)
+            // On the per-session MISS (session file absent) return null: the previous
+            // fall-through aggregated the project's OTHER sessions under the missing
+            // session's id (the #2734 shape on the miss path, #1345: 181 ms for
+            // 4 sessions) and made findConversationById stop at the prefix project
+            // instead of reaching the longer project dir that owns the id.
+            const projectBasename = path.basename(projectPath);
+            const taskSuffix = taskId.startsWith('claude-') ? taskId.substring(7) : null;
+            if (taskSuffix !== null && taskSuffix.startsWith(projectBasename + '--')) {
+                const sessionPart = taskSuffix.substring(projectBasename.length + 2);
+                const sessionFile = `${sessionPart}.jsonl`;
                 if (jsonlFiles.includes(sessionFile)) {
                     jsonlFiles = [sessionFile];
+                } else {
+                    return null;
                 }
             }
 
