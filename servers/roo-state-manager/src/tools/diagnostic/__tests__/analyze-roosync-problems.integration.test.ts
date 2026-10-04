@@ -137,13 +137,15 @@ describe('analyze_roosync_problems (integration)', () => {
       const result1 = await analyzeRooSyncProblems();
       expect(result1).toBeDefined();
 
-      // Avec un chemin invalide - devrait retourner une erreur système (ENOENT en anglais)
+      // Avec un chemin invalide - erreur amicale nommant le chemin (#2307),
+      // pas l'ENOENT système brut
       const result2 = await analyzeRooSyncProblems({ roadmapPath: '/nonexistent/path/sync-roadmap.md' });
       expect(result2).toBeDefined();
 
       const parsed = JSON.parse(result2.content[0].text);
       expect(parsed.success).toBe(false);
-      expect(parsed.error).toMatch(/ENOENT|no such file/);
+      expect(parsed.code).toBe('ROADMAP_NOT_FOUND');
+      expect(parsed.error).toContain('sync-roadmap.md');
     });
 
     test('should accept generateReport parameter', async () => {
@@ -176,13 +178,14 @@ describe('analyze_roosync_problems (integration)', () => {
       });
 
       expect(result).toBeDefined();
-      // L'outil retourne isError: true quand une erreur système survient (ENOENT)
-      expect(result.isError).toBe(true);
+      // Un fichier absent est une condition attendue, pas une erreur système :
+      // réponse amicale ROADMAP_NOT_FOUND nommant le chemin, sans isError (#2307)
+      expect(result.isError).toBeUndefined();
 
       const parsed = JSON.parse(result.content[0].text);
       expect(parsed.success).toBe(false);
-      // L'erreur système ENOENT est en anglais
-      expect(parsed.error).toMatch(/ENOENT|no such file/);
+      expect(parsed.code).toBe('ROADMAP_NOT_FOUND');
+      expect(parsed.error).toContain('nonexistent');
     });
 
     test('should handle invalid JSON in roadmap', async () => {
