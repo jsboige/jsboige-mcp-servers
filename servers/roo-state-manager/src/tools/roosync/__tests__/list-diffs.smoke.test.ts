@@ -4,6 +4,16 @@
  * Purpose: Validate that roosync_list_diffs returns fresh data after state changes
  * Pattern: Issue #564 Phase 2 - Prevent silent bugs from cache staleness (issue #562)
  *
+ * #2639: RE-ENABLED in CI (2026-10-04). The test was already fully isolated
+ *   (tmpdir `.shared-state-test-listdiffs` under os.tmpdir(), baseline and
+ *   inventories written there in each test, ROOSYNC_SHARED_PATH routed to it
+ *   and SHARED_STATE_PATH deleted in beforeEach to prevent the real-path
+ *   override, cleanup with ENOTEMPTY retries in afterEach) — the blanket
+ *   smoke exclusion predated that isolation and was stale. An
+ *   isolation-contract test now pins the tmpdir guarantee explicitly; the
+ *   leftover debug-file write (permanent file in os.tmpdir() + console.log)
+ *   was removed on re-enable.
+ *
  * @see docs/testing/issue-564-phase1-audit-report.md (lines 88-95)
  *
  * NOTE: This test uses the BaselineService architecture which requires:
@@ -244,17 +254,6 @@ describe('SMOKE: roosync_list_diffs', () => {
     expect(result1.filterApplied).toBe('all');
     expect(result1.totalDiffs).toBeGreaterThanOrEqual(0);
 
-    // DEBUG: Write diffs to permanent file to see what's being detected
-    const debugPath = path.join(os.tmpdir(), 'debug-diffs-listdiffs.json');
-    fs.mkdirSync(path.dirname(debugPath), { recursive: true });
-    fs.writeFileSync(debugPath, JSON.stringify({
-      result1_diffs: result1.diffs,
-      result1_totalDiffs: result1.totalDiffs,
-      baseline_version: initialBaseline.version,
-      baseline_machines: initialBaseline.machines?.length || 0
-    }, null, 2));
-    console.log('[DEBUG] Diffs written to:', debugPath);
-
     const initialDiffCount = result1.totalDiffs;
 
     // Step 3: Modify the underlying state (add differences in inventory)
@@ -277,6 +276,29 @@ describe('SMOKE: roosync_list_diffs', () => {
     // This validates that diffs are computed fresh from filesystem,
     // not from stale cached data
     expect(result2.totalDiffs).toBeGreaterThan(initialDiffCount);
+  });
+
+  it('runs against the tmpdir shared state it creates (isolation contract, #2639)', async () => {
+    // The baseline and inventories must live under ROOSYNC_SHARED_PATH (the
+    // tmpdir this test created in beforeEach), never under a real
+    // GDrive/RooSync location.
+    expect(process.env.ROOSYNC_SHARED_PATH).toBe(testSharedStatePath);
+    expect(testSharedStatePath.startsWith(os.tmpdir())).toBe(true);
+
+    // A baseline + a diverging inventory written to the tmpdir must be the
+    // state the tool reads back: the diff it reports can only come from there.
+    writeBaseline(makeBaseline('iso-v1', 1));
+    writeInventoryFiles({
+      'test-machine-1': makeMachineInventory('test-machine-1', ['node-version', 'extra-mode'])
+    });
+    RooSyncService.resetInstance();
+
+    const result = await roosyncListDiffs({ filterType: 'all', forceRefresh: true });
+
+    expect(result.totalDiffs).toBeGreaterThan(0);
+    // And no shared-state artefact leaked next to the repo or the real store:
+    expect(fs.existsSync(testBaselinePath)).toBe(true);
+    expect(testBaselinePath.startsWith(testSharedStatePath)).toBe(true);
   });
 
   it('should return empty diffs when no baseline exists', async () => {

@@ -132,7 +132,7 @@ servers/
 
 1. **Build**: `npm run build` (serveurs TypeScript)
 2. **Tests**: `npx vitest run` (JAMAIS `npm test` — watch mode blocks)
-3. **CI config**: `npx vitest run --config vitest.config.ci.ts` (exclut 26 fichiers de tests déclarés — recensement : `servers/roo-state-manager/docs/CI-EXCLUSIONS-CENSUS.md`)
+3. **CI config**: `npx vitest run --config vitest.config.ci.ts` (exclut 25 fichiers de tests déclarés — recensement : `servers/roo-state-manager/docs/CI-EXCLUSIONS-CENSUS.md`)
 
 ---
 
