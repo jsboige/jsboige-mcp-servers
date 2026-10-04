@@ -14,9 +14,10 @@
  * @version 1.1.0 (#564 Phase 2, #606 fix)
  */
 
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { existsSync, rmSync, mkdirSync, writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Mock getLocalMachineId pour contrôler l'identifiant dans les tests
 vi.mock('../../../utils/message-helpers.js', async () => {
@@ -30,7 +31,12 @@ vi.mock('../../../utils/message-helpers.js', async () => {
 });
 
 // Mock getSharedStatePath pour utiliser un chemin de test
-const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-diagnose');
+// #1355 : le fixture vivait dans src/__test-data__/ (dans l'arbre du dépôt) et le rmSync
+// de l'afterEach échouait en ENOTEMPTY sur le runner Linux (run 37199160323) quand le
+// chemin reset du service ratissait ses propres fichiers. Isolation hors arbre via
+// mkdtemp(os.tmpdir()), même pattern que baseline.integration.test.ts.
+let testSharedStatePath: string;
+let testRootDir: string;
 vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
@@ -61,6 +67,14 @@ describe('roosyncDiagnose (integration)', () => {
   // RooSyncService singleton (via loadRooSyncConfig) uses the test directory.
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
   const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
+
+  beforeAll(() => {
+    // #1355 : racine temporaire hors arbre du dépôt, une par worker (mkdtemp),
+    // réutilisée par tous les tests du fichier ; l'afterEach ne ratisse que le
+    // sous-répertoire shared-state pour préserver l'isolation par test.
+    testRootDir = mkdtempSync(join(tmpdir(), 'diagnose-it-'));
+    testSharedStatePath = join(testRootDir, 'shared-state');
+  });
 
   beforeEach(async () => {
     // Fix #634: Override env var BEFORE singleton recreation.
@@ -107,8 +121,22 @@ describe('roosyncDiagnose (integration)', () => {
     }
 
     // Cleanup : supprimer répertoire test pour isolation
+    // #1355 : maxRetries/retryDelay — le reset du service peut ratisser ses propres
+    // fichiers en concurrence de ce rmSync (ENOTEMPTY observé sur runner Linux).
     if (existsSync(testSharedStatePath)) {
-      rmSync(testSharedStatePath, { recursive: true, force: true });
+      rmSync(testSharedStatePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
+  afterAll(() => {
+    // #1355 : retirer la racine mkdtemp ; ne jamais faire échouer la suite sur
+    // un échec de nettoyage (même politique que baseline.integration.test.ts).
+    if (testRootDir && existsSync(testRootDir)) {
+      try {
+        rmSync(testRootDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      } catch {
+        // nettoyage best-effort
+      }
     }
   });
 
