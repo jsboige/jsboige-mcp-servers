@@ -14,7 +14,7 @@ import {
   updateRoadmapStatusAsync,
   loadDecisionDetails
 } from '../decision-helpers.js';
-import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { RooSyncConfig } from '../../../../config/roosync-config.js';
 
@@ -301,31 +301,77 @@ describe('decision-helpers', () => {
       expect(() => restoreBackup(backupInfo, testBackupDir)).toThrow('Répertoire de backup introuvable');
     });
 
-    it('should restore files from backup', () => {
-      // Create a backup structure
-      const backupSubDir = join(testBackupDir, 'backup-test');
+    it('should restore files at their EXACT original path (round-trip, #2639)', () => {
+      // Répertoire source avec un segment à underscores — le décodage lossy
+      // (_ → /) le détruisait (__test-data__ → test-data).
+      const sourceDir = join(testBackupDir, '__test-data__');
+      mkdirSync(sourceDir, { recursive: true });
+      const original = join(sourceDir, 'decision.json');
+      writeFileSync(original, 'contenu original', 'utf-8');
+
+      const backupInfo = createBackup([original], testBackupDir);
+      expect(backupInfo.files).toEqual([original]);
+
+      // Simuler la perte de l'original, puis restaurer
+      rmSync(original);
+      expect(existsSync(original)).toBe(false);
+
+      const restored = restoreBackup(backupInfo, testBackupDir);
+
+      expect(restored).toEqual([original]);
+      expect(existsSync(original)).toBe(true);
+      expect(readFileSync(original, 'utf-8')).toBe('contenu original');
+      // Aucun fichier parasite dans le CWD ni le backupDir (régression du
+      // fichier `D` 0 octet — base d'un flux ADS créé par un nom manglé
+      // contenant le `:` du lecteur).
+      expect(existsSync(join(process.cwd(), 'D'))).toBe(false);
+      const stray = readdirSync(backupInfo.backupDir).filter(f => f.length <= 1);
+      expect(stray).toEqual([]);
+    });
+
+    // POSIX seulement : le nom hérité conserve le `:` du lecteur — sur NTFS ce
+    // nom EST la pathologie ADS que #2639 corrige (base `D` 0 octet + flux) ;
+    // un backup pré-fix créé sous Windows n'a jamais été restaurable, il n'y a
+    // rien à y tester. Sous Linux le nom hérité est un nom de fichier légal.
+    (process.platform === 'win32' ? it.skip : it)(
+      'should restore backups created by the LEGACY name scheme (pre-#2639)',
+      () => {
+      const sourceDir = join(testBackupDir, 'legacy-src');
+      mkdirSync(sourceDir, { recursive: true });
+      const original = join(sourceDir, 'old.json');
+
+      const backupSubDir = join(testBackupDir, 'backup-legacy');
+      mkdirSync(backupSubDir, { recursive: true });
+      // Nom hérité : séparateurs remplacés, `:` conservé
+      const legacyName = original.replace(/[/\\]/g, '_');
+      writeFileSync(join(backupSubDir, legacyName), 'contenu hérité', 'utf-8');
+
+      const restored = restoreBackup(
+        { timestamp: 'legacy', files: [original], backupDir: backupSubDir },
+        testBackupDir
+      );
+
+      expect(restored).toEqual([original]);
+      expect(readFileSync(original, 'utf-8')).toBe('contenu hérité');
+    });
+
+    it('should throw when the manifest is empty (names not decodable, #2639)', () => {
+      const backupSubDir = join(testBackupDir, 'backup-empty');
       mkdirSync(backupSubDir, { recursive: true });
 
-      // Create a backup file (with mangled name like the code expects)
-      const backupFileName = 'tmp_test_restore_temp_test-file.txt';
-      const backupFilePath = join(backupSubDir, backupFileName);
-      writeFileSync(backupFilePath, 'backup content', 'utf-8');
+      expect(() =>
+        restoreBackup({ timestamp: 'x', files: [], backupDir: backupSubDir }, testBackupDir)
+      ).toThrow('Manifeste de backup vide');
+    });
 
-      const backupInfo = {
-        timestamp: 'test',
-        files: [join(testBackupDir, 'test-file.txt')],
-        backupDir: backupSubDir
-      };
+    it('should throw when no backed-up file is found for any manifest entry', () => {
+      const backupSubDir = join(testBackupDir, 'backup-missing');
+      mkdirSync(backupSubDir, { recursive: true });
+      const original = join(testBackupDir, 'gone.json');
 
-      // This test may fail due to path reconstruction logic
-      // Just verify the function doesn't throw unexpectedly
-      try {
-        const result = restoreBackup(backupInfo, testBackupDir);
-        expect(Array.isArray(result)).toBe(true);
-      } catch (error) {
-        // Expected if path reconstruction fails
-        expect((error as Error).message).toBeDefined();
-      }
+      expect(() =>
+        restoreBackup({ timestamp: 'x', files: [original], backupDir: backupSubDir }, testBackupDir)
+      ).toThrow('Aucun fichier restauré');
     });
   });
 
