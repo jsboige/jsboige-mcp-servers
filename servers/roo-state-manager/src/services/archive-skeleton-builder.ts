@@ -16,6 +16,7 @@
 import { ConversationSkeleton, MessageSkeleton } from '../types/conversation.js';
 import { ArchivedTask } from './task-archiver/types.js';
 import { stripXmlTags, truncateAtBoundary } from '../utils/text-preview.js';
+import { deriveWorkspaceFromClaudeTaskId } from '../utils/claude-project-workspace.js';
 
 /**
  * Preview truncation lengths — MUST mirror the listing extraction in
@@ -68,7 +69,7 @@ export function archiveToSkeleton(archive: ArchivedTask): ConversationSkeleton {
         isCompleted: archive.metadata?.isCompleted ?? false,
         metadata: {
             title: archive.metadata?.title,
-            workspace: archive.metadata?.workspace,
+            workspace: archive.metadata?.workspace ?? deriveWorkspaceFromClaudeTaskId(archive.taskId),
             mode: archive.metadata?.mode,
             createdAt: archive.metadata?.createdAt ?? fallbackTimestamp,
             lastActivity: archive.metadata?.lastActivity ?? fallbackTimestamp,
@@ -131,7 +132,7 @@ export function archiveToStub(archive: ArchivedTask, filePath: string): Conversa
         isCompleted: archive.metadata?.isCompleted ?? false,
         metadata: {
             title: archive.metadata?.title,
-            workspace: archive.metadata?.workspace,
+            workspace: archive.metadata?.workspace ?? deriveWorkspaceFromClaudeTaskId(archive.taskId),
             mode: archive.metadata?.mode,
             createdAt: archive.metadata?.createdAt ?? fallbackTimestamp,
             lastActivity: archive.metadata?.lastActivity ?? fallbackTimestamp,
