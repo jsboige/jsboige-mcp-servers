@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, tryGetSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { formatErrorForResponse } from '../../utils/error-format.js';
 
 interface AnalyzeOptions {
@@ -65,8 +65,13 @@ export const analyze_roosync_problems: Tool = {
 
 export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
     let isAutoDetected = false;
+    let resolvedPath = '';
     try {
-        // Path resolution: explicit param > standard shared state path (#2307 Phase 4)
+        // Path resolution: explicit param > standard shared state path (#2307 Phase 4).
+        // A relative param is anchored via path.resolve() so the caller always sees
+        // the absolute path that was actually read — fs resolves relatives against
+        // the server cwd anyway, silently, and the old code echoed the relative
+        // string back as filePath (#2307).
         let roadmapPath = options.roadmapPath;
         if (!roadmapPath) {
             try {
@@ -74,26 +79,48 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
                 roadmapPath = path.join(sharedStatePath, 'sync-roadmap.md');
                 isAutoDetected = true;
             } catch {
-                // getSharedStatePath() threw — no shared path configured
-            }
-        }
-        if (!roadmapPath) {
-            return {
-                content: [{
+                // getSharedStatePath() threw — no shared path configured. This is
+                // NOT "file not found": the file was never looked for. Distinct
+                // error so a machine without RooSync shared state gets the real
+                // cause instead of hunting a missing file (#2307).
+                return {
+                    content: [{
                         type: 'text',
                         text: JSON.stringify({
                             success: false,
-                            error: "Fichier sync-roadmap.md introuvable. Veuillez spécifier le chemin."
+                            code: 'NO_SHARED_STATE_PATH',
+                            error: "Aucun chemin d'état partagé RooSync configuré (ROOSYNC_SHARED_PATH absente et aucun .env résolu). Indiquez roadmapPath explicitement."
                         }, null, 2)
                     }]
-            };
+                };
+            }
         }
-        const stats = await fs.stat(roadmapPath);
-        const content = await fs.readFile(roadmapPath, 'utf8');
+        resolvedPath = path.resolve(roadmapPath);
+        let stats;
+        try {
+            stats = await fs.stat(resolvedPath);
+        } catch (error: any) {
+            const isENOENT = error?.code === 'ENOENT' ||
+                (typeof error?.message === 'string' && error.message.includes('ENOENT'));
+            if (isENOENT) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: false,
+                            code: 'ROADMAP_NOT_FOUND',
+                            error: `Fichier introuvable : ${resolvedPath}${isAutoDetected ? " (chemin auto-détecté depuis l'état partagé)" : ''}`
+                        }, null, 2)
+                    }]
+                };
+            }
+            throw error;
+        }
+        const content = await fs.readFile(resolvedPath, 'utf8');
 
         const analysis: RoadmapAnalysis = {
             timestamp: new Date().toISOString(),
-            filePath: roadmapPath,
+            filePath: resolvedPath,
             fileSize: stats.size,
             totalDecisions: 0,
             pendingDecisions: 0,
@@ -182,6 +209,25 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             }
         }
 
+        // Dialect honesty (#2307): the live sync-roadmap.md is written by
+        // BaselineService as `## <emoji> Décision <id>` sections — this analyzer
+        // only parses legacy DECISION_BLOCK markers. Measured on the po-2025
+        // shared state: 142 KB roadmap, 311 decision sections, 0 DECISION_BLOCK
+        // markers → totalDecisions: 0 reported as a clean success. Flag the
+        // mismatch instead of implying the roadmap is empty.
+        if (analysis.totalDecisions === 0) {
+            const roadmapDialectSections = content.match(/## (?:⏳|✅|❌|🎯) Décision /g)?.length ?? 0;
+            if (roadmapDialectSections > 0) {
+                analysis.issues.push({
+                    type: 'FORMAT_MISMATCH',
+                    severity: 'HIGH',
+                    count: roadmapDialectSections,
+                    description: `Le roadmap contient ${roadmapDialectSections} sections '## <emoji> Décision' (dialecte BaselineService) mais 0 bloc DECISION_BLOCK analysable — totalDecisions=0 est un faux vert, pas une roadmap vide.`,
+                    details: { parsedDialect: 'DECISION_BLOCK', presentDialect: 'emoji-sections' }
+                });
+            }
+        }
+
         // Consolidation des problèmes
         if (analysis.duplicateIds.length > 0) {
             analysis.issues.push({
@@ -248,7 +294,7 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
                 }
             }
             if (cleanedUp > 0) {
-                await fs.writeFile(roadmapPath!, updatedContent, 'utf8');
+                await fs.writeFile(resolvedPath, updatedContent, 'utf8');
             }
         }
 
@@ -257,8 +303,12 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
             // Logique de génération de rapport MD similaire au PS1
             // Simplifié pour cet outil MCP qui retourne principalement du JSON
             // Mais on peut écrire le fichier si demandé
-            const reportDir = path.join(getSharedStatePath(), 'reports');
-            ensureStoreSubdir(getSharedStatePath(), 'reports');
+            // #2307: with an explicit roadmapPath and no shared state configured,
+            // getSharedStatePath() would throw and fail the whole call AFTER the
+            // analysis succeeded — the report lands beside the analyzed file instead.
+            const reportBase = tryGetSharedStatePath() ?? path.dirname(resolvedPath);
+            const reportDir = path.join(reportBase, 'reports');
+            ensureStoreSubdir(reportBase, 'reports');
             reportPath = path.join(reportDir, `PHASE3A-ANALYSE-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
 
             const reportContent = `# Rapport d'Analyse RooSync
@@ -317,16 +367,18 @@ ${JSON.stringify(analysis.issues, null, 2)}
         };
 
     } catch (error: any) {
-        // Auto-detected path that doesn't exist → friendly "introuvable" message
+        // readFile ENOENT race (deleted between stat and read) → friendly message
+        // naming the exact path tried (#2307)
         const isENOENT = error?.code === 'ENOENT' ||
             (typeof error?.message === 'string' && error.message.includes('ENOENT'));
-        if (isAutoDetected && isENOENT) {
+        if (isENOENT && resolvedPath) {
             return {
                 content: [{
                     type: 'text',
                     text: JSON.stringify({
                         success: false,
-                        error: "Fichier sync-roadmap.md introuvable. Veuillez spécifier le chemin."
+                        code: 'ROADMAP_NOT_FOUND',
+                        error: `Fichier introuvable : ${resolvedPath}`
                     }, null, 2)
                 }]
             };

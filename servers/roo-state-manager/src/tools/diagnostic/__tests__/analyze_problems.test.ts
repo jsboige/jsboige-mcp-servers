@@ -4,16 +4,18 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import * as path from 'path';
 import { analyzeRooSyncProblems } from '../analyze_problems.js';
 
 // Mock fs/promises
-const { mockReadFile, mockAccess, mockStat, mockMkdir, mockWriteFile, mockGetSharedStatePath } = vi.hoisted(() => ({
+const { mockReadFile, mockAccess, mockStat, mockMkdir, mockWriteFile, mockGetSharedStatePath, mockTryGetSharedStatePath } = vi.hoisted(() => ({
 	mockReadFile: vi.fn(),
 	mockAccess: vi.fn(),
 	mockStat: vi.fn(),
 	mockMkdir: vi.fn(),
 	mockWriteFile: vi.fn(),
 	mockGetSharedStatePath: vi.fn(() => '/mock/shared-state'),
+	mockTryGetSharedStatePath: vi.fn(() => '/mock/shared-state'),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -33,6 +35,8 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../../../utils/shared-state-path.js', () => ({
 	getSharedStatePath: mockGetSharedStatePath,
+	tryGetSharedStatePath: mockTryGetSharedStatePath,
+	ensureStoreSubdir: vi.fn(),
 	assertSharedStoreAccessible: () => {},
 }));
 
@@ -40,19 +44,26 @@ describe('analyze_problems', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockGetSharedStatePath.mockReturnValue('/mock/shared-state');
+		mockTryGetSharedStatePath.mockReturnValue('/mock/shared-state');
 	});
 
 	// ============================================================
-	// Path detection
+	// Path detection (#2307)
 	// ============================================================
 
 	describe('path detection', () => {
-		test('returns error when shared state path not configured', async () => {
+		test('unresolvable shared path says NO_SHARED_STATE_PATH, not "introuvable" (#2307)', async () => {
+			// The old message claimed the FILE was missing ("introuvable") when in
+			// fact no shared state path was configured — the file was never looked
+			// for. Measured live on po-2025: misleading hunt for a missing file.
 			mockGetSharedStatePath.mockImplementation(() => { throw new Error('not configured'); });
 			const result = await analyzeRooSyncProblems({});
 			const data = JSON.parse(result.content[0].text);
 			expect(data.success).toBe(false);
-			expect(data.error).toContain('introuvable');
+			expect(data.code).toBe('NO_SHARED_STATE_PATH');
+			expect(data.error).toContain('état partagé');
+			expect(data.error).toContain('roadmapPath');
+			expect(data.error).not.toContain('introuvable');
 		});
 
 		test('uses getSharedStatePath for auto-detection (#2307 Phase 4)', async () => {
@@ -66,7 +77,38 @@ describe('analyze_problems', () => {
 			mockStat.mockResolvedValueOnce({ size: 200 });
 			mockReadFile.mockResolvedValueOnce('');
 			await analyzeRooSyncProblems({ roadmapPath: '/explicit/path.md' });
-			expect(mockReadFile).toHaveBeenCalledWith('/explicit/path.md', 'utf8');
+			expect(mockReadFile).toHaveBeenCalledWith(path.resolve('/explicit/path.md'), 'utf8');
+		});
+
+		test('relative roadmapPath is read AND reported as absolute (#2307)', async () => {
+			// fs resolves relatives against the server cwd silently; the analysis
+			// must echo the absolute path that was actually read, not the relative
+			// string the caller passed.
+			mockStat.mockResolvedValueOnce({ size: 200 });
+			mockReadFile.mockResolvedValueOnce('');
+			const result = await analyzeRooSyncProblems({ roadmapPath: 'nested/roadmap.md' });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.success).toBe(true);
+			expect(data.filePath).toBe(path.resolve('nested/roadmap.md'));
+			expect(path.isAbsolute(data.filePath)).toBe(true);
+		});
+
+		test('auto-detected ENOENT names the exact path tried (#2307)', async () => {
+			mockStat.mockRejectedValueOnce(Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }));
+			const result = await analyzeRooSyncProblems({});
+			const data = JSON.parse(result.content[0].text);
+			expect(data.success).toBe(false);
+			expect(data.code).toBe('ROADMAP_NOT_FOUND');
+			expect(data.error).toContain('sync-roadmap.md');
+			expect(data.error).toContain('auto-détecté');
+		});
+
+		test('explicit-path ENOENT names the path too (no raw stack)', async () => {
+			mockStat.mockRejectedValueOnce(Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }));
+			const result = await analyzeRooSyncProblems({ roadmapPath: '/gone/roadmap.md' });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.success).toBe(false);
+			expect(data.error).toContain(path.resolve('/gone/roadmap.md'));
 		});
 	});
 
@@ -212,8 +254,11 @@ describe('analyze_problems', () => {
 	// ============================================================
 
 	describe('error handling', () => {
-		test('returns error result on fs exception', async () => {
-			mockStat.mockRejectedValueOnce(new Error('ENOENT'));
+		test('returns error result on non-ENOENT fs exception', async () => {
+			// Non-ENOENT only: ENOENT is now routed to the friendly
+			// ROADMAP_NOT_FOUND branch, so this generic-exception test must use
+			// a different error class (EACCES) to exercise the raw-error path.
+			mockStat.mockRejectedValueOnce(new Error('EACCES: permission denied'));
 			const result = await analyzeRooSyncProblems({ roadmapPath: '/broken/path.md' });
 			const data = JSON.parse(result.content[0].text);
 			expect(data.success).toBe(false);
@@ -228,6 +273,82 @@ describe('analyze_problems', () => {
 			const data = JSON.parse(result.content[0].text);
 			expect(data.success).toBe(true);
 			expect(data.totalDecisions).toBe(0);
+			// A genuinely empty roadmap is legitimate (fresh install) — no mismatch flag
+			expect(data.issues.length).toBe(0);
+		});
+	});
+
+	// ============================================================
+	// Dialect honesty (#2307): the live roadmap uses BaselineService's
+	// `## <emoji> Décision` sections, which the DECISION_BLOCK parser
+	// cannot see. Measured live: 142 KB roadmap, 311 sections,
+	// 0 markers → totalDecisions: 0 reported as a clean success.
+	// ============================================================
+
+	describe('dialect honesty (#2307)', () => {
+		const emojiDialectContent = [
+			'# Sync Roadmap',
+			'',
+			'## ⏳ Décision decision-1777305081301-0',
+			'**Machine:** target-machine',
+			'**Statut:** pending',
+			'',
+			'---',
+			'',
+			'## ✅ Décision decision-1777325301570-0',
+			'**Machine:** target-machine',
+			'**Statut:** approved',
+		].join('\n');
+
+		test('flags FORMAT_MISMATCH instead of a clean zero on emoji-dialect content', async () => {
+			mockStat.mockResolvedValueOnce({ size: 500 });
+			mockReadFile.mockResolvedValueOnce(emojiDialectContent);
+			const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md' });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.success).toBe(true);
+			expect(data.totalDecisions).toBe(0); // still unparseable — the flag is the honesty
+			const mismatch = data.issues.find((i: any) => i.type === 'FORMAT_MISMATCH');
+			expect(mismatch).toBeDefined();
+			expect(mismatch.severity).toBe('HIGH');
+			expect(mismatch.count).toBe(2); // both emoji sections counted
+		});
+
+		test('no FORMAT_MISMATCH when DECISION_BLOCK content parses normally', async () => {
+			const blockContent = [
+				'<!-- DECISION_BLOCK_START -->',
+				'**ID:** `DEC-001`',
+				'**Statut:** pending',
+				'<!-- DECISION_BLOCK_END -->',
+			].join('\n');
+			mockStat.mockResolvedValueOnce({ size: 200 });
+			mockReadFile.mockResolvedValueOnce(blockContent);
+			const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md' });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.totalDecisions).toBe(1);
+			expect(data.issues.some((i: any) => i.type === 'FORMAT_MISMATCH')).toBe(false);
+		});
+
+		test('no FORMAT_MISMATCH on unrelated markdown (no decision sections at all)', async () => {
+			mockStat.mockResolvedValueOnce({ size: 300 });
+			mockReadFile.mockResolvedValueOnce('# Notes\n\nSome prose without decisions.\n');
+			const result = await analyzeRooSyncProblems({ roadmapPath: '/test/notes.md' });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.issues.length).toBe(0);
+		});
+
+		test('generateReport with explicit path works without shared state configured (#2307)', async () => {
+			// Old behavior: the report branch called getSharedStatePath() directly —
+			// with an explicit roadmapPath and no shared state, the whole call failed
+			// AFTER the analysis succeeded. Now the report lands beside the file.
+			mockGetSharedStatePath.mockImplementation(() => { throw new Error('not configured'); });
+			mockTryGetSharedStatePath.mockReturnValue(null);
+			mockStat.mockResolvedValueOnce({ size: 200 });
+			mockReadFile.mockResolvedValueOnce('');
+			const result = await analyzeRooSyncProblems({ roadmapPath: '/x/roadmap.md', generateReport: true });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.success).toBe(true);
+			expect(data.reportGenerated).toContain(path.resolve('/x/roadmap.md', '..'));
+			expect(mockWriteFile).toHaveBeenCalled();
 		});
 	});
 
