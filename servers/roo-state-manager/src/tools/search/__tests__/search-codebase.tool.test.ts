@@ -1518,7 +1518,9 @@ describe('search-codebase.tool', () => {
 				expect(parsed.existing_collections[0].collection).toBe('ws-someone');
 				expect(parsed.existing_collections[0].top_dirs).toEqual(['mcps']);
 				expect(mockQdrant.scroll).toHaveBeenCalledWith('ws-someone', expect.objectContaining({
-					with_payload: { include: ['pathSegments'] }
+					// #2609 grain 3: filePath joined the payload include — the same scroll
+					// now also samples relative paths for the liveness preference.
+					with_payload: { include: ['pathSegments', 'filePath'] }
 				}));
 			});
 
@@ -1579,7 +1581,8 @@ describe('search-codebase.tool', () => {
 				// content-matching stays skipped (null signature), but the diagnostic still
 				// lets an unmounted-worktree caller self-identify. Payload-only calls.
 				expect(mockQdrant.scroll).toHaveBeenCalledWith('ws-anything', expect.objectContaining({
-					with_payload: { include: ['pathSegments'] }
+					// #2609 grain 3: payload contract extended with filePath (liveness sample).
+					with_payload: { include: ['pathSegments', 'filePath'] }
 				}));
 			});
 
@@ -1876,6 +1879,165 @@ describe('search-codebase.tool', () => {
 			// #2609 follow-up: the accepting path must be observable, not re-derived.
 			// This fixture is THE overlap-acceptance case — jaccard 0.226 < 0.6.
 			expect(match!.sharedDiscriminants).toBeGreaterThanOrEqual(2);
+		});
+	});
+
+	// ============================================================
+	// #2609 grain 3 (ai-01, 2026-10-04) — liveness preference at content-match
+	// resolution. Measured live: the decaying twin ws-59e7574de63c6e62 (liveness 0.751,
+	// dead build-vintage dirs) was served over the repaired ws-d2ffdbaa832aed16
+	// (liveness 0.954) purely on points-count/score — golden q3 returned 12/15
+	// unopenable paths. Among accepted candidates, the livelier one must win.
+	// ============================================================
+
+	describe('findCollectionByContent - liveness preference (#2609 grain 3)', () => {
+		// Same 30-dir inflated-workspace signature as the #2554 fixture above: both
+		// candidates accept via the overlap path (0.875 / 0.777), twin scores higher.
+		const workspaceSignature = new Set([
+			'.claude', '.git', '.github', '.playwright-mcp', '.roo', '.shared-state',
+			'.temp', '.tmp', '.vscode', 'archive', 'backups', 'demo-roo-code', 'docker',
+			'docs', 'exports', 'logs', 'mcps', 'modules', 'node_modules', 'outputs',
+			'profiles', 'roo-code', 'roo-code-customization', 'roo-config',
+			'scheduled-tasks', 'scripts', 'temp', 'tests', 'zoo-code', '_archives'
+		]);
+		// 8-dir twin (7 shared → overlap 7/8 = 0.875) whose sampled paths are half dead.
+		const TWIN_POINTS = [
+			{ payload: { pathSegments: { '0': 'mcps' }, filePath: 'src/a.ts' } },
+			{ payload: { pathSegments: { '0': 'docs' }, filePath: 'src/b.ts' } },
+			{ payload: { pathSegments: { '0': 'archive' }, filePath: 'build-x/dead1.js' } },
+			{ payload: { pathSegments: { '0': 'roo-code' }, filePath: 'build-x/dead2.js' } },
+			{ payload: { pathSegments: { '0': 'demo-roo-code' } } },
+			{ payload: { pathSegments: { '0': 'roo-config' } } },
+			{ payload: { pathSegments: { '0': 'scripts' } } },
+			{ payload: { pathSegments: { '0': 'demo-quickfiles' } } }
+		];
+		// 9-dir repaired (7 shared → overlap 7/9 ≈ 0.778, LOWER structural score) —
+		// all sampled paths alive. Liveness must outrank the structural score.
+		const REPAIRED_POINTS = [
+			{ payload: { pathSegments: { '0': 'mcps' }, filePath: 'src/a.ts' } },
+			{ payload: { pathSegments: { '0': 'docs' }, filePath: 'src/b.ts' } },
+			{ payload: { pathSegments: { '0': 'archive' }, filePath: 'src/c.ts' } },
+			{ payload: { pathSegments: { '0': 'roo-code' }, filePath: 'src/d.ts' } },
+			{ payload: { pathSegments: { '0': 'demo-roo-code' } } },
+			{ payload: { pathSegments: { '0': 'roo-config' } } },
+			{ payload: { pathSegments: { '0': 'scripts' } } },
+			{ payload: { pathSegments: { '0': 'extra-unshared' } } },
+			{ payload: { pathSegments: { '0': 'another-unshared' } } }
+		];
+		const WORKSPACE_ROOT = 'W:/ws';
+
+		beforeEach(() => {
+			// A path is "dead" iff it contains 'dead' — deterministic liveness fixture.
+			mockExistsSync.mockImplementation((p: any) => !String(p).includes('dead'));
+		});
+
+		test('livelier accepted candidate beats the structurally-better decaying twin', async () => {
+			mockQdrant.scroll.mockImplementation(async (name: string) => ({
+				points: name === 'ws-twin' ? TWIN_POINTS : name === 'ws-repaired' ? REPAIRED_POINTS : []
+			}));
+
+			const match = await findCollectionByContent(
+				mockQdrant,
+				['ws-twin', 'ws-repaired'],
+				workspaceSignature,
+				WORKSPACE_ROOT
+			);
+
+			expect(match).not.toBeNull();
+			// The twin scores 0.875 vs 0.778, but half its paths are dead — the repaired
+			// collection (all paths alive) must be served instead.
+			expect(match!.name).toBe('ws-repaired');
+			expect(match!.selection_basis).toBe('liveness');
+			expect(match!.liveness_flipped_selection).toBe(true);
+			expect(match!.liveness!.ratio).toBe(1);
+			expect(match!.liveness!.checked).toBe(4);
+		});
+
+		test('CONTENT_MATCH_LIVENESS=0 restores pure structural-score selection (rollback)', async () => {
+			mockQdrant.scroll.mockImplementation(async (name: string) => ({
+				points: name === 'ws-twin' ? TWIN_POINTS : name === 'ws-repaired' ? REPAIRED_POINTS : []
+			}));
+			const prev = process.env.CONTENT_MATCH_LIVENESS;
+			process.env.CONTENT_MATCH_LIVENESS = '0';
+			try {
+				const match = await findCollectionByContent(
+					mockQdrant,
+					['ws-twin', 'ws-repaired'],
+					workspaceSignature,
+					WORKSPACE_ROOT
+				);
+				expect(match!.name).toBe('ws-twin');
+				expect(match!.selection_basis).toBe('score');
+				expect(match!.liveness).toBeUndefined();
+				expect(match!.liveness_flipped_selection).toBeUndefined();
+			} finally {
+				if (prev === undefined) delete process.env.CONTENT_MATCH_LIVENESS;
+				else process.env.CONTENT_MATCH_LIVENESS = prev;
+			}
+		});
+
+		test('single accepted candidate still reports its liveness (observability), selection stays score', async () => {
+			mockQdrant.scroll.mockImplementation(async (name: string) => ({
+				points: name === 'ws-twin' ? TWIN_POINTS : []
+			}));
+
+			const match = await findCollectionByContent(
+				mockQdrant,
+				['ws-twin', 'ws-other'],
+				workspaceSignature,
+				WORKSPACE_ROOT
+			);
+
+			expect(match!.name).toBe('ws-twin');
+			expect(match!.selection_basis).toBe('score');
+			expect(match!.liveness!.ratio).toBe(0.5);
+		});
+
+		test('undecidable liveness (no filePath payload) falls back to structural score', async () => {
+			// Points without filePath → no liveness sample → legacy ranking, no liveness field.
+			const noPaths = TWIN_POINTS.map(p => ({ payload: { pathSegments: p.payload.pathSegments } }));
+			const noPathsRepaired = REPAIRED_POINTS.map(p => ({ payload: { pathSegments: p.payload.pathSegments } }));
+			mockQdrant.scroll.mockImplementation(async (name: string) => ({
+				points: name === 'ws-twin' ? noPaths : name === 'ws-repaired' ? noPathsRepaired : []
+			}));
+
+			const match = await findCollectionByContent(
+				mockQdrant,
+				['ws-twin', 'ws-repaired'],
+				workspaceSignature,
+				WORKSPACE_ROOT
+			);
+
+			expect(match!.name).toBe('ws-twin');
+			expect(match!.selection_basis).toBe('score');
+			expect(match!.liveness).toBeUndefined();
+		});
+
+		test('paths escaping the workspace root are not liveness signal — never counted', async () => {
+			// All of the repaired candidate's paths escape the root via '..' — checked < 2
+			// → undecidable → structural score keeps the twin.
+			const escapers = REPAIRED_POINTS.map((p, i) => ({
+				payload: { pathSegments: p.payload.pathSegments, filePath: `../outside/file-${i}.ts` }
+			}));
+			mockQdrant.scroll.mockImplementation(async (name: string) => ({
+				points: name === 'ws-twin' ? TWIN_POINTS : name === 'ws-repaired' ? escapers : []
+			}));
+
+			const match = await findCollectionByContent(
+				mockQdrant,
+				['ws-twin', 'ws-repaired'],
+				workspaceSignature,
+				WORKSPACE_ROOT
+			);
+
+			expect(match!.name).toBe('ws-twin');
+			// Only the twin is decidable (its 4 paths) → legacy score ranking. The
+			// twin's own liveness is still reported — escapers made the REPAIRED
+			// candidate undecidable, not the winner unobservable.
+			expect(match!.selection_basis).toBe('score');
+			expect(match!.liveness!.ratio).toBe(0.5);
+			expect(match!.liveness!.checked).toBe(4);
+			expect(match!.liveness_flipped_selection).toBeUndefined();
 		});
 	});
 
