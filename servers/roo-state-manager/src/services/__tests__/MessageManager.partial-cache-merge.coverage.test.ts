@@ -63,12 +63,14 @@ const POOL_SIZE = 105; // 50 + 50 + 5 chunks
 const READ_CONCURRENCY = 50;
 
 /**
- * Zero-padded, so the lexical order `rebuildInboxCache` sorts on IS the creation
- * order — the ids embed their timestamp, which is the assumption the production
- * sort relies on.
+ * REAL generated shape (`msg-YYYYMMDDTHHMMSS-…`, the `T` survives
+ * `toISOString()`). Since the recency follow-up, ordering recognises ONLY this
+ * shape (`compareByEmbeddedRecencyDesc`); an index-padded fake matches nothing
+ * and silently turns the ordering assertions into readdir-order assertions.
  */
 function idAt(index: number): string {
-  return `msg-3292-${String(index).padStart(4, '0')}`;
+  const hhmmss = `00${String(Math.floor(index / 60)).padStart(2, '0')}${String(index % 60).padStart(2, '0')}`;
+  return `msg-20260801T${hhmmss}-${String(index).padStart(6, '0')}`;
 }
 
 function makeTempSharedState(): string {
