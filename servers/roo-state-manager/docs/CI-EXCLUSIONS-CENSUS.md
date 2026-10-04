@@ -49,14 +49,16 @@ dans le tmpdir, `ROOSYNC_SHARED_PATH` routé, cleanup ENOTEMPTY-retry ; contrat 
 **#2639 (2026-10-04, 6e réactivation — audit des 8 entrées restantes) :** les 8 entrées ont été
 **mesurées une par une**, en levant l'exclusion et en exécutant le fichier sous `vitest.config.ci.ts`
 (la config qui fait autorité — pas `vitest.config.ts`, dont le verdict diffère). **2 réactivées** :
-`baseline.integration.test.ts` (12/12) et `diagnose.integration.test.ts` (23/23) — elles routaient
-**déjà** `ROOSYNC_SHARED_PATH` vers un tmpdir `os.tmpdir()` en `beforeEach`, ne portent **aucune**
+`baseline.integration.test.ts` (12/12) et `diagnose.integration.test.ts` (23/23) — elles routent
+`ROOSYNC_SHARED_PATH` vers un tmpdir **`mkdtemp(os.tmpdir())` monté en `beforeAll`** (racine hors
+arbre du dépôt ; `baseline.integration` l'avait déjà, `diagnose.integration` l'a reçue du fix #1355
+— le census disait « déjà … en `beforeEach` », inexact des deux côtés), ne portent **aucune**
 référence APPDATA/GDrive/chemin Windows (grep
 `APPDATA|process.platform|win32|C:\|G:\|RooStorageDetector|globalStorage` → **0 hit** sur les deux, et
 sur **11 des 12** `*.integration.test.ts` de `src/tools/roosync/__tests__/` — le 12ᵉ,
 `mcp-management.integration.test.ts`, est le seul à toucher `process.env.APPDATA` et il **n'est pas
-exclu**) et créent elles-mêmes leurs répertoires de fixture (gitignorés) : l'exclusion
-blanket du 2026-07-26 était périmée, même classe que les SMOKE.
+exclu`) et créent elles-mêmes leurs répertoires de fixture (hors arbre du dépôt, via `mkdtemp`) :
+l'exclusion blanket du 2026-07-26 était périmée, même classe que les SMOKE.
 **Les 6 autres restent exclues, chacune pour une raison MESURÉE** (section dédiée ci-dessous) — la
 catégorie « APPDATA/GDRIVE » ne décrivait correctement **aucune** des trois qui y figuraient →
 **23 entrées**.
