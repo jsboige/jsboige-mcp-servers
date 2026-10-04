@@ -1116,6 +1116,32 @@ describe('roosync_indexing trend_report action', () => {
 		expect(text).toContain('| Bash | 600 | 🆕 |');
 	});
 
+	test('#2336 D3 fleet:true persists trend-report-fleet.md next to snapshots', async () => {
+		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
+		fs.mkdirSync(snapshotsDir, { recursive: true });
+
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-01.json', 500, [toolEntry('Bash', 500, 50, 100, 300)]);
+		writeRichSnapshot(snapshotsDir, 'machine-a-2026-07-08.json', 700, [toolEntry('Bash', 700, 35, 210, 455)]);
+		writeRichSnapshot(snapshotsDir, 'machine-b-2026-07-08.json', 350, [toolEntry('Read', 350, 7, 70, 200)]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'trend_report', fleet: true },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect(result.isError).toBe(false);
+		const text: string = result.content[0].text;
+		const reportPath = path.join(snapshotsDir, 'trend-report-fleet.md');
+		// Returned report points at the artifact.
+		expect(text).toContain(`**Persisted artifact:** ${reportPath}`);
+		// Artifact exists on disk, carries the fleet report and its persist note.
+		expect(fs.existsSync(reportPath)).toBe(true);
+		const onDisk: string = fs.readFileSync(reportPath, 'utf-8');
+		expect(onDisk).toContain('— FLEET');
+		expect(onDisk).toContain('| Bash |');
+		expect(onDisk.endsWith('refreshed by each fleet:true call.\n')).toBe(true);
+	});
+
 	test('#2336 fleet absent (default) keeps single-machine behaviour', async () => {
 		const snapshotsDir = path.join(tmpDir, 'tool-usage-snapshots');
 		fs.mkdirSync(snapshotsDir, { recursive: true });
