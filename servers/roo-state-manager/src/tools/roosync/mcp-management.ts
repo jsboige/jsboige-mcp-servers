@@ -719,34 +719,66 @@ async function writeMcpSettingsAtomic(settingsPath: string, settings: McpSetting
     }
 }
 
-async function runNpmBuild(mcpPath: string, retries = 3): Promise<string> {
+/**
+ * #2307 (Phase 4, item EBUSY) : retry borné sur EBUSY Windows — l'hôte MCP
+ * vivant tient les binaires natifs (.node, ex. sqlite3.node) chargés pendant
+ * un rebuild, et Windows verrouille les DLL chargées : le remplacement échoue
+ * de façon transitoire jusqu'à ce que l'ancien hôte relâche le handle.
+ * Organisme unique partagé avec l'outil legacy `rebuild_and_restart_mcp`
+ * (même backoff, même plafond — pas deux implémentations qui dérivent).
+ */
+export const EBUSY_RETRIES = 3;
+export const EBUSY_BASE_DELAY_MS = 2000;
+
+export function isEBUSYError(error: unknown): boolean {
+    const e = error as { message?: string; code?: string } | null;
+    return Boolean(e?.message?.includes('EBUSY')) || e?.code === 'EBUSY';
+}
+
+export async function withEBUSYRetry<T>(
+    op: () => Promise<T>,
+    opts: {
+        retries?: number;
+        baseDelayMs?: number;
+        wrapError?: (error: unknown, attempt: number, retries: number) => Error;
+    } = {}
+): Promise<T> {
+    const { retries = EBUSY_RETRIES, baseDelayMs = EBUSY_BASE_DELAY_MS, wrapError } = opts;
     const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
-            const result = await new Promise<string>((resolve, reject) => {
-                exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout, stderr) => {
-                    if (error) {
-                        reject(error);
-                    } else {
-                        resolve(stdout);
-                    }
-                });
-            });
-            return result;
-        } catch (error: any) {
-            const isEBUSY = error?.message?.includes('EBUSY') || error?.code === 'EBUSY';
-            if (isEBUSY && attempt < retries) {
-                const backoffMs = attempt * 2000;
-                await delay(backoffMs);
+            return await op();
+        } catch (error) {
+            if (isEBUSYError(error) && attempt < retries) {
+                await delay(attempt * baseDelayMs);
                 continue;
             }
-            throw new HeartbeatServiceError(
-                `Build failed (attempt ${attempt}/${retries}): ${error?.message || error}`,
-                'BUILD_FAILED'
-            );
+            throw wrapError ? wrapError(error, attempt, retries) : error;
         }
     }
-    throw new HeartbeatServiceError('Build failed: max retries exceeded', 'BUILD_FAILED');
+    /* unreachable — chaque itération retourne ou lève */
+    throw new Error('withEBUSYRetry: retries exhausted without throw');
+}
+
+async function runNpmBuild(mcpPath: string): Promise<string> {
+    return withEBUSYRetry(
+        () => new Promise<string>((resolve, reject) => {
+            exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout) => {
+                if (error) {
+                    reject(error);
+                } else {
+                    resolve(stdout);
+                }
+            });
+        }),
+        {
+            wrapError: (error, attempt, retries) =>
+                new HeartbeatServiceError(
+                    `Build failed (attempt ${attempt}/${retries}): ${(error as Error)?.message || error}`,
+                    'BUILD_FAILED'
+                ),
+        }
+    );
 }
 
 async function touchFile(filePath: string): Promise<void> {
