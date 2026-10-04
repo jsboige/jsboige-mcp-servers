@@ -137,7 +137,7 @@ collecte 0 test sans la variable, l'exclusion est déclarative mais sans effet s
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+1+8+7+1+1+1+1 = 26 · effectif : mesure 2026-10-04 post-#2639 (`--collect`) — 17 fichiers / 366 tests**
+**Total déclaré : 6+0+8+7+1+1+1+1 = 25 · effectif : mesure 2026-10-04 post-#2639 (`--collect`) — 16 fichiers / 363 tests**
 
 ---
 
@@ -169,10 +169,11 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
 
 1. **POWERSHELL (6)** — plateforme légitime (CI = ubuntu), mais rien n'empêcherait un job matrix
    Windows de les exécuter. Candidat « job dédié », pas réactivation simple.
-2. **SMOKE + APPDATA/GDRIVE (9 restantes)** — dépendance état réel GDrive : réactivation seulement
+2. **SMOKE + APPDATA/GDRIVE (8 restantes, toutes APPDATA)** — dépendance état réel GDrive : réactivation seulement
    derrière un flag d'env type `GDRIVE_INTEGRATION=1` (pattern déjà utilisé par
    `LLM_LIVE_INTEGRATION=1`). (`get-status.smoke` puis `machines.smoke` ont quitté cette liste le
-   2026-10-03, `send.smoke` puis `storage-management.smoke` (mock-based) le 2026-10-04, #2639.)
+   2026-10-03, `send.smoke`, `storage-management.smoke` (mock-based) puis `list-diffs.smoke` le
+   2026-10-04, #2639 — les 5 fichiers smoke sont réactivés.)
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
    skeleton-cache-reconstruction, workspace-filtering-diagnosis) : soit documenter la raison au niveau
    du config unit, soit rouvrir — en l'état elles sont invisibles pour la CI comme pour le run local.
