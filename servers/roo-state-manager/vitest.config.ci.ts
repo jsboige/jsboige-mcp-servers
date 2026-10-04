@@ -13,11 +13,11 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 23 test-file entries + 4 tests-directory globs
+ * Exclusion census: 22 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
- * Last audit: 2026-10-04 (#2639) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
+ * Last audit: 2026-10-05 (#2639) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import unitConfig from './vitest.config.unit.js';
@@ -149,15 +149,14 @@ export default mergeConfig(unitConfig, defineConfig({
       //   InventoryService) — tests stay green, but the file remains Windows-coupled.
       // 'src/tools/roosync/__tests__/baseline.integration.test.ts',
       // 'src/tools/roosync/__tests__/diagnose.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 28/28 GREEN, but the file leaves a
-      //   stray 0-byte `D` in the CWD. Bisected to 'should handle complete workflow:
-      //   approve → apply → rollback'; making `D` a directory turns it into a hard
-      //   failure (EISDIR → rollbackResult.success === false), so the rollback path
-      //   really writes to it. Write site not identified (createBackup/restoreBackup
-      //   never ran — the backups dir stays empty; no `split(':')` on the shared path).
-      //   An unidentified write in a path that also runs in production does not get
-      //   switched on silently in CI — needs its own investigation.
-      'src/tools/roosync/__tests__/decision.integration.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 7th): the stray 0-byte `D` was root-caused by
+      //   the ADS fix (#1358) — the pre-fix backup name kept the drive `:`, so on NTFS
+      //   `D:_dev_…json` was an ADS stream carried by a base file `D`, and the
+      //   restore's copyFileSync(…, 'D') copied that empty `D` into the CWD. With the
+      //   fix (deterministic name, manifest-driven restore) the file no longer
+      //   appears: measured 28/28 green under this config on Windows — the native ADS
+      //   platform, i.e. the worst case — with no `D` before or after.
+      // 'src/tools/roosync/__tests__/decision.integration.test.ts',
       // STAYS EXCLUDED — measured 2026-10-04 (#2639): 13/13 fail. The tool shells out
       //   to `pwsh -NoProfile -ExecutionPolicy Bypass -c "& ...generate-mcp-dashboard.ps1"`
       //   (refresh-dashboard.ts l.161) — a hard PowerShell/Windows dependency, and the
