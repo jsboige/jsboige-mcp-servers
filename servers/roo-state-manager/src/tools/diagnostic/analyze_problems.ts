@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getSharedStatePath, tryGetSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { formatErrorForResponse } from '../../utils/error-format.js';
+import { ROADMAP_DECISION_SECTION_PATTERN } from '../../services/BaselineService.js';
 
 interface AnalyzeOptions {
     roadmapPath?: string;
@@ -214,18 +215,22 @@ export async function analyzeRooSyncProblems(options: AnalyzeOptions = {}) {
         // only parses legacy DECISION_BLOCK markers. Measured on the po-2025
         // shared state: 142 KB roadmap, 311 decision sections, 0 DECISION_BLOCK
         // markers → totalDecisions: 0 reported as a clean success. Flag the
-        // mismatch instead of implying the roadmap is empty.
-        if (analysis.totalDecisions === 0) {
-            const roadmapDialectSections = content.match(/## (?:⏳|✅|❌|🎯) Décision /g)?.length ?? 0;
-            if (roadmapDialectSections > 0) {
-                analysis.issues.push({
-                    type: 'FORMAT_MISMATCH',
-                    severity: 'HIGH',
-                    count: roadmapDialectSections,
-                    description: `Le roadmap contient ${roadmapDialectSections} sections '## <emoji> Décision' (dialecte BaselineService) mais 0 bloc DECISION_BLOCK analysable — totalDecisions=0 est un faux vert, pas une roadmap vide.`,
-                    details: { parsedDialect: 'DECISION_BLOCK', presentDialect: 'emoji-sections' }
-                });
-            }
+        // mismatch instead of implying the roadmap is empty — and NOT only when
+        // the block parser found nothing: a MIXED file (blocks + emoji sections)
+        // parses "fine" while part of its decisions stay invisible to every
+        // counter below, which is the same lie with a smaller blind spot.
+        const roadmapDialectSections = content.match(new RegExp(ROADMAP_DECISION_SECTION_PATTERN, 'g'))?.length ?? 0;
+        if (roadmapDialectSections > 0) {
+            const parsedBlocks = analysis.totalDecisions;
+            analysis.issues.push({
+                type: 'FORMAT_MISMATCH',
+                severity: 'HIGH',
+                count: roadmapDialectSections,
+                description: parsedBlocks === 0
+                    ? `Le roadmap contient ${roadmapDialectSections} sections '## <emoji> Décision' (dialecte BaselineService) mais 0 bloc DECISION_BLOCK analysable — totalDecisions=0 est un faux vert, pas une roadmap vide.`
+                    : `Le roadmap mêle les dialectes : ${parsedBlocks} blocs DECISION_BLOCK analysés ET ${roadmapDialectSections} sections '## <emoji> Décision' (dialecte BaselineService) invisibles pour l'analyseur — les compteurs ne couvrent que les blocs.`,
+                details: { parsedDialect: 'DECISION_BLOCK', presentDialect: 'emoji-sections', parsedBlocks }
+            });
         }
 
         // Consolidation des problèmes

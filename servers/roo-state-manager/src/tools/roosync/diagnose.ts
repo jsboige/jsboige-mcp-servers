@@ -183,8 +183,17 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
       case 'analyze': {
         const m = await import('../diagnostic/analyze_problems.js');
         const analyzeResult = await m.analyzeRooSyncProblems(args as any) as any;
+        // The MCP envelope carries the report as JSON in content[0].text, not
+        // in a success field — reading `analyzeResult.success` was always true
+        // (#2307), turning ROADMAP_NOT_FOUND into a green envelope.
+        let payload: any = null;
+        try {
+          payload = JSON.parse(analyzeResult?.content?.[0]?.text ?? 'null');
+        } catch {
+          payload = null;
+        }
         return {
-          success: analyzeResult?.success !== false,
+          success: payload?.success === true && analyzeResult?.isError !== true,
           action: 'analyze',
           timestamp,
           data: analyzeResult

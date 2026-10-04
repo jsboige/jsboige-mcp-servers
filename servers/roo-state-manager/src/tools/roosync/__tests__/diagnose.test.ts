@@ -588,9 +588,44 @@ describe('roosync_diagnose', () => {
       const args: DiagnoseArgs = { action: 'analyze', roadmapPath: '/nonexistent/roadmap.md' };
       const result = await roosyncDiagnose(args);
 
-      // Note: current routing checks analyzeResult.success (top-level), not isError
       expect(result.action).toBe('analyze');
       expect(result.data).toEqual(mockResult);
+    });
+
+    it('should report success=false when the parsed payload says so (#2307)', async () => {
+      // ROADMAP_NOT_FOUND shape: friendly error, isError UNDEFINED, the verdict
+      // lives only in the JSON of content[0].text. The old code read
+      // `analyzeResult.success` on the MCP envelope — a field that never
+      // exists there — so this case returned success:true (always-green).
+      const mockResult = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ success: false, code: 'ROADMAP_NOT_FOUND', error: 'sync-roadmap.md introuvable' }) }],
+      };
+
+      vi.doMock('../../diagnostic/analyze_problems.js', () => ({
+        analyzeRooSyncProblems: vi.fn().mockResolvedValue(mockResult)
+      }));
+
+      const args: DiagnoseArgs = { action: 'analyze', roadmapPath: '/gone/roadmap.md' };
+      const result = await roosyncDiagnose(args);
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe('analyze');
+      expect(result.data).toEqual(mockResult);
+    });
+
+    it('should report success=false when the payload text is not JSON (#2307)', async () => {
+      const mockResult = {
+        content: [{ type: 'text' as const, text: 'not json at all' }],
+      };
+
+      vi.doMock('../../diagnostic/analyze_problems.js', () => ({
+        analyzeRooSyncProblems: vi.fn().mockResolvedValue(mockResult)
+      }));
+
+      const args: DiagnoseArgs = { action: 'analyze' };
+      const result = await roosyncDiagnose(args);
+
+      expect(result.success).toBe(false);
     });
   });
 
