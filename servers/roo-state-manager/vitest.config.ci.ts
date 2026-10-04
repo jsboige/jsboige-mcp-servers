@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 25 test-file entries + 4 tests-directory globs
+ * Exclusion census: 23 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -118,23 +118,67 @@ export default mergeConfig(unitConfig, defineConfig({
       //   pass under the CI config with the exclusion lifted.
       // 'src/tools/roosync/__tests__/list-diffs.smoke.test.ts',
 
-      // ===== CI-excluded: APPDATA/GDRIVE (Windows paths + GDrive) =====
+      // ===== CI-excluded: platform (PowerShell) / state-dependent / stale-schema =====
       // 2026-07-26 (#2967): src/tools/roosync/__tests__/baseline.test.ts RE-ENABLED in CI.
       //   All tests use vi.mock() for child_process, RooSyncService, ConfigService,
       //   shared-state-path, BaselineService, InventoryCollector, DiffDetector. No real
       //   GDrive/APPDATA/PowerShell dependency. Verified: 79/79 pass under CI config,
       //   full suite 12635/12635 pass with file re-enabled.
-      //   The heavier baseline.integration.test.ts below stays excluded (real GDrive).
-      'src/tools/roosync/__tests__/baseline.integration.test.ts',
-      'src/tools/roosync/__tests__/compare-config.integration.test.ts',
-      'src/tools/roosync/__tests__/config.integration.test.ts',
+      // 2026-10-04 (#2639, tranche 6 — measured by lifting each exclusion and running
+      //   the file under THIS config, which is the authoritative one):
+      //   RE-ENABLED (2): baseline.integration, diagnose.integration.
+      //   They already routed ROOSYNC_SHARED_PATH to an os.tmpdir() fixture in
+      //   beforeEach and carry no APPDATA / GDrive / Windows-path reference of their own
+      //   (grep APPDATA|process.platform|win32|C:\|G:\|RooStorageDetector|globalStorage
+      //   → 0 hit on both files, and on 11 of the 12 *.integration.test.ts of
+      //   src/tools/roosync/__tests__/ ; the 12th, mcp-management, is the only one that
+      //   touches process.env.APPDATA and it is NOT excluded); both create their own
+      //   fixture dirs (mkdirSync recursive), which are gitignored — safe on a fresh CI
+      //   checkout.
+      //   The 2026-07-26 blanket exclusion was stale — same class as the SMOKEs.
+      //   baseline.integration additionally pins SHARED_STATE_PATH to a temp dir
+      //   (BaselineService prioritises it over ROOSYNC_SHARED_PATH).
+      //   Verified: 12/12 + 23/23 pass under this config.
+      // 'src/tools/roosync/__tests__/baseline.integration.test.ts',
+      // 'src/tools/roosync/__tests__/diagnose.integration.test.ts',
+      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 28/28 GREEN, but the file leaves a
+      //   stray 0-byte `D` in the CWD. Bisected to 'should handle complete workflow:
+      //   approve → apply → rollback'; making `D` a directory turns it into a hard
+      //   failure (EISDIR → rollbackResult.success === false), so the rollback path
+      //   really writes to it. Write site not identified (createBackup/restoreBackup
+      //   never ran — the backups dir stays empty; no `split(':')` on the shared path).
+      //   An unidentified write in a path that also runs in production does not get
+      //   switched on silently in CI — needs its own investigation.
       'src/tools/roosync/__tests__/decision.integration.test.ts',
-      'src/tools/roosync/__tests__/diagnose.integration.test.ts',
+      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 13/13 fail. The tool shells out
+      //   to `pwsh -NoProfile -ExecutionPolicy Bypass -c "& ...generate-mcp-dashboard.ps1"`
+      //   (refresh-dashboard.ts l.161) — a hard PowerShell/Windows dependency, and the
+      //   one entry here whose "platform-dependent" label was accurate.
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
+      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 1/41 fails. The apply_profile
+      //   'should throw when profile not found' case asserts on /profil.*non trouvé/
+      //   but receives 'model-configs.json non trouvé localement': the tmpdir holds no
+      //   model-configs.json fixture, so the tool fails one branch earlier. Fix = add
+      //   the fixture to the test, not a CI-config change.
+      'src/tools/roosync/__tests__/config.integration.test.ts',
+      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 3/39 fail, and NOT for a
+      //   GDrive reason. The #495 env-var block filters on the loose substring
+      //   'manquante', which also matches checkRosterPartitionDrift()'s wording
+      //   ('manquantes du roster' / 'Manquantes du roster', compare-config.ts
+      //   l.2010 and l.2031). That drift is derived from service.loadDashboard()
+      //   — real shared state — so the expected count is machine/state-dependent
+      //   and the file is not tmpdir-isolable as written. Fix = tighten the test
+      //   filter (path.startsWith('env.') + severity).
+      'src/tools/roosync/__tests__/compare-config.integration.test.ts',
       // update-dashboard.integration.test.ts removed with its module (#3549) —
       // update est v3-native, couvert en CI par dashboard-update-v3.test.ts
       // Live LLM endpoint, opt-in via LLM_LIVE_INTEGRATION=1 — 502 repro (#1578)
       'src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts',
+      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 2/20 fail. Pure schema/
+      //   interface tests — no APPDATA/GDrive dependency whatsoever (entry was
+      //   miscategorised). The two 'action: restore' acceptance cases no longer
+      //   match the live BaselineArgsSchema: this needs the TEST updated, not a
+      //   CI-config change.
       'tests/unit/tools/roosync/baseline.test.ts',
 
       // ===== CI-excluded: Export baseline (schema mismatch) =====
