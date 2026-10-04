@@ -325,6 +325,47 @@ describe('archive workspace origin — Claude archives (friction 04/10)', () => 
         expect(result.metadata.workspace).toBeUndefined();
     });
 
+    /**
+     * Format RÉEL des archives écrites par l'archiver (review #1353, bloquant 1) :
+     * le `taskId` du CORPS est le safeSessionId SANS préfixe `claude-`, et le `/`
+     * du chemin projet est sanitizer en `__` (TaskArchiver.ts:38-40, :378) —
+     * fixture copiée de `task-archive/myia-ai-01/claude-C--dev-roo-extensions__0f2d4e16-….json.gz`.
+     * Le préfixe ne vit que dans le NOM DE FICHIER (`:348`).
+     */
+    const archivedClaudeArchive: ArchivedTask = {
+        ...claudeArchive,
+        taskId: 'C--dev-roo-extensions__0f2d4e16-4b81-4a12-af93-b8524d28f8d2',
+    };
+
+    it('archiveToSkeleton: dérive le workspace du taskId de corps d’archive (sans préfixe, séparateur __)', () => {
+        const result = archiveToSkeleton(archivedClaudeArchive);
+        // Limite de structure : le `\` interne du chemin est slugifié en `-`
+        // simple, indistinguable d'un tiret littéral — la valeur dérivée garde
+        // les tirets (cf. deriveWorkspaceFromClaudeProjectSlug).
+        expect(result.metadata.workspace).toBe('c:/dev-roo-extensions');
+        // Le filtre retrouve l'archive sur la valeur dérivée (exact)…
+        expect(matchesWorkspace(result.metadata.workspace, 'c:/dev-roo-extensions')).toBe(true);
+        // …et par recherche exploratoire de composant (substring).
+        expect(matchesWorkspace(result.metadata.workspace, 'roo-extensions', 'substring')).toBe(true);
+    });
+
+    it('archiveToSkeleton: id dérivé du nom de fichier (préfixe claude- + __) — même dérivation', () => {
+        const result = archiveToSkeleton({
+            ...archivedClaudeArchive,
+            taskId: 'claude-C--dev-roo-extensions__0f2d4e16-4b81-4a12-af93-b8524d28f8d2',
+        });
+        expect(result.metadata.workspace).toBe('c:/dev-roo-extensions');
+    });
+
+    it('archiveToSkeleton: slug à -- interne (lecteur) — coupe au __ de l’uuid, pas au -- du lecteur', () => {
+        // `g--Mon-Drive-Suzon` : le `--` du lecteur doit survivre à la coupe.
+        const result = archiveToSkeleton({
+            ...claudeArchive,
+            taskId: 'g--Mon-Drive-Suzon__3650f974-4379-4001-b0a0-3cf02ee8a82',
+        });
+        expect(result.metadata.workspace).toBe('g:/Mon-Drive-Suzon');
+    });
+
     it('archiveToStub: dérive le workspace du taskId quand le champ est absent', () => {
         const result = archiveToStub(claudeArchive, 'G:/archive/claude-x.json');
         expect(result.metadata.workspace).toBe('d:/Dev-CoursIA');

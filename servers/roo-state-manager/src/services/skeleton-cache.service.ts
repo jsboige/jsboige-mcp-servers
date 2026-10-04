@@ -40,7 +40,11 @@ const SKELETON_CACHE_DIR_NAME = '.skeletons';
  * sur les machines Claude-only). Override test/ops : `SKELETON_TIER3_SNAPSHOT`.
  */
 const TIER3_SNAPSHOT_FILENAME = 'tier3-stub-snapshot.json';
-const TIER3_SNAPSHOT_VERSION = 1;
+// v2 (#1353) : les stubs v1 ont été persistés SANS la dérivation de workspace
+// des archives Claude — la phase 2 saute les taskIds déjà résidents, donc sans
+// bump le corpus existant ne serait jamais re-dérivé. Un snapshot v1 est
+// ignoré au chargement (« format inconnu ») et re-semé depuis les archives.
+export const TIER3_SNAPSHOT_VERSION = 2;
 
 /**
  * Configuration optionnelle pour activer les tiers cache supplementaires.

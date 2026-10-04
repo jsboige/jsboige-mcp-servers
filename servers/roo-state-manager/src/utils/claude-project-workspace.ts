@@ -34,17 +34,29 @@ export function deriveWorkspaceFromClaudeProjectSlug(slug: string | undefined): 
 }
 
 /**
- * Dérive le workspace depuis un taskId Claude (`claude-<slug>--<sessionUuid>`).
- * Rend `undefined` pour tout autre préfixe (les tâches roo/zoo portent leur
- * propre champ `workspace`) ou quand le slug n'est pas exploitable.
+ * Dérive le workspace depuis un taskId Claude — les DEUX conventions réelles :
+ *
+ * - **corps d'archive** : le safeSessionId NU, sans préfixe, où le `/` du chemin
+ *   projet est sanitizer en `__` (`C--dev-roo-extensions__<uuid>`,
+ *   `TaskArchiver.ts:38-40`, `:378`) ;
+ * - **scan live / nom de fichier d'archive** : `claude-<slug>--<uuid>`
+ *   (`claude-d--Dev-CoursIA--<uuid>`, `TaskArchiver.ts:348`).
+ *
+ * Le préfixe `claude-` est donc OPTIONNEL, et la coupe se fait au DERNIER
+ * `__` (archive) OU `--` (live) : l'uuid de session est toujours en fin d'id
+ * et ne contient jamais de séparateur double, donc le dernier des deux est
+ * celui qui précède l'uuid — même quand le slug porte son propre `--` de
+ * lecteur (`g--Mon-Drive-Suzon`).
+ *
+ * Rend `undefined` quand rien n'est dérivable : les tâches roo/zoo (taskId
+ * uuid-pur, sans slug de lecteur) ne matchent pas `DRIVE_SLUG_PATTERN` et
+ * portent de toute façon leur propre champ `workspace`.
  */
 export function deriveWorkspaceFromClaudeTaskId(taskId: string | undefined): string | undefined {
     const CLAUDE_PREFIX = 'claude-';
-    if (!taskId || !taskId.startsWith(CLAUDE_PREFIX)) return undefined;
-    const body = taskId.slice(CLAUDE_PREFIX.length);
-    // Le slug peut lui-même contenir `--` : on coupe au DERNIER séparateur,
-    // celui qui précède l'uuid de session.
-    const separator = body.lastIndexOf('--');
+    if (!taskId) return undefined;
+    const body = taskId.startsWith(CLAUDE_PREFIX) ? taskId.slice(CLAUDE_PREFIX.length) : taskId;
+    const separator = Math.max(body.lastIndexOf('__'), body.lastIndexOf('--'));
     if (separator <= 0) return undefined;
     return deriveWorkspaceFromClaudeProjectSlug(body.slice(0, separator));
 }
