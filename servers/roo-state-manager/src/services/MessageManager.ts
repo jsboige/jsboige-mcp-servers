@@ -181,6 +181,26 @@ export interface MessageListItem {
 }
 
 /**
+ * Project a stored message onto its list row.
+ *
+ * Single source of truth for the `preview` clipping: the rebuild pass and the
+ * partial-cache merge must produce rows a caller cannot tell apart, or a listing
+ * would depend on which path happened to fill the cache.
+ */
+function toInboxListItem(message: Message): MessageListItem {
+  return {
+    id: message.id,
+    from: message.from,
+    to: message.to,
+    subject: message.subject,
+    priority: message.priority,
+    timestamp: message.timestamp,
+    status: message.status,
+    preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
+  };
+}
+
+/**
  * Gestionnaire de messagerie RooSync
  * 
  * Responsabilités :
@@ -628,7 +648,15 @@ export class MessageManager {
     // Skip files that failed a recent read (negative cache): a cloud-only GDrive
     // file that timed out once will usually time out again for a while, and
     // re-reading it every 5-min rebuild burns ~10s on a read that can't succeed.
-    const readableFiles = files.filter(f => !this.isNegativelyCached(f));
+    // #3292 follow-up: read MOST RECENT FIRST. Ids embed their creation instant,
+    // so a lexical sort is a recency sort — the same assumption buildRecentSlice
+    // already relies on. The pass is budget-bounded, so its read ORDER decides
+    // WHAT a truncation sacrifices: ascending (readdir) order dropped an
+    // arbitrary subset, while descending order always keeps the newest files,
+    // which are the ones a caller is most likely to act on.
+    const readableFiles = files
+      .filter(f => !this.isNegativelyCached(f))
+      .sort((a, b) => b.localeCompare(a));
     const skippedCount = files.length - readableFiles.length;
 
     logger.info(`Building inbox cache (${readableFiles.length} files${skippedCount ? `, ${skippedCount} skipped (negative cache)` : ''}, concurrency=${MessageManager.READ_CONCURRENCY})`);
@@ -637,6 +665,37 @@ export class MessageManager {
     const { items, full, truncated } = await this.parseInboxFiles(readableFiles, deadline);
 
     if (truncated && this.inboxCache !== null) {
+      if (this.inboxCachePartial) {
+        // #3292 follow-up. The guard below assumes the cache we hold is COMPLETE,
+        // so a truncated pass is a strict subset of it and discarding the pass
+        // loses nothing. Since #3292 that premise is false: the cache may be the
+        // 100-file COLD-START SLICE, flagged partial. A truncated pass is then
+        // NOT a subset — it is the only fresh reading of the pool anyone has
+        // done — and discarding it throws away every file it read while the
+        // slice stays in place, so the next attempt restarts from zero. On a
+        // pool slow enough to truncate on every pass, the slice becomes the
+        // terminal state and `deep: true` — an explicit request for the full
+        // pool — keeps handing back the slice, silently.
+        // Merge instead, union by id, so the reads survive.
+        const mergedFull = new Map(this.inboxFullCache);
+        for (const [id, message] of full) {
+          mergedFull.set(id, message);
+        }
+        const mergedItems = [...mergedFull.values()].map(toInboxListItem);
+        mergedItems.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        this.inboxCache = mergedItems;
+        this.inboxFullCache = mergedFull;
+        this.contentBuiltAt = now;
+        // Still incomplete, and it must SAY so: `false` would label a partial
+        // pool complete, and `-1` keeps the next call rebuilding. Merging makes
+        // progress possible; it does not make the pass exhaustive.
+        this.inboxCachePartial = true;
+        this.lastInboxFileCount = -1;
+        this.cacheBuiltAt = now;
+        return { items: mergedItems, full: mergedFull };
+      }
+
       // A truncated pass is a SUBSET. Installing it would turn a complete cache
       // into a partial one — a regression no caller can see. Keep what we have;
       // -1 defeats the count check so the next call rebuilds, while the TTL still
@@ -721,16 +780,7 @@ export class MessageManager {
             continue;
           }
           full.set(message.id, message);
-          items.push({
-            id: message.id,
-            from: message.from,
-            to: message.to,
-            subject: message.subject,
-            priority: message.priority,
-            timestamp: message.timestamp,
-            status: message.status,
-            preview: message.body.substring(0, 100) + (message.body.length > 100 ? '...' : '')
-          });
+          items.push(toInboxListItem(message));
         } else {
           const failedFile = chunk[r] ? join(this.inboxPath, chunk[r]) : 'unknown';
           // Record the read failure so the file is skipped on subsequent rebuilds
