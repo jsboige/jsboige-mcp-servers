@@ -301,10 +301,48 @@ describe('InventoryService', () => {
       expect(env).toBeDefined();
       expect(env?.ROOSYNC_MACHINE_ID).toBe('myia-po-2026');
       expect(env?.QDRANT_URL).toBe('https://qdrant.myia.io');
-      expect(env?.OPENAI_API_KEY).toBe('sk-test');
+      // #2307 : OPENAI_API_KEY porte KEY → jamais publié, même sur préfixe surveillé
+      expect(env?.OPENAI_API_KEY).toBeUndefined();
       expect(env?.EMBEDDING_MODEL).toBe('text-embedding-3');
       // OTHER_VAR does not match ROOSYNC_|QDRANT_|OPENAI_|EMBEDDING_
       expect(env?.OTHER_VAR).toBeUndefined();
+    });
+
+    it('should NOT publish env vars whose name marks a secret, even on a watched prefix (#2307)', async () => {
+      const claudeJson = {
+        mcpServers: {
+          'roo-state-manager': {
+            env: {
+              ROOSYNC_MACHINE_ID: 'myia-po-2026',
+              ROOSYNC_SHARED_API_TOKEN: 'tok-should-not-publish',
+              QDRANT_URL: 'https://qdrant.myia.io',
+              QDRANT_API_KEY: 'qk-should-not-publish',
+              OPENAI_API_KEY: 'sk-should-not-publish',
+              EMBEDDING_MODEL: 'text-embedding-3',
+              EMBEDDING_SECRET: 'should-not-publish',
+              EMBEDDING_DB_PASSWORD: 'should-not-publish',
+            },
+          },
+        },
+      };
+
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      mockReadJSONByPath({
+        '.claude.json': claudeJson,
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue();
+
+      const inventory = await service.getMachineInventory();
+      const env = inventory.inventory.claudeConfig?.env;
+
+      expect(env?.ROOSYNC_MACHINE_ID).toBe('myia-po-2026');
+      expect(env?.QDRANT_URL).toBe('https://qdrant.myia.io');
+      expect(env?.EMBEDDING_MODEL).toBe('text-embedding-3');
+      expect(env?.ROOSYNC_SHARED_API_TOKEN).toBeUndefined();
+      expect(env?.QDRANT_API_KEY).toBeUndefined();
+      expect(env?.OPENAI_API_KEY).toBeUndefined();
+      expect(env?.EMBEDDING_SECRET).toBeUndefined();
+      expect(env?.EMBEDDING_DB_PASSWORD).toBeUndefined();
     });
 
     it('should deduplicate env vars across MCP servers', async () => {
