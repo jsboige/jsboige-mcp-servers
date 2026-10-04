@@ -10,17 +10,17 @@
 
 | Mesure | Valeur (2026-10-04) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **27** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **26** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
-| Fichiers effectivement non collectés en CI (vs run local) | **18** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **369** | idem |
+| Fichiers effectivement non collectés en CI (vs run local) | **17** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
+| Tests sautés en CI (vs run local) | **366** | idem |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
-drift-guard verrouille et que les docs citent. Le compte *effectif* (19 fichiers / 372 tests) dépend
+drift-guard verrouille et que les docs citent. Le compte *effectif* (17 fichiers / 366 tests) dépend
 aussi des patterns `include` et du contenu des fichiers (ex. `dashboard-llm-live` collecte 0 test sans
 `LLM_LIVE_INTEGRATION=1`) : il dérive sans toucher au config, donc il n'est pas gardé et se mesure à la
-demande via `--collect`. Le compte *effectif* (18 fichiers / 369 tests) dépend
+demande via `--collect`.
 
 ## Historique de la dérive (avant #3322)
 
@@ -38,10 +38,14 @@ retiré avec son module (update v3-native, couvert en CI) → **30 entrées**. *
 `ROOSYNC_SHARED_PATH` créé par le test — plus de dépendance GDrive réelle) → **29 entrées**. **#2639 (2026-10-03, 2e réactivation) :** `machines.smoke.test.ts` réactivé (même méthode : tmpdir `os.tmpdir()` remplaçant le chemin `/tmp` POSIX-only + contrat d'isolation) → **28 entrées**. **#2639 (2026-10-04, 3e réactivation) :** `send.smoke.test.ts` réactivé
 (l'isolation tmpdir était déjà en place depuis la réécriture #564/#815 — l'exclusion blanket posée à sa
 création `e514937d` était périmée ; ajout d'un contrat d'isolation explicite) → **27 entrées**.
+**#2639 (2026-10-04, 4e réactivation) :** `storage-management.smoke.test.ts` réactivé (**isolation
+mock-based**, écart documenté à la méthode tmpdir : les détecteurs scannent des chemins machine réels
+via un cache global 5 min sans routage env — pattern CI établi `baseline.test.ts` #2967 ; fraîcheur #564
+préservée sur état mock) → **26 entrées**.
 
 ---
 
-## Les 27 entrées fichiers de test
+## Les 26 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -56,7 +60,7 @@ CI tourne sur `ubuntu-22.04` ; ces tests requièrent Windows PowerShell / APPDAT
 | `tests/unit/services/InventoryCollectorWrapper.test.ts` | 3 | non |
 | `src/tools/roosync/__tests__/inventory.integration.test.ts` | 13 | non |
 
-### SMOKE — 2 entrées, toutes effectives (6 tests)
+### SMOKE — 1 entrée, effective (3 tests)
 
 Dépendent de l'état réel GDrive/RooSync partagé (production), pas de mocks.
 
@@ -65,11 +69,12 @@ scénario sur un tmpdir `ROOSYNC_SHARED_PATH` créé par le test — 11/11 véri
 `machines.smoke.test.ts` réactivé le même jour, même méthode — tmpdir `os.tmpdir()` + contrat
 d'isolation, 4/4 vérifiés sous config CI. `send.smoke.test.ts` réactivé le 2026-10-04 : isolation
 tmpdir déjà en place (réécriture #564/#815, l'exclusion blanket de sa création était périmée),
-contrat d'isolation ajouté — 4/4 vérifiés sous config CI.)*
+contrat d'isolation ajouté — 4/4 vérifiés sous config CI. `storage-management.smoke.test.ts` réactivé
+le 2026-10-04 : isolation **mock-based** — les détecteurs ne routent pas par env, les mocks
+`baseline.test.ts` #2967 font tourner la fraîcheur #564 sur état mock — 4/4 vérifiés sous config CI.)*
 
 | Entrée | Tests | Datée |
 |---|---|---|
-| `src/tools/roosync/__tests__/storage-management.smoke.test.ts` | 3 | non |
 | `src/tools/roosync/__tests__/list-diffs.smoke.test.ts` | 3 | non |
 
 ### APPDATA/GDRIVE — 8 entrées, 7 effectives (175 tests) + 1 no-op
@@ -126,7 +131,7 @@ collecte 0 test sans la variable, l'exclusion est déclarative mais sans effet s
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+2+8+7+1+1+1+1 = 27 · effectif : mesure 2026-10-04 post-#2639 (`--collect`) — 18 fichiers / 369 tests**
+**Total déclaré : 6+1+8+7+1+1+1+1 = 26 · effectif : mesure 2026-10-04 post-#2639 (`--collect`) — 17 fichiers / 366 tests**
 
 ---
 
@@ -158,10 +163,10 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
 
 1. **POWERSHELL (6)** — plateforme légitime (CI = ubuntu), mais rien n'empêcherait un job matrix
    Windows de les exécuter. Candidat « job dédié », pas réactivation simple.
-2. **SMOKE + APPDATA/GDRIVE (10 restantes)** — dépendance état réel GDrive : réactivation seulement
+2. **SMOKE + APPDATA/GDRIVE (9 restantes)** — dépendance état réel GDrive : réactivation seulement
    derrière un flag d'env type `GDRIVE_INTEGRATION=1` (pattern déjà utilisé par
    `LLM_LIVE_INTEGRATION=1`). (`get-status.smoke` puis `machines.smoke` ont quitté cette liste le
-   2026-10-03, `send.smoke` le 2026-10-04, #2639.)
+   2026-10-03, `send.smoke` puis `storage-management.smoke` (mock-based) le 2026-10-04, #2639.)
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
    skeleton-cache-reconstruction, workspace-filtering-diagnosis) : soit documenter la raison au niveau
    du config unit, soit rouvrir — en l'état elles sont invisibles pour la CI comme pour le run local.

@@ -4,46 +4,79 @@
  * Purpose: Validate that roosync_storage_management returns fresh data after state changes
  * Pattern: Issue #564 Phase 2 - Prevent silent bugs from cache staleness (issue #562)
  *
+ * #2639: RE-ENABLED in CI (2026-10-04). Isolation is MOCK-BASED, not tmpdir-based:
+ *   the tool delegates to RooStorageDetector/ZooStorageDetector, which scan real
+ *   machine paths (GDrive, home dirs) through a 5-minute global cache and expose no
+ *   env routing — a tmpdir ROOSYNC_SHARED_PATH never reaches them. Both detectors
+ *   (and handleMaintenance) are therefore mocked, the established CI pattern
+ *   (baseline.test.ts #2967, 15+ files). The #564 freshness pattern is preserved:
+ *   the mock state changes between two calls and the second result must reflect it.
+ *
  * @see docs/testing/issue-564-phase1-audit-report.md (lines 162-176)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Mock the real-machine detectors — no real GDrive/home storage is involved (#2639)
+vi.mock('../../../utils/roo-storage-detector.js', () => ({
+  RooStorageDetector: {
+    detectRooStorage: vi.fn(),
+    getStorageStats: vi.fn(),
+    getWorkspaceBreakdown: vi.fn()
+  }
+}));
+vi.mock('../../../utils/zoo-storage-detector.js', () => ({
+  ZooStorageDetector: {
+    getStorageStats: vi.fn()
+  }
+}));
+vi.mock('../../maintenance/maintenance.js', () => ({
+  handleMaintenance: vi.fn()
+}));
+
 import { roosyncStorageManagement } from '../storage-management.js';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
+import { ZooStorageDetector } from '../../../utils/zoo-storage-detector.js';
+import { handleMaintenance } from '../../maintenance/maintenance.js';
+
+const rooDetect = vi.mocked(RooStorageDetector.detectRooStorage);
+const rooStats = vi.mocked(RooStorageDetector.getStorageStats);
+const rooBreakdown = vi.mocked(RooStorageDetector.getWorkspaceBreakdown);
+const zooStats = vi.mocked(ZooStorageDetector.getStorageStats);
+const maintenanceMock = vi.mocked(handleMaintenance);
 
 describe('SMOKE: roosync_storage_management', () => {
-  const testStoragePath = path.join(os.tmpdir(), '.test-storage');
-  const testTasksPath = path.join(testStoragePath, 'test-workspace', 'tasks');
-  let originalEnv: NodeJS.ProcessEnv;
-
   beforeEach(() => {
-    // Save original environment
-    originalEnv = { ...process.env };
-
-    // Create test directory structure
-    if (!fs.existsSync(testTasksPath)) {
-      fs.mkdirSync(testTasksPath, { recursive: true });
-    }
+    vi.clearAllMocks();
+    // Deterministic timestamps: two mocked calls resolve in <1ms, so real clocks
+    // could stamp both with the same millisecond and flake the freshness asserts.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-04T01:00:00.000Z'));
   });
 
   afterEach(() => {
-    // Restore original environment
-    process.env = originalEnv;
+    vi.useRealTimers();
+  });
 
-    // Cleanup test files
-    if (fs.existsSync(testStoragePath)) {
-      fs.rmSync(testStoragePath, { recursive: true, force: true });
-    }
+  it('serves every storage read from the mocks, never the real detectors (isolation contract, #2639)', async () => {
+    rooDetect.mockResolvedValue({ found: true, locations: [] } as any);
+    zooStats.mockResolvedValue({ totalLocations: 0, totalConversations: 0, totalSize: 0 } as any);
+    rooStats.mockResolvedValue({ totalLocations: 0, totalConversations: 0, totalSize: 0 } as any);
+    rooBreakdown.mockResolvedValue({});
+
+    await roosyncStorageManagement({ action: 'storage', storageAction: 'detect' });
+
+    expect(rooDetect).toHaveBeenCalledTimes(1);
+    expect(zooStats).not.toHaveBeenCalled(); // detect path reads Roo only
   });
 
   it('should detect storage location changes (action: storage, subAction: detect)', async () => {
-    // Step 1: Create initial storage state with one task file
-    const task1Path = path.join(testTasksPath, 'task-1.json');
-    fs.writeFileSync(task1Path, JSON.stringify({ id: 'task-1', created: '2026-03-11T10:00:00Z' }));
+    // Step 1: initial detection (baseline)
+    rooDetect.mockResolvedValue({
+      found: false,
+      locations: []
+    } as any);
 
-    // Step 2: Initial call to detect storage (baseline)
     const result1 = await roosyncStorageManagement({
       action: 'storage',
       storageAction: 'detect'
@@ -52,89 +85,103 @@ describe('SMOKE: roosync_storage_management', () => {
     expect(result1.success).toBe(true);
     expect(result1.action).toBe('storage');
     expect(result1.subAction).toBe('detect');
-    expect(result1.data).toBeDefined();
+    expect(result1.data).toMatchObject({ found: false });
 
-    // Step 3: Modify the underlying state (add more task files)
-    const task2Path = path.join(testTasksPath, 'task-2.json');
-    const task3Path = path.join(testTasksPath, 'task-3.json');
-    fs.writeFileSync(task2Path, JSON.stringify({ id: 'task-2', created: '2026-03-11T11:00:00Z' }));
-    fs.writeFileSync(task3Path, JSON.stringify({ id: 'task-3', created: '2026-03-11T11:00:00Z' }));
+    // Step 2: modify the underlying state (a location appears)
+    vi.advanceTimersByTime(10);
+    rooDetect.mockResolvedValue({
+      found: true,
+      locations: ['D:/tmp/.test-storage/tasks']
+    } as any);
 
-    // Step 4: Make second call to detect storage
+    // Step 3: second call must reflect the new state, not a stale cached response
     const result2 = await roosyncStorageManagement({
       action: 'storage',
       storageAction: 'detect'
     });
 
-    // Step 5: Verify that result2 reflects the state change (not stale cached data)
     expect(result2.success).toBe(true);
-    expect(result2.action).toBe('storage');
-    expect(result2.subAction).toBe('detect');
-
-    // The data should reflect the new state (more files detected)
-    // This validates that no stale cache is preventing detection of new files
-    expect(result2.data).toBeDefined();
     expect(result2.timestamp).not.toBe(result1.timestamp);
+    expect(result2.data).toMatchObject({
+      found: true,
+      locations: ['D:/tmp/.test-storage/tasks']
+    });
   });
 
   it('should return fresh stats after workspace changes (action: storage, subAction: stats)', async () => {
-    // Step 1: Create initial workspace with minimal data
-    const workspace1Path = path.join(testStoragePath, 'workspace-1', 'tasks');
-    fs.mkdirSync(workspace1Path, { recursive: true });
-    fs.writeFileSync(
-      path.join(workspace1Path, 'task-1.json'),
-      JSON.stringify({ id: 'task-1', size: 100 })
-    );
+    // Step 1: initial stats (baseline, one workspace, no Zoo)
+    rooStats.mockResolvedValue({
+      totalLocations: 1,
+      totalConversations: 5,
+      totalSize: 100
+    } as any);
+    zooStats.mockResolvedValue({
+      totalLocations: 0,
+      totalConversations: 0,
+      totalSize: 0
+    } as any);
+    rooBreakdown.mockResolvedValue({ 'workspace-1': { conversationCount: 5 } } as any);
 
-    // Step 2: Initial call to get stats (baseline)
     const result1 = await roosyncStorageManagement({
       action: 'storage',
       storageAction: 'stats'
     });
 
     expect(result1.success).toBe(true);
-    expect(result1.action).toBe('storage');
     expect(result1.subAction).toBe('stats');
+    expect(result1.data).toMatchObject({
+      totalLocations: 1,
+      totalConversations: 5,
+      totalSize: 100,
+      totalWorkspaces: 1,
+      roo: { totalConversations: 5 }
+    });
+    // Zoo absent from the enhanced payload when it reports zero locations (#2429)
+    expect(result1.data).not.toHaveProperty('zooCode');
 
-    // Step 3: Modify the underlying state (add more workspaces and tasks)
-    const workspace2Path = path.join(testStoragePath, 'workspace-2', 'tasks');
-    fs.mkdirSync(workspace2Path, { recursive: true });
-    fs.writeFileSync(
-      path.join(workspace2Path, 'task-2.json'),
-      JSON.stringify({ id: 'task-2', size: 200 })
-    );
-    fs.writeFileSync(
-      path.join(workspace2Path, 'task-3.json'),
-      JSON.stringify({ id: 'task-3', size: 300 })
-    );
+    // Step 2: modify the underlying state (more workspaces + Zoo appears)
+    vi.advanceTimersByTime(10);
+    rooStats.mockResolvedValue({
+      totalLocations: 2,
+      totalConversations: 8,
+      totalSize: 300
+    } as any);
+    zooStats.mockResolvedValue({
+      totalLocations: 1,
+      totalConversations: 2,
+      totalSize: 50
+    } as any);
+    rooBreakdown.mockResolvedValue({
+      'workspace-1': { conversationCount: 5 },
+      'workspace-2': { conversationCount: 3 }
+    } as any);
 
-    // Step 4: Make second call to get stats
+    // Step 3: second call must reflect the new state (fresh stats, not cached)
     const result2 = await roosyncStorageManagement({
       action: 'storage',
       storageAction: 'stats'
     });
 
-    // Step 5: Verify that result2 reflects the state change (fresh stats, not cached)
     expect(result2.success).toBe(true);
-    expect(result2.action).toBe('storage');
-    expect(result2.subAction).toBe('stats');
     expect(result2.timestamp).not.toBe(result1.timestamp);
-
-    // Stats should reflect the new workspace and additional tasks
-    // This validates that storage stats are computed fresh, not from stale cache
-    expect(result2.data).toBeDefined();
+    expect(result2.data).toMatchObject({
+      totalLocations: 2,
+      totalConversations: 8,
+      totalSize: 300,
+      totalWorkspaces: 2,
+      zooCode: { totalLocations: 1 }
+    });
   });
 
   it('should handle maintenance operations without stale cache (action: maintenance, subAction: cache_rebuild)', async () => {
-    // Step 1: Create initial task data
-    const task1Path = path.join(testTasksPath, 'task-1.json');
-    fs.writeFileSync(task1Path, JSON.stringify({ id: 'task-1', content: 'initial' }));
-
-    // Create minimal conversationCache and state for maintenance
     const conversationCache = new Map();
-    const state = {} as any; // Minimal state object
+    const state = {} as any;
 
-    // Step 2: Initial cache_rebuild call
+    // Step 1: initial cache_rebuild (baseline)
+    maintenanceMock.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ rebuilt: 1, tasks: ['task-1'] }) }]
+    } as any);
+
     const result1 = await roosyncStorageManagement(
       {
         action: 'maintenance',
@@ -148,13 +195,22 @@ describe('SMOKE: roosync_storage_management', () => {
     expect(result1.success).toBe(true);
     expect(result1.action).toBe('maintenance');
     expect(result1.subAction).toBe('cache_rebuild');
+    expect(result1.data).toMatchObject({ rebuilt: 1 });
 
-    // Step 3: Modify the underlying task data
-    const task2Path = path.join(testTasksPath, 'task-2.json');
-    fs.writeFileSync(task1Path, JSON.stringify({ id: 'task-1', content: 'modified' }));
-    fs.writeFileSync(task2Path, JSON.stringify({ id: 'task-2', content: 'new' }));
+    // force_rebuild must be passed through to the maintenance handler
+    expect(maintenanceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'cache_rebuild', force_rebuild: true }),
+      conversationCache,
+      state
+    );
 
-    // Step 4: Second cache_rebuild call with force_rebuild
+    // Step 2: modify the underlying task data
+    vi.advanceTimersByTime(10);
+    maintenanceMock.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ rebuilt: 2, tasks: ['task-1', 'task-2'] }) }]
+    } as any);
+
+    // Step 3: second rebuild must reflect the new state
     const result2 = await roosyncStorageManagement(
       {
         action: 'maintenance',
@@ -165,14 +221,8 @@ describe('SMOKE: roosync_storage_management', () => {
       state
     );
 
-    // Step 5: Verify fresh rebuild reflects new state
     expect(result2.success).toBe(true);
-    expect(result2.action).toBe('maintenance');
-    expect(result2.subAction).toBe('cache_rebuild');
     expect(result2.timestamp).not.toBe(result1.timestamp);
-
-    // The rebuild should process the modified and new task files
-    // This validates that force_rebuild prevents using stale cached data
-    expect(result2.data).toBeDefined();
+    expect(result2.data).toMatchObject({ rebuilt: 2, tasks: ['task-1', 'task-2'] });
   });
 });
