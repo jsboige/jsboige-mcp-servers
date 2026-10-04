@@ -3,7 +3,7 @@
  * Issue #492 - Couverture des outils top-level
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { mockExec } = vi.hoisted(() => ({
 	mockExec: vi.fn()
@@ -49,6 +49,12 @@ describe('rebuild-and-restart', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Fake-timer leak defense (review note roo-extensions#1352): if a sibling
+		// test file in the same worker armed vi.useFakeTimers() and failed before
+		// its own afterEach restored real timers, the async exec chains below
+		// would hang on frozen timers (EBUSY-style timeout observed on #1352).
+		// vi.useRealTimers() is a no-op when timers are already real.
+		vi.useRealTimers();
 		// #4006: rebuild now requires package.json at the resolved path — default
 		// to present so legacy cwd tests keep their semantics; the refusal test
 		// overrides per-call.
@@ -58,6 +64,10 @@ describe('rebuild-and-restart', () => {
 	});
 
 	afterEach(() => {
+		// Restore real timers + APPDATA so this file never leaks fake timers
+		// into the next test file of the worker either (mirror of the beforeEach
+		// defense — review note roo-extensions#1352).
+		vi.useRealTimers();
 		process.env.APPDATA = origAppdata;
 	});
 
