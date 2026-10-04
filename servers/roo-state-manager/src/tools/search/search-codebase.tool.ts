@@ -14,7 +14,7 @@ import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, dirname, extname, isAbsolute, join, resolve } from 'path';
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'path';
 
 /**
  * #2609/#2554 (rename-GC gap): the Roo/Zoo Code indexer (reference-only submodule
@@ -235,20 +235,26 @@ function getWorkspaceRootSignature(workspaceRoot: string): Set<string> | null {
  * If false-negatives still appear in the wild, consider a second scroll from a
  * hash-derived offset. (Hardening per web1 review observation.)
  *
- * Returns the set of pathSegments.0 values, or null if the collection is unreadable.
+ * Returns the collection's signature (set of pathSegments.0 values) plus the sampled
+ * relative filePaths (used by the #2609 liveness preference below), or null if the
+ * collection is unreadable.
  */
-async function getCollectionSignature(qdrant: any, collectionName: string): Promise<Set<string> | null> {
+async function getCollectionSignature(
+	qdrant: any,
+	collectionName: string
+): Promise<{ dirs: Set<string>; paths: string[] } | null> {
 	try {
 		// Sample 200 points: payload-only (no vector). pathSegments is always present
 		// on indexed points (qdrant-client.ts:315-331). Robust to scroll's response
 		// shape variants (.points or .result.points).
 		const result = await qdrant.scroll(collectionName, {
 			limit: 200,
-			with_payload: { include: ['pathSegments'] },
+			with_payload: { include: ['pathSegments', 'filePath'] },
 			with_vector: false,
 		});
 		const points = result?.points || result?.result?.points || [];
 		const sig = new Set<string>();
+		const paths: string[] = [];
 		for (const p of points) {
 			const ps = p?.payload?.pathSegments;
 			if (ps && typeof ps === 'object') {
@@ -260,8 +266,58 @@ async function getCollectionSignature(qdrant: any, collectionName: string): Prom
 				const seg0 = String(p.payload.filePath).split(/[\\/]/)[0];
 				if (seg0) sig.add(seg0);
 			}
+			if (p?.payload?.filePath) paths.push(String(p.payload.filePath));
 		}
-		return sig;
+		return { dirs: sig, paths };
+	} catch {
+		return null;
+	}
+}
+
+// ─── #2609 grain 3 (2026-10-04): liveness preference at content-match resolution ──
+// Measured live (ai-01, 2026-10-04): among accepted candidates, the content-match picks
+// purely by structural score (points_count-desc order + score tie-break). The decaying
+// twin ws-59e7574de63c6e62 (398 567 pts, liveness 0.751 — dead build-vintage dirs) was
+// served over the repaired ws-d2ffdbaa832aed16 (328 245 pts, liveness 0.954), and golden
+// q3 returned 12/15 unopenable paths. Structural similarity cannot see that a collection
+// indexes files that no longer exist under the requested workspace — only the disk can.
+
+/** Rollback: CONTENT_MATCH_LIVENESS=0 restores pure structural-score selection. */
+function isContentMatchLivenessEnabled(): boolean {
+	return process.env.CONTENT_MATCH_LIVENESS !== '0';
+}
+/** Liveness ratio of the RESOLVED collection below which the response warns (stale twin). */
+const CONTENT_MATCH_LIVENESS_WARN_RATIO = parseFloat(process.env.CONTENT_MATCH_LIVENESS_WARN_RATIO || '0.5');
+/** Caps the existsSync sample per candidate (paths come free from the signature scroll). */
+const LIVENESS_MAX_PATHS = 100;
+
+/**
+ * Estimate a candidate collection's liveness: the share of its sampled indexed paths
+ * that still exist under the requested workspace root. Dead paths are exactly the hits
+ * the caller could not open, so among structurally-accepted candidates the livelier
+ * one delivers more exploitable results (#2609's north-star rubric).
+ *
+ * Paths escaping the workspace root are skipped (not a liveness signal for THIS
+ * workspace). Returns null when fewer than 2 paths are checkable — an undecidable
+ * sample must never masquerade as a measured ratio.
+ */
+export function estimateCollectionLiveness(
+	paths: string[],
+	workspaceRoot: string
+): { ratio: number; checked: number } | null {
+	try {
+		const root = resolve(workspaceRoot);
+		let live = 0;
+		let checked = 0;
+		for (const raw of paths.slice(0, LIVENESS_MAX_PATHS)) {
+			if (!raw) continue;
+			const abs = resolve(root, String(raw).replace(/\\/g, '/'));
+			if (abs !== root && !abs.startsWith(root + sep)) continue;
+			checked++;
+			if (existsSync(abs)) live++;
+		}
+		if (checked < 2) return null;
+		return { ratio: live / checked, checked };
 	} catch {
 		return null;
 	}
@@ -277,16 +333,34 @@ async function getCollectionSignature(qdrant: any, collectionName: string): Prom
  * non-generic dir shared. Else null. On null the caller keeps the honest diagnostic —
  * we never serve a low-confidence guess.
  *
+ * Selection among accepted candidates (#2609 grain 3): liveness ratio FIRST (the share
+ * of sampled indexed paths still existing under workspaceRoot), structural score as
+ * tie-break. A strictly livelier accepted candidate beats a structurally-better but
+ * decaying one — both passed the same structural gates, so they index the same
+ * workspace; only the disk knows which one still serves openable paths. Liveness
+ * applies only when ≥2 candidates are decidable; otherwise the legacy score ranking
+ * stands (first on tie — candidates arrive points_count desc).
+ *
  * @param qdrant - Qdrant client
  * @param candidates - ws-* collection names to probe (pre-sorted by points_count desc)
  * @param workspaceSignature - top-level dirs of the workspace on disk (null = skip)
- * @returns { name, jaccard, overlap, sharedDiscriminants } of the best strict match, or null
+ * @param workspaceRoot - requested workspace root (enables the liveness preference)
+ * @returns the selected match with its metrics + liveness, or null
  */
 export async function findCollectionByContent(
 	qdrant: any,
 	candidates: string[],
-	workspaceSignature: Set<string> | null
-): Promise<{ name: string; jaccard: number; overlap: number; sharedDiscriminants: number } | null> {
+	workspaceSignature: Set<string> | null,
+	workspaceRoot?: string
+): Promise<{
+	name: string;
+	jaccard: number;
+	overlap: number;
+	sharedDiscriminants: number;
+	liveness?: { ratio: number; checked: number };
+	selection_basis: 'score' | 'liveness';
+	liveness_flipped_selection?: boolean;
+} | null> {
 	if (!workspaceSignature || workspaceSignature.size === 0 || candidates.length === 0) {
 		return null;
 	}
@@ -294,28 +368,34 @@ export async function findCollectionByContent(
 	// Discriminant dirs = workspace dirs minus generic ones. At least one must be shared.
 	const discriminantDirs = new Set([...workspaceSignature].filter(d => !GENERIC_DIRS.has(d)));
 
-	let best: { name: string; jaccard: number; overlap: number; sharedDiscriminants: number } | null = null;
-	// Rank by the stronger of the two metrics so the overlap path can win the tie-break
-	// on inflated workspaces where Jaccard is uniformly low across candidates.
-	let bestScore = -1;
 	const scanned = Math.min(candidates.length, CONTENT_MATCH_MAX_CANDIDATES);
+	type Accepted = {
+		name: string;
+		jaccard: number;
+		overlap: number;
+		sharedDiscriminants: number;
+		score: number;
+		paths: string[];
+		liveness: { ratio: number; checked: number } | null;
+	};
+	const accepted: Accepted[] = [];
 
 	for (let i = 0; i < scanned; i++) {
 		const name = candidates[i];
-		const collSig = await getCollectionSignature(qdrant, name);
-		if (!collSig || collSig.size === 0) continue;
+		const sig = await getCollectionSignature(qdrant, name);
+		if (!sig || sig.dirs.size === 0) continue;
 
 		// Jaccard similarity between workspace dirs and collection's indexed dirs.
-		const intersection = [...workspaceSignature].filter(d => collSig.has(d)).length;
-		const union = new Set([...workspaceSignature, ...collSig]).size;
+		const intersection = [...workspaceSignature].filter(d => sig.dirs.has(d)).length;
+		const union = new Set([...workspaceSignature, ...sig.dirs]).size;
 		if (union === 0) continue;
 		const jaccard = intersection / union;
 
 		// #2554/#2766: overlap coefficient (containment) = intersection / min(sizes).
 		// Robust to an inflated workspace: measures whether the indexed dirs are a subset
 		// of the workspace, independent of how many extra non-indexed dirs the workspace has.
-		const overlap = intersection / Math.min(workspaceSignature.size, collSig.size);
-		const sharedDiscriminantCount = [...discriminantDirs].filter(d => collSig.has(d)).length;
+		const overlap = intersection / Math.min(workspaceSignature.size, sig.dirs.size);
+		const sharedDiscriminantCount = [...discriminantDirs].filter(d => sig.dirs.has(d)).length;
 
 		// STRICT gate: at least one shared discriminant dir, AND either the original
 		// Jaccard threshold OR the overlap threshold. The overlap path additionally
@@ -326,14 +406,53 @@ export async function findCollectionByContent(
 			|| (overlap >= CONTENT_MATCH_MIN_OVERLAP && sharedDiscriminantCount >= 2)
 		);
 		if (accept) {
-			const score = Math.max(jaccard, overlap);
-			if (!best || score > bestScore) {
-				best = { name, jaccard, overlap, sharedDiscriminants: sharedDiscriminantCount };
-				bestScore = score;
-			}
+			// Rank by the stronger of the two metrics so the overlap path can win the
+			// tie-break on inflated workspaces where Jaccard is uniformly low.
+			accepted.push({
+				name,
+				jaccard,
+				overlap,
+				sharedDiscriminants: sharedDiscriminantCount,
+				score: Math.max(jaccard, overlap),
+				paths: sig.paths,
+				liveness: null,
+			});
 		}
 	}
-	return best;
+	if (accepted.length === 0) return null;
+
+	// Liveness for every accepted candidate — paths already sampled by the signature
+	// scroll, so this costs only bounded existsSync calls (≤ LIVENESS_MAX_PATHS each).
+	if (workspaceRoot && isContentMatchLivenessEnabled()) {
+		for (const c of accepted) {
+			c.liveness = estimateCollectionLiveness(c.paths, workspaceRoot);
+		}
+	}
+
+	// Legacy selection: best structural score, first on tie (candidates arrive points-desc).
+	const byScore = [...accepted].sort((a, b) => b.score - a.score);
+	let winner = byScore[0];
+	let selectionBasis: 'score' | 'liveness' = 'score';
+	let flipped = false;
+
+	const decidable = accepted.filter(c => c.liveness !== null);
+	if (decidable.length >= 2) {
+		const byLiveness = [...decidable].sort((a, b) =>
+			(b.liveness!.ratio - a.liveness!.ratio) || (b.score - a.score));
+		if (byLiveness[0] !== winner) flipped = true;
+		winner = byLiveness[0];
+		selectionBasis = 'liveness';
+	}
+
+	return {
+		name: winner.name,
+		jaccard: winner.jaccard,
+		overlap: winner.overlap,
+		sharedDiscriminants: winner.sharedDiscriminants,
+		...(winner.liveness ? { liveness: winner.liveness } : {}),
+		selection_basis: selectionBasis,
+		...(flipped ? { liveness_flipped_selection: true } : {}),
+	};
 }
 
 // ─── #2609 V2(c)(b): partial-collection detection at resolution time ──────────
@@ -1177,6 +1296,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			jaccard: number; jaccard_threshold: number;
 			overlap?: number; overlap_threshold?: number;
 			shared_discriminant_dirs?: number; accepted_via?: 'jaccard' | 'overlap';
+			selection_basis?: 'score' | 'liveness';
+			liveness_ratio?: number; liveness_checked_paths?: number;
+			liveness_flipped_selection?: boolean;
 		} | undefined;
 		// points_count of the hash-matched collection (if any). Used to detect the
 		// "collection exists but is empty" blind-spot: the hash resolves to a real
@@ -1244,7 +1366,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// Try content-based matching (STRICT threshold — never serve a low-confidence guess).
 			const workspaceSignature = getWorkspaceRootSignature(workspace);
 			const contentMatch = workspaceSignature
-				? await findCollectionByContent(qdrant, candidates, workspaceSignature)
+				? await findCollectionByContent(qdrant, candidates, workspaceSignature, workspace)
 				: null;
 
 			if (contentMatch) {
@@ -1265,6 +1387,15 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 					overlap_threshold: CONTENT_MATCH_MIN_OVERLAP,
 					shared_discriminant_dirs: contentMatch.sharedDiscriminants,
 					accepted_via: contentMatch.jaccard >= CONTENT_MATCH_MIN_JACCARD ? 'jaccard' : 'overlap',
+					// #2609 grain 3: what selected the served collection among accepted
+					// candidates — liveness (share of sampled paths alive under this
+					// workspace) or structural score — plus the winner's liveness numbers.
+					selection_basis: contentMatch.selection_basis,
+					...(contentMatch.liveness ? {
+						liveness_ratio: Math.round(contentMatch.liveness.ratio * 1000) / 1000,
+						liveness_checked_paths: contentMatch.liveness.checked,
+					} : {}),
+					...(contentMatch.liveness_flipped_selection ? { liveness_flipped_selection: true } : {}),
 				};
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
@@ -1278,7 +1409,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				const sigByCollection = new Map<string, string[] | null>();
 				for (const r of ranked.slice(0, 10)) {
 					const sig = await getCollectionSignature(qdrant, r.name);
-					const topDirs = sig ? [...sig].slice(0, 8) : null;
+					const topDirs = sig?.dirs ? [...sig.dirs].slice(0, 8) : null;
 					sigByCollection.set(r.name, topDirs);
 					collectionDiagnostics.push({
 						collection: r.name,
@@ -1740,6 +1871,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			...(coverage ? { coverage } : {}),
 			...(coverage?.below_threshold ? {
 				coverage_warning: `collection ${collectionName} is PARTIAL: ${coverage.indexed_files}/${coverage.eligible_files} eligible workspace files indexed (ratio ${coverage.coverage_ratio} < ${coverage.warn_threshold}). Files absent from the corpus cannot be retrieved by any ranking — re-index this workspace (Roo/Zoo Code codebase index on this machine) to repair.`
+			} : {}),
+			// #2609 grain 3: the resolved collection itself is decaying — most of its
+			// sampled indexed paths no longer exist under this workspace. Its hits are
+			// dead paths no ranking can revive; only a re-index repairs.
+			...(contentMatchDetails?.liveness_ratio !== undefined
+				&& contentMatchDetails.liveness_ratio < CONTENT_MATCH_LIVENESS_WARN_RATIO ? {
+				liveness_warning: `collection ${collectionName} is DECAYING: only ${contentMatchDetails.liveness_ratio} of its sampled indexed paths still exist under this workspace (stale twin collection). Re-index this workspace (Roo/Zoo Code codebase index) to repair.`
 			} : {}),
 			results_count: results.length,
 			min_score_used: effectiveMinScore,
