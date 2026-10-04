@@ -425,6 +425,32 @@ export function generateNextSteps(
  * @param backupPath Chemin du répertoire de backup
  * @returns Informations sur le backup créé
  */
+/**
+ * Nom de fichier de backup déterministe pour un chemin original (#2639).
+ *
+ * Le `:` du lecteur Windows DOIT être remplacé : un nom de backup
+ * `D:_dev_…json` est interprété par NTFS comme un flux ADS porté par un
+ * fichier de base `D` (0 octet) — le contenu part dans le flux, invisible à
+ * `readdirSync`, et le rollback copiait ensuite ce `D` vide dans le CWD.
+ * Le décodage inverse (`_` → `/`) étant structurellement lossy (les `_`
+ * légitimes des segments, ex. `__test-data__`, sont détruits), la
+ * restauration est pilotée par le manifeste `files[]` du meta et recompute
+ * ce nom — jamais décodée depuis le nom de fichier.
+ */
+export function backupFileNameFor(originalPath: string): string {
+  return originalPath.replace(/[/\\:]/g, '_');
+}
+
+/**
+ * Mangling hérité (pré-#2639) : séparateurs seulement, `:` conservé.
+ * Conservé UNIQUEMENT comme candidat de lecture au restore, pour les
+ * backups créés avant le fix (notamment sous Linux où le nom ne pose pas
+ * de problème NTFS).
+ */
+function legacyBackupFileName(originalPath: string): string {
+  return originalPath.replace(/[/\\]/g, '_');
+}
+
 export function createBackup(
   files: string[],
   backupPath: string
@@ -446,8 +472,7 @@ export function createBackup(
 
     for (const file of files) {
       if (existsSync(file)) {
-        const fileName = file.replace(/[/\\]/g, '_');
-        const backupFilePath = join(backupDir, fileName);
+        const backupFilePath = join(backupDir, backupFileNameFor(file));
         copyFileSync(file, backupFilePath);
         backedUpFiles.push(file);
       }
@@ -476,24 +501,47 @@ export function restoreBackup(
   targetPath: string
 ): string[] {
   try {
-    const { copyFileSync, existsSync, readdirSync } = require('fs');
+    const { copyFileSync, existsSync } = require('fs');
 
     if (!backupInfo.backupDir || !existsSync(backupInfo.backupDir)) {
       throw new Error('Répertoire de backup introuvable');
     }
 
+    // #2639: restauration pilotée par le manifeste `files[]` du meta — le
+    // décodage du nom de fichier (`_` → `/`) était lossy et écrivait hors
+    // cible (fichier `D` 0 octet dans le CWD sur Windows, `__test-data__`
+    // restauré en `test-data` partout).
+    if (!Array.isArray(backupInfo.files) || backupInfo.files.length === 0) {
+      throw new Error('Manifeste de backup vide — noms de fichiers non reconstruisibles (#2639)');
+    }
+
     const restoredFiles: string[] = [];
-    const backupFiles = readdirSync(backupInfo.backupDir);
+    let missing = 0;
 
-    for (const backupFile of backupFiles) {
-      // Reconstituer le chemin original depuis le nom du fichier backup
-      const originalPath = backupFile.replace(/_/g, '/');
-      const backupFilePath = join(backupInfo.backupDir, backupFile);
+    for (const originalPath of backupInfo.files) {
+      // Candidats de lecture : nom courant (colonne sanitizée) puis nom hérité
+      // pour les backups créés avant le fix.
+      const candidates = [backupFileNameFor(originalPath), legacyBackupFileName(originalPath)];
+      let restored = false;
 
-      if (existsSync(backupFilePath)) {
-        copyFileSync(backupFilePath, originalPath);
-        restoredFiles.push(originalPath);
+      for (const candidate of candidates) {
+        const backupFilePath = join(backupInfo.backupDir, candidate);
+        if (existsSync(backupFilePath)) {
+          copyFileSync(backupFilePath, originalPath);
+          restoredFiles.push(originalPath);
+          restored = true;
+          break;
+        }
       }
+
+      if (!restored) {
+        missing++;
+        console.error(`[restoreBackup] Fichier de backup introuvable pour ${originalPath}`);
+      }
+    }
+
+    if (restoredFiles.length === 0 && missing > 0) {
+      throw new Error('Aucun fichier restauré — backups introuvables dans ' + backupInfo.backupDir);
     }
 
     return restoredFiles;
