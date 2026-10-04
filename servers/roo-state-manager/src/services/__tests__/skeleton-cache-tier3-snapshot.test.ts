@@ -77,7 +77,7 @@ vi.mock('../task-archiver/index.js', () => ({
 	}
 }));
 
-import { SkeletonCacheService } from '../skeleton-cache.service.js';
+import { SkeletonCacheService, TIER3_SNAPSHOT_VERSION } from '../skeleton-cache.service.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 
 // Absolu sur l'OS courant : le service n'honore l'override que s'il passe
@@ -106,7 +106,9 @@ function makeStub(taskId: string, machineId: string): ConversationSkeleton {
 }
 
 function snapshotPayload(stubs: ConversationSkeleton[], savedAt = Date.now()): string {
-	return JSON.stringify({ version: 1, savedAt, stubs });
+	// #1353 : adossé à la constante — un bump de version doit invalider les
+	// snapshots persistés (re-seed), et le test suit sans retoucher la fixture.
+	return JSON.stringify({ version: TIER3_SNAPSHOT_VERSION, savedAt, stubs });
 }
 
 /** Configure un environnement "machine Claude-only" : aucun storage Roo,
@@ -204,7 +206,7 @@ describe('SkeletonCacheService — Tier 3 stub snapshot (#1747 E)', () => {
 		const tmpPath = mockWriteFile.mock.calls[0][0] as string;
 		expect(tmpPath).toContain('.tmp-');
 		const payload = JSON.parse(mockWriteFile.mock.calls[0][1] as string);
-		expect(payload.version).toBe(1);
+		expect(payload.version).toBe(TIER3_SNAPSHOT_VERSION);
 		expect(payload.stubs).toHaveLength(2);
 		for (const stub of payload.stubs) {
 			expect(stub.sequence).toEqual([]);

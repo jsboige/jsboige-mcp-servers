@@ -14,6 +14,7 @@ import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { stripXmlTags, truncateAtBoundary } from '../../utils/text-preview.js';
 import { matchesWorkspace } from '../../utils/workspace-match.js';
+import { deriveWorkspaceFromClaudeProjectSlug } from '../../utils/claude-project-workspace.js';
 import { applyUnifiedHeaderFiltersAndSort } from './unified-header-pipeline.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
 import { promises as fs } from 'fs';
@@ -1747,19 +1748,15 @@ async function scanClaudeSessions(
                 continue;
             }
 
-            // Derive workspace: read cwd from first JSONL line (reliable),
-            // fallback to directory name with hyphens preserved (ambiguous but better than wrong)
+            // Derive workspace: read cwd from first JSONL line (reliable), fallback to the
+            // shared slug deriver — same rule as archived sessions, defined once
+            // (utils/claude-project-workspace.ts, friction ai-01 04/10).
             let derivedWorkspace: string | undefined;
             if (files.length > 0) {
                 derivedWorkspace = await extractCwdFromJsonl(path.join(location.projectPath, files[0]));
             }
             if (!derivedWorkspace) {
-                const projectName = path.basename(location.projectPath);
-                const driveMatch = projectName.match(/^([a-zA-Z])--(.*)/);
-                if (driveMatch) {
-                    // Keep hyphens as-is — can't distinguish path separators from literal hyphens
-                    derivedWorkspace = `${driveMatch[1].toLowerCase()}:/${driveMatch[2]}`;
-                }
+                derivedWorkspace = deriveWorkspaceFromClaudeProjectSlug(path.basename(location.projectPath));
             }
 
             for (const file of files) {
